@@ -6,6 +6,8 @@ import type { SqlValue } from '../common/types';
 import { SchemaManager } from '../schema/manager';
 import type { TableSchema } from '../schema/table';
 import type { FunctionSchema } from '../schema/function';
+import { Parser } from '../parser/parser';
+import { Compiler } from '../compiler/compiler';
 // Placeholder for Function management
 // import { FunctionManager } from '../func/manager';
 
@@ -21,7 +23,8 @@ export class Database {
     private registeredVTabs: Map<string, { module: VirtualTableModule<any, any>, auxData: unknown }> = new Map();
     // Function registration now delegated to SchemaManager/Schema
     // private registeredFuncs: Map<string, { /* function details */ }> = new Map();
-    private isAutocommit = true; // TODO: Manage transaction state
+    private isAutocommit = true; // Manages transaction state
+    private inTransaction = false;
 
     constructor() {
         this.schemaManager = new SchemaManager(this);
@@ -41,74 +44,159 @@ export class Database {
             throw new MisuseError("Database is closed");
         }
         console.log(`Preparing SQL: ${sql}`);
-        // TODO: Implement actual parsing and VDBE code generation
-        // Parser will need access to schemaManager to resolve tables/functions
-        // For now, create a placeholder statement
+
+        // Create the statement
         const stmt = new Statement(this, sql);
-        this.statements.add(stmt);
-        return stmt;
+
+        try {
+            // Initialize it
+            // await stmt._prepare(); // Removed - Compilation happens lazily
+
+            // Add to active statements list
+            this.statements.add(stmt);
+
+            return stmt;
+        } catch (error) {
+            // Clean up if prepare fails
+            this.statements.delete(stmt);
+            throw error;
+        }
     }
 
-     /**
+    /**
      * Executes one or more SQL statements directly.
-     * Convenience method, less efficient for repeated execution than prepare/step.
      * @param sql The SQL string(s) to execute.
+     * @param params Optional parameters to bind (array or object).
      * @param callback Optional callback to process result rows.
      * @returns A Promise resolving when execution completes.
      * @throws SqliteError on failure.
      */
-    async exec(sql: string, callback?: (row: Record<string, SqlValue>, columnNames: string[]) => void): Promise<void> {
-         if (!this.isOpen) {
+    async exec(
+        sql: string,
+        params?: SqlValue[] | Record<string, SqlValue> | ((row: Record<string, SqlValue>, columns: string[]) => void),
+        callback?: (row: Record<string, SqlValue>, columns: string[]) => void
+    ): Promise<void> {
+        if (!this.isOpen) {
             throw new MisuseError("Database is closed");
         }
+
+        // Check if the first argument is the callback (no params)
+        if (typeof params === 'function' && callback === undefined) {
+            callback = params as (row: Record<string, SqlValue>, columns: string[]) => void;
+            params = undefined;
+        }
+
         console.log(`Executing SQL: ${sql}`);
-        // TODO: Implement statement splitting and execution loop
-        // This is complex as it needs to handle multiple statements and result processing.
-        // For a minimal start, we might only support single statements or defer this.
-        const stmt = await this.prepare(sql); // Simplified: assumes single statement
+
+        // TODO: Split multiple statements
+        // For now, we'll assume a single statement
+
+        const stmt = await this.prepare(sql);
+
         try {
+            // Bind parameters if provided
+            if (params && typeof params !== 'function') {
+                stmt.bindAll(params);
+            }
+
+            // Execute the statement
             let result = await stmt.step();
+
             while (result === StatusCode.ROW) {
+                // Process row if callback provided
                 if (callback) {
-                    const rowData = stmt.getAsObject(); // Assuming getAsObject method exists
-                    const colNames = stmt.getColumnNames(); // Assuming getColumnNames exists
+                    const rowData = stmt.getAsObject();
+                    const colNames = stmt.getColumnNames();
                     callback(rowData, colNames);
                 }
+
+                // Step to next row
                 result = await stmt.step();
             }
-            if (result !== StatusCode.DONE && result !== StatusCode.OK) { // OK might be valid for non-SELECT exec
-                // Prepare might succeed, but step could fail
+
+            if (result !== StatusCode.DONE && result !== StatusCode.OK) {
                 throw new SqliteError("Execution failed", result);
             }
         } finally {
+            // Always finalize the statement
             await stmt.finalize();
         }
     }
 
-
     /**
      * Registers a virtual table module.
-     * @param name The name of the module (used in CREATE VIRTUAL TABLE ... USING name(...)).
+     * @param name The name of the module.
      * @param module The module implementation.
      * @param auxData Optional client data passed to xCreate/xConnect.
-     * @throws SqliteError if registration fails (e.g., name conflict).
      */
     registerVtabModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
         if (!this.isOpen) {
             throw new MisuseError("Database is closed");
         }
+
         const lowerName = name.toLowerCase();
         if (this.registeredVTabs.has(lowerName)) {
-            // Original SQLite allows overwriting, should we? For now, error.
             throw new SqliteError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
         }
+
         console.log(`Registering VTab module: ${name}`);
         this.registeredVTabs.set(lowerName, { module, auxData });
-        // The module isn't linked to a specific table until CREATE VIRTUAL TABLE
     }
 
     // Function registration is now handled via SchemaManager / Schema
     // registerFunction(...) // Removed from here
+
+    /**
+     * Begins a transaction.
+     * @param mode Transaction mode ('deferred', 'immediate', or 'exclusive').
+     */
+    async beginTransaction(mode: 'deferred' | 'immediate' | 'exclusive' = 'deferred'): Promise<void> {
+        if (!this.isOpen) {
+            throw new MisuseError("Database is closed");
+        }
+
+        if (this.inTransaction) {
+            throw new SqliteError("Transaction already active", StatusCode.ERROR);
+        }
+
+        await this.exec(`BEGIN ${mode.toUpperCase()} TRANSACTION`);
+        this.inTransaction = true;
+        this.isAutocommit = false;
+    }
+
+    /**
+     * Commits the current transaction.
+     */
+    async commit(): Promise<void> {
+        if (!this.isOpen) {
+            throw new MisuseError("Database is closed");
+        }
+
+        if (!this.inTransaction) {
+            throw new SqliteError("No transaction active", StatusCode.ERROR);
+        }
+
+        await this.exec("COMMIT");
+        this.inTransaction = false;
+        this.isAutocommit = true;
+    }
+
+    /**
+     * Rolls back the current transaction.
+     */
+    async rollback(): Promise<void> {
+        if (!this.isOpen) {
+            throw new MisuseError("Database is closed");
+        }
+
+        if (!this.inTransaction) {
+            throw new SqliteError("No transaction active", StatusCode.ERROR);
+        }
+
+        await this.exec("ROLLBACK");
+        this.inTransaction = false;
+        this.isAutocommit = true;
+    }
 
     /**
      * Closes the database connection and releases resources.
@@ -118,6 +206,7 @@ export class Database {
         if (!this.isOpen) {
             return;
         }
+
         console.log("Closing database...");
         this.isOpen = false;
 
@@ -127,7 +216,6 @@ export class Database {
         this.statements.clear();
 
         // Clear schemas, ensuring VTabs are potentially disconnected
-        // TODO: Implement proper disconnect/destroy loop based on active VTabs
         this.schemaManager.clearAll(true);
 
         this.registeredVTabs.clear();
@@ -146,17 +234,16 @@ export class Database {
 
     /** Checks if the database connection is in autocommit mode. */
     getAutocommit(): boolean {
-         if (!this.isOpen) {
+        if (!this.isOpen) {
             throw new MisuseError("Database is closed");
         }
-        return this.isAutocommit; // TODO: Implement actual transaction state tracking
+        return this.isAutocommit;
     }
 
     /**
      * Programmatically defines or replaces a virtual table in the 'main' schema.
      * This is an alternative/supplement to using `CREATE VIRTUAL TABLE`.
-     * @param definition The schema definition for the table. Must have isVirtual=true and valid module info.
-     * @throws SqliteError if the definition is invalid or belongs to another schema.
+     * @param definition The schema definition for the table.
      */
     defineVirtualTable(definition: TableSchema): void {
         if (!this.isOpen) throw new MisuseError("Database is closed");
@@ -164,17 +251,15 @@ export class Database {
             throw new MisuseError("Definition must be for a virtual table with a module");
         }
         if (definition.schemaName !== 'main') {
-             throw new MisuseError("Programmatic definition only supported for 'main' schema currently");
+            throw new MisuseError("Programmatic definition only supported for 'main' schema currently");
         }
-        // TODO: Maybe disconnect/destroy existing vtab instance if replacing?
+
         this.schemaManager.getMainSchema().addTable(definition);
     }
-
 
     // TODO: Add methods for programmatic schema definition if needed
     // defineTable(...) - For regular tables (if ever needed)
     // defineFunction(...) - Wraps schemaManager.getMainSchema().addFunction(...)
-
 
     // Internal accessors used by parser/planner/VDBE
     /** @internal */
@@ -183,13 +268,12 @@ export class Database {
     }
 
     /** @internal */
-     _findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
+    _findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
         return this.schemaManager.findTable(tableName, dbName);
     }
 
     /** @internal */
     _findFunction(funcName: string, nArg: number): FunctionSchema | undefined {
-         return this.schemaManager.findFunction(funcName, nArg);
+        return this.schemaManager.findFunction(funcName, nArg);
     }
-
 }

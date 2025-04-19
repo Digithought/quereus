@@ -7,13 +7,16 @@ import type { Database } from './database';
 // --- Add VDBE imports ---
 import { type VdbeProgram, VdbeProgramBuilder } from '../vdbe/program';
 import { Vdbe, type MemoryCell } from '../vdbe/engine';
-import { createInstruction } from '../vdbe/instruction'; // For placeholder compile
+import { createInstruction, type P4Vtab } from '../vdbe/instruction'; // For placeholder compile
 import { Opcode, IndexConstraintOp } from '../common/constants'; // For placeholder compile
 // ------------------------
 
-import type { SelectAst, SelectColumn, WhereClauseSimple } from '../parser/ast'; // Simulated AST
+import type { SelectStmt, ResultColumn, Expression, BinaryExpr, ColumnExpr } from '../parser/ast'; // Corrected imports
 import type { TableSchema } from '../schema/table';
 import type { IndexInfo, IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
+import { Parser } from '../parser/parser';
+import { Compiler } from '../compiler/compiler';
+import type { AstNode } from '../parser/ast'; // Type-only import
 
 // Helper type guard for parameters in AST
 function isParameter(value: SqlValue | { type: 'parameter', key: number | string }): value is { type: 'parameter', key: number | string } {
@@ -47,13 +50,14 @@ export class Statement {
 
     // --- Simulate Parsing ---
     /** @internal Simulates parsing the SQL into our AST structure. Replace with real parser later. */
-    private simulateParse(): SelectAst {
+    private simulateParse(): SelectStmt { // Changed return type to SelectStmt
         // VERY basic simulation - assumes SELECT * FROM vtab [WHERE col = ?]
         console.warn("SQL parsing simulation active!");
         const sqlLower = this.sql.toLowerCase().trim();
         let tableName = 'unknown';
-        let where: SelectAst['whereClause'] = null;
-        let columns: SelectColumn[] = [{ type: 'all' }]; // Default to '*'
+        // Simplified WHERE clause representation for simulation
+        let where: { column: string; operator: IndexConstraintOp; value: SqlValue | { type: 'parameter', key: number | string } } | null = null;
+        let columns: ResultColumn[] = [{ type: 'all' }]; // Default to '*'
 
         const fromMatch = sqlLower.match(/from\s+([a-z_]\w*)/);
         if (fromMatch) {
@@ -64,9 +68,9 @@ export class Statement {
 
         const selectMatch = sqlLower.match(/select\s+(.*?)\s+from/);
         if (selectMatch && selectMatch[1] !== '*') {
-            columns = selectMatch[1].split(',').map(c => ({ type: 'column', name: c.trim() }));
+             // Simulation: treating column names directly as expressions
+            columns = selectMatch[1].split(',').map(c => ({ type: 'column', expr: { type: 'column', name: c.trim() } }));
         }
-
 
         const whereMatch = this.sql.match(/where\s+([a-z_]\w*)\s*=\s*(\?|\d+|'[^']+'|"[^"]+")/i); // Match ?, number, or quoted string
         if (whereMatch) {
@@ -87,13 +91,23 @@ export class Statement {
             where = { column: colName, operator: IndexConstraintOp.EQ, value: value };
         }
 
-        return {
-            type: 'SELECT',
+        // Create a SelectStmt like object for the compiler simulation
+        // NOTE: Many fields are missing/simplified compared to the real AST
+        const simulatedAst: Partial<SelectStmt> & { type: 'select' } = {
+            type: 'select',
             columns: columns,
-            fromTable: tableName,
-            fromSchema: null, // Assume 'main'/'temp' search for now
-            whereClause: where
+            from: [{ type: 'table', table: { type: 'identifier', name: tableName } }],
+            where: where ? { // Simulate a simple binary expression for the WHERE clause
+                type: 'binary',
+                operator: '=',
+                left: { type: 'column', name: where.column },
+                right: isParameter(where.value)
+                    ? { type: 'parameter', key: where.value.key } as any // Cast parameter marker
+                    : { type: 'literal', value: where.value }
+            } : undefined
         };
+
+        return simulatedAst as SelectStmt; // Cast to full type, acknowledging simulation limits
     }
     // --- End Simulate Parsing ---
 
@@ -104,16 +118,36 @@ export class Statement {
         console.log("Compiling statement...");
         this.vdbeProgram = null;
 
+        // --- Use Real Parser ---
+        // const parser = new Parser();
+        // const ast = parser.parse(this.sql);
+        // For now, continue using the simulation
         const ast = this.simulateParse();
+        // ---------------------
+
+        // --- Use Real Compiler ---
+        // const compiler = new Compiler(this.db);
+        // this.vdbeProgram = compiler.compile(ast, this.sql);
+        // this.needsCompile = false;
+        // console.log("Compilation complete.");
+        // console.log("Generated Program:", this.vdbeProgram.instructions.map(i => `${Opcode[i.opcode]} ${i.p1} ${i.p2} ${i.p3} ${i.p4 !== null ? ` P4:${JSON.stringify(i.p4)}` : ''}`).join('\n'));
+        // return this.vdbeProgram;
+        // -------------------------
+
+        // Keep the placeholder compiler logic for now
         const builder = new VdbeProgramBuilder(this.sql);
         let currentReg = 1; // Start VDBE registers at 1 (0 often special)
         const vtabArgsRegisters: { constraintIndex: number, registerIndex: number }[] = []; // Track constraint -> register
 
         // Resolve Table Schema
-        const tableSchema = this.db._findTable(ast.fromTable, ast.fromSchema);
-        if (!tableSchema) { throw new SqliteError(`No such table: ${ast.fromTable}`, StatusCode.ERROR); }
+        const firstFrom = ast.from?.[0];
+        const tableName = (firstFrom?.type === 'table') ? firstFrom.table.name : 'unknown';
+        const schemaName = (firstFrom?.type === 'table') ? firstFrom.table.schema : null;
+
+        const tableSchema = this.db._findTable(tableName, schemaName);
+        if (!tableSchema) { throw new SqliteError(`No such table: ${tableName}`, StatusCode.ERROR); }
         if (!tableSchema.isVirtual || !tableSchema.vtabModule || !tableSchema.vtabInstance) {
-            throw new SqliteError(`Table ${ast.fromTable} is not a ready virtual table`, StatusCode.ERROR);
+            throw new SqliteError(`Table ${tableName} is not a ready virtual table`, StatusCode.ERROR);
         }
 
         // Prepare for xBestIndex
@@ -122,24 +156,37 @@ export class Statement {
         builder.setRequiredMemCells(1); // Need at least one register
 
         // Process WHERE clause (simplified)
-        if (ast.whereClause) {
-            const colIndex = tableSchema.columnIndexMap.get(ast.whereClause.column.toLowerCase());
+        if (ast.where) {
+            // This simplified version assumes WHERE is `column = value/param`
+            const whereExpr = ast.where as BinaryExpr; // Assume binary for simulation
+            const colExpr = whereExpr.left as ColumnExpr; // Assume column on left
+            const valExpr = whereExpr.right; // Value/Param on right
+
+            const colIndex = tableSchema.columnIndexMap.get(colExpr.name.toLowerCase());
             if (colIndex === undefined) {
-                throw new SqliteError(`No such column in ${tableSchema.name}: ${ast.whereClause.column}`, StatusCode.ERROR);
+                throw new SqliteError(`No such column in ${tableSchema.name}: ${colExpr.name}`, StatusCode.ERROR);
             }
-            const constraint: IndexConstraint = { iColumn: colIndex, op: ast.whereClause.operator, usable: true };
+            const constraint: IndexConstraint = {
+                iColumn: colIndex,
+                op: IndexConstraintOp.EQ, // Simulation assumes EQ
+                usable: true
+            };
             constraints.push(constraint);
             constraintUsage.push({ argvIndex: 0, omit: false }); // Placeholder usage
 
-            const constraintValue = ast.whereClause.value;
             const valueReg = currentReg++; // Allocate register for the value
             builder.setRequiredMemCells(valueReg + 1);
 
-            if (isParameter(constraintValue)) { // Use type guard
-                 builder.registerParameter(constraintValue.key, valueReg); // Map parameter to register
+            if (valExpr.type === 'parameter') {
+                const paramKey = valExpr.name || valExpr.index;
+                if (paramKey === undefined) {
+                     throw new SqliteError("Invalid parameter expression in WHERE simulation", StatusCode.INTERNAL);
+                }
+                 builder.registerParameter(paramKey, valueReg); // Map parameter to register
                  vtabArgsRegisters.push({ constraintIndex: constraints.length - 1, registerIndex: valueReg });
                  // Value will be placed in valueReg by Vdbe.applyBindings
-            } else { // It's a literal SqlValue
+            } else if (valExpr.type === 'literal') { // It's a literal SqlValue
+                const constraintValue = valExpr.value;
                 const constIdx = builder.addConstant(constraintValue);
                 // Generate instruction to load literal into register
                  switch (typeof constraintValue) {
@@ -163,6 +210,8 @@ export class Statement {
                         throw new SqliteError(`Unsupported literal type in WHERE: ${typeof constraintValue}`, StatusCode.ERROR);
                  }
                  vtabArgsRegisters.push({ constraintIndex: constraints.length - 1, registerIndex: valueReg });
+            } else {
+                 throw new SqliteError("WHERE clause simulation only supports literal or parameter values", StatusCode.INTERNAL);
             }
         }
 
@@ -172,7 +221,7 @@ export class Statement {
             aConstraint: constraints,
             nOrderBy: 0,
             aOrderBy: [],
-            colUsed: BigInt("0xFFFFFFFFFFFFFFFF"),
+            colUsed: BigInt("0xFFFFFFFFFFFFFFFF"), // Assume all columns might be used
             aConstraintUsage: constraintUsage,
             idxNum: 0,
             idxStr: null,
@@ -189,13 +238,17 @@ export class Statement {
         // Determine Result Columns
         let resultColumns: { name: string, index: number }[] = [];
         if (ast.columns.length === 1 && ast.columns[0].type === 'all') {
-            resultColumns = tableSchema.columns.filter(c => !c.hidden).map((c, i) => ({ name: c.name, index: i }));
+            resultColumns = tableSchema.columns.filter(c => !c.hidden).map((c, i) => ({
+                 name: c.name,
+                 index: tableSchema.columnIndexMap.get(c.name.toLowerCase())! // Use map for correct index
+                }));
         } else {
-            ast.columns.forEach(selCol => {
+            ast.columns.forEach((selCol: ResultColumn) => { // Added type annotation
                 if (selCol.type === 'column') {
-                    const colIndex = tableSchema.columnIndexMap.get(selCol.name.toLowerCase());
+                    const expr = selCol.expr as ColumnExpr; // Assume ColumnExpr for simulation
+                    const colIndex = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
                     if (colIndex === undefined) {
-                        throw new SqliteError(`No such column in ${tableSchema.name}: ${selCol.name}`, StatusCode.ERROR);
+                        throw new SqliteError(`No such column in ${tableSchema.name}: ${expr.name}`, StatusCode.ERROR);
                     }
                     resultColumns.push({ name: tableSchema.columns[colIndex].name, index: colIndex }); // Use actual case name
                 } else {
@@ -237,7 +290,9 @@ export class Statement {
         builder.addInstruction(createInstruction(Opcode.Init, 0, addrInit + 1)); // Jump over Init on subsequent runs
 
         // --- Open Cursor ---
-        builder.addInstruction(createInstruction(Opcode.OpenRead, cursorIdx, 0, 0, tableSchema)); // Pass TableSchema in P4
+         // Pass TableSchema in P4
+        const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
+        builder.addInstruction(createInstruction(Opcode.OpenRead, cursorIdx, 0, 0, p4Vtab));
 
         // --- Filtering ---
         const addrFilter = builder.getCurrentAddress();
@@ -279,7 +334,7 @@ export class Statement {
         builder.addInstruction(createInstruction(Opcode.Close, cursorIdx)); // Close the cursor
 
         // --- Halt ---
-        builder.addInstruction(createInstruction(Opcode.Halt));
+        builder.addInstruction(createInstruction(Opcode.Halt, StatusCode.OK)); // Ensure OK halt code
 
         // --- Finalize ---
         this.vdbeProgram = builder.build();
@@ -308,11 +363,41 @@ export class Statement {
          }
          // If VDBE exists, potentially apply binding immediately? Or let step handle it.
          if (this.vdbe) {
-            this.vdbe.applyBindings(this.boundParameters); // Re-apply all? Or just one?
+            this.vdbe.clearAppliedBindings(); // Mark bindings as needing re-application
+            this.vdbe.applyBindings(this.boundParameters);
          }
          return this;
      }
 
+     /**
+      * Binds multiple parameters from an array or object.
+      * @param params An array of values (for positional ?) or an object (for named :name, $name).
+      * @returns This statement instance for chaining.
+      */
+     bindAll(params: SqlValue[] | Record<string, SqlValue>): this {
+        if (this.finalized) throw new MisuseError("Statement finalized");
+        if (this.busy) throw new MisuseError("Statement busy");
+
+        if (Array.isArray(params)) {
+            // Bind by position (1-based index)
+            for (let i = 0; i < params.length; i++) {
+                this.bind(i + 1, params[i]);
+            }
+        } else if (typeof params === 'object' && params !== null) {
+            // Bind by name
+            for (const key in params) {
+                if (Object.prototype.hasOwnProperty.call(params, key)) {
+                    // Ensure key starts with : or $ if it's a named param identifier
+                    // (Though our simple parser/compiler might not enforce this)
+                    this.bind(key, params[key]);
+                }
+            }
+        } else {
+            throw new MisuseError("Invalid parameters type for bindAll. Use array or object.");
+        }
+
+        return this;
+     }
 
     /**
      * Executes the next step of the prepared statement.
@@ -422,11 +507,11 @@ export class Statement {
      * @throws MisuseError if the statement is finalized or busy.
      */
     clearBindings(): this {
-        if (this.finalized) throw new MisuseError("Statement finalized");
-        if (this.busy) throw new MisuseError("Statement busy - reset first");
-        this.boundParameters.clear();
+         if (this.finalized) throw new MisuseError("Statement finalized");
+         if (this.busy) throw new MisuseError("Statement busy - reset first");
+         this.boundParameters.clear();
         if (this.vdbe) { this.vdbe.clearAppliedBindings(); }
-        return this;
+         return this;
     }
 
     /**
