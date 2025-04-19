@@ -1,0 +1,77 @@
+import { Opcode } from '../common/constants';
+import type { SqlValue } from '../common/types';
+import type { FunctionSchema } from '../schema/function';
+import type { TableSchema } from '../schema/table';
+
+/**
+ * Represents a single instruction in the VDBE program.
+ * Mimics the structure of SQLite's VdbeOp.
+ */
+export interface VdbeInstruction {
+    /** The operation code (e.g., Halt, Goto, Column, ResultRow) */
+    opcode: Opcode;
+    /** First operand */
+    p1: number;
+    /** Second operand */
+    p2: number;
+    /** Third operand */
+    p3: number;
+    /** Fourth operand (often a string, pointer, or complex object) */
+    p4: any | null; // Type depends heavily on the opcode
+    /** Fifth operand (added later in SQLite, can store extra info) */
+    p5: number; // Typically flags or counts
+    /** Optional comment for debugging/explanation (not used by execution) */
+    comment?: string;
+}
+
+/**
+ * Creates a VDBE instruction.
+ * @param opcode The operation code.
+ * @param p1 Operand 1.
+ * @param p2 Operand 2.
+ * @param p3 Operand 3.
+ * @param p4 Operand 4 (optional, type varies).
+ * @param p5 Operand 5 (optional, flags).
+ * @param comment Optional descriptive comment.
+ */
+export function createInstruction(
+    opcode: Opcode,
+    p1: number = 0,
+    p2: number = 0,
+    p3: number = 0,
+    p4: any | null = null,
+    p5: number = 0,
+    comment?: string
+): VdbeInstruction {
+    return { opcode, p1, p2, p3, p4, p5, comment };
+}
+
+// --- Concrete types for P4 operands ---
+
+/** P4 operand for Opcode.Function */
+export interface P4FuncDef {
+    funcDef: FunctionSchema; // The actual function definition/callbacks
+    nArgs: number; // Number of arguments expected (or taken from funcDef?)
+    type: 'funcdef';
+}
+
+/** Placeholder for P4 when it refers to a virtual table cursor (or its schema?) */
+export interface P4Vtab {
+    tableSchema: TableSchema; // Store the resolved schema
+    type: 'vtab';
+}
+
+/** Placeholder for P4 when it refers to collation sequence */
+export interface P4Coll {
+    name: string;
+    // collationFunc: (a: string, b: string) => number; // The actual function if needed directly
+    type: 'coll';
+}
+
+/** Placeholder for P4 storing multiple values (e.g., for comparisons) */
+export interface P4KeyInfo {
+    // columns: { index: number, sortOrder: 'ASC' | 'DESC', collation?: P4Coll }[];
+    type: 'keyinfo';
+}
+
+// Add more P4 types as needed (P4_MEM, P4_INTARRAY, P4_SUBPROGRAM, etc.)

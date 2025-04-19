@@ -3,7 +3,7 @@
   "compilerOptions": {
 		"outDir": "dist",
 		"strictFunctionTypes": true,
-		"noUncheckedIndexedAccess": true
+		"lib": ["ES2023", "ES2023.Array", "DOM", "DOM.Iterable", "WebWorker", "ESNext"]
   },
   "include": ["src", "test"]
 }
