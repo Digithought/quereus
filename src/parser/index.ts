@@ -12,8 +12,8 @@ import { TokenType } from './lexer';
  * @returns AST for the SELECT statement
  */
 export function parseSelect(sql: string): SelectStmt {
-  const parser = new Parser();
-  return parser.initialize(sql).selectStatement();
+	const parser = new Parser();
+	return parser.initialize(sql).selectStatement();
 }
 
 /**
@@ -22,8 +22,8 @@ export function parseSelect(sql: string): SelectStmt {
  * @returns AST for the INSERT statement
  */
 export function parseInsert(sql: string): InsertStmt {
-  const parser = new Parser();
-  return parser.initialize(sql).insertStatement();
+	const parser = new Parser();
+	return parser.initialize(sql).insertStatement();
 }
 
 /**
@@ -32,15 +32,15 @@ export function parseInsert(sql: string): InsertStmt {
  * @returns AST for the statement
  */
 export function parse(sql: string): SelectStmt | InsertStmt {
-  const parser = new Parser();
-  const stmt = parser.parse(sql);
+	const parser = new Parser();
+	const stmt = parser.parse(sql);
 
-  // Check statement type
-  if (stmt.type === 'select') {
-    return stmt as SelectStmt;
-  } else if (stmt.type === 'insert') {
-    return stmt as InsertStmt;
-  }
+	// Check statement type
+	if (stmt.type === 'select') {
+		return stmt as SelectStmt;
+	} else if (stmt.type === 'insert') {
+		return stmt as InsertStmt;
+	}
 
-  throw new Error(`Unsupported SQL statement type: ${stmt.type}`);
+	throw new Error(`Unsupported SQL statement type: ${stmt.type}`);
 }

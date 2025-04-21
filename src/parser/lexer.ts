@@ -6,642 +6,676 @@
 
 // Token types
 export enum TokenType {
-  // Literals
-  INTEGER = 'INTEGER',
-  FLOAT = 'FLOAT',
-  STRING = 'STRING',
-  IDENTIFIER = 'IDENTIFIER',
-  BLOB = 'BLOB',
+	// Literals
+	INTEGER = 'INTEGER',
+	FLOAT = 'FLOAT',
+	STRING = 'STRING',
+	IDENTIFIER = 'IDENTIFIER',
+	BLOB = 'BLOB',
 
-  // Keywords
-  SELECT = 'SELECT',
-  FROM = 'FROM',
-  WHERE = 'WHERE',
-  INSERT = 'INSERT',
-  UPDATE = 'UPDATE',
-  DELETE = 'DELETE',
-  CREATE = 'CREATE',
-  DROP = 'DROP',
-  ALTER = 'ALTER',
-  TABLE = 'TABLE',
-  INDEX = 'INDEX',
-  VIEW = 'VIEW',
-  VIRTUAL = 'VIRTUAL',
-  USING = 'USING',
-  INTO = 'INTO',
-  NULL = 'NULL',
-  NOT = 'NOT',
-  AND = 'AND',
-  OR = 'OR',
-  IN = 'IN',
-  LIKE = 'LIKE',
-  BETWEEN = 'BETWEEN',
-  IS = 'IS',
-  AS = 'AS',
-  DISTINCT = 'DISTINCT',
-  GROUP = 'GROUP',
-  BY = 'BY',
-  HAVING = 'HAVING',
-  ORDER = 'ORDER',
-  ASC = 'ASC',
-  DESC = 'DESC',
-  LIMIT = 'LIMIT',
-  OFFSET = 'OFFSET',
-  UNION = 'UNION',
-  ALL = 'ALL',
-  PRIMARY = 'PRIMARY',
-  KEY = 'KEY',
-  UNIQUE = 'UNIQUE',
-  DEFAULT = 'DEFAULT',
-  CHECK = 'CHECK',
-  FOREIGN = 'FOREIGN',
-  REFERENCES = 'REFERENCES',
-  ON = 'ON',
-  CONFLICT = 'CONFLICT',
-  CASCADE = 'CASCADE',
-  RESTRICT = 'RESTRICT',
-  SET = 'SET',
-  NO = 'NO',
-  ACTION = 'ACTION',
-  WITHOUT = 'WITHOUT',
-  ROWID = 'ROWID',
-  BEGIN = 'BEGIN',
-  COMMIT = 'COMMIT',
-  ROLLBACK = 'ROLLBACK',
-  TRANSACTION = 'TRANSACTION',
-  DEFERRED = 'DEFERRED',
-  IMMEDIATE = 'IMMEDIATE',
-  EXCLUSIVE = 'EXCLUSIVE',
-  JOIN = 'JOIN',
-  INNER = 'INNER',
-  LEFT = 'LEFT',
-  RIGHT = 'RIGHT',
-  FULL = 'FULL',
-  CROSS = 'CROSS',
-  OUTER = 'OUTER',
-  NATURAL = 'NATURAL',
-  REPLACE = 'REPLACE',
-  VALUES = 'VALUES',
-  EXISTS = 'EXISTS',
-  IF = 'IF',
+	// Keywords
+	SELECT = 'SELECT',
+	FROM = 'FROM',
+	WHERE = 'WHERE',
+	INSERT = 'INSERT',
+	UPDATE = 'UPDATE',
+	DELETE = 'DELETE',
+	CREATE = 'CREATE',
+	DROP = 'DROP',
+	ALTER = 'ALTER',
+	TABLE = 'TABLE',
+	INDEX = 'INDEX',
+	VIEW = 'VIEW',
+	TEMP = 'TEMP',
+	TEMPORARY = 'TEMPORARY',
+	VIRTUAL = 'VIRTUAL',
+	USING = 'USING',
+	INTO = 'INTO',
+	NULL = 'NULL',
+	NOT = 'NOT',
+	AND = 'AND',
+	OR = 'OR',
+	IN = 'IN',
+	LIKE = 'LIKE',
+	BETWEEN = 'BETWEEN',
+	IS = 'IS',
+	AS = 'AS',
+	DISTINCT = 'DISTINCT',
+	GROUP = 'GROUP',
+	BY = 'BY',
+	HAVING = 'HAVING',
+	ORDER = 'ORDER',
+	ASC = 'ASC',
+	DESC = 'DESC',
+	LIMIT = 'LIMIT',
+	OFFSET = 'OFFSET',
+	UNION = 'UNION',
+	ALL = 'ALL',
+	PRIMARY = 'PRIMARY',
+	CONSTRAINT = 'CONSTRAINT',
+	GENERATED = 'GENERATED',
+	COLLATE = 'COLLATE',
+	KEY = 'KEY',
+	UNIQUE = 'UNIQUE',
+	DEFAULT = 'DEFAULT',
+	CHECK = 'CHECK',
+	FOREIGN = 'FOREIGN',
+	REFERENCES = 'REFERENCES',
+	AUTOINCREMENT = 'AUTOINCREMENT',
+	ON = 'ON',
+	CONFLICT = 'CONFLICT',
+	CASCADE = 'CASCADE',
+	RESTRICT = 'RESTRICT',
+	SET = 'SET',
+	NO = 'NO',
+	ACTION = 'ACTION',
+	WITHOUT = 'WITHOUT',
+	ROWID = 'ROWID',
+	RENAME = 'RENAME',
+	COLUMN = 'COLUMN',
+	TO = 'TO',
+	ADD = 'ADD',
+	ALWAYS = 'ALWAYS',
+	ABORT = 'ABORT',
+	FAIL = 'FAIL',
+	IGNORE = 'IGNORE',
+	BEGIN = 'BEGIN',
+	COMMIT = 'COMMIT',
+	ROLLBACK = 'ROLLBACK',
+	TRANSACTION = 'TRANSACTION',
+	DEFERRED = 'DEFERRED',
+	IMMEDIATE = 'IMMEDIATE',
+	EXCLUSIVE = 'EXCLUSIVE',
+	JOIN = 'JOIN',
+	INNER = 'INNER',
+	LEFT = 'LEFT',
+	RIGHT = 'RIGHT',
+	FULL = 'FULL',
+	CROSS = 'CROSS',
+	OUTER = 'OUTER',
+	NATURAL = 'NATURAL',
+	REPLACE = 'REPLACE',
+	VALUES = 'VALUES',
+	EXISTS = 'EXISTS',
+	IF = 'IF',
+	DEFERRABLE = 'DEFERRABLE',
+	INITIALLY = 'INITIALLY',
+	STORED = 'STORED',
+	SAVEPOINT = 'SAVEPOINT',
+	RELEASE = 'RELEASE',
 
-  // Operators and punctuation
-  PLUS = 'PLUS',               // +
-  MINUS = 'MINUS',             // -
-  ASTERISK = 'ASTERISK',       // *
-  SLASH = 'SLASH',             // /
-  PERCENT = 'PERCENT',         // %
-  EQUAL = 'EQUAL',             // =
-  EQUAL_EQUAL = 'EQUAL_EQUAL', // == (SQLite allows both = and ==)
-  NOT_EQUAL = 'NOT_EQUAL',     // != or <>
-  LESS = 'LESS',               // <
-  LESS_EQUAL = 'LESS_EQUAL',   // <=
-  GREATER = 'GREATER',         // >
-  GREATER_EQUAL = 'GREATER_EQUAL', // >=
-  LPAREN = 'LPAREN',           // (
-  RPAREN = 'RPAREN',           // )
-  COMMA = 'COMMA',             // ,
-  DOT = 'DOT',                 // .
-  SEMICOLON = 'SEMICOLON',     // ;
-  TILDE = 'TILDE',             // ~ (for REGEXP)
-  PIPE = 'PIPE',               // | (for concatenation or UNION)
-  PIPE_PIPE = 'PIPE_PIPE',     // || (for concatenation)
-  AMPERSAND = 'AMPERSAND',     // &
-  AMPERSAND_AMPERSAND = 'AMPERSAND_AMPERSAND', // &&
-  QUESTION = 'QUESTION',       // ? (for parameters)
-  COLON = 'COLON',             // : (for named parameters)
-  DOLLAR = 'DOLLAR',           // $ (for named parameters)
-  ARROW = 'ARROW',             // -> (JSON operator)
+	// Operators and punctuation
+	PLUS = 'PLUS',               // +
+	MINUS = 'MINUS',             // -
+	ASTERISK = 'ASTERISK',       // *
+	SLASH = 'SLASH',             // /
+	PERCENT = 'PERCENT',         // %
+	EQUAL = 'EQUAL',             // =
+	EQUAL_EQUAL = 'EQUAL_EQUAL', // == (SQLite allows both = and ==)
+	NOT_EQUAL = 'NOT_EQUAL',     // != or <>
+	LESS = 'LESS',               // <
+	LESS_EQUAL = 'LESS_EQUAL',   // <=
+	GREATER = 'GREATER',         // >
+	GREATER_EQUAL = 'GREATER_EQUAL', // >=
+	LPAREN = 'LPAREN',           // (
+	RPAREN = 'RPAREN',           // )
+	COMMA = 'COMMA',             // ,
+	DOT = 'DOT',                 // .
+	SEMICOLON = 'SEMICOLON',     // ;
+	TILDE = 'TILDE',             // ~ (for REGEXP)
+	PIPE = 'PIPE',               // | (for concatenation or UNION)
+	PIPE_PIPE = 'PIPE_PIPE',     // || (for concatenation)
+	AMPERSAND = 'AMPERSAND',     // &
+	AMPERSAND_AMPERSAND = 'AMPERSAND_AMPERSAND', // &&
+	QUESTION = 'QUESTION',       // ? (for parameters)
+	COLON = 'COLON',             // : (for named parameters)
+	DOLLAR = 'DOLLAR',           // $ (for named parameters)
+	ARROW = 'ARROW',             // -> (JSON operator)
 
-  // Special
-  EOF = 'EOF',
-  ERROR = 'ERROR'
+	// Special
+	EOF = 'EOF',
+	ERROR = 'ERROR'
 }
 
 // Token represents a lexical token from the SQL input
 export interface Token {
-  type: TokenType;
-  lexeme: string;
-  literal?: any;
-  line: number;
-  column: number;
+	type: TokenType;
+	lexeme: string;
+	literal?: any;
+	line: number;
+	column: number;
 }
 
 // Reserved keywords mapping
 const KEYWORDS: Record<string, TokenType> = {
-  'select': TokenType.SELECT,
-  'from': TokenType.FROM,
-  'where': TokenType.WHERE,
-  'insert': TokenType.INSERT,
-  'update': TokenType.UPDATE,
-  'delete': TokenType.DELETE,
-  'create': TokenType.CREATE,
-  'drop': TokenType.DROP,
-  'alter': TokenType.ALTER,
-  'table': TokenType.TABLE,
-  'index': TokenType.INDEX,
-  'view': TokenType.VIEW,
-  'virtual': TokenType.VIRTUAL,
-  'using': TokenType.USING,
-  'null': TokenType.NULL,
-  'not': TokenType.NOT,
-  'and': TokenType.AND,
-  'or': TokenType.OR,
-  'in': TokenType.IN,
-  'like': TokenType.LIKE,
-  'between': TokenType.BETWEEN,
-  'is': TokenType.IS,
-  'as': TokenType.AS,
-  'distinct': TokenType.DISTINCT,
-  'group': TokenType.GROUP,
-  'by': TokenType.BY,
-  'having': TokenType.HAVING,
-  'order': TokenType.ORDER,
-  'asc': TokenType.ASC,
-  'desc': TokenType.DESC,
-  'limit': TokenType.LIMIT,
-  'offset': TokenType.OFFSET,
-  'union': TokenType.UNION,
-  'all': TokenType.ALL,
-  'primary': TokenType.PRIMARY,
-  'key': TokenType.KEY,
-  'unique': TokenType.UNIQUE,
-  'default': TokenType.DEFAULT,
-  'check': TokenType.CHECK,
-  'foreign': TokenType.FOREIGN,
-  'references': TokenType.REFERENCES,
-  'on': TokenType.ON,
-  'conflict': TokenType.CONFLICT,
-  'cascade': TokenType.CASCADE,
-  'restrict': TokenType.RESTRICT,
-  'set': TokenType.SET,
-  'no': TokenType.NO,
-  'action': TokenType.ACTION,
-  'without': TokenType.WITHOUT,
-  'rowid': TokenType.ROWID,
-  'begin': TokenType.BEGIN,
-  'commit': TokenType.COMMIT,
-  'rollback': TokenType.ROLLBACK,
-  'transaction': TokenType.TRANSACTION,
-  'deferred': TokenType.DEFERRED,
-  'immediate': TokenType.IMMEDIATE,
-  'exclusive': TokenType.EXCLUSIVE,
-  'join': TokenType.JOIN,
-  'inner': TokenType.INNER,
-  'left': TokenType.LEFT,
-  'right': TokenType.RIGHT,
-  'full': TokenType.FULL,
-  'cross': TokenType.CROSS,
-  'outer': TokenType.OUTER,
-  'natural': TokenType.NATURAL,
-  'replace': TokenType.REPLACE,
-  'values': TokenType.VALUES,
-  'exists': TokenType.EXISTS,
-  'if': TokenType.IF,
-  'into': TokenType.INTO,
+	'select': TokenType.SELECT,
+	'from': TokenType.FROM,
+	'where': TokenType.WHERE,
+	'insert': TokenType.INSERT,
+	'update': TokenType.UPDATE,
+	'delete': TokenType.DELETE,
+	'create': TokenType.CREATE,
+	'drop': TokenType.DROP,
+	'alter': TokenType.ALTER,
+	'table': TokenType.TABLE,
+	'index': TokenType.INDEX,
+	'view': TokenType.VIEW,
+	'virtual': TokenType.VIRTUAL,
+	'using': TokenType.USING,
+	'null': TokenType.NULL,
+	'not': TokenType.NOT,
+	'and': TokenType.AND,
+	'or': TokenType.OR,
+	'in': TokenType.IN,
+	'like': TokenType.LIKE,
+	'between': TokenType.BETWEEN,
+	'is': TokenType.IS,
+	'as': TokenType.AS,
+	'distinct': TokenType.DISTINCT,
+	'group': TokenType.GROUP,
+	'by': TokenType.BY,
+	'having': TokenType.HAVING,
+	'order': TokenType.ORDER,
+	'asc': TokenType.ASC,
+	'desc': TokenType.DESC,
+	'limit': TokenType.LIMIT,
+	'offset': TokenType.OFFSET,
+	'union': TokenType.UNION,
+	'all': TokenType.ALL,
+	'primary': TokenType.PRIMARY,
+	'key': TokenType.KEY,
+	'unique': TokenType.UNIQUE,
+	'default': TokenType.DEFAULT,
+	'check': TokenType.CHECK,
+	'foreign': TokenType.FOREIGN,
+	'references': TokenType.REFERENCES,
+	'on': TokenType.ON,
+	'conflict': TokenType.CONFLICT,
+	'cascade': TokenType.CASCADE,
+	'restrict': TokenType.RESTRICT,
+	'set': TokenType.SET,
+	'autoincrement': TokenType.AUTOINCREMENT,
+	'no': TokenType.NO,
+	'action': TokenType.ACTION,
+	'without': TokenType.WITHOUT,
+	'rowid': TokenType.ROWID,
+	'begin': TokenType.BEGIN,
+	'commit': TokenType.COMMIT,
+	'rollback': TokenType.ROLLBACK,
+	'transaction': TokenType.TRANSACTION,
+	'deferred': TokenType.DEFERRED,
+	'immediate': TokenType.IMMEDIATE,
+	'exclusive': TokenType.EXCLUSIVE,
+	'deferrable': TokenType.DEFERRABLE,
+	'initially': TokenType.INITIALLY,
+	'stored': TokenType.STORED,
+	'join': TokenType.JOIN,
+	'inner': TokenType.INNER,
+	'left': TokenType.LEFT,
+	'right': TokenType.RIGHT,
+	'full': TokenType.FULL,
+	'cross': TokenType.CROSS,
+	'outer': TokenType.OUTER,
+	'natural': TokenType.NATURAL,
+	'replace': TokenType.REPLACE,
+	'values': TokenType.VALUES,
+	'exists': TokenType.EXISTS,
+	'if': TokenType.IF,
+	'into': TokenType.INTO,
+	'temp': TokenType.TEMP,
+	'temporary': TokenType.TEMPORARY,
+	'rename': TokenType.RENAME,
+	'to': TokenType.TO,
+	'add': TokenType.ADD,
+	'always': TokenType.ALWAYS,
+	'abort': TokenType.ABORT,
+	'fail': TokenType.FAIL,
+	'ignore': TokenType.IGNORE,
+	'savepoint': TokenType.SAVEPOINT,
+	'release': TokenType.RELEASE,
 };
 
 /**
  * Lexer class for tokenizing SQL statements
  */
 export class Lexer {
-  private source: string;
-  private tokens: Token[] = [];
-  private start = 0;
-  private current = 0;
-  private line = 1;
-  private column = 1;
+	private source: string;
+	private tokens: Token[] = [];
+	private start = 0;
+	private current = 0;
+	private line = 1;
+	private column = 1;
 
-  constructor(source: string) {
-    this.source = source;
-  }
+	constructor(source: string) {
+		this.source = source;
+	}
 
-  /**
-   * Scans the input and returns all tokens.
-   */
-  scanTokens(): Token[] {
-    while (!this.isAtEnd()) {
-      this.start = this.current;
-      this.scanToken();
-    }
+	/**
+	 * Scans the input and returns all tokens.
+	 */
+	scanTokens(): Token[] {
+		while (!this.isAtEnd()) {
+			this.start = this.current;
+			this.scanToken();
+		}
 
-    this.tokens.push({
-      type: TokenType.EOF,
-      lexeme: '',
-      line: this.line,
-      column: this.column
-    });
+		this.tokens.push({
+			type: TokenType.EOF,
+			lexeme: '',
+			line: this.line,
+			column: this.column
+		});
 
-    return this.tokens;
-  }
+		return this.tokens;
+	}
 
-  private isAtEnd(): boolean {
-    return this.current >= this.source.length;
-  }
+	private isAtEnd(): boolean {
+		return this.current >= this.source.length;
+	}
 
-  private scanToken(): void {
-    const c = this.advance();
+	private scanToken(): void {
+		const c = this.advance();
 
-    switch (c) {
-      // Single-character tokens
-      case '(': this.addToken(TokenType.LPAREN); break;
-      case ')': this.addToken(TokenType.RPAREN); break;
-      case ',': this.addToken(TokenType.COMMA); break;
-      case '.': this.addToken(TokenType.DOT); break;
-      case ';': this.addToken(TokenType.SEMICOLON); break;
-      case '+': this.addToken(TokenType.PLUS); break;
-      case '-':
-        if (this.match('>')) {
-          this.addToken(TokenType.ARROW);
-        } else {
-          this.addToken(TokenType.MINUS);
-        }
-        break;
-      case '*': this.addToken(TokenType.ASTERISK); break;
-      case '/':
-        if (this.match('/')) {
-          // Single line comment
-          while (this.peek() !== '\n' && !this.isAtEnd()) {
-            this.advance();
-          }
-        } else if (this.match('*')) {
-          // Multiline comment
-          this.multilineComment();
-        } else {
-          this.addToken(TokenType.SLASH);
-        }
-        break;
-      case '%': this.addToken(TokenType.PERCENT); break;
-      case '~': this.addToken(TokenType.TILDE); break;
-      case '?': this.addToken(TokenType.QUESTION); break;
-      case ':': this.addToken(TokenType.COLON); break;
-      case '$': this.addToken(TokenType.DOLLAR); break;
+		switch (c) {
+			// Single-character tokens
+			case '(': this.addToken(TokenType.LPAREN); break;
+			case ')': this.addToken(TokenType.RPAREN); break;
+			case ',': this.addToken(TokenType.COMMA); break;
+			case '.': this.addToken(TokenType.DOT); break;
+			case ';': this.addToken(TokenType.SEMICOLON); break;
+			case '+': this.addToken(TokenType.PLUS); break;
+			case '-':
+				if (this.match('>')) {
+					this.addToken(TokenType.ARROW);
+				} else {
+					this.addToken(TokenType.MINUS);
+				}
+				break;
+			case '*': this.addToken(TokenType.ASTERISK); break;
+			case '/':
+				if (this.match('/')) {
+					// Single line comment
+					while (this.peek() !== '\n' && !this.isAtEnd()) {
+						this.advance();
+					}
+				} else if (this.match('*')) {
+					// Multiline comment
+					this.multilineComment();
+				} else {
+					this.addToken(TokenType.SLASH);
+				}
+				break;
+			case '%': this.addToken(TokenType.PERCENT); break;
+			case '~': this.addToken(TokenType.TILDE); break;
+			case '?': this.addToken(TokenType.QUESTION); break;
+			case ':': this.addToken(TokenType.COLON); break;
+			case '$': this.addToken(TokenType.DOLLAR); break;
 
-      // One or two character tokens
-      case '=':
-        this.addToken(this.match('=') ? TokenType.EQUAL_EQUAL : TokenType.EQUAL);
-        break;
-      case '!':
-        this.addToken(this.match('=') ? TokenType.NOT_EQUAL : TokenType.ERROR);
-        break;
-      case '<':
-        if (this.match('=')) {
-          this.addToken(TokenType.LESS_EQUAL);
-        } else if (this.match('>')) {
-          this.addToken(TokenType.NOT_EQUAL);
-        } else {
-          this.addToken(TokenType.LESS);
-        }
-        break;
-      case '>':
-        this.addToken(this.match('=') ? TokenType.GREATER_EQUAL : TokenType.GREATER);
-        break;
-      case '|':
-        this.addToken(this.match('|') ? TokenType.PIPE_PIPE : TokenType.PIPE);
-        break;
-      case '&':
-        this.addToken(this.match('&') ? TokenType.AMPERSAND_AMPERSAND : TokenType.AMPERSAND);
-        break;
+			// One or two character tokens
+			case '=':
+				this.addToken(this.match('=') ? TokenType.EQUAL_EQUAL : TokenType.EQUAL);
+				break;
+			case '!':
+				this.addToken(this.match('=') ? TokenType.NOT_EQUAL : TokenType.ERROR);
+				break;
+			case '<':
+				if (this.match('=')) {
+					this.addToken(TokenType.LESS_EQUAL);
+				} else if (this.match('>')) {
+					this.addToken(TokenType.NOT_EQUAL);
+				} else {
+					this.addToken(TokenType.LESS);
+				}
+				break;
+			case '>':
+				this.addToken(this.match('=') ? TokenType.GREATER_EQUAL : TokenType.GREATER);
+				break;
+			case '|':
+				this.addToken(this.match('|') ? TokenType.PIPE_PIPE : TokenType.PIPE);
+				break;
+			case '&':
+				this.addToken(this.match('&') ? TokenType.AMPERSAND_AMPERSAND : TokenType.AMPERSAND);
+				break;
 
-      // String literals
-      case '\'': this.string('\''); break;
-      case '"': this.string('"'); break;
-      case '`': this.backtickIdentifier(); break;
-      case '[': this.bracketIdentifier(); break;
+			// String literals
+			case '\'': this.string('\''); break;
+			case '"': this.string('"'); break;
+			case '`': this.backtickIdentifier(); break;
+			case '[': this.bracketIdentifier(); break;
 
-      // Blob literals
-      case 'x':
-      case 'X':
-        if (this.match('\'')) {
-          this.blobLiteral();
-        } else {
-          this.identifier();
-        }
-        break;
+			// Blob literals
+			case 'x':
+			case 'X':
+				if (this.match('\'')) {
+					this.blobLiteral();
+				} else {
+					this.identifier();
+				}
+				break;
 
-      // Whitespace
-      case ' ':
-      case '\r':
-      case '\t':
-        // Ignore whitespace
-        this.column++;
-        break;
-      case '\n':
-        this.line++;
-        this.column = 1;
-        break;
+			// Whitespace
+			case ' ':
+			case '\r':
+			case '\t':
+				// Ignore whitespace
+				this.column++;
+				break;
+			case '\n':
+				this.line++;
+				this.column = 1;
+				break;
 
-      // Default - handle identifiers and numbers
-      default:
-        if (this.isDigit(c)) {
-          this.number();
-        } else if (this.isAlpha(c)) {
-          this.identifier();
-        } else {
-          this.addErrorToken(`Unexpected character: ${c}`);
-        }
-        break;
-    }
-  }
+			// Default - handle identifiers and numbers
+			default:
+				if (this.isDigit(c)) {
+					this.number();
+				} else if (this.isAlpha(c)) {
+					this.identifier();
+				} else {
+					this.addErrorToken(`Unexpected character: ${c}`);
+				}
+				break;
+		}
+	}
 
-  private advance(): string {
-    this.column++;
-    return this.source.charAt(this.current++);
-  }
+	private advance(): string {
+		this.column++;
+		return this.source.charAt(this.current++);
+	}
 
-  private match(expected: string): boolean {
-    if (this.isAtEnd()) return false;
-    if (this.source.charAt(this.current) !== expected) return false;
+	private match(expected: string): boolean {
+		if (this.isAtEnd()) return false;
+		if (this.source.charAt(this.current) !== expected) return false;
 
-    this.current++;
-    this.column++;
-    return true;
-  }
+		this.current++;
+		this.column++;
+		return true;
+	}
 
-  private peek(): string {
-    if (this.isAtEnd()) return '\0';
-    return this.source.charAt(this.current);
-  }
+	private peek(): string {
+		if (this.isAtEnd()) return '\0';
+		return this.source.charAt(this.current);
+	}
 
-  private peekNext(): string {
-    if (this.current + 1 >= this.source.length) return '\0';
-    return this.source.charAt(this.current + 1);
-  }
+	private peekNext(): string {
+		if (this.current + 1 >= this.source.length) return '\0';
+		return this.source.charAt(this.current + 1);
+	}
 
-  private string(quote: string): void {
-    let value = '';
-    let escaping = false;
+	private string(quote: string): void {
+		let value = '';
+		let escaping = false;
 
-    while ((!this.isAtEnd() && this.peek() !== quote) || escaping) {
-      if (this.peek() === '\n') {
-        this.line++;
-        this.column = 1;
-      }
+		while ((!this.isAtEnd() && this.peek() !== quote) || escaping) {
+			if (this.peek() === '\n') {
+				this.line++;
+				this.column = 1;
+			}
 
-      if (escaping) {
-        // Handle escape sequences
-        const c = this.peek();
-        switch (c) {
-          case 'n': value += '\n'; break;
-          case 'r': value += '\r'; break;
-          case 't': value += '\t'; break;
-          case '\\': value += '\\'; break;
-          case '\'': value += '\''; break;
-          case '"': value += '"'; break;
-          case '0': value += '\0'; break;
-          default: value += c; break;
-        }
-        escaping = false;
-      } else if (this.peek() === '\\') {
-        escaping = true;
-      } else {
-        value += this.peek();
-      }
+			if (escaping) {
+				// Handle escape sequences
+				const c = this.peek();
+				switch (c) {
+					case 'n': value += '\n'; break;
+					case 'r': value += '\r'; break;
+					case 't': value += '\t'; break;
+					case '\\': value += '\\'; break;
+					case '\'': value += '\''; break;
+					case '"': value += '"'; break;
+					case '0': value += '\0'; break;
+					default: value += c; break;
+				}
+				escaping = false;
+			} else if (this.peek() === '\\') {
+				escaping = true;
+			} else {
+				value += this.peek();
+			}
 
-      this.advance();
-    }
+			this.advance();
+		}
 
-    if (this.isAtEnd()) {
-      this.addErrorToken("Unterminated string.");
-      return;
-    }
+		if (this.isAtEnd()) {
+			this.addErrorToken("Unterminated string.");
+			return;
+		}
 
-    // Consume the closing quote
-    this.advance();
+		// Consume the closing quote
+		this.advance();
 
-    // SQLite allows adjacent string literals to be concatenated
-    if (this.peek() === quote) {
-      this.advance(); // Consume the opening quote of the next string
-      this.string(quote); // Process the next string
-      // Merge the two string tokens
-      if (this.tokens.length > 0 && this.tokens[this.tokens.length - 1].type === TokenType.STRING) {
-        const prevToken = this.tokens.pop()!;
-        value += prevToken.literal;
-      }
-    }
+		// SQLite allows adjacent string literals to be concatenated
+		if (this.peek() === quote) {
+			this.advance(); // Consume the opening quote of the next string
+			this.string(quote); // Process the next string
+			// Merge the two string tokens
+			if (this.tokens.length > 0 && this.tokens[this.tokens.length - 1].type === TokenType.STRING) {
+				const prevToken = this.tokens.pop()!;
+				value += prevToken.literal;
+			}
+		}
 
-    this.addToken(TokenType.STRING, value);
-  }
+		this.addToken(TokenType.STRING, value);
+	}
 
-  private backtickIdentifier(): void {
-    let value = '';
+	private backtickIdentifier(): void {
+		let value = '';
 
-    while (!this.isAtEnd() && this.peek() !== '`') {
-      if (this.peek() === '\n') {
-        this.line++;
-        this.column = 1;
-      }
-      value += this.advance();
-    }
+		while (!this.isAtEnd() && this.peek() !== '`') {
+			if (this.peek() === '\n') {
+				this.line++;
+				this.column = 1;
+			}
+			value += this.advance();
+		}
 
-    if (this.isAtEnd()) {
-      this.addErrorToken("Unterminated identifier.");
-      return;
-    }
+		if (this.isAtEnd()) {
+			this.addErrorToken("Unterminated identifier.");
+			return;
+		}
 
-    // Consume the closing backtick
-    this.advance();
+		// Consume the closing backtick
+		this.advance();
 
-    this.addToken(TokenType.IDENTIFIER, value);
-  }
+		this.addToken(TokenType.IDENTIFIER, value);
+	}
 
-  private bracketIdentifier(): void {
-    let value = '';
+	private bracketIdentifier(): void {
+		let value = '';
 
-    while (!this.isAtEnd() && this.peek() !== ']') {
-      if (this.peek() === '\n') {
-        this.line++;
-        this.column = 1;
-      }
-      value += this.advance();
-    }
+		while (!this.isAtEnd() && this.peek() !== ']') {
+			if (this.peek() === '\n') {
+				this.line++;
+				this.column = 1;
+			}
+			value += this.advance();
+		}
 
-    if (this.isAtEnd()) {
-      this.addErrorToken("Unterminated identifier.");
-      return;
-    }
+		if (this.isAtEnd()) {
+			this.addErrorToken("Unterminated identifier.");
+			return;
+		}
 
-    // Consume the closing bracket
-    this.advance();
+		// Consume the closing bracket
+		this.advance();
 
-    this.addToken(TokenType.IDENTIFIER, value);
-  }
+		this.addToken(TokenType.IDENTIFIER, value);
+	}
 
-  private blobLiteral(): void {
-    let value = '';
+	private blobLiteral(): void {
+		let value = '';
 
-    while (!this.isAtEnd() && this.peek() !== '\'') {
-      if (this.isHexDigit(this.peek())) {
-        value += this.advance();
-      } else if (this.isWhitespace(this.peek())) {
-        this.advance(); // Skip whitespace in blob literals
-      } else {
-        this.addErrorToken("Invalid character in blob literal.");
-        return;
-      }
-    }
+		while (!this.isAtEnd() && this.peek() !== '\'') {
+			if (this.isHexDigit(this.peek())) {
+				value += this.advance();
+			} else if (this.isWhitespace(this.peek())) {
+				this.advance(); // Skip whitespace in blob literals
+			} else {
+				this.addErrorToken("Invalid character in blob literal.");
+				return;
+			}
+		}
 
-    if (this.isAtEnd()) {
-      this.addErrorToken("Unterminated blob literal.");
-      return;
-    }
+		if (this.isAtEnd()) {
+			this.addErrorToken("Unterminated blob literal.");
+			return;
+		}
 
-    // Consume the closing quote
-    this.advance();
+		// Consume the closing quote
+		this.advance();
 
-    // Validate hex string length
-    if (value.length % 2 !== 0) {
-      this.addErrorToken("Blob literal must have an even number of hex digits.");
-      return;
-    }
+		// Validate hex string length
+		if (value.length % 2 !== 0) {
+			this.addErrorToken("Blob literal must have an even number of hex digits.");
+			return;
+		}
 
-    // Convert hex string to Uint8Array
-    try {
-      const bytes = new Uint8Array(value.length / 2);
-      for (let i = 0; i < value.length; i += 2) {
-        bytes[i / 2] = parseInt(value.substring(i, i + 2), 16);
-      }
-      this.addToken(TokenType.BLOB, bytes);
-    } catch (e) {
-      this.addErrorToken("Invalid blob literal.");
-    }
-  }
+		// Convert hex string to Uint8Array
+		try {
+			const bytes = new Uint8Array(value.length / 2);
+			for (let i = 0; i < value.length; i += 2) {
+				bytes[i / 2] = parseInt(value.substring(i, i + 2), 16);
+			}
+			this.addToken(TokenType.BLOB, bytes);
+		} catch (e) {
+			this.addErrorToken("Invalid blob literal.");
+		}
+	}
 
-  private number(): void {
-    let isFloat = false;
-    let value = '';
+	private number(): void {
+		let isFloat = false;
+		let value = '';
 
-    // Consume digits before decimal point
-    while (this.isDigit(this.peek())) {
-      value += this.advance();
-    }
+		// Consume digits before decimal point
+		while (this.isDigit(this.peek())) {
+			value += this.advance();
+		}
 
-    // Check for decimal point
-    if (this.peek() === '.' && this.isDigit(this.peekNext())) {
-      isFloat = true;
-      value += this.advance(); // Consume the '.'
+		// Check for decimal point
+		if (this.peek() === '.' && this.isDigit(this.peekNext())) {
+			isFloat = true;
+			value += this.advance(); // Consume the '.'
 
-      // Consume digits after decimal point
-      while (this.isDigit(this.peek())) {
-        value += this.advance();
-      }
-    }
+			// Consume digits after decimal point
+			while (this.isDigit(this.peek())) {
+				value += this.advance();
+			}
+		}
 
-    // Check for exponent part
-    if (this.peek().toLowerCase() === 'e') {
-      isFloat = true;
-      value += this.advance(); // Consume the 'e' or 'E'
+		// Check for exponent part
+		if (this.peek().toLowerCase() === 'e') {
+			isFloat = true;
+			value += this.advance(); // Consume the 'e' or 'E'
 
-      // Optional sign
-      if (this.peek() === '+' || this.peek() === '-') {
-        value += this.advance();
-      }
+			// Optional sign
+			if (this.peek() === '+' || this.peek() === '-') {
+				value += this.advance();
+			}
 
-      // Exponent digits
-      if (!this.isDigit(this.peek())) {
-        this.addErrorToken("Invalid number literal: expected digits after exponent.");
-        return;
-      }
+			// Exponent digits
+			if (!this.isDigit(this.peek())) {
+				this.addErrorToken("Invalid number literal: expected digits after exponent.");
+				return;
+			}
 
-      while (this.isDigit(this.peek())) {
-        value += this.advance();
-      }
-    }
+			while (this.isDigit(this.peek())) {
+				value += this.advance();
+			}
+		}
 
-    if (isFloat) {
-      this.addToken(TokenType.FLOAT, parseFloat(value));
-    } else {
-      // For integers, check if it fits in a regular number or needs BigInt
-      const num = parseInt(value, 10);
-      if (num > Number.MAX_SAFE_INTEGER || num < Number.MIN_SAFE_INTEGER) {
-        this.addToken(TokenType.INTEGER, BigInt(value));
-      } else {
-        this.addToken(TokenType.INTEGER, num);
-      }
-    }
-  }
+		if (isFloat) {
+			this.addToken(TokenType.FLOAT, parseFloat(value));
+		} else {
+			// For integers, check if it fits in a regular number or needs BigInt
+			const num = parseInt(value, 10);
+			if (num > Number.MAX_SAFE_INTEGER || num < Number.MIN_SAFE_INTEGER) {
+				this.addToken(TokenType.INTEGER, BigInt(value));
+			} else {
+				this.addToken(TokenType.INTEGER, num);
+			}
+		}
+	}
 
-  private identifier(): void {
-    while (this.isAlphaNumeric(this.peek())) {
-      this.advance();
-    }
+	private identifier(): void {
+		while (this.isAlphaNumeric(this.peek())) {
+			this.advance();
+		}
 
-    // Check if the identifier is a keyword
-    const text = this.source.substring(this.start, this.current).toLowerCase();
-    const type = KEYWORDS[text] || TokenType.IDENTIFIER;
+		// Check if the identifier is a keyword
+		const text = this.source.substring(this.start, this.current).toLowerCase();
+		const type = KEYWORDS[text] || TokenType.IDENTIFIER;
 
-    this.addToken(type);
-  }
+		this.addToken(type);
+	}
 
-  private multilineComment(): void {
-    let nesting = 1;  // Support nested comments
+	private multilineComment(): void {
+		let nesting = 1;  // Support nested comments
 
-    while (nesting > 0 && !this.isAtEnd()) {
-      if (this.peek() === '/' && this.peekNext() === '*') {
-        this.advance(); // Consume '/'
-        this.advance(); // Consume '*'
-        nesting++;
-      } else if (this.peek() === '*' && this.peekNext() === '/') {
-        this.advance(); // Consume '*'
-        this.advance(); // Consume '/'
-        nesting--;
-      } else {
-        if (this.peek() === '\n') {
-          this.line++;
-          this.column = 1;
-        } else {
-          this.column++;
-        }
-        this.advance();
-      }
-    }
+		while (nesting > 0 && !this.isAtEnd()) {
+			if (this.peek() === '/' && this.peekNext() === '*') {
+				this.advance(); // Consume '/'
+				this.advance(); // Consume '*'
+				nesting++;
+			} else if (this.peek() === '*' && this.peekNext() === '/') {
+				this.advance(); // Consume '*'
+				this.advance(); // Consume '/'
+				nesting--;
+			} else {
+				if (this.peek() === '\n') {
+					this.line++;
+					this.column = 1;
+				} else {
+					this.column++;
+				}
+				this.advance();
+			}
+		}
 
-    if (nesting > 0) {
-      this.addErrorToken("Unterminated comment.");
-    }
-  }
+		if (nesting > 0) {
+			this.addErrorToken("Unterminated comment.");
+		}
+	}
 
-  private isDigit(c: string): boolean {
-    return c >= '0' && c <= '9';
-  }
+	private isDigit(c: string): boolean {
+		return c >= '0' && c <= '9';
+	}
 
-  private isHexDigit(c: string): boolean {
-    return (c >= '0' && c <= '9') ||
-           (c >= 'a' && c <= 'f') ||
-           (c >= 'A' && c <= 'F');
-  }
+	private isHexDigit(c: string): boolean {
+		return (c >= '0' && c <= '9') ||
+			(c >= 'a' && c <= 'f') ||
+			(c >= 'A' && c <= 'F');
+	}
 
-  private isAlpha(c: string): boolean {
-    return (c >= 'a' && c <= 'z') ||
-           (c >= 'A' && c <= 'Z') ||
-           c === '_';
-  }
+	private isAlpha(c: string): boolean {
+		return (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			c === '_';
+	}
 
-  private isAlphaNumeric(c: string): boolean {
-    return this.isAlpha(c) || this.isDigit(c);
-  }
+	private isAlphaNumeric(c: string): boolean {
+		return this.isAlpha(c) || this.isDigit(c);
+	}
 
-  private isWhitespace(c: string): boolean {
-    return c === ' ' || c === '\r' || c === '\n' || c === '\t';
-  }
+	private isWhitespace(c: string): boolean {
+		return c === ' ' || c === '\r' || c === '\n' || c === '\t';
+	}
 
-  private addToken(type: TokenType, literal?: any): void {
-    const text = this.source.substring(this.start, this.current);
-    this.tokens.push({
-      type,
-      lexeme: text,
-      literal,
-      line: this.line,
-      column: this.column - (this.current - this.start)
-    });
-  }
+	private addToken(type: TokenType, literal?: any): void {
+		const text = this.source.substring(this.start, this.current);
+		this.tokens.push({
+			type,
+			lexeme: text,
+			literal,
+			line: this.line,
+			column: this.column - (this.current - this.start)
+		});
+	}
 
-  private addErrorToken(message: string): void {
-    this.tokens.push({
-      type: TokenType.ERROR,
-      lexeme: message,
-      line: this.line,
-      column: this.column
-    });
-  }
+	private addErrorToken(message: string): void {
+		this.tokens.push({
+			type: TokenType.ERROR,
+			lexeme: message,
+			line: this.line,
+			column: this.column
+		});
+	}
 }

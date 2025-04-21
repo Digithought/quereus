@@ -20,518 +20,329 @@ import type { AstNode } from '../parser/ast'; // Type-only import
 
 // Helper type guard for parameters in AST
 function isParameter(value: SqlValue | { type: 'parameter', key: number | string }): value is { type: 'parameter', key: number | string } {
-    return typeof value === 'object' && value !== null && value.hasOwnProperty('type') && (value as any).type === 'parameter';
+	return typeof value === 'object' && value !== null && value.hasOwnProperty('type') && (value as any).type === 'parameter';
 }
 
 /**
  * Represents a prepared SQL statement.
  */
 export class Statement {
-    public readonly db: Database;
-    public readonly sql: string;
-    private finalized = false;
-    private busy = false; // True if step has been called but not reset/finalized/done
-    private boundParameters: Map<number | string, SqlValue> = new Map();
-    private columnNames: string[] = []; // Populated after first successful step
-    private currentRowInternal: MemoryCell[] | null = null; // Store raw MemoryCells from VDBE
+	public readonly db: Database;
+	public readonly sql: string;
+	private finalized = false;
+	private busy = false; // True if step has been called but not reset/finalized/done
+	private boundParameters: Map<number | string, SqlValue> = new Map();
+	private columnNames: string[] = []; // Populated after first successful step
+	private currentRowInternal: MemoryCell[] | null = null; // Store raw MemoryCells from VDBE
 
-    // --- Add VDBE program and engine references ---
-    private vdbeProgram: VdbeProgram | null = null;
-    private vdbe: Vdbe | null = null;
-    private needsCompile = true;
-    // -----------------------------------------------
+	// --- Add VDBE program and engine references ---
+	private vdbeProgram: VdbeProgram | null = null;
+	private vdbe: Vdbe | null = null;
+	private needsCompile = true;
+	// -----------------------------------------------
 
-    /** @internal */
-    constructor(db: Database, sql: string) {
-        this.db = db;
-        this.sql = sql;
-        // Defer compilation until first step or explicit compile call
-    }
+	/** @internal */
+	constructor(db: Database, sql: string) {
+		this.db = db;
+		this.sql = sql;
+		// Defer compilation until first step or explicit compile call
+	}
 
-    // --- Simulate Parsing ---
-    /** @internal Simulates parsing the SQL into our AST structure. Replace with real parser later. */
-    private simulateParse(): SelectStmt { // Changed return type to SelectStmt
-        // VERY basic simulation - assumes SELECT * FROM vtab [WHERE col = ?]
-        console.warn("SQL parsing simulation active!");
-        const sqlLower = this.sql.toLowerCase().trim();
-        let tableName = 'unknown';
-        // Simplified WHERE clause representation for simulation
-        let where: { column: string; operator: IndexConstraintOp; value: SqlValue | { type: 'parameter', key: number | string } } | null = null;
-        let columns: ResultColumn[] = [{ type: 'all' }]; // Default to '*'
+	// --- Simulate Parsing ---
+	/** @internal Simulates parsing the SQL into our AST structure. Replace with real parser later. */
+	private simulateParse(): SelectStmt { // Changed return type to SelectStmt
+		// VERY basic simulation - assumes SELECT * FROM vtab [WHERE col = ?]
+		console.warn("SQL parsing simulation active!");
+		const sqlLower = this.sql.toLowerCase().trim();
+		let tableName = 'unknown';
+		// Simplified WHERE clause representation for simulation
+		let where: { column: string; operator: IndexConstraintOp; value: SqlValue | { type: 'parameter', key: number | string } } | null = null;
+		let columns: ResultColumn[] = [{ type: 'all' }]; // Default to '*'
 
-        const fromMatch = sqlLower.match(/from\s+([a-z_]\w*)/);
-        if (fromMatch) {
-            tableName = fromMatch[1];
-        } else {
-            throw new SyntaxError(`Could not find FROM clause in: ${this.sql}`);
-        }
+		const fromMatch = sqlLower.match(/from\s+([a-z_]\w*)/);
+		if (fromMatch) {
+			tableName = fromMatch[1];
+		} else {
+			throw new SyntaxError(`Could not find FROM clause in: ${this.sql}`);
+		}
 
-        const selectMatch = sqlLower.match(/select\s+(.*?)\s+from/);
-        if (selectMatch && selectMatch[1] !== '*') {
-             // Simulation: treating column names directly as expressions
-            columns = selectMatch[1].split(',').map(c => ({ type: 'column', expr: { type: 'column', name: c.trim() } }));
-        }
+		const selectMatch = sqlLower.match(/select\s+(.*?)\s+from/);
+		if (selectMatch && selectMatch[1] !== '*') {
+			// Simulation: treating column names directly as expressions
+			columns = selectMatch[1].split(',').map(c => ({ type: 'column', expr: { type: 'column', name: c.trim() } }));
+		}
 
-        const whereMatch = this.sql.match(/where\s+([a-z_]\w*)\s*=\s*(\?|\d+|'[^']+'|"[^"]+")/i); // Match ?, number, or quoted string
-        if (whereMatch) {
-            const colName = whereMatch[1];
-            const valStr = whereMatch[2];
-            let value: SqlValue | { type: 'parameter', key: number | string };
-            if (valStr === '?') {
-                // Assuming only one '?' for now, assign index 1
-                value = { type: 'parameter', key: 1 };
-            } else if (valStr.startsWith("'") || valStr.startsWith('"')) {
-                value = valStr.slice(1, -1); // Simple string literal unquoting
-            } else {
-                value = Number(valStr); // Simple number literal parsing
-                if (isNaN(value)) {
-                    throw new SyntaxError(`Invalid literal in WHERE clause: ${valStr}`);
-                }
-            }
-            where = { column: colName, operator: IndexConstraintOp.EQ, value: value };
-        }
+		const whereMatch = this.sql.match(/where\s+([a-z_]\w*)\s*=\s*(\?|\d+|'[^']+'|"[^"]+")/i); // Match ?, number, or quoted string
+		if (whereMatch) {
+			const colName = whereMatch[1];
+			const valStr = whereMatch[2];
+			let value: SqlValue | { type: 'parameter', key: number | string };
+			if (valStr === '?') {
+				// Assuming only one '?' for now, assign index 1
+				value = { type: 'parameter', key: 1 };
+			} else if (valStr.startsWith("'") || valStr.startsWith('"')) {
+				value = valStr.slice(1, -1); // Simple string literal unquoting
+			} else {
+				value = Number(valStr); // Simple number literal parsing
+				if (isNaN(value)) {
+					throw new SyntaxError(`Invalid literal in WHERE clause: ${valStr}`);
+				}
+			}
+			where = { column: colName, operator: IndexConstraintOp.EQ, value: value };
+		}
 
-        // Create a SelectStmt like object for the compiler simulation
-        // NOTE: Many fields are missing/simplified compared to the real AST
-        const simulatedAst: Partial<SelectStmt> & { type: 'select' } = {
-            type: 'select',
-            columns: columns,
-            from: [{ type: 'table', table: { type: 'identifier', name: tableName } }],
-            where: where ? { // Simulate a simple binary expression for the WHERE clause
-                type: 'binary',
-                operator: '=',
-                left: { type: 'column', name: where.column },
-                right: isParameter(where.value)
-                    ? { type: 'parameter', key: where.value.key } as any // Cast parameter marker
-                    : { type: 'literal', value: where.value }
-            } : undefined
-        };
+		// Create a SelectStmt like object for the compiler simulation
+		// NOTE: Many fields are missing/simplified compared to the real AST
+		const simulatedAst: Partial<SelectStmt> & { type: 'select' } = {
+			type: 'select',
+			columns: columns,
+			from: [{ type: 'table', table: { type: 'identifier', name: tableName } }],
+			where: where ? { // Simulate a simple binary expression for the WHERE clause
+				type: 'binary',
+				operator: '=',
+				left: { type: 'column', name: where.column },
+				right: isParameter(where.value)
+					? { type: 'parameter', key: where.value.key } as any // Cast parameter marker
+					: { type: 'literal', value: where.value }
+			} : undefined
+		};
 
-        return simulatedAst as SelectStmt; // Cast to full type, acknowledging simulation limits
-    }
-    // --- End Simulate Parsing ---
+		return simulatedAst as SelectStmt; // Cast to full type, acknowledging simulation limits
+	}
+	// --- End Simulate Parsing ---
 
-    /** @internal */
-    private async compile(): Promise<VdbeProgram> {
-        if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
-        if (this.finalized) { throw new MisuseError("Statement finalized"); }
-        console.log("Compiling statement...");
-        this.vdbeProgram = null;
+	/** @internal */
+	private async compile(): Promise<VdbeProgram> {
+		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
+		if (this.finalized) { throw new MisuseError("Statement finalized"); }
+		console.log("Compiling statement...");
+		this.vdbeProgram = null;
 
-        // --- Use Real Parser ---
-        // const parser = new Parser();
-        // const ast = parser.parse(this.sql);
-        // For now, continue using the simulation
-        const ast = this.simulateParse();
-        // ---------------------
+		try {
+			// --- Use Real Parser & Compiler ---
+			const parser = new Parser();
+			const ast = parser.parse(this.sql);
 
-        // --- Use Real Compiler ---
-        // const compiler = new Compiler(this.db);
-        // this.vdbeProgram = compiler.compile(ast, this.sql);
-        // this.needsCompile = false;
-        // console.log("Compilation complete.");
-        // console.log("Generated Program:", this.vdbeProgram.instructions.map(i => `${Opcode[i.opcode]} ${i.p1} ${i.p2} ${i.p3} ${i.p4 !== null ? ` P4:${JSON.stringify(i.p4)}` : ''}`).join('\n'));
-        // return this.vdbeProgram;
-        // -------------------------
+			// TODO: Check if the AST is supported before compiling
+			// e.g., if (!(ast.type === 'select' || ast.type === 'insert')) { ... }
 
-        // Keep the placeholder compiler logic for now
-        const builder = new VdbeProgramBuilder(this.sql);
-        let currentReg = 1; // Start VDBE registers at 1 (0 often special)
-        const vtabArgsRegisters: { constraintIndex: number, registerIndex: number }[] = []; // Track constraint -> register
+			const compiler = new Compiler(this.db);
+			this.vdbeProgram = compiler.compile(ast, this.sql);
+			// ----------------------------------
 
-        // Resolve Table Schema
-        const firstFrom = ast.from?.[0];
-        const tableName = (firstFrom?.type === 'table') ? firstFrom.table.name : 'unknown';
-        const schemaName = (firstFrom?.type === 'table') ? firstFrom.table.schema : null;
+			this.needsCompile = false;
+			console.log("Compilation complete.");
+			// Optional: Log generated program for debugging
+			// console.log("Generated Program:", this.vdbeProgram.instructions.map(i => `${Opcode[i.opcode]} ${i.p1} ${i.p2} ${i.p3} ${i.p4 !== null ? ` P4:${JSON.stringify(i.p4)}` : ''}`).join('\n'));
+		} catch (e) {
+			console.error("Compilation failed:", e);
+			// Convert errors to SqliteError if they aren't already
+			if (e instanceof SqliteError) {
+				throw e;
+			} else if (e instanceof Error) {
+				// Distinguish between ParseError and other errors
+				const errorCode = (e.name === 'ParseError') ? StatusCode.ERROR : StatusCode.INTERNAL;
+				throw new SqliteError(`Compilation error: ${e.message}`, errorCode);
+			} else {
+				throw new SqliteError("Unknown compilation error", StatusCode.INTERNAL);
+			}
+		}
 
-        const tableSchema = this.db._findTable(tableName, schemaName);
-        if (!tableSchema) { throw new SqliteError(`No such table: ${tableName}`, StatusCode.ERROR); }
-        if (!tableSchema.isVirtual || !tableSchema.vtabModule || !tableSchema.vtabInstance) {
-            throw new SqliteError(`Table ${tableName} is not a ready virtual table`, StatusCode.ERROR);
-        }
+		if (!this.vdbeProgram) {
+			throw new SqliteError("Compilation resulted in no program", StatusCode.INTERNAL);
+		}
 
-        // Prepare for xBestIndex
-        const constraints: IndexConstraint[] = [];
-        const constraintUsage: IndexConstraintUsage[] = [];
-        builder.setRequiredMemCells(1); // Need at least one register
+		return this.vdbeProgram;
+	}
 
-        // Process WHERE clause (simplified)
-        if (ast.where) {
-            // This simplified version assumes WHERE is `column = value/param`
-            const whereExpr = ast.where as BinaryExpr; // Assume binary for simulation
-            const colExpr = whereExpr.left as ColumnExpr; // Assume column on left
-            const valExpr = whereExpr.right; // Value/Param on right
+	/**
+	 * Binds a value to a parameter index (1-based) or name.
+	 * Implementation for both overloads.
+	 */
+	bind(key: number | string, value: SqlValue): this {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.busy) throw new MisuseError("Statement busy");
+		// Binding might require re-compilation in complex cases, but not for this simple compiler
+		// this.needsCompile = true;
+		if (typeof key === 'number') {
+			if (key < 1) throw new RangeError(`Parameter index ${key} out of range (must be >= 1)`);
+			this.boundParameters.set(key, value);
+		} else if (typeof key === 'string') {
+			this.boundParameters.set(key, value);
+		} else {
+			throw new MisuseError("Invalid parameter key type");
+		}
+		// If VDBE exists, potentially apply binding immediately? Or let step handle it.
+		if (this.vdbe) {
+			this.vdbe.clearAppliedBindings(); // Mark bindings as needing re-application
+			this.vdbe.applyBindings(this.boundParameters);
+		}
+		return this;
+	}
 
-            const colIndex = tableSchema.columnIndexMap.get(colExpr.name.toLowerCase());
-            if (colIndex === undefined) {
-                throw new SqliteError(`No such column in ${tableSchema.name}: ${colExpr.name}`, StatusCode.ERROR);
-            }
-            const constraint: IndexConstraint = {
-                iColumn: colIndex,
-                op: IndexConstraintOp.EQ, // Simulation assumes EQ
-                usable: true
-            };
-            constraints.push(constraint);
-            constraintUsage.push({ argvIndex: 0, omit: false }); // Placeholder usage
+	/**
+	 * Binds multiple parameters from an array or object.
+	 * @param params An array of values (for positional ?) or an object (for named :name, $name).
+	 * @returns This statement instance for chaining.
+	 */
+	bindAll(params: SqlValue[] | Record<string, SqlValue>): this {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.busy) throw new MisuseError("Statement busy");
 
-            const valueReg = currentReg++; // Allocate register for the value
-            builder.setRequiredMemCells(valueReg + 1);
+		if (Array.isArray(params)) {
+			// Bind by position (1-based index)
+			for (let i = 0; i < params.length; i++) {
+				this.bind(i + 1, params[i]);
+			}
+		} else if (typeof params === 'object' && params !== null) {
+			// Bind by name
+			for (const key in params) {
+				if (Object.prototype.hasOwnProperty.call(params, key)) {
+					// Ensure key starts with : or $ if it's a named param identifier
+					// (Though our simple parser/compiler might not enforce this)
+					this.bind(key, params[key]);
+				}
+			}
+		} else {
+			throw new MisuseError("Invalid parameters type for bindAll. Use array or object.");
+		}
 
-            if (valExpr.type === 'parameter') {
-                const paramKey = valExpr.name || valExpr.index;
-                if (paramKey === undefined) {
-                     throw new SqliteError("Invalid parameter expression in WHERE simulation", StatusCode.INTERNAL);
-                }
-                 builder.registerParameter(paramKey, valueReg); // Map parameter to register
-                 vtabArgsRegisters.push({ constraintIndex: constraints.length - 1, registerIndex: valueReg });
-                 // Value will be placed in valueReg by Vdbe.applyBindings
-            } else if (valExpr.type === 'literal') { // It's a literal SqlValue
-                const constraintValue = valExpr.value;
-                const constIdx = builder.addConstant(constraintValue);
-                // Generate instruction to load literal into register
-                 switch (typeof constraintValue) {
-                    case 'string':
-                        builder.addInstruction(createInstruction(Opcode.String8, 0, valueReg, 0, constIdx)); break;
-                    case 'number':
-                        // Use Integer for simplicity, Real would need check/different opcode
-                        builder.addInstruction(createInstruction(Opcode.Integer, constraintValue, valueReg)); break;
-                    case 'bigint':
-                        builder.addInstruction(createInstruction(Opcode.Int64, 0, valueReg, 0, constIdx)); break;
-                     case 'boolean': // Convert boolean to integer 0 or 1
-                         builder.addInstruction(createInstruction(Opcode.Integer, constraintValue ? 1 : 0, valueReg)); break;
-                    case 'object':
-                        if (constraintValue === null) {
-                            builder.addInstruction(createInstruction(Opcode.Null, 0, valueReg)); break;
-                        } else if (constraintValue instanceof Uint8Array) {
-                            builder.addInstruction(createInstruction(Opcode.Blob, 0, valueReg, 0, constIdx)); break;
-                        }
-                        // Fallthrough intentional for unknown object types? Maybe error?
-                    default:
-                        throw new SqliteError(`Unsupported literal type in WHERE: ${typeof constraintValue}`, StatusCode.ERROR);
-                 }
-                 vtabArgsRegisters.push({ constraintIndex: constraints.length - 1, registerIndex: valueReg });
-            } else {
-                 throw new SqliteError("WHERE clause simulation only supports literal or parameter values", StatusCode.INTERNAL);
-            }
-        }
+		return this;
+	}
 
-        // Call xBestIndex
-        const indexInfo: IndexInfo = {
-            nConstraint: constraints.length,
-            aConstraint: constraints,
-            nOrderBy: 0,
-            aOrderBy: [],
-            colUsed: BigInt("0xFFFFFFFFFFFFFFFF"), // Assume all columns might be used
-            aConstraintUsage: constraintUsage,
-            idxNum: 0,
-            idxStr: null,
-            orderByConsumed: false,
-            estimatedCost: 1000000,
-            estimatedRows: BigInt(1000000),
-            idxFlags: 0,
-        };
-        const bestIndexStatus = tableSchema.vtabInstance.module.xBestIndex(tableSchema.vtabInstance, indexInfo);
-        if (bestIndexStatus !== StatusCode.OK) {
-            throw new SqliteError(`Virtual table ${tableSchema.name} xBestIndex failed`, bestIndexStatus);
-        }
+	/**
+	 * Executes the next step of the prepared statement.
+	 * @returns A Promise resolving to a StatusCode (ROW, DONE, or an error code).
+	 * @throws MisuseError if the statement is finalized.
+	 */
+	async step(): Promise<StatusCode> {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		await this.compile();
+		if (!this.vdbeProgram) throw new SqliteError("Compilation failed", StatusCode.INTERNAL);
+		if (!this.vdbe) {
+			this.vdbe = new Vdbe(this, this.vdbeProgram);
+			this.vdbe.applyBindings(this.boundParameters); // Apply initial bindings
+		}
+		this.busy = true;
+		this.currentRowInternal = null;
+		const status = await this.vdbe.run();
+		if (status !== StatusCode.ROW) { this.busy = false; }
+		console.log(`Step result: ${StatusCode[status]}`);
+		return status;
+	}
 
-        // Determine Result Columns
-        let resultColumns: { name: string, index: number }[] = [];
-        if (ast.columns.length === 1 && ast.columns[0].type === 'all') {
-            resultColumns = tableSchema.columns.filter(c => !c.hidden).map((c, i) => ({
-                 name: c.name,
-                 index: tableSchema.columnIndexMap.get(c.name.toLowerCase())! // Use map for correct index
-                }));
-        } else {
-            ast.columns.forEach((selCol: ResultColumn) => { // Added type annotation
-                if (selCol.type === 'column') {
-                    const expr = selCol.expr as ColumnExpr; // Assume ColumnExpr for simulation
-                    const colIndex = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
-                    if (colIndex === undefined) {
-                        throw new SqliteError(`No such column in ${tableSchema.name}: ${expr.name}`, StatusCode.ERROR);
-                    }
-                    resultColumns.push({ name: tableSchema.columns[colIndex].name, index: colIndex }); // Use actual case name
-                } else {
-                     throw new SqliteError(`Compiler only supports '*' or column names currently`, StatusCode.INTERNAL);
-                }
-            });
-        }
-        const numResultColumns = resultColumns.length;
-        const resultColumnNames = resultColumns.map(rc => rc.name);
-        builder.setColumnNames(resultColumnNames);
-
-        // Generate VDBE Code
-        const cursorIdx = 0;
-        builder.setRequiredCursors(1);
-
-        // Allocate registers for VFilter args (if any) and results
-        let regArgsStart = currentReg; // Next available register
-        const argRegisters = new Map<number, number>(); // Map argvIndex to register index
-        let filterNArgs = 0;
-        indexInfo.aConstraintUsage.forEach((usage, i) => {
-            if (usage.argvIndex > 0) {
-                const argReg = currentReg++;
-                argRegisters.set(usage.argvIndex - 1, argReg); // Store 0-based argvIndex mapping
-                filterNArgs = Math.max(filterNArgs, usage.argvIndex);
-                // Find original register for this constraint
-                const sourceRegInfo = vtabArgsRegisters.find(r => r.constraintIndex === i);
-                if (!sourceRegInfo) throw new Error("Internal compiler error: cannot find source register for constraint");
-                // Copy value from its original register to the argument register
-                builder.addInstruction(createInstruction(Opcode.SCopy, sourceRegInfo.registerIndex, argReg));
-            }
-        });
-        builder.setRequiredMemCells(currentReg); // Update max register needed so far
-
-        const regResultStart = currentReg; // Results start after args
-        builder.setRequiredMemCells(regResultStart + numResultColumns);
-
-        // --- Start actual VDBE program ---
-        const addrInit = builder.getCurrentAddress();
-        builder.addInstruction(createInstruction(Opcode.Init, 0, addrInit + 1)); // Jump over Init on subsequent runs
-
-        // --- Open Cursor ---
-         // Pass TableSchema in P4
-        const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
-        builder.addInstruction(createInstruction(Opcode.OpenRead, cursorIdx, 0, 0, p4Vtab));
-
-        // --- Filtering ---
-        const addrFilter = builder.getCurrentAddress();
-        // Estimate EOF address (will be backpatched)
-        // Calculation: VFilter + N*VColumn + ResultRow + VNext + Goto = 5 + N
-        const addrEOFEstimate = addrFilter + 5 + numResultColumns;
-        const filterInfo = {
-             idxNum: indexInfo.idxNum,
-             idxStr: indexInfo.idxStr,
-             nArgs: filterNArgs
-        };
-        // VFilter needs the STARTING register for args (regArgsStart), P4 has the count (filterNArgs)
-        builder.addInstruction(createInstruction(Opcode.VFilter, cursorIdx, addrEOFEstimate, regArgsStart, filterInfo));
-
-        // --- Loop Body ---
-        const addrLoopStart = builder.getCurrentAddress();
-        // Load result columns into registers
-        for (let i = 0; i < numResultColumns; i++) {
-             const colSchemaIndex = resultColumns[i].index;
-             const destReg = regResultStart + i;
-             builder.addInstruction(createInstruction(Opcode.VColumn, cursorIdx, colSchemaIndex, destReg));
-        }
-        // Yield the row
-        builder.addInstruction(createInstruction(Opcode.ResultRow, regResultStart, numResultColumns));
-
-        // --- Next ---
-        const addrNext = builder.getCurrentAddress();
-        builder.addInstruction(createInstruction(Opcode.VNext, cursorIdx, addrEOFEstimate)); // Jump to EOF on end
-
-        // --- Loop ---
-        builder.addInstruction(createInstruction(Opcode.Goto, 0, addrLoopStart)); // Loop back to VColumn
-
-        // --- EOF Target ---
-        const addrEOFActual = builder.getCurrentAddress();
-        builder.updateInstructionP2(addrFilter, addrEOFActual); // Backpatch VFilter jump
-        builder.updateInstructionP2(addrNext, addrEOFActual);   // Backpatch VNext jump
-
-        // --- Cleanup ---
-        builder.addInstruction(createInstruction(Opcode.Close, cursorIdx)); // Close the cursor
-
-        // --- Halt ---
-        builder.addInstruction(createInstruction(Opcode.Halt, StatusCode.OK)); // Ensure OK halt code
-
-        // --- Finalize ---
-        this.vdbeProgram = builder.build();
-        this.needsCompile = false;
-        console.log("Compilation complete.");
-        console.log("Generated Program:", this.vdbeProgram.instructions.map(i => `${Opcode[i.opcode]} ${i.p1} ${i.p2} ${i.p3} ${i.p4 !== null ? ` P4:${JSON.stringify(i.p4)}` : ''}`).join('\n'));
-        return this.vdbeProgram;
-    }
-
-    /**
-     * Binds a value to a parameter index (1-based) or name.
-     * Implementation for both overloads.
-     */
-    bind(key: number | string, value: SqlValue): this {
-         if (this.finalized) throw new MisuseError("Statement finalized");
-         if (this.busy) throw new MisuseError("Statement busy");
-         // Binding might require re-compilation in complex cases, but not for this simple compiler
-         // this.needsCompile = true;
-         if (typeof key === 'number') {
-            if (key < 1 ) throw new RangeError(`Parameter index ${key} out of range (must be >= 1)`);
-            this.boundParameters.set(key, value);
-         } else if (typeof key === 'string') {
-            this.boundParameters.set(key, value);
-         } else {
-             throw new MisuseError("Invalid parameter key type");
-         }
-         // If VDBE exists, potentially apply binding immediately? Or let step handle it.
-         if (this.vdbe) {
-            this.vdbe.clearAppliedBindings(); // Mark bindings as needing re-application
-            this.vdbe.applyBindings(this.boundParameters);
-         }
-         return this;
-     }
-
-     /**
-      * Binds multiple parameters from an array or object.
-      * @param params An array of values (for positional ?) or an object (for named :name, $name).
-      * @returns This statement instance for chaining.
-      */
-     bindAll(params: SqlValue[] | Record<string, SqlValue>): this {
-        if (this.finalized) throw new MisuseError("Statement finalized");
-        if (this.busy) throw new MisuseError("Statement busy");
-
-        if (Array.isArray(params)) {
-            // Bind by position (1-based index)
-            for (let i = 0; i < params.length; i++) {
-                this.bind(i + 1, params[i]);
-            }
-        } else if (typeof params === 'object' && params !== null) {
-            // Bind by name
-            for (const key in params) {
-                if (Object.prototype.hasOwnProperty.call(params, key)) {
-                    // Ensure key starts with : or $ if it's a named param identifier
-                    // (Though our simple parser/compiler might not enforce this)
-                    this.bind(key, params[key]);
-                }
-            }
-        } else {
-            throw new MisuseError("Invalid parameters type for bindAll. Use array or object.");
-        }
-
-        return this;
-     }
-
-    /**
-     * Executes the next step of the prepared statement.
-     * @returns A Promise resolving to a StatusCode (ROW, DONE, or an error code).
-     * @throws MisuseError if the statement is finalized.
-     */
-    async step(): Promise<StatusCode> {
-        if (this.finalized) throw new MisuseError("Statement finalized");
-        await this.compile();
-        if (!this.vdbeProgram) throw new SqliteError("Compilation failed", StatusCode.INTERNAL);
-        if (!this.vdbe) {
-             this.vdbe = new Vdbe(this, this.vdbeProgram);
-             this.vdbe.applyBindings(this.boundParameters); // Apply initial bindings
-        }
-        this.busy = true;
-        this.currentRowInternal = null;
-        const status = await this.vdbe.run();
-        if (status !== StatusCode.ROW) { this.busy = false; }
-        console.log(`Step result: ${StatusCode[status]}`);
-        return status;
-    }
-
-    /** @internal Called by VDBE ResultRow opcode */
-    _setCurrentRow(memCells: MemoryCell[]): void {
-        // Store the raw memory cells for potential later type/subtype access
-        this.currentRowInternal = memCells;
-        // Could also extract simple values here if preferred
-    }
+	/** @internal Called by VDBE ResultRow opcode */
+	_setCurrentRow(memCells: MemoryCell[]): void {
+		// Store the raw memory cells for potential later type/subtype access
+		this.currentRowInternal = memCells;
+		// Could also extract simple values here if preferred
+	}
 
 
-    /**
-     * Retrieves all column values for the current row as an array.
-     * Should only be called after step() returns ROW.
-     * @returns An array of SqlValue.
-     * @throws MisuseError if step() did not return ROW.
-     */
-    get(): SqlValue[] {
-        if (this.finalized) throw new MisuseError("Statement finalized");
-        if (!this.currentRowInternal) throw new MisuseError("No row available");
-        return this.currentRowInternal.map(cell => cell.value);
-    }
+	/**
+	 * Retrieves all column values for the current row as an array.
+	 * Should only be called after step() returns ROW.
+	 * @returns An array of SqlValue.
+	 * @throws MisuseError if step() did not return ROW.
+	 */
+	get(): SqlValue[] {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (!this.currentRowInternal) throw new MisuseError("No row available");
+		return this.currentRowInternal.map(cell => cell.value);
+	}
 
-    /**
-     * Retrieves all column values for the current row as an object
-     * with column names as keys.
-     * Should only be called after step() returns ROW.
-     * @returns An object mapping column names to values.
-     * @throws MisuseError if step() did not return ROW or if column names are not available.
-     */
-    getAsObject(): Record<string, SqlValue> {
-         if (this.finalized) throw new MisuseError("Statement finalized");
-         if (!this.currentRowInternal) throw new MisuseError("No row available");
-         const names = this.vdbeProgram?.columnNames || []; // Get names from program
-         if (names.length === 0 && this.currentRowInternal.length > 0) {
-             // Fallback if compiler didn't set names (should not happen ideally)
-             return this.currentRowInternal.reduce((acc, cell, i) => {
-                 acc[`col_${i}`] = cell.value;
-                 return acc;
-             }, {} as Record<string, SqlValue>);
-         }
-         if (names.length !== this.currentRowInternal.length) {
-              throw new SqliteError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
-         }
-         const obj: Record<string, SqlValue> = {};
-         for (let i = 0; i < names.length; i++) {
-            const name = names[i];
-            if (!(name in obj)) { obj[name] = this.currentRowInternal[i].value; }
-         }
-         return obj;
-    }
+	/**
+	 * Retrieves all column values for the current row as an object
+	 * with column names as keys.
+	 * Should only be called after step() returns ROW.
+	 * @returns An object mapping column names to values.
+	 * @throws MisuseError if step() did not return ROW or if column names are not available.
+	 */
+	getAsObject(): Record<string, SqlValue> {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (!this.currentRowInternal) throw new MisuseError("No row available");
+		const names = this.vdbeProgram?.columnNames || []; // Get names from program
+		if (names.length === 0 && this.currentRowInternal.length > 0) {
+			// Fallback if compiler didn't set names (should not happen ideally)
+			return this.currentRowInternal.reduce((acc, cell, i) => {
+				acc[`col_${i}`] = cell.value;
+				return acc;
+			}, {} as Record<string, SqlValue>);
+		}
+		if (names.length !== this.currentRowInternal.length) {
+			throw new SqliteError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
+		}
+		const obj: Record<string, SqlValue> = {};
+		for (let i = 0; i < names.length; i++) {
+			const name = names[i];
+			if (!(name in obj)) { obj[name] = this.currentRowInternal[i].value; }
+		}
+		return obj;
+	}
 
 
-    /**
-     * Gets the names of the columns in the result set.
-     * Available after the first successful step() call that returns ROW or after compilation.
-     * @returns An array of column names.
-     */
-    getColumnNames(): string[] {
-        if (this.finalized) throw new MisuseError("Statement finalized");
-        // Compile if needed to get column names
-        if (this.needsCompile && !this.vdbeProgram) {
-            // This path is tricky - compile is async, but this method is sync.
-            // Require step() to be called first, or make this async?
-            // Let's assume compile was called or names are available from program.
-            console.warn("Fetching column names might require prior step() or compilation");
-        }
-        return [...(this.vdbeProgram?.columnNames || [])];
-    }
+	/**
+	 * Gets the names of the columns in the result set.
+	 * Available after the first successful step() call that returns ROW or after compilation.
+	 * @returns An array of column names.
+	 */
+	getColumnNames(): string[] {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		// Compile if needed to get column names
+		if (this.needsCompile && !this.vdbeProgram) {
+			// This path is tricky - compile is async, but this method is sync.
+			// Require step() to be called first, or make this async?
+			// Let's assume compile was called or names are available from program.
+			console.warn("Fetching column names might require prior step() or compilation");
+		}
+		return [...(this.vdbeProgram?.columnNames || [])];
+	}
 
-    /**
-     * Resets the prepared statement to its initial state, ready to be re-executed.
-     * Retains bound parameter values.
-     * @returns A Promise resolving on completion.
-     * @throws MisuseError if the statement is finalized.
-     */
-    async reset(): Promise<void> {
-        if (this.finalized) throw new MisuseError("Statement finalized");
-        if (this.vdbe) { await this.vdbe.reset(); } // Wait for cursor closing
-        this.currentRowInternal = null;
-        this.busy = false;
-        this.needsCompile = false; // Program is still valid
-    }
+	/**
+	 * Resets the prepared statement to its initial state, ready to be re-executed.
+	 * Retains bound parameter values.
+	 * @returns A Promise resolving on completion.
+	 * @throws MisuseError if the statement is finalized.
+	 */
+	async reset(): Promise<void> {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.vdbe) { await this.vdbe.reset(); } // Wait for cursor closing
+		this.currentRowInternal = null;
+		this.busy = false;
+		this.needsCompile = false; // Program is still valid
+	}
 
-    /**
-     * Clears all bound parameter values, setting them to NULL.
-     * @returns This statement instance for chaining.
-     * @throws MisuseError if the statement is finalized or busy.
-     */
-    clearBindings(): this {
-         if (this.finalized) throw new MisuseError("Statement finalized");
-         if (this.busy) throw new MisuseError("Statement busy - reset first");
-         this.boundParameters.clear();
-        if (this.vdbe) { this.vdbe.clearAppliedBindings(); }
-         return this;
-    }
+	/**
+	 * Clears all bound parameter values, setting them to NULL.
+	 * @returns This statement instance for chaining.
+	 * @throws MisuseError if the statement is finalized or busy.
+	 */
+	clearBindings(): this {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.busy) throw new MisuseError("Statement busy - reset first");
+		this.boundParameters.clear();
+		if (this.vdbe) { this.vdbe.clearAppliedBindings(); }
+		return this;
+	}
 
-    /**
-     * Finalizes the statement, releasing associated resources.
-     * This statement instance should not be used after calling finalize.
-     * @returns A promise resolving on completion.
-     */
-    async finalize(): Promise<void> {
-        if (this.finalized) return;
-        this.finalized = true;
-        this.busy = false;
-        if (this.vdbe) { await this.vdbe.reset(); } // Ensure cursors are closed
-        this.boundParameters.clear();
-        this.currentRowInternal = null;
-        this.vdbeProgram = null;
-        this.vdbe = null;
-        this.db._statementFinalized(this);
-    }
+	/**
+	 * Finalizes the statement, releasing associated resources.
+	 * This statement instance should not be used after calling finalize.
+	 * @returns A promise resolving on completion.
+	 */
+	async finalize(): Promise<void> {
+		if (this.finalized) return;
+		this.finalized = true;
+		this.busy = false;
+		if (this.vdbe) { await this.vdbe.reset(); } // Ensure cursors are closed
+		this.boundParameters.clear();
+		this.currentRowInternal = null;
+		this.vdbeProgram = null;
+		this.vdbe = null;
+		this.db._statementFinalized(this);
+	}
 
-    // TODO: Add methods like getParameterCount(), getParameterName(), getParameterIndex() if needed
-    // TODO: Add sqlite3_column_* equivalent methods if direct column access is desired beyond get()/getAsObject()
+	// TODO: Add methods like getParameterCount(), getParameterName(), getParameterIndex() if needed
+	// TODO: Add sqlite3_column_* equivalent methods if direct column access is desired beyond get()/getAsObject()
 
 }

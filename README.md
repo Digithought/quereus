@@ -11,7 +11,7 @@ SQLiter is a lightweight, TypeScript adaptation of the SQLite 3 query processor,
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
 *   **Async VTab Operations**: Assume virtual table data operations (reads/writes) can be long-running and asynchronous, designing the core engine accordingly.
 *   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native.
-*   **Minimal Dependencies**: Avoid heavy external dependencies.
+*   **Minimal Dependencies**: Avoid heavy external dependencies where possible (currently includes `digitree`).
 *   **SQL Compatibility**: Support a rich subset of SQL, particularly DML features useful for querying and manipulating data across virtual tables.
 
 ## Architecture Overview
@@ -25,7 +25,7 @@ SQLiter follows a classic query processing pipeline, adapted for its specific go
 3.  **Compiler (`src/compiler`)**:
     *   Traverses the AST.
     *   Resolves table and function references using the Schema Manager.
-    *   Performs basic query planning (currently heavily reliant on virtual table `xBestIndex`).
+    *   Performs query planning via the virtual table `xBestIndex` method.
     *   Generates bytecode instructions for the Virtual Database Engine (VDBE).
 4.  **VDBE - Virtual Database Engine (`src/vdbe`)**:
     *   A stack-based virtual machine that executes the compiled bytecode (`engine.ts`).
@@ -38,7 +38,7 @@ SQLiter follows a classic query processing pipeline, adapted for its specific go
     *   The core data interface. Modules implement the `VirtualTableModule` interface (`module.ts`), defining how to create, connect, query, and update table instances.
     *   `table.ts` and `cursor.ts` provide base classes for table and cursor instances.
     *   `indexInfo.ts` defines the structure used for query planning (`xBestIndex`).
-    *   Includes a sample `memoryTable.ts` implementation.
+    *   Includes a `MemoryTable` implementation (`memory-table.ts`) backed by the `digitree` B+Tree library.  This is also used for internal ephemeral purposes as well.  See [memory tables](doc/memory-table.md) for details.
 6.  **Schema Management (`src/schema`)**:
     *   The `SchemaManager` (`manager.ts`) orchestrates access to different database schemas ('main', 'temp').
     *   Each `Schema` (`schema.ts`) holds definitions for tables (`table.ts`), columns (`column.ts`), and functions (`function.ts`).
@@ -49,6 +49,9 @@ SQLiter follows a classic query processing pipeline, adapted for its specific go
 8.  **Core API (`src/core`)**:
     *   `Database (`database.ts`): The main entry point, managing connections, transactions, and module registration.
     *   `Statement (`statement.ts`): Represents a compiled SQL query, handling parameter binding, execution steps, and result retrieval.
+9.  **Utilities (`src/util`)**:
+    *   `comparison.ts`: Provides SQL value comparison logic (`compareSqlValues`).
+    *   `latches.ts`: A simple async mutex for serializing operations.
 
 ## Source File Layout
 
@@ -60,7 +63,7 @@ The project is organized into the following main directories:
 *   `src/compiler`: Translates AST to VDBE bytecode.
 *   `src/vdbe`: The bytecode execution engine (Virtual Database Engine).
 *   `src/schema`: Management of database schemas (tables, columns, functions).
-*   `src/vtab`: Virtual table interface definitions and implementations.
+*   `src/vtab`: Virtual table interface definitions and implementations (including `MemoryTable`).
 *   `src/func`: User-defined function context and related components.
 *   `src/util`: General utility functions (e.g., value comparison and latches).
 
@@ -76,6 +79,6 @@ The project is organized into the following main directories:
 
 ## Current Status
 
-SQLiter is currently under active development. Core components like the parser, VDBE, basic virtual table support, and the core API are being built out. SQL feature support and the compiler are still limited.
+SQLiter is currently under active development. Core components like the parser, VDBE, virtual table interface, `MemoryTable` implementation, planning infrastructure (`xBestIndex`), and the core API are functional. SQL feature support (e.g., complex constraints, triggers, window functions, full sorting) and advanced query optimization are areas for future development.
 
 

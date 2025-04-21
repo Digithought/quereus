@@ -4,531 +4,355 @@
  * Translates SQL AST into VDBE instructions
  */
 
-import { StatusCode, type SqlValue, SqlDataType } from '../common/types';
+import { StatusCode, type SqlValue } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { Opcode } from '../common/constants';
-import { createInstruction, type VdbeInstruction, type P4Vtab } from '../vdbe/instruction';
+import { type VdbeInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
 import type { Database } from '../core/database';
-import type { SchemaManager } from '../schema/manager';
 import type { TableSchema } from '../schema/table';
-import * as AST from '../parser/ast';
+import type * as AST from '../parser/ast';
+import * as Helpers from './helpers';
+import * as ExprCompiler from './expression';
+import * as StmtCompiler from './statement';
+// --- Add Correlation Types ---
+import type { CorrelatedColumnInfo, SubqueryCorrelationResult } from './helpers';
+import type { ArgumentMap } from './expression'; // Import ArgumentMap
+// ----------------------------
+
+// Import implementations to merge methods onto the prototype
+import './helpers';
+import './expression';
+import './statement';
+
+// --- Add IndexInfo types ---
+import type { IndexInfo, IndexConstraint, IndexOrderBy, IndexConstraintUsage } from '../vtab/indexInfo';
+// --------------------------
+
+// --- Define structure for planning results ---
+export interface CursorPlanningResult {
+	idxNum: number;
+	idxStr: string | null;
+	usage: IndexConstraintUsage[];
+	cost: number;
+	rows: bigint;
+	orderByConsumed: boolean;
+	constraints: IndexConstraint[]; // Keep track of constraints passed to xBestIndex
+	constraintExpressions: ReadonlyMap<number, AST.Expression>;
+	handledWhereNodes: ReadonlySet<AST.Expression>; // Track nodes handled by this plan
+}
+// ------------------------------------------
+
+// --- Define structure for mapping result columns to source/expression ---
+export interface ColumnResultInfo {
+	targetReg: number;
+	sourceCursor: number; // -1 if not from a direct column
+	sourceColumnIndex: number; // -1 if not from a direct column
+	expr?: AST.Expression; // The expression that generated this result column
+}
+// --------------------------------------------------------------------
+
+// --- Add HAVING context type ---
+export interface HavingContext {
+	finalColumnMap: ReadonlyArray<ColumnResultInfo>;
+}
+// --------------------------------
 
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
  */
 export class Compiler {
-  private db: Database;
-  private sql: string = '';
-  private constants: SqlValue[] = [];
-  private instructions: VdbeInstruction[] = [];
-  private numMemCells = 0;
-  private numCursors = 0;
-  private parameters: Map<number | string, { memIdx: number }> = new Map();
-  private columnAliases: string[] = [];
-  private tableSchemas: Map<number, TableSchema> = new Map();
-  private resultColumns: { name: string, table?: string, expr?: AST.Expression }[] = [];
+	// Properties made public for helper access
+	public db: Database;
+	public sql: string = '';
+	public constants: SqlValue[] = [];
+	public instructions: VdbeInstruction[] = [];
+	// --- Register/Cursor Allocation ---
+	public numMemCells = 0; // Max stack slot index used across all frames
+	private currentFrameLocals = 0; // Tracks highest local offset used in the *current* frame
+	public numCursors = 0;
+	// ---------------------------------
+	public parameters: Map<number | string, { memIdx: number }> = new Map();
+	public columnAliases: string[] = [];
+	public tableSchemas: Map<number, TableSchema> = new Map(); // Map cursor index to schema
+	public tableAliases: Map<string, number> = new Map(); // Map alias/name -> cursor index
+	public ephemeralTables: Map<number, TableSchema> = new Map(); // Track ephemeral schemas
+	public resultColumns: { name: string, table?: string, expr?: AST.Expression }[] = [];
+	// --- Add planning info map ---
+	public cursorPlanningInfo: Map<number, CursorPlanningResult> = new Map();
+	// ----------------------------
+	// --- Subroutine State ---
+	private subroutineCode: VdbeInstruction[] = [];
+	public subroutineDefs: Map<AST.SelectStmt, SubroutineInfo> = new Map();
+	public subroutineDepth = 0;
+	private currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
+	private maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
 
-  constructor(db: Database) {
-    this.db = db;
-  }
+	constructor(db: Database) {
+		this.db = db;
+	}
 
-  /**
-   * Compile an AST node into a VDBE program
-   */
-  compile(ast: AST.AstNode, sql: string): VdbeProgram {
-    // Reset state
-    this.sql = sql;
-    this.constants = [];
-    this.instructions = [];
-    this.numMemCells = 0;
-    this.numCursors = 0;
-    this.parameters = new Map();
-    this.columnAliases = [];
-    this.tableSchemas = new Map();
-    this.resultColumns = [];
+	/**
+	 * Compile an AST node into a VDBE program
+	 */
+	compile(ast: AST.AstNode, sql: string): VdbeProgram {
+		// Reset state
+		this.sql = sql;
+		this.constants = [];
+		this.instructions = [];
+		this.numMemCells = 0;
+		this.numCursors = 0;
+		this.parameters = new Map();
+		this.columnAliases = [];
+		this.tableSchemas = new Map();
+		this.tableAliases = new Map(); // Reset aliases
+		this.ephemeralTables = new Map();
+		this.resultColumns = [];
+		this.cursorPlanningInfo = new Map(); // Reset planning info
+		// --- Reset subroutine state ---
+		this.subroutineCode = [];
+		this.subroutineDefs = new Map();
+		this.subroutineDepth = 0;
+		// --- Reset new fields ---
+		this.currentFrameLocals = 0;
+		this.currentFrameEnterInsn = null;
+		this.maxLocalOffsetInCurrentFrame = 0;
+		// -----------------------------
 
-    // Add initial Init instruction
-    this.emit(Opcode.Init, 0, 0, 0, null, 0, "Start of program");
+		// Add initial Init instruction
+		this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
 
-    // Compile by node type
-    switch (ast.type) {
-      case 'select':
-        this.compileSelect(ast as AST.SelectStmt);
-        break;
-      default:
-        throw new SqliteError(`Unsupported statement type: ${ast.type}`, StatusCode.ERROR);
-    }
+		// Compile by node type
+		switch (ast.type) {
+			case 'select':
+				this.compileSelect(ast as AST.SelectStmt);
+				break;
+			case 'insert':
+				this.compileInsert(ast as AST.InsertStmt);
+				break;
+			case 'update':
+				this.compileUpdate(ast as AST.UpdateStmt);
+				break;
+			case 'delete':
+				this.compileDelete(ast as AST.DeleteStmt);
+				break;
+			case 'createTable':
+				this.compileCreateTable(ast as AST.CreateTableStmt);
+				break;
+			case 'createVirtualTable':
+				this.compileCreateVirtualTable(ast as AST.CreateVirtualTableStmt);
+				break;
+			case 'createIndex':
+				this.compileCreateIndex(ast as AST.CreateIndexStmt);
+				break;
+			case 'createView':
+				this.compileCreateView(ast as AST.CreateViewStmt);
+				break;
+			case 'drop':
+				this.compileDrop(ast as AST.DropStmt);
+				break;
+			case 'alterTable':
+				this.compileAlterTable(ast as AST.AlterTableStmt);
+				break;
+			case 'begin':
+				this.compileBegin(ast as AST.BeginStmt);
+				break;
+			case 'commit':
+				this.compileCommit(ast as AST.CommitStmt);
+				break;
+			case 'rollback':
+				this.compileRollback(ast as AST.RollbackStmt);
+				break;
+			case 'savepoint':
+				this.compileSavepoint(ast as AST.SavepointStmt);
+				break;
+			case 'release':
+				this.compileRelease(ast as AST.ReleaseStmt);
+				break;
 
-    // End program with Halt
-    this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
+			default:
+				throw new SqliteError(`Unsupported statement type: ${(ast as any).type}`, StatusCode.ERROR);
+		}
 
-    // Create program
-    return {
-      instructions: this.instructions,
-      constants: this.constants,
-      numMemCells: this.numMemCells,
-      numCursors: this.numCursors,
-      parameters: this.parameters,
-      columnNames: this.columnAliases,
-      sql: this.sql
-    };
-  }
+		// --- Append subroutines after main program ---
+		if (this.subroutineCode.length > 0) {
+			this.instructions.push(...this.subroutineCode);
+		}
+		// --------------------------------------------
 
-  /**
-   * Compile a SELECT statement
-   */
-  private compileSelect(stmt: AST.SelectStmt): void {
-    // Allocate memory cells for result columns
-    const resultBase = this.allocateMemoryCells(stmt.columns.length);
+		// End program with Halt
+		this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
 
-    // Process FROM clause first to set up cursors
-    if (stmt.from && stmt.from.length > 0) {
-      this.compileFrom(stmt.from);
-    }
+		// Create program
+		return {
+			instructions: this.instructions,
+			constants: this.constants,
+			numMemCells: this.numMemCells + 1, // VDBE needs one more than max index used
+			numCursors: this.numCursors,
+			parameters: this.parameters,
+			columnNames: this.columnAliases,
+			sql: this.sql
+		};
+	}
 
-    // Process WHERE clause
-    if (stmt.where) {
-      this.compileWhere(stmt.where);
-    }
+	// --- Update Subroutine Compilation Context ---
+	startSubroutineCompilation(): number { // Return address of FrameEnter
+		this.subroutineDepth++;
+		// Reset tracking for the new frame
+		this.maxLocalOffsetInCurrentFrame = 0;
+		// Emit FrameEnter with placeholder size (0). Will be patched in endSubroutineCompilation.
+		const frameEnterAddr = this.emit(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${this.subroutineDepth}`);
+		this.currentFrameEnterInsn = (this as any).subroutineCode[(this as any).subroutineCode.length - 1]; // Get ref
+		// Reserve space for control info (RetAddr, OldFP) - Frame slots 0 and 1
+		this.allocateMemoryCells(2);
+		return frameEnterAddr;
+	}
+	endSubroutineCompilation(): void {
+		if (this.subroutineDepth > 0) {
+			// Patch the FrameEnter instruction with the calculated frame size
+			if (this.currentFrameEnterInsn) {
+				// Frame size = max local offset used + 1 (since offset is 0-based)
+				const frameSize = this.maxLocalOffsetInCurrentFrame + 1;
+				this.currentFrameEnterInsn.p1 = frameSize;
+				this.currentFrameEnterInsn = null; // Clear for next subroutine
+			} else {
+				console.error("Compiler Error: Mismatched start/endSubroutineCompilation or missing FrameEnter tracking.");
+			}
+			this.subroutineDepth--;
+			// No need to restore max offset tracking, handled by new frame start
+		} else {
+			console.warn("Attempted to end subroutine compilation at depth 0");
+		}
+	}
+	// -----------------------------------------------
 
-    // Generate column expressions
-    let colIdx = 0;
-    for (const column of stmt.columns) {
-      if (column.type === 'all') {
-        // Expand * to all columns from tables
-        // For simplicity in this implementation, we'll treat * as a special case
-        // In a full implementation, you'd enumerate all columns from all tables
-        this.emit(Opcode.Null, 0, resultBase + colIdx, 0, null, 0, "Wildcard column (simplified)");
+	// --- Wrapper Methods Delegating to Helpers ---
 
-        // In a real implementation, we'd expand this to multiple columns
-        this.resultColumns.push({ name: '*', table: column.table });
-        this.columnAliases.push(column.table ? `${column.table}.*` : '*');
-        colIdx++;
-      } else if (column.expr) {
-        // Regular column expression
-        const targetReg = resultBase + colIdx;
-        this.compileExpression(column.expr, targetReg);
+	// Helpers
+	allocateMemoryCells(count: number): number { return Helpers.allocateMemoryCellsHelper(this, count); }
+	allocateCursor(): number { return Helpers.allocateCursorHelper(this); }
+	addConstant(value: SqlValue): number { return Helpers.addConstantHelper(this, value); }
+	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return Helpers.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
+	allocateAddress(): number { return Helpers.allocateAddressHelper(this); }
+	resolveAddress(placeholder: number): void { Helpers.resolveAddressHelper(this, placeholder); }
+	getCurrentAddress(): number { return Helpers.getCurrentAddressHelper(this); }
+	createEphemeralSchema(cursorIdx: number, numCols: number): TableSchema { return Helpers.createEphemeralSchemaHelper(this, cursorIdx, numCols); }
+	closeCursorsUsedBySelect(cursors: number[]): void { Helpers.closeCursorsUsedBySelectHelper(this, cursors); }
+	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return Helpers.compileFromCoreHelper(this, sources); }
+	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { Helpers.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
+	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { Helpers.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
 
-        // Track column name/alias for result set
-        let colName = '';
+	// Expressions
+	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { ExprCompiler.compileLiteral(this, expr, targetReg); }
+	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprCompiler.compileParameter(this, expr, targetReg); }
+	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { ExprCompiler.compileSubquery(this, expr, targetReg); }
+	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { ExprCompiler.compileScalarSubquery(this, subQuery, targetReg); }
+	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { ExprCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
+	compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void { ExprCompiler.compileComparisonSubquery(this, leftExpr, op, subQuery, targetReg); }
+	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { ExprCompiler.compileExistsSubquery(this, subQuery, targetReg); }
 
-        if (column.alias) {
-          colName = column.alias;
-        } else if (column.expr.type === 'column') {
-          colName = column.expr.name;
-        } else {
-          colName = `col${colIdx + 1}`;
-        }
+	// Statements
+	compileSelect(stmt: AST.SelectStmt): void { StmtCompiler.compileSelectStatement(this, stmt); }
+	compileInsert(stmt: AST.InsertStmt): void { StmtCompiler.compileInsertStatement(this, stmt); }
+	compileUpdate(stmt: AST.UpdateStmt): void { StmtCompiler.compileUpdateStatement(this, stmt); }
+	compileDelete(stmt: AST.DeleteStmt): void { StmtCompiler.compileDeleteStatement(this, stmt); }
+	compileCreateTable(stmt: AST.CreateTableStmt): void { StmtCompiler.compileCreateTableStatement(this, stmt); }
+	compileCreateVirtualTable(stmt: AST.CreateVirtualTableStmt): void { StmtCompiler.compileCreateVirtualTableStatement(this, stmt); }
+	compileCreateIndex(stmt: AST.CreateIndexStmt): void { StmtCompiler.compileCreateIndexStatement(this, stmt); }
+	compileCreateView(stmt: AST.CreateViewStmt): void { StmtCompiler.compileCreateViewStatement(this, stmt); }
+	compileDrop(stmt: AST.DropStmt): void { StmtCompiler.compileDropStatement(this, stmt); }
+	compileAlterTable(stmt: AST.AlterTableStmt): void { StmtCompiler.compileAlterTableStatement(this, stmt); }
+	compileBegin(stmt: AST.BeginStmt): void { StmtCompiler.compileBeginStatement(this, stmt); }
+	compileCommit(stmt: AST.CommitStmt): void { StmtCompiler.compileCommitStatement(this, stmt); }
+	compileRollback(stmt: AST.RollbackStmt): void { StmtCompiler.compileRollbackStatement(this, stmt); }
+	compileSavepoint(stmt: AST.SavepointStmt): void { StmtCompiler.compileSavepointStatement(this, stmt); }
+	compileRelease(stmt: AST.ReleaseStmt): void { StmtCompiler.compileReleaseStatement(this, stmt); }
+	compileSelectCore(stmt: AST.SelectStmt, outerCursors: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
+		// Explicitly type the function we're calling to help the linter
+		const compileFunc: (
+			c: Compiler,
+			s: AST.SelectStmt,
+			oc: number[],
+			corr?: SubqueryCorrelationResult,
+			am?: ArgumentMap
+		) => { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } = StmtCompiler.compileSelectCoreStatement;
 
-        this.columnAliases.push(colName);
-        this.resultColumns.push({
-          name: colName,
-          expr: column.expr
-        });
+		return compileFunc(this, stmt, outerCursors, correlation, argumentMap);
+	}
+}
 
-        colIdx++;
-      }
-    }
+// Augment the Compiler interface (needed for methods in other files to see 'this')
+// This duplicates the declarations in the other files, which is necessary for standalone file checks
+// but might feel redundant. Alternatively, create a central interface file.
+declare module './compiler' {
+	interface Compiler {
+		// Helpers
+		allocateMemoryCells(count: number): number;
+		allocateCursor(): number;
+		addConstant(value: SqlValue): number;
+		emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number;
+		allocateAddress(): number;
+		resolveAddress(placeholder: number): void;
+		getCurrentAddress(): number;
+		createEphemeralSchema(cursorIdx: number, numCols: number): TableSchema;
+		closeCursorsUsedBySelect(cursors: number[]): void;
+		compileFromCore(sources: AST.FromClause[] | undefined): number[];
+		planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void;
+		verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void;
 
-    // Generate ResultRow instruction
-    this.emit(
-      Opcode.ResultRow,
-      resultBase,
-      stmt.columns.length,
-      0,
-      null,
-      0,
-      "Output result row"
-    );
-  }
+		// Expressions
+		compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileLiteral(expr: AST.LiteralExpr, targetReg: number): void;
+		compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileParameter(expr: AST.ParameterExpr, targetReg: number): void;
+		compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void;
+		compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
+		compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void;
+		compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void;
+		compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
 
-  /**
-   * Compile the FROM clause
-   */
-  private compileFrom(sources: AST.FromClause[]): void {
-    // For simple implementation, just handle the first table source
-    if (sources.length > 0) {
-      const source = sources[0];
+		// Statements
+		compileSelect(stmt: AST.SelectStmt): void;
+		compileInsert(stmt: AST.InsertStmt): void;
+		compileUpdate(stmt: AST.UpdateStmt): void;
+		compileDelete(stmt: AST.DeleteStmt): void;
+		compileCreateTable(stmt: AST.CreateTableStmt): void;
+		compileCreateVirtualTable(stmt: AST.CreateVirtualTableStmt): void;
+		compileCreateIndex(stmt: AST.CreateIndexStmt): void;
+		compileCreateView(stmt: AST.CreateViewStmt): void;
+		compileDrop(stmt: AST.DropStmt): void;
+		compileAlterTable(stmt: AST.AlterTableStmt): void;
+		compileBegin(stmt: AST.BeginStmt): void;
+		compileCommit(stmt: AST.CommitStmt): void;
+		compileRollback(stmt: AST.RollbackStmt): void;
+		compileSavepoint(stmt: AST.SavepointStmt): void;
+		compileRelease(stmt: AST.ReleaseStmt): void;
+		compileSelectCore(stmt: AST.SelectStmt, outerCursors: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] };
 
-      if (source.type === 'table') {
-        const cursor = this.allocateCursor();
-        const tableName = source.table.name;
-        const schemaName = source.table.schema || 'main';
+		cursorPlanningInfo: Map<number, CursorPlanningResult>;
+		tableAliases: Map<string, number>;
+		subroutineDefs: Map<AST.SelectStmt, SubroutineInfo>;
 
-        // Look up table schema
-        const tableSchema = this.db._findTable(tableName, schemaName);
-        if (!tableSchema) {
-          throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR);
-        }
+		// Make compilation context switchers accessible if helpers need them
+		startSubroutineCompilation(): number;
+		endSubroutineCompilation(): void;
 
-        this.tableSchemas.set(cursor, tableSchema);
+		subroutineDepth: number;
+	}
 
-        // Open a cursor to the table
-        if (tableSchema.isVirtual && tableSchema.vtabInstance) {
-          // For virtual table
-          this.emit(
-            Opcode.OpenRead,
-            cursor,
-            0,  // db index (0 for main)
-            0,
-            tableSchema, // P4 contains table schema
-            0,
-            `Open virtual table ${schemaName}.${tableName}`
-          );
-
-          // Immediately run VFilter with empty args to start scanning
-          this.emit(
-            Opcode.VFilter,
-            cursor,
-            this.instructions.length + 2, // Jump to next instruction after if no rows
-            0, // No filter args for now
-            { idxNum: 0, idxStr: null, nArgs: 0 },
-            0,
-            `Initial scan of ${tableName}`
-          );
-        } else {
-          // For regular table (not implemented in this simplified version)
-          throw new SqliteError("Regular tables not implemented - only virtual tables supported", StatusCode.ERROR);
-        }
-      } else {
-        throw new SqliteError("JOIN not implemented in this simplified version", StatusCode.ERROR);
-      }
-    }
-  }
-
-  /**
-   * Compile the WHERE clause
-   */
-  private compileWhere(expr: AST.Expression): void {
-    // In a simplified implementation, we'll just handle basic WHERE clauses
-    // by evaluating the expression into a register and checking if true
-    const whereReg = this.allocateMemoryCells(1);
-    this.compileExpression(expr, whereReg);
-
-    // Test if the where condition is false
-    const endAddr = this.instructions.length + 2;
-    this.emit(
-      Opcode.IfFalse,
-      whereReg,
-      endAddr, // Jump to VNext
-      0,
-      null,
-      0,
-      "Skip row if WHERE clause is false"
-    );
-  }
-
-  /**
-   * Compile a cursor loop for scanning a virtual table
-   */
-  private compileCursorLoop(cursor: number, bodyStartAddr: number): void {
-    // VNext advances to next row
-    this.emit(
-      Opcode.VNext,
-      cursor,
-      this.instructions.length + 2, // Address to jump if at EOF
-      0,
-      null,
-      0,
-      "Advance to next row"
-    );
-
-    // If we have more rows, go back to body start
-    this.emit(
-      Opcode.Goto,
-      0,
-      bodyStartAddr,
-      0,
-      null,
-      0,
-      "Loop back for next row"
-    );
-  }
-
-  /**
-   * Compile an expression
-   */
-  private compileExpression(expr: AST.Expression, targetReg: number): void {
-    switch (expr.type) {
-      case 'literal':
-        this.compileLiteral(expr, targetReg);
-        break;
-      case 'column':
-        this.compileColumn(expr, targetReg);
-        break;
-      case 'binary':
-        this.compileBinary(expr, targetReg);
-        break;
-      case 'function':
-        this.compileFunction(expr, targetReg);
-        break;
-      case 'parameter':
-        this.compileParameter(expr, targetReg);
-        break;
-      default:
-        throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR);
-    }
-  }
-
-  /**
-   * Compile a literal expression
-   */
-  private compileLiteral(expr: AST.LiteralExpr, targetReg: number): void {
-    const value = expr.value;
-
-    // Handle by value type
-    if (value === null) {
-      this.emit(Opcode.Null, 0, targetReg, 0, null, 0, "NULL literal");
-    } else if (typeof value === 'number') {
-      if (Number.isInteger(value) && value >= -32768 && value <= 32767) {
-        // Small integer, use direct value
-        this.emit(Opcode.Integer, value, targetReg, 0, null, 0, `Integer literal: ${value}`);
-      } else if (Number.isInteger(value)) {
-        // Larger integer, use constant pool
-        const constIdx = this.addConstant(value);
-        this.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `Integer literal: ${value}`);
-      } else {
-        // Float
-        const constIdx = this.addConstant(value);
-        this.emit(Opcode.Real, 0, targetReg, 0, constIdx, 0, `Float literal: ${value}`);
-      }
-    } else if (typeof value === 'string') {
-      const constIdx = this.addConstant(value);
-      this.emit(Opcode.String8, 0, targetReg, 0, constIdx, 0, `String literal: '${value}'`);
-    } else if (typeof value === 'bigint') {
-      const constIdx = this.addConstant(value);
-      this.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `BigInt literal: ${value}`);
-    } else if (value instanceof Uint8Array) {
-      const constIdx = this.addConstant(value);
-      this.emit(Opcode.Blob, value.length, targetReg, 0, constIdx, 0, "BLOB literal");
-    } else {
-      throw new SqliteError(`Unsupported literal type: ${typeof value}`, StatusCode.ERROR);
-    }
-  }
-
-  /**
-   * Compile a column reference
-   */
-  private compileColumn(expr: AST.ColumnExpr, targetReg: number): void {
-    // Find the cursor and column index
-    let cursor = -1;
-    let colIdx = -1;
-
-    // In a real implementation, we'd scan all tables and match table/column
-    // Here we'll just use the first cursor and look for a column by name
-    cursor = 0; // Use first cursor
-
-    const tableSchema = this.tableSchemas.get(cursor);
-    if (!tableSchema) {
-      throw new SqliteError(`No table found for column: ${expr.name}`, StatusCode.ERROR);
-    }
-
-    // Find column index in the table schema
-    colIdx = tableSchema.columns.findIndex(col => col.name === expr.name);
-    if (colIdx === -1) {
-      throw new SqliteError(`Column not found: ${expr.name}`, StatusCode.ERROR);
-    }
-
-    // For virtual tables, use VColumn
-    if (tableSchema.isVirtual) {
-      this.emit(
-        Opcode.VColumn,
-        cursor,
-        colIdx,
-        targetReg,
-        null,
-        0,
-        `Get column: ${expr.name}`
-      );
-    } else {
-      // For normal tables (not implemented)
-      throw new SqliteError("Regular tables not implemented - only virtual tables supported", StatusCode.ERROR);
-    }
-  }
-
-  /**
-   * Compile a binary expression
-   */
-  private compileBinary(expr: AST.BinaryExpr, targetReg: number): void {
-    // Allocate registers for left and right operands
-    const leftReg = this.allocateMemoryCells(1);
-    const rightReg = this.allocateMemoryCells(1);
-
-    // Compile operands
-    this.compileExpression(expr.left, leftReg);
-    this.compileExpression(expr.right, rightReg);
-
-    // Generate operation based on operator
-    switch (expr.operator.toUpperCase()) {
-      case '+':
-        this.emit(Opcode.Add, leftReg, rightReg, targetReg, null, 0, "Add");
-        break;
-      case '-':
-        this.emit(Opcode.Subtract, leftReg, rightReg, targetReg, null, 0, "Subtract");
-        break;
-      case '*':
-        this.emit(Opcode.Multiply, leftReg, rightReg, targetReg, null, 0, "Multiply");
-        break;
-      case '/':
-        this.emit(Opcode.Divide, leftReg, rightReg, targetReg, null, 0, "Divide");
-        break;
-      case 'AND':
-        // Evaluate left operand first
-        this.emit(Opcode.SCopy, leftReg, targetReg, 0, null, 0, "Copy left operand");
-
-        // If left is false, short-circuit, otherwise evaluate right
-        const endAddr = this.instructions.length + 5;
-        this.emit(Opcode.IfFalse, targetReg, endAddr, 0, null, 0, "Short-circuit AND if left is false");
-
-        // Evaluate right operand into result
-        this.emit(Opcode.SCopy, rightReg, targetReg, 0, null, 0, "Evaluate right operand");
-        break;
-
-      case 'OR':
-        // Evaluate left operand first
-        this.emit(Opcode.SCopy, leftReg, targetReg, 0, null, 0, "Copy left operand");
-
-        // If left is true, short-circuit, otherwise evaluate right
-        const endOrAddr = this.instructions.length + 5;
-        this.emit(Opcode.IfTrue, targetReg, endOrAddr, 0, null, 0, "Short-circuit OR if left is true");
-
-        // Evaluate right operand into result
-        this.emit(Opcode.SCopy, rightReg, targetReg, 0, null, 0, "Evaluate right operand");
-        break;
-
-      case '=':
-      case '==':
-        // Compare values and set result register to 1 or 0
-        this.emit(Opcode.Eq, leftReg, this.instructions.length + 3, rightReg, null, 0, "Equal comparison");
-        this.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "Set false result");
-        this.emit(Opcode.Goto, 0, this.instructions.length + 2, 0, null, 0, "Skip true block");
-        this.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "Set true result");
-        break;
-
-      case '!=':
-      case '<>':
-        // Compare values and set result register to 1 or 0
-        this.emit(Opcode.Ne, leftReg, this.instructions.length + 3, rightReg, null, 0, "Not equal comparison");
-        this.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "Set false result");
-        this.emit(Opcode.Goto, 0, this.instructions.length + 2, 0, null, 0, "Skip true block");
-        this.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "Set true result");
-        break;
-
-      case '<':
-        this.emit(Opcode.Lt, leftReg, this.instructions.length + 3, rightReg, null, 0, "Less than comparison");
-        this.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "Set false result");
-        this.emit(Opcode.Goto, 0, this.instructions.length + 2, 0, null, 0, "Skip true block");
-        this.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "Set true result");
-        break;
-
-      case '<=':
-        this.emit(Opcode.Le, leftReg, this.instructions.length + 3, rightReg, null, 0, "Less than or equal comparison");
-        this.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "Set false result");
-        this.emit(Opcode.Goto, 0, this.instructions.length + 2, 0, null, 0, "Skip true block");
-        this.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "Set true result");
-        break;
-
-      case '>':
-        this.emit(Opcode.Gt, leftReg, this.instructions.length + 3, rightReg, null, 0, "Greater than comparison");
-        this.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "Set false result");
-        this.emit(Opcode.Goto, 0, this.instructions.length + 2, 0, null, 0, "Skip true block");
-        this.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "Set true result");
-        break;
-
-      case '>=':
-        this.emit(Opcode.Ge, leftReg, this.instructions.length + 3, rightReg, null, 0, "Greater than or equal comparison");
-        this.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "Set false result");
-        this.emit(Opcode.Goto, 0, this.instructions.length + 2, 0, null, 0, "Skip true block");
-        this.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "Set true result");
-        break;
-
-      default:
-        throw new SqliteError(`Unsupported binary operator: ${expr.operator}`, StatusCode.ERROR);
-    }
-  }
-
-  /**
-   * Compile a function call
-   */
-  private compileFunction(expr: AST.FunctionExpr, targetReg: number): void {
-    // Allocate registers for arguments
-    const argRegs = this.allocateMemoryCells(expr.args.length);
-
-    // Compile each argument
-    for (let i = 0; i < expr.args.length; i++) {
-      this.compileExpression(expr.args[i], argRegs + i);
-    }
-
-    // Look up function definition
-    const funcDef = this.db._findFunction(expr.name, expr.args.length);
-    if (!funcDef) {
-      throw new SqliteError(`Function not found: ${expr.name}/${expr.args.length}`, StatusCode.ERROR);
-    }
-
-    // Generate function call
-    this.emit(
-      Opcode.Function,
-      0,
-      argRegs,
-      targetReg,
-      { type: 'funcdef', funcDef, nArgs: expr.args.length },
-      0,
-      `Call function: ${expr.name}`
-    );
-  }
-
-  /**
-   * Compile a parameter reference
-   */
-  private compileParameter(expr: AST.ParameterExpr, targetReg: number): void {
-    // Register this parameter for binding
-    const key = expr.name || expr.index!;
-    this.parameters.set(key, { memIdx: targetReg });
-
-    // We'll leave the register empty, it will be filled by bound params at runtime
-    this.emit(Opcode.Null, 0, targetReg, 0, null, 0, `Parameter placeholder: ${key}`);
-  }
-
-  /**
-   * Allocate memory cells
-   */
-  private allocateMemoryCells(count: number): number {
-    const base = this.numMemCells;
-    this.numMemCells += count;
-    return base;
-  }
-
-  /**
-   * Allocate a cursor
-   */
-  private allocateCursor(): number {
-    return this.numCursors++;
-  }
-
-  /**
-   * Add a constant to the constant pool
-   */
-  private addConstant(value: SqlValue): number {
-    const idx = this.constants.length;
-    this.constants.push(value);
-    return idx;
-  }
-
-  /**
-   * Emit a VDBE instruction
-   */
-  private emit(
-    opcode: Opcode,
-    p1: number = 0,
-    p2: number = 0,
-    p3: number = 0,
-    p4: any = null,
-    p5: number = 0,
-    comment?: string
-  ): number {
-    const idx = this.instructions.length;
-    this.instructions.push(createInstruction(opcode, p1, p2, p3, p4, p5, comment));
-    return idx;
-  }
+	interface SubroutineInfo {
+		startAddress: number;
+		correlation: SubqueryCorrelationResult;
+		regSubqueryHasNullOutput?: number;
+	}
 }

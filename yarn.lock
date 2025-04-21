@@ -3930,6 +3930,11 @@ diff@^7.0.0:
   resolved "https://registry.yarnpkg.com/diff/-/diff-7.0.0.tgz#3fb34d387cd76d803f6eebea67b921dab0182a9a"
   integrity sha512-PJWHUb1RFevKCwaFA9RlG5tCd+FO5iRh9A8HEtkmBH2Li03iJriB6m6JIN4rGz3K3JLawI7/veA1xzRKP6ISBw==
 
+digitree@^1.3.2:
+  version "1.3.2"
+  resolved "https://registry.yarnpkg.com/digitree/-/digitree-1.3.2.tgz#bd24ba05c924862a3baa6744f34ba0dd1ea82264"
+  integrity sha512-IjbUNqAwrxt0E9FbE0Ge8vp4vsOMN1Edw8OfBii/FCnl6DKDTPCUVHi2TujImJSunyKEGrAPR2Fp36YUuLh84g==
+
 dir-glob@^3.0.0, dir-glob@^3.0.1:
   version "3.0.1"
   resolved "https://registry.yarnpkg.com/dir-glob/-/dir-glob-3.0.1.tgz#56dbf73d992a4a93ba1584f4534063fd2e41717f"

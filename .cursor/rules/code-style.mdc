@@ -1,0 +1,29 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Code Style Conventions
+
+This project uses [.editorconfig](mdc:.editorconfig) to enforce consistent coding styles across editors and IDEs.
+
+Generally favor expressive style over imperative.  E.g. map rather than loop, conditional expressions rather than if...
+
+## General Conventions
+- UTF-8 encoding for all files
+- Insert final newline at end of files
+- Trim trailing whitespace (except in Markdown files)
+
+## TypeScript Files
+- Tab indentation (2 spaces)
+- Single quotes for strings
+
+## Markdown Files
+- Space indentation
+- No maximum line length enforced
+- Trailing whitespace preserved (for line breaks)
+- No trim trailing whitespace
+
+## Configuration
+The complete configuration is defined in [.editorconfig](mdc:.editorconfig). Make sure your editor has EditorConfig support enabled to automatically follow these conventions.
+

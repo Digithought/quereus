@@ -2,6 +2,10 @@
     "cSpell.words": [
         "Backpatch",
         "backpatched",
+        "LPAREN",
+        "RPAREN",
+        "SAVEPOINT",
+        "savepoints",
         "sqliter",
         "Vdbe",
         "vtab"
