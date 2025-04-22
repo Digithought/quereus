@@ -3,7 +3,7 @@ import { VirtualTable } from './table';
 import { VirtualTableCursor } from './cursor';
 import type { VirtualTableModule } from './module';
 import type { IndexInfo, IndexConstraint, IndexOrderBy } from './indexInfo';
-import { IndexConstraintOp } from '../common/constants';
+import { IndexConstraintOp, ConflictResolution } from '../common/constants';
 import type { Database } from '../core/database';
 import { type SqlValue, StatusCode, SqlDataType } from '../common/types';
 import { SqliteError, ConstraintError } from '../common/errors';
@@ -226,20 +226,41 @@ export class MemoryTable extends VirtualTable {
 		}
 	}
 
-	addRow(row: Record<string, SqlValue>): bigint {
+	addRow(row: Record<string, SqlValue>): { rowid?: bigint } {
 		if (!this.data) throw new Error("MemoryTable BTree not initialized.");
 
-		const rowid = this.nextRowid++;
+		const rowid = this.nextRowid; // Get potential rowid *before* conflict check
 		const rowWithId: MemoryTableRow = { ...row, _rowid_: rowid };
 		const key = this.keyFromEntry(rowWithId);
+		let existingKeyFound = false;
 
-		// Check main BTree and pending inserts/updates for conflicts
-		if (this.data.get(key) !== undefined || (this.inTransaction && this.pendingInserts?.has(key))) {
-			// TODO: Check pendingUpdates for newKey conflicts
-			const pkColName = this.getPkColNames() ?? 'rowid';
-			this.nextRowid = rowid; // Roll back rowid increment
-			throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
+		// Check main BTree for conflicts
+		if (this.data.get(key) !== undefined) {
+			existingKeyFound = true;
 		}
+
+		// Check pending inserts/updates for conflicts if in transaction
+		if (!existingKeyFound && this.inTransaction) { // Optimization: Skip buffer check if already found in BTree
+			if (this.pendingInserts?.has(key)) {
+				existingKeyFound = true;
+			} else if (this.pendingUpdates) {
+				for (const update of this.pendingUpdates.values()) {
+					if (this.compareKeys(update.newKey, key) === 0) {
+						existingKeyFound = true;
+						break;
+					}
+				}
+			}
+		}
+
+		if (existingKeyFound) {
+			// Don't increment nextRowid
+			// Return empty object to signal conflict
+			return {}; // CONFLICT DETECTED
+		}
+
+		// --- No conflict found, proceed with insert --- //
+		this.nextRowid++; // Increment rowid only if no conflict
 
 		try {
 			if (this.inTransaction) {
@@ -262,14 +283,12 @@ export class MemoryTable extends VirtualTable {
 					this.rowidToKeyMap.set(rowid, key);
 				}
 			}
-			return rowid;
+			return { rowid: rowid }; // SUCCESS - return new rowid
 		} catch (e: any) {
-			this.nextRowid = rowid;
-			if (e.message?.includes("duplicate key")) {
-				const pkColName = this.getPkColNames() ?? 'rowid';
-				throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
-			}
-			throw e;
+			// Catch unexpected BTree errors during the actual insert
+			this.nextRowid = rowid; // Rollback rowid increment on unexpected error
+			// Rethrow unexpected errors
+			throw new SqliteError(`Internal BTree error during insert: ${e.message}`, StatusCode.INTERNAL);
 		}
 	}
 
@@ -316,14 +335,27 @@ export class MemoryTable extends VirtualTable {
 
 		const potentialNewRow: MemoryTableRow = { ...existingRow, ...newData, _rowid_: rowid };
 		const newKey = this.keyFromEntry(potentialNewRow);
+		const keyChanged = this.compareKeys(newKey, oldKey) !== 0;
 
-		// Check for potential UNIQUE constraint violations (including buffers)
-		const conflictingRow = this.data.get(newKey);
-		const conflictingPendingInsert = this.inTransaction && this.pendingInserts?.get(newKey);
-		// TODO: Check pendingUpdates for newKey conflicts
-		if (this.compareKeys(newKey, oldKey) !== 0 && (conflictingRow || conflictingPendingInsert)) {
-			const pkColName = this.getPkColNames() ?? 'rowid';
-			throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
+		// Check for potential UNIQUE constraint violations if the key changed
+		if (keyChanged) {
+			let conflictingKeyFound = false;
+			if (this.data.get(newKey) !== undefined) conflictingKeyFound = true;
+			if (!conflictingKeyFound && this.inTransaction) {
+				if (this.pendingInserts?.has(newKey)) conflictingKeyFound = true;
+				else if (this.pendingUpdates) {
+					for (const update of this.pendingUpdates.values()) {
+						if (update.newRow._rowid_ !== rowid && this.compareKeys(update.newKey, newKey) === 0) {
+							conflictingKeyFound = true;
+							break;
+						}
+					}
+				}
+			}
+			if (conflictingKeyFound) {
+				const pkColName = this.getPkColNames() ?? 'rowid';
+				throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
+			}
 		}
 
 		try {
@@ -333,17 +365,19 @@ export class MemoryTable extends VirtualTable {
 				if (isPendingInsert) {
 					// Update the pending insert directly
 					this.pendingInserts?.set(newKey, potentialNewRow);
-					if (this.compareKeys(newKey, oldKey) !== 0) {
+					if (keyChanged) {
 						this.pendingInserts?.delete(oldKey);
 					}
 				} else {
 					// Add to pending updates (or update existing pending update)
-					this.pendingUpdates.set(rowid, { oldRow: existingRow, newRow: potentialNewRow, oldKey, newKey });
+					// Capture the *original* row before this update if it came from BTree
+					const originalRowFromBtree = this.pendingUpdates.has(rowid) ? this.pendingUpdates.get(rowid)!.oldRow : existingRow;
+					this.pendingUpdates.set(rowid, { oldRow: originalRowFromBtree, newRow: potentialNewRow, oldKey, newKey });
 				}
 				return true;
 			} else {
 				// Apply directly
-				if (this.compareKeys(newKey, oldKey) !== 0) {
+				if (keyChanged) {
 					if (!path) path = this.data.find(oldKey);
 					if (!path || !path.on) throw new Error("Cannot find original row path for key change update");
 					this.data.deleteAt(path);
@@ -359,12 +393,14 @@ export class MemoryTable extends VirtualTable {
 				}
 			}
 		} catch (e) {
+			// Let ConstraintError propagate up to xUpdate
+			if (e instanceof ConstraintError) throw e;
 			console.error("Failed to update row:", e);
 			// Rollback potential direct BTree changes if error occurred
-			if (!this.inTransaction && this.compareKeys(newKey, oldKey) !== 0) {
+			if (!this.inTransaction && keyChanged) {
 				try { if (path) this.data.deleteAt(path); this.data.insert(existingRow); if (this.rowidToKeyMap) this.rowidToKeyMap.set(rowid, oldKey); } catch { } // Best effort rollback
 			}
-			throw e;
+			throw new SqliteError(`Internal BTree error during update: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 		}
 	}
 
@@ -460,7 +496,7 @@ export class MemoryTable extends VirtualTable {
 		return this.readOnly;
 	}
 
-	private getPkColNames(): string | null {
+	public getPkColNames(): string | null {
 		if (this.primaryKeyColumnIndices.length === 0) return null;
 		return this.primaryKeyColumnIndices.map(idx => this.columns[idx]?.name ?? '?').join(', ');
 	}
@@ -992,12 +1028,13 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return rowid;
 	}
 
-	async xUpdate(table: MemoryTable, values: SqlValue[], rowidFromOpcode: bigint | null): Promise<{ rowid?: bigint }> {
+	async xUpdate(table: MemoryTable, values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
 		// Simplified interpretation based on our addRow/updateRow/deleteRow
 		if (table.isReadOnly()) {
 			throw new SqliteError(`Table '${table.tableName}' is read-only`, StatusCode.READONLY);
 		}
 		const release = await Latches.acquire(`MemoryTable.xUpdate:${table.schemaName}.${table.tableName}`);
+		const onConflict = (values as any)._onConflict || ConflictResolution.ABORT; // Get conflict policy passed via VUpdate P4
 
 		try {
 			if (values.length === 1 && typeof values[0] === 'bigint') {
@@ -1007,15 +1044,38 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			} else if (values.length > 1 && values[0] === null) {
 				// INSERT: values[0]=NULL, values[1..] are column values
 				const data = Object.fromEntries(table.columns.map((col, idx) => [col.name, values[idx + 1]]));
-				const newRowid = table.addRow(data);
-				return { rowid: newRowid };
+				// Call addRow and check result directly
+				const addResult = table.addRow(data);
+				if (addResult.rowid !== undefined) {
+					// Success
+					return { rowid: addResult.rowid };
+				} else {
+					// Conflict occurred (addRow returned {})
+					if (onConflict === ConflictResolution.IGNORE) {
+						return {}; // Indicate ignore
+					} else {
+						// Throw appropriate constraint error for ABORT/FAIL etc.
+						const pkColName = table.getPkColNames() ?? 'rowid'; // Reuse helper
+						throw new ConstraintError(`UNIQUE constraint failed: ${table.tableName}.${pkColName}`);
+					}
+				}
 			} else if (values.length > 1 && typeof values[0] === 'bigint') {
 				// UPDATE: values[0]=rowid, values[1..] are new column values
 				const targetRowid = values[0];
 				const data = Object.fromEntries(table.columns.map((col, idx) => [col.name, values[idx + 1]]));
-				const updated = table.updateRow(targetRowid, data);
-				if (!updated) throw new SqliteError(`Update failed for rowid ${targetRowid}`, StatusCode.ERROR);
-				return {};
+				try {
+					const updated = table.updateRow(targetRowid, data);
+					if (!updated) throw new SqliteError(`Update failed for rowid ${targetRowid}`, StatusCode.NOTFOUND); // NOTFOUND might be better
+					return {}; // Update doesn't return rowid in this Promise structure
+				} catch (e) {
+					if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {
+						// Conflict on UPDATE (e.g., changing PK to existing value)
+						return {}; // Indicate ignore
+					} else {
+						// Re-throw other errors or ABORT/FAIL etc. conflicts
+						throw e;
+					}
+				}
 			} else {
 				throw new SqliteError("Unsupported arguments for xUpdate", StatusCode.ERROR);
 			}

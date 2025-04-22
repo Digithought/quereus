@@ -482,7 +482,61 @@ export class Vdbe {
 			// VColumn/VRowid/VUpdate use frame-relative destinations (_setMem)
 			case Opcode.VColumn: { const cIdx=p1, col=p2, destOff=p3; const c=this.vdbeCursors[cIdx]; if(c?.sortedResults){ const s=c.sortedResults; if(s.index<0||s.index>=s.rows.length)throw new Error(); const r=s.rows[s.index]; if(col<0||col>=r.length)throw new Error(); this._setMem(destOff,r[col].value); break; } if(!c?.instance||!c.isValid)throw new Error("VColumn on invalid cursor"); this.vtabContext._clear(); const st=c.vtab!.module.xColumn(c.instance,this.vtabContext,col); if(st!==StatusCode.OK)throw new SqliteError(`xColumn failed (col ${col}, cursor ${cIdx})`, st); this._setMem(destOff, this.vtabContext._getResult()); break; }
 			case Opcode.VRowid: { const cIdx=p1, destOff=p2; const c=this.vdbeCursors[cIdx]; if(!c?.instance||!c.isValid)throw new Error("VRowid on invalid cursor"); const rid=await c.vtab!.module.xRowid(c.instance); this._setMem(destOff, rid); break; }
-			case Opcode.VUpdate: { const nD=p1, dOff=p2, rOff=p3, info=p4 as any; const v=info.table.vtabInstance!; if(!v.module.xUpdate) throw new Error("xUpdate not implemented for VTab"); const vals=[]; const fv=this._getMemValue(dOff); let op:'INSERT'|'UPDATE'|'DELETE',rowid:bigint|null; if(nD>1&&fv===null){op='INSERT';for(let i=1;i<nD;i++)vals.push(this._getMemValue(dOff+i));rowid=null;}else if(nD===1){op='DELETE';rowid=fv as bigint;}else{op='UPDATE';rowid=fv as bigint;for(let i=1;i<nD;i++)vals.push(this._getMemValue(dOff+i));} try{const res=await v.module.xUpdate!(v,vals,rowid);if(op==='INSERT'&&rOff>0&&res.rowid!==undefined)this._setMem(rOff,res.rowid);}catch(e){if(e instanceof ConstraintError)throw new SqliteError(e.message,StatusCode.CONSTRAINT);throw e;} break; }
+			case Opcode.VUpdate:				 // regno p1 p2 p3 p4 p5
+				{
+					const regDataStart = p2; // Start register of data (rowid, col0, col1...)
+					const regOut = p3;	 	 // Register to store result (e.g., new rowid for INSERT)
+					const nData = p1; // Number of data elements (including rowid)
+					// Correctly get p4 info from the instruction
+					const p4Info = p4 as { table: TableSchema, onConflict?: ConflictResolution };
+					if (!p4Info?.table?.vtabInstance?.module?.xUpdate) {
+						throw new Error("VUpdate called on non-virtual table or module lacks xUpdate");
+					}
+
+					const values: SqlValue[] = [];
+					for (let i = 0; i < nData; i++) {
+						// Use _getMemValue which handles initialization
+						values.push(this._getMemValue(regDataStart + i) ?? null);
+					}
+					// Pass conflict policy via a non-standard property
+					(values as any)._onConflict = p4Info.onConflict || ConflictResolution.ABORT;
+
+					const rowidFromData = values[0]; // First value is rowid (or null for insert)
+
+					try {
+						// Call xUpdate asynchronously
+						const result = await p4Info.table.vtabInstance.module.xUpdate(p4Info.table.vtabInstance, values, rowidFromData as bigint | null);
+
+						// Handle result based on operation and conflict policy
+						if (regOut > 0) {
+							if (values[0] === null) { // INSERT operation
+								if (result && result.rowid !== undefined) {
+									// Successful INSERT, store new rowid
+									this._setMem(regOut, result.rowid);
+								} else {
+									// INSERT failed or was ignored (due to IGNORE conflict policy)
+									// For CTE UNION DISTINCT, we need NULL in regOut if insert was ignored.
+									this._setMem(regOut, null);
+								}
+							} else {
+								// UPDATE/DELETE operation, typically don't write to regOut
+								this._setMem(regOut, null); // Set to NULL for consistency
+							}
+						}
+					} catch (e) {
+						// If xUpdate throws, halt the VDBE
+						if (e instanceof SqliteError) {
+							this.error = e;
+						} else if (e instanceof Error) {
+							this.error = new SqliteError(`Runtime error during VUpdate: ${e.message}`, StatusCode.ERROR);
+						} else {
+							this.error = new SqliteError("Unknown error during VUpdate execution", StatusCode.ERROR);
+						}
+						this.done = true; // Halt execution on error
+						return; // Exit step function
+					}
+				}
+				break;
 			// VTab transaction ops are okay
 			case Opcode.VBegin: case Opcode.VCommit: case Opcode.VRollback: case Opcode.VSync:
 			case Opcode.VSavepoint: case Opcode.VRelease: case Opcode.VRollbackTo:

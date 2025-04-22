@@ -309,7 +309,7 @@ function _compileSelectAndPopulateEphemeral(
 		// Need to know if the insert actually happened for queue insertion
 		// Let's allocate a temp register to store the outcome (new rowid or null/error indicator)
 		const regTargetRowid = compiler.allocateMemoryCells(1);
-		// Set to known non-null value before VUpdate
+		// Set to known non-null value before VUpdate (helps debugging, VDBE will overwrite)
 		compiler.emit(Opcode.Integer, -1, regTargetRowid, 0, null, 0, "Populate Eph: Init target rowid check");
 		compiler.emit(Opcode.VUpdate, queryNumCols + 1, insertDataReg, regTargetRowid, p4UpdateTarget, 0, `Populate Eph: Insert Target ${targetCursor}`);
 
@@ -317,7 +317,8 @@ function _compileSelectAndPopulateEphemeral(
 		if (insertIntoQueue && queueCursor !== undefined && queueSchema) {
 			const addrSkipQueueInsert = compiler.allocateAddress();
 			if (!isUnionAll) {
-				console.warn("UNION DISTINCT for recursive CTE queue insertion might be unreliable due to VUpdate IGNORE behavior. Treating as UNION ALL for queue.");
+				// If UNION DISTINCT, only insert into queue if the target insert was successful (regTargetRowid is NOT NULL)
+				compiler.emit(Opcode.IfNull, regTargetRowid, addrSkipQueueInsert, 0, null, 0, "Populate Eph: Skip queue if target insert ignored");
 			}
 			// Insert into queue (always for UNION ALL, or if target insert succeeded for UNION)
 			const p4UpdateQueue: any = { table: queueSchema, onConflict: ConflictResolution.ABORT }; // Queue never ignores
