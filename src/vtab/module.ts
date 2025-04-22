@@ -24,7 +24,7 @@ export interface VirtualTableModule<TTable extends VirtualTable, TCursor extends
 	 * @returns A promise resolving to the new VirtualTable instance or throwing an error.
 	 * @throws SqliteError on failure.
 	 */
-	xCreate(db: Database, pAux: unknown, args: ReadonlyArray<string>): Promise<TTable>;
+	xCreate(db: Database, pAux: unknown, args: ReadonlyArray<string>): TTable;
 
 	/**
 	 * Connect to (or create) a virtual table instance. Called for existing virtual tables when the schema is loaded.
@@ -34,7 +34,7 @@ export interface VirtualTableModule<TTable extends VirtualTable, TCursor extends
 	 * @returns A promise resolving to the VirtualTable instance or throwing an error.
 	 * @throws SqliteError on failure.
 	 */
-	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): Promise<TTable>;
+	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): TTable;
 
 	/**
 	 * Determine the best query plan (index) for a given set of constraints and orderings.

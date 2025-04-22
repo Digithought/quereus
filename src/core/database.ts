@@ -17,6 +17,10 @@ import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema,
 import { Parser } from '../parser/parser';
 import { Compiler } from '../compiler/compiler';
 import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table'; // Import helpers
+// Import default modules
+import { MemoryTableModule } from '../vtab/memory-table';
+import { JsonEachModule } from '../vtab/json-each';
+import { JsonTreeModule } from '../vtab/json-tree'; // Import JsonTreeModule
 
 /**
  * Represents a connection to an SQLite database (in-memory in this port).
@@ -41,6 +45,10 @@ export class Database {
 
 		// Register built-in functions
 		this.registerBuiltinFunctions();
+		// Register default virtual table modules
+		this.registerVtabModule('memory', new MemoryTableModule());
+		this.registerVtabModule('json_each', new JsonEachModule());
+		this.registerVtabModule('json_tree', new JsonTreeModule()); // Register JsonTreeModule
 	}
 
 	/** @internal Registers default built-in SQL functions */

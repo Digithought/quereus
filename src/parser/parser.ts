@@ -371,10 +371,22 @@ export class Parser {
 	}
 
 	/**
-	 * Parse a single table source
+	 * Parse a single table source, which can now be a table name or a table-valued function call
 	 */
-	private tableSource(): AST.TableSource {
-		// Parse table name
+	private tableSource(): AST.TableSource | AST.FunctionSource {
+		// Check for function call syntax: IDENTIFIER (
+		if (this.check(TokenType.IDENTIFIER) && this.checkNext(1, TokenType.LPAREN)) {
+			return this.functionSource();
+		}
+		// Otherwise, assume it's a standard table source
+		else {
+			return this.standardTableSource();
+		}
+	}
+
+	/** Parses a standard table source (schema.table or table) */
+	private standardTableSource(): AST.TableSource {
+		// Parse table name (potentially schema-qualified)
 		const table = this.tableIdentifier();
 
 		// Parse optional alias
@@ -395,6 +407,44 @@ export class Parser {
 		return {
 			type: 'table',
 			table,
+			alias
+		};
+	}
+
+	/** Parses a table-valued function source: name(arg1, ...) [AS alias] */
+	private functionSource(): AST.FunctionSource {
+		const name = this.tableIdentifier(); // Use tableIdentifier to allow schema.func if needed
+
+		this.consume(TokenType.LPAREN, "Expected '(' after table function name.");
+
+		const args: AST.Expression[] = [];
+		if (!this.check(TokenType.RPAREN)) {
+			do {
+				args.push(this.expression());
+			} while (this.match(TokenType.COMMA));
+		}
+
+		this.consume(TokenType.RPAREN, "Expected ')' after table function arguments.");
+
+		// Parse optional alias (same logic as for standard tables)
+		let alias: string | undefined;
+		if (this.match(TokenType.AS)) {
+			if (!this.check(TokenType.IDENTIFIER)) {
+				throw this.error(this.peek(), "Expected alias after 'AS'.");
+			}
+			alias = this.advance().lexeme;
+		} else if (this.check(TokenType.IDENTIFIER) &&
+			!this.checkNext(1, TokenType.DOT) &&
+			!this.checkNext(1, TokenType.COMMA) &&
+			!this.isJoinToken() &&
+			!this.isEndOfClause()) {
+			alias = this.advance().lexeme;
+		}
+
+		return {
+			type: 'functionSource',
+			name,
+			args,
 			alias
 		};
 	}

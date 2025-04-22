@@ -8,7 +8,7 @@ import type { ConflictResolution } from '../common/constants';
 
 // Base for all AST nodes
 export interface AstNode {
-	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createVirtualTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release';
+	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createVirtualTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource';
 }
 
 // Expression types
@@ -21,7 +21,8 @@ export type Expression =
 	| CastExpr
 	| ParameterExpr
 	| SubqueryExpr
-	| ColumnExpr;
+	| ColumnExpr
+	| FunctionSource;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -91,6 +92,14 @@ export interface SubqueryExpr extends AstNode {
 }
 
 // --- Statement Types ---
+
+// --- Add FunctionSource type ---
+export interface FunctionSource extends AstNode {
+	type: 'functionSource';
+	name: IdentifierExpr; // Function name (potentially schema.name)
+	args: Expression[];    // Arguments passed to the function
+	alias?: string;        // Optional alias for the generated table
+}
 
 // SELECT statement
 export interface SelectStmt extends AstNode {
@@ -227,8 +236,8 @@ export type ResultColumn =
 	| { type: 'all', table?: string }
 	| { type: 'column', expr: Expression, alias?: string };
 
-// FROM clause item (table or join)
-export type FromClause = TableSource | JoinClause;
+// FROM clause item (table, join, or function call)
+export type FromClause = TableSource | JoinClause | FunctionSource;
 
 // Table source in FROM clause
 export interface TableSource extends AstNode {

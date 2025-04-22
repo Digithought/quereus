@@ -595,7 +595,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		this.config = config;
 	}
 
-	async xCreate(db: Database, pAux: unknown, args: ReadonlyArray<string>): Promise<MemoryTable> {
+	xCreate(db: Database, pAux: unknown, args: ReadonlyArray<string>): MemoryTable {
 		if (args.length < 3) { throw new SqliteError("Invalid memory table declaration: schema and table name required", StatusCode.ERROR); }
 		const schemaName = args[1];
 		const tableName = args[2];
@@ -608,12 +608,14 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		this.tables.set(tableKey, table);
 
 		const sqlToParse = createTableSql ?? `CREATE TABLE "${tableName}" (value)`;
-		await this.setupSchema(db, table, sqlToParse);
+		// setupSchema can remain async internally if needed, but xCreate itself is sync now.
+		// However, schema setup SHOULD be synchronous for xBestIndex.
+		this.setupSchemaSync(db, table, sqlToParse);
 
 		return table;
 	}
 
-	async xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): Promise<MemoryTable> {
+	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): MemoryTable {
 		if (args.length < 3) { throw new SqliteError("Invalid memory table connection request", StatusCode.ERROR); }
 		const schemaName = args[1];
 		const tableName = args[2];
@@ -622,6 +624,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		if (existingTable) {
 			return existingTable;
 		}
+		// If not existing, create it synchronously
 		return this.xCreate(db, pAux, args);
 	}
 
@@ -1169,11 +1172,20 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
 	}
 
-	private async setupSchema(db: Database, table: MemoryTable, createTableSql: string): Promise<void> {
-		const moduleName = table.module.constructor.name;
+	// Rename to setupSchemaSync
+	private setupSchemaSync(db: Database, table: MemoryTable, createTableSql: string): void {
+		// This method MUST now be synchronous.
+		// Any async setup needs to happen elsewhere or be handled differently.
+		const moduleName = table.module.constructor.name; // Might be minified
+		// Use registered name if possible?
+		// For now, assume MemoryTable is always registered as 'memory' or similar
+		const registeredModuleName = 'memory'; // Assuming default registration name
 		const safeCreateTableSql = createTableSql.replace(/"/g, '""');
-		const createVirtualTableSql = `CREATE VIRTUAL TABLE "${table.schemaName}"."${table.tableName}" USING ${moduleName}("${safeCreateTableSql}")`;
+		// Constructing CREATE VIRTUAL TABLE for declareVtab (which remains sync?)
+		const createVirtualTableSql = `CREATE VIRTUAL TABLE "${table.schemaName}"."${table.tableName}" USING ${registeredModuleName}("${safeCreateTableSql}")`;
 
+		// declareVtab needs to be synchronous or this structure changes.
+		// Assuming declareVtab can operate synchronously based on parsed SQL for schema.
 		const initialTableSchema = db.schemaManager.declareVtab(table.schemaName, createVirtualTableSql, table);
 
 		let parsedColumns: { name: string, type: SqlDataType }[] = [];
@@ -1261,6 +1273,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			// Retain auxData and vtabArgs if they were on initialTableSchema
 			vtabAuxData: initialTableSchema?.vtabAuxData,
 			vtabArgs: initialTableSchema?.vtabArgs,
+			vtabModuleName: registeredModuleName, // Store the assumed registered name
 		};
 
 		const targetSchema = db.schemaManager.getSchema(table.schemaName);

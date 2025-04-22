@@ -4,11 +4,12 @@ import { SqliteError } from '../common/errors';
 import { StatusCode } from '../common/constants';
 import { createInstruction, type P4Vtab } from '../vdbe/instruction';
 import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
+import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table';
 import type { TableSchema } from '../schema/table';
 import type * as AST from '../parser/ast';
 import type { Compiler, CursorPlanningResult } from './compiler';
 import type { IndexInfo, IndexConstraint, IndexOrderBy, IndexConstraintUsage } from '../vtab/indexInfo';
+import type { P4SortKey } from '../vdbe/instruction';
 
 export function allocateMemoryCellsHelper(compiler: Compiler, count: number): number {
 	// Frame slots 0 and 1 are reserved for RetAddr and OldFP
@@ -147,7 +148,7 @@ export function createEphemeralSchemaHelper(
 	compiler: Compiler,
 	cursorIdx: number,
 	numCols: number,
-	sortKey?: { keyIndices: ReadonlyArray<number>; directions: ReadonlyArray<boolean> }
+	sortKey?: P4SortKey
 ): TableSchema {
 	const columns = Array.from({ length: numCols }, (_, i) => createDefaultColumnSchema(`eph_col${i}`));
 	// --- Create primaryKeyDefinition based on sortKey ---
@@ -195,36 +196,110 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const tableName = source.table.name;
 			const schemaName = source.table.schema || 'main';
 			const tableSchema = compiler.db._findTable(tableName, schemaName);
-			if (!tableSchema) { throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR); }
+			if (!tableSchema) throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR);
 
 			compiler.tableSchemas.set(cursor, tableSchema);
 			const lookupName = (source.alias || tableName).toLowerCase();
 			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
 				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
 			}
-			// Add to both global and current level maps for resolution within this FROM clause
 			compiler.tableAliases.set(lookupName, cursor);
 			currentLevelAliases.set(lookupName, cursor);
 
 			if (tableSchema.isVirtual && tableSchema.vtabInstance) {
 				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
 				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
+			} else if (tableSchema.isVirtual && !tableSchema.vtabInstance) {
+				// Need to connect if instance doesn't exist yet (e.g., schema load)
+				console.warn(`VTab ${tableName} found but not connected, attempting connect...`);
+				const module = compiler.db._getVtabModule(tableSchema.vtabModuleName ?? '');
+				if (!module) throw new SqliteError(`Module ${tableSchema.vtabModuleName} not found for VTab ${tableName}`);
+				const argv = [tableSchema.vtabModuleName ?? '', schemaName, tableName, ...(tableSchema.vtabArgs ?? [])];
+				// Call connect synchronously
+				const instance = module.module.xConnect(compiler.db, module.auxData, argv);
+				// Update the stored schema with the instance
+				const connectedSchema = { ...tableSchema, vtabInstance: instance };
+				compiler.db.schemaManager.getSchema(schemaName)?.addTable(connectedSchema);
+				compiler.tableSchemas.set(cursor, connectedSchema);
+				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema: connectedSchema };
+				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
 			} else { throw new SqliteError("Regular tables not supported", StatusCode.ERROR); }
 		} else if (source.type === 'join') {
 			openCursorsRecursive(source.left, currentLevelAliases);
 			openCursorsRecursive(source.right, currentLevelAliases);
+		} else if (source.type === 'functionSource') {
+			// Handle Table-Valued Function
+			const funcName = source.name.name; // Assuming simple identifier for now
+			const moduleInfo = compiler.db._getVtabModule(funcName);
+			if (!moduleInfo) {
+				throw new SqliteError(`Table-valued function or virtual table module not found: ${funcName}`, StatusCode.ERROR);
+			}
+
+			// Compile arguments into temporary registers
+			const compiledArgs: string[] = []; // Store evaluated args
+			// This part is tricky. Compiling expressions might require registers
+			// allocated *before* the async call. Let's assume simple literals/params for now.
+			const argRegisters: number[] = [];
+			for (const argExpr of source.args) {
+				const tempReg = compiler.allocateMemoryCells(1);
+				// TODO: Handle potential async nature if compileExpression becomes async
+				compiler.compileExpression(argExpr, tempReg);
+				// We need the *value* now to pass to xConnect, which requires running VDBE or specific handling
+				// This highlights the difficulty of async xConnect during sync compilation.
+				// **Compromise for now: Only support literal/parameter args for TVFs**
+				if (argExpr.type === 'literal') {
+					// Ensure literals passed as args are strings for argv
+					if (argExpr.value === null || typeof argExpr.value === 'string') {
+						compiledArgs.push(argExpr.value === null ? '' : argExpr.value); // Pass null as empty string?
+					} else {
+						// Or coerce other literals? For now, error if not string/null.
+						throw new SqliteError(`Table-valued function arguments must be string literals (or NULL) for ${funcName}.`, StatusCode.ERROR);
+					}
+				} else if (argExpr.type === 'parameter') {
+					// Parameters aren't available at compile time!
+					throw new SqliteError(`Parameters not supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR);
+				} else {
+					throw new SqliteError(`Only literals supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR);
+				}
+				// We don't actually need the registers if we evaluate here
+			}
+
+			// Construct argv for xConnect (Ensure all parts are strings)
+			const schemaName = 'main'; // Or determine based on context?
+			const tableName = source.alias || funcName; // Use alias or function name as table name
+			const argv: ReadonlyArray<string> = Object.freeze([funcName, schemaName, tableName, ...compiledArgs]);
+
+			// Call xConnect synchronously
+			const instance = moduleInfo.module.xConnect(compiler.db, moduleInfo.auxData, argv);
+			if (!instance || !instance.tableSchema) {
+				throw new SqliteError(`Module ${funcName} xConnect did not return a valid table instance or schema.`, StatusCode.INTERNAL);
+			}
+
+			// Allocate cursor and store schema/instance
+			const cursor = compiler.allocateCursor();
+			openedCursors.push(cursor);
+			compiler.tableSchemas.set(cursor, instance.tableSchema);
+			const lookupName = (source.alias || funcName).toLowerCase();
+			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
+				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
+			}
+			compiler.tableAliases.set(lookupName, cursor);
+			currentLevelAliases.set(lookupName, cursor);
+
+			// Emit opcode to open the cursor
+			const p4Vtab: P4Vtab = { type: 'vtab', tableSchema: instance.tableSchema };
+			compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open TVF ${lookupName}`);
+
 		} else {
 			throw new SqliteError(`Unsupported FROM clause type during cursor opening: ${(source as any).type}`, StatusCode.INTERNAL);
 		}
 	};
 
 	// Process each top-level FROM clause (usually just one)
-	sources.forEach(source => {
+	for (const source of sources) {
 		const currentLevelAliases = new Map<string, number>();
 		openCursorsRecursive(source, currentLevelAliases);
-		// Clear current level aliases after processing the clause to avoid affecting sibling FROM clauses (if any)
-		// This assumes standard SQL FROM scoping; SQLite might differ slightly with implicit joins.
-	});
+	}
 
 	return openedCursors;
 }
