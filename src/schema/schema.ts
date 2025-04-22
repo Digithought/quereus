@@ -66,6 +66,11 @@ export class Schema {
 		return this.functions.get(key) ?? this.functions.get(varArgsKey);
 	}
 
+	/** @internal Returns iterator over managed functions */
+	_getAllFunctions(): IterableIterator<FunctionSchema> {
+		return this.functions.values();
+	}
+
 	/** Removes a function definition. Returns true if found and removed. */
 	removeFunction(name: string, numArgs: number): boolean {
 		const key = getFunctionKey(name, numArgs);

@@ -26,6 +26,8 @@ export interface TableSchema {
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
 	vtabArgs?: ReadonlyArray<string>;
+	/** If virtual, the name the module was registered with */
+	vtabModuleName?: string;
 	/** Whether the table is declared WITHOUT ROWID (crucial for VTabs) */
 	// isWithoutRowid: boolean; // Let's assume VTabs *can* have rowids unless module specifies otherwise
 

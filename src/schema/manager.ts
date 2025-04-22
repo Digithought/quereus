@@ -7,7 +7,7 @@ import { StatusCode, SqlDataType } from '../common/constants';
 import type { VirtualTable } from '../vtab/table';
 import type { ColumnSchema } from './column';
 import { createDefaultColumnSchema } from './column';
-import { buildColumnIndexMap, findPrimaryKeyColumns } from './table';
+import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table';
 import { Parser } from '../parser/parser'; // Import the parser
 import type * as AST from '../parser/ast'; // Import AST types
 
@@ -39,6 +39,11 @@ export class SchemaManager {
 	/** Gets the 'temp' schema. */
 	getTempSchema(): Schema {
 		return this.schemas.get('temp')!; // Should always exist
+	}
+
+	/** @internal Returns iterator over managed schemas */
+	_getAllSchemas(): IterableIterator<Schema> {
+		return this.schemas.values();
 	}
 
 	/** Adds a schema (e.g., for ATTACH). Throws if name conflicts. */
@@ -178,12 +183,14 @@ export class SchemaManager {
 			schemaName: schema.name,
 			columns: Object.freeze(placeholderColumns),
 			columnIndexMap: Object.freeze(buildColumnIndexMap(placeholderColumns)),
-			primaryKeyColumns: Object.freeze(findPrimaryKeyColumns(placeholderColumns)),
+			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)), // Use helper
 			isVirtual: true,
 			vtabModule: associatedVtab.module,
 			vtabInstance: associatedVtab,
 			vtabAuxData: auxData,
 			vtabArgs: Object.freeze(vtabArgs || []), // Use parsed args
+			// Store the registered module name used in the CREATE stmt
+			vtabModuleName: createVtabAst.moduleName,
 		};
 
 		schema.addTable(tableSchema);
