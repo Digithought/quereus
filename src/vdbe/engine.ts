@@ -391,22 +391,46 @@ export class Vdbe {
 			case Opcode.MakeRecord: { const v:SqlValue[]=[]; for(let i=0; i<p2; i++) v.push(this._getMemValue(p1+i)); const serKey = JSON.stringify(v, (_,val)=>typeof val==='bigint'?val.toString()+'n':val instanceof Uint8Array?`blob:${Buffer.from(val).toString('hex')}`:val); this._setMem(p3, serKey); break; }
 			case Opcode.AggStep: {
 				const p4Func = p4 as P4FuncDef; if(!p4Func || p4Func.type !== 'funcdef') throw new SqliteError("Invalid P4 for AggStep", StatusCode.INTERNAL);
-				const serializedKey = this._getMemValue(p3) as string; let mapKey:string|number = serializedKey; /* ... handle key conversion ... */
-				// Args start at frame offset p2
+				const serializedKey = this._getMemValue(p3) as string;
+				let mapKey:string|number = serializedKey; // TODO: Key deserialization if needed
 				const args: SqlValue[] = []; for(let i=0; i<p4Func.nArgs; i++) args.push(this._getMemValue(p2+i));
 				let entry = this.aggregateContexts.get(mapKey);
-				this.udfContext = new FunctionContext(this.db, p4Func.funcDef.userData); this.udfContext._clear(); this.udfContext._setAggregateContextRef(entry?.accumulator);
+
+				// Reuse UDF context, ensure it's clean before xStep
+				this.udfContext._clear();
+				this.udfContext._setAggregateContextRef(entry?.accumulator);
+
 				try {
+					// Call xStep
 					p4Func.funcDef.xStep!(this.udfContext, Object.freeze(args));
+
+					// Check if xStep set an error via context.resultError()
+					const stepError = this.udfContext._getError();
+					if (stepError) {
+						throw stepError; // Throw to be caught below
+					}
+
+					// Update accumulator if necessary
 					const newAcc = this.udfContext._getAggregateContextRef();
-					if(entry===undefined && newAcc!==undefined){
-						// Group keys start at frame offset p1
+					if(entry === undefined && newAcc !== undefined){
 						const keys=[]; for(let i=0; i<p5; i++) keys.push(this._getMemValue(p1+i));
 						this.aggregateContexts.set(mapKey, {accumulator:newAcc, keyValues:Object.freeze(keys)});
-					} else if(entry!==undefined && newAcc!==undefined) {
+					} else if(entry !== undefined && newAcc !== undefined && newAcc !== entry.accumulator) {
 						entry.accumulator = newAcc;
 					}
-				} catch(e) { console.error(`AggStep Error: ${e}`); /*...*/ }
+				} catch(e) {
+					// Halt VDBE execution on error from xStep
+					console.error(`VDBE AggStep Error in function ${p4Func.funcDef.name}:`, e);
+					if (e instanceof SqliteError) {
+						this.error = e;
+					} else if (e instanceof Error) {
+						this.error = new SqliteError(`Runtime error in aggregate ${p4Func.funcDef.name} xStep: ${e.message}`, StatusCode.ERROR);
+					} else {
+						this.error = new SqliteError(`Unknown runtime error in aggregate ${p4Func.funcDef.name} xStep`, StatusCode.INTERNAL);
+					}
+					this.done = true; // Halt execution
+					return; // Don't increment PC
+				}
 				break;
 			}
 			case Opcode.AggFinal: {

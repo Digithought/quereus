@@ -1360,7 +1360,7 @@ export class Parser {
 		} else if (this.match(TokenType.FOREIGN)) {
 			this.consume(TokenType.KEY, "Expected KEY after FOREIGN.");
 			this.consume(TokenType.LPAREN, "Expected '(' before FOREIGN KEY columns.");
-			const columns = this.identifierList();
+			const columns = this.identifierList().map(name => ({ name }));
 			this.consume(TokenType.RPAREN, "Expected ')' after FOREIGN KEY columns.");
 			const fkClause = this.foreignKeyClause();
 			return { type: 'foreignKey', name, columns, foreignKey: fkClause };
@@ -1453,6 +1453,15 @@ export class Parser {
 			return 'noAction';
 		}
 		throw this.error(this.peek(), "Expected foreign key action (SET NULL, SET DEFAULT, CASCADE, RESTRICT, NO ACTION).");
+	}
+
+	/** @internal Parses a comma-separated list of identifiers, optionally with ASC/DESC */
+	private identifierList(): string[] {
+		const identifiers: string[] = [];
+		do {
+			identifiers.push(this.consumeIdentifier("Expected identifier in list."));
+		} while (this.match(TokenType.COMMA));
+		return identifiers;
 	}
 
 	/** @internal Parses a comma-separated list of identifiers, optionally with ASC/DESC */

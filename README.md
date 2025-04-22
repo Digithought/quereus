@@ -4,6 +4,8 @@
 
 SQLiter is a lightweight, TypeScript adaptation of the SQLite 3 query processor, specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query capabilities (joins, aggregates, window functions) primarily over data sources exposed via the virtual table mechanism, while intentionally de-emphasizing persistent file storage.
 
+See [SQLite 3 Source](amalgamation/sqlite3.c) for reference.
+
 ## Project Goals
 
 *   **Virtual Table Centric**: Provide a robust and flexible virtual table API as the primary means of interacting with data sources.

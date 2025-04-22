@@ -140,7 +140,9 @@ export class MemoryTable extends VirtualTable {
 		if (pkDef.length === 0) {
 			console.log(`MemoryTable '${this.tableName}': Using rowid as BTree key.`);
 			this.keyFromEntry = (row) => row._rowid_;
-			this.compareKeys = (a, b) => compareSqlValues(a, b);
+			// Explicitly define compareKeys for rowid (bigint)
+			// Ensure compareSqlValues handles BTreeKey which might be bigint
+			this.compareKeys = (a, b) => compareSqlValues(a as SqlValue, b as SqlValue);
 			this.rowidToKeyMap = null;
 		} else if (pkDef.length === 1) {
 			const { index: pkIndex, desc: isDesc } = pkDef[0];
@@ -148,13 +150,16 @@ export class MemoryTable extends VirtualTable {
 			if (!pkColName) {
 				console.error(`MemoryTable '${this.tableName}': Invalid primary key index ${pkIndex}. Falling back to rowid key.`);
 				this.keyFromEntry = (row) => row._rowid_;
-				this.compareKeys = (a, b) => compareSqlValues(a, b);
+				// Ensure compareSqlValues handles BTreeKey which might be bigint
+				this.compareKeys = (a, b) => compareSqlValues(a as SqlValue, b as SqlValue);
 				this.rowidToKeyMap = null;
 			} else {
 				console.log(`MemoryTable '${this.tableName}': Using PRIMARY KEY column '${pkColName}' (index ${pkIndex}, ${isDesc ? 'DESC' : 'ASC'}) as BTree key.`);
 				this.keyFromEntry = (row) => row[pkColName] as BTreeKey;
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => {
-					const cmp = compareSqlValues(a as SqlValue, b as SqlValue); // Cast needed as compareSqlValues takes SqlValue
+					// Cast needed as compareSqlValues takes SqlValue, but BTreeKey might be SqlValue[]
+					// This case is for single PK, so it should be SqlValue
+					const cmp = compareSqlValues(a as SqlValue, b as SqlValue);
 					return isDesc ? -cmp : cmp;
 				};
 				this.rowidToKeyMap = new Map();
@@ -164,12 +169,14 @@ export class MemoryTable extends VirtualTable {
 			if (pkCols.some(c => !c.name)) {
 				console.error(`MemoryTable '${this.tableName}': Invalid composite primary key indices. Falling back to rowid key.`);
 				this.keyFromEntry = (row) => row._rowid_;
-				this.compareKeys = (a, b) => compareSqlValues(a, b);
+				// Ensure compareSqlValues handles BTreeKey which might be bigint
+				this.compareKeys = (a, b) => compareSqlValues(a as SqlValue, b as SqlValue);
 				this.rowidToKeyMap = null;
 			} else {
 				const pkColNames = pkCols.map(c => c.name!); // Safe due to check above
 				console.log(`MemoryTable '${this.tableName}': Using Composite PRIMARY KEY (${pkCols.map(c => `${c.name} ${c.desc ? 'DESC' : 'ASC'}`).join(', ')}) as BTree key.`);
 				this.keyFromEntry = (row) => pkColNames.map(name => row[name]);
+				// Use the dedicated composite key comparison function
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => this.compareCompositeKeysWithOrder(a, b, pkCols.map(c => c.desc));
 				this.rowidToKeyMap = new Map();
 			}
@@ -1240,11 +1247,20 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			generated: false,
 		}));
 
+		// Ensure the schema object passed to addTable is correctly formed
 		const finalTableSchema: TableSchema = {
-			...initialTableSchema,
+			...(initialTableSchema ?? {}), // Use initial schema if available
+			name: table.tableName,
+			schemaName: table.schemaName,
 			columns: Object.freeze(finalColumns),
 			columnIndexMap: Object.freeze(buildColumnIndexMap(finalColumns)),
 			primaryKeyDefinition: Object.freeze(pkDef), // Use the parsed definition
+			isVirtual: true,
+			vtabModule: table.module,
+			vtabInstance: table,
+			// Retain auxData and vtabArgs if they were on initialTableSchema
+			vtabAuxData: initialTableSchema?.vtabAuxData,
+			vtabArgs: initialTableSchema?.vtabArgs,
 		};
 
 		const targetSchema = db.schemaManager.getSchema(table.schemaName);

@@ -140,9 +140,11 @@ export function createAggregateFunction(
 		numArgs: options.numArgs,
 		flags: options.flags ?? FunctionFlags.UTF8, // Aggregates often aren't deterministic by default
 		xStep: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => {
-			try {
+			// REMOVE try...catch from xStep wrapper - let VDBE handle errors
+			// try {
 				// Basic arity check
 				if (options.numArgs >= 0 && args.length !== options.numArgs) {
+					// Throw error directly for VDBE to catch
 					throw new Error(`Aggregate ${options.name} step called with ${args.length} arguments, expected ${options.numArgs}`);
 				}
 				let accumulator = context.getAggregateContext<any>();
@@ -155,12 +157,12 @@ export function createAggregateFunction(
 
 				const newAccumulator = stepFunc(accumulator, ...coercedArgs);
 				context.setAggregateContext(newAccumulator);
-			} catch (e) {
+			// } catch (e) {
 				// Errors in xStep might be tricky - should they halt the query?
 				// For now, log and potentially ignore, or set an error state?
-				console.error(`Error in aggregate function ${options.name} xStep:`, e);
+			// REMOVED: console.error(`Error in aggregate function ${options.name} xStep:`, e);
 				// We might need a way for context to signal an error from xStep that xFinal can check.
-			}
+			// }
 		},
 		xFinal: (context: SqliteContext) => {
 			try {

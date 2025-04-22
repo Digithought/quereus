@@ -7,7 +7,7 @@
 import { StatusCode, type SqlValue } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { Opcode } from '../common/constants';
-import { type VdbeInstruction } from '../vdbe/instruction';
+import { type P4SortKey, type VdbeInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
 import type { Database } from '../core/database';
 import type { TableSchema } from '../schema/table';
@@ -15,8 +15,12 @@ import type * as AST from '../parser/ast';
 import * as Helpers from './helpers';
 import * as ExprCompiler from './expression';
 import * as StmtCompiler from './statement';
+// --- Import SELECT compiler ---
+import * as SelectCompiler from './select';
 // --- Add Correlation Types ---
 import type { CorrelatedColumnInfo, SubqueryCorrelationResult } from './helpers';
+// --- Import SUBQUERY compiler ---
+import * as SubqueryCompiler from './subquery';
 import type { ArgumentMap } from './expression'; // Import ArgumentMap
 // ----------------------------
 
@@ -24,6 +28,8 @@ import type { ArgumentMap } from './expression'; // Import ArgumentMap
 import './helpers';
 import './expression';
 import './statement';
+import './select'; // Added
+import './subquery'; // Added
 
 // --- Add IndexInfo types ---
 import type { IndexInfo, IndexConstraint, IndexOrderBy, IndexConstraintUsage } from '../vtab/indexInfo';
@@ -58,6 +64,14 @@ export interface HavingContext {
 }
 // --------------------------------
 
+// --- Add Subroutine Info type ---
+export interface SubroutineInfo {
+	startAddress: number;
+	correlation: SubqueryCorrelationResult;
+	regSubqueryHasNullOutput?: number; // Used for EXISTS/IN
+}
+// --------------------------------
+
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
  */
@@ -87,6 +101,10 @@ export class Compiler {
 	public subroutineDepth = 0;
 	private currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
 	private maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
+	// --- Stack Pointers ---
+	public stackPointer: number = 0; // Current stack top (absolute index)
+	public framePointer: number = 0; // Current frame base (absolute index)
+	// ----------------------
 
 	constructor(db: Database) {
 		this.db = db;
@@ -117,6 +135,8 @@ export class Compiler {
 		this.currentFrameLocals = 0;
 		this.currentFrameEnterInsn = null;
 		this.maxLocalOffsetInCurrentFrame = 0;
+		this.stackPointer = 0; // Reset stack pointers
+		this.framePointer = 0;
 		// -----------------------------
 
 		// Add initial Init instruction
@@ -204,7 +224,7 @@ export class Compiler {
 		const frameEnterAddr = this.emit(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${this.subroutineDepth}`);
 		this.currentFrameEnterInsn = (this as any).subroutineCode[(this as any).subroutineCode.length - 1]; // Get ref
 		// Reserve space for control info (RetAddr, OldFP) - Frame slots 0 and 1
-		this.allocateMemoryCells(2);
+		// this.allocateMemoryCells(2); // allocateMemoryCellsHelper handles offsets
 		return frameEnterAddr;
 	}
 	endSubroutineCompilation(): void {
@@ -212,6 +232,7 @@ export class Compiler {
 			// Patch the FrameEnter instruction with the calculated frame size
 			if (this.currentFrameEnterInsn) {
 				// Frame size = max local offset used + 1 (since offset is 0-based)
+				// Local offsets start at 2, so max offset includes control info slots
 				const frameSize = this.maxLocalOffsetInCurrentFrame + 1;
 				this.currentFrameEnterInsn.p1 = frameSize;
 				this.currentFrameEnterInsn = null; // Clear for next subroutine
@@ -236,7 +257,7 @@ export class Compiler {
 	allocateAddress(): number { return Helpers.allocateAddressHelper(this); }
 	resolveAddress(placeholder: number): void { Helpers.resolveAddressHelper(this, placeholder); }
 	getCurrentAddress(): number { return Helpers.getCurrentAddressHelper(this); }
-	createEphemeralSchema(cursorIdx: number, numCols: number): TableSchema { return Helpers.createEphemeralSchemaHelper(this, cursorIdx, numCols); }
+	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema { return Helpers.createEphemeralSchemaHelper(this, cursorIdx, numCols, sortKey); }
 	closeCursorsUsedBySelect(cursors: number[]): void { Helpers.closeCursorsUsedBySelectHelper(this, cursors); }
 	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return Helpers.compileFromCoreHelper(this, sources); }
 	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { Helpers.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
@@ -251,14 +272,16 @@ export class Compiler {
 	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprCompiler.compileParameter(this, expr, targetReg); }
-	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { ExprCompiler.compileSubquery(this, expr, targetReg); }
-	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { ExprCompiler.compileScalarSubquery(this, subQuery, targetReg); }
-	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { ExprCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
-	compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void { ExprCompiler.compileComparisonSubquery(this, leftExpr, op, subQuery, targetReg); }
-	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { ExprCompiler.compileExistsSubquery(this, subQuery, targetReg); }
+	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
+
+	// Subqueries (delegated to SubqueryCompiler)
+	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileScalarSubquery(this, subQuery, targetReg); }
+	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
+	compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileComparisonSubquery(this, leftExpr, op, subQuery, targetReg); }
+	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileExistsSubquery(this, subQuery, targetReg); }
 
 	// Statements
-	compileSelect(stmt: AST.SelectStmt): void { StmtCompiler.compileSelectStatement(this, stmt); }
+	compileSelect(stmt: AST.SelectStmt): void { SelectCompiler.compileSelectStatement(this, stmt); }
 	compileInsert(stmt: AST.InsertStmt): void { StmtCompiler.compileInsertStatement(this, stmt); }
 	compileUpdate(stmt: AST.UpdateStmt): void { StmtCompiler.compileUpdateStatement(this, stmt); }
 	compileDelete(stmt: AST.DeleteStmt): void { StmtCompiler.compileDeleteStatement(this, stmt); }
@@ -281,7 +304,7 @@ export class Compiler {
 			oc: number[],
 			corr?: SubqueryCorrelationResult,
 			am?: ArgumentMap
-		) => { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } = StmtCompiler.compileSelectCoreStatement;
+		) => { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } = SelectCompiler.compileSelectCoreStatement;
 
 		return compileFunc(this, stmt, outerCursors, correlation, argumentMap);
 	}
@@ -300,7 +323,7 @@ declare module './compiler' {
 		allocateAddress(): number;
 		resolveAddress(placeholder: number): void;
 		getCurrentAddress(): number;
-		createEphemeralSchema(cursorIdx: number, numCols: number): TableSchema;
+		createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema;
 		closeCursorsUsedBySelect(cursors: number[]): void;
 		compileFromCore(sources: AST.FromClause[] | undefined): number[];
 		planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void;
@@ -316,13 +339,13 @@ declare module './compiler' {
 		compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileParameter(expr: AST.ParameterExpr, targetReg: number): void;
 		compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void;
+		// Subqueries
 		compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
 		compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void;
 		compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void;
 		compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
 
-		// Statements
-		compileSelect(stmt: AST.SelectStmt): void;
+		// Statements (Non-Select)
 		compileInsert(stmt: AST.InsertStmt): void;
 		compileUpdate(stmt: AST.UpdateStmt): void;
 		compileDelete(stmt: AST.DeleteStmt): void;
@@ -337,6 +360,8 @@ declare module './compiler' {
 		compileRollback(stmt: AST.RollbackStmt): void;
 		compileSavepoint(stmt: AST.SavepointStmt): void;
 		compileRelease(stmt: AST.ReleaseStmt): void;
+		// Select Statements
+		compileSelect(stmt: AST.SelectStmt): void;
 		compileSelectCore(stmt: AST.SelectStmt, outerCursors: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] };
 
 		cursorPlanningInfo: Map<number, CursorPlanningResult>;
@@ -348,11 +373,7 @@ declare module './compiler' {
 		endSubroutineCompilation(): void;
 
 		subroutineDepth: number;
-	}
-
-	interface SubroutineInfo {
-		startAddress: number;
-		correlation: SubqueryCorrelationResult;
-		regSubqueryHasNullOutput?: number;
+		stackPointer: number;
+		framePointer: number;
 	}
 }

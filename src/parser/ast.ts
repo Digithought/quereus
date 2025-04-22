@@ -281,7 +281,7 @@ export interface ColumnConstraint {
 export interface TableConstraint {
 	type: 'primaryKey' | 'unique' | 'check' | 'foreignKey';
 	name?: string;
-	columns?: { name: string; direction?: 'asc' | 'desc' }[]; // UPDATED: Allow direction
+	columns?: { name: string; direction?: 'asc' | 'desc' }[];
 	expr?: Expression;         // For CHECK
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;

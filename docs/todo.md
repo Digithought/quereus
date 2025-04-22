@@ -4,20 +4,14 @@ This list outlines the remaining major features and refinements needed to make S
 
 **I. Core Query Processing Features:**
 
-*   [P] **Join Implementation:**
-    *   [ ] Potentially optimize join algorithms (e.g., hash join if beneficial for specific VTabs).
-*   [P] **Subquery Enhancements:**
-    *   [P] Implement support for correlated subqueries (Core helpers exist, thorough review and needs state management refinement).
-*   [P] **Built-in Functions:**
-    *   [ ] Implement standard Date/Time functions (`date`, `time`, `datetime`, `julianday`, `strftime`).
-    *   [ ] Consider adding JSON functions (`json_extract`, etc.).
-*   [ ] LEFT JOIN NULL Padding (compileSelectStatement): The current implementation re-runs compileSelectCore during the loop closing phase just to get the columnMap for NULL padding. This is inefficient and could potentially lead to incorrect register allocation if not careful. It would be better to run compileSelectCore once before the main loop, store its columnMap, and use that map for both the main row processing and the NULL padding logic. This would require restructuring compileSelectStatement.
-*   [ ] Aggregate xStep Error Handling: Errors within the xStep function of aggregates (src/func/registration.ts, src/vdbe/engine.ts) are currently caught and logged but don't seem to halt the query or propagate an error state properly, unlike errors in xFunc or xFinal. SQLite's C API allows xStep to signal errors.
-*   [ ] Nested Correlated Subqueries: As noted in src/compiler/statement.ts (compileSelectCoreStatement), compileExpression might need refinement to correctly pass down correlation information (correlation and argumentMap) when compiling deeply nested subquery expressions.
+*   [ ] Ability to initialize Database with existing JSON schema, and save out the current schema as JSON
+*   [ ] Implement standard Date/Time functions (`date`, `time`, `datetime`, `julianday`, `strftime`).
+*   [ ] Consider adding JSON functions (`json_extract`, etc.).
+*   [ ] **Common Table Expressions (CTEs):** Recursive and non-recursive.
 
 **II. VDBE & Compiler Core:**
 
-*   [X] **Opcode Implementation:**
+*   [ ] **Opcode Optimization:**
     *   [ ] Consider opcodes for more efficient type conversions or comparisons if `Affinity` proves insufficient.
     *   [ ] Consider VDBE optimizations (e.g., peephole).
 *   [P] **Type System & Affinity:**
@@ -46,7 +40,6 @@ This list outlines the remaining major features and refinements needed to make S
 **IV. SQL Feature Support (Lower Priority):**
 
 *   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
-*   [ ] **Common Table Expressions (CTEs):** Recursive and non-recursive.
 *   [ ] **Triggers:** Would require sub-program compilation and execution logic.
 *   [ ] **Views:** Implement `CREATE VIEW` execution (requires storing view definition and substituting during compilation).
 *   [ ] **Indexes:** Implement `CREATE/DROP INDEX` execution (relevant mainly if non-VTab storage were added, or for VTabs that support external indexing).
