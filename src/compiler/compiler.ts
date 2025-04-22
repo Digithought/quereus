@@ -4,38 +4,57 @@
  * Translates SQL AST into VDBE instructions
  */
 
-import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError } from '../common/errors';
-import { Opcode } from '../common/constants';
-import { type P4SortKey, type VdbeInstruction } from '../vdbe/instruction';
+import { StatusCode, type SqlValue, SqlDataType } from '../common/types';
+import { SqliteError } from '../common/errors'; // Removed ConflictResolution
+import { Opcode, ConflictResolution } from '../common/constants'; // Added ConflictResolution here
+import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
+import type { WithClause } from '../parser/ast';
 import type { Database } from '../core/database';
 import type { TableSchema } from '../schema/table';
 import type * as AST from '../parser/ast';
 import * as Helpers from './helpers';
 import * as ExprCompiler from './expression';
 import * as StmtCompiler from './statement';
-// --- Import SELECT compiler ---
 import * as SelectCompiler from './select';
-// --- Add Correlation Types ---
-import type { CorrelatedColumnInfo, SubqueryCorrelationResult } from './helpers';
-// --- Import SUBQUERY compiler ---
+import type { SubqueryCorrelationResult } from './helpers';
+import { compileUnhandledWhereConditions } from './helpers'; // Keep this
 import * as SubqueryCompiler from './subquery';
-import type { ArgumentMap } from './expression'; // Import ArgumentMap
-// ----------------------------
-
-// Import implementations to merge methods onto the prototype
+import type { ArgumentMap } from './expression';
 import './helpers';
 import './expression';
 import './statement';
-import './select'; // Added
-import './subquery'; // Added
+import './select';
+import './subquery';
+import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
+import { createDefaultColumnSchema } from '../schema/column';
+import { buildColumnIndexMap } from '../schema/table';
+// --- Import CTE compilation --- //
+import { compileCommonTableExpression } from './cte';
+// ------------------------------ //
 
-// --- Add IndexInfo types ---
-import type { IndexInfo, IndexConstraint, IndexOrderBy, IndexConstraintUsage } from '../vtab/indexInfo';
-// --------------------------
 
-// --- Define structure for planning results ---
+// --- Add Result/CTE Info types --- //
+export interface ColumnResultInfo {
+	targetReg: number;
+	sourceCursor: number; // -1 if not from a direct column
+	sourceColumnIndex: number; // -1 if not from a direct column
+	expr?: AST.Expression; // The expression that generated this result column
+}
+export interface HavingContext {
+	finalColumnMap: ReadonlyArray<ColumnResultInfo>;
+}
+export interface SubroutineInfo {
+	startAddress: number;
+	correlation: SubqueryCorrelationResult;
+	regSubqueryHasNullOutput?: number;
+}
+export interface CteInfo {
+	type: 'materialized';
+	cursorIdx: number;
+	schema: TableSchema;
+	// Add 'view' type later if needed
+}
 export interface CursorPlanningResult {
 	idxNum: number;
 	idxStr: string | null;
@@ -43,34 +62,11 @@ export interface CursorPlanningResult {
 	cost: number;
 	rows: bigint;
 	orderByConsumed: boolean;
-	constraints: IndexConstraint[]; // Keep track of constraints passed to xBestIndex
+	constraints: IndexConstraint[];
 	constraintExpressions: ReadonlyMap<number, AST.Expression>;
-	handledWhereNodes: ReadonlySet<AST.Expression>; // Track nodes handled by this plan
+	handledWhereNodes: ReadonlySet<AST.Expression>;
 }
-// ------------------------------------------
-
-// --- Define structure for mapping result columns to source/expression ---
-export interface ColumnResultInfo {
-	targetReg: number;
-	sourceCursor: number; // -1 if not from a direct column
-	sourceColumnIndex: number; // -1 if not from a direct column
-	expr?: AST.Expression; // The expression that generated this result column
-}
-// --------------------------------------------------------------------
-
-// --- Add HAVING context type ---
-export interface HavingContext {
-	finalColumnMap: ReadonlyArray<ColumnResultInfo>;
-}
-// --------------------------------
-
-// --- Add Subroutine Info type ---
-export interface SubroutineInfo {
-	startAddress: number;
-	correlation: SubqueryCorrelationResult;
-	regSubqueryHasNullOutput?: number; // Used for EXISTS/IN
-}
-// --------------------------------
+// ---------------------------------- //
 
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
@@ -88,6 +84,9 @@ export class Compiler {
 	// ---------------------------------
 	public parameters: Map<number | string, { memIdx: number }> = new Map();
 	public columnAliases: string[] = [];
+	// --- Add CTE map --- //
+	public cteMap: Map<string, CteInfo> = new Map(); // Map CTE name -> Info
+	// -------------------- //
 	public tableSchemas: Map<number, TableSchema> = new Map(); // Map cursor index to schema
 	public tableAliases: Map<string, number> = new Map(); // Map alias/name -> cursor index
 	public ephemeralTables: Map<number, TableSchema> = new Map(); // Track ephemeral schemas
@@ -117,11 +116,13 @@ export class Compiler {
 		// Reset state
 		this.sql = sql;
 		this.constants = [];
+		// Reset main instruction stream (subroutines handled separately)
 		this.instructions = [];
 		this.numMemCells = 0;
 		this.numCursors = 0;
 		this.parameters = new Map();
 		this.columnAliases = [];
+		this.cteMap = new Map(); // Reset CTE map
 		this.tableSchemas = new Map();
 		this.tableAliases = new Map(); // Reset aliases
 		this.ephemeralTables = new Map();
@@ -142,6 +143,14 @@ export class Compiler {
 		// Add initial Init instruction
 		this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
 
+		// --- Compile WITH clause FIRST if present --- //
+		let withClause: WithClause | undefined;
+		if ('withClause' in ast && (ast as any).withClause !== undefined) {
+			withClause = (ast as any).withClause;
+			this.compileWithClause(withClause);
+		}
+		// ------------------------------------------ //
+
 		// Compile by node type
 		switch (ast.type) {
 			case 'select':
@@ -156,6 +165,7 @@ export class Compiler {
 			case 'delete':
 				this.compileDelete(ast as AST.DeleteStmt);
 				break;
+			// --- Add WITH clause handling for other statements if needed --- //
 			case 'createTable':
 				this.compileCreateTable(ast as AST.CreateTableStmt);
 				break;
@@ -194,11 +204,14 @@ export class Compiler {
 				throw new SqliteError(`Unsupported statement type: ${(ast as any).type}`, StatusCode.ERROR);
 		}
 
-		// --- Append subroutines after main program ---
+		// --- Append subroutines after main program --- //
 		if (this.subroutineCode.length > 0) {
+			// Patch subroutine FrameEnter sizes before appending
+			// (This assumes endSubroutineCompilation was called correctly for each)
 			this.instructions.push(...this.subroutineCode);
+			this.subroutineCode = []; // Clear for potential reuse
 		}
-		// --------------------------------------------
+		// -------------------------------------------- //
 
 		// End program with Halt
 		this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
@@ -215,18 +228,22 @@ export class Compiler {
 		};
 	}
 
-	// --- Update Subroutine Compilation Context ---
+	// --- Update Subroutine Compilation Context --- //
 	startSubroutineCompilation(): number { // Return address of FrameEnter
 		this.subroutineDepth++;
 		// Reset tracking for the new frame
 		this.maxLocalOffsetInCurrentFrame = 0;
 		// Emit FrameEnter with placeholder size (0). Will be patched in endSubroutineCompilation.
-		const frameEnterAddr = this.emit(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${this.subroutineDepth}`);
-		this.currentFrameEnterInsn = (this as any).subroutineCode[(this as any).subroutineCode.length - 1]; // Get ref
+		// Target the subroutineCode array directly for emission
+		const instruction = createInstruction(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${this.subroutineDepth}`);
+		this.subroutineCode.push(instruction);
+		const frameEnterAddr = this.subroutineCode.length - 1; // Address relative to subroutineCode
+		this.currentFrameEnterInsn = instruction; // Get ref
 		// Reserve space for control info (RetAddr, OldFP) - Frame slots 0 and 1
-		// this.allocateMemoryCells(2); // allocateMemoryCellsHelper handles offsets
+		// allocateMemoryCellsHelper handles offsets correctly within the frame logic
 		return frameEnterAddr;
 	}
+
 	endSubroutineCompilation(): void {
 		if (this.subroutineDepth > 0) {
 			// Patch the FrameEnter instruction with the calculated frame size
@@ -247,7 +264,7 @@ export class Compiler {
 	}
 	// -----------------------------------------------
 
-	// --- Wrapper Methods Delegating to Helpers ---
+	// --- Wrapper Methods Delegating to Helpers --- //
 
 	// Helpers
 	allocateMemoryCells(count: number): number { return Helpers.allocateMemoryCellsHelper(this, count); }
@@ -307,6 +324,28 @@ export class Compiler {
 		) => { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } = SelectCompiler.compileSelectCoreStatement;
 
 		return compileFunc(this, stmt, outerCursors, correlation, argumentMap);
+	}
+
+	// --- Add WithClause handling ---
+	compileWithClause(withClause: WithClause | undefined): void {
+		if (!withClause) {
+			return; // No WITH clause present
+		}
+
+		console.log(`Compiling WITH${withClause.recursive ? ' RECURSIVE' : ''} clause...`);
+
+		// Need to handle potential mutual recursion or dependencies
+		// For now, compile sequentially
+		for (const cte of withClause.ctes) {
+			const cteNameLower = cte.name.toLowerCase();
+			if (this.cteMap.has(cteNameLower)) {
+				throw new SqliteError(`Duplicate CTE name: '${cte.name}'`, StatusCode.ERROR);
+			}
+			// Pass the context (recursive or not) from the main WITH clause
+			// Call the imported function, passing `this` (the compiler instance)
+			compileCommonTableExpression(this, cte, withClause.recursive);
+		}
+		console.log("Finished compiling WITH clause.");
 	}
 }
 
@@ -375,5 +414,9 @@ declare module './compiler' {
 		subroutineDepth: number;
 		stackPointer: number;
 		framePointer: number;
+
+		// CTE Compilation (Now calls external function)
+		compileWithClause(withClause: WithClause | undefined): void;
+		// compileCommonTableExpression(cte: AST.CommonTableExpr, isRecursive: boolean): void; // Removed from interface
 	}
 }

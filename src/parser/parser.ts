@@ -59,60 +59,114 @@ export class Parser {
 
 		// Parse statement
 		try {
-			return this.statement();
+			// --- Parse optional WITH clause first ---
+			const withClause = this.tryParseWithClause();
+			// --- Then parse the main statement ---
+			const mainStatement = this.statement();
+			// --- Attach WITH clause if present ---
+			if (withClause && 'withClause' in mainStatement) {
+				(mainStatement as any).withClause = withClause;
+			} else if (withClause) {
+				// Throw error if WITH is used with unsupported statement type
+				throw this.error(this.previous(), `WITH clause cannot be used with ${mainStatement.type} statement.`);
+			}
+			return mainStatement;
 		} catch (e) {
 			if (e instanceof ParseError) {
 				throw e;
 			}
 			// Unknown error
-			throw new Error(`Parser error: ${e}`);
+			console.error("Unhandled parser error:", e); // Log unexpected errors
+			throw new Error(`Parser error: ${e instanceof Error ? e.message : e}`);
 		}
+	}
+
+	/**
+	 * Attempts to parse a WITH clause if present.
+	 * @returns The WithClause AST node or undefined if no WITH clause is found.
+	 */
+	private tryParseWithClause(): AST.WithClause | undefined {
+		if (!this.check(TokenType.IDENTIFIER) || this.peek().lexeme.toUpperCase() !== 'WITH') {
+			return undefined;
+		}
+		this.advance(); // Consume WITH
+
+		const recursive = this.matchKeyword('RECURSIVE');
+
+		const ctes: AST.CommonTableExpr[] = [];
+		do {
+			ctes.push(this.commonTableExpression());
+		} while (this.match(TokenType.COMMA));
+
+		return { type: 'withClause', recursive, ctes };
+	}
+
+	/**
+	 * Parses a single Common Table Expression (CTE).
+	 * cte_name [(col1, col2, ...)] AS (query)
+	 */
+	private commonTableExpression(): AST.CommonTableExpr {
+		const name = this.consumeIdentifier("Expected CTE name.");
+
+		let columns: string[] | undefined;
+		if (this.match(TokenType.LPAREN)) {
+			columns = [];
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					columns.push(this.consumeIdentifier("Expected column name in CTE definition."));
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after CTE column list.");
+		}
+
+		this.consume(TokenType.AS, "Expected 'AS' after CTE name.");
+		this.consume(TokenType.LPAREN, "Expected '(' before CTE query.");
+
+		// Parse the CTE query (can be SELECT, VALUES (via SELECT), INSERT, UPDATE, DELETE)
+		let query: AST.SelectStmt | AST.InsertStmt | AST.UpdateStmt | AST.DeleteStmt;
+		if (this.check(TokenType.SELECT)) {
+			query = this.selectStatement();
+		} else if (this.check(TokenType.INSERT)) {
+			query = this.insertStatement();
+		} else if (this.check(TokenType.UPDATE)) {
+			query = this.updateStatement();
+		} else if (this.check(TokenType.DELETE)) {
+			query = this.deleteStatement();
+		}
+		// TODO: Add support for VALUES directly if needed (though VALUES is usually part of SELECT)
+		else {
+			throw this.error(this.peek(), "Expected SELECT, INSERT, UPDATE, or DELETE statement for CTE query.");
+		}
+
+		this.consume(TokenType.RPAREN, "Expected ')' after CTE query.");
+
+		return { type: 'commonTableExpr', name, columns, query };
 	}
 
 	/**
 	 * Parse a single SQL statement
 	 */
 	private statement(): AST.AstNode {
-		if (this.match(TokenType.SELECT)) {
-			return this.selectStatement();
+		// --- Check for specific keywords first ---
+		const currentKeyword = this.peek().lexeme.toUpperCase();
+		switch (currentKeyword) {
+			case 'SELECT': this.advance(); return this.selectStatement();
+			case 'INSERT': this.advance(); return this.insertStatement();
+			case 'UPDATE': this.advance(); return this.updateStatement();
+			case 'DELETE': this.advance(); return this.deleteStatement();
+			case 'CREATE': this.advance(); return this.createStatement();
+			case 'DROP': this.advance(); return this.dropStatement();
+			case 'ALTER': this.advance(); return this.alterTableStatement();
+			case 'BEGIN': this.advance(); return this.beginStatement();
+			case 'COMMIT': this.advance(); return this.commitStatement();
+			case 'ROLLBACK': this.advance(); return this.rollbackStatement();
+			case 'SAVEPOINT': this.advance(); return this.savepointStatement();
+			case 'RELEASE': this.advance(); return this.releaseStatement();
+			// --- Add default case ---
+			default:
+				// If it wasn't a recognized keyword starting the statement
+				throw this.error(this.peek(), 'Expected statement type (SELECT, INSERT, UPDATE, DELETE, CREATE, etc.).');
 		}
-		if (this.match(TokenType.INSERT)) {
-			return this.insertStatement();
-		}
-		if (this.match(TokenType.UPDATE)) {
-			return this.updateStatement();
-		}
-		if (this.match(TokenType.DELETE)) {
-			return this.deleteStatement();
-		}
-		if (this.match(TokenType.CREATE)) {
-			return this.createStatement();
-		}
-		if (this.match(TokenType.DROP)) {
-			return this.dropStatement();
-		}
-		if (this.match(TokenType.ALTER)) {
-			return this.alterTableStatement();
-		}
-		if (this.match(TokenType.BEGIN)) {
-			return this.beginStatement();
-		}
-		if (this.match(TokenType.COMMIT)) {
-			return this.commitStatement();
-		}
-		if (this.match(TokenType.ROLLBACK)) {
-			return this.rollbackStatement();
-		}
-		if (this.match(TokenType.SAVEPOINT)) {
-			return this.savepointStatement();
-		}
-		if (this.match(TokenType.RELEASE)) {
-			return this.releaseStatement();
-		}
-
-		// TODO: Add other statement types (ALTER, DROP, CREATE INDEX/VIEW/VTAB, BEGIN/COMMIT/ROLLBACK)
-
-		throw this.error(this.peek(), 'Expected statement. Currently supporting SELECT and INSERT.');
 	}
 
 	/**
@@ -121,7 +175,7 @@ export class Parser {
 	 */
 	insertStatement(): AST.InsertStmt {
 		// INTO keyword is optional in SQLite
-		this.match(TokenType.INTO); // Handle missing TokenType.INTO gracefully
+		this.matchKeyword('INTO'); // Handle missing keyword gracefully
 
 		// Parse the table reference
 		const table = this.tableIdentifier();
@@ -180,8 +234,8 @@ export class Parser {
 	 * @returns AST for the SELECT statement
 	 */
 	selectStatement(): AST.SelectStmt {
-		const distinct = this.match(TokenType.DISTINCT);
-		const all = !distinct && this.match(TokenType.ALL);
+		const distinct = this.matchKeyword('DISTINCT');
+		const all = !distinct && this.matchKeyword('ALL');
 
 		// Parse column list
 		const columns = this.columnList();
@@ -887,7 +941,7 @@ export class Parser {
 	/** @internal */
 	private deleteStatement(): AST.DeleteStmt {
 		// Optional FROM keyword (SQLite allows omitting it)
-		this.match(TokenType.FROM);
+		this.matchKeyword('FROM');
 
 		const table = this.tableIdentifier();
 
@@ -912,25 +966,47 @@ export class Parser {
 
 	/** @internal */
 	private createStatement(): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt | AST.CreateVirtualTableStmt {
-		if (this.match(TokenType.TABLE)) {
+		// CREATE keyword consumed by main `statement` method
+		if (this.peekKeyword('TABLE')) {
+			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE."); // Consume the token
 			return this.createTableStatement();
-		} else if (this.match(TokenType.INDEX)) {
+		} else if (this.peekKeyword('INDEX')) {
+			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE.");
 			return this.createIndexStatement();
-		} else if (this.match(TokenType.VIEW)) {
+		} else if (this.peekKeyword('VIEW')) {
+			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
 			return this.createViewStatement();
-		} else if (this.match(TokenType.VIRTUAL)) {
-			this.consume(TokenType.TABLE, "Expected 'TABLE' after 'VIRTUAL'.");
+		} else if (this.peekKeyword('VIRTUAL')) {
+			this.consumeKeyword('VIRTUAL', "Expected 'VIRTUAL' after CREATE.");
+			this.consumeKeyword('TABLE', "Expected 'TABLE' after 'VIRTUAL'.");
 			return this.createVirtualTableStatement();
+		} else if (this.peekKeyword('UNIQUE')) {
+			this.consumeKeyword('UNIQUE', "Expected 'UNIQUE' after CREATE.");
+			// Handle CREATE UNIQUE INDEX ...
+			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE UNIQUE.");
+			return this.createIndexStatement(true); // Pass flag indicating unique
 		}
-		throw this.error(this.peek(), "Expected TABLE, INDEX, VIEW, or VIRTUAL after CREATE.");
+		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, or VIRTUAL after CREATE.");
 	}
 
-	/** @internal */
+	/**
+	 * Parse CREATE TABLE statement
+	 * @returns AST for CREATE TABLE
+	 */
 	private createTableStatement(): AST.CreateTableStmt {
-		const isTemporary = this.match(TokenType.TEMP) || this.match(TokenType.TEMPORARY);
-		// TABLE keyword was already consumed by createStatement
+		// TABLE keyword consumed by createStatement
+		let isTemporary = false;
+		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
+			isTemporary = true;
+			this.advance(); // Consume TEMP or TEMPORARY
+		}
 
-		const ifNotExists = this.match(TokenType.IF) && this.match(TokenType.NOT) && this.consume(TokenType.EXISTS, "Expected 'EXISTS' after 'IF NOT'.");
+		let ifNotExists = false;
+		if (this.matchKeyword('IF')) {
+			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
+			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF NOT'.");
+			ifNotExists = true;
+		}
 
 		const table = this.tableIdentifier();
 
@@ -938,11 +1014,12 @@ export class Parser {
 		let constraints: AST.TableConstraint[] = [];
 		let withoutRowid = false;
 
-		if (this.match(TokenType.LPAREN)) {
+		if (this.check(TokenType.LPAREN)) {
+			this.consume(TokenType.LPAREN, "Expected '(' to start table definition."); // Consume LPAREN
 			// Parse column definitions and table constraints
 			do {
 				// Check if it's a table constraint (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY)
-				if (this.check(TokenType.PRIMARY) || this.check(TokenType.UNIQUE) || this.check(TokenType.CHECK) || this.check(TokenType.FOREIGN)) {
+				if (this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN') || this.peekKeyword('CONSTRAINT')) {
 					constraints.push(this.tableConstraint());
 				} else {
 					// Otherwise, it's a column definition
@@ -953,11 +1030,11 @@ export class Parser {
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 
 			// Check for WITHOUT ROWID option
-			if (this.match(TokenType.WITHOUT)) {
-				this.consume(TokenType.ROWID, "Expected 'ROWID' after 'WITHOUT'.");
+			if (this.matchKeyword('WITHOUT')) { // matchKeyword consumes
+				this.consumeKeyword('ROWID', "Expected 'ROWID' after 'WITHOUT'.");
 				withoutRowid = true;
 			}
-		} else if (this.match(TokenType.AS)) {
+		} else if (this.matchKeyword('AS')) {
 			// CREATE TABLE ... AS SELECT ... (Not implemented fully yet)
 			const select = this.selectStatement();
 			throw new Error('CREATE TABLE AS SELECT is not fully implemented.');
@@ -978,16 +1055,29 @@ export class Parser {
 		};
 	}
 
-	/** @internal */
-	private createIndexStatement(): AST.CreateIndexStmt {
-		const isUnique = this.match(TokenType.UNIQUE);
-		this.consume(TokenType.INDEX, "Expected 'INDEX' after CREATE [UNIQUE].");
+	/**
+	 * Parse CREATE INDEX statement
+	 * @param isUnique Flag indicating if UNIQUE keyword was already parsed
+	 * @returns AST for CREATE INDEX
+	 */
+	private createIndexStatement(isUnique = false): AST.CreateIndexStmt {
+		// INDEX keyword consumed by createStatement (or CREATE UNIQUE INDEX logic)
+		// Handle if UNIQUE was parsed *before* INDEX (e.g., CREATE UNIQUE INDEX)
+		if (!isUnique && this.peekKeyword('UNIQUE')) {
+			isUnique = true;
+			this.advance(); // Consume UNIQUE
+		}
 
-		const ifNotExists = this.match(TokenType.IF) && this.match(TokenType.NOT) && this.consume(TokenType.EXISTS, "Expected 'EXISTS' after 'IF NOT'.");
+		let ifNotExists = false;
+		if (this.matchKeyword('IF')) {
+			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
+			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF NOT'.");
+			ifNotExists = true;
+		}
 
 		const index = this.tableIdentifier(); // Index name follows same identifier rules
 
-		this.consume(TokenType.ON, "Expected 'ON' after index name.");
+		this.consumeKeyword('ON', "Expected 'ON' after index name."); // consumeKeyword still useful here
 
 		const table = this.tableIdentifier();
 
@@ -996,7 +1086,7 @@ export class Parser {
 		this.consume(TokenType.RPAREN, "Expected ')' after indexed columns.");
 
 		let where: AST.Expression | undefined;
-		if (this.match(TokenType.WHERE)) {
+		if (this.matchKeyword('WHERE')) { // Use matchKeyword
 			where = this.expression();
 		}
 
@@ -1007,32 +1097,47 @@ export class Parser {
 			ifNotExists,
 			columns,
 			where,
-			isUnique,
+			isUnique, // Use the determined value
 		};
 	}
 
-	/** @internal */
+	/**
+	 * Parse CREATE VIEW statement
+	 * @returns AST for CREATE VIEW
+	 */
 	private createViewStatement(): AST.CreateViewStmt {
-		const isTemporary = this.match(TokenType.TEMP) || this.match(TokenType.TEMPORARY); // TEMP or TEMPORARY
-		this.consume(TokenType.VIEW, "Expected 'VIEW' after CREATE [TEMP].");
+		// VIEW keyword consumed by createStatement
+		let isTemporary = false;
+		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
+			isTemporary = true;
+			this.advance(); // Consume TEMP or TEMPORARY
+		}
 
-		const ifNotExists = this.match(TokenType.IF) && this.match(TokenType.NOT) && this.consume(TokenType.EXISTS, "Expected 'EXISTS' after 'IF NOT'.");
+		let ifNotExists = false;
+		if (this.matchKeyword('IF')) {
+			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
+			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF NOT'.");
+			ifNotExists = true;
+		}
 
 		const view = this.tableIdentifier(); // Views use the same identifier structure
 
 		let columns: string[] | undefined;
-		if (this.match(TokenType.LPAREN)) {
+		if (this.check(TokenType.LPAREN)) {
+			this.consume(TokenType.LPAREN, "Expected '(' to start view column list.");
 			columns = [];
-			do {
-				if (!this.check(TokenType.IDENTIFIER)) {
-					throw this.error(this.peek(), "Expected column name in view column list.");
-				}
-				columns.push(this.advance().lexeme);
-			} while (this.match(TokenType.COMMA));
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					if (!this.check(TokenType.IDENTIFIER)) {
+						throw this.error(this.peek(), "Expected column name in view column list.");
+					}
+					columns.push(this.advance().lexeme);
+				} while (this.match(TokenType.COMMA));
+			}
 			this.consume(TokenType.RPAREN, "Expected ')' after view column list.");
 		}
 
-		this.consume(TokenType.AS, "Expected 'AS' before SELECT statement for CREATE VIEW.");
+		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW."); // consumeKeyword ok here
 
 		const select = this.selectStatement();
 
@@ -1046,13 +1151,22 @@ export class Parser {
 		};
 	}
 
-	/** @internal */
+	/**
+	 * Parse CREATE VIRTUAL TABLE statement
+	 * @returns AST for CREATE VIRTUAL TABLE
+	 */
 	private createVirtualTableStatement(): AST.CreateVirtualTableStmt {
-		const ifNotExists = this.match(TokenType.IF) && this.match(TokenType.NOT) && this.consume(TokenType.EXISTS, "Expected 'EXISTS' after 'IF NOT'.");
+		// VIRTUAL TABLE keywords consumed by createStatement
+		let ifNotExists = false;
+		if (this.matchKeyword('IF')) {
+			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
+			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF NOT'.");
+			ifNotExists = true;
+		}
 
 		const table = this.tableIdentifier();
 
-		this.consume(TokenType.USING, "Expected 'USING' after table name for CREATE VIRTUAL TABLE.");
+		this.consumeKeyword('USING', "Expected 'USING' after table name for CREATE VIRTUAL TABLE.");
 
 		if (!this.check(TokenType.IDENTIFIER)) {
 			throw this.error(this.peek(), "Expected module name after 'USING'.");
@@ -1060,7 +1174,8 @@ export class Parser {
 		const moduleName = this.advance().lexeme;
 
 		const moduleArgs: string[] = [];
-		if (this.match(TokenType.LPAREN)) {
+		if (this.check(TokenType.LPAREN)) {
+			this.consume(TokenType.LPAREN, "Expected '(' to start module arguments.");
 			if (!this.check(TokenType.RPAREN)) { // Handle empty args list
 				do {
 					// Module arguments are often treated as unparsed strings/tokens
@@ -1089,23 +1204,34 @@ export class Parser {
 		};
 	}
 
-	/** @internal */
+	/**
+	 * Parse DROP statement
+	 * @returns AST for DROP statement
+	 */
 	private dropStatement(): AST.DropStmt {
+		// DROP keyword consumed by main `statement` method
 		let objectType: 'table' | 'view' | 'index' | 'trigger';
 
-		if (this.match(TokenType.TABLE)) {
+		if (this.peekKeyword('TABLE')) {
+			this.consumeKeyword('TABLE', "Expected TABLE after DROP.");
 			objectType = 'table';
-		} else if (this.match(TokenType.VIEW)) {
+		} else if (this.peekKeyword('VIEW')) {
+			this.consumeKeyword('VIEW', "Expected VIEW after DROP.");
 			objectType = 'view';
-		} else if (this.match(TokenType.INDEX)) {
+		} else if (this.peekKeyword('INDEX')) {
+			this.consumeKeyword('INDEX', "Expected INDEX after DROP.");
 			objectType = 'index';
-			// } else if (this.match(TokenType.TRIGGER)) { // Need TRIGGER token
+			// } else if (this.matchKeyword('TRIGGER')) { // Need TRIGGER token
 			//   objectType = 'trigger';
 		} else {
 			throw this.error(this.peek(), "Expected TABLE, VIEW, or INDEX after DROP.");
 		}
 
-		const ifExists = this.match(TokenType.IF) && this.consume(TokenType.EXISTS, "Expected 'EXISTS' after 'IF'.");
+		let ifExists = false;
+		if (this.matchKeyword('IF')) {
+			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF'.");
+			ifExists = true;
+		}
 
 		const name = this.tableIdentifier(); // Use tableIdentifier for schema.name structure
 
@@ -1117,35 +1243,42 @@ export class Parser {
 		};
 	}
 
-	/** @internal */
+	/**
+	 * Parse ALTER TABLE statement
+	 * @returns AST for ALTER TABLE statement
+	 */
 	private alterTableStatement(): AST.AlterTableStmt {
-		this.consume(TokenType.TABLE, "Expected 'TABLE' after ALTER.");
+		// ALTER keyword consumed by main `statement` method
+		this.consumeKeyword('TABLE', "Expected 'TABLE' after ALTER.");
 
 		const table = this.tableIdentifier();
 
 		let action: AST.AlterTableAction;
 
-		if (this.match(TokenType.RENAME)) {
-			if (this.match(TokenType.COLUMN)) {
+		if (this.peekKeyword('RENAME')) {
+			this.consumeKeyword('RENAME', "Expected RENAME.");
+			if (this.matchKeyword('COLUMN')) {
 				// RENAME COLUMN old TO new
 				const oldName = this.consumeIdentifier("Expected old column name after RENAME COLUMN.");
-				this.consume(TokenType.TO, "Expected 'TO' after old column name.");
+				this.consumeKeyword('TO', "Expected 'TO' after old column name.");
 				const newName = this.consumeIdentifier("Expected new column name after TO.");
 				action = { type: 'renameColumn', oldName, newName };
 			} else {
 				// RENAME TO new
-				this.consume(TokenType.TO, "Expected 'TO' after RENAME.");
+				this.consumeKeyword('TO', "Expected 'TO' after RENAME.");
 				const newName = this.consumeIdentifier("Expected new table name after RENAME TO.");
 				action = { type: 'renameTable', newName };
 			}
-		} else if (this.match(TokenType.ADD)) {
+		} else if (this.peekKeyword('ADD')) {
+			this.consumeKeyword('ADD', "Expected ADD.");
 			// ADD [COLUMN] column_def
-			this.match(TokenType.COLUMN); // Optional COLUMN keyword
+			this.matchKeyword('COLUMN'); // Optional COLUMN keyword
 			const column = this.columnDefinition();
 			action = { type: 'addColumn', column };
-		} else if (this.match(TokenType.DROP)) {
+		} else if (this.peekKeyword('DROP')) {
+			this.consumeKeyword('DROP', "Expected DROP.");
 			// DROP [COLUMN] column_name
-			this.match(TokenType.COLUMN); // Optional COLUMN keyword
+			this.matchKeyword('COLUMN'); // Optional COLUMN keyword
 			const name = this.consumeIdentifier("Expected column name after DROP COLUMN.");
 			action = { type: 'dropColumn', name };
 		} else {
@@ -1159,40 +1292,55 @@ export class Parser {
 		};
 	}
 
-	/** @internal */
+	/**
+	 * Parse BEGIN statement
+	 * @returns AST for BEGIN statement
+	 */
 	private beginStatement(): AST.BeginStmt {
+		// BEGIN keyword consumed by main `statement` method
 		let mode: 'deferred' | 'immediate' | 'exclusive' | undefined;
-		if (this.match(TokenType.DEFERRED)) {
+		if (this.peekKeyword('DEFERRED')) {
+			this.advance();
 			mode = 'deferred';
-		} else if (this.match(TokenType.IMMEDIATE)) {
+		} else if (this.peekKeyword('IMMEDIATE')) {
+			this.advance();
 			mode = 'immediate';
-		} else if (this.match(TokenType.EXCLUSIVE)) {
+		} else if (this.peekKeyword('EXCLUSIVE')) {
+			this.advance();
 			mode = 'exclusive';
 		}
 
 		// Optional TRANSACTION keyword
-		this.match(TokenType.TRANSACTION);
+		this.matchKeyword('TRANSACTION');
 
 		return { type: 'begin', mode };
 	}
 
-	/** @internal */
+	/**
+	 * Parse COMMIT statement
+	 * @returns AST for COMMIT statement
+	 */
 	private commitStatement(): AST.CommitStmt {
+		// COMMIT keyword consumed by main `statement` method
 		// Optional TRANSACTION keyword
-		this.match(TokenType.TRANSACTION);
+		this.matchKeyword('TRANSACTION');
 		return { type: 'commit' };
 	}
 
-	/** @internal */
+	/**
+	 * Parse ROLLBACK statement
+	 * @returns AST for ROLLBACK statement
+	 */
 	private rollbackStatement(): AST.RollbackStmt {
+		// ROLLBACK keyword consumed by main `statement` method
 		// Optional TRANSACTION keyword
-		this.match(TokenType.TRANSACTION);
+		this.matchKeyword('TRANSACTION');
 
 		// Optional TO [SAVEPOINT] savepoint_name
 		let savepoint: string | undefined;
-		if (this.match(TokenType.TO)) {
-			// Optional SAVEPOINT keyword (need to add to lexer if supporting)
-			this.match(TokenType.SAVEPOINT);
+		if (this.matchKeyword('TO')) {
+			// Optional SAVEPOINT keyword
+			this.matchKeyword('SAVEPOINT');
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected savepoint name after ROLLBACK TO.");
 			}
@@ -1201,16 +1349,24 @@ export class Parser {
 		return { type: 'rollback', savepoint };
 	}
 
-	/** @internal */
+	/**
+	 * Parse SAVEPOINT statement
+	 * @returns AST for SAVEPOINT statement
+	 */
 	private savepointStatement(): AST.SavepointStmt {
+		// SAVEPOINT keyword consumed by main `statement` method
 		const name = this.consumeIdentifier("Expected savepoint name after SAVEPOINT.");
 		return { type: 'savepoint', name };
 	}
 
-	/** @internal */
+	/**
+	 * Parse RELEASE statement
+	 * @returns AST for RELEASE statement
+	 */
 	private releaseStatement(): AST.ReleaseStmt {
+		// RELEASE keyword consumed by main `statement` method
 		// Optional SAVEPOINT keyword
-		this.match(TokenType.SAVEPOINT);
+		this.matchKeyword('SAVEPOINT');
 		const name = this.consumeIdentifier("Expected savepoint name after RELEASE [SAVEPOINT].");
 		return { type: 'release', savepoint: name };
 	}
@@ -1523,5 +1679,32 @@ export class Parser {
 			identifiers.push({ name, direction });
 		} while (this.match(TokenType.COMMA));
 		return identifiers;
+	}
+
+	// --- Helper method to peek keywords case-insensitively ---
+	private peekKeyword(keyword: string): boolean {
+		if (this.isAtEnd()) return false;
+		const token = this.peek();
+		// Check if it's an identifier with the correct lexeme or the specific keyword token
+		return (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keyword) ||
+			(token.type === TokenType[keyword.toUpperCase() as keyof typeof TokenType]);
+	}
+
+	// --- Helper method to match keywords case-insensitively ---
+	private matchKeyword(keyword: string): boolean {
+		if (this.isAtEnd()) return false; // Added check
+		if (this.peekKeyword(keyword)) {
+			this.advance();
+			return true;
+		}
+		return false;
+	}
+
+	// --- Helper method to consume keywords case-insensitively ---
+	private consumeKeyword(keyword: string, message: string): Token {
+		if (this.peekKeyword(keyword)) {
+			return this.advance();
+		}
+		throw this.error(this.peek(), message);
 	}
 }

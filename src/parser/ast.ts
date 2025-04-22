@@ -8,7 +8,7 @@ import type { ConflictResolution } from '../common/constants';
 
 // Base for all AST nodes
 export interface AstNode {
-	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createVirtualTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource';
+	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createVirtualTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr';
 }
 
 // Expression types
@@ -104,6 +104,7 @@ export interface FunctionSource extends AstNode {
 // SELECT statement
 export interface SelectStmt extends AstNode {
 	type: 'select';
+	withClause?: WithClause;
 	columns: ResultColumn[];
 	from?: FromClause[];
 	where?: Expression;
@@ -121,6 +122,7 @@ export interface SelectStmt extends AstNode {
 // INSERT statement
 export interface InsertStmt extends AstNode {
 	type: 'insert';
+	withClause?: WithClause;
 	table: IdentifierExpr;
 	columns?: string[];
 	values?: Expression[][];  // For VALUES (...), (...), ...
@@ -132,6 +134,7 @@ export interface InsertStmt extends AstNode {
 // UPDATE statement
 export interface UpdateStmt extends AstNode {
 	type: 'update';
+	withClause?: WithClause;
 	table: IdentifierExpr;
 	assignments: { column: string; value: Expression }[];
 	where?: Expression;
@@ -142,6 +145,7 @@ export interface UpdateStmt extends AstNode {
 // DELETE statement
 export interface DeleteStmt extends AstNode {
 	type: 'delete';
+	withClause?: WithClause;
 	table: IdentifierExpr;
 	where?: Expression;
 	returning?: ResultColumn[];
@@ -323,3 +327,18 @@ export type AlterTableAction =
 	| { type: 'renameColumn', oldName: string, newName: string }
 	| { type: 'addColumn', column: ColumnDef }
 	| { type: 'dropColumn', name: string };
+
+// --- Add CTE types ---
+export interface WithClause extends AstNode {
+	type: 'withClause';
+	recursive: boolean;
+	ctes: CommonTableExpr[];
+}
+
+export interface CommonTableExpr extends AstNode {
+	type: 'commonTableExpr';
+	name: string;
+	columns?: string[];
+	query: SelectStmt | InsertStmt | UpdateStmt | DeleteStmt; // CTE body
+}
+// -------------------

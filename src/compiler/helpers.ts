@@ -191,15 +191,41 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 	// Helper to recursively open cursors and manage aliases within the current scope
 	const openCursorsRecursive = (source: AST.FromClause, currentLevelAliases: Map<string, number>): void => {
 		if (source.type === 'table') {
+			const tableName = source.table.name;
+			const schemaName = source.table.schema || 'main'; // Use schema if provided
+			const lookupName = (source.alias || tableName).toLowerCase();
+			const cteNameLower = tableName.toLowerCase();
+
+			// --- Check CTE Map FIRST --- //
+			const cteInfo = compiler.cteMap.get(cteNameLower);
+			if (cteInfo) {
+				if (cteInfo.type === 'materialized') {
+					const cursor = cteInfo.cursorIdx;
+					openedCursors.push(cursor); // Use the existing CTE cursor
+					const tableSchema = cteInfo.schema;
+					compiler.tableSchemas.set(cursor, tableSchema); // Ensure schema is mapped
+					if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
+						throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
+					}
+					compiler.tableAliases.set(lookupName, cursor);
+					currentLevelAliases.set(lookupName, cursor);
+					// NO OpenRead needed - ephemeral table is already open/managed by CTE logic
+					console.log(`FROM: Using materialized CTE '${cteNameLower}' with cursor ${cursor} for alias '${lookupName}'`);
+				} else {
+					// Add support for other CTE types if needed (e.g., view-like)
+					throw new SqliteError(`Unsupported CTE type '${(cteInfo as any).type}' found for ${cteNameLower}`, StatusCode.INTERNAL);
+				}
+				return; // CTE handled, don't process as regular table
+			}
+			// -------------------------- //
+
+			// --- If not a CTE, proceed with normal table/vtab lookup --- //
 			const cursor = compiler.allocateCursor();
 			openedCursors.push(cursor);
-			const tableName = source.table.name;
-			const schemaName = source.table.schema || 'main';
 			const tableSchema = compiler.db._findTable(tableName, schemaName);
 			if (!tableSchema) throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR);
 
 			compiler.tableSchemas.set(cursor, tableSchema);
-			const lookupName = (source.alias || tableName).toLowerCase();
 			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
 				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
 			}

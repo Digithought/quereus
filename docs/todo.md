@@ -4,7 +4,6 @@ This list outlines the remaining major features and refinements needed to make S
 
 **I. Core Query Processing Features:**
 
-*   [ ] Consider adding JSON functions (`json_extract`, etc.).
 *   [ ] **Common Table Expressions (CTEs):** Recursive and non-recursive.
 *   [ ] Make "create virtual table" unnecessary (same as create table) and introduce syntax to set a default module
 
