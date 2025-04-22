@@ -1,7 +1,7 @@
 import { Opcode, ConflictResolution } from '../common/constants';
 import { StatusCode } from '../common/types';
 import { SqliteError } from '../common/errors';
-import { type P4Vtab, type P4FuncDef } from '../vdbe/instruction';
+import { type P4Vtab, type P4FuncDef, type P4SortKey } from '../vdbe/instruction';
 import type { Compiler, ColumnResultInfo } from './compiler';
 import type * as AST from '../parser/ast';
 import { compileUnhandledWhereConditions, type SubqueryCorrelationResult } from './helpers';
@@ -23,60 +23,50 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	const isSimpleAggregate = hasAggregates && !hasGroupBy; // e.g., SELECT COUNT(*) FROM t
 	const needsAggProcessing = hasAggregates || hasGroupBy;
 
-	// Validate selected columns: must be aggregate or part of GROUP BY key
-	if (hasGroupBy) {
-		const groupKeyExprStrings = new Set(stmt.groupBy!.map(expr => JSON.stringify(expr)));
-		stmt.columns.forEach(col => {
-			if (col.type === 'column' && !isAggregateResultColumn(col)) {
-				if (!groupKeyExprStrings.has(JSON.stringify(col.expr))) {
-					throw new SqliteError(`Column "${col.expr?.type === 'column' ? col.expr.name : (col.alias ?? '?')}" must appear in the GROUP BY clause or be used in an aggregate function`, StatusCode.ERROR);
-				}
-			}
-		});
-	}
+	// Determine the structure of the rows before potential sorting
+	// Call compileSelectCore once here if needed for column mapping/count
+	let preSortNumCols = 0;
+	let preSortColumnMap: ColumnResultInfo[] = [];
+	let preSortResultBaseReg = 0; // Only valid if no aggregation and no sorting
+
+	// Store original result/alias state
+	const savedResultColumns = compiler.resultColumns;
+	const savedColumnAliases = compiler.columnAliases;
+	compiler.resultColumns = [];
+	compiler.columnAliases = [];
 
 	// Open cursors first based on the FROM structure
 	const fromCursors = compiler.compileFromCore(stmt.from);
 
-	if (fromCursors.length === 0 && (!stmt.from || stmt.from.length === 0)) {
-		// Handle SELECT without FROM clause (potentially with aggregates like SELECT COUNT(1))
-		compileSelectNoFrom(compiler, stmt);
-		return;
-	}
+	// Plan table access early to determine if ORDER BY is consumed
+	const allCursors = [...fromCursors]; // Combine if needed later
+	allCursors.forEach(cursor => {
+		const schema = compiler.tableSchemas.get(cursor);
+		if (schema) {
+			compiler.planTableAccess(cursor, schema, stmt, new Set()); // Initial plan with no outer cursors active
+		}
+	});
 
-	// --- Check if Sorting is Required (ORDER BY) ---
+	// Determine if ORDER BY is needed AFTER planning
 	let needsExternalSort = false;
-	let orderByConsumed = false;
-	let orderByKeyMap: { colIdx: number, desc: boolean }[] = [];
+	let sortKeyInfo: P4SortKey | null = null;
 	if (stmt.orderBy && stmt.orderBy.length > 0) {
-		// If GROUP BY exists, ORDER BY can only be on GROUP BY keys or aggregates
-		// We defer checking ORDER BY consumption until after aggregation
-		needsExternalSort = true; // Assume sort is needed after aggregation/grouping
+		const orderByConsumed = allCursors.every(cursor => {
+			const plan = compiler.cursorPlanningInfo.get(cursor);
+			return plan?.orderByConsumed ?? false;
+		});
+		if (!orderByConsumed) {
+			needsExternalSort = true;
+		}
 	}
-	// ----------------------------------------------------------
 
-	// --- Prepare Ephemeral Table for Sorting (if ORDER BY exists) ---
-	let ephSortCursor = -1;
-	let ephSortSchema: import("../schema/table").TableSchema | undefined;
-	let ephSortNumCols = -1;
-	let sortOutputRegMap: number[] = []; // Maps final output column index to eph table index
-
-	if (needsExternalSort) {
-		// Schema will be based on the final output of the aggregation/grouping step
-		// We need to determine the number and rough type of output columns *after* aggregation
-		// This is tricky without running compileSelectCore twice.
-		// Let's estimate: number of group keys + number of aggregates
-		ephSortNumCols = (stmt.groupBy?.length ?? 0) + aggregateColumns.length;
-		if (isSimpleAggregate && !hasGroupBy) ephSortNumCols = aggregateColumns.length; // SELECT COUNT(*) case
-		if (ephSortNumCols === 0) ephSortNumCols = 1; // SELECT literal GROUP BY literal?
-
-		console.log(`Needs external sort, preparing ephemeral table with ${ephSortNumCols} columns.`);
-		ephSortCursor = compiler.allocateCursor();
-		ephSortSchema = compiler.createEphemeralSchema(ephSortCursor, ephSortNumCols);
-		// TODO: Refine ephemeral table schema types based on group keys/aggregate results
-		compiler.emit(Opcode.OpenEphemeral, ephSortCursor, ephSortNumCols, 0, null, 0, "Open Ephemeral for ORDER BY after Aggregation");
+	if (needsExternalSort && !needsAggProcessing) {
+		// If sorting without aggregation, get the column structure now
+		const coreResult = compiler.compileSelectCore(stmt, fromCursors);
+		preSortNumCols = coreResult.numCols;
+		preSortColumnMap = coreResult.columnMap;
+		preSortResultBaseReg = coreResult.resultBaseReg; // Base reg for rows going into sorter
 	}
-	// -------------------------------------------------------------
 
 	// Reset aggregate context map before processing rows
 	if (needsAggProcessing) {
@@ -113,6 +103,49 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	let finalNumCols = 0;
 	let finalColumnMap: ColumnResultInfo[] = [];
 	let groupKeyOutputRegs: number[] = [];
+
+	// --- Compile the core SELECT structure once to get the column map ---
+	// This map is needed for aggregation, sorting key mapping, and LEFT JOIN padding.
+	// Store result details in variables declared earlier.
+	let coreResultBaseReg = 0;
+	let coreNumCols = 0;
+	let coreColumnMap: ColumnResultInfo[] = [];
+
+	if (!needsAggProcessing) {
+		const coreResult = compiler.compileSelectCore(stmt, fromCursors);
+		coreResultBaseReg = coreResult.resultBaseReg;
+		coreNumCols = coreResult.numCols;
+		coreColumnMap = coreResult.columnMap;
+		// For non-aggregate, the core result *is* the final result structure (before sorting)
+		preSortNumCols = coreNumCols;
+		preSortColumnMap = coreColumnMap;
+		preSortResultBaseReg = coreResultBaseReg;
+	} else {
+		// For aggregation, we still need the structure *before* aggregation
+		// to correctly process GROUP BY keys and arguments to aggregate functions.
+		// Call compileSelectCore just to get this structure, but discard the base reg.
+		const coreResult = compiler.compileSelectCore(stmt, fromCursors);
+		coreNumCols = coreResult.numCols;
+		coreColumnMap = coreResult.columnMap;
+		// We will determine the final result structure (finalNumCols, finalColumnMap)
+		// during the aggregation output loop.
+	}
+	// ------------------------------------------------------------------
+
+	// --- Set column names based on the determined structure ---
+	const nameSourceMap = needsAggProcessing ? finalColumnMap : coreColumnMap;
+	// We need to set column names *after* the aggregation loop if aggregating,
+	// or *now* if not aggregating.
+	if (!needsAggProcessing) {
+		compiler.columnAliases = coreColumnMap.map(info => {
+			return (info.expr as any)?.alias
+				?? (info.expr?.type === 'column' ? info.expr.name : `col${coreColumnMap.indexOf(info)}`);
+		});
+	}
+	// ---------------------------------------------------------
+
+	// --- Prepare Ephemeral Table for Sorting (if ORDER BY exists and not consumed) ---
+	let ephSortCursor = -1;
 
 	fromCursors.forEach((cursor, index) => {
 		const schema = compiler.tableSchemas.get(cursor);
@@ -296,13 +329,10 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			compiler.emit(Opcode.IfTrue, matchReg, addrSkipNullPadEof, 0, null, 0, `LEFT JOIN EOF: Skip NULL pad if match found [${i}]`);
 
 			// Need to re-run compileSelectCore to know which regs to NULL pad?
-			// This is inefficient. Alternative: Store columnMap from a single run.
-			// Assuming columnMap is available from the aggregation/result calculation step above.
-			// This is complex if the structure differs significantly based on aggregation.
-			// Let's assume for now the result structure is predictable enough.
-			console.warn("LEFT JOIN NULL padding assumes result structure is consistent - may need refinement");
-			const tempCoreResult = compiler.compileSelectCore(stmt, fromCursors); // Re-run to get map for this context
-			tempCoreResult.columnMap.forEach(info => {
+			// REPLACED: Use the stored coreColumnMap
+			console.warn("Using stored column map for LEFT JOIN NULL padding.");
+			// const tempCoreResult = compiler.compileSelectCore(stmt, fromCursors); // Re-run to get map for this context
+			coreColumnMap.forEach(info => { // Use stored map
 				if (info.sourceCursor === cursor) {
 					compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, `LEFT JOIN EOF: NULL Pad Col ${info.sourceColumnIndex} from Cursor ${cursor}`);
 				}
@@ -367,7 +397,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		let currentResultReg = finalResultBaseReg; // Use the pre-allocated base
 		finalColumnMap = []; // Clear map for this group's output structure
 		let currentNumCols = 0; // Track columns *for this group*
-		sortOutputRegMap = [];
 
 		// 1. Output Group Key Columns (if GROUP BY)
 		if (hasGroupBy) {
@@ -379,7 +408,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				currentNumCols++; // Increment count for this group
 				groupKeyOutputRegs.push(keyReg);
 				finalColumnMap.push({ targetReg: keyReg, sourceCursor: -1, sourceColumnIndex: -1, expr: expr }); // Link to original expr
-				// sortOutputRegMap.push(keyReg); // Map based on final index
 			});
 		}
 
@@ -393,13 +421,21 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			// finalNumCols++; // Counted already
 			currentNumCols++; // Increment count for this group
 			finalColumnMap.push({ targetReg: aggResultReg, sourceCursor: -1, sourceColumnIndex: -1, expr: funcExpr });
-			// sortOutputRegMap.push(aggResultReg);
 		});
 
 		// Update finalNumCols if it wasn't set before (e.g., first group)
 		if (finalNumCols === 0) {
 			finalNumCols = currentNumCols;
 		}
+
+		// --- Set column names *after* determining aggregate output structure ---
+		if (needsAggProcessing) {
+			compiler.columnAliases = finalColumnMap.map(info => {
+				return (info.expr as any)?.alias
+					?? (info.expr?.type === 'column' ? info.expr.name : `col${finalColumnMap.indexOf(info)}`);
+			});
+		}
+		// ---------------------------------------------------------------------
 
 		// Now we have the final row for the group in registers finalResultBaseReg to finalResultBaseReg + finalNumCols - 1
 
@@ -438,6 +474,54 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	if (!needsAggProcessing) {
 		compiler.closeCursorsUsedBySelect(fromCursors);
 	}
+
+	// --- Output from Sorter ---
+	if (needsExternalSort) {
+		const addrSortLoopStart = compiler.allocateAddress();
+		const addrSortLoopEnd = compiler.allocateAddress();
+		const sortedResultBaseReg = compiler.allocateMemoryCells(ephSortNumCols);
+
+		compiler.emit(Opcode.Rewind, ephSortCursor, addrSortLoopEnd, 0, null, 0, "Rewind Sorter");
+		compiler.resolveAddress(addrSortLoopStart);
+
+		// Apply Limit/Offset during sorter output
+		if (regLimit > 0) {
+			// Offset Check
+			const addrPostOffsetCheck = compiler.allocateAddress();
+			compiler.emit(Opcode.IfZero, regOffset, addrPostOffsetCheck, 0, null, 0, "Check Offset == 0");
+			compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Decrement Offset");
+			compiler.emit(Opcode.Goto, 0, addrSortLoopStart + (ephSortNumCols + 1) + (regLimit > 0 ? 3 : 0) + 1, 0, null, 0, "Skip Row (Offset)");
+			compiler.resolveAddress(addrPostOffsetCheck);
+		}
+
+		// Read sorted row from ephemeral table
+		for (let i = 0; i < ephSortNumCols; i++) {
+			compiler.emit(Opcode.VColumn, ephSortCursor, i, sortedResultBaseReg + i, 0, 0, `Read Sorted Col ${i}`);
+		}
+		// Output the sorted row
+		compiler.emit(Opcode.ResultRow, sortedResultBaseReg, ephSortNumCols, 0, null, 0, "Output sorted row");
+
+		// Limit Check
+		if (regLimit > 0) {
+			const addrLimitNotZero = compiler.allocateAddress();
+			compiler.emit(Opcode.IfZero, regLimit, addrLimitNotZero, 0, null, 0, "Skip Limit Check if already 0");
+			compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Decrement Limit");
+			compiler.emit(Opcode.IfZero, regLimit, addrSortLoopEnd, 0, null, 0, "Check Limit Reached"); // Jump to end if limit hit
+			compiler.resolveAddress(addrLimitNotZero);
+		}
+
+		// Advance sorter cursor
+		compiler.resolveAddress(compiler.getCurrentAddress()); // Target for offset jump
+		compiler.emit(Opcode.VNext, ephSortCursor, addrSortLoopEnd, 0, null, 0, "VNext Sorter");
+		compiler.emit(Opcode.Goto, 0, addrSortLoopStart, 0, null, 0, "Loop Sorter Results");
+		compiler.resolveAddress(addrSortLoopEnd);
+		compiler.emit(Opcode.Close, ephSortCursor, 0, 0, null, 0, "Close Sorter");
+	}
+	// ------------------------
+
+	// Restore original result/alias state
+	compiler.resultColumns = savedResultColumns;
+	compiler.columnAliases = savedColumnAliases;
 }
 
 /** Handle SELECT without FROM - simpler case */

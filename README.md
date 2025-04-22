@@ -77,6 +77,10 @@ The project is organized into the following main directories:
 *   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Programmatic definition is supported.
 *   **SQL Subset**: Focuses on DML (SELECT, INSERT, UPDATE, DELETE) and features crucial for querying (joins, aggregates, etc.), omitting features tied to persistent storage (e.g., WAL, file formats, autoincrement intricacies).
 
+## Variations from SQLite
+
+* We support ASC/DESC on primary key column definitions
+
 ## Current Status
 
 SQLiter is currently under active development. Core components like the parser, VDBE, virtual table interface, `MemoryTable` implementation, planning infrastructure (`xBestIndex`), and the core API are functional. SQL feature support (e.g., complex constraints, triggers, window functions, full sorting) and advanced query optimization are areas for future development.

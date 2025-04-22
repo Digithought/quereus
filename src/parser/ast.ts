@@ -268,6 +268,7 @@ export interface ColumnConstraint {
 	expr?: Expression;          // For CHECK or DEFAULT
 	collation?: string;         // For COLLATE
 	autoincrement?: boolean;    // For PRIMARY KEY AUTOINCREMENT
+	direction?: 'asc' | 'desc'; // ADDED: For PRIMARY KEY ASC/DESC
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;
 	generated?: {
@@ -280,7 +281,7 @@ export interface ColumnConstraint {
 export interface TableConstraint {
 	type: 'primaryKey' | 'unique' | 'check' | 'foreignKey';
 	name?: string;
-	columns?: string[];         // For PRIMARY KEY and UNIQUE
+	columns?: { name: string; direction?: 'asc' | 'desc' }[]; // UPDATED: Allow direction
 	expr?: Expression;         // For CHECK
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;

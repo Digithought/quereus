@@ -2,7 +2,6 @@ import { Opcode } from '../common/constants';
 import type { SqlValue } from '../common/types';
 import type { FunctionSchema } from '../schema/function';
 import type { TableSchema } from '../schema/table';
-import type { ColumnSchema } from '../schema/column';
 
 /**
  * Represents a single instruction in the VDBE program.
@@ -70,15 +69,18 @@ export interface P4Coll {
 }
 
 /** Placeholder for P4 storing multiple values (e.g., for comparisons) */
-/** P4 operand storing sorting key information */
 export interface P4KeyInfo {
-	columns: {
-		index: number;          // Column index within the ephemeral table row
-		sortOrder: 'ASC' | 'DESC';
-		collation?: string;     // TODO: Implement collation logic if needed
-		// Potentially add affinity/type info if needed for comparison edge cases
-	}[];
+	// columns: { index: number, sortOrder: 'ASC' | 'DESC', collation?: P4Coll }[];
 	type: 'keyinfo';
+}
+
+/** Placeholder for P4 when sorting using MemoryTable */
+export interface P4SortKey {
+	/** Indices of columns in the input row used for sorting */
+	keyIndices: ReadonlyArray<number>;
+	/** Sort direction for each key column (true for DESC) */
+	directions: ReadonlyArray<boolean>;
+	type: 'sortkey';
 }
 
 // Add more P4 types as needed (P4_MEM, P4_INTARRAY, P4_SUBPROGRAM, etc.)

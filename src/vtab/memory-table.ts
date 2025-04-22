@@ -11,11 +11,13 @@ import type { SqliteContext } from '../func/context';
 import { Latches } from '../util/latches';
 import { Parser } from '../parser/parser';
 import type { ColumnSchema } from '../schema/column';
-import { buildColumnIndexMap, type TableSchema, findPrimaryKeyColumns } from '../schema/table';
+import { buildColumnIndexMap, type TableSchema, findPrimaryKeyDefinition, getPrimaryKeyIndices } from '../schema/table';
 import * as AST from '../parser/ast';
 // --- Import digitree and comparison ---
 import { BTree, KeyBound, KeyRange, Path } from 'digitree'; // KeyBound, KeyRange added
 import { compareSqlValues } from '../util/comparison';
+// --- Add P4SortKey import ---
+import type { P4SortKey } from '../vdbe/instruction'; // Import P4SortKey
 // ------------------------------------
 
 // Type for rows stored internally, always including the SQLite rowid
@@ -98,12 +100,14 @@ class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 export class MemoryTable extends VirtualTable {
 	public columns: { name: string, type: SqlDataType }[] = [];
 	public primaryKeyColumnIndices: ReadonlyArray<number> = [];
-	private keyFromEntry: (entry: MemoryTableRow) => BTreeKey = (row) => row._rowid_;
+	public keyFromEntry: (entry: MemoryTableRow) => BTreeKey = (row) => row._rowid_;
 	public compareKeys: (a: BTreeKey, b: BTreeKey) => number = compareSqlValues as any;
 	public data: BTree<BTreeKey, MemoryTableRow> | null = null;
 	private nextRowid: bigint = BigInt(1);
 	private readOnly: boolean;
 	public rowidToKeyMap: Map<bigint, BTreeKey> | null = null;
+	public isSorter: boolean = false;
+	public sorterColumnMap: ColumnSchema[] | null = null;
 
 	// --- Transaction State --- (Public for cursor access for now)
 	public inTransaction: boolean = false;
@@ -129,56 +133,61 @@ export class MemoryTable extends VirtualTable {
 		this.readOnly = readOnly;
 	}
 
-	setColumns(columns: { name: string, type: SqlDataType }[], pkIndices: ReadonlyArray<number>): void {
+	// --- Updated setColumns to use primaryKeyDefinition ---
+	setColumns(columns: { name: string, type: SqlDataType }[], pkDef: ReadonlyArray<{ index: number; desc: boolean }>): void {
 		this.columns = [...columns];
-		this.primaryKeyColumnIndices = pkIndices;
 
-		if (pkIndices.length === 0) {
+		if (pkDef.length === 0) {
 			console.log(`MemoryTable '${this.tableName}': Using rowid as BTree key.`);
-			this.primaryKeyColumnIndices = [];
 			this.keyFromEntry = (row) => row._rowid_;
-			this.compareKeys = compareSqlValues as any;
+			this.compareKeys = (a, b) => compareSqlValues(a, b);
 			this.rowidToKeyMap = null;
-		} else if (pkIndices.length === 1) {
-			const pkIndex = pkIndices[0];
+		} else if (pkDef.length === 1) {
+			const { index: pkIndex, desc: isDesc } = pkDef[0];
 			const pkColName = this.columns[pkIndex]?.name;
 			if (!pkColName) {
 				console.error(`MemoryTable '${this.tableName}': Invalid primary key index ${pkIndex}. Falling back to rowid key.`);
-				this.primaryKeyColumnIndices = [];
 				this.keyFromEntry = (row) => row._rowid_;
-				this.compareKeys = compareSqlValues as any;
+				this.compareKeys = (a, b) => compareSqlValues(a, b);
 				this.rowidToKeyMap = null;
 			} else {
-				console.log(`MemoryTable '${this.tableName}': Using PRIMARY KEY column '${pkColName}' (index ${pkIndex}) as BTree key.`);
+				console.log(`MemoryTable '${this.tableName}': Using PRIMARY KEY column '${pkColName}' (index ${pkIndex}, ${isDesc ? 'DESC' : 'ASC'}) as BTree key.`);
 				this.keyFromEntry = (row) => row[pkColName] as BTreeKey;
-				this.compareKeys = compareSqlValues as any;
+				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => {
+					const cmp = compareSqlValues(a as SqlValue, b as SqlValue); // Cast needed as compareSqlValues takes SqlValue
+					return isDesc ? -cmp : cmp;
+				};
 				this.rowidToKeyMap = new Map();
 			}
 		} else {
-			const pkColNames = pkIndices.map(idx => this.columns[idx]?.name).filter(name => !!name);
-			if (pkColNames.length !== pkIndices.length) {
+			const pkCols = pkDef.map(def => ({ name: this.columns[def.index]?.name, desc: def.desc }));
+			if (pkCols.some(c => !c.name)) {
 				console.error(`MemoryTable '${this.tableName}': Invalid composite primary key indices. Falling back to rowid key.`);
-				this.primaryKeyColumnIndices = [];
 				this.keyFromEntry = (row) => row._rowid_;
-				this.compareKeys = compareSqlValues as any;
+				this.compareKeys = (a, b) => compareSqlValues(a, b);
 				this.rowidToKeyMap = null;
 			} else {
-				console.log(`MemoryTable '${this.tableName}': Using Composite PRIMARY KEY (${pkColNames.join(', ')}) as BTree key.`);
+				const pkColNames = pkCols.map(c => c.name!); // Safe due to check above
+				console.log(`MemoryTable '${this.tableName}': Using Composite PRIMARY KEY (${pkCols.map(c => `${c.name} ${c.desc ? 'DESC' : 'ASC'}`).join(', ')}) as BTree key.`);
 				this.keyFromEntry = (row) => pkColNames.map(name => row[name]);
-				this.compareKeys = this.compareCompositeKeys;
+				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => this.compareCompositeKeysWithOrder(a, b, pkCols.map(c => c.desc));
 				this.rowidToKeyMap = new Map();
 			}
 		}
 
+		// Initialize BTree if not already done
+		// Or re-initialize if key structure changed (which setColumns implies)
 		this.data = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
 	}
+	// ----------------------------------------------------
 
-	private compareCompositeKeys(a: BTreeKey, b: BTreeKey): number {
+	private compareCompositeKeysWithOrder(a: BTreeKey, b: BTreeKey, directions: ReadonlyArray<boolean>): number {
 		const arrA = a as SqlValue[];
 		const arrB = b as SqlValue[];
 		const len = Math.min(arrA.length, arrB.length);
 		for (let i = 0; i < len; i++) {
-			const cmp = compareSqlValues(arrA[i], arrB[i]);
+			const dirMultiplier = directions[i] ? -1 : 1;
+			const cmp = compareSqlValues(arrA[i], arrB[i]) * dirMultiplier;
 			if (cmp !== 0) return cmp;
 		}
 		return arrA.length - arrB.length;
@@ -194,17 +203,19 @@ export class MemoryTable extends VirtualTable {
 	findPathByRowid(rowid: bigint): Path<BTreeKey, MemoryTableRow> | null {
 		// TODO: Check pending buffers (especially if rowid maps to an updated key)
 		if (!this.data) return null;
-		if (this.primaryKeyColumnIndices.length === 0) {
-			const path = this.data.find(rowid);
-			return path.on ? path : null;
+		if (!this.rowidToKeyMap && this.columns.length > 0) { // Check if it's a non-rowid key table
+			// This case should use rowidToKeyMap, error if map is missing
+			console.error(`MemoryTable ${this.tableName}: Attempt to find by rowid without rowidToKeyMap on a keyed table.`);
+			return null;
 		} else if (this.rowidToKeyMap) {
 			const key = this.rowidToKeyMap.get(rowid);
 			if (key === undefined) return null;
 			const path = this.data.find(key);
 			return (path.on && this.data.at(path)?._rowid_ === rowid) ? path : null;
 		} else {
-			console.error("MemoryTable internal error: Missing rowidToKeyMap for PK table.");
-			return null;
+			// It's a rowid-keyed table
+			const path = this.data.find(rowid);
+			return path.on ? path : null;
 		}
 	}
 
@@ -506,6 +517,62 @@ export class MemoryTable extends VirtualTable {
 		// and row objects are replaced, not mutated.
 	}
 	// ----------------------------------
+
+	// --- Internal method to configure as sorter ---
+	/** @internal Configures the BTree for sorting based on provided criteria */
+	_configureAsSorter(sortInfo: P4SortKey): void {
+		if (this.isSorter) {
+			console.warn(`MemoryTable ${this.tableName}: Already configured as sorter.`);
+			return;
+		}
+		console.log(`MemoryTable ${this.tableName}: Configuring BTree for sorting with keys:`, sortInfo.keyIndices, `directions:`, sortInfo.directions);
+
+		// Store the effective schema used by the sorter (assuming it matches the current columns)
+		// Create proper ColumnSchema objects for sorterColumnMap
+		this.sorterColumnMap = this.columns.map(c => ({
+			name: c.name,
+			affinity: c.type,
+			notNull: false,
+			primaryKey: false,
+			pkOrder: 0,
+			defaultValue: null,
+			collation: 'BINARY',
+			hidden: false,
+			generated: false,
+		}));
+
+		const keyFromEntry = (row: MemoryTableRow): BTreeKey => {
+			const keyValues = sortInfo.keyIndices.map(index => {
+				if (!this.sorterColumnMap) throw new Error("Sorter column map not set during key extraction");
+				const colName = this.sorterColumnMap[index]?.name;
+				return colName ? (row as any)[colName] : null;
+			});
+			keyValues.push(row._rowid_);
+			return keyValues;
+		};
+
+		const compareKeys = (a: BTreeKey, b: BTreeKey): number => {
+			const arrA = a as SqlValue[];
+			const arrB = b as SqlValue[];
+			const len = Math.min(arrA.length, arrB.length) - 1;
+
+			for (let i = 0; i < len; i++) {
+				const dirMultiplier = sortInfo.directions[i] ? -1 : 1;
+				const cmp = compareSqlValues(arrA[i], arrB[i]) * dirMultiplier;
+				if (cmp !== 0) return cmp;
+			}
+			const rowidA = arrA[len];
+			const rowidB = arrB[len];
+			return compareSqlValues(rowidA, rowidB);
+		};
+
+		this.keyFromEntry = keyFromEntry;
+		this.compareKeys = compareKeys;
+		this.isSorter = true;
+		this.data = new BTree<BTreeKey, MemoryTableRow>(keyFromEntry, compareKeys);
+		this.rowidToKeyMap = null;
+	}
+	// --------------------------------------------
 }
 
 /**
@@ -564,6 +631,10 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 	/** Create a new cursor for scanning the virtual table. */
 	async xOpen(table: MemoryTable): Promise<MemoryTableCursor> {
+		if (!table.data) {
+			// Initialize BTree here if not done by setColumns (e.g., if constructor doesn't call it)
+			table.data = new BTree<BTreeKey, MemoryTableRow>(table.keyFromEntry, table.compareKeys);
+		}
 		return new MemoryTableCursor(table);
 	}
 
@@ -573,6 +644,22 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	}
 
 	xBestIndex(table: MemoryTable, indexInfo: IndexInfo): number {
+		// --- Add check for sorter table ---
+		if (table.isSorter) {
+			// This table is just used for sorting, return a basic full-scan plan.
+			// Cost should be low as it implies data is already prepared.
+			indexInfo.idxNum = 0; // Use plan 0 (full scan)
+			indexInfo.estimatedCost = 1.0; // Very low cost
+			indexInfo.estimatedRows = BigInt(table.size || 1);
+			indexInfo.orderByConsumed = true; // The output *is* the sorted order
+			indexInfo.idxFlags = 0;
+			// No constraints are used by the sorter itself
+			indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+			indexInfo.idxStr = "sortplan"; // Indicate this is the sort plan
+			return StatusCode.OK;
+		}
+		// --- End sorter check ---
+
 		const constraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
 		const pkIndices = table.primaryKeyColumnIndices;
 		const keyIsRowid = pkIndices.length === 0;
@@ -1084,12 +1171,16 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 		let parsedColumns: { name: string, type: SqlDataType }[] = [];
 		let primaryKeyColNames: string[] = [];
+		let pkDef: { index: number; desc: boolean }[] = []; // Store definition directly
+
 		try {
 			const parser = new Parser();
 			const ast = parser.parse(createTableSql);
 			if (ast.type === 'createTable') {
 				const createTableAst = ast as AST.CreateTableStmt;
-				parsedColumns = createTableAst.columns.map(colDef => {
+				const colMap = new Map<string, number>();
+				parsedColumns = createTableAst.columns.map((colDef, index) => {
+					colMap.set(colDef.name.toLowerCase(), index);
 					let affinity = SqlDataType.TEXT;
 					const typeName = colDef.dataType?.toUpperCase() || '';
 					if (typeName.includes('INT')) affinity = SqlDataType.INTEGER;
@@ -1102,19 +1193,29 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				});
 
 				let foundPk = false;
+				// Check table constraints first
 				createTableAst.constraints.forEach(constraint => {
 					if (constraint.type === 'primaryKey' && constraint.columns) {
 						if (foundPk) throw new Error("Multiple primary keys defined");
-						primaryKeyColNames = constraint.columns;
 						foundPk = true;
+						// Assume ASC for table-level PK constraints (standard SQL)
+						pkDef = constraint.columns.map(colInfo => {
+							const index = colMap.get(colInfo.name.toLowerCase());
+							if (index === undefined) throw new Error(`PK column ${colInfo.name} not found`);
+							// Use parsed direction, default to asc (false for desc)
+							return { index, desc: colInfo.direction === 'desc' };
+						});
 					}
 				});
+				// Check column constraints if no table constraint found
 				if (!foundPk) {
-					createTableAst.columns.forEach(colDef => {
-						if (colDef.constraints.some(c => c.type === 'primaryKey')) {
+					createTableAst.columns.forEach((colDef, index) => {
+						const pkConstraint = colDef.constraints.find(c => c.type === 'primaryKey');
+						if (pkConstraint) {
 							if (foundPk) throw new Error("Multiple primary keys defined");
-							primaryKeyColNames = [colDef.name];
 							foundPk = true;
+							// Use direction from column constraint AST
+							pkDef = [{ index, desc: pkConstraint.direction === 'desc' }];
 						}
 					});
 				}
@@ -1123,24 +1224,17 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			throw new SqliteError(`Invalid CREATE TABLE definition provided to MemoryTable module: ${e.message}`, StatusCode.ERROR);
 		}
 
-		const pkIndices = primaryKeyColNames
-			.map(pkName => parsedColumns.findIndex(pc => pc.name.toLowerCase() === pkName.toLowerCase()))
-			.filter(idx => idx !== -1);
+		// Directly call setColumns with the derived pkDef
+		table.setColumns(parsedColumns, pkDef);
 
-		if (pkIndices.length !== primaryKeyColNames.length) {
-			console.warn(`MemoryTable '${table.tableName}': Some PRIMARY KEY columns not found in definition. Using rowid key.`);
-			pkIndices.length = 0;
-		}
-
-		table.setColumns(parsedColumns, pkIndices);
-
+		// Update the registered TableSchema in SchemaManager
 		const finalColumns: ColumnSchema[] = table.columns.map((c, index) => ({
 			name: c.name,
 			affinity: c.type,
-			notNull: false,
-			primaryKey: pkIndices.includes(index),
-			pkOrder: pkIndices.includes(index) ? pkIndices.indexOf(index) + 1 : 0,
-			defaultValue: null,
+			notNull: false, // TODO: Parse constraints properly
+			primaryKey: pkDef.some(def => def.index === index),
+			pkOrder: pkDef.findIndex(def => def.index === index) + 1, // 1-based order
+			defaultValue: null, // TODO: Parse constraints
 			collation: 'BINARY',
 			hidden: false,
 			generated: false,
@@ -1150,7 +1244,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			...initialTableSchema,
 			columns: Object.freeze(finalColumns),
 			columnIndexMap: Object.freeze(buildColumnIndexMap(finalColumns)),
-			primaryKeyColumns: Object.freeze(pkIndices),
+			primaryKeyDefinition: Object.freeze(pkDef), // Use the parsed definition
 		};
 
 		const targetSchema = db.schemaManager.getSchema(table.schemaName);

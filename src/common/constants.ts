@@ -116,6 +116,7 @@ export enum Opcode {
 	LoadOuterVar = 182,// P1=OuterFrameLevels, P2=VarIndexInOuterFrame, P3=DestReg
 	Push = 183,        // P1=SrcRegOffset (Value to push)
 	StackPop = 184,    // P1=Count (Number of items to pop from absolute stack top)
+	ConfigureSorter=185, // P1=cursorIdx, P4=P4SortKey
 
 	// Other (Placeholder codes, need verification)
 	// Count = 84,

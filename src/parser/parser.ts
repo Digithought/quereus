@@ -1278,11 +1278,11 @@ export class Parser {
 
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
-			const direction = this.match(TokenType.ASC) ? 'asc' : this.match(TokenType.DESC) ? 'desc' : undefined; // Optional ASC/DESC
+			// Parse optional direction for column PK
+			const direction = this.match(TokenType.ASC) ? 'asc' : this.match(TokenType.DESC) ? 'desc' : undefined;
 			const onConflict = this.parseConflictClause();
 			const autoincrement = this.match(TokenType.AUTOINCREMENT);
-			// Direction doesn't really fit in the ColumnConstraint AST for PK, handle if needed
-			return { type: 'primaryKey', name, onConflict, autoincrement };
+			return { type: 'primaryKey', name, onConflict, autoincrement, direction };
 		} else if (this.match(TokenType.NOT)) {
 			this.consume(TokenType.NULL, "Expected NULL after NOT.");
 			const onConflict = this.parseConflictClause();
@@ -1338,13 +1338,17 @@ export class Parser {
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			this.consume(TokenType.LPAREN, "Expected '(' before PRIMARY KEY columns.");
-			const columns = this.identifierList();
+			// Use updated identifierListWithDirection
+			const columns = this.identifierListWithDirection();
 			this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
 			return { type: 'primaryKey', name, columns, onConflict };
 		} else if (this.match(TokenType.UNIQUE)) {
 			this.consume(TokenType.LPAREN, "Expected '(' before UNIQUE columns.");
-			const columns = this.identifierList();
+			// Assume UNIQUE columns don't typically have direction specified, use simple list
+			// If needed later, could use identifierListWithDirection here too.
+			const columnsSimple = this.identifierList();
+			const columns = columnsSimple.map(name => ({ name })); // Convert to new format
 			this.consume(TokenType.RPAREN, "Expected ')' after UNIQUE columns.");
 			const onConflict = this.parseConflictClause();
 			return { type: 'unique', name, columns, onConflict };
@@ -1451,11 +1455,13 @@ export class Parser {
 		throw this.error(this.peek(), "Expected foreign key action (SET NULL, SET DEFAULT, CASCADE, RESTRICT, NO ACTION).");
 	}
 
-	/** @internal Parses a comma-separated list of identifiers */
-	private identifierList(): string[] {
-		const identifiers: string[] = [];
+	/** @internal Parses a comma-separated list of identifiers, optionally with ASC/DESC */
+	private identifierListWithDirection(): { name: string; direction?: 'asc' | 'desc' }[] {
+		const identifiers: { name: string; direction?: 'asc' | 'desc' }[] = [];
 		do {
-			identifiers.push(this.consumeIdentifier("Expected identifier in list."));
+			const name = this.consumeIdentifier("Expected identifier in list.");
+			const direction = this.match(TokenType.ASC) ? 'asc' : this.match(TokenType.DESC) ? 'desc' : undefined;
+			identifiers.push({ name, direction });
 		} while (this.match(TokenType.COMMA));
 		return identifiers;
 	}

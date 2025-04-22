@@ -143,15 +143,30 @@ export interface SubqueryCorrelationResult {
 }
 // ---------------------------------------
 
-export function createEphemeralSchemaHelper(compiler: Compiler, cursorIdx: number, numCols: number): TableSchema {
+export function createEphemeralSchemaHelper(
+	compiler: Compiler,
+	cursorIdx: number,
+	numCols: number,
+	sortKey?: { keyIndices: ReadonlyArray<number>; directions: ReadonlyArray<boolean> }
+): TableSchema {
 	const columns = Array.from({ length: numCols }, (_, i) => createDefaultColumnSchema(`eph_col${i}`));
+	// --- Create primaryKeyDefinition based on sortKey ---
+	let pkDef: ReadonlyArray<{ index: number; desc: boolean }> = [];
+	if (sortKey) {
+		pkDef = Object.freeze(sortKey.keyIndices.map((idx, i) => ({ index: idx, desc: sortKey.directions[i] })));
+		// Mark the columns as part of the PK for clarity, although setColumns will use pkDef directly
+		pkDef.forEach(def => { if (columns[def.index]) columns[def.index].primaryKey = true; });
+	}
+	// --------------------------------------------------
 	const schema: TableSchema = {
 		name: `_eph_${cursorIdx}`,
 		schemaName: '_temp_internal',
 		columns: Object.freeze(columns),
 		columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
-		primaryKeyColumns: Object.freeze([]),
+		primaryKeyDefinition: pkDef, // Use the generated definition
 		isVirtual: true,
+		// Ephemeral tables created this way don't have a pre-registered module/instance
+		// They are typically handled by the MemoryTableModule directly in the VDBE
 	};
 	compiler.ephemeralTables.set(cursorIdx, schema);
 	return schema;
@@ -341,7 +356,11 @@ function calculateColumnUsage(
 	}
 
 	// Ensure PK cols are marked if table has PK (implicitly used)
-	schema.primaryKeyColumns.forEach(addColToMask);
+	schema.primaryKeyDefinition.forEach(def => {
+		if (def.index >= 0 && def.index < schema.columns.length) {
+			addColToMask(def.index);
+		}
+	});
 
 	return mask;
 }

@@ -3,7 +3,7 @@ import { SqliteError, MisuseError, ConstraintError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
-import type { VdbeInstruction, P4Vtab, P4FuncDef } from './instruction';
+import type { VdbeInstruction, P4Vtab, P4FuncDef, P4SortKey } from './instruction';
 import { Opcode, ConflictResolution } from '../common/constants';
 import { evaluateIsTrue, compareSqlValues } from '../util/comparison';
 import type { VirtualTableCursor } from '../vtab/cursor';
@@ -498,24 +498,34 @@ export class Vdbe {
 			case Opcode.Noop: break; // Do nothing
 
 			// --- Ephemeral Table Opcodes ---
-			// Need review for stack frame compatibility
-			case Opcode.OpenEphemeral: // P1=cursorIdx, P2=numCols
+			case Opcode.OpenEphemeral: { // P1=cursorIdx, P2=numCols, P4=TableSchema?
 				const ephCursorIdx = p1;
 				const ephNumCols = p2;
-				const ephSchema: TableSchema = {
-					name: `_eph_${ephCursorIdx}`,
-					schemaName: '_temp_internal',
-					columns: Array.from({ length: ephNumCols }, (_, i) => createDefaultColumnSchema(`eph_col${i}`)),
-					columnIndexMap: Object.freeze(buildColumnIndexMap(Array.from({ length: ephNumCols }, (_, i) => createDefaultColumnSchema(`eph_col${i}`)))),
-					primaryKeyColumns: [],
-					isVirtual: true,
-				};
+				const providedSchema = p4 as TableSchema | null; // Schema might be passed in P4
+
+				// Create the MemoryTable instance first
 				const ephTable = new MemoryTable(this.db, Vdbe.ephemeralModule, '_temp_internal', `_eph_${ephCursorIdx}`);
-				ephTable.setColumns(ephSchema.columns.map(c => ({ name: c.name, type: c.affinity })), []);
 				this.ephemeralTables.set(ephCursorIdx, { table: ephTable, module: Vdbe.ephemeralModule });
+
+				// Initialize columns and B-Tree based on whether a schema was provided
+				if (providedSchema && providedSchema.columns && providedSchema.primaryKeyDefinition) {
+					// Use the provided schema (likely for a sorter)
+					console.log(`VDBE OpenEphemeral: Initializing cursor ${ephCursorIdx} with provided schema (PK def length: ${providedSchema.primaryKeyDefinition.length})`);
+					// Map TableSchema columns to the simpler format setColumns expects
+					const cols = providedSchema.columns.map(c => ({ name: c.name, type: c.affinity }));
+					ephTable.setColumns(cols, providedSchema.primaryKeyDefinition);
+				} else {
+					// Default initialization (basic columns, rowid key)
+					console.log(`VDBE OpenEphemeral: Initializing cursor ${ephCursorIdx} with default schema (${ephNumCols} cols)`);
+					const defaultCols = Array.from({ length: ephNumCols }, (_, i) => ({ name: `eph_col${i}`, type: SqlDataType.TEXT }));
+					ephTable.setColumns(defaultCols, []); // Empty pkDef means rowid key
+				}
+
+				// Now open the cursor on the configured table
 				const ephInstance = await Vdbe.ephemeralModule.xOpen(ephTable);
 				this.vdbeCursors[ephCursorIdx] = { instance: ephInstance, vtab: ephTable, isValid: false, isEof: false, isEphemeral: true };
 				break;
+			}
 
 			// --- New Opcode.StackPop ---
 			case Opcode.StackPop: { // P1=Count
