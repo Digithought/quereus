@@ -87,4 +87,15 @@ The project is organized into the following main directories:
 
 SQLiter is currently under active development. Core components like the parser, VDBE, virtual table interface, `MemoryTable` implementation, planning infrastructure (`xBestIndex`), and the core API are functional. SQL feature support (e.g., complex constraints, triggers, window functions, full sorting) and advanced query optimization are areas for future development.
 
+**Supported Built-in Functions (Partial List):**
+
+*   **Scalar:** `lower`, `upper`, `length`, `substr`/`substring`, `abs`, `round`, `coalesce`, `nullif`, `like`, `glob`
+*   **Aggregate:** `count`, `sum`, `avg`, `min`, `max`, `group_concat`
+*   **Date/Time:** `date`, `time`, `datetime`, `julianday`, `strftime`
+    *   Date/Time functions support modifiers like `+X days`, `start of month`, `weekday N`, `localtime`, `utc`, `unixepoch`.
+
+## Future Work
+
+See the [TODO List](docs/todo.md) for a detailed breakdown of planned features and improvements.
+
 

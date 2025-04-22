@@ -1,7 +1,8 @@
 import { lowerFunc, upperFunc, lengthFunc, substrFunc, substringFunc, absFunc, roundFunc, coalesceFunc,
 	nullifFunc, likeFunc, globFunc } from './scalar';
-import { countStarFunc, sumFunc, avgFunc, minFunc, maxFunc } from './aggregate';
+import { countStarFunc, sumFunc, avgFunc, minFunc, maxFunc, countXFunc, groupConcatFuncRev } from './aggregate';
 import type { FunctionSchema } from '../../schema/function';
+import { dateFunc, timeFunc, datetimeFunc, juliandayFunc, strftimeFunc } from './datetime';
 
 // Combine all built-in function definitions into a single array
 export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
@@ -24,4 +25,10 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	maxFunc,
 	countXFunc,
 	groupConcatFuncRev,
+	// Date/Time Functions
+	dateFunc,
+	timeFunc,
+	datetimeFunc,
+	juliandayFunc,
+	strftimeFunc,
 ];
