@@ -30,7 +30,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 
 	const moduleInfo = db._getVtabModule(moduleName);
 	if (!moduleInfo) {
-		throw new SqliteError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR);
+		throw new SqliteError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
 	const finalArgs: string[] = [
@@ -53,7 +53,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 	} catch (e: any) {
 		const message = e instanceof Error ? e.message : String(e);
 		const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
-		throw new SqliteError(`Module '${moduleName}' xCreate failed for table '${tableName}': ${message}`, code);
+		throw new SqliteError(`Module '${moduleName}' xCreate failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
 	const schema = db.schemaManager.getSchema(schemaName);
@@ -67,7 +67,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `CREATE TABLE ${tableName} (skipped IF NOT EXISTS)`);
 			return;
 		} else {
-			throw new SqliteError(`Table ${schemaName}.${tableName} already exists`, StatusCode.ERROR);
+			throw new SqliteError(`Table ${schemaName}.${tableName} already exists`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 	}
 
@@ -135,7 +135,7 @@ export function compilePragmaStatement(compiler: Compiler, stmt: AST.PragmaStmt)
 		case 'default_vtab_module': {
 			const moduleName = getStringValue(valueNode);
 			if (moduleName === null) {
-				throw new SqliteError(`PRAGMA default_vtab_module requires a string or identifier value.`, StatusCode.ERROR);
+				throw new SqliteError(`PRAGMA default_vtab_module requires a string or identifier value.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
 			// We modify the setter slightly to only take the name here
 			// The args are set by a separate pragma

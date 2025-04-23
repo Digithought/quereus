@@ -143,8 +143,12 @@ export interface Token {
 	type: TokenType;
 	lexeme: string;
 	literal?: any;
-	line: number;
-	column: number;
+	startLine: number;
+	startColumn: number;
+	startOffset: number;
+	endLine: number;
+	endColumn: number;
+	endOffset: number;
 }
 
 // Reserved keywords mapping
@@ -247,6 +251,8 @@ export class Lexer {
 	private current = 0;
 	private line = 1;
 	private column = 1;
+	private startLine = 1;
+	private startColumn = 1;
 
 	constructor(source: string) {
 		this.source = source;
@@ -258,14 +264,20 @@ export class Lexer {
 	scanTokens(): Token[] {
 		while (!this.isAtEnd()) {
 			this.start = this.current;
+			this.startLine = this.line;
+			this.startColumn = this.column;
 			this.scanToken();
 		}
 
 		this.tokens.push({
 			type: TokenType.EOF,
 			lexeme: '',
-			line: this.line,
-			column: this.column
+			startLine: this.line,
+			startColumn: this.column,
+			startOffset: this.source.length,
+			endLine: this.line,
+			endColumn: this.column,
+			endOffset: this.source.length,
 		});
 
 		return this.tokens;
@@ -360,7 +372,6 @@ export class Lexer {
 			case '\r':
 			case '\t':
 				// Ignore whitespace
-				this.column++;
 				break;
 			case '\n':
 				this.line++;
@@ -381,8 +392,15 @@ export class Lexer {
 	}
 
 	private advance(): string {
-		this.column++;
-		return this.source.charAt(this.current++);
+		const char = this.source.charAt(this.current);
+		this.current++;
+		if (char === '\n') {
+			this.line++;
+			this.column = 1;
+		} else {
+			this.column++;
+		}
+		return char;
 	}
 
 	private match(expected: string): boolean {
@@ -667,8 +685,12 @@ export class Lexer {
 			type,
 			lexeme: text,
 			literal,
-			line: this.line,
-			column: this.column - (this.current - this.start)
+			startLine: this.startLine,
+			startColumn: this.startColumn,
+			startOffset: this.start,
+			endLine: this.line,
+			endColumn: this.column -1,
+			endOffset: this.current,
 		});
 	}
 
@@ -676,8 +698,12 @@ export class Lexer {
 		this.tokens.push({
 			type: TokenType.ERROR,
 			lexeme: message,
-			line: this.line,
-			column: this.column
+			startLine: this.line,
+			startColumn: this.column -1,
+			startOffset: this.current -1,
+			endLine: this.line,
+			endColumn: this.column -1,
+			endOffset: this.current,
 		});
 	}
 }

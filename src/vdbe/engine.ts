@@ -613,7 +613,7 @@ export class Vdbe {
 					throw new SqliteError(`ResultRow stack access out of bounds: FP=${this.framePointer} Offset=${p1} Count=${p2} SP=${this.stackPointer}`, StatusCode.INTERNAL);
 				}
 				// Slice the stack directly for the result row
-				this.stmt._setCurrentRow(this.stack.slice(startIdx, startIdx + p2));
+				this.stmt.setCurrentRow(this.stack.slice(startIdx, startIdx + p2));
 				this.hasYielded = true;
 				this.programCounter++;
 				return;
@@ -705,5 +705,32 @@ export class Vdbe {
 			}
 		}
 		this._setMem(destOffset, result);
+	}
+
+	/** Generic VDBE error handler */
+	private handleVdbeError(e: any, opcodeName: string, pc: number): void {
+		const message = `VDBE Error during ${opcodeName} at PC ${pc}: ${e instanceof Error ? e.message : String(e)}`;
+		const code = e instanceof SqliteError ? e.code : StatusCode.INTERNAL;
+		this.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
+		this.done = true;
+		console.error(this.error);
+	}
+
+	/** VTab error handler */
+	private handleVTabError(e: any, vtabName: string, method: string, pc: number): void {
+		const message = `Error in VTab ${vtabName}.${method} at PC ${pc}: ${e instanceof Error ? e.message : String(e)}`;
+		const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
+		this.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
+		this.done = true;
+		console.error(this.error);
+	}
+
+	/** UDF error handler */
+	private handleUdfError(e: any, funcName: string, pc: number, step: string = 'xFunc'): void {
+		const message = `Error in function ${funcName} (${step}) at PC ${pc}: ${e instanceof Error ? e.message : String(e)}`;
+		const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
+		this.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
+		this.done = true;
+		console.error(this.error);
 	}
 }

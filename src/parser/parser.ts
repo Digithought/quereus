@@ -22,6 +22,22 @@ export class ParseError extends Error {
 	}
 }
 
+// Helper function to create the location object
+function _createLoc(startToken: Token, endToken: Token): AST.AstNode['loc'] {
+	return {
+		start: {
+			line: startToken.startLine,
+			column: startToken.startColumn,
+			offset: startToken.startOffset,
+		},
+		end: {
+			line: endToken.endLine,
+			column: endToken.endColumn,
+			offset: endToken.endOffset,
+		},
+	};
+}
+
 /**
  * SQL Parser class
  */
@@ -45,7 +61,7 @@ export class Parser {
 		// Check for errors from lexer
 		const errorToken = this.tokens.find(t => t.type === TokenType.ERROR);
 		if (errorToken) {
-			throw new ParseError(errorToken, errorToken.lexeme);
+			throw new ParseError(errorToken, `${errorToken.lexeme} at line ${errorToken.startLine}, column ${errorToken.startColumn}`);
 		}
 
 		return this;
@@ -62,17 +78,31 @@ export class Parser {
 			// --- Parse optional WITH clause first ---
 			const withClause = this.tryParseWithClause();
 			// --- Then parse the main statement ---
-			const mainStatement = this.statement();
+			const startOfMainStmtToken = this.peek();
+			const mainStatement = this.statement(startOfMainStmtToken);
 			// --- Attach WITH clause if present ---
 			if (withClause && 'withClause' in mainStatement) {
 				(mainStatement as any).withClause = withClause;
+				if (withClause.loc && mainStatement.loc) {
+					mainStatement.loc.start = withClause.loc.start;
+				}
 			} else if (withClause) {
 				// Throw error if WITH is used with unsupported statement type
 				throw this.error(this.previous(), `WITH clause cannot be used with ${mainStatement.type} statement.`);
 			}
+			// Consume optional semicolon at the end
+			this.match(TokenType.SEMICOLON);
+			if (!this.isAtEnd()) {
+				throw this.error(this.peek(), `Unexpected token after end of statement: ${this.peek().lexeme}`);
+			}
 			return mainStatement;
 		} catch (e) {
 			if (e instanceof ParseError) {
+				// Add location to the error message if not already present
+				if (!e.message.includes(`at line ${e.token.startLine}`)) {
+					const locationInfo = ` at line ${e.token.startLine}, column ${e.token.startColumn}`;
+					(e as any).message = e.message + locationInfo;
+				}
 				throw e;
 			}
 			// Unknown error
@@ -89,7 +119,7 @@ export class Parser {
 		if (!this.check(TokenType.IDENTIFIER) || this.peek().lexeme.toUpperCase() !== 'WITH') {
 			return undefined;
 		}
-		this.advance(); // Consume WITH
+		const startToken = this.advance(); // Consume WITH
 
 		const recursive = this.matchKeyword('RECURSIVE');
 
@@ -98,7 +128,9 @@ export class Parser {
 			ctes.push(this.commonTableExpression());
 		} while (this.match(TokenType.COMMA));
 
-		return { type: 'withClause', recursive, ctes };
+		const endToken = this.previous(); // Last token of the last CTE
+
+		return { type: 'withClause', recursive, ctes, loc: _createLoc(startToken, endToken) };
 	}
 
 	/**
@@ -106,7 +138,9 @@ export class Parser {
 	 * cte_name [(col1, col2, ...)] AS (query)
 	 */
 	private commonTableExpression(): AST.CommonTableExpr {
+		const startToken = this.peek(); // Peek before consuming name
 		const name = this.consumeIdentifier("Expected CTE name.");
+		let endToken: Token = this.previous(); // End token initially is the name
 
 		let columns: string[] | undefined;
 		if (this.match(TokenType.LPAREN)) {
@@ -116,57 +150,59 @@ export class Parser {
 					columns.push(this.consumeIdentifier("Expected column name in CTE definition."));
 				} while (this.match(TokenType.COMMA));
 			}
-			this.consume(TokenType.RPAREN, "Expected ')' after CTE column list.");
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CTE column list.");
 		}
 
 		this.consume(TokenType.AS, "Expected 'AS' after CTE name.");
 		this.consume(TokenType.LPAREN, "Expected '(' before CTE query.");
 
 		// Parse the CTE query (can be SELECT, VALUES (via SELECT), INSERT, UPDATE, DELETE)
+		const queryStartToken = this.peek();
 		let query: AST.SelectStmt | AST.InsertStmt | AST.UpdateStmt | AST.DeleteStmt;
 		if (this.check(TokenType.SELECT)) {
-			query = this.selectStatement();
+			query = this.selectStatement(queryStartToken); // Pass start token
 		} else if (this.check(TokenType.INSERT)) {
-			query = this.insertStatement();
+			query = this.insertStatement(queryStartToken);
 		} else if (this.check(TokenType.UPDATE)) {
-			query = this.updateStatement();
+			query = this.updateStatement(queryStartToken);
 		} else if (this.check(TokenType.DELETE)) {
-			query = this.deleteStatement();
+			query = this.deleteStatement(queryStartToken);
 		}
 		// TODO: Add support for VALUES directly if needed (though VALUES is usually part of SELECT)
 		else {
 			throw this.error(this.peek(), "Expected SELECT, INSERT, UPDATE, or DELETE statement for CTE query.");
 		}
 
-		this.consume(TokenType.RPAREN, "Expected ')' after CTE query.");
+		endToken = this.consume(TokenType.RPAREN, "Expected ')' after CTE query."); // Capture ')' as end token
 
-		return { type: 'commonTableExpr', name, columns, query };
+		return { type: 'commonTableExpr', name, columns, query, loc: _createLoc(startToken, endToken) };
 	}
 
 	/**
 	 * Parse a single SQL statement
+	 * @param startToken The token that started this statement (e.g., SELECT, INSERT)
 	 */
-	private statement(): AST.AstNode {
+	private statement(startToken: Token): AST.AstNode {
 		// --- Check for specific keywords first ---
-		const currentKeyword = this.peek().lexeme.toUpperCase();
+		const currentKeyword = startToken.lexeme.toUpperCase();
 		switch (currentKeyword) {
-			case 'SELECT': this.advance(); return this.selectStatement();
-			case 'INSERT': this.advance(); return this.insertStatement();
-			case 'UPDATE': this.advance(); return this.updateStatement();
-			case 'DELETE': this.advance(); return this.deleteStatement();
-			case 'CREATE': this.advance(); return this.createStatement();
-			case 'DROP': this.advance(); return this.dropStatement();
-			case 'ALTER': this.advance(); return this.alterTableStatement();
-			case 'BEGIN': this.advance(); return this.beginStatement();
-			case 'COMMIT': this.advance(); return this.commitStatement();
-			case 'ROLLBACK': this.advance(); return this.rollbackStatement();
-			case 'SAVEPOINT': this.advance(); return this.savepointStatement();
-			case 'RELEASE': this.advance(); return this.releaseStatement();
-			case 'PRAGMA': this.advance(); return this.pragmaStatement();
+			case 'SELECT': this.advance(); return this.selectStatement(startToken);
+			case 'INSERT': this.advance(); return this.insertStatement(startToken);
+			case 'UPDATE': this.advance(); return this.updateStatement(startToken);
+			case 'DELETE': this.advance(); return this.deleteStatement(startToken);
+			case 'CREATE': this.advance(); return this.createStatement(startToken);
+			case 'DROP': this.advance(); return this.dropStatement(startToken);
+			case 'ALTER': this.advance(); return this.alterTableStatement(startToken);
+			case 'BEGIN': this.advance(); return this.beginStatement(startToken);
+			case 'COMMIT': this.advance(); return this.commitStatement(startToken);
+			case 'ROLLBACK': this.advance(); return this.rollbackStatement(startToken);
+			case 'SAVEPOINT': this.advance(); return this.savepointStatement(startToken);
+			case 'RELEASE': this.advance(); return this.releaseStatement(startToken);
+			case 'PRAGMA': this.advance(); return this.pragmaStatement(startToken);
 			// --- Add default case ---
 			default:
 				// If it wasn't a recognized keyword starting the statement
-				throw this.error(this.peek(), 'Expected statement type (SELECT, INSERT, UPDATE, DELETE, CREATE, etc.).');
+				throw this.error(startToken, `Expected statement type (SELECT, INSERT, UPDATE, DELETE, CREATE, etc.), got '${startToken.lexeme}'.`);
 		}
 	}
 
@@ -174,7 +210,7 @@ export class Parser {
 	 * Parse an INSERT statement
 	 * @returns AST for the INSERT statement
 	 */
-	insertStatement(): AST.InsertStmt {
+	insertStatement(startToken: Token): AST.InsertStmt {
 		// INTO keyword is optional in SQLite
 		this.matchKeyword('INTO'); // Handle missing keyword gracefully
 
@@ -198,6 +234,7 @@ export class Parser {
 		// Parse VALUES clause
 		let values: AST.Expression[][] | undefined;
 		let select: AST.SelectStmt | undefined;
+		let lastConsumedToken = this.previous(); // After columns or table id
 
 		if (this.match(TokenType.VALUES)) {
 			values = [];
@@ -213,10 +250,13 @@ export class Parser {
 
 				this.consume(TokenType.RPAREN, "Expected ')' after values.");
 				values.push(valueList);
+				lastConsumedToken = this.previous(); // Update after closing paren of value list
 			} while (this.match(TokenType.COMMA));
 		} else if (this.check(TokenType.SELECT)) {
 			// Handle INSERT ... SELECT
-			select = this.selectStatement();
+			const selectStartToken = this.peek();
+			select = this.selectStatement(selectStartToken);
+			lastConsumedToken = this.previous(); // After SELECT statement is parsed
 		} else {
 			throw this.error(this.peek(), "Expected VALUES or SELECT after INSERT.");
 		}
@@ -226,31 +266,41 @@ export class Parser {
 			table,
 			columns,
 			values,
-			select
+			select,
+			loc: _createLoc(startToken, lastConsumedToken),
 		};
 	}
 
 	/**
 	 * Parse a SELECT statement
+	 * @param startToken The 'SELECT' token or start token of a sub-query
 	 * @returns AST for the SELECT statement
 	 */
-	selectStatement(): AST.SelectStmt {
+	selectStatement(startToken?: Token): AST.SelectStmt {
+		const start = startToken ?? this.previous(); // Use provided or the keyword token
+		let lastConsumedToken = start; // Initialize lastConsumed
+
 		const distinct = this.matchKeyword('DISTINCT');
+		if (distinct) lastConsumedToken = this.previous();
 		const all = !distinct && this.matchKeyword('ALL');
+		if (all) lastConsumedToken = this.previous();
 
 		// Parse column list
 		const columns = this.columnList();
+		if (columns.length > 0) lastConsumedToken = this.previous(); // Update after last column element
 
 		// Parse FROM clause if present
 		let from: AST.FromClause[] | undefined;
 		if (this.match(TokenType.FROM)) {
 			from = this.tableSourceList();
+			if (from.length > 0) lastConsumedToken = this.previous(); // After last source/join
 		}
 
 		// Parse WHERE clause if present
 		let where: AST.Expression | undefined;
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
+			lastConsumedToken = this.previous(); // After where expression
 		}
 
 		// Parse GROUP BY clause if present
@@ -260,12 +310,14 @@ export class Parser {
 			do {
 				groupBy.push(this.expression());
 			} while (this.match(TokenType.COMMA));
+			lastConsumedToken = this.previous(); // After last group by expression
 		}
 
 		// Parse HAVING clause if present
 		let having: AST.Expression | undefined;
 		if (this.match(TokenType.HAVING)) {
 			having = this.expression();
+			lastConsumedToken = this.previous(); // After having expression
 		}
 
 		// Parse ORDER BY clause if present
@@ -278,6 +330,7 @@ export class Parser {
 					(this.match(TokenType.ASC) ? 'asc' : 'asc'); // Default to ASC
 				orderBy.push({ expr, direction });
 			} while (this.match(TokenType.COMMA));
+			lastConsumedToken = this.previous(); // After last order by clause
 		}
 
 		// Parse LIMIT clause if present
@@ -285,15 +338,18 @@ export class Parser {
 		let offset: AST.Expression | undefined;
 		if (this.match(TokenType.LIMIT)) {
 			limit = this.expression();
+			lastConsumedToken = this.previous(); // After limit expression
 
 			// LIMIT x OFFSET y syntax
 			if (this.match(TokenType.OFFSET)) {
 				offset = this.expression();
+				lastConsumedToken = this.previous(); // After offset expression
 			}
 			// LIMIT x, y syntax (x is offset, y is limit)
 			else if (this.match(TokenType.COMMA)) {
 				offset = limit;
 				limit = this.expression();
+				lastConsumedToken = this.previous(); // After second limit expression
 			}
 		}
 
@@ -302,8 +358,10 @@ export class Parser {
 		let unionAll = false;
 		if (this.match(TokenType.UNION)) {
 			unionAll = this.match(TokenType.ALL);
+			const selectStartToken = this.peek(); // Start of the next SELECT
 			if (this.match(TokenType.SELECT)) {
-				union = this.selectStatement();
+				union = this.selectStatement(selectStartToken); // Pass start token
+				lastConsumedToken = this.previous(); // After UNION's SELECT statement
 			} else {
 				throw this.error(this.peek(), "Expected 'SELECT' after 'UNION'.");
 			}
@@ -322,7 +380,8 @@ export class Parser {
 			distinct,
 			all,
 			union,
-			unionAll
+			unionAll,
+			loc: _createLoc(start, lastConsumedToken),
 		};
 	}
 
@@ -331,8 +390,10 @@ export class Parser {
 	 */
 	private columnList(): AST.ResultColumn[] {
 		const columns: AST.ResultColumn[] = [];
+		let startToken = this.peek(); // Start of the first column item
 
 		do {
+			startToken = this.peek(); // Update start for each item
 			// Handle wildcard: * or table.*
 			if (this.match(TokenType.ASTERISK)) {
 				columns.push({ type: 'all' });
@@ -349,16 +410,19 @@ export class Parser {
 			else {
 				const expr = this.expression();
 				let alias: string | undefined;
+				let endToken = this.previous(); // End token is initially end of expression
 
 				// Handle AS alias or just alias
 				if (this.match(TokenType.AS)) {
 					if (this.check(TokenType.IDENTIFIER) || this.check(TokenType.STRING)) {
-						alias = this.advance().lexeme;
-						if (this.previous().type === TokenType.STRING) {
-							alias = this.previous().literal;
+						const aliasToken = this.advance();
+						alias = aliasToken.lexeme;
+						if (aliasToken.type === TokenType.STRING) {
+							alias = aliasToken.literal;
 						}
+						endToken = aliasToken; // Update end token to alias
 					} else {
-						throw this.error(this.peek(), "Expected identifier after 'AS'.");
+						throw this.error(this.peek(), "Expected identifier or string after 'AS'.");
 					}
 				}
 				// Implicit alias (no AS keyword)
@@ -367,7 +431,9 @@ export class Parser {
 					!this.checkNext(1, TokenType.DOT) &&
 					!this.checkNext(1, TokenType.COMMA) &&
 					!this.isEndOfClause()) {
-					alias = this.advance().lexeme;
+					const aliasToken = this.advance();
+					alias = aliasToken.lexeme;
+					endToken = aliasToken; // Update end token to alias
 				}
 
 				columns.push({ type: 'column', expr, alias });
@@ -381,8 +447,10 @@ export class Parser {
 	 * Parse a table identifier (possibly schema-qualified)
 	 */
 	private tableIdentifier(): AST.IdentifierExpr {
+		const startToken = this.peek();
 		let schema: string | undefined;
 		let name: string;
+		let endToken = startToken;
 
 		if (this.check(TokenType.IDENTIFIER) && this.checkNext(1, TokenType.DOT)) {
 			schema = this.advance().lexeme;
@@ -391,8 +459,10 @@ export class Parser {
 				throw this.error(this.peek(), "Expected table name after schema.");
 			}
 			name = this.advance().lexeme;
+			endToken = this.previous();
 		} else if (this.check(TokenType.IDENTIFIER)) {
 			name = this.advance().lexeme;
+			endToken = this.previous();
 		} else {
 			throw this.error(this.peek(), "Expected table name.");
 		}
@@ -400,7 +470,8 @@ export class Parser {
 		return {
 			type: 'identifier',
 			name,
-			schema
+			schema,
+			loc: _createLoc(startToken, endToken),
 		};
 	}
 
@@ -429,20 +500,22 @@ export class Parser {
 	 * Parse a single table source, which can now be a table name or a table-valued function call
 	 */
 	private tableSource(): AST.TableSource | AST.FunctionSource {
+		const startToken = this.peek();
 		// Check for function call syntax: IDENTIFIER (
 		if (this.check(TokenType.IDENTIFIER) && this.checkNext(1, TokenType.LPAREN)) {
-			return this.functionSource();
+			return this.functionSource(startToken);
 		}
 		// Otherwise, assume it's a standard table source
 		else {
-			return this.standardTableSource();
+			return this.standardTableSource(startToken);
 		}
 	}
 
 	/** Parses a standard table source (schema.table or table) */
-	private standardTableSource(): AST.TableSource {
+	private standardTableSource(startToken: Token): AST.TableSource {
 		// Parse table name (potentially schema-qualified)
 		const table = this.tableIdentifier();
+		let endToken = this.previous(); // Initialize endToken after parsing table identifier
 
 		// Parse optional alias
 		let alias: string | undefined;
@@ -450,36 +523,44 @@ export class Parser {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
-			alias = this.advance().lexeme;
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+			endToken = aliasToken;
 		} else if (this.check(TokenType.IDENTIFIER) &&
 			!this.checkNext(1, TokenType.DOT) &&
 			!this.checkNext(1, TokenType.COMMA) &&
 			!this.isJoinToken() &&
 			!this.isEndOfClause()) {
-			alias = this.advance().lexeme;
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+			endToken = aliasToken;
 		}
 
 		return {
 			type: 'table',
 			table,
-			alias
+			alias,
+			loc: _createLoc(startToken, endToken),
 		};
 	}
 
 	/** Parses a table-valued function source: name(arg1, ...) [AS alias] */
-	private functionSource(): AST.FunctionSource {
-		const name = this.tableIdentifier(); // Use tableIdentifier to allow schema.func if needed
+	private functionSource(startToken: Token): AST.FunctionSource {
+		const name = this.tableIdentifier(); // name has its own loc
+		let endToken = this.previous(); // Initialize endToken after parsing function identifier
 
 		this.consume(TokenType.LPAREN, "Expected '(' after table function name.");
 
 		const args: AST.Expression[] = [];
+		let lastArgToken = this.previous(); // After LPAREN
 		if (!this.check(TokenType.RPAREN)) {
 			do {
 				args.push(this.expression());
+				lastArgToken = this.previous(); // After parsing argument
 			} while (this.match(TokenType.COMMA));
 		}
 
-		this.consume(TokenType.RPAREN, "Expected ')' after table function arguments.");
+		endToken = this.consume(TokenType.RPAREN, "Expected ')' after table function arguments.");
 
 		// Parse optional alias (same logic as for standard tables)
 		let alias: string | undefined;
@@ -487,20 +568,25 @@ export class Parser {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
-			alias = this.advance().lexeme;
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+			endToken = aliasToken;
 		} else if (this.check(TokenType.IDENTIFIER) &&
 			!this.checkNext(1, TokenType.DOT) &&
 			!this.checkNext(1, TokenType.COMMA) &&
 			!this.isJoinToken() &&
 			!this.isEndOfClause()) {
-			alias = this.advance().lexeme;
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+			endToken = aliasToken;
 		}
 
 		return {
 			type: 'functionSource',
 			name,
 			args,
-			alias
+			alias,
+			loc: _createLoc(startToken, endToken),
 		};
 	}
 
@@ -508,6 +594,8 @@ export class Parser {
 	 * Parse a JOIN clause
 	 */
 	private joinClause(left: AST.FromClause): AST.JoinClause {
+		const joinStartToken = this.peek(); // Capture token before parsing JOIN type
+
 		// Determine join type
 		let joinType: 'inner' | 'left' | 'right' | 'full' | 'cross' = 'inner';
 
@@ -535,9 +623,11 @@ export class Parser {
 		// Parse join condition
 		let condition: AST.Expression | undefined;
 		let columns: string[] | undefined;
+		let endToken = this.previous(); // End token is end of right source initially
 
 		if (this.match(TokenType.ON)) {
 			condition = this.expression();
+			endToken = this.previous(); // End token is end of ON expression
 		} else if (this.match(TokenType.USING)) {
 			this.consume(TokenType.LPAREN, "Expected '(' after 'USING'.");
 			columns = [];
@@ -549,7 +639,7 @@ export class Parser {
 				columns.push(this.advance().lexeme);
 			} while (this.match(TokenType.COMMA));
 
-			this.consume(TokenType.RPAREN, "Expected ')' after columns.");
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after columns.");
 		} else if (joinType !== 'cross') {
 			throw this.error(this.peek(), "Expected 'ON' or 'USING' after JOIN.");
 		}
@@ -560,7 +650,8 @@ export class Parser {
 			left,
 			right,
 			condition,
-			columns
+			columns,
+			loc: _createLoc(joinStartToken, endToken),
 		};
 	}
 
@@ -584,7 +675,8 @@ export class Parser {
 				type: 'binary',
 				operator,
 				left: expr,
-				right
+				right,
+				loc: _createLoc(this.peek(), this.previous()),
 			};
 		}
 
@@ -604,7 +696,8 @@ export class Parser {
 				type: 'binary',
 				operator,
 				left: expr,
-				right
+				right,
+				loc: _createLoc(this.peek(), this.previous()),
 			};
 		}
 
@@ -624,7 +717,8 @@ export class Parser {
 				type: 'binary',
 				operator,
 				left: expr,
-				right
+				right,
+				loc: _createLoc(this.peek(), this.previous()),
 			};
 		}
 
@@ -655,7 +749,8 @@ export class Parser {
 				type: 'binary',
 				operator,
 				left: expr,
-				right
+				right,
+				loc: _createLoc(this.peek(), this.previous()),
 			};
 		}
 
@@ -675,7 +770,8 @@ export class Parser {
 				type: 'binary',
 				operator,
 				left: expr,
-				right
+				right,
+				loc: _createLoc(this.peek(), this.previous()),
 			};
 		}
 
@@ -688,17 +784,19 @@ export class Parser {
 	private factor(): AST.Expression {
 		// First, handle unary operators
 		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE)) {
-			const operator = this.previous().lexeme;
+			const operatorToken = this.previous();
+			const operator = operatorToken.lexeme;
 			const right = this.factor();
-			return { type: 'unary', operator, expr: right };
+			return { type: 'unary', operator, expr: right, loc: _createLoc(this.peek(), this.previous()) };
 		}
 
-		let expr = this.collateExpression(); // Use collateExpression instead of primary
+		let expr = this.collateExpression();
 
 		while (this.match(TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT)) {
-			const operator = this.previous().lexeme;
-			const right = this.collateExpression(); // Use collateExpression here too
-			expr = { type: 'binary', operator, left: expr, right };
+			const operatorToken = this.previous();
+			const operator = operatorToken.lexeme;
+			const right = this.collateExpression();
+			expr = { type: 'binary', operator, left: expr, right, loc: _createLoc(this.peek(), this.previous()) };
 		}
 
 		return expr;
@@ -708,6 +806,8 @@ export class Parser {
 	 * Parse primary expressions (literals, identifiers, etc.)
 	 */
 	private primary(): AST.Expression {
+		const startToken = this.peek();
+
 		// Literals
 		if (this.match(TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING, TokenType.NULL, TokenType.BLOB)) {
 			const token = this.previous();
@@ -717,19 +817,13 @@ export class Parser {
 				value = null;
 			}
 
-			return {
-				type: 'literal',
-				value
-			};
+			return { type: 'literal', value, loc: _createLoc(startToken, token) };
 		}
 
 		// Parameter expressions (?, :name, $name)
 		if (this.match(TokenType.QUESTION)) {
-			// Positional parameter
-			return {
-				type: 'parameter',
-				index: this.parameterPosition++
-			};
+			const token = this.previous();
+			return { type: 'parameter', index: this.parameterPosition++, loc: _createLoc(startToken, token) };
 		}
 
 		if (this.match(TokenType.COLON, TokenType.DOLLAR)) {
@@ -737,16 +831,13 @@ export class Parser {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected identifier after parameter prefix.");
 			}
-			const name = this.advance().lexeme;
-			return {
-				type: 'parameter',
-				name
-			};
+			const nameToken = this.advance();
+			return { type: 'parameter', name: nameToken.lexeme, loc: _createLoc(startToken, nameToken) };
 		}
 
 		// Function call
 		if (this.check(TokenType.IDENTIFIER) && this.checkNext(1, TokenType.LPAREN)) {
-			const name = this.advance().lexeme;
+			const nameToken = this.advance();
 
 			this.consume(TokenType.LPAREN, "Expected '(' after function name.");
 
@@ -754,7 +845,7 @@ export class Parser {
 			if (!this.check(TokenType.RPAREN)) {
 				do {
 					if (this.match(TokenType.ASTERISK)) {
-						args.push({ type: 'literal', value: '*' } as any);
+						args.push({ type: 'literal', value: '*', loc: _createLoc(this.peek(), this.peek()) } as any);
 					} else {
 						args.push(this.expression());
 					}
@@ -766,8 +857,10 @@ export class Parser {
 			// TODO: check for aggregate functions
 			return {
 				type: 'function',
-				name,
-				args
+				name: nameToken.lexeme,
+				args,
+				isAggregate: false,
+				loc: _createLoc(startToken, this.previous()),
 			};
 		}
 
@@ -780,34 +873,37 @@ export class Parser {
 				this.advance(); // Consume DOT
 				const table = this.advance().lexeme;
 				this.advance(); // Consume DOT
-				const name = this.advance().lexeme;
+				const nameToken = this.advance();
 
 				return {
 					type: 'column',
-					name,
+					name: nameToken.lexeme,
 					table,
-					schema
+					schema,
+					loc: _createLoc(startToken, nameToken),
 				};
 			}
 			// table.column
 			else if (this.checkNext(1, TokenType.DOT) && this.checkNext(2, TokenType.IDENTIFIER)) {
 				const table = this.advance().lexeme;
 				this.advance(); // Consume DOT
-				const name = this.advance().lexeme;
+				const nameToken = this.advance();
 
 				return {
 					type: 'column',
-					name,
-					table
+					name: nameToken.lexeme,
+					table,
+					loc: _createLoc(startToken, nameToken),
 				};
 			}
 			// just column
 			else {
-				const name = this.advance().lexeme;
+				const nameToken = this.advance();
 
 				return {
 					type: 'column',
-					name
+					name: nameToken.lexeme,
+					loc: _createLoc(startToken, nameToken),
 				};
 			}
 		}
@@ -834,10 +930,9 @@ export class Parser {
 		return false;
 	}
 
-	private consume(type: TokenType, message: string): boolean {
+	private consume(type: TokenType, message: string): Token {
 		if (this.check(type)) {
-			this.advance();
-			return true;
+			return this.advance();
 		}
 
 		throw this.error(this.peek(), message);
@@ -871,7 +966,8 @@ export class Parser {
 	}
 
 	private error(token: Token, message: string): ParseError {
-		return new ParseError(token, message);
+		const locationInfo = ` at line ${token.startLine}, column ${token.startColumn}`;
+		return new ParseError(token, message + locationInfo);
 	}
 
 	private isJoinToken(): boolean {
@@ -899,11 +995,9 @@ export class Parser {
 	// --- Statement Parsing Stubs ---
 
 	/** @internal */
-	private updateStatement(): AST.UpdateStmt {
+	private updateStatement(startToken: Token): AST.UpdateStmt {
 		const table = this.tableIdentifier();
-
 		this.consume(TokenType.SET, "Expected 'SET' after table name in UPDATE.");
-
 		const assignments: { column: string; value: AST.Expression }[] = [];
 		do {
 			if (!this.check(TokenType.IDENTIFIER)) {
@@ -914,69 +1008,41 @@ export class Parser {
 			const value = this.expression();
 			assignments.push({ column, value });
 		} while (this.match(TokenType.COMMA));
-
 		let where: AST.Expression | undefined;
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
 		}
-
-		// Optional ON CONFLICT and RETURNING clauses (placeholders)
-		// let onConflict: ConflictResolution | undefined;
-		// let returning: ResultColumn[] | undefined;
-
-		return {
-			type: 'update',
-			table,
-			assignments,
-			where,
-			// onConflict,
-			// returning,
-		};
+		const endToken = this.previous();
+		return { type: 'update', table, assignments, where, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
-	private deleteStatement(): AST.DeleteStmt {
-		// Optional FROM keyword (SQLite allows omitting it)
+	private deleteStatement(startToken: Token): AST.DeleteStmt {
 		this.matchKeyword('FROM');
-
 		const table = this.tableIdentifier();
-
 		let where: AST.Expression | undefined;
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
 		}
-
-		// Optional RETURNING clause (placeholder for now)
-		// let returning: ResultColumn[] | undefined;
-		// if (this.match(TokenType.RETURNING)) {
-		//   returning = this.columnList();
-		// }
-
-		return {
-			type: 'delete',
-			table,
-			where,
-			// returning,
-		};
+		const endToken = this.previous();
+		return { type: 'delete', table, where, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
-	private createStatement(): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
-		// CREATE keyword consumed by main `statement` method
+	private createStatement(startToken: Token): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
 		if (this.peekKeyword('TABLE')) {
-			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE."); // Consume the token
-			return this.createTableStatement();
+			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE.");
+			return this.createTableStatement(startToken);
 		} else if (this.peekKeyword('INDEX')) {
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE.");
-			return this.createIndexStatement();
+			return this.createIndexStatement(startToken);
 		} else if (this.peekKeyword('VIEW')) {
 			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
-			return this.createViewStatement();
+			return this.createViewStatement(startToken);
 		} else if (this.peekKeyword('UNIQUE')) {
 			this.consumeKeyword('UNIQUE', "Expected 'UNIQUE' after CREATE.");
-			// Handle CREATE UNIQUE INDEX ...
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE UNIQUE.");
-			return this.createIndexStatement(true); // Pass flag indicating unique
+			return this.createIndexStatement(startToken, true);
 		}
 		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, or VIRTUAL after CREATE.");
 	}
@@ -985,12 +1051,11 @@ export class Parser {
 	 * Parse CREATE TABLE statement
 	 * @returns AST for CREATE TABLE
 	 */
-	private createTableStatement(): AST.CreateTableStmt {
-		// TABLE keyword consumed by createStatement
+	private createTableStatement(startToken: Token): AST.CreateTableStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
-			this.advance(); // Consume TEMP or TEMPORARY
+			this.advance();
 		}
 
 		let ifNotExists = false;
@@ -1007,31 +1072,24 @@ export class Parser {
 		let withoutRowid = false;
 
 		if (this.check(TokenType.LPAREN)) {
-			this.consume(TokenType.LPAREN, "Expected '(' to start table definition."); // Consume LPAREN
-			// Parse column definitions and table constraints
+			this.consume(TokenType.LPAREN, "Expected '(' to start table definition.");
 			do {
-				// Check if it's a table constraint (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY)
 				if (this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN') || this.peekKeyword('CONSTRAINT')) {
 					constraints.push(this.tableConstraint());
 				} else {
-					// Otherwise, it's a column definition
 					columns.push(this.columnDefinition());
 				}
 			} while (this.match(TokenType.COMMA));
 
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 
-			// Check for WITHOUT ROWID option
-			if (this.matchKeyword('WITHOUT')) { // matchKeyword consumes
+			if (this.matchKeyword('WITHOUT')) {
 				this.consumeKeyword('ROWID', "Expected 'ROWID' after 'WITHOUT'.");
 				withoutRowid = true;
 			}
 		} else if (this.matchKeyword('AS')) {
-			// CREATE TABLE ... AS SELECT ... (Not implemented fully yet)
 			const select = this.selectStatement();
 			throw new Error('CREATE TABLE AS SELECT is not fully implemented.');
-			// Need to infer columns from SELECT statement
-			// return { type: 'createTable', table, ifNotExists, isTemporary, select };
 		} else {
 			throw this.error(this.peek(), "Expected '(' or 'AS' after table name.");
 		}
@@ -1044,6 +1102,7 @@ export class Parser {
 			constraints,
 			withoutRowid,
 			isTemporary,
+			loc: _createLoc(startToken, this.previous()),
 		};
 	}
 
@@ -1052,12 +1111,10 @@ export class Parser {
 	 * @param isUnique Flag indicating if UNIQUE keyword was already parsed
 	 * @returns AST for CREATE INDEX
 	 */
-	private createIndexStatement(isUnique = false): AST.CreateIndexStmt {
-		// INDEX keyword consumed by createStatement (or CREATE UNIQUE INDEX logic)
-		// Handle if UNIQUE was parsed *before* INDEX (e.g., CREATE UNIQUE INDEX)
+	private createIndexStatement(startToken: Token, isUnique = false): AST.CreateIndexStmt {
 		if (!isUnique && this.peekKeyword('UNIQUE')) {
 			isUnique = true;
-			this.advance(); // Consume UNIQUE
+			this.advance();
 		}
 
 		let ifNotExists = false;
@@ -1067,9 +1124,9 @@ export class Parser {
 			ifNotExists = true;
 		}
 
-		const index = this.tableIdentifier(); // Index name follows same identifier rules
+		const index = this.tableIdentifier();
 
-		this.consumeKeyword('ON', "Expected 'ON' after index name."); // consumeKeyword still useful here
+		this.consumeKeyword('ON', "Expected 'ON' after index name.");
 
 		const table = this.tableIdentifier();
 
@@ -1078,7 +1135,7 @@ export class Parser {
 		this.consume(TokenType.RPAREN, "Expected ')' after indexed columns.");
 
 		let where: AST.Expression | undefined;
-		if (this.matchKeyword('WHERE')) { // Use matchKeyword
+		if (this.matchKeyword('WHERE')) {
 			where = this.expression();
 		}
 
@@ -1089,7 +1146,8 @@ export class Parser {
 			ifNotExists,
 			columns,
 			where,
-			isUnique, // Use the determined value
+			isUnique,
+			loc: _createLoc(startToken, this.previous()),
 		};
 	}
 
@@ -1097,12 +1155,11 @@ export class Parser {
 	 * Parse CREATE VIEW statement
 	 * @returns AST for CREATE VIEW
 	 */
-	private createViewStatement(): AST.CreateViewStmt {
-		// VIEW keyword consumed by createStatement
+	private createViewStatement(startToken: Token): AST.CreateViewStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
-			this.advance(); // Consume TEMP or TEMPORARY
+			this.advance();
 		}
 
 		let ifNotExists = false;
@@ -1112,7 +1169,7 @@ export class Parser {
 			ifNotExists = true;
 		}
 
-		const view = this.tableIdentifier(); // Views use the same identifier structure
+		const view = this.tableIdentifier();
 
 		let columns: string[] | undefined;
 		if (this.check(TokenType.LPAREN)) {
@@ -1129,7 +1186,7 @@ export class Parser {
 			this.consume(TokenType.RPAREN, "Expected ')' after view column list.");
 		}
 
-		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW."); // consumeKeyword ok here
+		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW.");
 
 		const select = this.selectStatement();
 
@@ -1140,6 +1197,7 @@ export class Parser {
 			columns,
 			select,
 			isTemporary,
+			loc: _createLoc(startToken, this.previous()),
 		};
 	}
 
@@ -1147,8 +1205,7 @@ export class Parser {
 	 * Parse DROP statement
 	 * @returns AST for DROP statement
 	 */
-	private dropStatement(): AST.DropStmt {
-		// DROP keyword consumed by main `statement` method
+	private dropStatement(startToken: Token): AST.DropStmt {
 		let objectType: 'table' | 'view' | 'index' | 'trigger';
 
 		if (this.peekKeyword('TABLE')) {
@@ -1160,8 +1217,6 @@ export class Parser {
 		} else if (this.peekKeyword('INDEX')) {
 			this.consumeKeyword('INDEX', "Expected INDEX after DROP.");
 			objectType = 'index';
-			// } else if (this.matchKeyword('TRIGGER')) { // Need TRIGGER token
-			//   objectType = 'trigger';
 		} else {
 			throw this.error(this.peek(), "Expected TABLE, VIEW, or INDEX after DROP.");
 		}
@@ -1172,13 +1227,14 @@ export class Parser {
 			ifExists = true;
 		}
 
-		const name = this.tableIdentifier(); // Use tableIdentifier for schema.name structure
+		const name = this.tableIdentifier();
 
 		return {
 			type: 'drop',
 			objectType,
 			name,
 			ifExists,
+			loc: _createLoc(startToken, this.previous()),
 		};
 	}
 
@@ -1186,8 +1242,7 @@ export class Parser {
 	 * Parse ALTER TABLE statement
 	 * @returns AST for ALTER TABLE statement
 	 */
-	private alterTableStatement(): AST.AlterTableStmt {
-		// ALTER keyword consumed by main `statement` method
+	private alterTableStatement(startToken: Token): AST.AlterTableStmt {
 		this.consumeKeyword('TABLE', "Expected 'TABLE' after ALTER.");
 
 		const table = this.tableIdentifier();
@@ -1197,27 +1252,23 @@ export class Parser {
 		if (this.peekKeyword('RENAME')) {
 			this.consumeKeyword('RENAME', "Expected RENAME.");
 			if (this.matchKeyword('COLUMN')) {
-				// RENAME COLUMN old TO new
 				const oldName = this.consumeIdentifier("Expected old column name after RENAME COLUMN.");
 				this.consumeKeyword('TO', "Expected 'TO' after old column name.");
 				const newName = this.consumeIdentifier("Expected new column name after TO.");
 				action = { type: 'renameColumn', oldName, newName };
 			} else {
-				// RENAME TO new
 				this.consumeKeyword('TO', "Expected 'TO' after RENAME.");
 				const newName = this.consumeIdentifier("Expected new table name after RENAME TO.");
 				action = { type: 'renameTable', newName };
 			}
 		} else if (this.peekKeyword('ADD')) {
 			this.consumeKeyword('ADD', "Expected ADD.");
-			// ADD [COLUMN] column_def
-			this.matchKeyword('COLUMN'); // Optional COLUMN keyword
+			this.matchKeyword('COLUMN');
 			const column = this.columnDefinition();
 			action = { type: 'addColumn', column };
 		} else if (this.peekKeyword('DROP')) {
 			this.consumeKeyword('DROP', "Expected DROP.");
-			// DROP [COLUMN] column_name
-			this.matchKeyword('COLUMN'); // Optional COLUMN keyword
+			this.matchKeyword('COLUMN');
 			const name = this.consumeIdentifier("Expected column name after DROP COLUMN.");
 			action = { type: 'dropColumn', name };
 		} else {
@@ -1228,6 +1279,7 @@ export class Parser {
 			type: 'alterTable',
 			table,
 			action,
+			loc: _createLoc(startToken, this.previous()),
 		};
 	}
 
@@ -1235,8 +1287,7 @@ export class Parser {
 	 * Parse BEGIN statement
 	 * @returns AST for BEGIN statement
 	 */
-	private beginStatement(): AST.BeginStmt {
-		// BEGIN keyword consumed by main `statement` method
+	private beginStatement(startToken: Token): AST.BeginStmt {
 		let mode: 'deferred' | 'immediate' | 'exclusive' | undefined;
 		if (this.peekKeyword('DEFERRED')) {
 			this.advance();
@@ -1249,84 +1300,72 @@ export class Parser {
 			mode = 'exclusive';
 		}
 
-		// Optional TRANSACTION keyword
 		this.matchKeyword('TRANSACTION');
 
-		return { type: 'begin', mode };
+		return { type: 'begin', mode, loc: _createLoc(startToken, this.previous()) };
 	}
 
 	/**
 	 * Parse COMMIT statement
 	 * @returns AST for COMMIT statement
 	 */
-	private commitStatement(): AST.CommitStmt {
-		// COMMIT keyword consumed by main `statement` method
-		// Optional TRANSACTION keyword
+	private commitStatement(startToken: Token): AST.CommitStmt {
 		this.matchKeyword('TRANSACTION');
-		return { type: 'commit' };
+		return { type: 'commit', loc: _createLoc(startToken, this.previous()) };
 	}
 
 	/**
 	 * Parse ROLLBACK statement
 	 * @returns AST for ROLLBACK statement
 	 */
-	private rollbackStatement(): AST.RollbackStmt {
-		// ROLLBACK keyword consumed by main `statement` method
-		// Optional TRANSACTION keyword
+	private rollbackStatement(startToken: Token): AST.RollbackStmt {
 		this.matchKeyword('TRANSACTION');
 
-		// Optional TO [SAVEPOINT] savepoint_name
 		let savepoint: string | undefined;
 		if (this.matchKeyword('TO')) {
-			// Optional SAVEPOINT keyword
 			this.matchKeyword('SAVEPOINT');
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected savepoint name after ROLLBACK TO.");
 			}
 			savepoint = this.advance().lexeme;
 		}
-		return { type: 'rollback', savepoint };
+		return { type: 'rollback', savepoint, loc: _createLoc(startToken, this.previous()) };
 	}
 
 	/**
 	 * Parse SAVEPOINT statement
 	 * @returns AST for SAVEPOINT statement
 	 */
-	private savepointStatement(): AST.SavepointStmt {
-		// SAVEPOINT keyword consumed by main `statement` method
+	private savepointStatement(startToken: Token): AST.SavepointStmt {
 		const name = this.consumeIdentifier("Expected savepoint name after SAVEPOINT.");
-		return { type: 'savepoint', name };
+		return { type: 'savepoint', name, loc: _createLoc(startToken, this.previous()) };
 	}
 
 	/**
 	 * Parse RELEASE statement
 	 * @returns AST for RELEASE statement
 	 */
-	private releaseStatement(): AST.ReleaseStmt {
-		// RELEASE keyword consumed by main `statement` method
-		// Optional SAVEPOINT keyword
+	private releaseStatement(startToken: Token): AST.ReleaseStmt {
 		this.matchKeyword('SAVEPOINT');
 		const name = this.consumeIdentifier("Expected savepoint name after RELEASE [SAVEPOINT].");
-		return { type: 'release', savepoint: name };
+		return { type: 'release', savepoint: name, loc: _createLoc(startToken, this.previous()) };
 	}
 
 	/**
 	 * Parse PRAGMA statement
 	 * @returns AST for PRAGMA statement
 	 */
-	private pragmaStatement(): AST.PragmaStmt {
-		// PRAGMA keyword consumed by statement()
+	private pragmaStatement(startToken: Token): AST.PragmaStmt {
 		const name = this.consumeIdentifier("Expected pragma name.");
 
 		let value: AST.LiteralExpr | AST.IdentifierExpr | undefined;
 		if (this.match(TokenType.EQUAL)) {
-			// Parse the value after '='
 			if (this.check(TokenType.IDENTIFIER)) {
 				value = { type: 'identifier', name: this.advance().lexeme };
 			} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL)) {
 				const token = this.previous();
 				value = { type: 'literal', value: token.type === TokenType.NULL ? null : token.literal };
-			} else if (this.match(TokenType.MINUS)) { // Handle negative numbers
+			} else if (this.match(TokenType.MINUS)) {
 				if (this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
 					const token = this.advance();
 					value = { type: 'literal', value: -token.literal };
@@ -1337,14 +1376,10 @@ export class Parser {
 				throw this.error(this.peek(), "Expected pragma value (identifier, string, number, or NULL).");
 			}
 		} else {
-			// TODO: Handle PRAGMA name; syntax if needed (no value)
-			// For now, assume assignment format is required for our pragmas
-			// If no value is needed, the check above will fail. Let's require '=' for now.
 			throw this.error(this.peek(), "Expected '=' after pragma name.");
-
 		}
 
-		return { type: 'pragma', name: name.toLowerCase(), value }; // Store name lowercased
+		return { type: 'pragma', name: name.toLowerCase(), value, loc: _createLoc(startToken, this.previous()) };
 	}
 
 	// --- Supporting Clause / Definition Parsers ---
@@ -1360,18 +1395,12 @@ export class Parser {
 
 	/** @internal Parses a single indexed column definition */
 	private indexedColumn(): AST.IndexedColumn {
-		// SQLite allows expressions in index definitions, so parse a full expression first
 		const expr = this.expression();
 
-		// However, for simplicity and common usage, let's extract the name if it's just a simple column identifier
 		let name: string | undefined;
 		if (expr.type === 'column' && !expr.table && !expr.schema) {
 			name = expr.name;
 		}
-
-		// TODO: Parse COLLATE collation_name if needed
-		// let collation: string | undefined;
-		// if (this.match(TokenType.COLLATE)) { ... }
 
 		let direction: 'asc' | 'desc' | undefined;
 		if (this.match(TokenType.ASC)) {
@@ -1381,11 +1410,9 @@ export class Parser {
 		}
 
 		if (name) {
-			// If it was a simple column name, prefer the name field
-			return { name, direction /*, collation */ };
+			return { name, direction };
 		} else {
-			// Otherwise, store the parsed expression
-			return { expr, direction /*, collation */ };
+			return { expr, direction };
 		}
 	}
 
@@ -1404,18 +1431,16 @@ export class Parser {
 		const name = this.consumeIdentifier("Expected column name.");
 
 		let dataType: string | undefined;
-		// Simple type name parsing (e.g., INTEGER, TEXT, VARCHAR(10))
 		if (this.check(TokenType.IDENTIFIER)) {
 			dataType = this.advance().lexeme;
-			// Optionally parse type parameters like (10, 2) for NUMERIC etc.
 			if (this.match(TokenType.LPAREN)) {
 				dataType += '(';
-				let parenLevel = 1; // Handle nested parentheses
+				let parenLevel = 1;
 				while (parenLevel > 0 && !this.isAtEnd()) {
 					const token = this.peek();
 					if (token.type === TokenType.LPAREN) parenLevel++;
 					if (token.type === TokenType.RPAREN) parenLevel--;
-					if (parenLevel > 0) { // Don't add the closing parenthesis here
+					if (parenLevel > 0) {
 						dataType += this.advance().lexeme;
 					}
 				}
@@ -1442,70 +1467,82 @@ export class Parser {
 	private isColumnConstraintStart(): boolean {
 		return this.check(TokenType.CONSTRAINT) ||
 			this.check(TokenType.PRIMARY) ||
-			this.check(TokenType.NOT) || // NOT NULL
+			this.check(TokenType.NOT) ||
 			this.check(TokenType.UNIQUE) ||
 			this.check(TokenType.CHECK) ||
 			this.check(TokenType.DEFAULT) ||
-			this.check(TokenType.COLLATE) || // Added
-			this.check(TokenType.REFERENCES) || // FOREIGN KEY
-			this.check(TokenType.GENERATED); // Added
+			this.check(TokenType.COLLATE) ||
+			this.check(TokenType.REFERENCES) ||
+			this.check(TokenType.GENERATED);
 	}
 
 	/** @internal Parses a single column constraint */
 	private columnConstraint(): AST.ColumnConstraint {
 		let name: string | undefined;
+		const startToken = this.peek(); // Capture start token
+		let endToken = startToken; // Initialize end token
+
 		if (this.match(TokenType.CONSTRAINT)) {
 			name = this.consumeIdentifier("Expected constraint name after CONSTRAINT.");
+			endToken = this.previous();
 		}
 
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
-			// Parse optional direction for column PK
 			const direction = this.match(TokenType.ASC) ? 'asc' : this.match(TokenType.DESC) ? 'desc' : undefined;
+			if (direction) endToken = this.previous();
 			const onConflict = this.parseConflictClause();
+			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
 			const autoincrement = this.match(TokenType.AUTOINCREMENT);
-			return { type: 'primaryKey', name, onConflict, autoincrement, direction };
+			if (autoincrement) endToken = this.previous();
+			return { type: 'primaryKey', name, onConflict, autoincrement, direction, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.NOT)) {
 			this.consume(TokenType.NULL, "Expected NULL after NOT.");
+			endToken = this.previous();
 			const onConflict = this.parseConflictClause();
-			return { type: 'notNull', name, onConflict };
+			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
+			return { type: 'notNull', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.UNIQUE)) {
+			endToken = this.previous();
 			const onConflict = this.parseConflictClause();
-			return { type: 'unique', name, onConflict };
+			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
+			return { type: 'unique', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
-			this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			return { type: 'check', name, expr };
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
+			return { type: 'check', name, expr, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.DEFAULT)) {
-			// Handle signed numbers, CURRENT_TIME, etc. more explicitly if needed
-			// For now, expression handles literals, parenthesized expr might work for others
 			const expr = this.expression();
-			return { type: 'default', name, expr };
+			endToken = this.previous();
+			return { type: 'default', name, expr, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.COLLATE)) {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected collation name after COLLATE.");
 			}
 			const collation = this.advance().lexeme;
-			return { type: 'collate', name, collation };
-		} else if (this.match(TokenType.REFERENCES)) { // Foreign key defined inline
+			endToken = this.previous();
+			return { type: 'collate', name, collation, loc: _createLoc(startToken, endToken) };
+		} else if (this.match(TokenType.REFERENCES)) {
 			const fkClause = this.foreignKeyClause();
-			return { type: 'foreignKey', name, foreignKey: fkClause };
+			endToken = this.previous(); // End token is end of FK clause
+			return { type: 'foreignKey', name, foreignKey: fkClause, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.GENERATED)) {
-			this.consume(TokenType.ALWAYS, "Expected ALWAYS after GENERATED."); // Need ALWAYS token? Assume AS for now.
+			this.consume(TokenType.ALWAYS, "Expected ALWAYS after GENERATED.");
 			this.consume(TokenType.AS, "Expected AS after GENERATED ALWAYS.");
 			this.consume(TokenType.LPAREN, "Expected '(' after AS.");
 			const expr = this.expression();
 			this.consume(TokenType.RPAREN, "Expected ')' after generated expression.");
+			endToken = this.previous();
 			let stored = false;
 			if (this.match(TokenType.STORED)) {
 				stored = true;
-			} else {
-				this.match(TokenType.VIRTUAL); // Optional VIRTUAL keyword
+				endToken = this.previous();
+			} else if (this.match(TokenType.VIRTUAL)) {
+				endToken = this.previous();
 			}
-			return { type: 'generated', name, generated: { expr, stored } };
+			return { type: 'generated', name, generated: { expr, stored }, loc: _createLoc(startToken, endToken) };
 		}
-
 
 		throw this.error(this.peek(), "Expected column constraint type (PRIMARY KEY, NOT NULL, UNIQUE, CHECK, DEFAULT, COLLATE, REFERENCES, GENERATED).");
 	}
@@ -1520,17 +1557,14 @@ export class Parser {
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			this.consume(TokenType.LPAREN, "Expected '(' before PRIMARY KEY columns.");
-			// Use updated identifierListWithDirection
 			const columns = this.identifierListWithDirection();
 			this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
 			return { type: 'primaryKey', name, columns, onConflict };
 		} else if (this.match(TokenType.UNIQUE)) {
 			this.consume(TokenType.LPAREN, "Expected '(' before UNIQUE columns.");
-			// Assume UNIQUE columns don't typically have direction specified, use simple list
-			// If needed later, could use identifierListWithDirection here too.
 			const columnsSimple = this.identifierList();
-			const columns = columnsSimple.map(name => ({ name })); // Convert to new format
+			const columns = columnsSimple.map(name => ({ name }));
 			this.consume(TokenType.RPAREN, "Expected ')' after UNIQUE columns.");
 			const onConflict = this.parseConflictClause();
 			return { type: 'unique', name, columns, onConflict };
@@ -1591,7 +1625,7 @@ export class Parser {
 				deferrable = false;
 				if (this.match(TokenType.INITIALLY)) {
 					if (this.match(TokenType.DEFERRED)) {
-						initiallyDeferred = true; // NOT DEFERRABLE INITIALLY DEFERRED doesn't make sense but parse it
+						initiallyDeferred = true;
 					} else if (this.match(TokenType.IMMEDIATE)) {
 						initiallyDeferred = false;
 					} else {
@@ -1599,7 +1633,7 @@ export class Parser {
 					}
 				}
 			} else {
-				break; // No more FK clauses
+				break;
 			}
 		}
 
@@ -1661,14 +1695,13 @@ export class Parser {
 	private peekKeyword(keyword: string): boolean {
 		if (this.isAtEnd()) return false;
 		const token = this.peek();
-		// Check if it's an identifier with the correct lexeme or the specific keyword token
 		return (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keyword) ||
 			(token.type === TokenType[keyword.toUpperCase() as keyof typeof TokenType]);
 	}
 
 	// --- Helper method to match keywords case-insensitively ---
 	private matchKeyword(keyword: string): boolean {
-		if (this.isAtEnd()) return false; // Added check
+		if (this.isAtEnd()) return false;
 		if (this.peekKeyword(keyword)) {
 			this.advance();
 			return true;
@@ -1686,11 +1719,12 @@ export class Parser {
 
 	// Add a new parsing level for COLLATE
 	private collateExpression(): AST.Expression {
-		let expr = this.primary(); // Parse the base expression
+		let expr = this.primary();
 
 		if (this.match(TokenType.COLLATE)) {
+			const collationToken = this.previous();
 			const collationName = this.consumeIdentifier("Expected collation name after COLLATE.");
-			expr = { type: 'collate', expr, collation: collationName };
+			expr = { type: 'collate', expr, collation: collationName, loc: _createLoc(this.peek(), this.previous()) };
 		}
 
 		return expr;

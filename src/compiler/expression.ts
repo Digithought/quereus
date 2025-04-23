@@ -86,16 +86,23 @@ function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, correlati
 		for (const [_, cIdx] of compiler.tableAliases.entries()) {
 			const schema = compiler.tableSchemas.get(cIdx);
 			if (schema?.columnIndexMap.has(expr.name.toLowerCase())) {
+				// Avoid marking as ambiguous if the column only exists in one schema accessible here.
+				// If we find it again, it IS ambiguous.
+				if (cursor !== -1) {
+					// Ambiguous case - return null here, let compileColumn handle the error with location
+					return null;
+				}
 				cursor = cIdx;
-				break;
+				// Don't break immediately, need to check for ambiguity
 			}
 		}
 	}
-	if (cursor === -1) return null; // Not found or ambiguous (will error later)
+	// If cursor is still -1 after checking all aliases, the column wasn't found.
+	if (cursor === -1) return null; // Not found
 	const tableSchema = compiler.tableSchemas.get(cursor);
-	if (!tableSchema) return null;
+	if (!tableSchema) return null; // Should not happen if alias map is consistent
 	const colIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
-	if (colIdx === undefined) return null;
+	if (colIdx === undefined) return null; // Column name not in the resolved schema
 	const columnSchema = tableSchema.columns[colIdx];
 	return { table: tableSchema, column: columnSchema };
 }
@@ -150,7 +157,7 @@ export function compileExpression(compiler: Compiler, expr: AST.Expression, targ
 		case 'subquery': compiler.compileSubquery(expr, targetReg); break;
 		case 'collate': compiler.compileCollate(expr, targetReg, correlation, havingContext, argumentMap); break; // Add this
 		default:
-			throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR);
+			throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 
@@ -179,7 +186,7 @@ export function compileLiteral(compiler: Compiler, expr: AST.LiteralExpr, target
 		compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `BigInt literal: ${value}`);
 	}
 	else {
-		throw new SqliteError(`Unsupported literal type: ${typeof value}`, StatusCode.ERROR);
+		throw new SqliteError(`Unsupported literal type: ${typeof value}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 
@@ -217,7 +224,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 				console.warn(`Correlated column ${expr.name} identified but not found in argument map.`);
 				// Fall through to normal resolution? Or throw error?
 				// Throwing might be safer
-				throw new SqliteError(`Internal error: Correlated column ${expr.name} not found in argument map.`);
+				throw new SqliteError(`Internal error: Correlated column ${expr.name} not found in argument map.`, StatusCode.INTERNAL, undefined, expr.loc?.start.line, expr.loc?.start.column);
 			}
 		}
 	}
@@ -236,7 +243,8 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 			compiler.emit(Opcode.SCopy, matchedCol.targetReg, targetReg, 0, null, 0, `HAVING: Use grouped/aggregated col '${expr.name}' from reg ${matchedCol.targetReg}`);
 			return;
 		}
-		throw new SqliteError(`Column "${expr.name}" must appear in the GROUP BY clause or be used in an aggregate function`, StatusCode.ERROR);
+		// Error: Column must be in GROUP BY or aggregate
+		throw new SqliteError(`Column "${expr.name}" must appear in the GROUP BY clause or be used in an aggregate function`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 
 	// 3. Default behavior (WHERE, SELECT list, non-correlated subquery part, etc.)
@@ -248,17 +256,19 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 		const aliasOrTableName = expr.table.toLowerCase();
 		const foundCursor = compiler.tableAliases.get(aliasOrTableName);
 		if (foundCursor === undefined) {
-			throw new SqliteError(`Table or alias not found: ${expr.table}`, StatusCode.ERROR);
+			// Error: Table or alias not found
+			throw new SqliteError(`Table or alias not found: ${expr.table}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 		}
 		cursor = foundCursor;
 		tableSchema = compiler.tableSchemas.get(cursor);
-		if (!tableSchema) { throw new SqliteError(`Internal error: Schema not found for cursor ${cursor}`, StatusCode.INTERNAL); }
+		if (!tableSchema) { throw new SqliteError(`Internal error: Schema not found for cursor ${cursor}`, StatusCode.INTERNAL); } // Internal error, loc less critical
 		const potentialColIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
 		if (potentialColIdx === undefined) {
 			if (expr.name.toLowerCase() === 'rowid' && tableSchema.primaryKeyDefinition.length === 0) {
 				colIdx = -1;
 			} else {
-				throw new SqliteError(`Column not found in table ${expr.table}: ${expr.name}`, StatusCode.ERROR);
+				// Error: Column not found in specified table
+				throw new SqliteError(`Column not found in table ${expr.table}: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 			}
 		} else {
 			colIdx = potentialColIdx;
@@ -281,7 +291,8 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 				const idx = schema.columnIndexMap.get(expr.name.toLowerCase());
 				if (idx !== undefined) {
 					if (potentialCursor !== -1) {
-						throw new SqliteError(`Ambiguous column name: ${expr.name}. Qualify with table name or alias.`, StatusCode.ERROR);
+						// Error: Ambiguous column
+						throw new SqliteError(`Ambiguous column name: ${expr.name}. Qualify with table name or alias.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 					}
 					potentialCursor = cursorId;
 					potentialColIdx = idx;
@@ -289,7 +300,8 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 					foundCount++;
 				} else if (expr.name.toLowerCase() === 'rowid' && schema.primaryKeyDefinition.length === 0) {
 					if (potentialCursor !== -1) {
-						throw new SqliteError(`Ambiguous column name: ${expr.name} (rowid). Qualify with table name or alias.`, StatusCode.ERROR);
+						// Error: Ambiguous column (rowid)
+						throw new SqliteError(`Ambiguous column name: ${expr.name} (rowid). Qualify with table name or alias.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 					}
 					potentialCursor = cursorId;
 					potentialColIdx = -1;
@@ -300,39 +312,46 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 		}
 
 		if (potentialCursor === -1) {
-			throw new SqliteError(`Column not found: ${expr.name}`, StatusCode.ERROR);
+			// Error: Column not found
+			throw new SqliteError(`Column not found: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 		}
 		cursor = potentialCursor;
 		colIdx = potentialColIdx;
 		tableSchema = potentialSchema;
 	}
 
-	if (!tableSchema) { throw new Error("Internal: Schema resolution failed"); }
+	if (!tableSchema) { throw new Error("Internal: Schema resolution failed"); } // Internal error
 
 	if (tableSchema.isVirtual) {
 		compiler.emit(Opcode.VColumn, cursor, colIdx, targetReg, 0, 0, `Get column: ${tableSchema.name}.${expr.name} (idx ${colIdx})`);
 	} else {
-		throw new SqliteError("Regular tables not implemented", StatusCode.ERROR);
+		throw new SqliteError("Regular tables not implemented", StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 
 export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	// If it's a subquery comparison, handle specially
-	if (expr.right.type === 'subquery' && ['=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IN'].includes(expr.operator.toUpperCase())) {
+	if (expr.right.type === 'subquery' && [
+		'=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IN'
+	].includes(expr.operator.toUpperCase())) {
 		const subQuery = expr.right.query;
 		switch (expr.operator.toUpperCase()) {
 			case 'IN': compiler.compileInSubquery(expr.left, subQuery, targetReg, false /*, correlation, argumentMap*/); return; // Fix: Adjusted arguments
 			case '=': case '==': case '!=': case '<>': case '<': case '<=': case '>': case '>=':
 				compiler.compileComparisonSubquery(expr.left, expr.operator, subQuery, targetReg /*, correlation, argumentMap*/); return; // Fix: Adjusted arguments
-			default: throw new SqliteError(`Operator '${expr.operator}' cannot be used with a subquery on the right side.`, StatusCode.ERROR);
+			default:
+				throw new SqliteError(`Operator '${expr.operator}' cannot be used with a subquery on the right side.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 		}
 	}
-	if (expr.left.type === 'subquery' && ['=', '==', '!=', '<>', '<', '<=', '>', '>='].includes(expr.operator.toUpperCase())) {
+	if (expr.left.type === 'subquery' && [
+		'=', '==', '!=', '<>', '<', '<=', '>', '>='
+	].includes(expr.operator.toUpperCase())) {
 		const subQuery = expr.left.query;
 		switch (expr.operator.toUpperCase()) {
 			case '=': case '==': case '!=': case '<>': case '<': case '<=': case '>': case '>=':
 				compiler.compileComparisonSubquery(expr.left, expr.operator, subQuery, targetReg /*, correlation, argumentMap*/); return; // Fix: Adjusted arguments
-			default: throw new SqliteError(`Operator '${expr.operator}' cannot be used with a subquery on the left side.`, StatusCode.ERROR);
+			default:
+				throw new SqliteError(`Operator '${expr.operator}' cannot be used with a subquery on the left side.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 		}
 	}
 
@@ -468,7 +487,7 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 		}
 		case 'LIKE': case 'GLOB': {
 			// TODO: Implement LIKE/GLOB with proper collation support
-			throw new SqliteError(`Operator ${expr.operator} not fully implemented yet with collation support.`, StatusCode.ERROR);
+			throw new SqliteError(`Operator ${expr.operator} not fully implemented yet with collation support.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 		}
 		case 'AND': {
 			// AND: Evaluate left. If false/null, result is left. Otherwise, result is right.
@@ -544,7 +563,7 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 			break;
 		}
 		default:
-			throw new SqliteError(`Unsupported binary operator: ${expr.operator}`, StatusCode.ERROR);
+			throw new SqliteError(`Unsupported binary operator: ${expr.operator}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 
@@ -622,7 +641,7 @@ export function compileUnary(compiler: Compiler, expr: AST.UnaryExpr, targetReg:
 
 			compiler.resolveAddress(addrEnd);
 			break;
-		default: throw new SqliteError(`Unsupported unary operator: ${expr.operator}`, StatusCode.ERROR);
+		default: throw new SqliteError(`Unsupported unary operator: ${expr.operator}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 
@@ -665,7 +684,7 @@ export function compileFunction(compiler: Compiler, expr: AST.FunctionExpr, targ
 
 	// Find the function definition
 	const funcDef = compiler.db._findFunction(expr.name, expr.args.length);
-	if (!funcDef) { throw new SqliteError(`Function not found: ${expr.name}/${expr.args.length}`, StatusCode.ERROR); }
+	if (!funcDef) { throw new SqliteError(`Function not found: ${expr.name}/${expr.args.length}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column); }
 
 	const isAggregate = !!(funcDef.xStep && funcDef.xFinal);
 
@@ -685,10 +704,15 @@ export function compileFunction(compiler: Compiler, expr: AST.FunctionExpr, targ
 	else if (isAggregate && havingContext && !funcDef.xFunc) {
 		// This case means an aggregate function was found in HAVING, but it wasn't pre-computed.
 		// This shouldn't happen if the HAVING clause correctly references aggregate results.
-		throw new SqliteError(`Aggregate function ${funcDef.name} used incorrectly in HAVING clause.`, StatusCode.ERROR);
+		throw new SqliteError(`Aggregate function ${funcDef.name} used incorrectly in HAVING clause.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+	} else if (isAggregate && !havingContext) {
+		// This case means an aggregate function was used in a scalar context.
+		// Per SQLite behavior, this often results in an error or unexpected NULL.
+		// Let's throw an error for clarity.
+		throw new SqliteError(`Aggregate function ${funcDef.name} used in a scalar context`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	} else {
 		// Should not be reachable if function definition is valid
-		throw new SqliteError(`Invalid function call context for ${funcDef.name}`, StatusCode.INTERNAL);
+		throw new SqliteError(`Invalid function call context for ${funcDef.name}`, StatusCode.INTERNAL, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 

@@ -99,9 +99,6 @@ export class Database {
 		const stmt = new Statement(this, sql);
 
 		try {
-			// Initialize it
-			// await stmt._prepare(); // Removed - Compilation happens lazily
-
 			// Add to active statements list
 			this.statements.add(stmt);
 

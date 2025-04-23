@@ -25,7 +25,7 @@ export function compileCommonTableExpression(compiler: Compiler, cte: AST.Common
 	// --- Non-Recursive CTE Handling --- //
 	// Check if it *looks* recursive but wasn't declared in a RECURSIVE context
 	if (!isRecursiveContext && isRecursiveCteQuery(compiler, cte, cteName)) {
-		throw new SqliteError(`Recursive CTE '${cteName}' used without 'RECURSIVE' keyword`, StatusCode.ERROR);
+		throw new SqliteError(`Recursive CTE '${cteName}' used without 'RECURSIVE' keyword`, StatusCode.ERROR, undefined, cte.loc?.start.line, cte.loc?.start.column);
 	}
 
 	console.log(`Compiling Non-Recursive CTE (Materializing): ${cteName}`);
@@ -56,7 +56,7 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 				// Basic type inference - can be improved
 				let affinity = SqlDataType.TEXT;
 				if (info.expr?.type === 'literal') {
-					if (typeof info.expr.value === 'number') affinity = SqlDataType.FLOAT;
+					if (typeof info.expr.value === 'number') affinity = SqlDataType.REAL;
 					if (typeof info.expr.value === 'bigint') affinity = SqlDataType.INTEGER;
 					if (info.expr.value === null) affinity = SqlDataType.NULL; // Though usually TEXT/BLOB default is fine
 				}
@@ -71,7 +71,7 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 
 			console.log(`CTE '${cteName}': Inferred ${resultInfo.numCols} columns for ephemeral table ${cteCursorIdx}`);
 		} else {
-			throw new SqliteError(`CTE query type '${cte.query.type}' not yet supported for materialization`, StatusCode.ERROR);
+			throw new SqliteError(`CTE query type '${cte.query.type}' not yet supported for materialization`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 		}
 
 	} finally {
@@ -96,13 +96,13 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): void {
 	const cteName = cte.name.toLowerCase();
 	if (cte.query.type !== 'select' || (!cte.query.union && !cte.query.unionAll)) {
-		throw new SqliteError(`Recursive CTE '${cteName}' must use UNION or UNION ALL`, StatusCode.ERROR);
+		throw new SqliteError(`Recursive CTE '${cteName}' must use UNION or UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 	}
 
 	const initialSelect = { ...cte.query, union: undefined, unionAll: undefined }; // Extract initial SELECT
 	const recursiveSelect = cte.query.union;
 	if (!recursiveSelect) {
-		throw new SqliteError(`Recursive CTE '${cteName}' is missing the recursive part after UNION ALL`, StatusCode.ERROR);
+		throw new SqliteError(`Recursive CTE '${cteName}' is missing the recursive part after UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 	}
 	const isUnionAll = cte.query.unionAll ?? false; // Default to UNION (distinct)
 
@@ -132,7 +132,7 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 		const inferredColumns = resultInfo.columnMap.map((info, index) => {
 			let affinity = SqlDataType.TEXT; // Default
 			if (info.expr?.type === 'literal') {
-				if (typeof info.expr.value === 'number') affinity = SqlDataType.FLOAT;
+				if (typeof info.expr.value === 'number') affinity = SqlDataType.REAL;
 				if (typeof info.expr.value === 'bigint') affinity = SqlDataType.INTEGER;
 				if (info.expr.value === null) affinity = SqlDataType.NULL;
 			}
@@ -294,7 +294,7 @@ function _compileSelectAndPopulateEphemeral(
 		queryResultBase = innerResult.resultBaseReg;
 		queryNumCols = innerResult.numCols;
 		if (queryNumCols !== targetSchema.columns.length) {
-			throw new SqliteError(`CTE column count mismatch during population: expected ${targetSchema.columns.length}, got ${queryNumCols}`, StatusCode.ERROR);
+			throw new SqliteError(`CTE column count mismatch during population: expected ${targetSchema.columns.length}, got ${queryNumCols}`, StatusCode.ERROR, undefined, selectStmt.loc?.start.line, selectStmt.loc?.start.column);
 		}
 
 		// Prepare data for VUpdate
@@ -383,10 +383,12 @@ function isRecursiveCteQuery(compiler: Compiler, cte: AST.CommonTableExpr, cteNa
 	if (sel.union) {
 		const checkClause = (clause: AST.FromClause): boolean => {
 			if (!clause) return false;
-			if (clause.type === 'table' && clause.table.name.toLowerCase() === cteName.toLowerCase()) {
-				return true;
-			}
-			if (clause.type === 'join') {
+			if (clause.type === 'table') {
+				// Need to check against CTE name, not compiler.tableAliases during initial check
+				if (clause.table.name.toLowerCase() === cteName.toLowerCase()) {
+					return true;
+				}
+			} else if (clause.type === 'join') {
 				return checkClause(clause.left) || checkClause(clause.right);
 			}
 			// Add other FROM clause types if needed (e.g., subqueries, functions)

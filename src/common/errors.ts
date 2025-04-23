@@ -1,24 +1,60 @@
 import { StatusCode } from './constants';
+import type { Token } from '../parser/lexer';
 
-/** Base class for SQLite-related errors */
+/**
+ * Base class for SQLiter specific errors
+ */
 export class SqliteError extends Error {
-	public readonly code: StatusCode;
+	public code: number;
+	public cause?: Error;
+	public line?: number;
+	public column?: number;
 
-	constructor(message: string, code: StatusCode = StatusCode.ERROR) {
+	constructor(message: string, code: number = StatusCode.ERROR, cause?: Error, line?: number, column?: number) {
 		super(message);
-		this.name = 'SqliteError';
 		this.code = code;
-		// Ensure the prototype chain is correctly set up
-		Object.setPrototypeOf(this, SqliteError.prototype);
+		this.name = 'SqliteError';
+		this.cause = cause;
+		this.line = line;
+		this.column = column;
+
+		// Enhance message with location if available
+		if (line !== undefined && column !== undefined) {
+			this.message = `${message} (at line ${line}, column ${column})`;
+		}
+
+		// Maintain stack trace in V8
+		if (Error.captureStackTrace) {
+			Error.captureStackTrace(this, SqliteError);
+		}
 	}
 }
 
-/** Specific error for constraint violations */
+/**
+ * Parser-specific error (includes token info)
+ */
+export class ParseError extends SqliteError {
+	public token: Token;
+
+	constructor(message: string, token: Token) {
+		// Pass token location to SqliteError constructor
+		super(message, StatusCode.ERROR, undefined, token.startLine, token.startColumn);
+		this.token = token;
+		this.name = 'ParseError';
+
+		// Don't repeat location in the base message if it's already added
+		// Let the base class handle adding location if needed.
+		// this.message = `${message} (at line ${token.startLine}, column ${token.startColumn})`;
+	}
+}
+
+/**
+ * Error for constraint violations
+ */
 export class ConstraintError extends SqliteError {
-	constructor(message: string = "Constraint violation") {
-		super(message, StatusCode.CONSTRAINT);
+	constructor(message: string, code: number = StatusCode.CONSTRAINT) {
+		super(message, code);
 		this.name = 'ConstraintError';
-		Object.setPrototypeOf(this, ConstraintError.prototype);
 	}
 }
 

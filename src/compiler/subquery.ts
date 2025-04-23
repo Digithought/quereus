@@ -33,7 +33,7 @@ export function compileScalarSubquery(compiler: Compiler, subQuery: AST.SelectSt
 // --- Uncorrelated Scalar Subquery --- //
 function compileUncorrelatedScalarSubquery(compiler: Compiler, subQuery: AST.SelectStmt, targetReg: number): void {
 	if (subQuery.columns.length !== 1 || subQuery.columns[0].type === 'all') {
-		throw new SqliteError("Scalar subquery must return exactly one column (cannot be *)", StatusCode.ERROR);
+		throw new SqliteError("Scalar subquery must return exactly one column (cannot be *)", StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 	const regHasRow = compiler.allocateMemoryCells(1);
 	const addrLoopStart = compiler.allocateAddress(); // Re-add loop start address
@@ -111,7 +111,7 @@ function compileCorrelatedScalarSubquery(
 		// Compile subquery core inside the subroutine context
 		const subQueryCursors: number[] = [];
 		const { resultBaseReg, numCols } = compiler.compileSelectCore(subQuery, subQueryCursors, correlation, argumentMap);
-		if (numCols !== 1) throw new SqliteError("Correlated scalar subquery must return one column", StatusCode.INTERNAL);
+		if (numCols !== 1) throw new SqliteError("Correlated scalar subquery must return one column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 
 		const addrSubLoopStart = compiler.allocateAddress();
 		const addrSubLoopEnd = compiler.allocateAddress();
@@ -250,7 +250,7 @@ export function compileInSubquery(
 	invert: boolean
 ): void {
 	if (subQuery.columns.length !== 1 || subQuery.columns[0].type === 'all') {
-		throw new SqliteError("Subquery for IN operator must return exactly one column (cannot be *)", StatusCode.ERROR);
+		throw new SqliteError("Subquery for IN operator must return exactly one column (cannot be *)", StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 
 	const subqueryCorrelation = analyzeSubqueryCorrelation(compiler, subQuery, new Set(compiler.tableAliases.values()));
@@ -416,7 +416,7 @@ function compileCorrelatedInSubquery(
 		// Compile subquery core
 		const subQueryCursors: number[] = [];
 		const { resultBaseReg, numCols } = compiler.compileSelectCore(subQuery, subQueryCursors, correlation, subArgumentMap);
-		if (numCols !== 1) throw new SqliteError("Correlated IN subquery requires 1 column", StatusCode.INTERNAL);
+		if (numCols !== 1) throw new SqliteError("Correlated IN subquery requires 1 column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 
 		// --- Subroutine Logic ---
 		const addrSubLoopStart = compiler.allocateAddress();
@@ -586,7 +586,7 @@ function compileUncorrelatedComparisonSubquery(
 		case '<=': compareOpcode = Opcode.Le; break;
 		case '>': compareOpcode = Opcode.Gt; break;
 		case '>=': compareOpcode = Opcode.Ge; break;
-		default: throw new SqliteError(`Unsupported comparison operator with subquery: ${op}`);
+		default: throw new SqliteError(`Unsupported comparison operator with subquery: ${op}`, StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 
 	// Use correct comparison order: compare(regSubResult, regLeft)
@@ -671,7 +671,7 @@ function compileCorrelatedComparisonSubquery(
 		case '<=': compareOpcode = Opcode.Le; break;
 		case '>': compareOpcode = Opcode.Gt; break;
 		case '>=': compareOpcode = Opcode.Ge; break;
-		default: throw new SqliteError(`Unsupported comparison operator with subquery: ${op}`);
+		default: throw new SqliteError(`Unsupported comparison operator with subquery: ${op}`, StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 
 	// Compare regLeftValue with retrieved subquery result (note order: compare(sub, left))

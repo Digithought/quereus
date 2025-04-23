@@ -4,7 +4,7 @@
  * Translates SQL AST into VDBE instructions
  */
 import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError } from '../common/errors'; // Removed ConflictResolution
+import { SqliteError, ParseError } from '../common/errors'; // Removed ConflictResolution
 import { Opcode } from '../common/constants'; // Added ConflictResolution here
 import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
@@ -108,119 +108,142 @@ export class Compiler {
 	 * Compile an AST node into a VDBE program
 	 */
 	compile(ast: AST.AstNode, sql: string): VdbeProgram {
-		// Reset state
-		this.sql = sql;
-		this.constants = [];
-		// Reset main instruction stream (subroutines handled separately)
-		this.instructions = [];
-		this.numMemCells = 0;
-		this.numCursors = 0;
-		this.parameters = new Map();
-		this.columnAliases = [];
-		this.cteMap = new Map(); // Reset CTE map
-		this.tableSchemas = new Map();
-		this.tableAliases = new Map(); // Reset aliases
-		this.ephemeralTables = new Map();
-		this.resultColumns = [];
-		this.cursorPlanningInfo = new Map(); // Reset planning info
-		// --- Reset subroutine state ---
-		this.subroutineCode = [];
-		this.subroutineDefs = new Map();
-		this.subroutineDepth = 0;
-		// --- Reset new fields ---
-		this.currentFrameLocals = 0;
-		this.currentFrameEnterInsn = null;
-		this.maxLocalOffsetInCurrentFrame = 0;
-		this.stackPointer = 0; // Reset stack pointers
-		this.framePointer = 0;
-		// -----------------------------
+		try {
+			// Reset state
+			this.sql = sql;
+			this.constants = [];
+			// Reset main instruction stream (subroutines handled separately)
+			this.instructions = [];
+			this.numMemCells = 0;
+			this.numCursors = 0;
+			this.parameters = new Map();
+			this.columnAliases = [];
+			this.cteMap = new Map(); // Reset CTE map
+			this.tableSchemas = new Map();
+			this.tableAliases = new Map(); // Reset aliases
+			this.ephemeralTables = new Map();
+			this.resultColumns = [];
+			this.cursorPlanningInfo = new Map(); // Reset planning info
+			// --- Reset subroutine state ---
+			this.subroutineCode = [];
+			this.subroutineDefs = new Map();
+			this.subroutineDepth = 0;
+			// --- Reset new fields ---
+			this.currentFrameLocals = 0;
+			this.currentFrameEnterInsn = null;
+			this.maxLocalOffsetInCurrentFrame = 0;
+			this.stackPointer = 0; // Reset stack pointers
+			this.framePointer = 0;
+			// -----------------------------
 
-		// Add initial Init instruction
-		this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
+			// Add initial Init instruction
+			this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
 
-		// --- Compile WITH clause FIRST if present --- //
-		let withClause: WithClause | undefined;
-		if ('withClause' in ast && (ast as any).withClause !== undefined) {
-			withClause = (ast as any).withClause;
-			this.compileWithClause(withClause);
+			// --- Compile WITH clause FIRST if present --- //
+			let withClause: WithClause | undefined;
+			if ('withClause' in ast && (ast as any).withClause !== undefined) {
+				withClause = (ast as any).withClause;
+				this.compileWithClause(withClause);
+			}
+			// ------------------------------------------ //
+
+			// Compile by node type
+			switch (ast.type) {
+				case 'select':
+					this.compileSelect(ast as AST.SelectStmt);
+					break;
+				case 'insert':
+					this.compileInsert(ast as AST.InsertStmt);
+					break;
+				case 'update':
+					this.compileUpdate(ast as AST.UpdateStmt);
+					break;
+				case 'delete':
+					this.compileDelete(ast as AST.DeleteStmt);
+					break;
+				// --- Add WITH clause handling for other statements if needed --- //
+				case 'createTable':
+					this.compileCreateTable(ast as AST.CreateTableStmt);
+					break;
+				case 'createIndex':
+					this.compileCreateIndex(ast as AST.CreateIndexStmt);
+					break;
+				case 'createView':
+					this.compileCreateView(ast as AST.CreateViewStmt);
+					break;
+				case 'drop':
+					this.compileDrop(ast as AST.DropStmt);
+					break;
+				case 'alterTable':
+					this.compileAlterTable(ast as AST.AlterTableStmt);
+					break;
+				case 'begin':
+					this.compileBegin(ast as AST.BeginStmt);
+					break;
+				case 'commit':
+					this.compileCommit(ast as AST.CommitStmt);
+					break;
+				case 'rollback':
+					this.compileRollback(ast as AST.RollbackStmt);
+					break;
+				case 'savepoint':
+					this.compileSavepoint(ast as AST.SavepointStmt);
+					break;
+				case 'release':
+					this.compileRelease(ast as AST.ReleaseStmt);
+					break;
+				case 'pragma':
+					this.compilePragma(ast as AST.PragmaStmt);
+					break;
+
+				default:
+					throw new SqliteError(`Unsupported statement type: ${(ast as any).type}`, StatusCode.ERROR);
+			}
+
+			// --- Append subroutines after main program --- //
+			if (this.subroutineCode.length > 0) {
+				// Patch subroutine FrameEnter sizes before appending
+				// (This assumes endSubroutineCompilation was called correctly for each)
+				this.instructions.push(...this.subroutineCode);
+				this.subroutineCode = []; // Clear for potential reuse
+			}
+			// -------------------------------------------- //
+
+			// End program with Halt
+			this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
+
+			// Create program
+			return {
+				instructions: this.instructions,
+				constants: this.constants,
+				numMemCells: this.numMemCells + 1, // VDBE needs one more than max index used
+				numCursors: this.numCursors,
+				parameters: this.parameters,
+				columnNames: this.columnAliases,
+				sql: this.sql
+			};
+		} catch (error) {
+			if (error instanceof ParseError) {
+				// Re-throw ParseError as SqliteError, preserving location and cause
+				throw new SqliteError(
+					error.message, // Original parser message (already includes location hint from token)
+					StatusCode.ERROR, // Use the correct code
+					error, // Set the original ParseError as the cause
+					error.line, // Use line from SqliteError base
+					error.column // Use column from SqliteError base
+				);
+			} else if (error instanceof SqliteError) {
+				// If it's already an SqliteError, just re-throw it
+				throw error;
+			} else {
+				// Wrap other unexpected errors
+				throw new SqliteError(
+					`Unexpected compiler error: ${error instanceof Error ? error.message : String(error)}`,
+					StatusCode.INTERNAL,
+					error instanceof Error ? error : undefined // Set cause if it's an Error
+				);
+			}
 		}
-		// ------------------------------------------ //
-
-		// Compile by node type
-		switch (ast.type) {
-			case 'select':
-				this.compileSelect(ast as AST.SelectStmt);
-				break;
-			case 'insert':
-				this.compileInsert(ast as AST.InsertStmt);
-				break;
-			case 'update':
-				this.compileUpdate(ast as AST.UpdateStmt);
-				break;
-			case 'delete':
-				this.compileDelete(ast as AST.DeleteStmt);
-				break;
-			// --- Add WITH clause handling for other statements if needed --- //
-			case 'createTable':
-				this.compileCreateTable(ast as AST.CreateTableStmt);
-				break;
-			case 'createIndex':
-				this.compileCreateIndex(ast as AST.CreateIndexStmt);
-				break;
-			case 'createView':
-				this.compileCreateView(ast as AST.CreateViewStmt);
-				break;
-			case 'drop':
-				this.compileDrop(ast as AST.DropStmt);
-				break;
-			case 'alterTable':
-				this.compileAlterTable(ast as AST.AlterTableStmt);
-				break;
-			case 'begin':
-				this.compileBegin(ast as AST.BeginStmt);
-				break;
-			case 'commit':
-				this.compileCommit(ast as AST.CommitStmt);
-				break;
-			case 'rollback':
-				this.compileRollback(ast as AST.RollbackStmt);
-				break;
-			case 'savepoint':
-				this.compileSavepoint(ast as AST.SavepointStmt);
-				break;
-			case 'release':
-				this.compileRelease(ast as AST.ReleaseStmt);
-				break;
-			case 'pragma':
-				this.compilePragma(ast as AST.PragmaStmt);
-				break;
-
-			default:
-				throw new SqliteError(`Unsupported statement type: ${(ast as any).type}`, StatusCode.ERROR);
-		}
-
-		// --- Append subroutines after main program --- //
-		if (this.subroutineCode.length > 0) {
-			// Patch subroutine FrameEnter sizes before appending
-			// (This assumes endSubroutineCompilation was called correctly for each)
-			this.instructions.push(...this.subroutineCode);
-			this.subroutineCode = []; // Clear for potential reuse
-		}
-		// -------------------------------------------- //
-
-		// End program with Halt
-		this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
-
-		// Create program
-		return {
-			instructions: this.instructions,
-			constants: this.constants,
-			numMemCells: this.numMemCells + 1, // VDBE needs one more than max index used
-			numCursors: this.numCursors,
-			parameters: this.parameters,
-			columnNames: this.columnAliases,
-			sql: this.sql
-		};
 	}
 
 	// --- Update Subroutine Compilation Context --- //

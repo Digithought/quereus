@@ -210,7 +210,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 					const tableSchema = cteInfo.schema;
 					compiler.tableSchemas.set(cursor, tableSchema); // Ensure schema is mapped
 					if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-						throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
+						throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 					}
 					compiler.tableAliases.set(lookupName, cursor);
 					currentLevelAliases.set(lookupName, cursor);
@@ -228,11 +228,11 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const cursor = compiler.allocateCursor();
 			openedCursors.push(cursor);
 			const tableSchema = compiler.db._findTable(tableName, schemaName);
-			if (!tableSchema) throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR);
+			if (!tableSchema) throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
 
 			compiler.tableSchemas.set(cursor, tableSchema);
 			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
+				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 			}
 			compiler.tableAliases.set(lookupName, cursor);
 			currentLevelAliases.set(lookupName, cursor);
@@ -244,7 +244,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				// Need to connect if instance doesn't exist yet (e.g., schema load)
 				console.warn(`VTab ${tableName} found but not connected, attempting connect...`);
 				const module = compiler.db._getVtabModule(tableSchema.vtabModuleName ?? '');
-				if (!module) throw new SqliteError(`Module ${tableSchema.vtabModuleName} not found for VTab ${tableName}`);
+				if (!module) throw new SqliteError(`Module ${tableSchema.vtabModuleName} not found for VTab ${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
 				const argv = [tableSchema.vtabModuleName ?? '', schemaName, tableName, ...(tableSchema.vtabArgs ?? [])];
 				// Call connect synchronously
 				const instance = module.module.xConnect(compiler.db, module.auxData, argv);
@@ -254,7 +254,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				compiler.tableSchemas.set(cursor, connectedSchema);
 				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema: connectedSchema };
 				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
-			} else { throw new SqliteError("Regular tables not supported", StatusCode.ERROR); }
+			} else { throw new SqliteError("Regular tables not supported", StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column); }
 		} else if (source.type === 'join') {
 			openCursorsRecursive(source.left, currentLevelAliases);
 			openCursorsRecursive(source.right, currentLevelAliases);
@@ -263,7 +263,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const funcName = source.name.name; // Assuming simple identifier for now
 			const moduleInfo = compiler.db._getVtabModule(funcName);
 			if (!moduleInfo) {
-				throw new SqliteError(`Table-valued function or virtual table module not found: ${funcName}`, StatusCode.ERROR);
+				throw new SqliteError(`Table-valued function or virtual table module not found: ${funcName}`, StatusCode.ERROR, undefined, source.name.loc?.start.line, source.name.loc?.start.column);
 			}
 
 			// Compile arguments into temporary registers
@@ -284,13 +284,13 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 						compiledArgs.push(argExpr.value === null ? '' : argExpr.value); // Pass null as empty string?
 					} else {
 						// Or coerce other literals? For now, error if not string/null.
-						throw new SqliteError(`Table-valued function arguments must be string literals (or NULL) for ${funcName}.`, StatusCode.ERROR);
+						throw new SqliteError(`Table-valued function arguments must be string literals (or NULL) for ${funcName}.`, StatusCode.ERROR, undefined, argExpr.loc?.start.line, argExpr.loc?.start.column);
 					}
 				} else if (argExpr.type === 'parameter') {
 					// Parameters aren't available at compile time!
-					throw new SqliteError(`Parameters not supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR);
+					throw new SqliteError(`Parameters not supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR, undefined, argExpr.loc?.start.line, argExpr.loc?.start.column);
 				} else {
-					throw new SqliteError(`Only literals supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR);
+					throw new SqliteError(`Only literals supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR, undefined, argExpr.loc?.start.line, argExpr.loc?.start.column);
 				}
 				// We don't actually need the registers if we evaluate here
 			}
@@ -312,7 +312,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			compiler.tableSchemas.set(cursor, instance.tableSchema);
 			const lookupName = (source.alias || funcName).toLowerCase();
 			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR);
+				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 			}
 			compiler.tableAliases.set(lookupName, cursor);
 			currentLevelAliases.set(lookupName, cursor);
@@ -359,7 +359,7 @@ function findReferencedColumns(compiler: Compiler, expr: AST.Expression | undefi
 						foundCursor = cursorId;
 					}
 				}
-				if (ambiguous) throw new SqliteError(`Ambiguous column reference in usage analysis: ${colExpr.name}`);
+				if (ambiguous) throw new SqliteError(`Ambiguous column reference in usage analysis: ${colExpr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 			}
 
 			if (activeCursors.has(foundCursor)) {
@@ -508,7 +508,7 @@ function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: 
 						foundInOuter = true;
 					}
 				}
-				if (ambiguous) throw new SqliteError(`Ambiguous column in constraint analysis: ${colExpr.name}`);
+				if (ambiguous) throw new SqliteError(`Ambiguous column in constraint analysis: ${colExpr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 			}
 			// It's an outer expression if the resolved cursor is NOT the target cursor
 			return sourceCursor !== -1 && sourceCursor !== cursorIdx;
@@ -593,17 +593,18 @@ function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: 
 					const upperBoundExpr = binExpr.right.right;
 
 					// Create synthetic AST nodes for the constraints
-					const geExpr: AST.BinaryExpr = { type: 'binary', operator: '>=', left: colExpr, right: lowerBoundExpr };
-					const leExpr: AST.BinaryExpr = { type: 'binary', operator: '<=', left: colExpr, right: upperBoundExpr };
+					const geExpr: AST.BinaryExpr = { type: 'binary', operator: '>=', left: colExpr, right: lowerBoundExpr, loc: binExpr.loc }; // Pass loc
+					const leExpr: AST.BinaryExpr = { type: 'binary', operator: '<=', left: colExpr, right: upperBoundExpr, loc: binExpr.loc }; // Pass loc
 
 					traverse(geExpr); // Check if >= can be handled
 					traverse(leExpr); // Check if <= can be handled
 
 					// If BOTH components were handled, mark the original BETWEEN node
-					if (handledNodes.has(geExpr) && handledNodes.has(leExpr)) {
-						handledNodes.add(binExpr);
-					}
-					// Rely on traverse marking the synthetic ge/le nodes if they are handleable individually.
+					// Note: This check might be overly strict if traverse logic changes.
+					// Let's rely on traverse marking the synthetic ge/le nodes individually.
+					// if (handledNodes.has(geExpr) && handledNodes.has(leExpr)) {
+					// 	handledNodes.add(binExpr);
+					// }
 				} else {
 					console.warn("Unsupported BETWEEN structure for planning.");
 				}
@@ -792,6 +793,8 @@ export function planTableAccessHelper(
 					const colIdx = tableSchema.columnIndexMap.get(colNameLower);
 					if (colIdx !== undefined) {
 						orderBy.push({ iColumn: colIdx, desc: ob.direction === 'desc' });
+					} else if (colNameLower === 'rowid') {
+						orderBy.push({ iColumn: -1, desc: ob.direction === 'desc' });
 					}
 				}
 			} else {
@@ -830,7 +833,7 @@ export function planTableAccessHelper(
 	}
 
 	if (status !== StatusCode.OK) {
-		throw new SqliteError(`xBestIndex failed for table ${tableSchema.name} with code ${status}`, status);
+		throw new SqliteError(`xBestIndex failed for table ${tableSchema.name} with code ${status}`, status, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
 	// Store the results from xBestIndex
@@ -901,6 +904,7 @@ export function verifyWhereConstraintsHelper(
 			// Reconstruct the expression for verification.
 			// This involves the column from the current cursor and the original value expression.
 			let verificationExpr: AST.Expression | null = null;
+			let verificationExprLoc: AST.AstNode['loc'] | undefined = originalValueExpr?.loc; // Default to value expr loc
 
 			if (constraint.iColumn === -1) {
 				// TODO: Handle rowid verification if needed (e.g., using a special function/opcode?)
@@ -913,12 +917,15 @@ export function verifyWhereConstraintsHelper(
 				console.error(`Cannot find column name for index ${constraint.iColumn} in table ${tableSchema.name} during verification.`);
 				continue;
 			}
+			// Synthesize a ColumnExpr - no real location, but needed for structure
 			const colExpr: AST.ColumnExpr = { type: 'column', name: colName };
 
 			// Handle IS NULL / IS NOT NULL (originalValueExpr is the unary expr itself)
 			if (constraint.op === IndexConstraintOp.ISNULL || constraint.op === IndexConstraintOp.ISNOTNULL) {
 				if (originalValueExpr?.type === 'unary') {
-					verificationExpr = originalValueExpr;
+					// Reconstruct unary with our synthesized colExpr
+					verificationExpr = { ...originalValueExpr, expr: colExpr };
+					verificationExprLoc = originalValueExpr.loc;
 				} else {
 					console.warn(`Cannot reconstruct IS NULL/IS NOT NULL verification expression for constraint ${i}.`);
 					continue;
@@ -954,12 +961,14 @@ export function verifyWhereConstraintsHelper(
 				}
 
 				// Construct the binary expression: colExpr op originalValueExpr
-				const binaryExpr: AST.BinaryExpr = { type: 'binary', operator: opInfo.op, left: colExpr, right: originalValueExpr };
+				// Use the location of the original value expression for the combined expression
+				const binaryExpr: AST.BinaryExpr = { type: 'binary', operator: opInfo.op, left: colExpr, right: originalValueExpr, loc: verificationExprLoc };
 				verificationExpr = binaryExpr;
 			}
 
 			// Compile and check the verification expression
 			if (verificationExpr) {
+				// Pass the original location when compiling
 				compiler.compileExpression(verificationExpr, tempReg);
 				// Use the original operator string if available, otherwise the op code number
 				const opStr = (verificationExpr.type === 'unary' ? verificationExpr.operator : (verificationExpr.type === 'binary' ? verificationExpr.operator : `op${constraint.op}`));
@@ -1116,7 +1125,7 @@ export function analyzeSubqueryCorrelation(
 						foundCursorId = cursorId;
 					}
 				}
-				if (ambiguous) throw new SqliteError(`Ambiguous column in subquery correlation check: ${colExpr.name}`);
+				if (ambiguous) throw new SqliteError(`Ambiguous column in subquery correlation check: ${colExpr.name}`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
 				sourceCursor = foundCursorId;
 			}
 

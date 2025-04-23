@@ -8,8 +8,8 @@ import { compileUnhandledWhereConditions } from './helpers';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
-	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR); }
-	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting INSERT`, StatusCode.ERROR); }
+	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting INSERT`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	let targetColumns = stmt.columns;
 	if (!targetColumns) {
@@ -18,7 +18,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 		const schemaCols = new Set(tableSchema.columns.map(c => c.name.toLowerCase()));
 		for (const col of targetColumns) {
 			if (!schemaCols.has(col.toLowerCase())) {
-				throw new SqliteError(`Column '${col}' not found in table '${tableSchema.name}'`, StatusCode.ERROR);
+				throw new SqliteError(`Column '${col}' not found in table '${tableSchema.name}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
 		}
 	}
@@ -34,7 +34,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 
 	if (stmt.values) {
 		for (const valueRow of stmt.values) {
-			if (valueRow.length !== numCols) { throw new SqliteError(`Column count mismatch: table ${tableSchema.name} expected ${numCols} columns, but ${valueRow.length} values were supplied`, StatusCode.ERROR); }
+			if (valueRow.length !== numCols) { throw new SqliteError(`Column count mismatch: table ${tableSchema.name} expected ${numCols} columns, but ${valueRow.length} values were supplied`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
 
 			compiler.emit(Opcode.Null, 0, regDataStart, 0, null, 0, "Rowid=NULL for INSERT");
 			for (let i = 0; i < tableSchema.columns.length; i++) {
@@ -48,15 +48,15 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 			const p4Update = { onConflict: stmt.onConflict || ConflictResolution.ABORT, table: tableSchema };
 			compiler.emit(Opcode.VUpdate, tableSchema.columns.length + 1, regDataStart, regNewRowid, p4Update, 0, `VUpdate INSERT ${tableSchema.name}`);
 		}
-	} else if (stmt.select) { throw new SqliteError("INSERT ... SELECT compilation not implemented yet.", StatusCode.ERROR); }
-	else { throw new SqliteError("INSERT statement missing VALUES or SELECT clause.", StatusCode.ERROR); }
+	} else if (stmt.select) { throw new SqliteError("INSERT ... SELECT compilation not implemented yet.", StatusCode.ERROR, undefined, stmt.select.loc?.start.line, stmt.select.loc?.start.column); }
+	else { throw new SqliteError("INSERT statement missing VALUES or SELECT clause.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
 	compiler.emit(Opcode.Close, cursor, 0, 0, null, 0, `Close ${tableSchema.name}`);
 }
 
 export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
-	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR); }
-	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting UPDATE`, StatusCode.ERROR); }
+	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting UPDATE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -102,8 +102,8 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 	for (const assignment of stmt.assignments) {
 		const colNameLower = assignment.column.toLowerCase();
 		const colIndex = colNameToIndexMap.get(colNameLower);
-		if (colIndex === undefined) { throw new SqliteError(`Column '${assignment.column}' not found in table '${tableSchema.name}'`, StatusCode.ERROR); }
-		if (assignedColumnIndices.has(colIndex)) { throw new SqliteError(`Column '${assignment.column}' specified more than once in SET clause`, StatusCode.ERROR); }
+		if (colIndex === undefined) { throw new SqliteError(`Column '${assignment.column}' not found in table '${tableSchema.name}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
+		if (assignedColumnIndices.has(colIndex)) { throw new SqliteError(`Column '${assignment.column}' specified more than once in SET clause`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
 		const valueReg = compiler.allocateMemoryCells(1);
 		compiler.compileExpression(assignment.value, valueReg /* Pass correlation/argMap? */);
 		assignmentRegs.set(colIndex, valueReg);
@@ -137,8 +137,8 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 
 export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
-	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR); }
-	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting DELETE`, StatusCode.ERROR); }
+	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting DELETE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -207,7 +207,7 @@ export function compileSavepointStatement(compiler: Compiler, stmt: AST.Savepoin
 
 export function compileReleaseStatement(compiler: Compiler, stmt: AST.ReleaseStmt): void {
 	if (!stmt.savepoint) {
-		throw new SqliteError("RELEASE statement requires a savepoint name.", StatusCode.ERROR);
+		throw new SqliteError("RELEASE statement requires a savepoint name.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 	const savepointName = compiler.addConstant(stmt.savepoint);
 	compiler.emit(Opcode.Savepoint, 2, 0, 0, savepointName, 0, `RELEASE ${stmt.savepoint}`);
