@@ -81,6 +81,7 @@ The project is organized into the following main directories:
 
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
 * [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
+* [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
 * [TODO List](docs/todo.md): Planned features and improvements
 
 ## Key Design Decisions
@@ -97,9 +98,12 @@ The project is organized into the following main directories:
 
 *   Uses `CREATE TABLE ... USING module(...)` syntax for virtual tables.
 *   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions in `CREATE TABLE`.
-*   No persistent file storage mechanisms.
-*   Core VDBE execution involving VTabs is asynchronous.
-*   Different set of built-in functions tailored for JS environments (e.g., extensive JSON support).
+*   Interface enhancements: `eval()` async enumerable helper on `Database`; easy to use parameters as names or indexed
+*   Core VDBE execution stepping is asynchronous.
+*   Built-in functions tailored for JS environments (e.g., extensive JSON support).
+*   No plans for:
+  *   Triggers - not well suited to federated environment
+  *   Persistent file storage - this could always be developed as an add-in VT module
 
 ## Current Status
 
@@ -135,16 +139,6 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   **JSON:** `json_valid`, `json_type`, `json_extract`, `json_quote`, `json_array`, `json_object`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_array_length`, `json_patch`
 
 ## Future Work
-
-Key areas for future development include:
-
-*   Implementing full SQL standard **Collation** support.
-*   Adding **Window Functions**.
-*   Implementing full **Constraint Enforcement** (`CHECK`, `NOT NULL`, `DEFAULT`).
-*   Improving **Query Planning** (`xBestIndex` logic in VTabs).
-*   Adding comprehensive **Testing**.
-*   Implementing remaining DDL features like **Views** and `ALTER TABLE`.
-*   Improving **Error Reporting** and **Documentation**.
 
 See the [TODO List](docs/todo.md) for a detailed breakdown.
 

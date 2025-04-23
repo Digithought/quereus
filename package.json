@@ -34,6 +34,7 @@
   "dependencies": {
     "digitree": "^1.3.2",
     "fast-json-patch": "^3.1.1",
+    "temporal-polyfill": "^0.3.0",
     "uint8arrays": "^5.1.0"
   }
 }
