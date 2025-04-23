@@ -1,15 +1,106 @@
 import { Opcode, ConflictResolution } from '../common/constants';
-import { StatusCode, type SqlValue } from '../common/types';
+import { StatusCode, type SqlValue, SqlDataType } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { createInstruction, type P4Vtab, type P4FuncDef } from '../vdbe/instruction';
 import type { Compiler, HavingContext, SubroutineInfo } from './compiler';
 import type * as AST from '../parser/ast';
 import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './helpers';
 import type { TableSchema } from '../schema/table';
+import type { ColumnSchema } from '../schema/column';
+import { getAffinityForType } from '../schema/schema'; // Need a way to get affinity from type string
 // Note: Subquery compilation functions are now in subquery.ts
 
 // New type for the argument map
 export type ArgumentMap = ReadonlyMap<string, number>; // Key: "cursor.colIdx", Value: negative FP offset
+
+// --- Expression Affinity Determination ---
+
+/** Determines the affinity of an expression. */
+function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {
+	switch (expr.type) {
+		case 'literal':
+			const v = expr.value;
+			if (v === null) return SqlDataType.NULL; // Or maybe NONE/BLOB?
+			if (typeof v === 'number') return SqlDataType.REAL;
+			if (typeof v === 'bigint') return SqlDataType.INTEGER;
+			if (typeof v === 'string') return SqlDataType.TEXT;
+			if (v instanceof Uint8Array) return SqlDataType.BLOB;
+			return SqlDataType.BLOB; // Default
+		case 'column': {
+			const schemaInfo = resolveColumnSchema(compiler, expr, correlation);
+			return schemaInfo?.column?.affinity ?? SqlDataType.BLOB; // Default to BLOB if unresolved
+		}
+		case 'cast':
+			// Determine affinity from the target type string
+			return getAffinityForType(expr.targetType); // Use helper from schema utils
+		case 'function':
+			const funcDef = compiler.db._findFunction(expr.name, expr.args.length);
+			// TODO: Add return type/affinity to FunctionSchema
+			return funcDef?.affinity ?? SqlDataType.BLOB; // Assume BLOB/NONE if func/affinity unknown
+		case 'parameter':
+			return SqlDataType.BLOB; // Parameter affinity is unknown until binding
+		case 'unary':
+			switch (expr.operator.toUpperCase()) {
+				case '-': case '+': return SqlDataType.NUMERIC;
+				case '~': return SqlDataType.INTEGER;
+				case 'NOT': return SqlDataType.INTEGER; // Boolean result
+				default: return SqlDataType.BLOB;
+			}
+		case 'binary':
+			switch (expr.operator.toUpperCase()) {
+				case '+': case '-': case '*': case '/': case '%':
+				case '&': case '|': case '<<': case '>>':
+					return SqlDataType.NUMERIC; // Or INTEGER for bitwise?
+				case '||': return SqlDataType.TEXT;
+				case '=': case '==': case '!=': case '<>': case '<': case '<=': case '>': case '>=':
+				case 'IS': case 'IS NOT': case 'IN': case 'LIKE': case 'GLOB': case 'BETWEEN':
+					return SqlDataType.INTEGER; // Boolean result
+				case 'AND': case 'OR':
+					// Affinity is determined by operands, default to NUMERIC?
+					const affLeft = getExpressionAffinity(compiler, expr.left, correlation);
+					const affRight = getExpressionAffinity(compiler, expr.right, correlation);
+					// Simple rule: if either is TEXT/BLOB, maybe TEXT? Else NUMERIC?
+					if (affLeft === SqlDataType.TEXT || affRight === SqlDataType.TEXT) return SqlDataType.TEXT;
+					if (affLeft === SqlDataType.BLOB || affRight === SqlDataType.BLOB) return SqlDataType.BLOB;
+					return SqlDataType.NUMERIC;
+				default: return SqlDataType.BLOB;
+			}
+		case 'subquery':
+			// Cannot easily determine affinity without executing/analyzing subquery result columns
+			return SqlDataType.BLOB;
+		case 'identifier':
+			// Treat as column
+			return getExpressionAffinity(compiler, { type: 'column', name: expr.name }, correlation);
+		default:
+			return SqlDataType.BLOB;
+	}
+}
+
+/** Helper to find the schema for a column expression */
+function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, correlation?: SubqueryCorrelationResult): { table: TableSchema, column: ColumnSchema } | null {
+	// Simplified resolution - assumes column is valid and unambiguous (checked later in compileColumn)
+	let cursor = -1;
+	if (expr.table) {
+		cursor = compiler.tableAliases.get(expr.table.toLowerCase()) ?? -1;
+	} else {
+		for (const [_, cIdx] of compiler.tableAliases.entries()) {
+			const schema = compiler.tableSchemas.get(cIdx);
+			if (schema?.columnIndexMap.has(expr.name.toLowerCase())) {
+				cursor = cIdx;
+				break;
+			}
+		}
+	}
+	if (cursor === -1) return null; // Not found or ambiguous (will error later)
+	const tableSchema = compiler.tableSchemas.get(cursor);
+	if (!tableSchema) return null;
+	const colIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
+	if (colIdx === undefined) return null;
+	const columnSchema = tableSchema.columns[colIdx];
+	return { table: tableSchema, column: columnSchema };
+}
+
+// --- End Affinity --- //
 
 export function compileExpression(compiler: Compiler, expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	switch (expr.type) {
@@ -203,6 +294,27 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 	const rightReg = compiler.allocateMemoryCells(1);
 	compiler.compileExpression(expr.left, leftReg, correlation, havingContext, argumentMap);
 	compiler.compileExpression(expr.right, rightReg, correlation, havingContext, argumentMap);
+
+	// Get affinity of operands *after* compilation
+	const leftAffinity = getExpressionAffinity(compiler, expr.left, correlation);
+	const rightAffinity = getExpressionAffinity(compiler, expr.right, correlation);
+
+	// Check if affinity needs to be applied before comparison or arithmetic
+	const isComparison = ['=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IS', 'IS NOT'].includes(expr.operator.toUpperCase());
+	if (isComparison) {
+		const leftIsNum = [SqlDataType.INTEGER, SqlDataType.REAL, SqlDataType.NUMERIC].includes(leftAffinity);
+		const rightIsNum = [SqlDataType.INTEGER, SqlDataType.REAL, SqlDataType.NUMERIC].includes(rightAffinity);
+		const leftIsTextBlob = [SqlDataType.TEXT, SqlDataType.BLOB].includes(leftAffinity);
+		const rightIsTextBlob = [SqlDataType.TEXT, SqlDataType.BLOB].includes(rightAffinity);
+
+		// Apply NUMERIC affinity if one is numeric and the other is text/blob
+		if (leftIsNum && rightIsTextBlob) {
+			compiler.emit(Opcode.Affinity, rightReg, 1, 0, 'NUMERIC', 0, `Apply NUMERIC affinity to RHS for comparison`);
+		} else if (rightIsNum && leftIsTextBlob) {
+			compiler.emit(Opcode.Affinity, leftReg, 1, 0, 'NUMERIC', 0, `Apply NUMERIC affinity to LHS for comparison`);
+		}
+	}
+
 	switch (expr.operator.toUpperCase()) {
 		case '+': compiler.emit(Opcode.Add, leftReg, rightReg, targetReg, null, 0, "Add"); break;
 		case '-': compiler.emit(Opcode.Subtract, leftReg, rightReg, targetReg, null, 0, "Subtract"); break;
@@ -266,7 +378,7 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 				compiler.emit(Opcode.IfNull, rightReg, addrSetNull, 0, null, 0, `Compare: If right NULL, jump to set NULL`);
 			}
 
-			// Perform comparison and jump if true
+			// Perform comparison and jump if true (using the already affinity-adjusted values)
 			compiler.emit(jumpOpcode, leftReg, addrIsTrue, rightReg, null, 0, `Compare ${expr.operator}`);
 
 			// Comparison is false
@@ -373,13 +485,18 @@ export function compileUnary(compiler: Compiler, expr: AST.UnaryExpr, targetReg:
 export function compileCast(compiler: Compiler, expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	compiler.compileExpression(expr.expr, targetReg, correlation, havingContext, argumentMap);
 	const targetType = expr.targetType.toUpperCase();
-	let affinityChar: string;
-	if (targetType.includes('CHAR') || targetType.includes('CLOB') || targetType.includes('TEXT')) { affinityChar = 't'; }
-	else if (targetType.includes('INT')) { affinityChar = 'i'; }
-	else if (targetType.includes('BLOB')) { affinityChar = 'b'; }
-	else if (targetType.includes('REAL') || targetType.includes('FLOA') || targetType.includes('DOUB')) { affinityChar = 'r'; }
-	else { affinityChar = 'n'; } // NUMERIC/NONE
-	compiler.emit(Opcode.Affinity, targetReg, 1, 0, affinityChar, 0, `CAST to ${targetType}`);
+	// Use SqlDataType enum constants for affinity string in P4
+	const affinity = getAffinityForType(targetType);
+	let affinityStr: string;
+	switch (affinity) {
+		case SqlDataType.INTEGER: affinityStr = 'INTEGER'; break;
+		case SqlDataType.REAL: affinityStr = 'REAL'; break;
+		case SqlDataType.TEXT: affinityStr = 'TEXT'; break;
+		case SqlDataType.BLOB: affinityStr = 'BLOB'; break;
+		case SqlDataType.NUMERIC: affinityStr = 'NUMERIC'; break;
+		default: affinityStr = 'BLOB'; // Default/NONE affinity maps to BLOB (no conversion)
+	}
+	compiler.emit(Opcode.Affinity, targetReg, 1, 0, affinityStr, 0, `CAST to ${targetType}`);
 }
 
 export function compileFunction(compiler: Compiler, expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {

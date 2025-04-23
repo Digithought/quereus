@@ -1,18 +1,17 @@
 import { StatusCode, type SqlValue, SqlDataType } from '../common/types';
-import { SqliteError, MisuseError, ConstraintError } from '../common/errors';
+import { SqliteError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
 import type { VdbeInstruction, P4Vtab, P4FuncDef, P4SortKey } from './instruction';
 import { Opcode, ConflictResolution } from '../common/constants';
 import { evaluateIsTrue, compareSqlValues } from '../util/comparison';
+import { applyNumericAffinity, applyTextAffinity, applyIntegerAffinity, applyRealAffinity, applyBlobAffinity } from '../util/affinity';
 import type { VirtualTableCursor } from '../vtab/cursor';
 import type { VirtualTable } from '../vtab/table';
 import { FunctionContext } from '../func/context';
 import type { TableSchema } from '../schema/table';
 import { MemoryTable, MemoryTableModule } from '../vtab/memory-table';
-import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
 
 /** Represents a single VDBE memory cell (register) */
 export interface MemoryCell {
@@ -448,7 +447,46 @@ export class Vdbe {
 			case Opcode.AggContext: if(!this.currentAggregateEntry)throw new Error(); this._setMem(p2, this.currentAggregateEntry[1]?.accumulator); break;
 			case Opcode.AggGroupValue: if(!this.currentAggregateEntry)throw new Error(); this._setMem(p3, this.currentAggregateEntry[1]?.keyValues[p2]??null); break;
 			// Affinity uses frame-relative registers
-			case Opcode.Affinity: { const s=p1, c=p2, aff=p4 as string; for(let i=0; i<c; i++){const off=s+i; const v=this._getMemValue(off); let nv=v; /* ... apply affinity ... */ if(nv!==v) this._setMem(off, nv);} break; }
+			case Opcode.Affinity: {
+				const startOffset = p1;
+				const count = p2;
+				const affinityStr = (p4 as string).toUpperCase(); // Ensure case-insensitivity
+
+				// Ensure range is valid relative to current frame and stack
+				const startIdx = this.framePointer + startOffset;
+				const endIdx = startIdx + count;
+				if (startOffset < this.localsStartOffset) {
+					throw new SqliteError(`Affinity opcode attempt on control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
+				}
+				if (startIdx < 0 || endIdx > this.stackPointer) {
+					throw new SqliteError(`Affinity opcode stack access out of bounds: FP=${this.framePointer} Offset=${startOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
+				}
+
+				// Determine the affinity function based on p4 string
+				let applyAffinityFn: (v: SqlValue) => SqlValue;
+				switch (affinityStr) {
+					case 'NUMERIC': applyAffinityFn = applyNumericAffinity; break;
+					case 'INTEGER': applyAffinityFn = applyIntegerAffinity; break;
+					case 'REAL': applyAffinityFn = applyRealAffinity; break;
+					case 'TEXT': applyAffinityFn = applyTextAffinity; break;
+					case 'BLOB': applyAffinityFn = applyBlobAffinity; break;
+					default:
+						// NONE affinity or unknown: no-op
+						applyAffinityFn = (v) => v;
+				}
+
+				// Apply affinity to the specified range of registers
+				for (let i = 0; i < count; i++) {
+					const offset = startOffset + i;
+					const currentValue = this._getMemValue(offset);
+					const newValue = applyAffinityFn(currentValue);
+					// Only update if the value actually changed
+					if (newValue !== currentValue) {
+						this._setMem(offset, newValue);
+					}
+				}
+				break;
+			}
 			// --------------------------------------------------
 
 			// --- Opcodes needing careful Stack Pointer/Frame Pointer awareness ---

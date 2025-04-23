@@ -44,6 +44,7 @@ This list outlines the remaining major features and refinements needed to make S
 
 *   [P] **Date/Time Functions:** Core functions exist (`date`, `time`, `strftime`...). Need robust parsing (`parseTimeToMillis`) and `strftime` formatting for full SQLite compatibility.
 *   [P] **JSON Functions:** Good coverage (`json_extract`, `json_object`, `json_valid`, `json_type`, manipulation functions, aggregates). Review `json_patch` behavior and edge cases.
+*   [ ] **Reflective Schema:** Virtual sqlite_schema table to expose the schema via a table
 *   [ ] **Add More Built-ins:** Consider other useful SQLite functions (e.g., math, more string functions).
 
 **V. Testing & Documentation:**

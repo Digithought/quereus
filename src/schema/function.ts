@@ -1,6 +1,7 @@
 import type { SqliteContext } from '../func/context';
 import type { SqlValue } from '../common/types';
 import { FunctionFlags } from '../common/constants';
+import { SqlDataType } from '../common/types';
 
 /**
  * Represents the registered definition of a user-defined function
@@ -27,6 +28,8 @@ export interface FunctionSchema {
 	xInverse?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Destructor for user data (if provided during registration) */
 	xDestroy?: (userData: unknown) => void;
+	/** Recommended affinity for the function's return value (optional) */
+	affinity?: SqlDataType;
 }
 
 /** Key for storing/looking up functions */

@@ -34,79 +34,81 @@ export function evaluateIsTrue(value: SqlValue): boolean {
 	}
 }
 
+/** Represents SQLite storage classes for comparison purposes. */
+enum StorageClass {
+	NULL = 0,
+	NUMERIC = 1, // INTEGER or REAL
+	TEXT = 2,
+	BLOB = 3,
+	UNKNOWN = 99
+}
+
+/** Determines the effective storage class for comparison, converting boolean to numeric. */
+function getStorageClass(v: SqlValue): StorageClass {
+	if (v === null || v === undefined) return StorageClass.NULL;
+	const type = typeof v;
+	if (type === 'number' || type === 'bigint' || type === 'boolean') return StorageClass.NUMERIC;
+	if (type === 'string') return StorageClass.TEXT;
+	if (type === 'object' && v instanceof Uint8Array) return StorageClass.BLOB;
+	return StorageClass.UNKNOWN; // Should not happen with SqlValue
+}
+
 /**
- * Compares two SqlValue types using JavaScript comparison rules, aiming
- * for determinism consistent with typical JS expectations. Handles nulls.
- * Order: NULL < Numbers < Strings < Blobs < Booleans (arbitrary but consistent)
+ * Compares two SqlValue types based on SQLite's comparison rules for storage classes.
+ * Order: NULL < Numeric (INTEGER/REAL/BOOLEAN) < TEXT < BLOB.
+ * Note: This does not implement full SQLite type affinity rules which might apply
+ * before comparison, nor does it handle collations beyond basic lexicographical for TEXT.
  * @param a First value.
  * @param b Second value.
  * @returns -1 if a < b, 0 if a === b, 1 if a > b.
  */
 export function compareSqlValues(a: SqlValue, b: SqlValue): number {
-	const typeA = getComparisonTypeOrder(a);
-	const typeB = getComparisonTypeOrder(b);
+	const classA = getStorageClass(a);
+	const classB = getStorageClass(b);
 
-	if (typeA !== typeB) {
-		return typeA - typeB;
+	if (classA === StorageClass.NULL && classB === StorageClass.NULL) return 0;
+	if (classA === StorageClass.NULL) return -1; // null < non-null
+	if (classB === StorageClass.NULL) return 1; // non-null > null
+
+	if (classA !== classB) {
+		return classA - classB; // Compare based on storage class order
 	}
 
-	// Types are the same (or both are numbers/bigints)
-	if (a === null && b === null) return 0; // Should be covered by type order, but safe
+	// --- Values are of the same storage class ---
 
-	switch (typeof a) {
-		case 'number':
-			// Handle potential comparison with bigint b
-			if (typeof b === 'bigint') {
-				const bigA = BigInt(Math.trunc(a)); // Potential precision loss for large floats
-				return bigA < b ? -1 : bigA > b ? 1 : 0;
-			}
-			// Standard number comparison
-			const numB = b as number; // Type already matched
-			return a < numB ? -1 : a > numB ? 1 : 0;
-		case 'bigint':
-			// Handle potential comparison with number b
-			if (typeof b === 'number') {
-				const bigB = BigInt(Math.trunc(b));
-				return a < bigB ? -1 : a > bigB ? 1 : 0;
-			}
-			// Standard bigint comparison
-			const bigB_ = b as bigint; // Type already matched
-			return a < bigB_ ? -1 : a > bigB_ ? 1 : 0;
-		case 'string':
-			// Simple lexicographical comparison
-			const strB = b as string;
-			return a < strB ? -1 : a > strB ? 1 : 0;
-		case 'boolean':
-			// false < true
-			const boolB = b as boolean;
-			return (a === boolB) ? 0 : (a === false) ? -1 : 1;
-		case 'object':
-			if (a instanceof Uint8Array && b instanceof Uint8Array) {
-				// Lexicographical comparison of byte arrays
-				const len = Math.min(a.length, b.length);
-				for (let i = 0; i < len; i++) {
-					if (a[i] !== b[i]) {
-						return a[i] < b[i] ? -1 : 1;
-					}
+	// Convert booleans to numbers for consistent comparison within NUMERIC class
+	const valA = typeof a === 'boolean' ? (a ? 1 : 0) : a;
+	const valB = typeof b === 'boolean' ? (b ? 1 : 0) : b;
+
+	switch (classA) {
+		case StorageClass.NUMERIC:
+			// JS comparison operators handle number/bigint comparison correctly
+			return (valA as number | bigint) < (valB as number | bigint) ? -1 :
+			       (valA as number | bigint) > (valB as number | bigint) ? 1 : 0;
+
+		case StorageClass.TEXT:
+			// Simple lexicographical comparison (no collation awareness)
+			const strA = valA as string;
+			const strB = valB as string;
+			return strA < strB ? -1 : strA > strB ? 1 : 0;
+
+		case StorageClass.BLOB:
+			// Lexicographical comparison of byte arrays
+			const blobA = valA as Uint8Array;
+			const blobB = valB as Uint8Array;
+			const len = Math.min(blobA.length, blobB.length);
+			for (let i = 0; i < len; i++) {
+				if (blobA[i] !== blobB[i]) {
+					return blobA[i] < blobB[i] ? -1 : 1;
 				}
-				return a.length < b.length ? -1 : a.length > b.length ? 1 : 0;
 			}
-		// Fallthrough for other objects (shouldn't happen with SqlValue)
-		default:
-			return 0; // Treat unknown/incomparable types as equal?
+			return blobA.length < blobB.length ? -1 : blobA.length > blobB.length ? 1 : 0;
+
+		default: // UNKNOWN - should not happen
+			return 0;
 	}
 }
 
-/** Assigns an order to types for comparison */
-function getComparisonTypeOrder(v: SqlValue): number {
-	if (v === null || v === undefined) return 0; // NULLs first
-	const type = typeof v;
-	if (type === 'number' || type === 'bigint') return 1; // All numerics together
-	if (type === 'string') return 2;
-	if (type === 'object' && v instanceof Uint8Array) return 3; // Blobs
-	if (type === 'boolean') return 4; // Booleans last
-	return 99; // Should not happen
-}
-
-// TODO: Add comparison functions (compareSqlValues) that implement
-// SQLite's type comparison rules and collations. This is complex.
+// TODO: The main remaining task for comparison is implementing SQLite's
+// type affinity rules (which affect how values are treated BEFORE comparison)
+// and handling different TEXT collations.

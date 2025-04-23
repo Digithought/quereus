@@ -44,13 +44,15 @@ export enum StatusCode {
 	// Add other relevant codes as needed
 }
 
-/** Represents the fundamental SQLite datatypes for type checking/coercion if needed. */
+/** Represents the fundamental SQLite datatypes/affinity types. */
 export enum SqlDataType {
 	INTEGER = 1,
-	FLOAT = 2,
+	REAL = 2,
 	TEXT = 3,
 	BLOB = 4,
 	NULL = 5,
+	NUMERIC = 6,
+	// NONE = 0? // Optional: Represents no affinity, behaves like BLOB
 }
 
 // Add other core types/interfaces as needed, e.g., for Error objects.
