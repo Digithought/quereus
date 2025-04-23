@@ -8,6 +8,7 @@ import type * as AST from '../parser/ast';
 import { compileUnhandledWhereConditions, type SubqueryCorrelationResult } from './helpers';
 import type { ArgumentMap } from './expression';
 import { analyzeSubqueryCorrelation } from './helpers'; // Added import
+import type { TableSchema } from '../schema/table';
 
 // --- SELECT Statement Compilation --- //
 
@@ -102,7 +103,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	// Calculate sorter info if needed, using the *final* structure map
 	let ephSortCursor = -1;
-	let ephSortSchema: import("../schema/table").TableSchema | undefined;
+	let ephSortSchema: TableSchema | undefined;
 	if (needsExternalSort) {
 		const sortTerms = stmt.orderBy!;
 		const keyIndices: number[] = [];

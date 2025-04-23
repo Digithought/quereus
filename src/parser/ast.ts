@@ -8,7 +8,7 @@ import type { ConflictResolution } from '../common/constants';
 
 // Base for all AST nodes
 export interface AstNode {
-	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createVirtualTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr';
+	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma';
 }
 
 // Expression types
@@ -160,15 +160,8 @@ export interface CreateTableStmt extends AstNode {
 	constraints: TableConstraint[];
 	withoutRowid?: boolean;
 	isTemporary?: boolean;
-}
-
-// CREATE VIRTUAL TABLE statement
-export interface CreateVirtualTableStmt extends AstNode {
-	type: 'createVirtualTable';
-	table: IdentifierExpr;
-	ifNotExists: boolean;
-	moduleName: string;
-	moduleArgs: string[];
+	moduleName?: string;   // Optional module name from USING clause
+	moduleArgs?: string[]; // Optional module arguments from USING clause
 }
 
 // CREATE INDEX statement
@@ -328,7 +321,13 @@ export type AlterTableAction =
 	| { type: 'addColumn', column: ColumnDef }
 	| { type: 'dropColumn', name: string };
 
-// --- Add CTE types ---
+// Add PragmaStmt interface
+export interface PragmaStmt extends AstNode {
+	type: 'pragma';
+	name: string; // Name of the pragma
+	value?: LiteralExpr | IdentifierExpr; // Value being assigned (optional for some pragmas)
+}
+
 export interface WithClause extends AstNode {
 	type: 'withClause';
 	recursive: boolean;
@@ -341,4 +340,3 @@ export interface CommonTableExpr extends AstNode {
 	columns?: string[];
 	query: SelectStmt | InsertStmt | UpdateStmt | DeleteStmt; // CTE body
 }
-// -------------------

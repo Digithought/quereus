@@ -103,6 +103,7 @@ export enum TokenType {
 	STORED = 'STORED',
 	SAVEPOINT = 'SAVEPOINT',
 	RELEASE = 'RELEASE',
+	PRAGMA = 'PRAGMA',
 
 	// Operators and punctuation
 	PLUS = 'PLUS',               // +
@@ -233,6 +234,7 @@ const KEYWORDS: Record<string, TokenType> = {
 	'ignore': TokenType.IGNORE,
 	'savepoint': TokenType.SAVEPOINT,
 	'release': TokenType.RELEASE,
+	'pragma': TokenType.PRAGMA,
 };
 
 /**

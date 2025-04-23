@@ -54,6 +54,7 @@ export enum Opcode {
 	ShiftLeft = 85, // P1=reg1(Amount), P2=reg2(Value), P3=dest; R[P3] = R[P2] << R[P1]
 	ShiftRight = 86,// P1=reg1(Amount), P2=reg2(Value), P3=dest; R[P3] = R[P2] >> R[P1]
 	BitNot = 87,    // P1=reg_src, P2=reg_dest; R[P2] = ~R[P1]
+	Not = 88,       // P1=reg_src, P2=reg_dest; R[P2] = !R[P1]
 
 	// Type Affinity / Conversion
 	Affinity = 91,  // P1=reg_start, P2=count, P3=0, P4=affinity_string; Apply affinity P4 to R[P1..P1+P2-1]

@@ -162,6 +162,7 @@ export class Parser {
 			case 'ROLLBACK': this.advance(); return this.rollbackStatement();
 			case 'SAVEPOINT': this.advance(); return this.savepointStatement();
 			case 'RELEASE': this.advance(); return this.releaseStatement();
+			case 'PRAGMA': this.advance(); return this.pragmaStatement();
 			// --- Add default case ---
 			default:
 				// If it wasn't a recognized keyword starting the statement
@@ -965,7 +966,7 @@ export class Parser {
 	}
 
 	/** @internal */
-	private createStatement(): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt | AST.CreateVirtualTableStmt {
+	private createStatement(): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
 		// CREATE keyword consumed by main `statement` method
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE."); // Consume the token
@@ -976,10 +977,6 @@ export class Parser {
 		} else if (this.peekKeyword('VIEW')) {
 			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
 			return this.createViewStatement();
-		} else if (this.peekKeyword('VIRTUAL')) {
-			this.consumeKeyword('VIRTUAL', "Expected 'VIRTUAL' after CREATE.");
-			this.consumeKeyword('TABLE', "Expected 'TABLE' after 'VIRTUAL'.");
-			return this.createVirtualTableStatement();
 		} else if (this.peekKeyword('UNIQUE')) {
 			this.consumeKeyword('UNIQUE', "Expected 'UNIQUE' after CREATE.");
 			// Handle CREATE UNIQUE INDEX ...
@@ -1152,59 +1149,6 @@ export class Parser {
 	}
 
 	/**
-	 * Parse CREATE VIRTUAL TABLE statement
-	 * @returns AST for CREATE VIRTUAL TABLE
-	 */
-	private createVirtualTableStatement(): AST.CreateVirtualTableStmt {
-		// VIRTUAL TABLE keywords consumed by createStatement
-		let ifNotExists = false;
-		if (this.matchKeyword('IF')) {
-			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
-			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF NOT'.");
-			ifNotExists = true;
-		}
-
-		const table = this.tableIdentifier();
-
-		this.consumeKeyword('USING', "Expected 'USING' after table name for CREATE VIRTUAL TABLE.");
-
-		if (!this.check(TokenType.IDENTIFIER)) {
-			throw this.error(this.peek(), "Expected module name after 'USING'.");
-		}
-		const moduleName = this.advance().lexeme;
-
-		const moduleArgs: string[] = [];
-		if (this.check(TokenType.LPAREN)) {
-			this.consume(TokenType.LPAREN, "Expected '(' to start module arguments.");
-			if (!this.check(TokenType.RPAREN)) { // Handle empty args list
-				do {
-					// Module arguments are often treated as unparsed strings/tokens
-					// We'll capture the lexeme of the next token, regardless of type (except comma/paren)
-					const token = this.peek();
-					if (token.type === TokenType.COMMA || token.type === TokenType.RPAREN || token.type === TokenType.EOF) {
-						throw this.error(token, "Expected module argument.");
-					}
-					// Consume the argument token(s). A simple approach is to just take the lexeme.
-					// More complex arguments might require consuming multiple tokens.
-					// For now, just take the next token's lexeme.
-					moduleArgs.push(this.advance().lexeme);
-					// TODO: Handle quoted arguments or more complex token sequences if needed.
-
-				} while (this.match(TokenType.COMMA));
-			}
-			this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
-		}
-
-		return {
-			type: 'createVirtualTable',
-			ifNotExists,
-			table,
-			moduleName,
-			moduleArgs,
-		};
-	}
-
-	/**
 	 * Parse DROP statement
 	 * @returns AST for DROP statement
 	 */
@@ -1369,6 +1313,43 @@ export class Parser {
 		this.matchKeyword('SAVEPOINT');
 		const name = this.consumeIdentifier("Expected savepoint name after RELEASE [SAVEPOINT].");
 		return { type: 'release', savepoint: name };
+	}
+
+	/**
+	 * Parse PRAGMA statement
+	 * @returns AST for PRAGMA statement
+	 */
+	private pragmaStatement(): AST.PragmaStmt {
+		// PRAGMA keyword consumed by statement()
+		const name = this.consumeIdentifier("Expected pragma name.");
+
+		let value: AST.LiteralExpr | AST.IdentifierExpr | undefined;
+		if (this.match(TokenType.EQUAL)) {
+			// Parse the value after '='
+			if (this.check(TokenType.IDENTIFIER)) {
+				value = { type: 'identifier', name: this.advance().lexeme };
+			} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL)) {
+				const token = this.previous();
+				value = { type: 'literal', value: token.type === TokenType.NULL ? null : token.literal };
+			} else if (this.match(TokenType.MINUS)) { // Handle negative numbers
+				if (this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
+					const token = this.advance();
+					value = { type: 'literal', value: -token.literal };
+				} else {
+					throw this.error(this.peek(), "Expected number after '-'.");
+				}
+			} else {
+				throw this.error(this.peek(), "Expected pragma value (identifier, string, number, or NULL).");
+			}
+		} else {
+			// TODO: Handle PRAGMA name; syntax if needed (no value)
+			// For now, assume assignment format is required for our pragmas
+			// If no value is needed, the check above will fail. Let's require '=' for now.
+			throw this.error(this.peek(), "Expected '=' after pragma name.");
+
+		}
+
+		return { type: 'pragma', name: name.toLowerCase(), value }; // Store name lowercased
 	}
 
 	// --- Supporting Clause / Definition Parsers ---

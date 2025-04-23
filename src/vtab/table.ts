@@ -1,5 +1,6 @@
 import type { VirtualTableModule } from './module';
 import type { Database } from '../core/database';
+import type { TableSchema } from '../schema/table';
 
 /**
  * Base class (or interface) representing an instance of a virtual table.
@@ -11,6 +12,7 @@ export abstract class VirtualTable {
 	public readonly tableName: string;
 	public readonly schemaName: string;
 	public errorMessage?: string; // For storing error messages (like C API's zErrMsg)
+	public tableSchema?: TableSchema;
 
 	constructor(db: Database, module: VirtualTableModule<any, any>, schemaName: string, tableName: string) {
 		this.db = db;

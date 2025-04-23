@@ -36,6 +36,10 @@ export class Database {
 	// private registeredFuncs: Map<string, { /* function details */ }> = new Map();
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
+	// --- Add default module config ---
+	private defaultVtabModuleName: string = 'memory';
+	private defaultVtabModuleArgs: string[] = [];
+	// -------------------------------
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -581,4 +585,50 @@ export class Database {
 		// TODO: Warn only if needed functions and modules are missing
 		console.warn("Schema imported from JSON. Function implementations and VTab connections must be re-established manually.");
 	}
+
+	/**
+	 * @deprecated Use setDefaultVtabName and setDefaultVtabArgsFromJson via PRAGMA instead.
+	 * Sets the default virtual table module used when CREATE TABLE is called
+	 * without a USING clause.
+	 */
+	setDefaultVtabModule(name: string, args: string[] = []): void {
+		console.warn("Deprecated: Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` instead.");
+		this.setDefaultVtabName(name);
+		this.setDefaultVtabArgs(args); // Keep internal helper
+	}
+
+	/** @internal Sets only the name of the default module */
+	setDefaultVtabName(name: string): void {
+		if (!this.registeredVTabs.has(name.toLowerCase())) {
+			console.warn(`Setting default VTab module to '${name}', which is not currently registered.`);
+		}
+		this.defaultVtabModuleName = name;
+	}
+
+	/** @internal Sets the default args directly */
+	private setDefaultVtabArgs(args: string[]): void {
+		this.defaultVtabModuleArgs = [...args]; // Store a copy
+	}
+
+	/** @internal Sets the default args by parsing a JSON string */
+	setDefaultVtabArgsFromJson(argsJsonString: string): void {
+		try {
+			const parsedArgs = JSON.parse(argsJsonString);
+			if (!Array.isArray(parsedArgs) || !parsedArgs.every(arg => typeof arg === 'string')) {
+				throw new Error("JSON value must be an array of strings.");
+			}
+			this.setDefaultVtabArgs(parsedArgs);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			throw new SqliteError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
+		}
+	}
+
+	getDefaultVtabModule(): { name: string; args: string[] } {
+		return {
+			name: this.defaultVtabModuleName,
+			args: [...this.defaultVtabModuleArgs],
+		};
+	}
+	// ----------------------------------------
 }

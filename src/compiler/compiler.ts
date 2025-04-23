@@ -3,10 +3,9 @@
  *
  * Translates SQL AST into VDBE instructions
  */
-
-import { StatusCode, type SqlValue, SqlDataType } from '../common/types';
+import { StatusCode, type SqlValue } from '../common/types';
 import { SqliteError } from '../common/errors'; // Removed ConflictResolution
-import { Opcode, ConflictResolution } from '../common/constants'; // Added ConflictResolution here
+import { Opcode } from '../common/constants'; // Added ConflictResolution here
 import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
 import type { WithClause } from '../parser/ast';
@@ -16,9 +15,9 @@ import type * as AST from '../parser/ast';
 import * as Helpers from './helpers';
 import * as ExprCompiler from './expression';
 import * as StmtCompiler from './statement';
+import * as DdlCompiler from './ddl';
 import * as SelectCompiler from './select';
 import type { SubqueryCorrelationResult } from './helpers';
-import { compileUnhandledWhereConditions } from './helpers'; // Keep this
 import * as SubqueryCompiler from './subquery';
 import type { ArgumentMap } from './expression';
 import './helpers';
@@ -27,11 +26,7 @@ import './statement';
 import './select';
 import './subquery';
 import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
-import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
-// --- Import CTE compilation --- //
 import { compileCommonTableExpression } from './cte';
-// ------------------------------ //
 
 
 // --- Add Result/CTE Info types --- //
@@ -169,9 +164,6 @@ export class Compiler {
 			case 'createTable':
 				this.compileCreateTable(ast as AST.CreateTableStmt);
 				break;
-			case 'createVirtualTable':
-				this.compileCreateVirtualTable(ast as AST.CreateVirtualTableStmt);
-				break;
 			case 'createIndex':
 				this.compileCreateIndex(ast as AST.CreateIndexStmt);
 				break;
@@ -198,6 +190,9 @@ export class Compiler {
 				break;
 			case 'release':
 				this.compileRelease(ast as AST.ReleaseStmt);
+				break;
+			case 'pragma':
+				this.compilePragma(ast as AST.PragmaStmt);
 				break;
 
 			default:
@@ -302,14 +297,13 @@ export class Compiler {
 	compileInsert(stmt: AST.InsertStmt): void { StmtCompiler.compileInsertStatement(this, stmt); }
 	compileUpdate(stmt: AST.UpdateStmt): void { StmtCompiler.compileUpdateStatement(this, stmt); }
 	compileDelete(stmt: AST.DeleteStmt): void { StmtCompiler.compileDeleteStatement(this, stmt); }
-	compileCreateTable(stmt: AST.CreateTableStmt): void { StmtCompiler.compileCreateTableStatement(this, stmt); }
-	compileCreateVirtualTable(stmt: AST.CreateVirtualTableStmt): void { StmtCompiler.compileCreateVirtualTableStatement(this, stmt); }
-	compileCreateIndex(stmt: AST.CreateIndexStmt): void { StmtCompiler.compileCreateIndexStatement(this, stmt); }
-	compileCreateView(stmt: AST.CreateViewStmt): void { StmtCompiler.compileCreateViewStatement(this, stmt); }
-	compileDrop(stmt: AST.DropStmt): void { StmtCompiler.compileDropStatement(this, stmt); }
-	compileAlterTable(stmt: AST.AlterTableStmt): void { StmtCompiler.compileAlterTableStatement(this, stmt); }
-	compileBegin(stmt: AST.BeginStmt): void { StmtCompiler.compileBeginStatement(this, stmt); }
-	compileCommit(stmt: AST.CommitStmt): void { StmtCompiler.compileCommitStatement(this, stmt); }
+	compileCreateTable(stmt: AST.CreateTableStmt): void { DdlCompiler.compileCreateTableStatement(this, stmt); }
+	compileCreateIndex(stmt: AST.CreateIndexStmt): void { DdlCompiler.compileCreateIndexStatement(this, stmt); }
+	compileCreateView(stmt: AST.CreateViewStmt): void { DdlCompiler.compileCreateViewStatement(this, stmt); }
+	compileDrop(stmt: AST.DropStmt): void { DdlCompiler.compileDropStatement(this, stmt); }
+	compileAlterTable(stmt: AST.AlterTableStmt): void { DdlCompiler.compileAlterTableStatement(this, stmt); }
+	compileBegin(stmt: AST.BeginStmt): void { DdlCompiler.compileBeginStatement(this, stmt); }
+	compileCommit(stmt: AST.CommitStmt): void { DdlCompiler.compileCommitStatement(this, stmt); }
 	compileRollback(stmt: AST.RollbackStmt): void { StmtCompiler.compileRollbackStatement(this, stmt); }
 	compileSavepoint(stmt: AST.SavepointStmt): void { StmtCompiler.compileSavepointStatement(this, stmt); }
 	compileRelease(stmt: AST.ReleaseStmt): void { StmtCompiler.compileReleaseStatement(this, stmt); }
@@ -347,6 +341,9 @@ export class Compiler {
 		}
 		console.log("Finished compiling WITH clause.");
 	}
+
+	// Add compilePragma delegator
+	compilePragma(stmt: AST.PragmaStmt): void { DdlCompiler.compilePragmaStatement(this, stmt); }
 }
 
 // Augment the Compiler interface (needed for methods in other files to see 'this')
@@ -389,7 +386,6 @@ declare module './compiler' {
 		compileUpdate(stmt: AST.UpdateStmt): void;
 		compileDelete(stmt: AST.DeleteStmt): void;
 		compileCreateTable(stmt: AST.CreateTableStmt): void;
-		compileCreateVirtualTable(stmt: AST.CreateVirtualTableStmt): void;
 		compileCreateIndex(stmt: AST.CreateIndexStmt): void;
 		compileCreateView(stmt: AST.CreateViewStmt): void;
 		compileDrop(stmt: AST.DropStmt): void;
@@ -418,5 +414,6 @@ declare module './compiler' {
 		// CTE Compilation (Now calls external function)
 		compileWithClause(withClause: WithClause | undefined): void;
 		// compileCommonTableExpression(cte: AST.CommonTableExpr, isRecursive: boolean): void; // Removed from interface
+		compilePragma(stmt: AST.PragmaStmt): void;
 	}
 }

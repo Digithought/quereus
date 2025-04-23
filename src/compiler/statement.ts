@@ -1,11 +1,10 @@
 import { Opcode, ConflictResolution } from '../common/constants';
 import { StatusCode } from '../common/types';
 import { SqliteError } from '../common/errors';
-import { type P4Vtab, type P4FuncDef, type P4SortKey } from '../vdbe/instruction';
-import type { Compiler, ColumnResultInfo, HavingContext } from './compiler';
+import { type P4Vtab } from '../vdbe/instruction';
+import type { Compiler } from './compiler';
 import type * as AST from '../parser/ast';
-import { compileUnhandledWhereConditions, type SubqueryCorrelationResult } from './helpers';
-import type { ArgumentMap } from './expression';
+import { compileUnhandledWhereConditions } from './helpers';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
@@ -190,60 +189,20 @@ export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt)
 	compiler.emit(Opcode.Close, cursor, 0, 0, null, 0, `Close ${tableSchema.name}`);
 }
 
-export function compileCreateTableStatement(compiler: Compiler, stmt: AST.CreateTableStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "CREATE TABLE (no-op in VDBE)");
-}
-
-export function compileCreateVirtualTableStatement(compiler: Compiler, stmt: AST.CreateVirtualTableStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "CREATE VIRTUAL TABLE (no-op in VDBE)");
-}
-
-export function compileCreateIndexStatement(compiler: Compiler, stmt: AST.CreateIndexStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "CREATE INDEX (no-op in VDBE)");
-}
-
-export function compileCreateViewStatement(compiler: Compiler, stmt: AST.CreateViewStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "CREATE VIEW (no-op in VDBE)");
-}
-
-export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "DROP (no-op in VDBE)");
-}
-
-export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTableStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "ALTER TABLE (no-op in VDBE)");
-}
-
-export function compileBeginStatement(compiler: Compiler, stmt: AST.BeginStmt): void {
-	compiler.emit(Opcode.VBegin, 0, 0, 0, null, 0, `BEGIN ${stmt.mode || 'DEFERRED'}`);
-}
-
-export function compileCommitStatement(compiler: Compiler, stmt: AST.CommitStmt): void {
-	compiler.emit(Opcode.VCommit, 0, 0, 0, null, 0, "COMMIT");
-}
-
 export function compileRollbackStatement(compiler: Compiler, stmt: AST.RollbackStmt): void {
 	if (stmt.savepoint) {
-		// ROLLBACK TO savepoint
 		const savepointName = compiler.addConstant(stmt.savepoint);
-		// P1=0 indicates ROLLBACK TO
-		// P2=unused? Or index?
-		// P4=name constant index
 		compiler.emit(Opcode.Savepoint, 0, 0, 0, savepointName, 0, `ROLLBACK TO ${stmt.savepoint}`);
-		compiler.emit(Opcode.VRollbackTo, 0, 0, 0, savepointName, 0, `VRollbackTo ${stmt.savepoint}`); // VTab Hook
+		compiler.emit(Opcode.VRollbackTo, 0, 0, 0, savepointName, 0, `VRollbackTo ${stmt.savepoint}`);
 	} else {
-		// Full ROLLBACK
 		compiler.emit(Opcode.VRollback, 0, 0, 0, null, 0, "ROLLBACK");
 	}
 }
 
-// --- Add Savepoint/Release Compilers ---
 export function compileSavepointStatement(compiler: Compiler, stmt: AST.SavepointStmt): void {
 	const savepointName = compiler.addConstant(stmt.name);
-	// P1=1 indicates SAVEPOINT
-	// P4=name constant index
 	compiler.emit(Opcode.Savepoint, 1, 0, 0, savepointName, 0, `SAVEPOINT ${stmt.name}`);
-	compiler.emit(Opcode.VSavepoint, 0, 0, 0, savepointName, 0, `VSavepoint ${stmt.name}`); // VTab Hook
+	compiler.emit(Opcode.VSavepoint, 0, 0, 0, savepointName, 0, `VSavepoint ${stmt.name}`);
 }
 
 export function compileReleaseStatement(compiler: Compiler, stmt: AST.ReleaseStmt): void {
@@ -251,8 +210,6 @@ export function compileReleaseStatement(compiler: Compiler, stmt: AST.ReleaseStm
 		throw new SqliteError("RELEASE statement requires a savepoint name.", StatusCode.ERROR);
 	}
 	const savepointName = compiler.addConstant(stmt.savepoint);
-	// P1=2 indicates RELEASE
-	// P4=name constant index
 	compiler.emit(Opcode.Savepoint, 2, 0, 0, savepointName, 0, `RELEASE ${stmt.savepoint}`);
-	compiler.emit(Opcode.VRelease, 0, 0, 0, savepointName, 0, `VRelease ${stmt.savepoint}`); // VTab Hook
+	compiler.emit(Opcode.VRelease, 0, 0, 0, savepointName, 0, `VRelease ${stmt.savepoint}`);
 }

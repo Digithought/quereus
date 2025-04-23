@@ -5,6 +5,7 @@ import { createInstruction, type P4Vtab, type P4FuncDef } from '../vdbe/instruct
 import type { Compiler, HavingContext, SubroutineInfo } from './compiler';
 import type * as AST from '../parser/ast';
 import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './helpers';
+import type { TableSchema } from '../schema/table';
 // Note: Subquery compilation functions are now in subquery.ts
 
 // New type for the argument map
@@ -22,7 +23,6 @@ export function compileExpression(compiler: Compiler, expr: AST.Expression, targ
 		case 'subquery': compiler.compileSubquery(expr, targetReg); break; // Calls wrapper in compiler.ts
 		case 'identifier': compiler.compileColumn({ type: 'column', name: expr.name }, targetReg, correlation, havingContext, argumentMap); break;
 		default:
-			const _exhaustiveCheck: never = expr;
 			throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR);
 	}
 }
@@ -115,7 +115,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 	// 3. Default behavior (WHERE, SELECT list, non-correlated subquery part, etc.)
 	let cursor = -1;
 	let colIdx = -1;
-	let tableSchema: import("../schema/table").TableSchema | undefined; // Added import type
+	let tableSchema: TableSchema | undefined; // Added import type
 
 	if (expr.table) {
 		const aliasOrTableName = expr.table.toLowerCase();
@@ -141,7 +141,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 		let foundCount = 0;
 		let potentialCursor = -1;
 		let potentialColIdx = -1;
-		let potentialSchema: import("../schema/table").TableSchema | undefined;
+		let potentialSchema: TableSchema | undefined;
 
 		// Iterate through currently active aliases in the *compiler's* context
 		for (const [alias, cursorId] of compiler.tableAliases.entries()) {
@@ -335,18 +335,36 @@ export function compileUnary(compiler: Compiler, expr: AST.UnaryExpr, targetReg:
 		case '+': compiler.emit(Opcode.SCopy, operandReg, targetReg, 0, null, 0, "Unary Plus (no-op)"); break;
 		case '~': compiler.emit(Opcode.BitNot, operandReg, targetReg, 0, null, 0, "Bitwise NOT"); break;
 		case 'NOT':
-			// Standard boolean NOT (handles NULL correctly via IfFalse)
+			// Standard boolean NOT (handles NULL correctly)
+			// Result = (operand == 0) ? 1 : (operand IS NULL ? NULL : 0)
+			const addrIsNull = compiler.allocateAddress();
 			const addrSetTrue = compiler.allocateAddress();
-			const addrEnd_std = compiler.allocateAddress();
-			compiler.emit(Opcode.IfFalse, operandReg, addrSetTrue, 0, null, 0, "NOT: If operand is false/null, jump to set true");
-			// Operand was true
-			compiler.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "NOT: Set result 0");
-			compiler.emit(Opcode.Goto, 0, addrEnd_std, 0, null, 0);
-			// Operand was false or null
+			const addrEnd = compiler.allocateAddress();
+
+			// Compile operand
+			const notOperandReg = compiler.allocateMemoryCells(1);
+			compiler.compileExpression(expr.expr, notOperandReg, correlation, havingContext, argumentMap);
+
+			// Check for NULL operand -> NULL result
+			compiler.emit(Opcode.IfNull, notOperandReg, addrIsNull, 0, null, 0, "NOT: Check if operand is NULL");
+
+			// Check if operand is FALSE (0 or 0.0) -> TRUE result (1)
+			compiler.emit(Opcode.IfZero, notOperandReg, addrSetTrue, 0, null, 0, "NOT: Check if operand is 0 (false)");
+
+			// Operand was TRUE (non-zero) -> FALSE result (0)
+			compiler.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "NOT: Set result 0 (operand was true)");
+			compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0);
+
+			// Set TRUE result path
 			compiler.resolveAddress(addrSetTrue);
-			compiler.emit(Opcode.IfNull, operandReg, addrEnd_std, 0, null, 0, "NOT: If operand NULL, result NULL"); // NULL -> NULL
-			compiler.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "NOT: Set result 1"); // False -> True
-			compiler.resolveAddress(addrEnd_std);
+			compiler.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "NOT: Set result 1 (operand was false)");
+			compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0);
+
+			// Set NULL result path
+			compiler.resolveAddress(addrIsNull);
+			compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, "NOT: Set result NULL (operand was NULL)");
+
+			compiler.resolveAddress(addrEnd);
 			break;
 		default: throw new SqliteError(`Unsupported unary operator: ${expr.operator}`, StatusCode.ERROR);
 	}
