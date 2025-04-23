@@ -77,6 +77,12 @@ The project is organized into the following main directories:
 *   `src/util`: General utility functions (e.g., value comparison, latches, DDL stringifier).
 *   `docs`: Project documentation (TODO, MemoryTable guide).
 
+## Documentation
+
+* [Usage Guide](docs/usage.md): Detailed usage examples and API reference
+* [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
+* [TODO List](docs/todo.md): Planned features and improvements
+
 ## Key Design Decisions
 
 *   **Federated / VTab-Centric**: The architecture prioritizes virtual tables as the primary data source and sink. The `CREATE TABLE ... USING module(...)` syntax is used to create tables backed by specific VTab modules. If `USING` is omitted, it defaults to the configured default module (initially `MemoryTable`).

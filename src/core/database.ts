@@ -510,4 +510,59 @@ export class Database {
 	_getCollation(name: string): CollationFunction | undefined {
 		return getCollationUtil(name);
 	}
+
+	/**
+	 * Prepares, binds parameters, executes, and yields result rows for a query.
+	 * This is a high-level convenience method for iterating over query results.
+	 * The underlying statement is automatically finalized when iteration completes
+	 * or if an error occurs.
+	 *
+	 * @param sql The SQL query string to execute.
+	 * @param params Optional parameters to bind (array for positional, object for named).
+	 * @yields Each result row as an object (`Record<string, SqlValue>`).
+	 * @returns An `AsyncIterableIterator` yielding result rows.
+	 * @throws MisuseError if the database is closed.
+	 * @throws SqliteError on prepare/bind/execution errors.
+	 *
+	 * @example
+	 * ```typescript
+	 * try {
+	 *   for await (const user of db.eval("SELECT * FROM users WHERE status = ?", ["active"])) {
+	 *     console.log(`Active user: ${user.name}`);
+	 *   }
+	 * } catch (e) {
+	 *   console.error("Query failed:", e);
+	 * }
+	 * ```
+	 */
+	async *eval(sql: string, params?: SqlValue[] | Record<string, SqlValue>): AsyncIterableIterator<Record<string, SqlValue>> {
+		if (!this.isOpen) {
+			throw new MisuseError("Database is closed");
+		}
+
+		let stmt: Statement | null = null;
+		try {
+			stmt = await this.prepare(sql);
+
+			if (params) {
+				stmt.bindAll(params);
+			}
+
+			let status: StatusCode;
+			while ((status = await stmt.step()) === StatusCode.ROW) {
+				yield stmt.getAsObject();
+			}
+
+			// Check if step() finished with an error
+			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
+				throw new SqliteError(`Iteration failed for query: ${sql}`, status);
+			}
+			// Implicitly return { done: true } when loop finishes or step returns DONE/OK
+		} finally {
+			// Always finalize the internally prepared statement
+			if (stmt) {
+				await stmt.finalize();
+			}
+		}
+	}
 }

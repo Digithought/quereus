@@ -4,10 +4,8 @@ This list outlines the remaining major features and refinements needed to make S
 
 **I. Core Query Processing Features:**
 
-*   [X] **Type System & Affinity:**
-    *   [X] Implement full Collation support for comparisons and ordering (e.g., NOCASE, RTRIM).
 *   [ ] **Error Reporting:**
-    *   [ ] Improve detail, context, and consistency of error messages and codes throughout the engine (e.g., add line info from AST).
+    *   [ ] Improve detail, context, and consistency of error messages and codes throughout the engine (e.g., add line info from AST, have errors nest to reflect detail).
 *   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
 *   [ ] **Triggers:** Would require sub-program compilation and execution logic.
 *   [P] **Views:** Parser supports `CREATE VIEW`. Need to implement view definition storage and substitution during compilation.
@@ -52,11 +50,10 @@ This list outlines the remaining major features and refinements needed to make S
     *   [ ] Unit tests for parser, compiler opcodes, VDBE execution steps, VTab methods, type handling, built-in functions, transactions, subqueries, CTEs.
     *   [ ] Integration tests covering complex queries, joins, aggregates, subqueries, VTab interactions, transactions, savepoints.
     *   [ ] Use SQL logic tests (porting relevant subsets from SQLite) if feasible.
-*   [X] **Documentation - README:** Update README based on current status (This task).
+*   [ ] **Documentation - SQLite variances:**  Detailed description of how this system varies from SQLite
 *   [ ] **Documentation - API:** Generate API documentation (e.g., using TypeDoc).
 *   [ ] **Documentation - VTabs:** Write a guide on creating custom Virtual Table modules.
-*   [ ] **Documentation - VDBE:** Document VDBE opcodes and their behavior.
-*   [P] **Documentation - MemoryTable:** `memory-table.md` exists, ensure it stays current.
+*   [P] **Documentation - subsystems:** Give each subsystem it's own architectural overview document (currently `memory-table.md` exists)
 
 **Legend:**
 *   `[ ]`: Not Started

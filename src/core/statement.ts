@@ -1,27 +1,14 @@
 import { type SqlValue, StatusCode } from '../common/types';
-import { MisuseError, SqliteError, SyntaxError } from '../common/errors';
+import { MisuseError, SqliteError } from '../common/errors';
 import type { Database } from './database';
-// Placeholder for VDBE execution result
-// import { VdbeResult } from '../vdbe/engine';
+import { SqlDataType } from '../common/constants';
+import { Parser, ParseError } from '../parser/parser';
+import { Compiler } from '../compiler/compiler';
 
 // --- Add VDBE imports ---
-import { type VdbeProgram, VdbeProgramBuilder } from '../vdbe/program';
+import { type VdbeProgram } from '../vdbe/program';
 import { Vdbe, type MemoryCell } from '../vdbe/engine';
-import { createInstruction, type P4Vtab } from '../vdbe/instruction'; // For placeholder compile
-import { Opcode, IndexConstraintOp } from '../common/constants'; // For placeholder compile
 // ------------------------
-
-import type { SelectStmt, ResultColumn, Expression, BinaryExpr, ColumnExpr } from '../parser/ast'; // Corrected imports
-import type { TableSchema } from '../schema/table';
-import type { IndexInfo, IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
-import { Parser } from '../parser/parser';
-import { Compiler } from '../compiler/compiler';
-import type { AstNode } from '../parser/ast'; // Type-only import
-
-// Helper type guard for parameters in AST
-function isParameter(value: SqlValue | { type: 'parameter', key: number | string }): value is { type: 'parameter', key: number | string } {
-	return typeof value === 'object' && value !== null && value.hasOwnProperty('type') && (value as any).type === 'parameter';
-}
 
 /**
  * Represents a prepared SQL statement.
@@ -60,26 +47,21 @@ export class Statement {
 			const parser = new Parser();
 			const ast = parser.parse(this.sql);
 
-			// TODO: Check if the AST is supported before compiling
-			// e.g., if (!(ast.type === 'select' || ast.type === 'insert')) { ... }
-
 			const compiler = new Compiler(this.db);
 			this.vdbeProgram = compiler.compile(ast, this.sql);
 			// ----------------------------------
 
 			this.needsCompile = false;
 			console.log("Compilation complete.");
-			// Optional: Log generated program for debugging
-			// console.log("Generated Program:", this.vdbeProgram.instructions.map(i => `${Opcode[i.opcode]} ${i.p1} ${i.p2} ${i.p3} ${i.p4 !== null ? ` P4:${JSON.stringify(i.p4)}` : ''}`).join('\n'));
 		} catch (e) {
 			console.error("Compilation failed:", e);
 			// Convert errors to SqliteError if they aren't already
 			if (e instanceof SqliteError) {
 				throw e;
+			} else if (e instanceof ParseError) {
+				throw new SqliteError(`Parse error: ${e.message}`, StatusCode.ERROR);
 			} else if (e instanceof Error) {
-				// Distinguish between ParseError and other errors
-				const errorCode = (e.name === 'ParseError') ? StatusCode.ERROR : StatusCode.INTERNAL;
-				throw new SqliteError(`Compilation error: ${e.message}`, errorCode);
+				throw new SqliteError(`Compilation error: ${e.message}`, StatusCode.INTERNAL);
 			} else {
 				throw new SqliteError("Unknown compilation error", StatusCode.INTERNAL);
 			}
@@ -99,8 +81,6 @@ export class Statement {
 	bind(key: number | string, value: SqlValue): this {
 		if (this.finalized) throw new MisuseError("Statement finalized");
 		if (this.busy) throw new MisuseError("Statement busy");
-		// Binding might require re-compilation in complex cases, but not for this simple compiler
-		// this.needsCompile = true;
 		if (typeof key === 'number') {
 			if (key < 1) throw new RangeError(`Parameter index ${key} out of range (must be >= 1)`);
 			this.boundParameters.set(key, value);
@@ -109,7 +89,7 @@ export class Statement {
 		} else {
 			throw new MisuseError("Invalid parameter key type");
 		}
-		// If VDBE exists, potentially apply binding immediately? Or let step handle it.
+		// If VDBE exists, potentially apply binding immediately
 		if (this.vdbe) {
 			this.vdbe.clearAppliedBindings(); // Mark bindings as needing re-application
 			this.vdbe.applyBindings(this.boundParameters);
@@ -135,8 +115,6 @@ export class Statement {
 			// Bind by name
 			for (const key in params) {
 				if (Object.prototype.hasOwnProperty.call(params, key)) {
-					// Ensure key starts with : or $ if it's a named param identifier
-					// (Though our simple parser/compiler might not enforce this)
 					this.bind(key, params[key]);
 				}
 			}
@@ -149,6 +127,7 @@ export class Statement {
 
 	/**
 	 * Executes the next step of the prepared statement.
+	 * Use the `run()`, `get()`, `all()` methods for higher-level control.
 	 * @returns A Promise resolving to a StatusCode (ROW, DONE, or an error code).
 	 * @throws MisuseError if the statement is finalized.
 	 */
@@ -169,20 +148,19 @@ export class Statement {
 	}
 
 	/** @internal Called by VDBE ResultRow opcode */
-	_setCurrentRow(memCells: MemoryCell[]): void {
+	setCurrentRow(memCells: MemoryCell[]): void {
 		// Store the raw memory cells for potential later type/subtype access
 		this.currentRowInternal = memCells;
-		// Could also extract simple values here if preferred
 	}
-
 
 	/**
 	 * Retrieves all column values for the current row as an array.
-	 * Should only be called after step() returns ROW.
+	 * Should only be called after step() returns ROW. Consider using the
+	 * higher-level get() or all() methods for simpler fetch patterns.
 	 * @returns An array of SqlValue.
 	 * @throws MisuseError if step() did not return ROW.
 	 */
-	get(): SqlValue[] {
+	getArray(): SqlValue[] {
 		if (this.finalized) throw new MisuseError("Statement finalized");
 		if (!this.currentRowInternal) throw new MisuseError("No row available");
 		return this.currentRowInternal.map(cell => cell.value);
@@ -191,7 +169,8 @@ export class Statement {
 	/**
 	 * Retrieves all column values for the current row as an object
 	 * with column names as keys.
-	 * Should only be called after step() returns ROW.
+	 * Should only be called after step() returns ROW. Consider using the
+	 * higher-level get() or all() methods for simpler fetch patterns.
 	 * @returns An object mapping column names to values.
 	 * @throws MisuseError if step() did not return ROW or if column names are not available.
 	 */
@@ -217,7 +196,6 @@ export class Statement {
 		return obj;
 	}
 
-
 	/**
 	 * Gets the names of the columns in the result set.
 	 * Available after the first successful step() call that returns ROW or after compilation.
@@ -225,13 +203,6 @@ export class Statement {
 	 */
 	getColumnNames(): string[] {
 		if (this.finalized) throw new MisuseError("Statement finalized");
-		// Compile if needed to get column names
-		if (this.needsCompile && !this.vdbeProgram) {
-			// This path is tricky - compile is async, but this method is sync.
-			// Require step() to be called first, or make this async?
-			// Let's assume compile was called or names are available from program.
-			console.warn("Fetching column names might require prior step() or compilation");
-		}
 		return [...(this.vdbeProgram?.columnNames || [])];
 	}
 
@@ -279,7 +250,232 @@ export class Statement {
 		this.db._statementFinalized(this);
 	}
 
-	// TODO: Add methods like getParameterCount(), getParameterName(), getParameterIndex() if needed
-	// TODO: Add sqlite3_column_* equivalent methods if direct column access is desired beyond get()/getAsObject()
+	/**
+	 * Executes the prepared statement with the given parameters until completion.
+	 * This is a convenience method that binds parameters, steps through all rows,
+	 * and resets the statement. It does not return rows. Ideal for INSERT, UPDATE, DELETE.
+	 *
+	 * @param params Optional parameters (array for positional, object for named).
+	 * @returns A Promise resolving when execution is complete.
+	 * @throws MisuseError if statement is finalized or busy.
+	 * @throws SqliteError if execution fails.
+	 */
+	async run(params?: SqlValue[] | Record<string, SqlValue>): Promise<void> {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.busy) throw new MisuseError("Statement busy - already running?");
 
+		if (params) {
+			this.bindAll(params); // Use existing bindAll
+		}
+
+		try {
+			let status: StatusCode;
+			do {
+				status = await this.step(); // Use existing step
+				if (status === StatusCode.ROW) {
+					// Row produced, clear it and continue stepping
+					this.currentRowInternal = null;
+				} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
+					// Error occurred during step
+					throw new SqliteError("Execution failed during run()", status);
+				}
+			} while (status === StatusCode.ROW);
+			// Status is DONE or OK here
+		} finally {
+			// Always reset the statement after run, even if it failed,
+			// making it ready for another run with potentially different params.
+			await this.reset();
+		}
+	}
+
+	/**
+	 * Executes the prepared statement, binds parameters, and retrieves the first result row.
+	 * Useful for queries expected to return at most one row (e.g., SELECT...LIMIT 1).
+	 * The statement is automatically reset after execution.
+	 *
+	 * @param params Optional parameters (array for positional, object for named).
+	 * @returns A Promise resolving to the first result row (as an object), or undefined if no rows are returned.
+	 * @throws MisuseError if statement is finalized or busy.
+	 * @throws SqliteError if execution fails.
+	 */
+	async get(params?: SqlValue[] | Record<string, SqlValue>): Promise<Record<string, SqlValue> | undefined> {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.busy) throw new MisuseError("Statement busy - already running?");
+
+		if (params) {
+			this.bindAll(params);
+		}
+
+		let result: Record<string, SqlValue> | undefined = undefined;
+		try {
+			const status = await this.step();
+			if (status === StatusCode.ROW) {
+				result = this.getAsObject(); // Use existing getAsObject
+			} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
+				throw new SqliteError("Execution failed during get()", status);
+			}
+			// Consume any potential subsequent rows if the user didn't LIMIT 1
+			let remainingStatus: StatusCode = status;
+			while (remainingStatus === StatusCode.ROW) {
+				remainingStatus = await this.step();
+				// Check for expected status codes
+				if (remainingStatus !== StatusCode.ROW &&
+					remainingStatus !== StatusCode.DONE &&
+					remainingStatus !== StatusCode.OK) {
+					// Error consuming remaining rows
+					console.warn(`Error consuming remaining rows after get(): ${StatusCode[remainingStatus]}`);
+					// Throw or just proceed to reset? Let's proceed for now.
+					break;
+				}
+			}
+		} finally {
+			await this.reset();
+		}
+		return result;
+	}
+
+	/**
+	 * Executes the prepared statement, binds parameters, and retrieves all result rows.
+	 * This is a convenience method that simplifies fetching all results into an array.
+	 * The statement is automatically reset after execution.
+	 *
+	 * @param params Optional parameters (array for positional, object for named).
+	 * @returns A Promise resolving to an array of result rows (as objects).
+	 * @throws MisuseError if statement is finalized or busy.
+	 * @throws SqliteError if execution fails.
+	 */
+	async all(params?: SqlValue[] | Record<string, SqlValue>): Promise<Record<string, SqlValue>[]> {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.busy) throw new MisuseError("Statement busy - already running?");
+
+		if (params) {
+			this.bindAll(params);
+		}
+
+		const results: Record<string, SqlValue>[] = [];
+		try {
+			let status: StatusCode;
+			do {
+				status = await this.step();
+				if (status === StatusCode.ROW) {
+					results.push(this.getAsObject()); // Use existing getAsObject
+				} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
+					throw new SqliteError("Execution failed during all()", status);
+				}
+			} while (status === StatusCode.ROW);
+		} finally {
+			await this.reset();
+		}
+		return results;
+	}
+
+	/**
+	 * Returns the number of parameters in the prepared statement.
+	 * @returns Number of parameters or 0 if none.
+	 */
+	getParameterCount(): number {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.needsCompile && !this.vdbeProgram) {
+			// If not compiled yet, we don't know parameter count
+			return 0;
+		}
+		return this.vdbeProgram?.parameters.size || 0;
+	}
+
+	/**
+	 * Gets the name of a parameter by its index.
+	 * @param index The 1-based index of the parameter.
+	 * @returns The parameter name, or null if the parameter is positional or not found.
+	 */
+	getParameterName(index: number): string | null {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (index < 1) throw new RangeError("Parameter index must be >= 1");
+		if (this.needsCompile && !this.vdbeProgram) return null;
+
+		// Look through parameters for a string key mapping to this index
+		for (const [key, value] of this.vdbeProgram?.parameters || []) {
+			if (typeof key === 'string' && value.memIdx === index) {
+				return key;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Gets the index of a named parameter.
+	 * @param name The parameter name (with or without : or $ prefix).
+	 * @returns The 1-based index of the parameter, or null if not found.
+	 */
+	getParameterIndex(name: string): number | null {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (!name) throw new MisuseError("Parameter name cannot be empty");
+		if (this.needsCompile && !this.vdbeProgram) return null;
+
+		const info = this.vdbeProgram?.parameters.get(name);
+		return info ? info.memIdx : null;
+	}
+
+	/**
+	 * Gets the data type of a column in the current row.
+	 * @param index The 0-based index of the column.
+	 * @returns The SQL data type.
+	 * @throws MisuseError if no row is available or index is out of range.
+	 */
+	getColumnType(index: number): SqlDataType {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (!this.currentRowInternal) throw new MisuseError("No row available");
+		if (index < 0 || index >= this.currentRowInternal.length) {
+			throw new RangeError(`Column index ${index} out of range (0-${this.currentRowInternal.length - 1})`);
+		}
+		// Return the data type of the cell at the given index
+		const value = this.currentRowInternal[index].value;
+
+		if (value === null) return SqlDataType.NULL;
+		if (typeof value === 'number') return SqlDataType.REAL;
+		if (typeof value === 'bigint') return SqlDataType.INTEGER;
+		if (typeof value === 'string') return SqlDataType.TEXT;
+		if (value instanceof Uint8Array) return SqlDataType.BLOB;
+		if (typeof value === 'boolean') return SqlDataType.INTEGER; // Booleans are stored as integers
+
+		// Fallback for any unexpected type
+		return SqlDataType.TEXT;
+	}
+
+	/**
+	 * Gets the name of a column by its index.
+	 * @param index The 0-based index of the column.
+	 * @returns The column name, or a generated name if not available.
+	 * @throws RangeError if index is out of range.
+	 */
+	getColumnName(index: number): string {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		const names = this.vdbeProgram?.columnNames || [];
+		if (index < 0 || (names.length > 0 && index >= names.length)) {
+			throw new RangeError(`Column index ${index} out of range (0-${names.length - 1})`);
+		}
+		return names[index] || `col_${index}`;
+	}
+
+	/**
+	 * Gets the byte length of a BLOB or TEXT column value.
+	 * @param index The 0-based index of the column.
+	 * @returns The byte length, or 0 for NULL values.
+	 * @throws MisuseError if no row is available.
+	 * @throws RangeError if index is out of range.
+	 */
+	getColumnBytes(index: number): number {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (!this.currentRowInternal) throw new MisuseError("No row available");
+		if (index < 0 || index >= this.currentRowInternal.length) {
+			throw new RangeError(`Column index ${index} out of range (0-${this.currentRowInternal.length - 1})`);
+		}
+
+		const value = this.currentRowInternal[index].value;
+		if (value === null) return 0;
+		if (value instanceof Uint8Array) return value.byteLength;
+		if (typeof value === 'string') return new TextEncoder().encode(value).length;
+
+		// For other types, convert to string first
+		return new TextEncoder().encode(String(value)).length;
+	}
 }
