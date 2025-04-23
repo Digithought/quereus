@@ -48,69 +48,6 @@ export class Statement {
 		// Defer compilation until first step or explicit compile call
 	}
 
-	// --- Simulate Parsing ---
-	/** @internal Simulates parsing the SQL into our AST structure. Replace with real parser later. */
-	private simulateParse(): SelectStmt { // Changed return type to SelectStmt
-		// VERY basic simulation - assumes SELECT * FROM vtab [WHERE col = ?]
-		console.warn("SQL parsing simulation active!");
-		const sqlLower = this.sql.toLowerCase().trim();
-		let tableName = 'unknown';
-		// Simplified WHERE clause representation for simulation
-		let where: { column: string; operator: IndexConstraintOp; value: SqlValue | { type: 'parameter', key: number | string } } | null = null;
-		let columns: ResultColumn[] = [{ type: 'all' }]; // Default to '*'
-
-		const fromMatch = sqlLower.match(/from\s+([a-z_]\w*)/);
-		if (fromMatch) {
-			tableName = fromMatch[1];
-		} else {
-			throw new SyntaxError(`Could not find FROM clause in: ${this.sql}`);
-		}
-
-		const selectMatch = sqlLower.match(/select\s+(.*?)\s+from/);
-		if (selectMatch && selectMatch[1] !== '*') {
-			// Simulation: treating column names directly as expressions
-			columns = selectMatch[1].split(',').map(c => ({ type: 'column', expr: { type: 'column', name: c.trim() } }));
-		}
-
-		const whereMatch = this.sql.match(/where\s+([a-z_]\w*)\s*=\s*(\?|\d+|'[^']+'|"[^"]+")/i); // Match ?, number, or quoted string
-		if (whereMatch) {
-			const colName = whereMatch[1];
-			const valStr = whereMatch[2];
-			let value: SqlValue | { type: 'parameter', key: number | string };
-			if (valStr === '?') {
-				// Assuming only one '?' for now, assign index 1
-				value = { type: 'parameter', key: 1 };
-			} else if (valStr.startsWith("'") || valStr.startsWith('"')) {
-				value = valStr.slice(1, -1); // Simple string literal unquoting
-			} else {
-				value = Number(valStr); // Simple number literal parsing
-				if (isNaN(value)) {
-					throw new SyntaxError(`Invalid literal in WHERE clause: ${valStr}`);
-				}
-			}
-			where = { column: colName, operator: IndexConstraintOp.EQ, value: value };
-		}
-
-		// Create a SelectStmt like object for the compiler simulation
-		// NOTE: Many fields are missing/simplified compared to the real AST
-		const simulatedAst: Partial<SelectStmt> & { type: 'select' } = {
-			type: 'select',
-			columns: columns,
-			from: [{ type: 'table', table: { type: 'identifier', name: tableName } }],
-			where: where ? { // Simulate a simple binary expression for the WHERE clause
-				type: 'binary',
-				operator: '=',
-				left: { type: 'column', name: where.column },
-				right: isParameter(where.value)
-					? { type: 'parameter', key: where.value.key } as any // Cast parameter marker
-					: { type: 'literal', value: where.value }
-			} : undefined
-		};
-
-		return simulatedAst as SelectStmt; // Cast to full type, acknowledging simulation limits
-	}
-	// --- End Simulate Parsing ---
-
 	/** @internal */
 	private async compile(): Promise<VdbeProgram> {
 		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }

@@ -151,26 +151,31 @@ export function createEphemeralSchemaHelper(
 	sortKey?: P4SortKey
 ): TableSchema {
 	const columns = Array.from({ length: numCols }, (_, i) => createDefaultColumnSchema(`eph_col${i}`));
-	// --- Create primaryKeyDefinition based on sortKey ---
 	let pkDef: ReadonlyArray<{ index: number; desc: boolean }> = [];
 	if (sortKey) {
+		// Set the collation on columns used as keys
+		sortKey.keyIndices.forEach((keyIndex, i) => {
+			if (keyIndex >= 0 && keyIndex < columns.length && sortKey.collations?.[i]) {
+				columns[keyIndex].collation = sortKey.collations[i]!;
+			}
+		});
+
 		pkDef = Object.freeze(sortKey.keyIndices.map((idx, i) => ({ index: idx, desc: sortKey.directions[i] })));
-		// Mark the columns as part of the PK for clarity, although setColumns will use pkDef directly
-		pkDef.forEach(def => { if (columns[def.index]) columns[def.index].primaryKey = true; });
+		pkDef.forEach(def => { if (def.index >= 0 && def.index < columns.length) columns[def.index].primaryKey = true; });
 	}
-	// --------------------------------------------------
-	const schema: TableSchema = {
-		name: `_eph_${cursorIdx}`,
-		schemaName: '_temp_internal',
+
+	const tableSchema: TableSchema = {
+		name: `ephemeral_${cursorIdx}`,
+		schemaName: 'temp',
 		columns: Object.freeze(columns),
 		columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
-		primaryKeyDefinition: pkDef, // Use the generated definition
+		primaryKeyDefinition: pkDef,
 		isVirtual: true,
-		// Ephemeral tables created this way don't have a pre-registered module/instance
-		// They are typically handled by the MemoryTableModule directly in the VDBE
 	};
-	compiler.ephemeralTables.set(cursorIdx, schema);
-	return schema;
+
+	compiler.tableSchemas.set(cursorIdx, tableSchema);
+	compiler.ephemeralTables.set(cursorIdx, tableSchema);
+	return tableSchema;
 }
 
 export function closeCursorsUsedBySelectHelper(compiler: Compiler, cursors: number[]): void {

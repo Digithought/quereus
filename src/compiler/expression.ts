@@ -102,17 +102,53 @@ function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, correlati
 
 // --- End Affinity --- //
 
+// First, add function to get expression collation
+function getExpressionCollation(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): string {
+	switch (expr.type) {
+		case 'literal': return 'BINARY'; // Literals use BINARY unless overridden
+		case 'column':
+			const colInfo = resolveColumnSchema(compiler, expr, correlation);
+			return colInfo?.column.collation || 'BINARY';
+		case 'collate': // Explicit COLLATE operator
+			return expr.collation.toUpperCase(); // Normalize collation name
+		case 'cast':
+			// CAST generally doesn't change collation
+			return 'BINARY';
+		case 'function':
+			// Functions usually have BINARY result collation
+			return 'BINARY';
+		case 'parameter':
+			return 'BINARY'; // Parameters are assigned BINARY collation
+		case 'unary':
+			// Unary operators generally don't affect collation
+			return 'BINARY';
+		case 'binary':
+			// Binary operations generally result in BINARY collation
+			return 'BINARY';
+		case 'subquery':
+			// Subquery results use BINARY collation
+			return 'BINARY';
+		case 'identifier':
+			// Treat as column
+			return 'BINARY';
+		default:
+			return 'BINARY';
+	}
+}
+
+// Now add support for COLLATE to compileExpression
 export function compileExpression(compiler: Compiler, expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	switch (expr.type) {
 		case 'literal': compiler.compileLiteral(expr, targetReg); break;
+		case 'identifier': compiler.compileColumn({ type: 'column', name: expr.name, alias: expr.name }, targetReg, correlation, havingContext, argumentMap); break;
 		case 'column': compiler.compileColumn(expr, targetReg, correlation, havingContext, argumentMap); break;
 		case 'binary': compiler.compileBinary(expr, targetReg, correlation, havingContext, argumentMap); break;
 		case 'unary': compiler.compileUnary(expr, targetReg, correlation, havingContext, argumentMap); break;
-		case 'cast': compiler.compileCast(expr as AST.CastExpr, targetReg, correlation, havingContext, argumentMap); break;
+		case 'cast': compiler.compileCast(expr, targetReg, correlation, havingContext, argumentMap); break;
 		case 'function': compiler.compileFunction(expr, targetReg, correlation, havingContext, argumentMap); break;
 		case 'parameter': compiler.compileParameter(expr, targetReg); break;
-		case 'subquery': compiler.compileSubquery(expr, targetReg); break; // Calls wrapper in compiler.ts
-		case 'identifier': compiler.compileColumn({ type: 'column', name: expr.name }, targetReg, correlation, havingContext, argumentMap); break;
+		case 'subquery': compiler.compileSubquery(expr, targetReg); break;
+		case 'collate': compiler.compileCollate(expr, targetReg, correlation, havingContext, argumentMap); break; // Add this
 		default:
 			throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR);
 	}
@@ -281,7 +317,8 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 }
 
 export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
-	if (expr.right.type === 'subquery') {
+	// If it's a subquery comparison, handle specially
+	if (expr.right.type === 'subquery' && ['=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IN'].includes(expr.operator.toUpperCase())) {
 		const subQuery = expr.right.query;
 		switch (expr.operator.toUpperCase()) {
 			case 'IN': compiler.compileInSubquery(expr.left, subQuery, targetReg, false /*, correlation, argumentMap*/); return; // Fix: Adjusted arguments
@@ -290,31 +327,53 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 			default: throw new SqliteError(`Operator '${expr.operator}' cannot be used with a subquery on the right side.`, StatusCode.ERROR);
 		}
 	}
+	if (expr.left.type === 'subquery' && ['=', '==', '!=', '<>', '<', '<=', '>', '>='].includes(expr.operator.toUpperCase())) {
+		const subQuery = expr.left.query;
+		switch (expr.operator.toUpperCase()) {
+			case '=': case '==': case '!=': case '<>': case '<': case '<=': case '>': case '>=':
+				compiler.compileComparisonSubquery(expr.left, expr.operator, subQuery, targetReg /*, correlation, argumentMap*/); return; // Fix: Adjusted arguments
+			default: throw new SqliteError(`Operator '${expr.operator}' cannot be used with a subquery on the left side.`, StatusCode.ERROR);
+		}
+	}
+
+	// Get affinity and operands
 	const leftReg = compiler.allocateMemoryCells(1);
 	const rightReg = compiler.allocateMemoryCells(1);
 	compiler.compileExpression(expr.left, leftReg, correlation, havingContext, argumentMap);
 	compiler.compileExpression(expr.right, rightReg, correlation, havingContext, argumentMap);
 
-	// Get affinity of operands *after* compilation
-	const leftAffinity = getExpressionAffinity(compiler, expr.left, correlation);
-	const rightAffinity = getExpressionAffinity(compiler, expr.right, correlation);
+	// Determine collation for comparison operators
+	let collationName: string | undefined;
+	const isComparison = ['=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IS', 'IS NOT', 'LIKE', 'GLOB'].includes(expr.operator.toUpperCase());
 
-	// Check if affinity needs to be applied before comparison or arithmetic
-	const isComparison = ['=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IS', 'IS NOT'].includes(expr.operator.toUpperCase());
 	if (isComparison) {
-		const leftIsNum = [SqlDataType.INTEGER, SqlDataType.REAL, SqlDataType.NUMERIC].includes(leftAffinity);
-		const rightIsNum = [SqlDataType.INTEGER, SqlDataType.REAL, SqlDataType.NUMERIC].includes(rightAffinity);
-		const leftIsTextBlob = [SqlDataType.TEXT, SqlDataType.BLOB].includes(leftAffinity);
-		const rightIsTextBlob = [SqlDataType.TEXT, SqlDataType.BLOB].includes(rightAffinity);
+		// Determine effective collation according to SQLite rules:
+		// 1. Explicit COLLATE on either operand wins
+		// 2. If one operand is a column, use its collation
+		// 3. Otherwise, use BINARY
 
-		// Apply NUMERIC affinity if one is numeric and the other is text/blob
-		if (leftIsNum && rightIsTextBlob) {
-			compiler.emit(Opcode.Affinity, rightReg, 1, 0, 'NUMERIC', 0, `Apply NUMERIC affinity to RHS for comparison`);
-		} else if (rightIsNum && leftIsTextBlob) {
-			compiler.emit(Opcode.Affinity, leftReg, 1, 0, 'NUMERIC', 0, `Apply NUMERIC affinity to LHS for comparison`);
+		if (expr.left.type === 'collate') {
+			collationName = expr.left.collation.toUpperCase();
+		} else if (expr.right.type === 'collate') {
+			collationName = expr.right.collation.toUpperCase();
+		} else {
+			const leftColl = getExpressionCollation(compiler, expr.left, correlation);
+			const rightColl = getExpressionCollation(compiler, expr.right, correlation);
+
+			if (leftColl !== 'BINARY' && rightColl === 'BINARY') {
+				collationName = leftColl;
+			} else if (rightColl !== 'BINARY' && leftColl === 'BINARY') {
+				collationName = rightColl;
+			} else if (leftColl !== 'BINARY' && rightColl !== 'BINARY' && leftColl !== rightColl) {
+				// Conflict - use BINARY
+				collationName = 'BINARY';
+			} else {
+				collationName = leftColl; // Same as rightColl or both BINARY
+			}
 		}
 	}
 
+	// The rest of the function remains similar, but we'll pass collation info to comparison opcodes
 	switch (expr.operator.toUpperCase()) {
 		case '+': compiler.emit(Opcode.Add, leftReg, rightReg, targetReg, null, 0, "Add"); break;
 		case '-': compiler.emit(Opcode.Subtract, leftReg, rightReg, targetReg, null, 0, "Subtract"); break;
@@ -326,6 +385,91 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 		case '|': compiler.emit(Opcode.BitOr, leftReg, rightReg, targetReg, null, 0, "BitOr"); break;
 		case '<<': compiler.emit(Opcode.ShiftLeft, rightReg, leftReg, targetReg, null, 0, "ShiftLeft"); break;
 		case '>>': compiler.emit(Opcode.ShiftRight, rightReg, leftReg, targetReg, null, 0, "ShiftRight"); break;
+		case '=': case '==': case '!=': case '<>': case '<': case '<=': case '>': case '>=': case 'IS': case 'IS NOT': {
+			let compareOp: Opcode;
+			let resultIfTrue = 1;
+			let resultIfFalse = 0;
+			let handleNull = true; // Standard operators treat NULL comparison as NULL
+			let jumpOpcode: Opcode | null = null;
+
+			// Set up P4 with collation info
+			let p4: any = null;
+			if (isComparison && collationName && collationName !== 'BINARY') {
+				p4 = { type: 'coll', name: collationName };
+			}
+
+			// Choose opcode and jump target logic
+			switch (expr.operator.toUpperCase()) {
+				case '=': case '==': compareOp = Opcode.Eq; jumpOpcode = Opcode.Eq; handleNull = true; break;
+				case 'IS': compareOp = Opcode.Eq; jumpOpcode = Opcode.Eq; handleNull = false; break;
+				case '!=': case '<>': compareOp = Opcode.Ne; jumpOpcode = Opcode.Ne; handleNull = true; break;
+				case 'IS NOT': compareOp = Opcode.Ne; jumpOpcode = Opcode.Ne; handleNull = false; break;
+				case '<': compareOp = Opcode.Lt; jumpOpcode = Opcode.Lt; handleNull = true; break;
+				case '<=': compareOp = Opcode.Le; jumpOpcode = Opcode.Le; handleNull = true; break;
+				case '>': compareOp = Opcode.Gt; jumpOpcode = Opcode.Gt; handleNull = true; break;
+				case '>=': compareOp = Opcode.Ge; jumpOpcode = Opcode.Ge; handleNull = true; break;
+				default: throw new Error("Impossible operator");
+			}
+
+			// Apply type affinity if needed
+			const leftAffinity = getExpressionAffinity(compiler, expr.left, correlation);
+			const rightAffinity = getExpressionAffinity(compiler, expr.right, correlation);
+			const leftIsNum = [SqlDataType.INTEGER, SqlDataType.REAL, SqlDataType.NUMERIC].includes(leftAffinity);
+			const rightIsNum = [SqlDataType.INTEGER, SqlDataType.REAL, SqlDataType.NUMERIC].includes(rightAffinity);
+			const leftIsTextBlob = [SqlDataType.TEXT, SqlDataType.BLOB].includes(leftAffinity);
+			const rightIsTextBlob = [SqlDataType.TEXT, SqlDataType.BLOB].includes(rightAffinity);
+
+			if (leftIsNum && rightIsTextBlob) {
+				compiler.emit(Opcode.Affinity, rightReg, 1, 0, 'NUMERIC', 0, `Apply NUMERIC affinity to RHS for comparison`);
+			} else if (rightIsNum && leftIsTextBlob) {
+				compiler.emit(Opcode.Affinity, leftReg, 1, 0, 'NUMERIC', 0, `Apply NUMERIC affinity to LHS for comparison`);
+			}
+
+			const addrIsTrue = compiler.allocateAddress();
+			const addrSetNull = compiler.allocateAddress();
+			const addrEnd = compiler.allocateAddress();
+
+			// ... rest of comparison logic (NULL handling, etc.) unchanged ...
+			// But we'll pass p4 containing collation to the jumpOpcode
+			if (handleNull) {
+				compiler.emit(Opcode.IfNull, leftReg, addrSetNull, 0, null, 0, `Compare: If left NULL, jump to set NULL`);
+				compiler.emit(Opcode.IfNull, rightReg, addrSetNull, 0, null, 0, `Compare: If right NULL, jump to set NULL`);
+			}
+
+			// This is the key change - passing p4 with collation info
+			compiler.emit(jumpOpcode!, leftReg, addrIsTrue, rightReg, p4, 0, `Compare ${expr.operator}${p4 ? ` (${p4.name})` : ''}`);
+
+			// Set false and jump to end
+			if (resultIfFalse !== 0) {
+				compiler.emit(Opcode.Integer, targetReg, resultIfFalse, 0, null, 0, `Load ${resultIfFalse} (false result)`);
+			} else {
+				compiler.emit(Opcode.Null, targetReg, 0, 0, null, 0, `Load 0 (false result)`);
+			}
+			compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0, `Jump to end, skipping true case`);
+
+			// Set true value
+			compiler.resolveAddress(addrIsTrue);
+			if (resultIfTrue !== 1) {
+				compiler.emit(Opcode.Integer, targetReg, resultIfTrue, 0, null, 0, `Load ${resultIfTrue} (true result)`);
+			} else {
+				compiler.emit(Opcode.Integer, targetReg, 1, 0, null, 0, `Load 1 (true result)`);
+			}
+			compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0, `Jump to end, skipping NULL case`);
+
+			// Set NULL value if either operand is NULL
+			if (handleNull) {
+				compiler.resolveAddress(addrSetNull);
+				compiler.emit(Opcode.Null, targetReg, 0, 0, null, 0, `Null comparison result`);
+			}
+
+			// End of comparison logic
+			compiler.resolveAddress(addrEnd);
+			break;
+		}
+		case 'LIKE': case 'GLOB': {
+			// TODO: Implement LIKE/GLOB with proper collation support
+			throw new SqliteError(`Operator ${expr.operator} not fully implemented yet with collation support.`, StatusCode.ERROR);
+		}
 		case 'AND': {
 			// AND: Evaluate left. If false/null, result is left. Otherwise, result is right.
 			const addrIsRight = compiler.allocateAddress();
@@ -561,4 +705,12 @@ export function compileSubquery(compiler: Compiler, expr: AST.SubqueryExpr, targ
 	// EXISTS and IN are typically handled by parent Unary/Binary expression compilers.
 	console.warn("compileSubquery assuming scalar context. EXISTS/IN should be handled by parent expression compiler.");
 	compiler.compileScalarSubquery(expr.query, targetReg);
+}
+
+// Add compileCollate function
+export function compileCollate(compiler: Compiler, expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
+	// The COLLATE operator doesn't change the value, only the collation used in comparisons
+	// We simply compile the underlying expression
+	compiler.compileExpression(expr.expr, targetReg, correlation, havingContext, argumentMap);
+	// No specific VDBE instructions needed for COLLATE - the collation info is used by binary expressions
 }

@@ -63,8 +63,7 @@ export interface P4Vtab {
 
 /** Placeholder for P4 when it refers to collation sequence */
 export interface P4Coll {
-	name: string;
-	// collationFunc: (a: string, b: string) => number; // The actual function if needed directly
+	name: string; // Collation sequence name (e.g., "BINARY", "NOCASE")
 	type: 'coll';
 }
 
@@ -80,6 +79,8 @@ export interface P4SortKey {
 	keyIndices: ReadonlyArray<number>;
 	/** Sort direction for each key column (true for DESC) */
 	directions: ReadonlyArray<boolean>;
+	/** Optional collation names for each key column */
+	collations?: ReadonlyArray<string | undefined>;
 	type: 'sortkey';
 }
 

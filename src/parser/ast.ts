@@ -8,21 +8,12 @@ import type { ConflictResolution } from '../common/constants';
 
 // Base for all AST nodes
 export interface AstNode {
-	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma';
+	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma' | 'collate';
 }
 
 // Expression types
-export type Expression =
-	| LiteralExpr
-	| IdentifierExpr
-	| BinaryExpr
-	| UnaryExpr
-	| FunctionExpr
-	| CastExpr
-	| ParameterExpr
-	| SubqueryExpr
-	| ColumnExpr
-	| FunctionSource;
+export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr | FunctionExpr | CastExpr
+	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -339,4 +330,10 @@ export interface CommonTableExpr extends AstNode {
 	name: string;
 	columns?: string[];
 	query: SelectStmt | InsertStmt | UpdateStmt | DeleteStmt; // CTE body
+}
+
+export interface CollateExpr extends AstNode {
+	type: 'collate';
+	expr: Expression;
+	collation: string;
 }

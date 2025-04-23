@@ -686,24 +686,19 @@ export class Parser {
 	 * Parse multiplication and division
 	 */
 	private factor(): AST.Expression {
-		let expr = this.primary();
+		// First, handle unary operators
+		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE)) {
+			const operator = this.previous().lexeme;
+			const right = this.factor();
+			return { type: 'unary', operator, expr: right };
+		}
+
+		let expr = this.collateExpression(); // Use collateExpression instead of primary
 
 		while (this.match(TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT)) {
-			let operator: string;
-			switch (this.previous().type) {
-				case TokenType.ASTERISK: operator = '*'; break;
-				case TokenType.SLASH: operator = '/'; break;
-				case TokenType.PERCENT: operator = '%'; break;
-				default: operator = '?';
-			}
-
-			const right = this.primary();
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right
-			};
+			const operator = this.previous().lexeme;
+			const right = this.collateExpression(); // Use collateExpression here too
+			expr = { type: 'binary', operator, left: expr, right };
 		}
 
 		return expr;
@@ -1687,5 +1682,17 @@ export class Parser {
 			return this.advance();
 		}
 		throw this.error(this.peek(), message);
+	}
+
+	// Add a new parsing level for COLLATE
+	private collateExpression(): AST.Expression {
+		let expr = this.primary(); // Parse the base expression
+
+		if (this.match(TokenType.COLLATE)) {
+			const collationName = this.consumeIdentifier("Expected collation name after COLLATE.");
+			expr = { type: 'collate', expr, collation: collationName };
+		}
+
+		return expr;
 	}
 }

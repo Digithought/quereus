@@ -21,6 +21,10 @@ import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table';
 import { MemoryTableModule } from '../vtab/memory-table';
 import { JsonEachModule } from '../vtab/json-each';
 import { JsonTreeModule } from '../vtab/json-tree'; // Import JsonTreeModule
+// Add import for collation functions
+import { registerCollation as registerCollationUtil, getCollation as getCollationUtil, type CollationFunction, BINARY_COLLATION, NOCASE_COLLATION, RTRIM_COLLATION } from '../util/comparison';
+// Import schema serialization functions
+import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization';
 
 /**
  * Represents a connection to an SQLite database (in-memory in this port).
@@ -53,6 +57,8 @@ export class Database {
 		this.registerVtabModule('memory', new MemoryTableModule());
 		this.registerVtabModule('json_each', new JsonEachModule());
 		this.registerVtabModule('json_tree', new JsonTreeModule()); // Register JsonTreeModule
+		// Register built-in collations
+		this.registerDefaultCollations();
 	}
 
 	/** @internal Registers default built-in SQL functions */
@@ -66,6 +72,15 @@ export class Database {
 			}
 		});
 		console.log(`Registered ${BUILTIN_FUNCTIONS.length} built-in functions.`);
+	}
+
+	/** @internal Registers default collation sequences */
+	private registerDefaultCollations(): void {
+		// Register the built-in collations
+		registerCollationUtil('BINARY', BINARY_COLLATION);
+		registerCollationUtil('NOCASE', NOCASE_COLLATION);
+		registerCollationUtil('RTRIM', RTRIM_COLLATION);
+		console.log("Default collations registered (BINARY, NOCASE, RTRIM)");
 	}
 
 	/**
@@ -405,66 +420,7 @@ export class Database {
 	 * @returns A JSON string representing the schema.
 	 */
 	exportSchemaJson(): string {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
-
-		const output: JsonDatabaseSchema = {
-			schemaVersion: 1,
-			schemas: {},
-		};
-
-		for (const schema of this.schemaManager._getAllSchemas()) {
-			const jsonSchema: JsonSchema = {
-				tables: [],
-				functions: [],
-			};
-
-			for (const tableSchema of schema.getAllTables()) {
-				const jsonTable: JsonTableSchema = {
-					name: tableSchema.name,
-					columns: tableSchema.columns.map((col: ColumnSchema) => {
-						const affinityKey = SqlDataType[col.affinity] as keyof typeof SqlDataType;
-						let jsonDefault: string | number | null = null;
-						if (typeof col.defaultValue === 'string' || typeof col.defaultValue === 'number' || col.defaultValue === null) {
-							jsonDefault = col.defaultValue;
-						} else if (typeof col.defaultValue === 'bigint') {
-							jsonDefault = col.defaultValue.toString() + 'n';
-						} else if (col.defaultValue instanceof Uint8Array) {
-							const hex = Array.from(col.defaultValue).map(b => b.toString(16).padStart(2, '0')).join('');
-							jsonDefault = `x'${hex}'`;
-						}
-
-						return {
-							name: col.name,
-							affinity: affinityKey,
-							notNull: col.notNull,
-							primaryKey: col.primaryKey,
-							defaultValue: jsonDefault,
-							collation: col.collation,
-							hidden: col.hidden,
-							generated: col.generated,
-						} as JsonColumnSchema;
-					}),
-					primaryKeyDefinition: [...tableSchema.primaryKeyDefinition],
-					isVirtual: tableSchema.isVirtual,
-					vtabModule: tableSchema.vtabModuleName,
-					vtabArgs: tableSchema.vtabArgs ? [...tableSchema.vtabArgs] : undefined,
-				};
-				jsonSchema.tables.push(jsonTable);
-			}
-
-			for (const funcSchema of schema._getAllFunctions()) {
-				const jsonFunc: JsonFunctionSchema = {
-					name: funcSchema.name,
-					numArgs: funcSchema.numArgs,
-					flags: funcSchema.flags,
-				};
-				jsonSchema.functions.push(jsonFunc);
-			}
-
-			output.schemas[schema.name] = jsonSchema;
-		}
-
-		return JSON.stringify(output, null, 2);
+		return exportSchemaJsonUtil(this);
 	}
 
 	/**
@@ -476,114 +432,7 @@ export class Database {
 	 * @throws Error on parsing errors or invalid schema format.
 	 */
 	importSchemaJson(jsonString: string): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
-		if (this.inTransaction) throw new MisuseError("Cannot import schema during a transaction");
-
-		let jsonData: JsonDatabaseSchema;
-		try {
-			jsonData = JSON.parse(jsonString);
-		} catch (e: any) {
-			throw new Error(`Failed to parse JSON schema: ${e.message}`);
-		}
-
-		if (jsonData.schemaVersion !== 1) {
-			throw new Error(`Unsupported schema version: ${jsonData.schemaVersion}. Expected version 1.`);
-		}
-
-		// Clear existing user-defined schemas before import
-		// Keep 'main' and 'temp' but clear their contents?
-		// Let's clear tables/functions from main/temp for now.
-		this.schemaManager.clearAll(false); // Don't disconnect VTabs yet
-
-		for (const schemaName in jsonData.schemas) {
-			if (!Object.prototype.hasOwnProperty.call(jsonData.schemas, schemaName)) continue;
-
-			let schema = this.schemaManager.getSchema(schemaName);
-			if (!schema) {
-				if (schemaName === 'main' || schemaName === 'temp') {
-					console.error(`Core schema ${schemaName} missing during import!`);
-					throw new SqliteError(`Internal error: Core schema ${schemaName} is missing.`, StatusCode.INTERNAL);
-				} else {
-					schema = this.schemaManager.addSchema(schemaName);
-				}
-			} else {
-				// Clear existing contents of main/temp if they weren't cleared by clearAll
-				schema.clearTables();
-				schema.clearFunctions();
-			}
-
-			const jsonSchema = jsonData.schemas[schemaName];
-
-			// Import Tables
-			for (const jsonTable of jsonSchema.tables) {
-				const columns: ColumnSchema[] = jsonTable.columns.map(jsonCol => {
-					const affinity = SqlDataType[jsonCol.affinity as keyof typeof SqlDataType];
-					if (affinity === undefined) {
-						throw new Error(`Invalid affinity string "${jsonCol.affinity}" for column ${jsonCol.name}`);
-					}
-					// Deserialize default value
-					let defaultValue: SqlValue = null;
-					if (typeof jsonCol.defaultValue === 'string') {
-						if (jsonCol.defaultValue.endsWith('n')) {
-							try { defaultValue = BigInt(jsonCol.defaultValue.slice(0, -1)); } catch { /* ignore invalid */ }
-						} else if (jsonCol.defaultValue.toLowerCase().startsWith('x\'') && jsonCol.defaultValue.endsWith('\'')) {
-							const hex = jsonCol.defaultValue.slice(2, -1);
-							try {
-								const bytes = new Uint8Array(hex.length / 2);
-								for (let i = 0; i < hex.length; i += 2) {
-									bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-								}
-								defaultValue = bytes;
-							} catch { /* ignore invalid hex */ }
-						} else {
-							defaultValue = jsonCol.defaultValue; // Assume string literal
-						}
-					} else if (typeof jsonCol.defaultValue === 'number' || jsonCol.defaultValue === null) {
-						defaultValue = jsonCol.defaultValue;
-					}
-
-					return {
-						name: jsonCol.name,
-						affinity: affinity,
-						notNull: jsonCol.notNull,
-						primaryKey: jsonCol.primaryKey,
-						pkOrder: jsonTable.primaryKeyDefinition.find(pk => pk.index === jsonTable.columns.indexOf(jsonCol)) ? jsonTable.primaryKeyDefinition.findIndex(pk => pk.index === jsonTable.columns.indexOf(jsonCol)) + 1 : 0,
-						defaultValue: defaultValue,
-						collation: jsonCol.collation,
-						hidden: jsonCol.hidden,
-						generated: jsonCol.generated,
-					} as ColumnSchema;
-				});
-
-				const tableSchema: TableSchema = {
-					name: jsonTable.name,
-					schemaName: schemaName,
-					columns: Object.freeze(columns),
-					columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
-					primaryKeyDefinition: Object.freeze(jsonTable.primaryKeyDefinition),
-					isVirtual: jsonTable.isVirtual,
-					vtabModuleName: jsonTable.vtabModule,
-					vtabArgs: jsonTable.vtabArgs ? Object.freeze(jsonTable.vtabArgs) : undefined,
-					// vtabModule, vtabInstance, vtabAuxData will be populated on connect
-				};
-				schema.addTable(tableSchema);
-			}
-
-			// Import Functions (stubs only)
-			for (const jsonFunc of jsonSchema.functions) {
-				// Check if it's a built-in function and skip if so?
-				// Or just allow overriding? Let's allow overriding for now.
-				const funcSchema: FunctionSchema = {
-					name: jsonFunc.name,
-					numArgs: jsonFunc.numArgs,
-					flags: jsonFunc.flags,
-					// Implementations (xFunc, xStep, xFinal) are NOT restored
-				};
-				schema.addFunction(funcSchema);
-			}
-		}
-		// TODO: Warn only if needed functions and modules are missing
-		console.warn("Schema imported from JSON. Function implementations and VTab connections must be re-established manually.");
+		importSchemaJsonUtil(this, jsonString);
 	}
 
 	/**
@@ -631,4 +480,34 @@ export class Database {
 		};
 	}
 	// ----------------------------------------
+
+	/**
+	 * Registers a user-defined collation sequence.
+	 * @param name The name of the collation sequence (case-insensitive).
+	 * @param func The comparison function (a, b) => number (-1, 0, 1).
+	 * @example
+	 * // Example: Create a custom collation for phone numbers
+	 * db.registerCollation('PHONENUMBER', (a, b) => {
+	 *   // Normalize phone numbers by removing non-digit characters
+	 *   const normalize = (phone) => phone.replace(/\D/g, '');
+	 *   const numA = normalize(a);
+	 *   const numB = normalize(b);
+	 *   return numA < numB ? -1 : numA > numB ? 1 : 0;
+	 * });
+	 *
+	 * // Then use it in SQL:
+	 * // SELECT * FROM contacts ORDER BY phone COLLATE PHONENUMBER;
+	 */
+	registerCollation(name: string, func: CollationFunction): void {
+		if (!this.isOpen) {
+			throw new SqliteError("Database is closed", StatusCode.ERROR);
+		}
+		registerCollationUtil(name, func);
+		console.log(`Registered collation: ${name}`);
+	}
+
+	/** @internal Gets a registered collation function */
+	_getCollation(name: string): CollationFunction | undefined {
+		return getCollationUtil(name);
+	}
 }

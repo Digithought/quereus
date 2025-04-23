@@ -3,7 +3,7 @@ import { SqliteError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
-import type { VdbeInstruction, P4Vtab, P4FuncDef, P4SortKey } from './instruction';
+import type { VdbeInstruction, P4Vtab, P4FuncDef, P4SortKey, P4Coll } from './instruction';
 import { Opcode, ConflictResolution } from '../common/constants';
 import { evaluateIsTrue, compareSqlValues } from '../util/comparison';
 import { applyNumericAffinity, applyTextAffinity, applyIntegerAffinity, applyRealAffinity, applyBlobAffinity } from '../util/affinity';
@@ -360,12 +360,33 @@ export class Vdbe {
 			case Opcode.IsNull: this._setMem(p2, this._getMemValue(p1) === null); break;
 			case Opcode.NotNull: this._setMem(p2, this._getMemValue(p1) !== null); break;
 			// Comparisons use frame-relative _getMemValue implicitly
-			case Opcode.Eq: conditionalJump(compareSqlValues(this._getMemValue(p3), this._getMemValue(p1)) === 0); return;
-			case Opcode.Ne: conditionalJump(compareSqlValues(this._getMemValue(p3), this._getMemValue(p1)) !== 0); return;
-			case Opcode.Lt: conditionalJump(compareSqlValues(this._getMemValue(p3), this._getMemValue(p1)) < 0); return;
-			case Opcode.Le: conditionalJump(compareSqlValues(this._getMemValue(p3), this._getMemValue(p1)) <= 0); return;
-			case Opcode.Gt: conditionalJump(compareSqlValues(this._getMemValue(p3), this._getMemValue(p1)) > 0); return;
-			case Opcode.Ge: conditionalJump(compareSqlValues(this._getMemValue(p3), this._getMemValue(p1)) >= 0); return;
+			case Opcode.Eq:
+			case Opcode.Ne:
+			case Opcode.Lt:
+			case Opcode.Le:
+			case Opcode.Gt:
+			case Opcode.Ge: {
+				const v1 = this._getMemValue(p1);
+				const v2 = this._getMemValue(p3);
+				const jumpTarget = p2;
+				const p4Coll = p4 as P4Coll | null; // Extract collation info from P4
+				const collationName = p4Coll?.type === 'coll' ? p4Coll.name : 'BINARY'; // Default to BINARY
+
+				// Pass collation to compareSqlValues
+				const comparisonResult = compareSqlValues(v1, v2, collationName);
+
+				let conditionMet = false;
+				switch (inst.opcode) {
+					case Opcode.Eq: conditionMet = comparisonResult === 0; break;
+					case Opcode.Ne: conditionMet = comparisonResult !== 0; break;
+					case Opcode.Lt: conditionMet = comparisonResult < 0; break;
+					case Opcode.Le: conditionMet = comparisonResult <= 0; break;
+					case Opcode.Gt: conditionMet = comparisonResult > 0; break;
+					case Opcode.Ge: conditionMet = comparisonResult >= 0; break;
+				}
+				conditionalJump(conditionMet);
+				return;
+			}
 			// Arithmetic/String ops use frame-relative _getMemValue/_setMem implicitly
 			case Opcode.Add: this._binaryArithOp(p1, p2, p3, (a, b) => Number(a) + Number(b)); break; // Needs BigInt check
 			case Opcode.Subtract: this._binaryArithOp(p1, p2, p3, (a, b) => Number(b) - Number(a)); break; // Needs BigInt check

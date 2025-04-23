@@ -98,7 +98,7 @@ class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
  * Can be keyed by rowid (default) or declared PRIMARY KEY column(s).
  */
 export class MemoryTable extends VirtualTable {
-	public columns: { name: string, type: SqlDataType }[] = [];
+	public columns: { name: string, type: SqlDataType, collation?: string }[] = [];
 	public primaryKeyColumnIndices: ReadonlyArray<number> = [];
 	public keyFromEntry: (entry: MemoryTableRow) => BTreeKey = (row) => row._rowid_;
 	public compareKeys: (a: BTreeKey, b: BTreeKey) => number = compareSqlValues as any;
@@ -134,7 +134,7 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	// --- Updated setColumns to use primaryKeyDefinition ---
-	setColumns(columns: { name: string, type: SqlDataType }[], pkDef: ReadonlyArray<{ index: number; desc: boolean }>): void {
+	setColumns(columns: { name: string, type: SqlDataType, collation?: string }[], pkDef: ReadonlyArray<{ index: number; desc: boolean }>): void {
 		this.columns = [...columns];
 
 		if (pkDef.length === 0) {
@@ -142,42 +142,48 @@ export class MemoryTable extends VirtualTable {
 			this.keyFromEntry = (row) => row._rowid_;
 			// Explicitly define compareKeys for rowid (bigint)
 			// Ensure compareSqlValues handles BTreeKey which might be bigint
-			this.compareKeys = (a, b) => compareSqlValues(a as SqlValue, b as SqlValue);
+			this.compareKeys = (a: BTreeKey, b: BTreeKey): number => compareSqlValues(a as SqlValue, b as SqlValue);
 			this.rowidToKeyMap = null;
 		} else if (pkDef.length === 1) {
 			const { index: pkIndex, desc: isDesc } = pkDef[0];
 			const pkColName = this.columns[pkIndex]?.name;
+			const pkCollation = this.columns[pkIndex]?.collation || 'BINARY'; // Get collation from column
 			if (!pkColName) {
 				console.error(`MemoryTable '${this.tableName}': Invalid primary key index ${pkIndex}. Falling back to rowid key.`);
 				this.keyFromEntry = (row) => row._rowid_;
 				// Ensure compareSqlValues handles BTreeKey which might be bigint
-				this.compareKeys = (a, b) => compareSqlValues(a as SqlValue, b as SqlValue);
+				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => compareSqlValues(a as SqlValue, b as SqlValue);
 				this.rowidToKeyMap = null;
 			} else {
 				console.log(`MemoryTable '${this.tableName}': Using PRIMARY KEY column '${pkColName}' (index ${pkIndex}, ${isDesc ? 'DESC' : 'ASC'}) as BTree key.`);
+				this.primaryKeyColumnIndices = Object.freeze([pkIndex]);
 				this.keyFromEntry = (row) => row[pkColName] as BTreeKey;
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => {
 					// Cast needed as compareSqlValues takes SqlValue, but BTreeKey might be SqlValue[]
 					// This case is for single PK, so it should be SqlValue
-					const cmp = compareSqlValues(a as SqlValue, b as SqlValue);
+					const cmp = compareSqlValues(a as SqlValue, b as SqlValue, pkCollation);
 					return isDesc ? -cmp : cmp;
 				};
 				this.rowidToKeyMap = new Map();
 			}
 		} else {
-			const pkCols = pkDef.map(def => ({ name: this.columns[def.index]?.name, desc: def.desc }));
+			const pkCols = pkDef.map(def => ({
+				name: this.columns[def.index]?.name,
+				desc: def.desc,
+				collation: this.columns[def.index]?.collation || 'BINARY' // Get collation from column
+			}));
 			if (pkCols.some(c => !c.name)) {
 				console.error(`MemoryTable '${this.tableName}': Invalid composite primary key indices. Falling back to rowid key.`);
 				this.keyFromEntry = (row) => row._rowid_;
 				// Ensure compareSqlValues handles BTreeKey which might be bigint
-				this.compareKeys = (a, b) => compareSqlValues(a as SqlValue, b as SqlValue);
+				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => compareSqlValues(a as SqlValue, b as SqlValue);
 				this.rowidToKeyMap = null;
 			} else {
 				const pkColNames = pkCols.map(c => c.name!); // Safe due to check above
 				console.log(`MemoryTable '${this.tableName}': Using Composite PRIMARY KEY (${pkCols.map(c => `${c.name} ${c.desc ? 'DESC' : 'ASC'}`).join(', ')}) as BTree key.`);
 				this.keyFromEntry = (row) => pkColNames.map(name => row[name]);
 				// Use the dedicated composite key comparison function
-				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => this.compareCompositeKeysWithOrder(a, b, pkCols.map(c => c.desc));
+				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => this.compareCompositeKeysWithOrder(a, b, pkCols.map(c => c.desc), pkCols.map(c => c.collation));
 				this.rowidToKeyMap = new Map();
 			}
 		}
@@ -188,13 +194,19 @@ export class MemoryTable extends VirtualTable {
 	}
 	// ----------------------------------------------------
 
-	private compareCompositeKeysWithOrder(a: BTreeKey, b: BTreeKey, directions: ReadonlyArray<boolean>): number {
+	private compareCompositeKeysWithOrder(
+		a: BTreeKey,
+		b: BTreeKey,
+		directions: ReadonlyArray<boolean>,
+		collations: ReadonlyArray<string> = []  // Add collations parameter with default empty array
+	): number {
 		const arrA = a as SqlValue[];
 		const arrB = b as SqlValue[];
 		const len = Math.min(arrA.length, arrB.length);
 		for (let i = 0; i < len; i++) {
 			const dirMultiplier = directions[i] ? -1 : 1;
-			const cmp = compareSqlValues(arrA[i], arrB[i]) * dirMultiplier;
+			const collation = collations[i] || 'BINARY'; // Use specified collation or default to BINARY
+			const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
 			if (cmp !== 0) return cmp;
 		}
 		return arrA.length - arrB.length;
@@ -601,7 +613,8 @@ export class MemoryTable extends VirtualTable {
 
 			for (let i = 0; i < len; i++) {
 				const dirMultiplier = sortInfo.directions[i] ? -1 : 1;
-				const cmp = compareSqlValues(arrA[i], arrB[i]) * dirMultiplier;
+				const collation = sortInfo.collations?.[i] || 'BINARY'; // Use collation from sort key or default
+				const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
 				if (cmp !== 0) return cmp;
 			}
 			const rowidA = arrA[len];
@@ -1263,9 +1276,9 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 					let affinity = SqlDataType.TEXT;
 					const typeName = colDef.dataType?.toUpperCase() || '';
 					if (typeName.includes('INT')) affinity = SqlDataType.INTEGER;
-					else if (typeName.includes('REAL') || typeName.includes('FLOAT') || typeName.includes('DOUBLE')) affinity = SqlDataType.FLOAT;
+					else if (typeName.includes('REAL') || typeName.includes('FLOAT') || typeName.includes('DOUBLE')) affinity = SqlDataType.REAL;
 					else if (typeName.includes('BLOB')) affinity = SqlDataType.BLOB;
-					else if (typeName.includes('NUMERIC')) affinity = SqlDataType.FLOAT;
+					else if (typeName.includes('NUMERIC')) affinity = SqlDataType.REAL;
 					else if (typeName.includes('BOOL')) affinity = SqlDataType.INTEGER;
 					else if (typeName.length > 0) affinity = SqlDataType.TEXT;
 					return { name: colDef.name, type: affinity };

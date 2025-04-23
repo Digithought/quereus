@@ -1,5 +1,55 @@
 import { type SqlValue } from '../common/types';
 
+// --- Add Collation Function Type ---
+export type CollationFunction = (a: string, b: string) => number;
+
+// --- Create a map to store registered collations ---
+const collations = new Map<string, CollationFunction>();
+
+// --- Export the built-in collation functions directly ---
+// BINARY (Default)
+export const BINARY_COLLATION: CollationFunction = (a, b) => {
+	return a < b ? -1 : a > b ? 1 : 0;
+};
+
+// NOCASE
+export const NOCASE_COLLATION: CollationFunction = (a, b) => {
+	const lowerA = a.toLowerCase();
+	const lowerB = b.toLowerCase();
+	return lowerA < lowerB ? -1 : lowerA > lowerB ? 1 : 0;
+};
+
+// RTRIM
+export const RTRIM_COLLATION: CollationFunction = (a, b) => {
+	let lenA = a.length;
+	let lenB = b.length;
+	// Find end of non-space characters
+	while (lenA > 0 && a[lenA - 1] === ' ') lenA--;
+	while (lenB > 0 && b[lenB - 1] === ' ') lenB--;
+	// Compare the trimmed parts
+	const minLen = Math.min(lenA, lenB);
+	for (let i = 0; i < minLen; i++) {
+		if (a[i] !== b[i]) {
+			return a[i] < b[i] ? -1 : 1;
+		}
+	}
+	// If prefixes match, the shorter (trimmed) string comes first
+	return lenA - lenB;
+};
+
+// --- Collation Registration Functions ---
+export function registerCollation(name: string, func: CollationFunction): void {
+    const upperName = name.toUpperCase();
+    if (collations.has(upperName)) {
+        console.warn(`Overwriting existing collation: ${upperName}`);
+    }
+    collations.set(upperName, func);
+}
+
+export function getCollation(name: string): CollationFunction | undefined {
+	return collations.get(name.toUpperCase());
+}
+
 /**
  * Evaluates a JavaScript value according to simplified, JS-idiomatic truthiness rules.
  * - null/undefined are false.
@@ -60,9 +110,10 @@ function getStorageClass(v: SqlValue): StorageClass {
  * before comparison, nor does it handle collations beyond basic lexicographical for TEXT.
  * @param a First value.
  * @param b Second value.
+ * @param collationName The collation to use for text comparison (defaults to BINARY).
  * @returns -1 if a < b, 0 if a === b, 1 if a > b.
  */
-export function compareSqlValues(a: SqlValue, b: SqlValue): number {
+export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string = 'BINARY'): number {
 	const classA = getStorageClass(a);
 	const classB = getStorageClass(b);
 
@@ -87,10 +138,13 @@ export function compareSqlValues(a: SqlValue, b: SqlValue): number {
 			       (valA as number | bigint) > (valB as number | bigint) ? 1 : 0;
 
 		case StorageClass.TEXT:
-			// Simple lexicographical comparison (no collation awareness)
-			const strA = valA as string;
-			const strB = valB as string;
-			return strA < strB ? -1 : strA > strB ? 1 : 0;
+            // Use the specified collation for text comparison
+            const collationFunc = collations.get(collationName.toUpperCase());
+            if (!collationFunc) {
+                console.warn(`Unknown collation requested: ${collationName}. Falling back to BINARY.`);
+                return BINARY_COLLATION(valA as string, valB as string);
+            }
+            return collationFunc(valA as string, valB as string);
 
 		case StorageClass.BLOB:
 			// Lexicographical comparison of byte arrays

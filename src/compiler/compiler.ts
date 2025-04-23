@@ -282,6 +282,7 @@ export class Compiler {
 	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileCollate(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprCompiler.compileParameter(this, expr, targetReg); }
 	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
@@ -372,6 +373,7 @@ declare module './compiler' {
 		compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileParameter(expr: AST.ParameterExpr, targetReg: number): void;
 		compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void;

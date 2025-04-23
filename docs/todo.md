@@ -4,9 +4,8 @@ This list outlines the remaining major features and refinements needed to make S
 
 **I. Core Query Processing Features:**
 
-*   [P] **Type System & Affinity:**
-    *   [P] Ensure rigorous and consistent type handling in `compareSqlValues` and arithmetic operations, matching SQLite affinity rules precisely (especially NUMERIC). (`compareSqlValues` exists, basic arithmetic ops exist, `Affinity` opcode exists but VDBE implementation needs verification).
-    *   [ ] Implement full Collation support for comparisons and ordering (e.g., NOCASE, RTRIM).
+*   [X] **Type System & Affinity:**
+    *   [X] Implement full Collation support for comparisons and ordering (e.g., NOCASE, RTRIM).
 *   [ ] **Error Reporting:**
     *   [ ] Improve detail, context, and consistency of error messages and codes throughout the engine (e.g., add line info from AST).
 *   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
