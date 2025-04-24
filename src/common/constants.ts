@@ -72,7 +72,7 @@ export enum Opcode {
 	// Cursors / VTable
 	OpenRead = 58,
 	OpenWrite = 59,
-	Close = 57, // Renumbered from 122
+	Close = 159,
 	VFilter = 166,
 	VNext = 167,
 	VColumn = 192, // Reassigned from 88 to avoid conflict with Not
@@ -124,6 +124,15 @@ export enum Opcode {
 	// Remove placeholders/unused
 	// Transaction = 190, // Replaced by VBegin/VCommit/etc.
 	// IfNullRow = 11, // Conflicts with Null
+
+	// Frame Opcodes
+	SeekRel = 160,      // p1=cursor, p2=targetReg, p3=basePtrReg, p4=offsetReg, p5=direction(-1/+1). Result ptr in p2.
+	MaxPtr = 161,       // p1=ptrRegA, p2=ptrRegB, p3=targetReg. Store Max(p1,p2) in p3.
+	AggFrame = 162,     // p1=cursor, p2=resultReg, p3=frameStartPtrReg, p4=P5AggFrameInfo, p5=frameEndPtrReg
+	FrameValue = 163,   // p1=cursor, p2=resultReg, p3=ptrReg, p4=argColIdx.
+	RangeScan = 164,    // p1=cursor, p2=startPtrReg, p3=endPtrReg, p4=P4RangeScanInfo { frameDef, orderByIndices, orderByDirs, orderByColls, currPtrReg, partStartPtrReg, startBoundReg?, endBoundReg? }
+	Lag = 165,          // p1=cursor, p2=targetReg, p3=offsetReg, p4=P4LagLeadInfo { currRowPtrReg, argColIdx }, p5=defaultReg
+	Lead = 166,         // p1=cursor, p2=targetReg, p3=offsetReg, p4=P4LagLeadInfo { currRowPtrReg, argColIdx }, p5=defaultReg
 
 } // End Opcode Enum
 

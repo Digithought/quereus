@@ -835,9 +835,9 @@ export class Parser {
 			return { type: 'parameter', name: nameToken.lexeme, loc: _createLoc(startToken, nameToken) };
 		}
 
-		// Function call
+		// Function call (with optional window function support)
 		if (this.check(TokenType.IDENTIFIER) && this.checkNext(1, TokenType.LPAREN)) {
-			const nameToken = this.advance();
+			const name = this.advance().lexeme;
 
 			this.consume(TokenType.LPAREN, "Expected '(' after function name.");
 
@@ -845,23 +845,35 @@ export class Parser {
 			if (!this.check(TokenType.RPAREN)) {
 				do {
 					if (this.match(TokenType.ASTERISK)) {
-						args.push({ type: 'literal', value: '*', loc: _createLoc(this.peek(), this.peek()) } as any);
+						args.push({ type: 'literal', value: '*' } as any);
 					} else {
 						args.push(this.expression());
 					}
 				} while (this.match(TokenType.COMMA));
 			}
 
-			this.consume(TokenType.RPAREN, "Expected ')' after function arguments.");
+			const endToken = this.consume(TokenType.RPAREN, "Expected ')' after function arguments.");
 
-			// TODO: check for aggregate functions
-			return {
+			const funcExpr: AST.FunctionExpr = {
 				type: 'function',
-				name: nameToken.lexeme,
+				name,
 				args,
-				isAggregate: false,
-				loc: _createLoc(startToken, this.previous()),
+				loc: _createLoc(startToken, endToken)
 			};
+
+			// Check for OVER clause (window function)
+			if (this.matchKeyword('OVER')) {
+				const window = this.parseWindowSpecification();
+				const overEndToken = this.previous();
+				return {
+					type: 'windowFunction',
+					function: funcExpr,
+					window,
+					loc: _createLoc(startToken, overEndToken)
+				};
+			}
+
+			return funcExpr;
 		}
 
 		// Column/identifier expressions
@@ -916,6 +928,79 @@ export class Parser {
 		}
 
 		throw this.error(this.peek(), "Expected expression.");
+	}
+
+	/**
+	 * Parses a window specification: (PARTITION BY ... ORDER BY ... [frame])
+	 */
+	private parseWindowSpecification(): AST.WindowDefinition {
+		if (this.match(TokenType.LPAREN)) {
+			let partitionBy: AST.Expression[] | undefined;
+			let orderBy: AST.OrderByClause[] | undefined;
+			let frame: AST.WindowFrame | undefined;
+
+			if (this.matchKeyword('PARTITION')) {
+				this.consumeKeyword('BY', "Expected 'BY' after 'PARTITION'.");
+				partitionBy = [];
+				do {
+					partitionBy.push(this.expression());
+				} while (this.match(TokenType.COMMA));
+			}
+
+			if (this.matchKeyword('ORDER')) {
+				this.consumeKeyword('BY', "Expected 'BY' after 'ORDER'.");
+				orderBy = [];
+				do {
+					const expr = this.expression();
+					const direction = this.match(TokenType.DESC) ? 'desc' : (this.match(TokenType.ASC) ? 'asc' : 'asc');
+					orderBy.push({ expr, direction });
+				} while (this.match(TokenType.COMMA));
+			}
+
+			// Frame clause (ROWS|RANGE ...)
+			if (this.matchKeyword('ROWS') || this.matchKeyword('RANGE')) {
+				const frameType = this.previous().lexeme.toLowerCase() as 'rows' | 'range';
+				const start = this.parseWindowFrameBound();
+				let end: AST.WindowFrameBound | null = null;
+				if (this.matchKeyword('AND')) {
+					end = this.parseWindowFrameBound();
+				}
+				frame = { type: frameType, start, end };
+			}
+
+			this.consume(TokenType.RPAREN, "Expected ')' after window specification.");
+			return { type: 'windowDefinition', partitionBy, orderBy, frame };
+		} else {
+			// Window name (not implemented)
+			throw this.error(this.peek(), 'Window name references are not yet supported. Use explicit window specs.');
+		}
+	}
+
+	/**
+	 * Parses a window frame bound (UNBOUNDED PRECEDING, CURRENT ROW, n PRECEDING/FOLLOWING)
+	 */
+	private parseWindowFrameBound(): AST.WindowFrameBound {
+		if (this.matchKeyword('UNBOUNDED')) {
+			if (this.matchKeyword('PRECEDING')) {
+				return { type: 'unboundedPreceding' };
+			} else if (this.matchKeyword('FOLLOWING')) {
+				return { type: 'unboundedFollowing' };
+			} else {
+				throw this.error(this.peek(), "Expected PRECEDING or FOLLOWING after UNBOUNDED.");
+			}
+		} else if (this.matchKeyword('CURRENT')) {
+			this.consumeKeyword('ROW', "Expected 'ROW' after 'CURRENT'.");
+			return { type: 'currentRow' };
+		} else {
+			const value = this.expression();
+			if (this.matchKeyword('PRECEDING')) {
+				return { type: 'preceding', value };
+			} else if (this.matchKeyword('FOLLOWING')) {
+				return { type: 'following', value };
+			} else {
+				throw this.error(this.peek(), "Expected PRECEDING or FOLLOWING after frame value.");
+			}
+		}
 	}
 
 	// Helper methods for token management

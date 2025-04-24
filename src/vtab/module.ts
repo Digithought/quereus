@@ -6,6 +6,7 @@ import type { IndexInfo } from './indexInfo';
 import type { SqlValue } from '../common/types';
 import type { VTabConfig } from '../common/constants';
 import type { SqliteContext } from '../func/context'; // Assuming SqliteContext exists
+import type { FunctionSchema } from '../schema/function'; // Add import
 
 /**
  * Base interface for module-specific configuration passed to xCreate/xConnect.
@@ -195,4 +196,40 @@ export interface VirtualTableModule<
 
 	// TODO: Add xIntegrity if needed later
 	// xIntegrity?(table: TTable, schema: string | null, tableName: string, mFlags: number): Promise<{ errorMessage?: string }>;
+
+	/**
+	 * Optional: Seeks to a row relative to a given base pointer/rowid.
+	 * Used by the SeekRel VDBE opcode for window function frame calculations (ROWS PRECEDING/FOLLOWING).
+	 * If not implemented, SeekRel will fail for cursors associated with this module.
+	 * @param cursor The cursor instance to operate on.
+	 * @param basePointer The pointer/rowid of the row to seek relative to.
+	 * @param offset The relative offset (positive for following, negative for preceding).
+	 * @returns A promise resolving to the pointer/rowid of the target row, or null if the seek goes out of bounds or is unsupported.
+	 * @throws SqliteError on failure.
+	 */
+	seekRelative?(cursor: TCursor, basePointer: any, offset: number): Promise<SqlValue | null>;
+
+	/**
+	 * Optional: Aggregates a value over a specified frame within the cursor's current result set.
+	 * Used by the AggFrame VDBE opcode.
+	 * @param cursor The cursor instance.
+	 * @param funcDef The aggregate function definition.
+	 * @param frameStartPtr Pointer/rowid of the first row in the frame.
+	 * @param frameEndPtr Pointer/rowid of the last row in the frame (can be null for unbounded following?).
+	 * @param argColIdx Index of the column argument within the cursor's rows (-1 for functions like COUNT(*)).
+	 * @returns A promise resolving to the final aggregated value.
+	 * @throws SqliteError on failure.
+	 */
+	xAggregateFrame?(cursor: TCursor, funcDef: FunctionSchema, frameStartPtr: any, frameEndPtr: any, argColIdx: number): Promise<SqlValue>;
+
+	/**
+	 * Optional: Retrieves a specific column value from the row identified by the given pointer.
+	 * Used by the FrameValue VDBE opcode.
+	 * @param cursor The cursor instance.
+	 * @param pointer Pointer/rowid of the target row.
+	 * @param colIdx Index of the column to retrieve.
+	 * @returns A promise resolving to the column value or null if row/column not found.
+	 * @throws SqliteError on failure.
+	 */
+	xColumnAtPointer?(cursor: TCursor, pointer: any, colIdx: number): Promise<SqlValue | null>;
 }
