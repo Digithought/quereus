@@ -50,7 +50,7 @@ function quoteIdentifierIfNeeded(name: string): string {
 }
 
 // Helper to stringify expressions (very basic for defaults/checks)
-function stringifyExpression(expr: AST.Expression): string {
+export function expressionToString(expr: AST.Expression): string {
 	switch (expr.type) {
 		case 'literal':
 			if (expr.value === null) return 'null';
@@ -69,9 +69,9 @@ function stringifyExpression(expr: AST.Expression): string {
 			}
 			return colStr;
 		case 'binary':
-			return `(${stringifyExpression(expr.left)} ${expr.operator} ${stringifyExpression(expr.right)})`;
+			return `(${expressionToString(expr.left)} ${expr.operator} ${expressionToString(expr.right)})`;
 		case 'unary':
-			return `${expr.operator} (${stringifyExpression(expr.expr)})`;
+			return `${expr.operator} (${expressionToString(expr.expr)})`;
 		// Add other expression types if needed (function, cast, etc.)
 		default:
 			return '?'; // Placeholder for complex expressions
@@ -79,7 +79,7 @@ function stringifyExpression(expr: AST.Expression): string {
 }
 
 // Helper to stringify conflict clauses
-function stringifyConflict(res: ConflictResolution | undefined): string {
+function conflictToString(res: ConflictResolution | undefined): string {
 	// ABORT is the default, so don't emit it
 	if (!res || res === ConflictResolution.ABORT) return '';
 	// Assuming ConflictResolution enum values are uppercase, convert them to lowercase
@@ -87,7 +87,7 @@ function stringifyConflict(res: ConflictResolution | undefined): string {
 }
 
 // Helper to stringify column constraints
-function stringifyColumnConstraints(constraints: AST.ColumnConstraint[]): string {
+function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string {
 	return constraints.map(c => {
 		let s = '';
 		if (c.name) s += `constraint ${quoteIdentifierIfNeeded(c.name)} `;
@@ -96,22 +96,22 @@ function stringifyColumnConstraints(constraints: AST.ColumnConstraint[]): string
 				s += 'primary key';
 				// ASC is default, only specify DESC
 				if (c.direction === 'desc') s += ` desc`;
-				s += stringifyConflict(c.onConflict);
+				s += conflictToString(c.onConflict);
 				if (c.autoincrement) s += ' autoincrement';
 				break;
 			case 'notNull':
 				s += 'not null';
-				s += stringifyConflict(c.onConflict);
+				s += conflictToString(c.onConflict);
 				break;
 			case 'unique':
 				s += 'unique';
-				s += stringifyConflict(c.onConflict);
+				s += conflictToString(c.onConflict);
 				break;
 			case 'check':
-				s += `check (${stringifyExpression(c.expr!)})`;
+				s += `check (${expressionToString(c.expr!)})`;
 				break;
 			case 'default':
-				s += `default ${stringifyExpression(c.expr!)}`;
+				s += `default ${expressionToString(c.expr!)}`;
 				break;
 			case 'collate':
 				s += `collate ${c.collation}`;
@@ -120,7 +120,7 @@ function stringifyColumnConstraints(constraints: AST.ColumnConstraint[]): string
 				s += 'references ?'; // Placeholder
 				break;
 			case 'generated':
-				s += `generated always as (${stringifyExpression(c.generated!.expr)})`;
+				s += `generated always as (${expressionToString(c.generated!.expr)})`;
 				// VIRTUAL is default, only specify STORED
 				if (c.generated!.stored) s += ' stored';
 				break;
@@ -130,7 +130,7 @@ function stringifyColumnConstraints(constraints: AST.ColumnConstraint[]): string
 }
 
 // Helper to stringify table constraints
-function stringifyTableConstraints(constraints: AST.TableConstraint[]): string {
+function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 	return constraints.map(c => {
 		let s = '';
 		if (c.name) s += `constraint ${quoteIdentifierIfNeeded(c.name)} `;
@@ -138,14 +138,14 @@ function stringifyTableConstraints(constraints: AST.TableConstraint[]): string {
 			case 'primaryKey':
 				// ASC is default, only specify DESC
 				s += `primary key (${c.columns!.map(col => `${quoteIdentifierIfNeeded(col.name)}${col.direction === 'desc' ? ' desc' : ''}`).join(', ')})`;
-				s += stringifyConflict(c.onConflict);
+				s += conflictToString(c.onConflict);
 				break;
 			case 'unique':
 				s += `unique (${c.columns!.map(col => quoteIdentifierIfNeeded(col.name)).join(', ')})`;
-				s += stringifyConflict(c.onConflict);
+				s += conflictToString(c.onConflict);
 				break;
 			case 'check':
-				s += `check (${stringifyExpression(c.expr!)})`;
+				s += `check (${expressionToString(c.expr!)})`;
 				break;
 			case 'foreignKey':
 				s += `foreign key (${c.columns!.map(col => quoteIdentifierIfNeeded(col.name)).join(', ')}) references ?`; // Placeholder
@@ -155,7 +155,7 @@ function stringifyTableConstraints(constraints: AST.TableConstraint[]): string {
 	}).filter(s => s.length > 0).join(', ');
 }
 
-export function stringifyCreateTable(stmt: AST.CreateTableStmt): string {
+export function createTableToString(stmt: AST.CreateTableStmt): string {
 	const parts: string[] = ['create'];
 	if (stmt.isTemporary) parts.push('temp');
 	parts.push('table');
@@ -169,12 +169,12 @@ export function stringifyCreateTable(stmt: AST.CreateTableStmt): string {
 	stmt.columns.forEach(col => {
 		let colDef = quoteIdentifierIfNeeded(col.name);
 		if (col.dataType) colDef += ` ${col.dataType}`; // Keep data type casing as is
-		const constraints = stringifyColumnConstraints(col.constraints);
+		const constraints = columnConstraintsToString(col.constraints);
 		if (constraints) colDef += ` ${constraints}`;
 		definitions.push(colDef);
 	});
 
-	const tableConstraints = stringifyTableConstraints(stmt.constraints);
+	const tableConstraints = tableConstraintsToString(stmt.constraints);
 	if (tableConstraints) definitions.push(tableConstraints);
 
 	parts.push(`(${definitions.join(', ')})`);

@@ -2,7 +2,7 @@ import type { Compiler } from "./compiler";
 import type * as AST from "../parser/ast";
 import { StatusCode, SqlDataType } from "../common/constants";
 import { SqliteError } from "../common/errors";
-import { stringifyCreateTable } from "../util/ddl-stringify";
+import { createTableToString } from "../util/ddl-stringify";
 import { Opcode } from "../common/constants";
 import type { Database } from '../core/database';
 import type { VirtualTable } from "../vtab/table";

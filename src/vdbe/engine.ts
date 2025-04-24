@@ -3,7 +3,8 @@ import { SqliteError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
-import type { VdbeInstruction, P4Vtab, P4FuncDef, P4SortKey, P4Coll } from './instruction';
+import type { VdbeInstruction, P4FuncDef, P4Coll } from './instruction';
+import type { P5AggFrameInfo } from './instruction';
 import { Opcode, ConflictResolution } from '../common/constants';
 import { evaluateIsTrue, compareSqlValues } from '../util/comparison';
 import { applyNumericAffinity, applyTextAffinity, applyIntegerAffinity, applyRealAffinity, applyBlobAffinity } from '../util/affinity';
@@ -12,6 +13,11 @@ import type { VirtualTable } from '../vtab/table';
 import { FunctionContext } from '../func/context';
 import type { TableSchema } from '../schema/table';
 import { MemoryTable, MemoryTableModule } from '../vtab/memory-table';
+import { type MemoryTableRow, MemoryTableCursor } from '../vtab/memory-table';
+import type { P4RangeScanInfo } from './instruction';
+import type { P4LagLeadInfo } from './instruction';
+import type { FunctionSchema } from '../schema/function';
+import type * as AST from '../parser/ast'; // Import AST namespace
 
 /** Represents a single VDBE memory cell (register) */
 export interface MemoryCell {
@@ -676,6 +682,409 @@ export class Vdbe {
 				break;
 			}
 			// -------------------------
+
+			// --- Window Function Frame Opcodes ---
+			case Opcode.MaxPtr: { // p1=ptrRegA, p2=ptrRegB, p3=targetReg
+				const ptrA = this._getMemValue(p1);
+				const ptrB = this._getMemValue(p2);
+				let maxPtr: SqlValue = null;
+
+				// Basic comparison, assuming pointers are comparable (e.g., numbers or specific objects/rowids)
+				// Treat null as the 'minimum' for MaxPtr
+				if (ptrA === null && ptrB === null) {
+					maxPtr = null;
+				} else if (ptrA === null) {
+					maxPtr = ptrB;
+				} else if (ptrB === null) {
+					maxPtr = ptrA;
+				} else {
+					// TODO: Define robust pointer comparison logic if needed
+					// Assuming simple > comparison works for now
+					try {
+						maxPtr = (ptrA > ptrB) ? ptrA : ptrB;
+					} catch (e) {
+						console.error("Error comparing pointers for MaxPtr", ptrA, ptrB, e);
+						// Default to null on comparison error?
+						maxPtr = null;
+					}
+				}
+				this._setMem(p3, maxPtr);
+				break;
+			}
+			case Opcode.SeekRel: { // p1=cursor, p2=targetReg, p3=basePtrReg, p4=offsetReg, p5=direction(-1/+1)
+				const cursorIdx = p1;
+				const targetReg = p2;
+				const basePtrReg = p3;
+				const offsetReg = p4;
+				const direction = p5; // -1 or +1
+
+				const vdbeCursor = this.vdbeCursors[cursorIdx];
+				const cursorInstance = vdbeCursor?.instance;
+				if (!cursorInstance) {
+					throw new SqliteError(`SeekRel: Invalid cursor index ${cursorIdx}`, StatusCode.INTERNAL);
+				}
+
+				const basePointer = this._getMemValue(basePtrReg);
+				const offsetVal = this._getMemValue(offsetReg);
+				const offset = (typeof offsetVal === 'number' || typeof offsetVal === 'bigint') ? Number(offsetVal) : 0;
+
+				const relativeOffset = offset * direction;
+
+				let resultPointer: SqlValue = null;
+				try {
+					// Check if the module implements the seekRelative method
+					const module = vdbeCursor?.vtab?.module;
+					if (module && typeof (module as any).seekRelative === 'function') {
+						// Call the module's seekRelative method, passing the cursor instance
+						resultPointer = await (module as any).seekRelative(cursorInstance, basePointer, relativeOffset);
+					} else {
+						console.warn(`SeekRel: Module for cursor ${cursorIdx} does not implement seekRelative. Opcode ignored.`);
+						// Leave resultPointer as null if method doesn't exist
+					}
+				} catch (e) {
+					this.handleVTabError(e, `cursor ${cursorIdx}`, 'seekRelative', this.programCounter);
+					return; // Halt on VTab error
+				}
+
+				this._setMem(targetReg, resultPointer);
+				break;
+			}
+			// -----------------------------------
+
+			// --- Add AggFrame and FrameValue ---
+			case Opcode.AggFrame: { // p1=cursor, p2=resultReg, p3=frameStartPtrReg, p4=P5AggFrameInfo, p5=0
+				const cursorIdx = p1;
+				const resultReg = p2;
+				const frameStartPtrReg = p3;
+				const aggInfo = p4 as P5AggFrameInfo; // p4 holds the info
+				// const frameEndPtrReg = ??? Need to adjust opcode definition or emit call if end ptr needed
+				// Assuming end ptr is also needed, let's say it's p5 (needs opcode def update)
+				const frameEndPtrReg = p5; // Assuming p5 is endPtrReg
+
+				const vdbeCursor = this.vdbeCursors[cursorIdx];
+				const cursorInstance = vdbeCursor?.instance;
+				const module = vdbeCursor?.vtab?.module;
+				if (!cursorInstance || !module) throw new SqliteError(`AggFrame: Invalid cursor ${cursorIdx}`, StatusCode.INTERNAL);
+
+				const frameStartPtr = this._getMemValue(frameStartPtrReg);
+				const frameEndPtr = this._getMemValue(frameEndPtrReg); // Read end ptr
+
+				let resultValue: SqlValue = null;
+				try {
+					if (typeof (module as any).xAggregateFrame === 'function') {
+						resultValue = await (module as any).xAggregateFrame(
+							cursorInstance,
+							aggInfo.funcDef,
+							frameStartPtr,
+							frameEndPtr,
+							aggInfo.argIdx
+						);
+					} else {
+						console.warn(`AggFrame: Module for cursor ${cursorIdx} does not implement xAggregateFrame.`);
+					}
+				} catch (e) {
+					this.handleVTabError(e, `cursor ${cursorIdx}`, 'xAggregateFrame', this.programCounter);
+					return;
+				}
+				this._setMem(resultReg, resultValue);
+				break;
+			}
+			case Opcode.FrameValue: { // p1=cursor, p2=resultReg, p3=ptrReg, p4=argColIdx, p5=0
+				const cursorIdx = p1;
+				const resultReg = p2;
+				const ptrReg = p3;
+				const argColIdx = p4 as number; // p4 holds the col index
+
+				const vdbeCursor = this.vdbeCursors[cursorIdx];
+				const cursorInstance = vdbeCursor?.instance;
+				const module = vdbeCursor?.vtab?.module;
+				if (!cursorInstance || !module) throw new SqliteError(`FrameValue: Invalid cursor ${cursorIdx}`, StatusCode.INTERNAL);
+
+				const pointer = this._getMemValue(ptrReg);
+
+				let resultValue: SqlValue = null;
+				try {
+					if (typeof (module as any).xColumnAtPointer === 'function') {
+						resultValue = await (module as any).xColumnAtPointer(cursorInstance, pointer, argColIdx);
+					} else {
+						console.warn(`FrameValue: Module for cursor ${cursorIdx} does not implement xColumnAtPointer.`);
+					}
+				} catch (e) {
+					this.handleVTabError(e, `cursor ${cursorIdx}`, 'xColumnAtPointer', this.programCounter);
+					return;
+				}
+				this._setMem(resultReg, resultValue);
+				break;
+			}
+			// -----------------------------------
+
+			// --- Add RangeScan ---
+			case Opcode.RangeScan: { // p1=cursor, p2=startPtrReg, p3=endPtrReg, p4=P4RangeScanInfo
+				const cursorIdx = p1;
+				const startPtrReg = p2;
+				const endPtrReg = p3;
+				const scanInfo = inst.p4 as P4RangeScanInfo;
+
+				const vdbeCursor = this.vdbeCursors[cursorIdx];
+				const cursorInstance = vdbeCursor?.instance as MemoryTableCursor;
+				if (!vdbeCursor || !cursorInstance || !(cursorInstance instanceof MemoryTableCursor)) {
+					throw new SqliteError(`RangeScan: Invalid cursor type for ${cursorIdx}`, StatusCode.INTERNAL);
+				}
+
+				const results = cursorInstance.getMergedResults();
+				if (!results || results.length === 0) {
+					this._setMem(startPtrReg, null); // Empty frame
+					this._setMem(endPtrReg, null);
+					break;
+				}
+
+				// Get pointers and find current index
+				const currentRowPtrVal = this._getMemValue(scanInfo.currPtrReg);
+				const partitionStartPtrVal = this._getMemValue(scanInfo.partStartPtrReg);
+				if(currentRowPtrVal === null || currentRowPtrVal instanceof Uint8Array) {
+					throw new SqliteError(`RangeScan: Current row pointer is NULL or Blob`, StatusCode.INTERNAL);
+				}
+				if(partitionStartPtrVal === null || partitionStartPtrVal instanceof Uint8Array) {
+					throw new SqliteError(`RangeScan: Partition start pointer is NULL or Blob`, StatusCode.INTERNAL);
+				}
+
+				let currentIndex = -1;
+				try {
+					const currentRowId = BigInt(currentRowPtrVal);
+					currentIndex = results.findIndex((r: MemoryTableRow) => r._rowid_ === currentRowId);
+				} catch { throw new SqliteError(`RangeScan: Invalid current row pointer value ${currentRowPtrVal}`, StatusCode.INTERNAL); }
+				if (currentIndex === -1) throw new SqliteError(`RangeScan: Current row pointer ${currentRowPtrVal} not found in results`, StatusCode.INTERNAL);
+
+				const currentRow = results[currentIndex];
+				const getCurrentOrderByKeys = (row: MemoryTableRow): SqlValue[] => scanInfo.orderByIndices.map(idx => row[(vdbeCursor.vtab as MemoryTable).columns[idx].name]);
+				const currentOrderByKeys = getCurrentOrderByKeys(currentRow);
+
+				// Helper to compare ORDER BY keys
+				const compareOrderByKeys = (keysA: SqlValue[], keysB: SqlValue[]): number => {
+					for (let i = 0; i < keysA.length; i++) {
+						const dir = scanInfo.orderByDirs[i] ? -1 : 1;
+						const coll = scanInfo.orderByColls[i];
+						const cmp = compareSqlValues(keysA[i], keysB[i], coll) * dir;
+						if (cmp !== 0) return cmp;
+					}
+					return 0;
+				};
+
+				// --- Calculate Frame Boundaries ---
+				let startIndex = -1;
+				let endIndex = -1;
+
+				const startBoundDef = scanInfo.frameDef.start;
+				const endBoundDef = scanInfo.frameDef.end;
+
+				// Check if N PRECEDING/FOLLOWING requires single numeric ORDER BY key
+				let requiresNumericSingleOrderBy = false;
+				if ((startBoundDef.type === 'preceding' || startBoundDef.type === 'following') && startBoundDef.value) {
+					requiresNumericSingleOrderBy = true;
+				}
+				if (endBoundDef && (endBoundDef.type === 'preceding' || endBoundDef.type === 'following') && endBoundDef.value) {
+					requiresNumericSingleOrderBy = true;
+				}
+
+				let orderByColIdx = -1;
+				let orderByColSchema: any = null; // Replace 'any' with ColumnSchema if available
+				let orderByColAffinity = SqlDataType.BLOB;
+
+				if (requiresNumericSingleOrderBy) {
+					if (scanInfo.orderByIndices.length !== 1) {
+						throw new SqliteError(`RANGE with offset requires exactly one ORDER BY clause`, StatusCode.ERROR);
+					}
+					orderByColIdx = scanInfo.orderByIndices[0];
+					orderByColSchema = (vdbeCursor.vtab as MemoryTable).columns[orderByColIdx];
+					if (!orderByColSchema) throw new Error(`Invalid orderByColIdx ${orderByColIdx}`);
+					orderByColAffinity = orderByColSchema.type || SqlDataType.BLOB; // Use column type for affinity
+					if (orderByColAffinity !== SqlDataType.INTEGER && orderByColAffinity !== SqlDataType.REAL && orderByColAffinity !== SqlDataType.NUMERIC) {
+						// Allow NUMERIC as well
+						throw new SqliteError(`RANGE with offset requires ORDER BY clause with NUMERIC affinity (found ${orderByColAffinity})`, StatusCode.ERROR);
+					}
+				}
+
+				const calcBoundValue = (boundDef: AST.WindowFrameBound | undefined, boundReg: number | undefined): SqlValue | null => {
+					if (!boundDef || !boundReg) return null;
+					const nVal = this._getMemValue(boundReg);
+					if (nVal === null || typeof nVal !== 'number' && typeof nVal !== 'bigint') {
+						throw new SqliteError(`Invalid value for RANGE offset N: ${nVal}`, StatusCode.ERROR);
+					}
+					const n = Number(nVal);
+					const currentKey = currentOrderByKeys[0]; // Assumes single ORDER BY key
+					if (currentKey === null || typeof currentKey !== 'number' && typeof currentKey !== 'bigint') {
+						throw new SqliteError(`Cannot calculate RANGE offset from non-numeric current key: ${currentKey}`, StatusCode.ERROR);
+					}
+					const currentNum = Number(currentKey);
+					if (boundDef.type === 'preceding') return currentNum - n;
+					if (boundDef.type === 'following') return currentNum + n;
+					return null;
+				};
+
+				const targetStartValue = calcBoundValue(startBoundDef, scanInfo.startBoundReg);
+				const targetEndValue = endBoundDef ? calcBoundValue(endBoundDef, scanInfo.endBoundReg) : null; // Handle null endBoundDef
+
+				// --- Find Start Index ---
+				if (startBoundDef.type === 'unboundedPreceding') {
+					// Find the first row belonging to the partition
+					try {
+						const partitionStartId = BigInt(partitionStartPtrVal);
+						startIndex = results.findIndex((r: MemoryTableRow) => r._rowid_ === partitionStartId);
+					} catch { throw new SqliteError(`RangeScan: Invalid partition start pointer value ${partitionStartPtrVal}`, StatusCode.INTERNAL); }
+					if (startIndex === -1) throw new SqliteError(`RangeScan: Partition start pointer ${partitionStartPtrVal} not found`, StatusCode.INTERNAL);
+				} else if (startBoundDef.type === 'currentRow') {
+					// Find first peer (row with same ORDER BY keys) going backwards
+					startIndex = currentIndex;
+					while (startIndex > 0 && compareOrderByKeys(getCurrentOrderByKeys(results[startIndex - 1]), currentOrderByKeys) === 0) {
+						startIndex--;
+					}
+					// Ensure we don't go before the partition start pointer
+					try {
+						const partitionStartId = BigInt(partitionStartPtrVal);
+						const partStartIndex = results.findIndex((r: MemoryTableRow) => r._rowid_ === partitionStartId);
+						if (partStartIndex > startIndex) startIndex = partStartIndex;
+					} catch {} // Ignore error finding partition start here
+				} else if (startBoundDef.type === 'preceding' || startBoundDef.type === 'following') {
+					// Iterate backwards (for PRECEDING) or forwards (for FOLLOWING) to find the first row >= targetStartValue
+					const searchBackward = (startBoundDef.type === 'preceding');
+					const comparisonOp = searchBackward ? compareSqlValues : (a:any,b:any,c:any)=> -compareSqlValues(a,b,c); // <= for PRECEDING, >= for FOLLOWING
+					startIndex = -1;
+					for(let i = currentIndex; i >= 0 && i < results.length; searchBackward ? i-- : i++) {
+						const rowKey = getCurrentOrderByKeys(results[i])[0]; // Assumes single key
+						if (comparisonOp(rowKey, targetStartValue, orderByColSchema?.collation) <= 0) {
+							// Found the boundary (inclusive)
+							// Need the *first* peer in this group if multiple rows match the boundary value
+							let firstPeerIndex = i;
+							while(firstPeerIndex > 0 && compareOrderByKeys(getCurrentOrderByKeys(results[firstPeerIndex-1]), getCurrentOrderByKeys(results[i])) === 0){
+								firstPeerIndex--;
+							}
+							startIndex = firstPeerIndex;
+							break;
+						}
+					}
+					// Handle boundary conditions (partition start)
+					try {
+						const partitionStartId = BigInt(partitionStartPtrVal);
+						const partStartIndex = results.findIndex((r: MemoryTableRow) => r._rowid_ === partitionStartId);
+						if (startIndex === -1 || partStartIndex > startIndex) startIndex = partStartIndex; // Don't go before partition start
+					} catch {}
+				}
+
+				// --- Find End Index ---
+				if (!endBoundDef || endBoundDef.type === 'currentRow') {
+					// Simple: end of the results array (assuming results are for one partition)
+					endIndex = results.length - 1;
+				} else if (endBoundDef.type === 'unboundedFollowing') {
+					// Simple: end of the results array (assuming results are for one partition)
+					endIndex = results.length - 1;
+				} else if (endBoundDef.type === 'preceding' || endBoundDef.type === 'following') {
+					// Iterate forwards (for FOLLOWING) or backwards (for PRECEDING) to find the last row <= targetEndValue
+					const searchForward = (endBoundDef.type === 'following');
+					const comparisonOp = searchForward ? compareSqlValues : (a:any,b:any,c:any)=> -compareSqlValues(a,b,c); // <= for FOLLOWING, >= for PRECEDING
+					endIndex = -1;
+					for(let i = currentIndex; i >= 0 && i < results.length; searchForward ? i++ : i--) {
+						const rowKey = getCurrentOrderByKeys(results[i])[0];
+						if (comparisonOp(rowKey, targetEndValue, orderByColSchema?.collation) <= 0) {
+							// Found the boundary (inclusive)
+							// Need the *last* peer in this group if multiple rows match the boundary value
+							let lastPeerIndex = i;
+							while(lastPeerIndex < results.length-1 && compareOrderByKeys(getCurrentOrderByKeys(results[lastPeerIndex+1]), getCurrentOrderByKeys(results[i])) === 0){
+								lastPeerIndex++;
+							}
+							endIndex = lastPeerIndex;
+							break;
+						}
+					}
+					// Handle case where search goes past end/start of results (means boundary is last/first row)
+					if(endIndex === -1){
+						// If we searched forward and didn't find, the frame ends at the last row
+						if(searchForward) endIndex = results.length - 1;
+						// If we searched backward and didn't find, the frame ends at the first row (respect partition)
+						else {
+							try {
+								const partitionStartId = BigInt(partitionStartPtrVal);
+								endIndex = results.findIndex((r: MemoryTableRow) => r._rowid_ === partitionStartId);
+							} catch { endIndex = 0; } // Default to 0 if partition ptr invalid?
+						}
+					}
+				}
+
+				// Final frame pointers
+				const startPtr = (startIndex >= 0 && startIndex < results.length) ? results[startIndex]._rowid_ : null;
+				const endPtr = (endIndex >= 0 && endIndex < results.length) ? results[endIndex]._rowid_ : null;
+
+				this._setMem(startPtrReg, startPtr);
+				this._setMem(endPtrReg, endPtr);
+				break;
+			}
+
+			// --- Add Lag/Lead ---
+			case Opcode.Lag:
+			case Opcode.Lead: {
+				const cursorIdx = p1;
+				const resultReg = p2;
+				const offsetReg = p3;
+				const lagLeadInfo = inst.p4 as P4LagLeadInfo;
+				const defaultReg = p5; // Default value reg is now p5
+				const argColIdx = lagLeadInfo.argColIdx; // Arg col index from p4
+
+				const vdbeCursor = this.vdbeCursors[cursorIdx];
+				const cursorInstance = vdbeCursor?.instance;
+				const module = vdbeCursor?.vtab?.module;
+				if (!cursorInstance || !module || !vdbeCursor.vtab) {
+					throw new SqliteError(`Lag/Lead: Invalid cursor ${cursorIdx}`, StatusCode.INTERNAL);
+				}
+
+				// Get current row pointer (Needs the register used in window_pass)
+				// We need access to `regCurrentRowPtr` from the compiler pass.
+				// This indicates a missing piece: how does the VDBE know which register holds the current pointer?
+				// For now, assume it's passed via P4 or a fixed convention.
+				// Let's *assume* P4 of the opcode holds the register offset for current row ptr.
+				// This requires changing the opcode definition and compiler pass again.
+				// --- TEMPORARY HACK: Assume P4 = currRowPtrReg offset (relative to FP) ---
+				const currRowPtrReg = lagLeadInfo.currRowPtrReg;
+				const currentRowPtrVal = this._getMemValue(currRowPtrReg);
+				if (currentRowPtrVal === null || currentRowPtrVal instanceof Uint8Array) {
+					throw new SqliteError(`Lag/Lead: Current row pointer is NULL or Blob`, StatusCode.INTERNAL);
+				}
+
+				// Get offset and default value
+				const offsetVal = this._getMemValue(offsetReg);
+				const defaultValue = this._getMemValue(defaultReg);
+				// TODO: Validate offsetVal is positive integer?
+				const offset = (typeof offsetVal === 'number' || typeof offsetVal === 'bigint') ? Number(offsetVal) : 1;
+				const relativeOffset = (inst.opcode === Opcode.Lead) ? offset : -offset;
+
+				let targetPointer: SqlValue | null = null;
+				let targetValue: SqlValue | null = defaultValue; // Default to default value
+
+				try {
+					// 1. Find the target row pointer using seekRelative
+					if (typeof (module as any).seekRelative === 'function') {
+						targetPointer = await (module as any).seekRelative(cursorInstance, currentRowPtrVal, relativeOffset);
+					} else {
+						console.warn(`Lag/Lead: Module for cursor ${cursorIdx} does not implement seekRelative.`);
+					}
+
+					// 2. If target row found, get the column value using xColumnAtPointer
+					if (targetPointer !== null) {
+						if (typeof (module as any).xColumnAtPointer === 'function') {
+							targetValue = await (module as any).xColumnAtPointer(cursorInstance, targetPointer, argColIdx);
+						} else {
+							console.warn(`Lag/Lead: Module for cursor ${cursorIdx} does not implement xColumnAtPointer.`);
+							// If row exists but can't get column, should it be default or error? Let's use default.
+							targetValue = defaultValue;
+						}
+					}
+				} catch (e) {
+					this.handleVTabError(e, vdbeCursor.vtab!.tableName, 'seekRelative/xColumnAtPointer', this.programCounter);
+					return; // Halt on VTab error
+				}
+
+				// Store the final result (either retrieved value or default value)
+				this._setMem(resultReg, targetValue);
+				break;
+			}
 
 			default:
 				throw new SqliteError(`Unsupported opcode: ${Opcode[inst.opcode]} (${inst.opcode})`, StatusCode.INTERNAL);

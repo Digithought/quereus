@@ -9,12 +9,20 @@ import type { ArgumentMap } from './expression';
 import { analyzeSubqueryCorrelation } from './correlation'; // Added import
 import type { TableSchema } from '../schema/table';
 import type { SubqueryCorrelationResult } from './correlation';
+import { setupWindowSorter, type WindowSorterInfo } from './window'; // Import window setup function
+import { compileWindowFunctionsPass } from './window_pass'; // Import window functions pass
+import { expressionToString } from '../util/ddl-stringify';
 
 // --- SELECT Statement Compilation --- //
 
 // Helper function to check if a result column is an aggregate function call
 function isAggregateResultColumn(col: AST.ResultColumn): boolean {
 	return col.type === 'column' && col.expr?.type === 'function' && col.expr.isAggregate === true;
+}
+
+// Helper function to check if a result column is a window function
+function isWindowFunctionColumn(col: AST.ResultColumn): boolean {
+	return col.type === 'column' && col.expr?.type === 'windowFunction';
 }
 
 // Helper function to get expressions from a GROUP BY clause
@@ -27,6 +35,16 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		compileSelectNoFrom(compiler, stmt);
 		return;
 	}
+
+	// Check for window functions
+	const windowColumns = stmt.columns.filter(isWindowFunctionColumn) as {
+		type: 'column';
+		expr: AST.WindowFunctionExpr;
+		alias?: string;
+	}[];
+	const hasWindowFunctions = windowColumns.length > 0;
+	let windowSorterInfo: WindowSorterInfo | undefined;
+	let sharedFrameDefinition: AST.WindowFrame | undefined; // To store the shared frame definition
 
 	const hasGroupBy = !!stmt.groupBy && stmt.groupBy.length > 0;
 	const aggregateColumns = stmt.columns.filter(isAggregateResultColumn) as ({ type: 'column', expr: AST.FunctionExpr, alias?: string })[];
@@ -70,6 +88,28 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		}
 	}
 
+	// Prepare for window functions if needed
+	if (hasWindowFunctions) {
+		// When window functions exist, we need a sorter cursor for the window function calculation
+		// Create the window sorter setup with partition/order columns
+		windowSorterInfo = setupWindowSorter(compiler, stmt);
+
+		// Store the frame definition (assuming it's the same for all WFs in the query)
+		if (windowColumns.length > 0 && windowColumns[0].expr.window?.frame) {
+			sharedFrameDefinition = windowColumns[0].expr.window.frame;
+		}
+
+		// Open ephemeral table for window sorter
+		const winSortCursor = windowSorterInfo.cursor;
+		const winSortSchema = compiler.createEphemeralSchema(
+			winSortCursor,
+			windowSorterInfo.schema.columns.length,
+			windowSorterInfo.sortKeyP4
+		);
+
+		compiler.emit(Opcode.OpenEphemeral, winSortCursor, windowSorterInfo.schema.columns.length, 0, winSortSchema, 0, "Open Window Function Sorter");
+	}
+
 	// Compile the core SELECT structure once to get the column map
 	// This map is needed for aggregation, sorting key mapping, and LEFT JOIN padding.
 	let coreResultBaseReg = 0;
@@ -85,7 +125,53 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	coreNumCols = coreResult.numCols;
 	coreColumnMap = coreResult.columnMap;
 
-	if (needsAggProcessing) {
+	if (hasWindowFunctions && windowSorterInfo) {
+		// With window functions, use the window sorter for the final output structure
+		// The sorter will include all the columns needed for window calculation
+		// We'll map the original select columns to the corresponding sorter columns or window result registers
+		finalColumnMap = [];
+
+		// Map each SELECT column to either a sorter column or window function result
+		stmt.columns.forEach((col, idx) => {
+			if (col.type === 'column') {
+				if (col.expr && col.expr.type === 'windowFunction') {
+					// This is a window function column
+					const winExpr = col.expr as AST.WindowFunctionExpr;
+					const placeholderInfo = windowSorterInfo!.windowResultPlaceholders.get(winExpr);
+					if (!placeholderInfo) {
+						throw new SqliteError(`Internal error: Window function placeholder not found for ${winExpr.function.name}`, StatusCode.INTERNAL);
+					}
+					// Map to the register that will hold the window function result
+					finalColumnMap.push({
+						targetReg: placeholderInfo.resultReg,
+						sourceCursor: -1, // Special value for window function result
+						sourceColumnIndex: placeholderInfo.sorterIndex,
+						expr: winExpr
+					});
+				} else if (col.expr) {
+					// Regular expression column - find in sorter schema
+					const exprStr = expressionToString(col.expr);
+					const sorterColIdx = windowSorterInfo!.exprToSorterIndex.get(exprStr);
+					if (sorterColIdx === undefined) {
+						throw new SqliteError(`Internal error: SELECT expression ${exprStr} not found in window sorter schema`, StatusCode.INTERNAL);
+					}
+					finalColumnMap.push({
+						targetReg: compiler.allocateMemoryCells(1),
+						sourceCursor: windowSorterInfo!.cursor,
+						sourceColumnIndex: sorterColIdx,
+						expr: col.expr
+					});
+				}
+			} else if (col.type === 'all') {
+				// TODO: Handle SELECT * with window functions
+				// This requires mapping all columns from the sorter that aren't window function placeholders
+				throw new SqliteError("SELECT * with window functions is not yet supported. Please specify columns explicitly.", StatusCode.ERROR);
+			}
+		});
+
+		finalNumCols = finalColumnMap.length;
+
+	} else if (needsAggProcessing) {
 		// Aggregation determines the final structure
 		// We will determine finalNumCols, finalColumnMap during the aggregation output loop.
 		// Estimate final base reg size (might need adjustment later)
@@ -255,8 +341,50 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		throw new Error("Internal: Column count mismatch during loop recompilation");
 	}
 
-	if (needsAggProcessing) {
-		// Calculate Group Key and call AggStep
+	if (hasWindowFunctions && windowSorterInfo) {
+		// --- Step 1: Calculate the row values and store in the window sorter ---
+		// Populate window sorter registers with the current row data
+		const sorterDataReg = windowSorterInfo.dataBaseReg;
+		windowSorterInfo.schema.columns.forEach((col, i) => {
+			const sourceExpr = windowSorterInfo.indexToExpression.get(i);
+			if (sourceExpr) {
+				// This is a data column needed for partition/order/args
+				// Find the expression's value in the current row
+				const coreColInfo = currentRowColumnMap.find(info =>
+					info.expr && expressionToString(info.expr) === expressionToString(sourceExpr));
+
+				if (coreColInfo) {
+					// Move value from core result register to sorter data register
+					compiler.emit(Opcode.Move, coreColInfo.targetReg, sorterDataReg + i, 1, null, 0,
+						`Move ${i}: ${expressionToString(sourceExpr).substring(0, 20)}`);
+				} else {
+					// Column not found in current row (shouldn't happen)
+					compiler.emit(Opcode.Null, 0, sorterDataReg + i, 1, null, 0,
+						`NULL for sorter col ${i} (expr not found in current row)`);
+				}
+			} else {
+				// This is a placeholder for window function result (will be calculated in window pass)
+				compiler.emit(Opcode.Null, 0, sorterDataReg + i, 1, null, 0,
+					`NULL placeholder for window result col ${i}`);
+			}
+		});
+
+		// Insert the data into the window sorter
+		const recordReg = compiler.allocateMemoryCells(1);
+		const rowidReg = compiler.allocateMemoryCells(1);
+		compiler.emit(Opcode.Null, 0, rowidReg, 0, null, 0, "Window Sort: NULL Rowid");
+		compiler.emit(Opcode.MakeRecord, sorterDataReg, windowSorterInfo.schema.columns.length, recordReg, null, 0,
+			"Make Window Sort Record");
+		// Use a combined data array that starts with rowid
+		const insertDataReg = compiler.allocateMemoryCells(windowSorterInfo.schema.columns.length + 1);
+		compiler.emit(Opcode.Move, rowidReg, insertDataReg, 1, null, 0, "Copy rowid for insert");
+		compiler.emit(Opcode.Move, sorterDataReg, insertDataReg + 1, windowSorterInfo.schema.columns.length, null, 0, "Copy data for insert");
+		compiler.emit(Opcode.VUpdate, windowSorterInfo.schema.columns.length + 1, insertDataReg, windowSorterInfo.cursor, { table: windowSorterInfo.schema }, 0,
+			"Insert Row into Window Sorter");
+
+	} else if (needsAggProcessing) {
+		// --- Standard Aggregation Step ---
+		// (Existing AggStep logic - calculates group key, calls AggStep for each aggregate)
 		let regGroupKeyStart = 0;
 		let numGroupKeys = 0;
 		let regSerializedKey = 0;
@@ -397,8 +525,79 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		activeOuterCursors.delete(cursor);
 	} // --- End loop closing --- //
 
+	// --- Window Function Processing (Post-looping phase) ---
+	if (hasWindowFunctions && windowSorterInfo) {
+		// Now that all rows are in the sorter, sort it
+		compiler.emit(Opcode.Sort, windowSorterInfo.cursor, 0, 0, null, 0, "Sort Window Function Data");
+
+		// We need a new set of registers for the final output row
+		// since the window functions need to be calculated
+		const outputBaseReg = compiler.allocateMemoryCells(finalColumnMap.length);
+
+		// Set up the loop to iterate through the sorter and calculate window functions
+		const addrWinLoopStart = compiler.allocateAddress();
+		const addrWinLoopEnd = compiler.allocateAddress();
+
+		// Run the window functions pass with the frame definition
+		compileWindowFunctionsPass(compiler, windowSorterInfo, outputBaseReg, finalColumnMap.length, sharedFrameDefinition);
+
+		// Now loop through the sorted data again and build final output
+		compiler.emit(Opcode.Rewind, windowSorterInfo.cursor, addrWinLoopEnd, 0, null, 0, "Rewind Window Sorter for Output");
+		compiler.resolveAddress(addrWinLoopStart);
+
+		// For each output column, move data from either the sorter or the calculated function result
+		finalColumnMap.forEach((colInfo, i) => {
+			if (colInfo.expr?.type === 'windowFunction') {
+				// Window function result is already in the placeholder register
+				const placeholderInfo = windowSorterInfo!.windowResultPlaceholders.get(colInfo.expr);
+				if (!placeholderInfo) {
+					throw new SqliteError(`Internal error: Window placeholder not found for output column ${i}`, StatusCode.INTERNAL);
+				}
+				compiler.emit(Opcode.Move, placeholderInfo.resultReg, outputBaseReg + i, 1, null, 0,
+					`Move window result to output ${i}`);
+			} else {
+				// Regular column - read from sorter
+				const sorterColIdx = colInfo.sourceColumnIndex;
+				compiler.emit(Opcode.VColumn, windowSorterInfo!.cursor, sorterColIdx, outputBaseReg + i, null, 0,
+					`Read sorter col ${sorterColIdx} to output ${i}`);
+			}
+		});
+
+		// Apply LIMIT/OFFSET if present
+		const addrSkipWinRow = compiler.allocateAddress();
+		if (regLimit > 0) {
+			const addrPostWinOffset = compiler.allocateAddress();
+			compiler.emit(Opcode.IfZero, regOffset, addrPostWinOffset, 0, null, 0, "Window: Check Offset == 0");
+			compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Window: Decrement Offset");
+			compiler.emit(Opcode.Goto, 0, addrSkipWinRow, 0, null, 0, "Window: Skip Row (Offset)");
+			compiler.resolveAddress(addrPostWinOffset);
+		}
+
+		// Output the window function row
+		compiler.emit(Opcode.ResultRow, outputBaseReg, finalColumnMap.length, 0, null, 0,
+			"Output Window Function Row");
+
+		// Apply LIMIT check
+		if (regLimit > 0) {
+			const addrWinLimitNotZero = compiler.allocateAddress();
+			compiler.emit(Opcode.IfZero, regLimit, addrWinLimitNotZero, 0, null, 0, "Window: Skip Limit Check if 0");
+			compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Window: Decrement Limit");
+			compiler.emit(Opcode.IfZero, regLimit, addrWinLoopEnd, 0, null, 0, "Window: Check Limit Reached");
+			compiler.resolveAddress(addrWinLimitNotZero);
+		}
+
+		compiler.resolveAddress(addrSkipWinRow);
+		// Advance to next row in the sorted window data
+		compiler.emit(Opcode.VNext, windowSorterInfo.cursor, addrWinLoopEnd, 0, null, 0, "Next Window Row");
+		compiler.emit(Opcode.Goto, 0, addrWinLoopStart, 0, null, 0, "Window Loop");
+		compiler.resolveAddress(addrWinLoopEnd);
+
+		// Close window sorter cursor
+		compiler.emit(Opcode.Close, windowSorterInfo.cursor, 0, 0, null, 0, "Close Window Sorter");
+	}
+
 	// --- Final Aggregation Result Output --- //
-	if (needsAggProcessing) {
+	if (needsAggProcessing && !hasWindowFunctions) {
 		const addrAggLoopStart = compiler.allocateAddress();
 		const addrAggLoopEnd = compiler.allocateAddress();
 		const regMapIterator = compiler.allocateMemoryCells(1); // Conceptual iterator register
@@ -501,10 +700,10 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		compiler.resolveAddress(addrHavingFail); // Jump here if HAVING is false
 		compiler.emit(Opcode.Goto, 0, addrAggLoopStart, 0, null, 0, "Loop Aggregate Results");
 		compiler.resolveAddress(addrAggLoopEnd);
-	} // --- End Final Aggregation Result Output --- //
+	}
 
 	// --- Output from Sorter --- //
-	if (needsExternalSort) {
+	if (needsExternalSort && !hasWindowFunctions) {
 		const addrSortLoopStart = compiler.allocateAddress();
 		const addrSortLoopEnd = compiler.allocateAddress();
 		const sortedResultBaseReg = compiler.allocateMemoryCells(finalNumCols); // Num cols from sorter matches final output

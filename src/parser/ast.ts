@@ -8,7 +8,7 @@ import type { ConflictResolution } from '../common/constants';
 
 // Base for all AST nodes
 export interface AstNode {
-	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma' | 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated';
+	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma' | 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction' | 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -17,7 +17,7 @@ export interface AstNode {
 
 // Expression types
 export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr | FunctionExpr | CastExpr
-	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr;
+	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -65,6 +65,44 @@ export interface FunctionExpr extends AstNode {
 	args: Expression[];
 	isAggregate?: boolean;
 }
+
+// Window function expression
+export interface WindowFunctionExpr extends AstNode {
+	type: 'windowFunction';
+	function: FunctionExpr;
+	window?: WindowDefinition;
+	alias?: string;
+}
+
+// Window definition (OVER clause)
+export interface WindowDefinition extends AstNode {
+	type: 'windowDefinition';
+	partitionBy?: Expression[];
+	orderBy?: OrderByClause[];
+	frame?: WindowFrame;
+}
+
+// Window frame clause
+export interface WindowFrame {
+	type: WindowFrameUnits; // Changed from 'windowFrame' to WindowFrameUnits
+	start: WindowFrameBound;
+	end: WindowFrameBound | null; // Can be just START bound
+	exclusion?: WindowFrameExclusion;
+}
+
+// Window frame bound
+export type WindowFrameBound =
+	| { type: 'currentRow' }
+	| { type: 'unboundedPreceding' }
+	| { type: 'unboundedFollowing' }
+	| { type: 'preceding', value: Expression }
+	| { type: 'following', value: Expression };
+
+// Window frame units
+export type WindowFrameUnits = 'rows' | 'range';
+
+// Window frame exclusion
+export type WindowFrameExclusion = 'no others' | 'current row' | 'group' | 'ties';
 
 // CAST expression
 export interface CastExpr extends AstNode {
