@@ -22,6 +22,7 @@ import { compileExpression } from './expression';
 import * as StmtCompiler from './statement';
 import * as DdlCompiler from './ddl';
 import * as SelectCompiler from './select';
+import * as Utils from './utils';
 import type { SubqueryCorrelationResult } from './correlation';
 import * as SubqueryCompiler from './subquery';
 import type { ArgumentMap } from './handlers';
@@ -310,7 +311,7 @@ export class Compiler {
 	// Keep the main compileExpression delegation
 	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	// Delegate specific handlers directly if needed (though maybe not necessary if compileExpression handles all)
-	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { ExprHandlers.compileLiteral(this, expr, targetReg); }
+	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { Utils.compileLiteralValue(this, expr.value, targetReg); }
 	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }

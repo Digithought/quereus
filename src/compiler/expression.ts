@@ -8,7 +8,8 @@ import type { ColumnSchema } from '../schema/column';
 import { getAffinityForType } from '../schema/schema'; // Need a way to get affinity from type string
 import type { ArgumentMap } from './handlers'; // Removed .ts extension
 // Import specific handlers
-import { compileLiteral, compileColumn, compileBinary, compileUnary, compileCast, compileFunction, compileParameter, compileCollate } from './handlers'; // Removed .ts extension
+import { compileColumn, compileBinary, compileUnary, compileCast, compileFunction, compileParameter, compileCollate } from './handlers'; // Removed .ts extension
+import { compileLiteralValue } from './utils';
 // Subquery compilation is delegated differently in Compiler class, handled there.
 // No need to import subquery handlers here.
 
@@ -151,7 +152,7 @@ function getExpressionCollation(compiler: Compiler, expr: AST.Expression, correl
  */
 export function compileExpression(compiler: Compiler, expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	switch (expr.type) {
-		case 'literal': compileLiteral(compiler, expr, targetReg); break;
+		case 'literal': compileLiteralValue(compiler, expr.value, targetReg); break;
 		case 'identifier': compileColumn(compiler, { type: 'column', name: expr.name, alias: expr.name }, targetReg, correlation, havingContext, argumentMap); break; // Treat identifier as column
 		case 'column': compileColumn(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
 		case 'binary': compileBinary(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;

@@ -5,6 +5,8 @@ import { getAffinityForType } from '../schema/schema';
 import type { TableSchema } from '../schema/table';
 import type { ColumnSchema } from '../schema/column';
 import type { SubqueryCorrelationResult } from './correlation';
+import type { SqlValue } from '../common/types';
+import { Opcode } from '../common/constants';
 
 /** Determines the affinity of an expression. */
 export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {
@@ -138,5 +140,41 @@ export function getExpressionCollation(compiler: Compiler, expr: AST.Expression,
 			return getExpressionCollation(compiler, { type: 'column', name: expr.name }, correlation);
 		default:
 			return 'BINARY';
+	}
+}
+
+/**
+ * Emits the appropriate VDBE instructions to load a literal SqlValue into a target register.
+ */
+export function compileLiteralValue(compiler: Compiler, value: SqlValue, targetReg: number): void {
+	if (value === null) {
+		compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, "Load NULL literal");
+	} else if (typeof value === 'number') {
+		if (Number.isSafeInteger(value)) {
+			compiler.emit(Opcode.Integer, value, targetReg, 0, null, 0, `Load Integer literal: ${value}`);
+		} else if (Number.isInteger(value)) {
+			// Value is integer but outside safe range, store as Int64 constant
+			const constIdx = compiler.addConstant(BigInt(value));
+			compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `Load Large Integer literal: ${value}`);
+		} else {
+			// Non-integer number, store as Real constant
+			const constIdx = compiler.addConstant(value);
+			compiler.emit(Opcode.Real, 0, targetReg, 0, constIdx, 0, `Load Float literal: ${value}`);
+		}
+	} else if (typeof value === 'string') {
+		const constIdx = compiler.addConstant(value);
+		compiler.emit(Opcode.String8, 0, targetReg, 0, constIdx, 0, `Load String literal`);
+	} else if (value instanceof Uint8Array) {
+		const constIdx = compiler.addConstant(value);
+		compiler.emit(Opcode.Blob, value.length, targetReg, 0, constIdx, 0, "Load BLOB literal");
+	} else if (typeof value === 'bigint') {
+		const constIdx = compiler.addConstant(value);
+		compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `Load BigInt literal: ${value}`);
+	} else if (typeof value === 'boolean') {
+		// Store booleans as integers 0 or 1
+		compiler.emit(Opcode.Integer, value ? 1 : 0, targetReg, 0, null, 0, `Load Boolean literal: ${value}`);
+	} else {
+		// Should not happen with SqlValue type, but good to have a fallback
+		throw new Error(`Unsupported literal type for VDBE emission: ${typeof value}`);
 	}
 }

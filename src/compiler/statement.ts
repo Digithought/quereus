@@ -6,6 +6,7 @@ import type { Compiler } from './compiler';
 import type * as AST from '../parser/ast';
 import { compileUnhandledWhereConditions } from './whereVerify';
 import { compileExpression, type ArgumentMap } from './expression';
+import { compileLiteralValue } from './utils';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
@@ -89,7 +90,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 					const checkExpr = constraint.expr;
 					const constraintName = constraint.name ?? `check_${idx}`;
 					const constraintContext = `CHECK constraint ${constraintName} on ${tableSchema.name}`;
-					
+
 					// Allocate register for check result
 					const regCheckResult = compiler.allocateMemoryCells(1);
 					const addrCheckFail = compiler.allocateAddress();
@@ -105,7 +106,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 
 					// --- Failure Handler --- (Executed if IfTrue doesn't jump)
 					// Use stringifyExpr(checkExpr) if available, otherwise just use name
-					const errorMsg = `CHECK constraint failed: ${constraintName}`; 
+					const errorMsg = `CHECK constraint failed: ${constraintName}`;
 					compiler.emit(Opcode.ConstraintViolation, 0, 0, 0, errorMsg, 0, `THROW ${constraintName}`);
 					// Jump to end if violation occurred (e.g., if there's cleanup code later, though likely program halts)
 					// compiler.emit(Opcode.Goto, 0, endOfChecksAddr, 0, null, 0);
@@ -116,14 +117,67 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 			}
 			// --- End CHECK constraints ---
 
+			// Populate the data registers for VUpdate, handling DEFAULT values
 			for (let i = 0; i < tableSchema.columns.length; i++) {
-				const valueReg = valueRegisters.get(i);
-				if (valueReg !== undefined) {
-					compiler.emit(Opcode.SCopy, valueReg, regDataStart + 1 + i, 0, null, 0, `Copy value for col ${i}`);
+				const destReg = regDataStart + 1 + i;
+				const providedValueReg = valueRegisters.get(i);
+				const columnSchema = tableSchema.columns[i];
+
+				if (providedValueReg !== undefined) {
+					// Value was provided in INSERT statement
+					compiler.emit(Opcode.SCopy, providedValueReg, destReg, 0, null, 0, `Copy provided value for col ${i} (${columnSchema.name})`);
+					// NOT NULL check already performed when value was compiled
 				} else {
-					compiler.emit(Opcode.Null, 0, regDataStart + 1 + i);
+					// Value not provided, check for DEFAULT
+					if (columnSchema.defaultValue !== undefined) {
+						// Compile or load the DEFAULT value
+						const regDefaultValue = compiler.allocateMemoryCells(1);
+						if (typeof columnSchema.defaultValue === 'object' && columnSchema.defaultValue !== null && 'type' in columnSchema.defaultValue) {
+							// It's an AST.Expression
+							compiler.compileExpression(columnSchema.defaultValue as AST.Expression, regDefaultValue);
+						} else {
+							// It's a literal SqlValue - use the helper
+							compileLiteralValue(compiler, columnSchema.defaultValue, regDefaultValue);
+						}
+
+						compiler.emit(Opcode.SCopy, regDefaultValue, destReg, 0, null, 0, `Copy DEFAULT value for col ${i} (${columnSchema.name})`);
+
+						// Check NOT NULL constraint on the *default* value
+						if (columnSchema.notNull) {
+							const regIsNullResult = compiler.allocateMemoryCells(1);
+							const addrConstraintFail = compiler.allocateAddress();
+							const addrConstraintOK = compiler.allocateAddress();
+							const constraintContext = `${tableSchema.name}.${columnSchema.name} DEFAULT`;
+
+							compiler.emit(Opcode.IsNull, regDefaultValue, regIsNullResult, 0, null, 0, `Check NULL ${constraintContext}`);
+							compiler.emit(Opcode.IfTrue, regIsNullResult, addrConstraintFail, 0, null, 0, `Jump if NULL ${constraintContext}`);
+							compiler.emit(Opcode.Goto, 0, addrConstraintOK, 0, null, 0, 'Skip violation');
+							compiler.resolveAddress(addrConstraintFail);
+							compiler.emit(Opcode.ConstraintViolation, 0, 0, 0, `NOT NULL constraint failed (using DEFAULT): ${constraintContext}`, 0, `THROW ${constraintContext}`);
+							compiler.resolveAddress(addrConstraintOK);
+							// Consider freeing regDefaultValue and regIsNullResult if temp registers are used
+						}
+					} else {
+						// No value provided and no DEFAULT value
+						compiler.emit(Opcode.Null, 0, destReg, 0, null, 0, `Set NULL for omitted col ${i} (${columnSchema.name})`);
+
+						// Check NOT NULL constraint if column is NOT NULL and has no DEFAULT
+						if (columnSchema.notNull) {
+							const addrConstraintFail = compiler.allocateAddress();
+							const constraintContext = `${tableSchema.name}.${columnSchema.name} (no default)`;
+							// We know the value is NULL, so directly emit the violation
+							compiler.emit(Opcode.ConstraintViolation, 0, 0, 0, `NOT NULL constraint failed: ${constraintContext}`, 0, `THROW ${constraintContext}`);
+							// This part of the code might technically be unreachable if ConstraintViolation halts,
+							// but include for clarity or potential future changes where it might not halt.
+							// compiler.emit(Opcode.Goto, 0, addrConstraintOK, 0, null, 0); // Skip if not needed
+							// compiler.resolveAddress(addrConstraintOK);
+						}
+					}
 				}
 			}
+
+			// Release registers used for provided values (if using temporary allocation)
+			// valueRegisters.forEach(reg => compiler.freeTempRegister(reg)); // Uncomment if using temp registers
 
 			const p4Update: P4Update = { onConflict: stmt.onConflict || ConflictResolution.ABORT, table: tableSchema, type: 'update' };
 			compiler.emit(Opcode.VUpdate, tableSchema.columns.length + 1, regDataStart, regNewRowid, p4Update, 0, `VUpdate INSERT ${tableSchema.name}`);
@@ -221,7 +275,7 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 	if (tableSchema.checkConstraints && tableSchema.checkConstraints.length > 0) {
 		// Map to hold registers for ALL columns (new or old values)
 		const updateValueRegisters = new Map<number, number>();
-		
+
 		// Populate with SET values and fetch old values for non-SET columns
 		for (let i = 0; i < tableSchema.columns.length; i++) {
 			if (assignmentRegs.has(i)) {
@@ -246,7 +300,7 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 			const checkExpr = constraint.expr;
 			const constraintName = constraint.name ?? `check_${idx}`;
 			const constraintContext = `CHECK constraint ${constraintName} on ${tableSchema.name}`;
-			
+
 			const regCheckResult = compiler.allocateMemoryCells(1);
 			const addrCheckOK = compiler.allocateAddress();
 

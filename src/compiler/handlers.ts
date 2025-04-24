@@ -7,39 +7,10 @@ import type * as AST from '../parser/ast';
 import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './correlation';
 import type { TableSchema } from '../schema/table';
 import { getAffinityForType } from '../schema/schema';
-import { getExpressionAffinity, getExpressionCollation, resolveColumnSchema } from './utils';
+import { getExpressionAffinity, getExpressionCollation, compileLiteralValue } from './utils';
 
 /** Map column name/alias to register holding its value */
 export type ArgumentMap = ReadonlyMap<string, number>;
-
-export function compileLiteral(compiler: Compiler, expr: AST.LiteralExpr, targetReg: number): void {
-	const value = expr.value;
-	if (value === null) {
-		compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, "NULL literal");
-	} else if (typeof value === 'number') {
-		if (Number.isSafeInteger(value)) {
-			compiler.emit(Opcode.Integer, value, targetReg, 0, null, 0, `Integer literal: ${value}`);
-		} else if (Number.isInteger(value)) {
-			const constIdx = compiler.addConstant(BigInt(value));
-			compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `Large Integer literal: ${value}`);
-		} else {
-			const constIdx = compiler.addConstant(value);
-			compiler.emit(Opcode.Real, 0, targetReg, 0, constIdx, 0, `Float literal: ${value}`);
-		}
-	} else if (typeof value === 'string') {
-		const constIdx = compiler.addConstant(value);
-		compiler.emit(Opcode.String8, 0, targetReg, 0, constIdx, 0, `String literal: '${value}'`);
-	} else if (value instanceof Uint8Array) {
-		const constIdx = compiler.addConstant(value);
-		compiler.emit(Opcode.Blob, value.length, targetReg, 0, constIdx, 0, "BLOB literal");
-	} else if (typeof value === 'bigint') {
-		const constIdx = compiler.addConstant(value);
-		compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `BigInt literal: ${value}`);
-	}
-	else {
-		throw new SqliteError(`Unsupported literal type: ${typeof value}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
-	}
-}
 
 export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	// --- Contextual Column Value Lookup (INSERT/UPDATE/CHECK) ---
@@ -495,7 +466,7 @@ export function compileCollate(compiler: Compiler, expr: AST.CollateExpr, target
 
 export function compileExpression(compiler: Compiler, expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	switch (expr.type) {
-		case 'literal': compileLiteral(compiler, expr, targetReg); break;
+		case 'literal': compileLiteralValue(compiler, expr.value, targetReg); break;
 		case 'identifier': compileColumn(compiler, { type: 'column', name: expr.name, alias: expr.name }, targetReg, correlation, havingContext, argumentMap); break;
 		case 'column': compileColumn(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
 		case 'binary': compileBinary(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
