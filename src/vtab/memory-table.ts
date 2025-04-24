@@ -1,7 +1,7 @@
 // src/vtab/memory-table.ts
 import { VirtualTable } from './table';
 import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule } from './module';
+import type { VirtualTableModule, BaseModuleConfig } from './module';
 import type { IndexInfo, IndexConstraint, IndexOrderBy } from './indexInfo';
 import { IndexConstraintOp, ConflictResolution } from '../common/constants';
 import type { Database } from '../core/database';
@@ -9,10 +9,10 @@ import { type SqlValue, StatusCode, SqlDataType } from '../common/types';
 import { SqliteError, ConstraintError } from '../common/errors';
 import type { SqliteContext } from '../func/context';
 import { Latches } from '../util/latches';
-import { Parser } from '../parser/parser';
-import type { ColumnSchema } from '../schema/column';
-import { buildColumnIndexMap, type TableSchema, findPrimaryKeyDefinition, getPrimaryKeyIndices } from '../schema/table';
-import * as AST from '../parser/ast';
+// import { Parser } from '../parser/parser';
+// import type { ColumnSchema } from '../schema/column';
+// import { buildColumnIndexMap, type TableSchema, findPrimaryKeyDefinition, getPrimaryKeyIndices } from '../schema/table';
+// import * as AST from '../parser/ast';
 // --- Import digitree and comparison ---
 import { BTree, KeyBound, KeyRange, Path } from 'digitree'; // KeyBound, KeyRange added
 import { compareSqlValues } from '../util/comparison';
@@ -25,12 +25,13 @@ export type MemoryTableRow = Record<string, SqlValue> & { _rowid_: bigint };
 // Type alias for the BTree key (can be rowid, single PK value, or array for composite PK)
 type BTreeKey = bigint | number | string | SqlValue[];
 
-// --- Transaction Buffer Types ---
-type PendingChange =
-	| { type: 'INSERT', row: MemoryTableRow, key: BTreeKey }
-	| { type: 'UPDATE', rowid: bigint, oldRow: MemoryTableRow, newRow: MemoryTableRow, oldKey: BTreeKey, newKey: BTreeKey }
-	| { type: 'DELETE', rowid: bigint, oldRow: MemoryTableRow, oldKey: BTreeKey };
-// ------------------------------
+// --- Define Configuration Interface ---
+interface MemoryTableConfig extends BaseModuleConfig {
+	columns: { name: string, type: SqlDataType, collation?: string }[];
+	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
+	readOnly?: boolean;
+}
+// ------------------------------------
 
 /**
  * Cursor for the MemoryTable using BTree paths and iterators.
@@ -107,7 +108,7 @@ export class MemoryTable extends VirtualTable {
 	private readOnly: boolean;
 	public rowidToKeyMap: Map<bigint, BTreeKey> | null = null;
 	public isSorter: boolean = false;
-	public sorterColumnMap: ColumnSchema[] | null = null;
+	// public sorterColumnMap: ColumnSchema[] | null = null; // Removed usage
 
 	// --- Transaction State --- (Public for cursor access for now)
 	public inTransaction: boolean = false;
@@ -583,26 +584,17 @@ export class MemoryTable extends VirtualTable {
 		console.log(`MemoryTable ${this.tableName}: Configuring BTree for sorting with keys:`, sortInfo.keyIndices, `directions:`, sortInfo.directions);
 
 		// Store the effective schema used by the sorter (assuming it matches the current columns)
-		// Create proper ColumnSchema objects for sorterColumnMap
-		this.sorterColumnMap = this.columns.map(c => ({
-			name: c.name,
-			affinity: c.type,
-			notNull: false,
-			primaryKey: false,
-			pkOrder: 0,
-			defaultValue: null,
-			collation: 'BINARY',
-			hidden: false,
-			generated: false,
-		}));
+		// Create simple mapping for sorter key extraction
+		const sorterColumnMap = this.columns.map(c => c.name);
+		// Removed ColumnSchema object creation
 
 		const keyFromEntry = (row: MemoryTableRow): BTreeKey => {
 			const keyValues = sortInfo.keyIndices.map(index => {
-				if (!this.sorterColumnMap) throw new Error("Sorter column map not set during key extraction");
-				const colName = this.sorterColumnMap[index]?.name;
+				// if (!this.sorterColumnMap) throw new Error("Sorter column map not set during key extraction"); // Removed check
+				const colName = sorterColumnMap[index]; // Use simple name map
 				return colName ? (row as any)[colName] : null;
 			});
-			keyValues.push(row._rowid_);
+			keyValues.push(row._rowid_); // Always add rowid for tie-breaking
 			return keyValues;
 		};
 
@@ -634,47 +626,38 @@ export class MemoryTable extends VirtualTable {
 /**
  * A module that provides in-memory table functionality using digitree.
  */
-export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableCursor> {
+export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableCursor, MemoryTableConfig> {
 	private static SCHEMA_VERSION = 1;
 	private tables: Map<string, MemoryTable> = new Map();
 
-	private config: { readOnly?: boolean; };
+	constructor() {}
 
-	constructor(config: { readOnly?: boolean } = {}) {
-		this.config = config;
-	}
+	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
+		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
+		if (this.tables.has(tableKey)) {
+			throw new SqliteError(`Memory table '${tableName}' already exists in schema '${schemaName}'`, StatusCode.ERROR);
+		}
 
-	xCreate(db: Database, pAux: unknown, args: ReadonlyArray<string>): MemoryTable {
-		if (args.length < 3) { throw new SqliteError("Invalid memory table declaration: schema and table name required", StatusCode.ERROR); }
-		const schemaName = args[1];
-		const tableName = args[2];
-		const tableKey = this.getTableKey(schemaName, tableName);
-		if (this.tables.has(tableKey)) { throw new SqliteError(`Memory table '${tableName}' already exists in schema '${schemaName}'`, StatusCode.ERROR); }
-
-		const createTableSql = args.find(arg => arg.trim().toUpperCase().startsWith("CREATE TABLE"));
-
-		const table = new MemoryTable(db, this, schemaName, tableName, !!this.config.readOnly);
+		const table = new MemoryTable(db, this, schemaName, tableName, !!options.readOnly);
 		this.tables.set(tableKey, table);
 
-		const sqlToParse = createTableSql ?? `CREATE TABLE "${tableName}" (value)`;
-		// setupSchema can remain async internally if needed, but xCreate itself is sync now.
-		// However, schema setup SHOULD be synchronous for xBestIndex.
-		this.setupSchema(db, table, sqlToParse);
+		// Directly set schema from options
+		table.setColumns(options.columns, options.primaryKey ?? []);
 
+		console.log(`MemoryTable '${tableName}' created (Schema set directly from options)`);
 		return table;
 	}
 
-	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): MemoryTable {
-		if (args.length < 3) { throw new SqliteError("Invalid memory table connection request", StatusCode.ERROR); }
-		const schemaName = args[1];
-		const tableName = args[2];
-		const tableKey = this.getTableKey(schemaName, tableName);
+	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
+		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
 		const existingTable = this.tables.get(tableKey);
 		if (existingTable) {
+			console.log(`MemoryTable '${tableName}' connected (found existing instance)`);
 			return existingTable;
 		}
-		// If not existing, create it synchronously
-		return this.xCreate(db, pAux, args);
+		// If not existing, create it synchronously using xCreate
+		console.log(`MemoryTable '${tableName}' not found, creating new instance via xConnect...`);
+		return this.xCreate(db, pAux, moduleName, schemaName, tableName, options);
 	}
 
 	async xDisconnect(table: MemoryTable): Promise<void> {
@@ -683,7 +666,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 	async xDestroy(table: MemoryTable): Promise<void> {
 		table.clear();
-		const tableKey = this.getTableKey(table.schemaName, table.tableName);
+		// Use table properties directly
+		const tableKey = `${table.schemaName.toLowerCase()}.${table.tableName.toLowerCase()}`;
 		this.tables.delete(tableKey);
 		console.log(`Memory table '${table.tableName}' destroyed`);
 	}
@@ -1212,8 +1196,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	async xSync(table: MemoryTable): Promise<void> { /* No-op */ }
 
 	async xRename(table: MemoryTable, newName: string): Promise<void> {
-		const oldTableKey = this.getTableKey(table.schemaName, table.tableName);
-		const newTableKey = this.getTableKey(table.schemaName, newName);
+		const oldTableKey = `${table.schemaName.toLowerCase()}.${table.tableName.toLowerCase()}`;
+		const newTableKey = `${table.schemaName.toLowerCase()}.${newName.toLowerCase()}`;
 
 		if (oldTableKey === newTableKey) return;
 		if (this.tables.has(newTableKey)) {
@@ -1240,120 +1224,4 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		table.rollbackToSavepoint(savepointIndex);
 	}
 	// -----------------------
-
-	private getTableKey(schemaName: string, tableName: string): string {
-		return `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
-	}
-
-	private setupSchema(db: Database, table: MemoryTable, createTableSql: string): void {
-		// This method MUST be synchronous.
-		// Any async setup needs to happen elsewhere or be handled differently.
-		const moduleName = table.module.constructor.name; // Might be minified
-		// Use registered name if possible?
-		// For now, assume MemoryTable is always registered as 'memory' or similar
-		const registeredModuleName = 'memory'; // Assuming default registration name
-		const safeCreateTableSql = createTableSql.replace(/"/g, '""');
-		// Constructing CREATE TABLE for declareVtab (which remains sync?)
-		const createVTableSql = `CREATE TABLE "${table.schemaName}"."${table.tableName}" USING ${registeredModuleName}("${safeCreateTableSql}")`;
-
-		// declareVtab needs to be synchronous or this structure changes.
-		// Assuming declareVtab can operate synchronously based on parsed SQL for schema.
-		const initialTableSchema = db.schemaManager.declareVtab(table.schemaName, createVTableSql, table);
-
-		let parsedColumns: { name: string, type: SqlDataType }[] = [];
-		let primaryKeyColNames: string[] = [];
-		let pkDef: { index: number; desc: boolean }[] = []; // Store definition directly
-
-		try {
-			const parser = new Parser();
-			const ast = parser.parse(createTableSql);
-			if (ast.type === 'createTable') {
-				const createTableAst = ast as AST.CreateTableStmt;
-				const colMap = new Map<string, number>();
-				parsedColumns = createTableAst.columns.map((colDef, index) => {
-					colMap.set(colDef.name.toLowerCase(), index);
-					let affinity = SqlDataType.TEXT;
-					const typeName = colDef.dataType?.toUpperCase() || '';
-					if (typeName.includes('INT')) affinity = SqlDataType.INTEGER;
-					else if (typeName.includes('REAL') || typeName.includes('FLOAT') || typeName.includes('DOUBLE')) affinity = SqlDataType.REAL;
-					else if (typeName.includes('BLOB')) affinity = SqlDataType.BLOB;
-					else if (typeName.includes('NUMERIC')) affinity = SqlDataType.REAL;
-					else if (typeName.includes('BOOL')) affinity = SqlDataType.INTEGER;
-					else if (typeName.length > 0) affinity = SqlDataType.TEXT;
-					return { name: colDef.name, type: affinity };
-				});
-
-				let foundPk = false;
-				// Check table constraints first
-				createTableAst.constraints.forEach(constraint => {
-					if (constraint.type === 'primaryKey' && constraint.columns) {
-						if (foundPk) throw new Error("Multiple primary keys defined");
-						foundPk = true;
-						// Assume ASC for table-level PK constraints (standard SQL)
-						pkDef = constraint.columns.map(colInfo => {
-							const index = colMap.get(colInfo.name.toLowerCase());
-							if (index === undefined) throw new Error(`PK column ${colInfo.name} not found`);
-							// Use parsed direction, default to asc (false for desc)
-							return { index, desc: colInfo.direction === 'desc' };
-						});
-					}
-				});
-				// Check column constraints if no table constraint found
-				if (!foundPk) {
-					createTableAst.columns.forEach((colDef, index) => {
-						const pkConstraint = colDef.constraints.find(c => c.type === 'primaryKey');
-						if (pkConstraint) {
-							if (foundPk) throw new Error("Multiple primary keys defined");
-							foundPk = true;
-							// Use direction from column constraint AST
-							pkDef = [{ index, desc: pkConstraint.direction === 'desc' }];
-						}
-					});
-				}
-			} else { throw new Error(`Expected CREATE TABLE, got ${ast.type}`); }
-		} catch (e: any) {
-			throw new SqliteError(`Invalid CREATE TABLE definition provided to MemoryTable module: ${e.message}`, StatusCode.ERROR);
-		}
-
-		// Directly call setColumns with the derived pkDef
-		table.setColumns(parsedColumns, pkDef);
-
-		// Update the registered TableSchema in SchemaManager
-		const finalColumns: ColumnSchema[] = table.columns.map((c, index) => ({
-			name: c.name,
-			affinity: c.type,
-			notNull: false, // TODO: Parse constraints properly
-			primaryKey: pkDef.some(def => def.index === index),
-			pkOrder: pkDef.findIndex(def => def.index === index) + 1, // 1-based order
-			defaultValue: null, // TODO: Parse constraints
-			collation: 'BINARY',
-			hidden: false,
-			generated: false,
-		}));
-
-		// Ensure the schema object passed to addTable is correctly formed
-		const finalTableSchema: TableSchema = {
-			...(initialTableSchema ?? {}), // Use initial schema if available
-			name: table.tableName,
-			schemaName: table.schemaName,
-			columns: Object.freeze(finalColumns),
-			columnIndexMap: Object.freeze(buildColumnIndexMap(finalColumns)),
-			primaryKeyDefinition: Object.freeze(pkDef), // Use the parsed definition
-			isVirtual: true,
-			vtabModule: table.module,
-			vtabInstance: table,
-			// Retain auxData and vtabArgs if they were on initialTableSchema
-			vtabAuxData: initialTableSchema?.vtabAuxData,
-			vtabArgs: initialTableSchema?.vtabArgs,
-			vtabModuleName: registeredModuleName, // Store the assumed registered name
-		};
-
-		const targetSchema = db.schemaManager.getSchema(table.schemaName);
-		if (targetSchema) {
-			targetSchema.addTable(finalTableSchema);
-			console.log(`MemoryTable '${table.tableName}' schema finalized and registered.`);
-		} else {
-			console.error(`Schema ${table.schemaName} not found when finalizing MemoryTable schema.`);
-		}
-	}
 }

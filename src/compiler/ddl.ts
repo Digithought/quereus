@@ -1,6 +1,6 @@
 import type { Compiler } from "./compiler";
 import type * as AST from "../parser/ast";
-import { StatusCode } from "../common/constants";
+import { StatusCode, SqlDataType } from "../common/constants";
 import { SqliteError } from "../common/errors";
 import { stringifyCreateTable } from "../util/ddl-stringify";
 import { Opcode } from "../common/constants";
@@ -8,26 +8,41 @@ import type { Database } from '../core/database';
 import type { VirtualTable } from "../vtab/table";
 import type { ViewSchema } from '../schema/view';
 import type { Schema } from '../schema/schema';
+import { Parser } from "../parser/parser";
+import type { SqlValue } from "../common/types";
+import type { BaseModuleConfig } from '../vtab/module';
+
+// Define local interfaces if not exported/importable easily
+interface MemoryTableConfig extends BaseModuleConfig {
+	columns: { name: string, type: SqlDataType, collation?: string }[];
+	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
+	readOnly?: boolean;
+}
+interface JsonConfig extends BaseModuleConfig {
+	jsonSource: SqlValue;
+	rootPath?: SqlValue;
+}
 
 export function compileCreateTableStatement(compiler: Compiler, stmt: AST.CreateTableStmt): void {
 	const db = compiler.db;
 	const schemaName = stmt.table.schema || 'main';
 	const tableName = stmt.table.name;
-
 	let moduleName: string;
-	let moduleArgs: string[];
-	let synthesizeDdlArg = false;
+	let moduleArgs: string[] = [];
+	let usingExplicitModule = false;
+	// let explicitMemoryModule = false; // Not needed with current logic
 
+	// Determine module and args source
 	if (stmt.moduleName) {
 		moduleName = stmt.moduleName;
 		moduleArgs = stmt.moduleArgs || [];
+		usingExplicitModule = true;
+		// explicitMemoryModule = moduleName.toLowerCase() === 'memory';
 	} else {
 		const defaultVtab = db.getDefaultVtabModule();
 		moduleName = defaultVtab.name;
+		// Default args are prepended IF specific module args aren't given via USING
 		moduleArgs = [...defaultVtab.args];
-		if (moduleName.toLowerCase() === 'memory') {
-			synthesizeDdlArg = true;
-		}
 	}
 
 	const moduleInfo = db._getVtabModule(moduleName);
@@ -35,23 +50,78 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		throw new SqliteError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
-	const finalArgs: string[] = [
-		moduleName,
-		schemaName,
-		tableName,
-	];
+	// --- Construct Module Options (TConfig) ---
+	let options: BaseModuleConfig;
 
-	if (synthesizeDdlArg) {
-		const ddlString = stringifyCreateTable(stmt);
-		finalArgs.push(ddlString);
-		finalArgs.push(...moduleArgs);
-	} else {
-		finalArgs.push(...moduleArgs);
+	try {
+		if (moduleName.toLowerCase() === 'memory') {
+			let columns: { name: string, type: SqlDataType, collation?: string }[];
+			let primaryKey: ReadonlyArray<{ index: number; desc: boolean }> | undefined;
+
+			if (usingExplicitModule) {
+				// Case: CREATE VIRTUAL TABLE ... USING memory('CREATE TABLE ...');
+				if (moduleArgs.length === 0 || !moduleArgs[0].trim().toUpperCase().startsWith('CREATE TABLE')) {
+					throw new Error("When using 'USING memory(...)', the first argument must be the CREATE TABLE DDL string.");
+				}
+				const ddlString = moduleArgs[0];
+				const parser = new Parser();
+				const parsedAst = parser.parse(ddlString);
+				if (parsedAst.type !== 'createTable') {
+					throw new Error("Argument provided to 'USING memory(...)' did not parse as a CREATE TABLE statement.");
+				}
+				const createTableAst = parsedAst as AST.CreateTableStmt;
+				// TODO: Extract collation from AST if needed
+				columns = createTableAst.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }));
+				primaryKey = parsePrimaryKeyFromAst(createTableAst.columns, createTableAst.constraints);
+				// TODO: Parse readOnly from subsequent args if desired? e.g., USING memory(ddl, 'readOnly=true')
+			} else {
+				// Case: CREATE TABLE ... ; (Implicitly uses default memory module)
+				// Use columns/constraints directly from the main statement's AST
+				if (!stmt.columns || stmt.columns.length === 0) {
+					throw new Error("Cannot create implicit memory table without column definitions.");
+				}
+				// TODO: Extract collation from AST if needed
+				columns = stmt.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }));
+				primaryKey = parsePrimaryKeyFromAst(stmt.columns, stmt.constraints || []);
+			}
+
+			options = {
+				columns: Object.freeze(columns),
+				primaryKey: primaryKey,
+				readOnly: false // Default readOnly, could be configurable later
+			} as MemoryTableConfig;
+
+		} else if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
+			// Expects 1 or 2 args: jsonSource, [rootPath]
+			if (moduleArgs.length < 1 || moduleArgs.length > 2) {
+				throw new Error(`${moduleName} requires 1 or 2 arguments (jsonSource, [rootPath])`);
+			}
+			options = {
+				jsonSource: moduleArgs[0], // Assume string args are handled correctly later
+				rootPath: moduleArgs[1]
+			} as JsonConfig;
+		} else {
+			// Generic module - pass empty config for now
+			// The module's xCreate needs to handle this or expect specific arg parsing
+			console.warn(`Compiler creating generic BaseModuleConfig for module '${moduleName}'. Module may need specific argument parsing.`);
+			options = {}; // Empty BaseModuleConfig
+		}
+	} catch (e: any) {
+		throw new SqliteError(`Failed to parse arguments for module '${moduleName}': ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
+	// --- End Construct Module Options ---
 
 	let tableInstance: VirtualTable;
 	try {
-		tableInstance = moduleInfo.module.xCreate(db, moduleInfo.auxData, Object.freeze(finalArgs));
+		// Call xCreate with the new signature
+		tableInstance = moduleInfo.module.xCreate(
+			db,
+			moduleInfo.auxData,
+			moduleName, // Pass explicit moduleName
+			schemaName, // Pass explicit schemaName
+			tableName,  // Pass explicit tableName
+			options     // Pass constructed options object
+		);
 	} catch (e: any) {
 		const message = e instanceof Error ? e.message : String(e);
 		const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
@@ -267,4 +337,56 @@ export function compilePragmaStatement(compiler: Compiler, stmt: AST.PragmaStmt)
 
 	// Pragmas modify DB state directly, no VDBE code generated
 	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `PRAGMA ${pragmaName}`);
+}
+
+// Helper to parse primary key from constraints AST
+export function parsePrimaryKeyFromAst(
+	columns: ReadonlyArray<AST.ColumnDef>,
+	constraints: ReadonlyArray<AST.TableConstraint> | undefined // Allow undefined constraints
+): ReadonlyArray<{ index: number; desc: boolean }> | undefined {
+	const colMap = new Map<string, number>();
+	columns.forEach((col, idx) => colMap.set(col.name.toLowerCase(), idx));
+	let pkDef: { index: number; desc: boolean }[] = [];
+	let foundPk = false;
+
+	// Check table constraints
+	if (constraints) {
+		for (const constraint of constraints) {
+			if (constraint.type === 'primaryKey' && constraint.columns) {
+				if (foundPk) throw new Error("Multiple primary keys defined");
+				foundPk = true;
+				pkDef = constraint.columns.map(colInfo => {
+					const index = colMap.get(colInfo.name.toLowerCase());
+					if (index === undefined) throw new Error(`PK column ${colInfo.name} not found`);
+					return { index, desc: colInfo.direction === 'desc' };
+				});
+				break; // Only one table-level PK allowed
+			}
+		}
+	}
+
+	// Check column constraints if no table constraint found
+	if (!foundPk) {
+		columns.forEach((colDef, index) => {
+			const pkConstraint = colDef.constraints.find(c => c.type === 'primaryKey');
+			if (pkConstraint) {
+				if (foundPk) throw new Error("Multiple primary keys defined (column + table/column)");
+				foundPk = true;
+				pkDef = [{ index, desc: pkConstraint.direction === 'desc' }];
+				// Cannot break here easily, still need to check all columns for multiple definitions
+			}
+		});
+	}
+
+	return pkDef.length > 0 ? Object.freeze(pkDef) : undefined;
+}
+
+// Helper to determine affinity from type name string
+export function getAffinityFromTypeName(typeName: string | undefined): SqlDataType {
+	const typeUpper = typeName?.toUpperCase() || '';
+	if (typeUpper.includes('INT')) return SqlDataType.INTEGER;
+	if (typeUpper.includes('REAL') || typeUpper.includes('FLOAT') || typeUpper.includes('DOUBLE')) return SqlDataType.REAL;
+	if (typeUpper.includes('BLOB')) return SqlDataType.BLOB;
+	if (typeUpper.includes('BOOL')) return SqlDataType.INTEGER; // Booleans often stored as int
+	return SqlDataType.TEXT;
 }

@@ -22,8 +22,11 @@ export function parseSelect(sql: string): SelectStmt {
  * @returns AST for the INSERT statement
  */
 export function parseInsert(sql: string): InsertStmt {
-	const parser = new Parser();
-	return parser.initialize(sql).insertStatement();
+	const stmt = parse(sql);
+	if (stmt.type !== 'insert') {
+		throw new Error(`Expected INSERT statement, but got ${stmt.type}`);
+	}
+	return stmt as InsertStmt;
 }
 
 /**

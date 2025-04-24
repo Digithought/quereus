@@ -1,6 +1,6 @@
 import { VirtualTable } from './table';
 import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule } from './module';
+import type { VirtualTableModule, BaseModuleConfig } from './module';
 import type { IndexInfo } from './indexInfo';
 import { type SqlValue, StatusCode, SqlDataType } from '../common/types';
 import { SqliteError } from '../common/errors';
@@ -10,6 +10,14 @@ import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../func/built
 import type { TableSchema } from '../schema/table';
 import { createDefaultColumnSchema } from '../schema/column';
 import { buildColumnIndexMap } from '../schema/table';
+
+// --- Define Configuration Interface (Shared with JsonEach) ---
+interface JsonConfig extends BaseModuleConfig {
+	jsonSource: SqlValue;
+	runtimeArgs?: ReadonlyArray<SqlValue>;
+	rootPath?: SqlValue;
+}
+// ----------------------------------------------------------
 
 // --- Constants for json_tree Schema (Identical to json_each) ---
 const JSON_TREE_SCHEMA: ReadonlyArray<{ name: string, affinity: SqlDataType }> = Object.freeze([
@@ -211,10 +219,11 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable> {
 
 // --- Module Implementation (No Inheritance) --- //
 
-export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTreeCursor> {
+export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTreeCursor, JsonConfig> {
 	// Add back all required methods
-	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): JsonTreeTable {
+	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonTreeTable {
 		// Args: module_name, schema_name, table_name, json_text, [root_path]
+		/* // Old argument parsing
 		if (args.length < 4 || args.length > 5) {
 			throw new SqliteError(`json_tree requires 1 or 2 arguments (json, [path])`, StatusCode.ERROR);
 		}
@@ -222,12 +231,16 @@ export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTre
 		const tableName = args[2];
 		const jsonText = args[3];
 		const rootPath = args.length > 4 ? args[4] : undefined;
+		*/
 
-		const table = new JsonTreeTable(db, this, schemaName, tableName, jsonText, rootPath);
+		const table = new JsonTreeTable(db, this, schemaName, tableName, options.jsonSource, options.rootPath);
 		return table;
 	}
 
-	xCreate = this.xConnect;
+	// xCreate = this.xConnect;
+	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonTreeTable {
+		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
+	}
 
 	async xDisconnect(table: JsonTreeTable): Promise<void> { /* No-op */ }
 	async xDestroy(table: JsonTreeTable): Promise<void> { /* No-op */ }

@@ -4,7 +4,7 @@ import { SqliteError } from '../common/errors';
 import { type P4FuncDef } from '../vdbe/instruction';
 import type { Compiler, HavingContext } from './compiler';
 import type * as AST from '../parser/ast';
-import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from '../analysis/correlation';
+import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './correlation';
 import type { TableSchema } from '../schema/table';
 import { getAffinityForType } from '../schema/schema';
 import { getExpressionAffinity, getExpressionCollation, resolveColumnSchema } from './utils';

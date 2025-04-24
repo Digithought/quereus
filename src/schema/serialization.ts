@@ -116,7 +116,7 @@ export function importSchemaJson(db: Database, jsonString: string): void {
   // Clear existing user-defined schemas before import
   // Keep 'main' and 'temp' but clear their contents?
   // Let's clear tables/functions from main/temp for now.
-  schemaManager.clearAll(false); // Don't disconnect VTabs yet
+  schemaManager.clearAll(); // Don't disconnect VTabs yet
 
   for (const schemaName in jsonData.schemas) {
     if (!Object.prototype.hasOwnProperty.call(jsonData.schemas, schemaName)) continue;

@@ -1,9 +1,24 @@
-import { Opcode } from '../common/constants';
+import { Opcode, SqlDataType } from '../common/constants';
 import { SqliteError } from '../common/errors';
 import { StatusCode } from '../common/types';
 import type { Compiler } from './compiler';
-import type * as AST from '../parser/ast';
+import * as AST from '../parser/ast';
 import type { P4Vtab } from '../vdbe/instruction';
+import { getAffinityFromTypeName, parsePrimaryKeyFromAst } from './ddl'; // Import helpers
+import type { BaseModuleConfig } from '../vtab/module';
+import type { SqlValue } from '../common/types';
+import { Parser } from '../parser/parser'; // Import Parser
+
+// Local config interfaces (mirroring ddl.ts for now)
+interface MemoryTableConfig extends BaseModuleConfig {
+	columns: { name: string, type: SqlDataType, collation?: string }[];
+	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
+	readOnly?: boolean;
+}
+interface JsonConfig extends BaseModuleConfig {
+	jsonSource: SqlValue;
+	rootPath?: SqlValue;
+}
 
 // --- FROM Clause Compilation --- //
 
@@ -65,9 +80,57 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				console.warn(`VTab ${tableName} found but not connected, attempting connect...`);
 				const module = compiler.db._getVtabModule(tableSchema.vtabModuleName ?? '');
 				if (!module) throw new SqliteError(`Module ${tableSchema.vtabModuleName} not found for VTab ${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
-				const argv = [tableSchema.vtabModuleName ?? '', schemaName, tableName, ...(tableSchema.vtabArgs ?? [])];
-				// Call connect synchronously
-				const instance = module.module.xConnect(compiler.db, module.auxData, argv);
+				const moduleName = tableSchema.vtabModuleName ?? '';
+				const storedArgs = tableSchema.vtabArgs ?? [];
+				let options: BaseModuleConfig = {}; // Default
+				try {
+					if (moduleName.toLowerCase() === 'memory') {
+						// Reconstruct MemoryTableConfig from stored DDL if possible
+						// This relies on the DDL being the first arg in vtabArgs
+						if (storedArgs.length > 0 && storedArgs[0].trim().toUpperCase().startsWith('CREATE TABLE')) {
+							const ddlString = storedArgs[0];
+							const parser = new Parser();
+							const parsedAst = parser.parse(ddlString);
+							if (parsedAst.type === 'createTable') {
+								const createTableAst = parsedAst as AST.CreateTableStmt;
+								options = {
+									columns: Object.freeze(createTableAst.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }))),
+									primaryKey: parsePrimaryKeyFromAst(createTableAst.columns, createTableAst.constraints),
+									readOnly: false // Assume default, cannot easily get this from stored args
+								} as MemoryTableConfig;
+							} else {
+								console.warn(`Could not parse stored DDL argument for memory table ${tableName} during connect.`);
+							}
+						} else {
+							console.warn(`Could not reconstruct schema for memory table ${tableName} during connect: DDL argument missing or invalid.`);
+							// Cannot proceed without schema info
+							throw new SqliteError(`Cannot connect to memory table ${tableName}: schema information missing from stored arguments.`);
+						}
+					} else if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
+						if (storedArgs.length < 1 || storedArgs.length > 2) {
+							throw new Error(`${moduleName} requires 1 or 2 stored arguments (jsonSource, [rootPath])`);
+						}
+						options = {
+							jsonSource: storedArgs[0],
+							rootPath: storedArgs[1]
+						} as JsonConfig;
+					} else {
+						// Generic module - pass empty config
+						options = {};
+					}
+				} catch (e: any) {
+					throw new SqliteError(`Failed to parse stored arguments for module '${moduleName}' on connect: ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined);
+				}
+
+				// Call connect with the new signature
+				const instance = module.module.xConnect(
+					compiler.db,
+					module.auxData,
+					moduleName,
+					schemaName,
+					tableName,
+					options
+				);
 				// Update the stored schema with the instance
 				const connectedSchema = { ...tableSchema, vtabInstance: instance };
 				compiler.db.schemaManager.getSchema(schemaName)?.addTable(connectedSchema);
@@ -104,11 +167,39 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				}
 			}
 
-			const schemaName = 'main';
-			const tableName = source.alias || funcName;
-			const argv: ReadonlyArray<string> = Object.freeze([funcName, schemaName, tableName, ...compiledArgs]);
+			const schemaName = 'main'; // TVFs usually don't have explicit schema in call
+			const funcAlias = source.alias || funcName;
+			// const argv: ReadonlyArray<string> = Object.freeze([funcName, schemaName, tableName, ...compiledArgs]);
+			const moduleName = funcName;
+			let options: BaseModuleConfig = {}; // Default for TVFs
 
-			const instance = moduleInfo.module.xConnect(compiler.db, moduleInfo.auxData, argv);
+			try {
+				if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
+					// Expects 1 or 2 args: jsonSource, [rootPath]
+					if (compiledArgs.length < 1 || compiledArgs.length > 2) {
+						throw new Error(`${moduleName} requires 1 or 2 arguments (jsonSource, [rootPath])`);
+					}
+					options = {
+						jsonSource: compiledArgs[0], // Assume string args are handled correctly later
+						rootPath: compiledArgs[1]
+					} as JsonConfig;
+				} else {
+					// Generic TVF module - pass empty config for now
+					console.warn(`Compiler creating generic BaseModuleConfig for TVF module '${moduleName}'. Module may need specific argument parsing.`);
+					options = {};
+				}
+			} catch (e: any) {
+				throw new SqliteError(`Failed to parse arguments for TVF module '${moduleName}': ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined, source.name.loc?.start.line, source.name.loc?.start.column);
+			}
+
+			const instance = moduleInfo.module.xConnect(
+				compiler.db,
+				moduleInfo.auxData,
+				moduleName, // Pass moduleName (funcName)
+				schemaName, // Pass default schemaName
+				funcAlias,  // Pass alias or funcName as tableName
+				options     // Pass constructed options object
+			);
 			if (!instance || !instance.tableSchema) {
 				throw new SqliteError(`Module ${funcName} xConnect did not return a valid table instance or schema.`, StatusCode.INTERNAL);
 			}

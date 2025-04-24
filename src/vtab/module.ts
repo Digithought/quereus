@@ -8,33 +8,67 @@ import type { VTabConfig } from '../common/constants';
 import type { SqliteContext } from '../func/context'; // Assuming SqliteContext exists
 
 /**
+ * Base interface for module-specific configuration passed to xCreate/xConnect.
+ * Modules should define their own interface extending this if they need options.
+ */
+export interface BaseModuleConfig {}
+
+/**
  * Interface defining the methods for a virtual table module implementation.
  * This is the TypeScript equivalent of the C sqlite3_module struct.
  *
  * Implementations should typically extend a base class rather than implementing
  * this directly to handle default behaviors and future additions gracefully.
+ *
+ * @template TTable The specific type of VirtualTable managed by this module.
+ * @template TCursor The specific type of VirtualTableCursor used by this module.
+ * @template TConfig The type defining module-specific configuration options.
  */
-export interface VirtualTableModule<TTable extends VirtualTable, TCursor extends VirtualTableCursor<TTable>> {
+export interface VirtualTableModule<
+	TTable extends VirtualTable,
+	TCursor extends VirtualTableCursor<TTable>,
+	TConfig extends BaseModuleConfig = BaseModuleConfig // Add generic config type
+> {
 
 	/**
 	 * Create a new virtual table instance. Called by CREATE VIRTUAL TABLE.
 	 * @param db The database connection.
 	 * @param pAux Client data passed during module registration.
-	 * @param args Arguments from the CREATE VIRTUAL TABLE statement (module name, db name, table name, module args...).
-	 * @returns A promise resolving to the new VirtualTable instance or throwing an error.
+	 * @param moduleName The name the module was registered with.
+	 * @param schemaName The name of the database schema (e.g., 'main', 'temp').
+	 * @param tableName The name of the virtual table being created.
+	 * @param options Module-specific configuration options derived from the USING clause arguments.
+	 * @returns The new VirtualTable instance.
 	 * @throws SqliteError on failure.
 	 */
-	xCreate(db: Database, pAux: unknown, args: ReadonlyArray<string>): TTable;
+	xCreate(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: TConfig
+	): TTable;
 
 	/**
 	 * Connect to (or create) a virtual table instance. Called for existing virtual tables when the schema is loaded.
 	 * @param db The database connection.
 	 * @param pAux Client data passed during module registration.
-	 * @param args Arguments from the CREATE VIRTUAL TABLE statement.
-	 * @returns A promise resolving to the VirtualTable instance or throwing an error.
+	 * @param moduleName The name the module was registered with.
+	 * @param schemaName The name of the database schema.
+	 * @param tableName The name of the virtual table being connected to.
+	 * @param options Module-specific configuration options derived from the original CREATE VIRTUAL TABLE arguments.
+	 * @returns The VirtualTable instance.
 	 * @throws SqliteError on failure.
 	 */
-	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): TTable;
+	xConnect(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: TConfig
+	): TTable;
 
 	/**
 	 * Determine the best query plan (index) for a given set of constraints and orderings.

@@ -4,7 +4,7 @@ import { SqlDataType } from '../common/constants';
 import { getAffinityForType } from '../schema/schema';
 import type { TableSchema } from '../schema/table';
 import type { ColumnSchema } from '../schema/column';
-import type { SubqueryCorrelationResult } from '../analysis/correlation';
+import type { SubqueryCorrelationResult } from './correlation';
 
 /** Determines the affinity of an expression. */
 export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {

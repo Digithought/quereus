@@ -1,6 +1,6 @@
 import { VirtualTable } from './table';
 import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule } from './module';
+import type { VirtualTableModule, BaseModuleConfig } from './module';
 import type { IndexInfo } from './indexInfo';
 import { type SqlValue, StatusCode, SqlDataType } from '../common/types';
 import { SqliteError } from '../common/errors';
@@ -10,6 +10,14 @@ import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../func/built
 import type { TableSchema } from '../schema/table';
 import { createDefaultColumnSchema } from '../schema/column';
 import { buildColumnIndexMap } from '../schema/table';
+
+// --- Define Configuration Interface ---
+interface JsonConfig extends BaseModuleConfig {
+	jsonSource: SqlValue;
+	runtimeArgs?: ReadonlyArray<SqlValue>; // For future use if needed
+	rootPath?: SqlValue;
+}
+// ------------------------------------
 
 // --- Constants for json_each Schema ---
 const JSON_EACH_SCHEMA: ReadonlyArray<{ name: string, affinity: SqlDataType }> = Object.freeze([
@@ -211,9 +219,10 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 
 // --- Module Implementation --- //
 
-export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor> {
-	xConnect(db: Database, pAux: unknown, args: ReadonlyArray<string>): JsonEachTable {
+export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor, JsonConfig> {
+	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonEachTable {
 		// Args should be: module_name, schema_name, table_name, json_text, [root_path]
+		/* // Old argument parsing
 		if (args.length < 4 || args.length > 5) {
 			throw new SqliteError(`json_each requires 1 or 2 arguments (json, [path])`, StatusCode.ERROR);
 		}
@@ -221,8 +230,9 @@ export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEac
 		const tableName = args[2];
 		const jsonText = args[3];
 		const rootPath = args.length > 4 ? args[4] : undefined;
+		*/
 
-		const table = new JsonEachTable(db, this, schemaName, tableName, jsonText, rootPath);
+		const table = new JsonEachTable(db, this, schemaName, tableName, options.jsonSource, options.rootPath);
 		// Fix 3: Remove declareVtab - instantiation happens differently for table functions
 		// No need to declare vtab here, connection implies existence for TVFs
 
@@ -230,7 +240,10 @@ export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEac
 	}
 
 	// xCreate is same as xConnect for ephemeral table functions like this
-	xCreate = this.xConnect;
+	// xCreate = this.xConnect;
+	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonEachTable {
+		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
+	}
 
 	async xDisconnect(table: JsonEachTable): Promise<void> { /* No-op */ }
 	async xDestroy(table: JsonEachTable): Promise<void> { /* No-op */ }
