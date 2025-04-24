@@ -66,6 +66,7 @@ class JsonEachTable extends VirtualTable {
 		this.tableSchema = Object.freeze({
 			name: tableName,
 			schemaName: schemaName,
+			checkConstraints: [],
 			columns: JSON_EACH_COLUMNS,
 			columnIndexMap: JSON_EACH_COLUMN_MAP,
 			primaryKeyDefinition: [], // No explicit PK

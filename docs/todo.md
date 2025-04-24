@@ -12,8 +12,6 @@ This list outlines the remaining major features and refinements needed to make S
 *   [ ] **Opcode Optimization:**
     *   [ ] Consider opcodes for more efficient type conversions or comparisons if `Affinity` proves insufficient.
     *   [ ] Consider VDBE optimizations (e.g., peephole).
-*   [P] **Recursive CTEs:** Basic recursive CTE compilation exists (`cte.ts`), needs comprehensive testing and validation against complex cases.
-*   [P] **Correlated Subqueries:** Compilation logic with stack frames and subroutines exists, requires thorough testing and validation.
 *   [ ] **VDBE Stack Frame Robustness:** Review stack/frame pointer management for edge cases and accuracy.
 *   [ ] **Compiler/Parser Syntax Alignment:** Ensure parser, compiler, and documentation consistently reflect the intended SQL syntax (e.g., `CREATE TABLE ... USING`).
 
@@ -43,7 +41,7 @@ This list outlines the remaining major features and refinements needed to make S
 
 *   [P] **Date/Time Functions:** Core functions exist (`date`, `time`, `strftime`...). Need robust parsing (`parseTimeToMillis`) and `strftime` formatting for full SQLite compatibility.
 *   [P] **JSON Functions:** Good coverage (`json_extract`, `json_object`, `json_valid`, `json_type`, manipulation functions, aggregates). Review `json_patch` behavior and edge cases.
-*   [ ] **Reflective Schema:** Virtual sqlite_schema table to expose the schema via a table
+*   [P] **Reflective Schema:** Virtual sqlite_schema table to expose the schema via a table
 *   [ ] **Add More Built-ins:** Consider other useful SQLite functions (e.g., math, more string functions).
 
 **V. Testing & Documentation:**

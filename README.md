@@ -121,6 +121,7 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   `PRAGMA` support for setting default VTab module.
 *   Basic `CREATE TABLE`/`DROP TABLE` for managing VTabs.
 *   Schema export/import via JSON.
+*   Basic read-only access to `sqlite_schema` for introspection.
 
 **Limitations & Missing Features:**
 

@@ -21,6 +21,9 @@ import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table';
 import { MemoryTableModule } from '../vtab/memory-table';
 import { JsonEachModule } from '../vtab/json-each';
 import { JsonTreeModule } from '../vtab/json-tree'; // Import JsonTreeModule
+// --- Import SchemaTableModule ---
+import { SchemaTableModule } from '../vtab/schema-table';
+// -------------------------------
 // Add import for collation functions
 import { registerCollation as registerCollationUtil, getCollation as getCollationUtil, type CollationFunction, BINARY_COLLATION, NOCASE_COLLATION, RTRIM_COLLATION } from '../util/comparison';
 // Import schema serialization functions
@@ -57,6 +60,7 @@ export class Database {
 		this.registerVtabModule('memory', new MemoryTableModule());
 		this.registerVtabModule('json_each', new JsonEachModule());
 		this.registerVtabModule('json_tree', new JsonTreeModule()); // Register JsonTreeModule
+		this.registerVtabModule('sqlite_schema', new SchemaTableModule()); // Register SchemaTableModule
 		// Register built-in collations
 		this.registerDefaultCollations();
 	}

@@ -24,7 +24,7 @@ async function main() {
     // Create a virtual table using our memory module
     console.log('\nCreating users table...');
     await db.exec(`
-      CREATE VIRTUAL TABLE users USING memory(
+      CREATE TABLE users USING memory(
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
         email TEXT,

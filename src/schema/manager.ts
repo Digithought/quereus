@@ -2,7 +2,7 @@ import { Schema } from './schema';
 import type { Database } from '../core/database'; // Use Database type
 import type { TableSchema } from './table';
 import type { FunctionSchema } from './function';
-import { SqliteError } from '../common/errors';
+import { SqliteError, MisuseError } from '../common/errors';
 import { StatusCode } from '../common/constants';
 import type { VirtualTableModule } from '../vtab/module';
 import type { VirtualTable } from '../vtab/table';
@@ -12,6 +12,8 @@ import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table';
 import { Parser } from '../parser/parser'; // Import the parser
 import type * as AST from '../parser/ast'; // Import AST types
 import type { ViewSchema } from './view'; // Import ViewSchema
+import { SchemaTableModule } from '../vtab/schema-table';
+import { SqlDataType } from '../common/types'; // Import SqlDataType
 
 /**
  * Manages all schemas associated with a database connection (main, temp, attached).
@@ -135,6 +137,71 @@ export class SchemaManager {
 	}
 
 	/**
+	 * @internal Finds a table or virtual table by name across schemas.
+	 */
+	_findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
+		const lowerTableName = tableName.toLowerCase();
+
+		// --- Handle sqlite_schema dynamically ---
+		if (lowerTableName === 'sqlite_schema') {
+			const moduleInfo = this.db._getVtabModule('sqlite_schema');
+			if (!moduleInfo) {
+				console.error("sqlite_schema module not registered!");
+				return undefined; // Should not happen if registered in Database constructor
+			}
+			// Dynamically construct the TableSchema for sqlite_schema
+			// Use the columns defined statically in the module
+			const columns: ColumnSchema[] = SchemaTableModule.COLUMNS.map((col: { name: string; type: SqlDataType; collation?: string }) => ({
+				name: col.name,
+				affinity: col.type,
+				notNull: false,
+				primaryKey: false, // sqlite_schema has no explicit PK in this representation
+				pkOrder: 0,
+				defaultValue: null,
+				collation: col.collation ?? 'BINARY', // Ensure collation exists
+				hidden: false,
+				generated: false,
+			}));
+			// Convert the static record into a ReadonlyMap
+			const columnIndexMap = new Map<string, number>(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP));
+
+			// Define checkConstraints explicitly as required by TableSchema - Removed intermediate variable
+			// const checkConstraints: ReadonlyArray<{ name?: string, expr: AST.Expression }> = [];
+
+			return {
+				name: 'sqlite_schema',
+				schemaName: 'main', // Belongs conceptually to main
+				columns: Object.freeze(columns),
+				columnIndexMap: Object.freeze(columnIndexMap),
+				primaryKeyDefinition: [], // No explicit PK
+				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>), // Define inline, typed, and frozen
+				isVirtual: true,
+				vtabModule: moduleInfo.module,
+				vtabInstance: undefined, // Instance created via xConnect
+				vtabAuxData: moduleInfo.auxData,
+				vtabArgs: [], // No creation args
+				vtabModuleName: 'sqlite_schema'
+			} satisfies TableSchema; // Use 'satisfies' for type checking without changing type
+		}
+		// --------------------------------------
+
+		if (dbName) {
+			// Search specific schema
+			const schema = this.schemas.get(dbName.toLowerCase());
+			return schema?.getTable(lowerTableName);
+		} else {
+			// Search order: main, then temp (and attached later)
+			const mainSchema = this.schemas.get('main');
+			let table = mainSchema?.getTable(lowerTableName);
+			if (table) return table;
+
+			const tempSchema = this.schemas.get('temp');
+			table = tempSchema?.getTable(lowerTableName);
+			return table; // Return temp table if found, otherwise undefined
+		}
+	}
+
+	/**
 	 * Finds a table by name, searching schemas according to SQLite rules.
 	 * If dbName is provided, searches only that schema.
 	 * Otherwise, searches current (usually 'main'), then 'temp'.
@@ -144,15 +211,7 @@ export class SchemaManager {
 	 * @returns The TableSchema or undefined if not found.
 	 */
 	findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
-		if (dbName) {
-			const schema = this.schemas.get(dbName.toLowerCase());
-			return schema?.getTable(tableName);
-		} else {
-			// Default search order: main, then temp
-			return this.getMainSchema().getTable(tableName)
-				?? this.getTempSchema().getTable(tableName);
-			// TODO: Add attached database lookup logic here if ATTACH is implemented
-		}
+		return this._findTable(tableName, dbName);
 	}
 
 	/**
