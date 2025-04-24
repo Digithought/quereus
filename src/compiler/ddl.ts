@@ -11,11 +11,13 @@ import type { Schema } from '../schema/schema';
 import { Parser } from "../parser/parser";
 import type { SqlValue } from "../common/types";
 import type { BaseModuleConfig } from '../vtab/module';
+import type { Expression } from '../parser/ast';
 
 // Define local interfaces if not exported/importable easily
 interface MemoryTableConfig extends BaseModuleConfig {
 	columns: { name: string, type: SqlDataType, collation?: string }[];
 	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
+	checkConstraints?: ReadonlyArray<{ name?: string, expr: Expression }>;
 	readOnly?: boolean;
 }
 interface JsonConfig extends BaseModuleConfig {
@@ -57,6 +59,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		if (moduleName.toLowerCase() === 'memory') {
 			let columns: { name: string, type: SqlDataType, collation?: string }[];
 			let primaryKey: ReadonlyArray<{ index: number; desc: boolean }> | undefined;
+			let checkConstraints: { name?: string, expr: Expression }[] = [];
 
 			if (usingExplicitModule) {
 				// Case: CREATE VIRTUAL TABLE ... USING memory('CREATE TABLE ...');
@@ -73,6 +76,19 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 				// TODO: Extract collation from AST if needed
 				columns = createTableAst.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }));
 				primaryKey = parsePrimaryKeyFromAst(createTableAst.columns, createTableAst.constraints);
+				// Gather checks from parsed DDL AST
+				createTableAst.columns.forEach(colDef => {
+					colDef.constraints?.forEach(con => {
+						if (con.type === 'check' && con.expr) {
+							checkConstraints.push({ name: con.name, expr: con.expr });
+						}
+					});
+				});
+				createTableAst.constraints?.forEach(con => {
+					if (con.type === 'check' && con.expr) {
+						checkConstraints.push({ name: con.name, expr: con.expr });
+					}
+				});
 				// TODO: Parse readOnly from subsequent args if desired? e.g., USING memory(ddl, 'readOnly=true')
 			} else {
 				// Case: CREATE TABLE ... ; (Implicitly uses default memory module)
@@ -83,11 +99,25 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 				// TODO: Extract collation from AST if needed
 				columns = stmt.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }));
 				primaryKey = parsePrimaryKeyFromAst(stmt.columns, stmt.constraints || []);
+				// Gather checks from main statement AST
+				stmt.columns.forEach(colDef => {
+					colDef.constraints?.forEach(con => {
+						if (con.type === 'check' && con.expr) {
+							checkConstraints.push({ name: con.name, expr: con.expr });
+						}
+					});
+				});
+				stmt.constraints?.forEach(con => {
+					if (con.type === 'check' && con.expr) {
+						checkConstraints.push({ name: con.name, expr: con.expr });
+					}
+				});
 			}
 
 			options = {
 				columns: Object.freeze(columns),
 				primaryKey: primaryKey,
+				checkConstraints: Object.freeze(checkConstraints),
 				readOnly: false // Default readOnly, could be configurable later
 			} as MemoryTableConfig;
 

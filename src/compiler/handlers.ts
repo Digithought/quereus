@@ -9,6 +9,7 @@ import type { TableSchema } from '../schema/table';
 import { getAffinityForType } from '../schema/schema';
 import { getExpressionAffinity, getExpressionCollation, resolveColumnSchema } from './utils';
 
+/** Map column name/alias to register holding its value */
 export type ArgumentMap = ReadonlyMap<string, number>;
 
 export function compileLiteral(compiler: Compiler, expr: AST.LiteralExpr, targetReg: number): void {
@@ -41,7 +42,68 @@ export function compileLiteral(compiler: Compiler, expr: AST.LiteralExpr, target
 }
 
 export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
+	// --- Contextual Column Value Lookup (INSERT/UPDATE/CHECK) ---
+	// Check if an argumentMap (mapping stringified column index to register) is provided
+	// This allows overriding the default VColumn read for contexts like CHECK constraints.
+	if (argumentMap) {
+		// We need to resolve the column index first to check the map.
+		// This duplicates some logic from the VColumn path, but is necessary to check the map *before* other lookups.
+		let resolvedColIdx = -99;
+		let resolvedCursor = -1;
+		let resolvedTableSchema: TableSchema | undefined;
+
+		if (expr.table) {
+			const aliasOrTableName = expr.table.toLowerCase();
+			const foundCursor = compiler.tableAliases.get(aliasOrTableName);
+			if (foundCursor !== undefined) {
+				resolvedCursor = foundCursor;
+				resolvedTableSchema = compiler.tableSchemas.get(resolvedCursor);
+				if (resolvedTableSchema) {
+					resolvedColIdx = resolvedTableSchema.columnIndexMap.get(expr.name.toLowerCase()) ?? -99;
+					if (resolvedColIdx === -99 && expr.name.toLowerCase() === 'rowid') resolvedColIdx = -1; // rowid check
+				}
+			}
+		} else {
+			// Search across all aliases for non-ambiguous match
+			let foundCount = 0;
+			for (const [_, cursorId] of compiler.tableAliases.entries()) {
+				const schema = compiler.tableSchemas.get(cursorId);
+				if (schema) {
+					const idx = schema.columnIndexMap.get(expr.name.toLowerCase());
+					if (idx !== undefined) {
+						if (foundCount > 0) { resolvedCursor = -2; break; } // Ambiguous
+						resolvedCursor = cursorId;
+						resolvedColIdx = idx;
+						resolvedTableSchema = schema;
+						foundCount++;
+					} else if (expr.name.toLowerCase() === 'rowid') {
+						if (foundCount > 0) { resolvedCursor = -2; break; } // Ambiguous
+						resolvedCursor = cursorId;
+						resolvedColIdx = -1; // rowid
+						resolvedTableSchema = schema;
+						foundCount++;
+					}
+				}
+			}
+			if (resolvedCursor === -2) resolvedColIdx = -99; // Ensure ambiguous doesn't match map key
+		}
+
+		// If we successfully resolved a non-ambiguous column index, check the map
+		if (resolvedColIdx !== -99 && resolvedCursor >= 0) {
+			const argKey = `${resolvedColIdx}`; // Key is stringified column index
+			const sourceRegFromArgs = argumentMap.get(argKey);
+			if (sourceRegFromArgs !== undefined) {
+				// Found the value in the provided argument map (e.g., new value for CHECK)
+				compiler.emit(Opcode.SCopy, sourceRegFromArgs, targetReg, 0, null, 0, `CHECK/SET: Use new val ${expr.name} from reg ${sourceRegFromArgs}`);
+				return; // Value obtained, skip further checks/VColumn
+			}
+		}
+	}
+	// --- End Contextual Column Value Lookup ---
+
+	// --- Correlated Subquery / HAVING clause Lookup --- (Existing logic)
 	if (compiler.subroutineDepth > 0 && argumentMap) {
+		// Check for correlated column ONLY if not found in the primary argumentMap check above
 		const correlatedColInfo = correlation?.correlatedColumns.find((cc: CorrelatedColumnInfo) => {
 			const outerSchema = compiler.tableSchemas.get(cc.outerCursor);
 			const outerColName = outerSchema?.columns[cc.outerColumnIndex]?.name.toLowerCase();

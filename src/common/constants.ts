@@ -85,6 +85,7 @@ export enum Opcode {
 	VSavepoint = 174,
 	VRelease = 175,
 	VRollbackTo = 176,
+	ConstraintViolation = 180, // P4=Error Context String
 
 	// Results
 	ResultRow = 81,
@@ -182,4 +183,3 @@ export enum ChangesetOperation {
 	INSERT = 18,
 	UPDATE = 23,
 }
-
