@@ -8,9 +8,7 @@ import type { Database } from '../core/database';
 import type { SqliteContext } from '../func/context';
 import type { SqlValue } from '../common/types';
 import type { Schema } from '../schema/schema';
-import type { TableSchema } from '../schema/table';
 import type { FunctionSchema } from '../schema/function';
-import { stringifyCreateTable } from '../util/ddl-stringify'; // Helper for SQL generation
 
 // Define the structure of rows returned by sqlite_schema
 interface SchemaRow {

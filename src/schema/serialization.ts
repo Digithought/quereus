@@ -45,7 +45,7 @@ export function exportSchemaJson(db: Database): string {
           if (typeof col.defaultValue === 'string' || typeof col.defaultValue === 'number' || col.defaultValue === null) {
             jsonDefault = col.defaultValue;
           } else if (typeof col.defaultValue === 'bigint') {
-            jsonDefault = col.defaultValue.toString() + 'n';
+            jsonDefault = (col.defaultValue as bigint).toString() + 'n';
           } else if (col.defaultValue instanceof Uint8Array) {
             const hex = Array.from(col.defaultValue).map(b => b.toString(16).padStart(2, '0')).join('');
             jsonDefault = `x'${hex}'`;
