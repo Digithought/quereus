@@ -23,7 +23,7 @@ async function runDemo() {
 
   // Create a virtual memory table for products
   await db.exec(`
-    CREATE VIRTUAL TABLE products USING memory(
+    CREATE TABLE products USING memory(
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       category TEXT,

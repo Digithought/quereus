@@ -181,6 +181,7 @@ export function importSchemaJson(db: Database, jsonString: string): void {
       const tableSchema: TableSchema = {
         name: jsonTable.name,
         schemaName: schemaName,
+        checkConstraints: [],
         columns: Object.freeze(columns),
         columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
         primaryKeyDefinition: Object.freeze(jsonTable.primaryKeyDefinition),

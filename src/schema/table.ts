@@ -1,6 +1,7 @@
 import type { ColumnSchema } from './column';
 import type { VirtualTableModule } from '../vtab/module';
 import type { VirtualTable } from '../vtab/table';
+import type { Expression } from '../parser/ast';
 
 /**
  * Represents the schema definition of a table (real or virtual).
@@ -17,7 +18,7 @@ export interface TableSchema {
 	/** Definition of the primary key, including order and direction */
 	primaryKeyDefinition: ReadonlyArray<{ index: number; desc: boolean }>;
 	/** CHECK constraints defined on the table or its columns */
-	checkConstraints: ReadonlyArray<{ name?: string, expr: import('../parser/ast').Expression }>;
+	checkConstraints: ReadonlyArray<{ name?: string, expr: Expression }>;
 	/** Whether the table is a virtual table */
 	isVirtual: boolean;
 	/** If virtual, reference to the registered module */

@@ -62,7 +62,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 			let checkConstraints: { name?: string, expr: Expression }[] = [];
 
 			if (usingExplicitModule) {
-				// Case: CREATE VIRTUAL TABLE ... USING memory('CREATE TABLE ...');
+				// Case: CREATE TABLE ... USING memory('CREATE TABLE ...');
 				if (moduleArgs.length === 0 || !moduleArgs[0].trim().toUpperCase().startsWith('CREATE TABLE')) {
 					throw new Error("When using 'USING memory(...)', the first argument must be the CREATE TABLE DDL string.");
 				}

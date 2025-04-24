@@ -65,6 +65,7 @@ class JsonTreeTable extends VirtualTable {
 		this.tableSchema = Object.freeze({
 			name: tableName,
 			schemaName: schemaName,
+			checkConstraints: [],
 			columns: JSON_TREE_COLUMNS,
 			columnIndexMap: JSON_TREE_COLUMN_MAP,
 			primaryKeyDefinition: [],
