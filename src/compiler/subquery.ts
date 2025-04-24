@@ -1,12 +1,9 @@
-import { Opcode, ConflictResolution } from '../common/constants';
-import { StatusCode, type SqlValue } from '../common/types';
+import { StatusCode } from '../common/types';
 import { SqliteError } from '../common/errors';
-import { type P4Vtab, type P4FuncDef } from '../vdbe/instruction';
-import type { Compiler, SubroutineInfo, ColumnResultInfo } from './compiler'; // Added ColumnResultInfo
+import type { Compiler, SubroutineInfo } from './compiler'; // Added ColumnResultInfo
 import type * as AST from '../parser/ast';
-import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './helpers';
-import type { ArgumentMap } from './expression';
-import type { TableSchema } from '../schema/table'; // Added TableSchema
+import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult } from './correlation';
+import { Opcode } from '../common/constants';
 
 // --- Subquery Compilation Functions --- //
 

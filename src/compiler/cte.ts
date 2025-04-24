@@ -7,8 +7,8 @@ import type * as AST from '../parser/ast';
 import type { P4SortKey } from '../vdbe/instruction';
 import { createDefaultColumnSchema } from '../schema/column';
 import { buildColumnIndexMap } from '../schema/table';
-import { compileUnhandledWhereConditions } from './helpers';
-import { analyzeSubqueryCorrelation } from './helpers';
+import { compileUnhandledWhereConditions } from './whereVerify';
+import { analyzeSubqueryCorrelation } from './correlation';
 
 // --- Add CTE compilation ---\
 export function compileCommonTableExpression(compiler: Compiler, cte: AST.CommonTableExpr, isRecursiveContext: boolean): void {

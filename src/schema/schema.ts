@@ -2,6 +2,8 @@ import type { TableSchema } from './table';
 import type { FunctionSchema } from './function';
 import { getFunctionKey } from './function';
 import { SqlDataType } from '../common/types'; // Import SqlDataType
+import type { ViewSchema } from './view'; // Import the new ViewSchema type
+import { SqliteError } from '../common/errors'; // Import SqliteError for conflict checking
 
 /**
  * Determines the affinity of a column based on its declared type name.
@@ -39,6 +41,7 @@ export class Schema {
 	public readonly name: string;
 	private tables: Map<string, TableSchema> = new Map();
 	private functions: Map<string, FunctionSchema> = new Map(); // Key uses getFunctionKey()
+	private views: Map<string, ViewSchema> = new Map(); // ADDED: Map for views
 
 	constructor(name: string) {
 		this.name = name;
@@ -48,6 +51,10 @@ export class Schema {
 	addTable(table: TableSchema): void {
 		if (table.schemaName !== this.name) {
 			throw new Error(`Table ${table.name} has wrong schema name ${table.schemaName}, expected ${this.name}`);
+		}
+		// Check for conflict with existing views
+		if (this.views.has(table.name.toLowerCase())) {
+			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
 		}
 		this.tables.set(table.name.toLowerCase(), table);
 		console.log(`Schema '${this.name}': Added/Updated table '${table.name}'`);
@@ -74,6 +81,49 @@ export class Schema {
 		return exists;
 	}
 
+	/** Clears all tables (does not call VTable disconnect/destroy). */
+	clearTables(): void {
+		this.tables.clear();
+	}
+
+	/** Adds or replaces a view definition in the schema. */
+	addView(view: ViewSchema): void {
+		if (view.schemaName !== this.name) {
+			throw new Error(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
+		}
+		// Check for conflict with existing tables
+		if (this.tables.has(view.name.toLowerCase())) {
+			throw new SqliteError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
+		}
+		this.views.set(view.name.toLowerCase(), view);
+		console.log(`Schema '${this.name}': Added/Updated view '${view.name}'`);
+	}
+
+	/** Gets a view definition by name (case-insensitive). */
+	getView(viewName: string): ViewSchema | undefined {
+		return this.views.get(viewName.toLowerCase());
+	}
+
+	/** Returns an iterator over all views in the schema. */
+	getAllViews(): IterableIterator<ViewSchema> {
+		return this.views.values();
+	}
+
+	/** Removes a view definition from the schema. Returns true if found and removed. */
+	removeView(viewName: string): boolean {
+		const key = viewName.toLowerCase();
+		const exists = this.views.has(key);
+		if (exists) {
+			console.log(`Schema '${this.name}': Removed view '${viewName}'`);
+			this.views.delete(key);
+		}
+		return exists;
+	}
+
+	/** Clears all views. */
+	clearViews(): void {
+		this.views.clear();
+	}
 
 	/** Adds or replaces a function definition in the schema. */
 	addFunction(func: FunctionSchema): void {
@@ -122,11 +172,6 @@ export class Schema {
 			}
 		});
 		this.functions.clear();
-	}
-
-	/** Clears all tables (does not call VTable disconnect/destroy). */
-	clearTables(): void {
-		this.tables.clear();
 	}
 
 	// TODO: Add methods for triggers, views, indexes if they become necessary later.

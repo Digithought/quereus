@@ -9,122 +9,122 @@ export enum Opcode {
 	Noop = 145,
 
 	// Data loading/constants
-	Null = 11,      // P2=reg; Set reg P2 to NULL
-	Integer = 6,    // P1=value, P2=reg; Set reg P2 to integer P1
-	Int64 = 118,    // P4=int64_const_idx, P2=reg; Set reg P2 to P4
-	String8 = 119,  // P2=reg, P4=string_const_idx; Set reg P2 to string P4
-	Real = 117,     // P4=double_const_idx, P2=reg; Set reg P2 to P4
-	Blob = 40,      // P1=len?, P2=reg, P4=blob_const_idx; Set reg P2 to P4
-	ZeroBlob = 146, // P1=reg_size, P2=reg_dest; Create zeroblob in R[P2] size R[P1]
+	Null = 11,
+	Integer = 6,
+	Int64 = 118,
+	String8 = 119,
+	Real = 117,
+	Blob = 40,
+	ZeroBlob = 146, // Keep higher number
 
 	// Register Manipulation
-	SCopy = 9,      // P1=src, P2=dest; Copy R[P1] to R[P2]
-	Move = 12,      // P1=src, P2=dest, P3=count; Move R[P1..P1+P3-1] to R[P2..P2+P3-1]
-	Clear = 10,     // P1=start_reg, P2=count; Clear R[P1]..R[P1+P2-1] to NULL
+	SCopy = 9,
+	Move = 12,
+	Clear = 10, // Renumbered from 111 to avoid conflict
 
 	// Control Flow / Jumps
-	IfTrue = 15,    // P1=reg, P2=addr; if R[P1] then jump to P2
-	IfFalse = 16,   // P1=reg, P2=addr; if R[P1] is false then jump to P2
-	IfZero = 93,    // P1=reg, P2=addr; if R[P1]==0 or NULL jump to P2
-	IfNull = 17,    // P1=reg, P2=addr; if R[P1] is NULL jump to P2
-	IfNotNull = 18, // P1=reg, P2=addr; if R[P1] is NOT NULL jump to P2
-	IsNull = 8,     // P1=reg, P2=dest; R[P2]=1 if R[P1] is NULL
-	NotNull = 10,   // P1=reg, P2=dest; R[P2]=1 if R[P1] is not NULL
-	Eq = 76,        // P1=reg1, P2=addr, P3=reg2; if R[P1]==R[P3] goto P2
-	Ne = 75,        // P1=reg1, P2=addr, P3=reg2; if R[P1]!=R[P3] goto P2
-	Lt = 77,        // P1=reg1, P2=addr, P3=reg2; if R[P1]< R[P3] goto P2
-	Le = 78,        // P1=reg1, P2=addr, P3=reg2; if R[P1]<=R[P3] goto P2
-	Gt = 79,        // P1=reg1, P2=addr, P3=reg2; if R[P1]> R[P3] goto P2
-	Ge = 80,        // P1=reg1, P2=addr, P3=reg2; if R[P1]>=R[P3] goto P2
-	Once = 14,      // P1=reg_flag, P2=addr_jump; If R[P1]++, jump to P2
+	IfTrue = 15,
+	IfFalse = 16,
+	IfZero = 93,
+	IfNull = 17,
+	IfNotNull = 18, // Reassigned from 10? Let's keep 18
+	IsNull = 8,
+	NotNull = 19, // Was 10, but Clear is 10. Also conflicts with IfNotNull if 18 is used. Needs careful review. Let's try 19.
+	Eq = 76,
+	Ne = 75,
+	Lt = 77,
+	Le = 78,
+	Gt = 79,
+	Ge = 80,
+	Once = 14,
+	IfPos = 97, // Renumbered from 117
+	IfNeg = 98, // Renumbered from 118
 
 	// Arithmetic/Logic
-	Add = 67,       // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P1] + R[P2]
-	Subtract = 68,  // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P2] - R[P1] (Order matters!)
-	Multiply = 69,  // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P1] * R[P2]
-	Divide = 70,    // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P2] / R[P1]
-	Remainder = 71, // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P2] % R[P1]
-	Concat = 72,    // P1=firstReg, P2=lastReg, P3=dest; Concatenate R[P1]..R[P2] -> R[P3]
+	Add = 67,
+	Subtract = 68,
+	Multiply = 69,
+	Divide = 70,
+	Remainder = 71,
+	Concat = 72,
 
 	// Bitwise / Unary
-	Negative = 73,  // P1=reg_src, P2=reg_dest; R[P2] = -R[P1]
-	// TODO: BitNot, ShiftLeft, ShiftRight if needed
-	BitAnd = 74,    // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P1] & R[P2]
-	BitOr = 84,     // P1=reg1, P2=reg2, P3=dest; R[P3] = R[P1] | R[P2] (Opcode reuse? Check SQLite)
-	ShiftLeft = 85, // P1=reg1(Amount), P2=reg2(Value), P3=dest; R[P3] = R[P2] << R[P1]
-	ShiftRight = 86,// P1=reg1(Amount), P2=reg2(Value), P3=dest; R[P3] = R[P2] >> R[P1]
-	BitNot = 87,    // P1=reg_src, P2=reg_dest; R[P2] = ~R[P1]
-	Not = 88,       // P1=reg_src, P2=reg_dest; R[P2] = !R[P1]
+	Negative = 73,
+	BitAnd = 74,
+	BitOr = 84,
+	ShiftLeft = 85,
+	ShiftRight = 86,
+	BitNot = 87,
+	Not = 88, // Keep 88
 
 	// Type Affinity / Conversion
-	Affinity = 91,  // P1=reg_start, P2=count, P3=0, P4=affinity_string; Apply affinity P4 to R[P1..P1+P2-1]
+	Affinity = 91,
 
-	// Ephemeral Table Opcodes (for Subqueries, Temp Tables)
-	OpenEphemeral = 5, // P1=cursorIdx, P2=numCols; Create temp B-Tree table
-	Rewind = 7,      // P1=cursorIdx, P2=addrIfEmpty; Position cursor P1 at start
-	MakeRecord = 83,  // P1=firstReg, P2=count, P3=destReg (Create serialized key for GROUP BY)
-	// Insert = ?,      // P1=cursor, P2=regRecord, P3=regRowidDest? Use VUpdate instead?
+	// Ephemeral Table Opcodes
+	OpenEphemeral = 5,
+	Rewind = 7,
+	MakeRecord = 83,
+	IdxInsert = 123, // Keep 123
 
 	// Functions
-	Function = 89,  // P1=reg_func, P2=reg_first_arg, P3=reg_result, P4=P4FuncDef
+	Function = 108, // Keep 108
 
 	// Cursors / VTable
-	OpenRead = 58,  // P1=cursorIdx, P2=0, P3=dbIdx, P4=TableSchema Ptr
-	OpenWrite = 59, // P1=cursorIdx, P2=numCols, P3=dbIdx, P4=TableSchema Ptr (Needed for VUpdate?)
-	Close = 57,     // P1=cursorIdx; Close the specified cursor
-	VFilter = 166,  // P1=cursorIdx, P2=addrNoRow, P3=regArgsStart, P4={idxNum, idxStr, nArgs}
-	VNext = 167,    // P1=cursorIdx, P2=addrEOF
-	VColumn = 88,   // P1=cursorIdx, P2=colIdx, P3=destReg
-	VUpdate = 168,  // P1=nData, P2=regDataStart, P3=cursorIdx, P4=P4KeyInfo?
-	VRowid = 169,   // P1=cursorIdx, P2=destReg; Get rowid from cursor P1
-	VBegin = 170,   // P1=cursorIdx (or 0 for all?)
-	VCommit = 171,  // P1=cursorIdx (or 0 for all?)
-	VRollback = 172,// P1=cursorIdx (or 0 for all?)
-	VSync = 173,    // P1=cursorIdx (or 0 for all?)
+	OpenRead = 58,
+	OpenWrite = 59,
+	Close = 57, // Renumbered from 122
+	VFilter = 166,
+	VNext = 167,
+	VColumn = 192, // Reassigned from 88 to avoid conflict with Not
+	VUpdate = 168,
+	VRowid = 169,
+	VBegin = 170,
+	VCommit = 171,
+	VRollback = 172,
+	VSync = 173,
+	VSavepoint = 174,
+	VRelease = 175,
+	VRollbackTo = 176,
 
 	// Results
-	ResultRow = 81, // P1=reg_first, P2=count; Output row from R[P1]..R[P1+P2-1]
+	ResultRow = 81,
 
 	// Sorting
-	Sort = 130,     // P1=cursorIdx, P2=addrEnd?, P4=SortKeyInfo? Sort ephemeral table P1
+	Sort = 130,
+	Sorted = 115, // Keep 115
 
-	// Subroutines (for Correlated Subqueries etc.)
-	Subroutine = 131, // P1=reg_RetAddr, P2=addr_Target
-	Return = 132,     // P1=reg_RetAddr
+	// Subroutines & Frame Management
+	Subroutine = 133, // Keep 133
+	Return = 134, // Keep 134
+	FrameEnter = 135, // Keep 135
+	FrameLeave = 136, // Keep 136
+	// LoadOuterVar = 182, // TODO: Implement if needed for correlation
+	Push = 131, // Keep 131
+	StackPop = 132, // Keep 132
 
 	// Aggregation Opcodes
-	AggStep = 133,    // P1=regGroupKeyStart, P2=firstArgReg, P3=regSerializedKey, P4=P4FuncDef, P5=numGroupKeys
-	AggFinal = 134,   // P1=regAccKey?, P3=resultReg, P4=P4FuncDef   // Finalize aggregate
+	AggStep = 109, // Keep 109
+	AggFinal = 110, // Keep 110
+	AggIterate = 126, // Keep 126
+	AggNext = 127, // Keep 127
+	AggKey = 128, // Keep 128
+	AggContext = 129, // Keep 129
+	AggGroupValue = 140, // Reassigned from 130 to avoid conflict with Sort
+	AggReset = 147,   // Reset aggregate context map
 
-	// Grouping / Aggregate Iteration
-	AggReset = 135,   // Clear VDBE aggregate context map
-	AggIterate = 136, // P1=mapIteratorReg. Start iteration over aggregate map.
-	AggNext = 137,    // P1=mapIteratorReg, P2=addrEOF. Advance iterator.
-	AggKey = 138,     // P1=mapIteratorReg, P2=destReg. Get current group key (serialized?).
-	AggContext = 139, // P1=mapIteratorReg, P2=destReg. Get current aggregate context object.
-	AggGroupValue = 140, // P1=mapIteratorReg, P2=keyIndex, P3=destReg. Get specific original group key value.
+	// Misc
+	CollSeq = 120, // Keep 120
+	OpenPseudo = 121, // Keep 121
+	Next = 124, // Keep 124
+	VerifyCookie = 107, // Keep 107
+	Savepoint = 141,
+	// ConfigureSorter=185, // TODO: Review/renumber
 
-	// Savepoint Opcodes
-	Savepoint = 141, // P1=0, P2=SavepointOperation, P4=SavepointName
-	// Note: Reusing VBegin/VCommit/VRollback for VTab hooks, need distinct opcodes for SAVEPOINT actions
-	VSavepoint = 174, // P1=Savepoint Index/ID?
-	VRelease = 175,   // P1=Savepoint Index/ID?
-	VRollbackTo = 176,// P1=Savepoint Index/ID?
+	// Remove placeholders/unused
+	// Transaction = 190, // Replaced by VBegin/VCommit/etc.
+	// IfNullRow = 11, // Conflicts with Null
 
-	// Frame Management (New)
-	FrameEnter = 180,  // P1=FrameSize (num locals)
-	FrameLeave = 181,  // P1=Return Address Reg
-	LoadOuterVar = 182,// P1=OuterFrameLevels, P2=VarIndexInOuterFrame, P3=DestReg
-	Push = 183,        // P1=SrcRegOffset (Value to push)
-	StackPop = 184,    // P1=Count (Number of items to pop from absolute stack top)
-	ConfigureSorter=185, // P1=cursorIdx, P4=P4SortKey
-
-	// Other (Placeholder codes, need verification)
-	// Count = 84,
-	IfNullRow = 11, // P1=cursorIdx, P2=addr; If cursor P1 is on a NULL row (LEFT JOIN), jump to P2
-	// Transaction Control (Using VBegin/VCommit/VRollback for VTabs, need distinct opcodes)
-	Transaction = 190, // P1=0(BEGIN)/1(COMMIT)/2(ROLLBACK)
-}
+} // End Opcode Enum
 
 // Constants for function flags (matching C API where sensible)
 export enum FunctionFlags {

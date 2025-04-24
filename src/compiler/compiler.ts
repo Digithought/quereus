@@ -4,30 +4,29 @@
  * Translates SQL AST into VDBE instructions
  */
 import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError, ParseError } from '../common/errors'; // Removed ConflictResolution
-import { Opcode } from '../common/constants'; // Added ConflictResolution here
+import { SqliteError, ParseError } from '../common/errors';
+import { Opcode, ConflictResolution } from '../common/constants';
 import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
 import type { WithClause } from '../parser/ast';
 import type { Database } from '../core/database';
 import type { TableSchema } from '../schema/table';
 import type * as AST from '../parser/ast';
-import * as Helpers from './helpers';
-import * as ExprCompiler from './expression';
+import * as CompilerState from './compilerState';
+import * as EphemeralCore from './ephemeral';
+import * as FromClauseCore from './fromClause';
+import * as QueryPlanner from './queryPlanner';
+import * as WhereVerify from './whereVerify';
+import * as ExprHandlers from './handlers';
+import { compileExpression } from './expression';
 import * as StmtCompiler from './statement';
 import * as DdlCompiler from './ddl';
 import * as SelectCompiler from './select';
-import type { SubqueryCorrelationResult } from './helpers';
+import type { SubqueryCorrelationResult } from './correlation';
 import * as SubqueryCompiler from './subquery';
-import type { ArgumentMap } from './expression';
-import './helpers';
-import './expression';
-import './statement';
-import './select';
-import './subquery';
-import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
+import type { ArgumentMap } from './handlers';
 import { compileCommonTableExpression } from './cte';
-
+import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
 
 // --- Add Result/CTE Info types --- //
 export interface ColumnResultInfo {
@@ -99,6 +98,7 @@ export class Compiler {
 	public stackPointer: number = 0; // Current stack top (absolute index)
 	public framePointer: number = 0; // Current frame base (absolute index)
 	// ----------------------
+	public outerCursors: number[] = []; // Added property
 
 	constructor(db: Database) {
 		this.db = db;
@@ -134,6 +134,7 @@ export class Compiler {
 			this.maxLocalOffsetInCurrentFrame = 0;
 			this.stackPointer = 0; // Reset stack pointers
 			this.framePointer = 0;
+			this.outerCursors = []; // Initialize outerCursors
 			// -----------------------------
 
 			// Add initial Init instruction
@@ -284,33 +285,42 @@ export class Compiler {
 
 	// --- Wrapper Methods Delegating to Helpers --- //
 
-	// Helpers
-	allocateMemoryCells(count: number): number { return Helpers.allocateMemoryCellsHelper(this, count); }
-	allocateCursor(): number { return Helpers.allocateCursorHelper(this); }
-	addConstant(value: SqlValue): number { return Helpers.addConstantHelper(this, value); }
-	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return Helpers.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
-	allocateAddress(): number { return Helpers.allocateAddressHelper(this); }
-	resolveAddress(placeholder: number): void { Helpers.resolveAddressHelper(this, placeholder); }
-	getCurrentAddress(): number { return Helpers.getCurrentAddressHelper(this); }
-	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema { return Helpers.createEphemeralSchemaHelper(this, cursorIdx, numCols, sortKey); }
-	closeCursorsUsedBySelect(cursors: number[]): void { Helpers.closeCursorsUsedBySelectHelper(this, cursors); }
-	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return Helpers.compileFromCoreHelper(this, sources); }
-	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { Helpers.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
-	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { Helpers.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
+	// Compiler State Helpers (./core/compilerState)
+	allocateMemoryCells(count: number): number { return CompilerState.allocateMemoryCellsHelper(this, count); }
+	allocateCursor(): number { return CompilerState.allocateCursorHelper(this); }
+	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
+	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
+	allocateAddress(): number { return CompilerState.allocateAddressHelper(this); }
+	resolveAddress(placeholder: number): void { CompilerState.resolveAddressHelper(this, placeholder); }
+	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
 
-	// Expressions
-	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { ExprCompiler.compileLiteral(this, expr, targetReg); }
-	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileCollate(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprCompiler.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprCompiler.compileParameter(this, expr, targetReg); }
+	// Ephemeral Table Helpers (./core/ephemeral)
+	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema { return EphemeralCore.createEphemeralSchemaHelper(this, cursorIdx, numCols, sortKey); }
+	closeCursorsUsedBySelect(cursors: number[]): void { EphemeralCore.closeCursorsUsedBySelectHelper(this, cursors); }
+
+	// FROM Clause Helper (./core/fromClause)
+	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
+
+	// Query Planning Helpers (./planning/queryPlanner & ./planning/whereVerify)
+	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { QueryPlanner.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
+	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
+	// compileUnhandledWhereConditions is likely called directly where needed, not via compiler instance
+
+	// Expressions (Main dispatcher in ./expression, specific handlers in ./expression/handlers)
+	// Keep the main compileExpression delegation
+	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	// Delegate specific handlers directly if needed (though maybe not necessary if compileExpression handles all)
+	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { ExprHandlers.compileLiteral(this, expr, targetReg); }
+	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileCollate(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprHandlers.compileParameter(this, expr, targetReg); }
+
+	// Subqueries (Delegated to SubqueryCompiler module)
 	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
-
-	// Subqueries (delegated to SubqueryCompiler)
 	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileScalarSubquery(this, subQuery, targetReg); }
 	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
 	compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileComparisonSubquery(this, leftExpr, op, subQuery, targetReg); }
@@ -331,17 +341,9 @@ export class Compiler {
 	compileRollback(stmt: AST.RollbackStmt): void { StmtCompiler.compileRollbackStatement(this, stmt); }
 	compileSavepoint(stmt: AST.SavepointStmt): void { StmtCompiler.compileSavepointStatement(this, stmt); }
 	compileRelease(stmt: AST.ReleaseStmt): void { StmtCompiler.compileReleaseStatement(this, stmt); }
-	compileSelectCore(stmt: AST.SelectStmt, outerCursors: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
-		// Explicitly type the function we're calling to help the linter
-		const compileFunc: (
-			c: Compiler,
-			s: AST.SelectStmt,
-			oc: number[],
-			corr?: SubqueryCorrelationResult,
-			am?: ArgumentMap
-		) => { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } = SelectCompiler.compileSelectCoreStatement;
-
-		return compileFunc(this, stmt, outerCursors, correlation, argumentMap);
+	compileSelectCore(stmt: AST.SelectStmt, outerCursorsForSelect: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
+		// Note: Changed name of outerCursors param to avoid conflict with class property
+		return SelectCompiler.compileSelectCoreStatement(this, stmt, outerCursorsForSelect, correlation, argumentMap);
 	}
 
 	// --- Add WithClause handling ---
@@ -370,12 +372,21 @@ export class Compiler {
 	compilePragma(stmt: AST.PragmaStmt): void { DdlCompiler.compilePragmaStatement(this, stmt); }
 }
 
-// Augment the Compiler interface (needed for methods in other files to see 'this')
-// This duplicates the declarations in the other files, which is necessary for standalone file checks
-// but might feel redundant. Alternatively, create a central interface file.
+// Remove augmentations for methods moved to helper modules
+// Keep augmentations for methods still delegated or part of core class interface if needed
+// Ideally, this block becomes smaller or disappears with better typing/imports.
+// Removing most helper declarations as they are now imported directly or handled via main dispatchers.
 declare module './compiler' {
 	interface Compiler {
-		// Helpers
+		// Core properties are implicitly part of the interface
+		// Core methods
+		compile(ast: AST.AstNode, sql: string): VdbeProgram;
+		startSubroutineCompilation(): number;
+		endSubroutineCompilation(): void;
+
+		// --- Keep Delegated Methods Signatures ---
+		// (TypeScript needs these if methods are called via `compiler.methodName` elsewhere)
+		// Compiler State
 		allocateMemoryCells(count: number): number;
 		allocateCursor(): number;
 		addConstant(value: SqlValue): number;
@@ -383,14 +394,17 @@ declare module './compiler' {
 		allocateAddress(): number;
 		resolveAddress(placeholder: number): void;
 		getCurrentAddress(): number;
+		// Ephemeral
 		createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema;
 		closeCursorsUsedBySelect(cursors: number[]): void;
+		// FROM Clause
 		compileFromCore(sources: AST.FromClause[] | undefined): number[];
+		// Planning
 		planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void;
 		verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void;
-
-		// Expressions
+		// Expressions (Main dispatcher)
 		compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
+		// Keep specific expression handlers if they might be called directly externally via compiler instance
 		compileLiteral(expr: AST.LiteralExpr, targetReg: number): void;
 		compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
@@ -399,14 +413,14 @@ declare module './compiler' {
 		compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileParameter(expr: AST.ParameterExpr, targetReg: number): void;
-		compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void;
 		// Subqueries
+		compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void;
 		compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
 		compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void;
 		compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void;
 		compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
-
-		// Statements (Non-Select)
+		// Statements
+		compileSelect(stmt: AST.SelectStmt): void;
 		compileInsert(stmt: AST.InsertStmt): void;
 		compileUpdate(stmt: AST.UpdateStmt): void;
 		compileDelete(stmt: AST.DeleteStmt): void;
@@ -420,25 +434,29 @@ declare module './compiler' {
 		compileRollback(stmt: AST.RollbackStmt): void;
 		compileSavepoint(stmt: AST.SavepointStmt): void;
 		compileRelease(stmt: AST.ReleaseStmt): void;
-		// Select Statements
-		compileSelect(stmt: AST.SelectStmt): void;
-		compileSelectCore(stmt: AST.SelectStmt, outerCursors: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] };
+		compileSelectCore(stmt: AST.SelectStmt, outerCursorsForSelect: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] };
+		// CTE / Pragma
+		compileWithClause(withClause: WithClause | undefined): void;
+		compilePragma(stmt: AST.PragmaStmt): void;
 
+		// Keep essential public properties needed by augmented methods/helpers
 		cursorPlanningInfo: Map<number, CursorPlanningResult>;
 		tableAliases: Map<string, number>;
 		subroutineDefs: Map<AST.SelectStmt, SubroutineInfo>;
-
-		// Make compilation context switchers accessible if helpers need them
-		startSubroutineCompilation(): number;
-		endSubroutineCompilation(): void;
-
 		subroutineDepth: number;
 		stackPointer: number;
 		framePointer: number;
-
-		// CTE Compilation (Now calls external function)
-		compileWithClause(withClause: WithClause | undefined): void;
-		// compileCommonTableExpression(cte: AST.CommonTableExpr, isRecursive: boolean): void; // Removed from interface
-		compilePragma(stmt: AST.PragmaStmt): void;
+		outerCursors: number[];
+		tableSchemas: Map<number, TableSchema>; // Needed by many helpers
+		ephemeralTables: Map<number, TableSchema>; // Needed by some helpers
+		db: Database;
+		constants: SqlValue[];
+		instructions: VdbeInstruction[];
+		numMemCells: number;
+		numCursors: number;
+		parameters: Map<number | string, { memIdx: number }>;
+		columnAliases: string[];
+		cteMap: Map<string, CteInfo>;
+		resultColumns: { name: string, table?: string, expr?: AST.Expression }[];
 	}
 }

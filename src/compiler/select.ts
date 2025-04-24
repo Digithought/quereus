@@ -1,14 +1,14 @@
-// src/compiler/select.ts
 import { Opcode } from '../common/constants';
 import { StatusCode } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { type P4Vtab, type P4FuncDef, type P4SortKey } from '../vdbe/instruction';
 import type { Compiler, ColumnResultInfo, HavingContext } from './compiler'; // Ensure HavingContext is imported
 import type * as AST from '../parser/ast';
-import { compileUnhandledWhereConditions, type SubqueryCorrelationResult } from './helpers';
+import { compileUnhandledWhereConditions } from './whereVerify';
 import type { ArgumentMap } from './expression';
-import { analyzeSubqueryCorrelation } from './helpers'; // Added import
+import { analyzeSubqueryCorrelation } from './correlation'; // Added import
 import type { TableSchema } from '../schema/table';
+import type { SubqueryCorrelationResult } from './correlation';
 
 // --- SELECT Statement Compilation --- //
 

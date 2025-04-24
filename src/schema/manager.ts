@@ -3,27 +3,82 @@ import type { Database } from '../core/database'; // Use Database type
 import type { TableSchema } from './table';
 import type { FunctionSchema } from './function';
 import { SqliteError } from '../common/errors';
-import { StatusCode, SqlDataType } from '../common/constants';
+import { StatusCode } from '../common/constants';
+import type { VirtualTableModule } from '../vtab/module';
 import type { VirtualTable } from '../vtab/table';
 import type { ColumnSchema } from './column';
 import { createDefaultColumnSchema } from './column';
 import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table';
 import { Parser } from '../parser/parser'; // Import the parser
 import type * as AST from '../parser/ast'; // Import AST types
+import type { ViewSchema } from './view'; // Import ViewSchema
 
 /**
  * Manages all schemas associated with a database connection (main, temp, attached).
  * Handles lookup resolution according to SQLite's rules.
  */
 export class SchemaManager {
-	private readonly db: Database;
 	private schemas: Map<string, Schema> = new Map();
+	private currentSchemaName: string = 'main';
+	private modules: Map<string, VirtualTableModule<any, any>> = new Map();
+	private defaultVTabModule: string | null = null; // Default module name
+	private db: Database; // Reference back to the Database instance
 
 	constructor(db: Database) {
 		this.db = db;
 		// Ensure 'main' and 'temp' schemas always exist
 		this.schemas.set('main', new Schema('main'));
 		this.schemas.set('temp', new Schema('temp'));
+	}
+
+	/** Sets the current default schema for unqualified names. */
+	setCurrentSchema(name: string): void {
+		if (this.schemas.has(name.toLowerCase())) {
+			this.currentSchemaName = name.toLowerCase();
+		} else {
+			console.warn(`Attempted to set current schema to non-existent schema: ${name}`);
+		}
+	}
+
+	/** Gets the name of the current default schema. */
+	getCurrentSchemaName(): string {
+		return this.currentSchemaName;
+	}
+
+	/** Registers a virtual table module. */
+	registerModule(name: string, module: VirtualTableModule<any, any>): void {
+		const lowerName = name.toLowerCase();
+		if (this.modules.has(lowerName)) {
+			console.warn(`Replacing existing virtual table module: ${lowerName}`);
+		}
+		this.modules.set(lowerName, module);
+		console.log(`Registered VTab module: ${lowerName}`);
+	}
+
+	/** Retrieves a registered virtual table module by name. */
+	getModule(name: string): VirtualTableModule<any, any> | undefined {
+		return this.modules.get(name.toLowerCase());
+	}
+
+	/** Sets the default virtual table module to use when USING is omitted. */
+	setDefaultVTabModule(name: string | null): void {
+		if (name === null) {
+			this.defaultVTabModule = null;
+			console.log("Default VTab module cleared.");
+			return;
+		}
+		const lowerName = name.toLowerCase();
+		if (this.modules.has(lowerName)) {
+			this.defaultVTabModule = lowerName;
+			console.log(`Default VTab module set to: ${lowerName}`);
+		} else {
+			throw new SqliteError(`Cannot set default VTab module: module '${lowerName}' not registered.`);
+		}
+	}
+
+	/** Gets the currently configured default virtual table module name. */
+	getDefaultVTabModuleName(): string | null {
+		return this.defaultVTabModule;
 	}
 
 	/** Gets a specific schema by name, or undefined if not found. */
@@ -71,6 +126,7 @@ export class SchemaManager {
 			// For now, just remove the schema container.
 			schema.clearFunctions(); // Call function destructors
 			schema.clearTables();
+			schema.clearViews();
 			this.schemas.delete(lowerName);
 			console.log(`SchemaManager: Removed schema '${name}'`);
 			return true;
@@ -118,7 +174,7 @@ export class SchemaManager {
 	 * Declares a virtual table's schema based on a CREATE VIRTUAL TABLE string.
 	 * This is intended to be called from VTab `xCreate`/`xConnect` methods.
 	 * @param schemaName The schema the table belongs to ('main', 'temp', etc.)
-	 * @param createVirtualTableSql The full `CREATE VIRTUAL TABLE ...` string.
+	 * @param createTableSql The full `CREATE VIRTUAL TABLE ...` string.
 	 * @param associatedVtab The VirtualTable instance to link.
 	 * @param auxData The auxData associated with the module registration.
 	 * @returns The created TableSchema.
@@ -126,7 +182,7 @@ export class SchemaManager {
 	 */
 	declareVtab(
 		schemaName: string,
-		createVirtualTableSql: string, // Expecting full CREATE VIRTUAL TABLE statement
+		createTableSql: string, // Expecting full CREATE TABLE statement
 		associatedVtab: VirtualTable,
 		auxData?: unknown,
 		// vtabArgs are now parsed from the SQL
@@ -136,19 +192,19 @@ export class SchemaManager {
 			throw new SqliteError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
 		}
 
-		console.log(`SchemaManager: Declaring VTab in '${schemaName}' using SQL: ${createVirtualTableSql}`);
+		console.log(`SchemaManager: Declaring VTab in '${schemaName}' using SQL: ${createTableSql}`);
 
 		// --- Use the Parser ---
-		let createVtabAst: AST.CreateVirtualTableStmt;
+		let createVtabAst: AST.CreateTableStmt;
 		try {
 			const parser = new Parser();
-			const ast = parser.parse(createVirtualTableSql);
-			if (ast.type !== 'createVirtualTable') {
-				throw new SqliteError(`Expected CREATE VIRTUAL TABLE statement, got ${ast.type}`, StatusCode.ERROR);
+			const ast = parser.parse(createTableSql);
+			if (ast.type !== 'createTable') {
+				throw new SqliteError(`Expected CREATE TABLE statement, got ${ast.type}`, StatusCode.ERROR);
 			}
-			createVtabAst = ast as AST.CreateVirtualTableStmt;
+			createVtabAst = ast as AST.CreateTableStmt;
 		} catch (e: any) {
-			throw new SqliteError(`Failed to parse CREATE VIRTUAL TABLE statement: ${e.message}`, StatusCode.ERROR);
+			throw new SqliteError(`Failed to parse CREATE TABLE statement: ${e.message}`, StatusCode.ERROR);
 		}
 
 		const tableName = createVtabAst.table.name;
@@ -197,24 +253,116 @@ export class SchemaManager {
 		return tableSchema;
 	}
 
-	/** Clears all schemas except main and temp, releasing resources. */
-	clearAll(disconnectVt = true): void {
-		// TODO: Implement proper VTab disconnect/destroy logic here before clearing
-		console.warn("SchemaManager.clearAll() - VTab disconnect/destroy not fully implemented yet.");
-		this.schemas.forEach((schema, name) => {
-			if (name !== 'main' && name !== 'temp') {
-				// Potentially iterate tables and call xDisconnect/xDestroy?
-				schema.clearFunctions(); // Call function destructors
-				schema.clearTables();
-				this.schemas.delete(name);
-			} else {
-				// Clear contents of main/temp but keep the schema objects
-				schema.clearFunctions();
-				// Should we clear tables from main/temp? Depends on desired persistence level.
-				// For purely transient, maybe yes. Let's clear for now.
-				schema.clearTables();
-			}
-		});
+	/**
+	 * Retrieves a view schema definition.
+	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema.
+	 * @param viewName The name of the view.
+	 * @returns The ViewSchema or undefined if not found.
+	 */
+	getView(schemaName: string | null, viewName: string): ViewSchema | undefined { // NEW METHOD
+		const targetSchemaName = schemaName ?? this.currentSchemaName;
+		const schema = this.schemas.get(targetSchemaName);
+		return schema?.getView(viewName);
+	}
 
+	/**
+	 * Retrieves any schema item (table or view) by name. Checks views first.
+	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema.
+	 * @param itemName The name of the table or view.
+	 * @returns The TableSchema or ViewSchema, or undefined if not found.
+	 */
+	getSchemaItem(schemaName: string | null, itemName: string): TableSchema | ViewSchema | undefined { // UPDATED METHOD
+		const targetSchemaName = schemaName ?? this.currentSchemaName;
+		const schema = this.schemas.get(targetSchemaName);
+		if (!schema) return undefined;
+		// Prioritize views over tables if names conflict (consistent with some DBs)
+		const view = schema.getView(itemName);
+		if (view) return view;
+		return schema.getTable(itemName);
+	}
+
+	/**
+	 * Drops a table from the specified schema.
+	 * @param schemaName The name of the schema.
+	 * @param tableName The name of the table to drop.
+	 * @returns True if the table was found and dropped, false otherwise.
+	 */
+	dropTable(schemaName: string, tableName: string): boolean {
+		const schema = this.schemas.get(schemaName);
+		if (!schema) return false;
+
+		// Find the table first to potentially call vtab->xDestroy
+		const tableSchema = schema.getTable(tableName);
+		let destroyPromise: Promise<void> | null = null;
+		if (tableSchema?.isVirtual && tableSchema.vtabInstance && tableSchema.vtabModule?.xDestroy) {
+			console.log(`Calling xDestroy for VTab ${schemaName}.${tableName}`);
+			destroyPromise = tableSchema.vtabModule.xDestroy(tableSchema.vtabInstance).catch(err => {
+				console.error(`Error during VTab xDestroy for ${schemaName}.${tableName}:`, err);
+				// Decide whether to proceed with schema removal despite xDestroy error
+			});
+		}
+
+		// Remove from schema map immediately
+		const removed = schema.removeTable(tableName);
+
+		// Await destruction if needed *after* removing from schema map
+		// Consider the implications if xDestroy fails - the schema entry is gone.
+		if (destroyPromise) {
+			// We don't await here directly to avoid blocking, but maybe should?
+			destroyPromise.then(() => console.log(`xDestroy completed for VTab ${schemaName}.${tableName}`));
+		}
+
+		return removed;
+	}
+
+	/**
+	 * Drops a view from the specified schema.
+	 * @param schemaName The name of the schema.
+	 * @param viewName The name of the view to drop.
+	 * @returns True if the view was found and dropped, false otherwise.
+	 */
+	dropView(schemaName: string, viewName: string): boolean { // NEW METHOD
+		const schema = this.schemas.get(schemaName);
+		if (!schema) return false;
+		return schema.removeView(viewName);
+	}
+
+	/** Clears all schema items (tables, functions, views) */
+	clearAll(): void { // UPDATED METHOD
+		this.schemas.forEach(schema => {
+			// Call clearTables which might handle VTab disconnect later?
+			// For now, just clear maps. VTab disconnect happens at DB close.
+			schema.clearTables();
+			schema.clearFunctions(); // Calls destructors
+			schema.clearViews();
+		});
+		// Optionally re-initialize built-ins? Or assume they are added again externally.
+		console.log("SchemaManager: Cleared all schemas.");
+	}
+
+	/**
+	 * Retrieves a schema object, throwing if it doesn't exist.
+	 * @param name Schema name ('main', 'temp', or custom). Case-insensitive.
+	 * @returns The Schema object.
+	 * @throws SqliteError if the schema does not exist.
+	 */
+	getSchemaOrFail(name: string): Schema {
+		const schema = this.schemas.get(name.toLowerCase());
+		if (!schema) {
+			throw new SqliteError(`Schema not found: ${name}`);
+		}
+		return schema;
+	}
+
+	/**
+	 * Retrieves a table from the specified schema.
+	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema.
+	 * @param tableName The name of the table.
+	 * @returns The TableSchema or undefined if not found.
+	 */
+	getTable(schemaName: string | null, tableName: string): TableSchema | undefined {
+		const targetSchemaName = schemaName ?? this.currentSchemaName;
+		const schema = this.schemas.get(targetSchemaName);
+		return schema?.getTable(tableName);
 	}
 }

@@ -659,7 +659,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		const sqlToParse = createTableSql ?? `CREATE TABLE "${tableName}" (value)`;
 		// setupSchema can remain async internally if needed, but xCreate itself is sync now.
 		// However, schema setup SHOULD be synchronous for xBestIndex.
-		this.setupSchemaSync(db, table, sqlToParse);
+		this.setupSchema(db, table, sqlToParse);
 
 		return table;
 	}
@@ -1245,21 +1245,20 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
 	}
 
-	// Rename to setupSchemaSync
-	private setupSchemaSync(db: Database, table: MemoryTable, createTableSql: string): void {
-		// This method MUST now be synchronous.
+	private setupSchema(db: Database, table: MemoryTable, createTableSql: string): void {
+		// This method MUST be synchronous.
 		// Any async setup needs to happen elsewhere or be handled differently.
 		const moduleName = table.module.constructor.name; // Might be minified
 		// Use registered name if possible?
 		// For now, assume MemoryTable is always registered as 'memory' or similar
 		const registeredModuleName = 'memory'; // Assuming default registration name
 		const safeCreateTableSql = createTableSql.replace(/"/g, '""');
-		// Constructing CREATE VIRTUAL TABLE for declareVtab (which remains sync?)
-		const createVirtualTableSql = `CREATE VIRTUAL TABLE "${table.schemaName}"."${table.tableName}" USING ${registeredModuleName}("${safeCreateTableSql}")`;
+		// Constructing CREATE TABLE for declareVtab (which remains sync?)
+		const createVTableSql = `CREATE TABLE "${table.schemaName}"."${table.tableName}" USING ${registeredModuleName}("${safeCreateTableSql}")`;
 
 		// declareVtab needs to be synchronous or this structure changes.
 		// Assuming declareVtab can operate synchronously based on parsed SQL for schema.
-		const initialTableSchema = db.schemaManager.declareVtab(table.schemaName, createVirtualTableSql, table);
+		const initialTableSchema = db.schemaManager.declareVtab(table.schemaName, createVTableSql, table);
 
 		let parsedColumns: { name: string, type: SqlDataType }[] = [];
 		let primaryKeyColNames: string[] = [];

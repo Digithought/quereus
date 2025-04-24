@@ -263,7 +263,7 @@ export class Database {
 		this.statements.clear();
 
 		// Clear schemas, ensuring VTabs are potentially disconnected
-		this.schemaManager.clearAll(true);
+		this.schemaManager.clearAll();
 
 		this.registeredVTabs.clear();
 		// Registered functions are cleared within schemaManager.clearAll()

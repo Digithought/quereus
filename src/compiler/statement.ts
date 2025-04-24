@@ -4,7 +4,7 @@ import { SqliteError } from '../common/errors';
 import { type P4Vtab } from '../vdbe/instruction';
 import type { Compiler } from './compiler';
 import type * as AST from '../parser/ast';
-import { compileUnhandledWhereConditions } from './helpers';
+import { compileUnhandledWhereConditions } from './whereVerify';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);

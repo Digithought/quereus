@@ -6,6 +6,8 @@ import { stringifyCreateTable } from "../util/ddl-stringify";
 import { Opcode } from "../common/constants";
 import type { Database } from '../core/database';
 import type { VirtualTable } from "../vtab/table";
+import type { ViewSchema } from '../schema/view';
+import type { Schema } from '../schema/schema';
 
 export function compileCreateTableStatement(compiler: Compiler, stmt: AST.CreateTableStmt): void {
 	const db = compiler.db;
@@ -96,11 +98,112 @@ export function compileCreateIndexStatement(compiler: Compiler, stmt: AST.Create
 }
 
 export function compileCreateViewStatement(compiler: Compiler, stmt: AST.CreateViewStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "CREATE VIEW (no-op in VDBE)");
+	const schemaName = stmt.view.schema ?? compiler.db.schemaManager.getCurrentSchemaName();
+	const viewName = stmt.view.name;
+
+	// Get target schema
+	let schema: Schema;
+	try {
+		schema = compiler.db.schemaManager.getSchemaOrFail(schemaName);
+	} catch (e) {
+		const foundSchema = compiler.db.schemaManager.getSchema(schemaName);
+		if (!foundSchema) {
+			throw new SqliteError(`Schema '${schemaName}' not found`, StatusCode.ERROR);
+		}
+		schema = foundSchema;
+	}
+
+	// Check for existing table/view
+	const existingItem = schema.getTable(viewName) ?? schema.getView(viewName);
+	if (existingItem) {
+		if (stmt.ifNotExists) {
+			// Item exists, but IF NOT EXISTS is specified, so it's a no-op.
+			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `View ${schemaName}.${viewName} already exists (IF NOT EXISTS)`);
+			return;
+		} else {
+			const itemType = ('selectAst' in existingItem) ? 'view' : 'table'; // Check if it's a view or table
+			throw new SqliteError(`cannot create ${itemType} ${viewName}: already exists in schema ${schema.name}`, StatusCode.ERROR);
+		}
+	}
+
+	// Create the ViewSchema object
+	const viewSchema: ViewSchema = {
+		name: viewName,
+		schemaName: schema.name, // Use the actual schema name
+		sql: compiler.sql, // Store the original SQL statement text
+		selectAst: stmt.select, // Store the parsed SELECT AST
+		columns: stmt.columns ? Object.freeze(stmt.columns) : undefined, // Store explicit columns if provided
+	};
+
+	// Add the view to the schema
+	try {
+		schema.addView(viewSchema);
+	} catch (e: any) {
+		// Catch potential conflicts thrown by schema.addView
+		if (e instanceof SqliteError) {
+			throw e; // Re-throw schema-level conflict errors
+		} else {
+			throw new SqliteError(`Error adding view ${viewName} to schema ${schema.name}: ${e.message}`, StatusCode.INTERNAL);
+		}
+	}
+
+	// CREATE VIEW doesn't produce executable VDBE code itself, just modifies schema
+	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `Schema definition for VIEW ${schemaName}.${viewName}`);
 }
 
+/**
+ * Compiles a DROP statement (TABLE, INDEX, VIEW).
+ */
 export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "DROP (no-op in VDBE)");
+	const schemaName = stmt.name.schema ?? compiler.db.schemaManager.getCurrentSchemaName();
+	const objectName = stmt.name.name;
+
+	let success = false;
+	let itemType = stmt.objectType; // 'table', 'view', 'index'
+
+	try {
+		switch (stmt.objectType) {
+			case 'table':
+				success = compiler.db.schemaManager.dropTable(schemaName, objectName);
+				break;
+			case 'view':
+				success = compiler.db.schemaManager.dropView(schemaName, objectName);
+				break;
+			case 'index':
+				// Dropping indexes might require more complex handling (e.g., finding associated table)
+				// For now, assume SchemaManager handles it or we add specific logic later.
+				// success = compiler.db.schemaManager.dropIndex(schemaName, objectName);
+				compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `DROP INDEX ${schemaName}.${objectName} (Not fully implemented)`);
+				success = true; // Assume success for now to avoid error below
+				itemType = 'index'; // Ensure correct item type for error message
+				console.warn(`DROP INDEX compilation is a placeholder.`);
+				break;
+			// case 'trigger': // Add if triggers are supported later
+			// 	 success = compiler.db.schemaManager.dropTrigger(schemaName, objectName);
+			// 	 break;
+			default:
+				// Should not happen if parser is correct
+				throw new SqliteError(`Unsupported object type for DROP: ${stmt.objectType}`);
+		}
+
+		if (!success && !stmt.ifExists) {
+			throw new SqliteError(`no such ${itemType}: ${objectName}`, StatusCode.ERROR);
+		}
+
+	} catch (e: any) {
+		// Re-throw schema-level errors
+		if (e instanceof SqliteError) {
+			throw e;
+		} else {
+			throw new SqliteError(`Error dropping ${itemType} ${objectName}: ${e.message}`, StatusCode.INTERNAL);
+		}
+	}
+
+	// DROP doesn't produce executable VDBE code itself, just modifies schema
+	const comment = success
+		? `Schema definition drop for ${itemType.toUpperCase()} ${schemaName}.${objectName}`
+		: `${itemType.toUpperCase()} ${schemaName}.${objectName} did not exist (IF EXISTS)`;
+	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, comment);
 }
 
 export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTableStmt): void {
