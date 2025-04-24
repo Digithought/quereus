@@ -3,7 +3,7 @@ import { SqliteError, ConstraintError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
-import type { VdbeInstruction, P4FuncDef, P4Coll } from './instruction';
+import type { VdbeInstruction, P4FuncDef, P4Coll, P4SchemaChange } from './instruction';
 import type { P5AggFrameInfo } from './instruction';
 import { Opcode, ConflictResolution } from '../common/constants';
 import { evaluateIsTrue, compareSqlValues } from '../util/comparison';
@@ -18,6 +18,7 @@ import type { P4RangeScanInfo } from './instruction';
 import type { P4LagLeadInfo } from './instruction';
 import type { FunctionSchema } from '../schema/function';
 import type * as AST from '../parser/ast'; // Import AST namespace
+import type { VirtualTableModule } from '../vtab/module'; // <-- Import VirtualTableModule
 
 /** Represents a single VDBE memory cell (register) */
 export interface MemoryCell {
@@ -641,7 +642,7 @@ export class Vdbe {
 			case Opcode.Noop: break; // Do nothing
 
 			// --- Ephemeral Table Opcodes ---
-			case Opcode.OpenEphemeral: { // P1=cursorIdx, P2=numCols, P4=TableSchema?
+			case Opcode.OpenEphemeral: { // P1=cursorIdx, P2=numCols, P4=TableSchema? (Optional)
 				const ephCursorIdx = p1;
 				const ephNumCols = p2;
 				const providedSchema = p4 as TableSchema | null; // Schema might be passed in P4
@@ -654,13 +655,14 @@ export class Vdbe {
 				if (providedSchema && providedSchema.columns && providedSchema.primaryKeyDefinition) {
 					// Use the provided schema (likely for a sorter)
 					console.log(`VDBE OpenEphemeral: Initializing cursor ${ephCursorIdx} with provided schema (PK def length: ${providedSchema.primaryKeyDefinition.length})`);
-					// Map TableSchema columns to the simpler format setColumns expects
-					const cols = providedSchema.columns.map(c => ({ name: c.name, type: c.affinity }));
+					// Map TableSchema columns to the format setColumns expects (with string | undefined type)
+					const cols = providedSchema.columns.map(c => ({ name: c.name, type: undefined, collation: c.collation })); // Pass undefined type
 					ephTable.setColumns(cols, providedSchema.primaryKeyDefinition);
 				} else {
 					// Default initialization (basic columns, rowid key)
 					console.log(`VDBE OpenEphemeral: Initializing cursor ${ephCursorIdx} with default schema (${ephNumCols} cols)`);
-					const defaultCols = Array.from({ length: ephNumCols }, (_, i) => ({ name: `eph_col${i}`, type: SqlDataType.TEXT }));
+					// Pass undefined type to setColumns
+					const defaultCols = Array.from({ length: ephNumCols }, (_, i) => ({ name: `eph_col${i}`, type: undefined, collation: 'BINARY' }));
 					ephTable.setColumns(defaultCols, []); // Empty pkDef means rowid key
 				}
 
@@ -1097,6 +1099,64 @@ export class Vdbe {
 				this._setMem(resultReg, targetValue);
 				break;
 			}
+
+			// --- Add SchemaChange handler ---
+			case Opcode.SchemaChange:
+				{
+					const cursorIdx = p1!;
+					const changeInfo = p4 as P4SchemaChange;
+					try {
+						if (cursorIdx < 0 || cursorIdx >= this.vdbeCursors.length || !this.vdbeCursors[cursorIdx]) {
+							throw new SqliteError(`SchemaChange: Invalid cursor index ${cursorIdx}`, StatusCode.INTERNAL);
+						}
+						const cursor = this.vdbeCursors[cursorIdx];
+						const vtab = cursor.vtab; // Get vtab instance directly
+						// Simplify Check: If cursor has a vtab instance, assume it's usable
+						if (!vtab) {
+							// This could happen if cursor wasn't opened or is not for a VTab
+							throw new SqliteError(`SchemaChange: Cursor ${cursorIdx} does not refer to an open virtual table`, StatusCode.INTERNAL);
+						}
+
+						const module = vtab.module as VirtualTableModule<any, any, any>;
+
+						if (typeof module.xAlterSchema === 'function') {
+							await module.xAlterSchema(vtab, changeInfo);
+							console.log(`VDBE SchemaChange: Successfully executed on table ${vtab.tableName}`);
+						} else {
+							throw new SqliteError(
+								`ALTER TABLE operation not supported by virtual table module for table '${vtab.tableName}'`,
+								StatusCode.MISUSE
+							);
+						}
+					} catch (e: any) {
+						// Fix Error Handling: Re-throw SqliteError or wrap others
+						if (e instanceof SqliteError) {
+							this.error = e;
+						} else {
+							const msg = `SchemaChange failed: ${e instanceof Error ? e.message : String(e)}`;
+							this.error = new SqliteError(msg, StatusCode.ERROR, e instanceof Error ? e : undefined);
+						}
+						this.done = true; // Halt execution on error
+						return; // Don't increment PC if halting
+					}
+					// Fix PC Increment: Always increment PC if not halting
+					this.programCounter++;
+				}
+				break;
+			// --------------------------------
+
+			case Opcode.AggReset:
+				{
+					this.aggregateContexts.clear();
+					this.aggregateIterator = null;
+					this.currentAggregateEntry = null;
+					this.programCounter++; // Increment PC
+				}
+				break;
+
+			case Opcode.AlterTable: // Placeholder - No action needed yet
+				this.programCounter++; // Increment PC even for no-op
+				break;
 
 			default:
 				throw new SqliteError(`Unsupported opcode: ${Opcode[inst.opcode]} (${inst.opcode})`, StatusCode.INTERNAL);

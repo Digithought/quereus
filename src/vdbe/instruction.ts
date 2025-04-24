@@ -4,6 +4,8 @@ import type { FunctionSchema } from '../schema/function';
 import type { TableSchema } from '../schema/table';
 import type { ConflictResolution } from '../common/constants';
 import type * as AST from '../parser/ast';
+import type { IndexConstraintOp } from '../common/constants';
+import type { SchemaChangeInfo } from '../vtab/module';
 
 /**
  * Represents a single instruction in the VDBE program.
@@ -125,3 +127,32 @@ export interface P4LagLeadInfo {
 	currRowPtrReg: number; // Register holding the pointer/rowid of the current row being processed
 	argColIdx: number; // Index of the argument column in the sorter row
 }
+
+// --- Define missing placeholder P4 types --- //
+export type P4JumpTarget = any; // Placeholder - likely number (address)
+export type P4IndexDef = any; // Placeholder - structure defining index
+export type P4TableDef = any; // Placeholder - structure defining table
+export type P4ViewDef = any; // Placeholder - structure defining view
+export type P4FunctionContext = any; // Placeholder - context for function call
+// ----------------------------------------- //
+
+// --- Add P4 type for SchemaChange (before union) --- //
+export type P4SchemaChange = SchemaChangeInfo;
+// --------------------------------------------------- //
+
+// Union type for all possible P4 parameter types
+export type InstructionP4 =
+	| string
+	| number
+	| bigint
+	| P4JumpTarget // Now defined (placeholder)
+	| P4SortKey
+	| P4IndexDef // Now defined (placeholder)
+	| P4TableDef // Now defined (placeholder)
+	| P4ViewDef // Now defined (placeholder)
+	| P4FunctionContext // Now defined (placeholder)
+	| P5AggFrameInfo // Use P5AggFrameInfo if P4AggFrameInfo doesn't exist
+	| P4RangeScanInfo
+	| P4LagLeadInfo
+	| P4SchemaChange
+	| null;

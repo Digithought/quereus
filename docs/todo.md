@@ -5,7 +5,6 @@ This list outlines the remaining major features and refinements needed to make S
 **I. Core Query Processing Features:**
 
 *   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
-*   [ ] **Full `ALTER TABLE` Support:** Implement execution for ADD/DROP/RENAME COLUMN (Parser supports, compiler is no-op). `RENAME TABLE` seems partially handled via VTab `xRename`.
 
 **II. VDBE & Compiler Core:**
 

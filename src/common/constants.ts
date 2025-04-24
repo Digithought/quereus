@@ -111,7 +111,6 @@ export enum Opcode {
 	AggKey = 128, // Keep 128
 	AggContext = 129, // Keep 129
 	AggGroupValue = 140, // Reassigned from 130 to avoid conflict with Sort
-	AggReset = 147,   // Reset aggregate context map
 
 	// Misc
 	CollSeq = 120, // Keep 120
@@ -133,6 +132,23 @@ export enum Opcode {
 	RangeScan = 164,    // p1=cursor, p2=startPtrReg, p3=endPtrReg, p4=P4RangeScanInfo { frameDef, orderByIndices, orderByDirs, orderByColls, currPtrReg, partStartPtrReg, startBoundReg?, endBoundReg? }
 	Lag = 165,          // p1=cursor, p2=targetReg, p3=offsetReg, p4=P4LagLeadInfo { currRowPtrReg, argColIdx }, p5=defaultReg
 	Lead = 166,         // p1=cursor, p2=targetReg, p3=offsetReg, p4=P4LagLeadInfo { currRowPtrReg, argColIdx }, p5=defaultReg
+	Checkpoint = 167,   // Checkpoint database P1
+	WalCheckpoint = 167, // Deprecated: Use Checkpoint
+
+	// DDL/Schema Opcodes
+	SchemaInvalidate = 168, // Invalidate schema cache
+	SchemaLoad = 169, // Load schema (used internally)
+	CreateIndex = 170, // Arguments = P4_INDEXDEF
+	CreateTable = 171, // Arguments = P4_TABLEDEF
+	CreateView = 172,  // Arguments = P4_VIEWDEF
+	DropTable = 173,
+	DropIndex = 174,
+	DropView = 175,
+	AlterTable = 176, // Placeholder for complex ALTER, maybe unused
+	SchemaChange = 177, // Perform VTab schema change (ADD/DROP/RENAME COL), P4=P4_SCHEMACHANGE
+
+	// Window Function Opcodes
+	AggReset = 178,    // Reset aggregate context P1=regCtx P2=nArg
 
 } // End Opcode Enum
 

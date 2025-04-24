@@ -1,7 +1,7 @@
 // src/vtab/memory-table.ts
 import { VirtualTable } from './table';
 import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule, BaseModuleConfig } from './module';
+import type { VirtualTableModule, BaseModuleConfig, SchemaChangeInfo } from './module';
 import type { IndexInfo, IndexConstraint, IndexOrderBy } from './indexInfo';
 import { IndexConstraintOp, ConflictResolution } from '../common/constants';
 import type { Database } from '../core/database';
@@ -11,20 +11,12 @@ import type { SqliteContext } from '../func/context';
 import { Latches } from '../util/latches';
 import { FunctionContext } from '../func/context';
 import type { FunctionSchema } from '../schema/function';
-// import { Parser } from '../parser/parser';
-// import type { ColumnSchema } from '../schema/column';
-// import { buildColumnIndexMap, type TableSchema, findPrimaryKeyDefinition, getPrimaryKeyIndices } from '../schema/table';
-// import * as AST from '../parser/ast';
-// --- Import digitree and comparison ---
-import { BTree, KeyBound, KeyRange, Path } from 'digitree'; // KeyBound, KeyRange added
+import { BTree, KeyBound, KeyRange, Path } from 'digitree';
 import { compareSqlValues } from '../util/comparison';
-// --- Add P4SortKey import ---
-import type { P4SortKey } from '../vdbe/instruction'; // Import P4SortKey
-// ------------------------------------
-// --- Add imports needed for TableSchema/Check Constraints ---
-import { buildColumnIndexMap, findPrimaryKeyDefinition, type TableSchema } from '../schema/table';
-import type { ColumnSchema } from '../schema/column';
-import type { Expression } from '../parser/ast';
+import type { P4SortKey } from '../vdbe/instruction';
+import { buildColumnIndexMap, findPrimaryKeyDefinition, type TableSchema, columnDefToSchema } from '../schema/table';
+import { type ColumnSchema, getAffinity } from '../schema/column'; // Use value import for getAffinity
+import type { Expression, ColumnDef } from '../parser/ast';
 // -----------------------------------------------------------
 
 // Type for rows stored internally, always including the SQLite rowid
@@ -32,9 +24,8 @@ export type MemoryTableRow = Record<string, SqlValue> & { _rowid_: bigint };
 // Type alias for the BTree key (can be rowid, single PK value, or array for composite PK)
 type BTreeKey = bigint | number | string | SqlValue[];
 
-// --- Define Configuration Interface --- Add checkConstraints
 interface MemoryTableConfig extends BaseModuleConfig {
-	columns: { name: string, type: SqlDataType, collation?: string }[];
+	columns: { name: string, type: string | undefined, collation?: string }[]; // <-- Change type to string | undefined
 	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
 	checkConstraints?: ReadonlyArray<{ name?: string, expr: Expression }>; // <-- Add check constraints
 	readOnly?: boolean;
@@ -122,8 +113,7 @@ export class MemoryTable extends VirtualTable {
 	private readOnly: boolean;
 	public rowidToKeyMap: Map<bigint, BTreeKey> | null = null;
 	public isSorter: boolean = false;
-	// public sorterColumnMap: ColumnSchema[] | null = null; // Removed usage
-	public tableSchema: TableSchema | undefined = undefined; // Store TableSchema instance
+	public tableSchema: TableSchema | undefined = undefined;
 
 	// --- Transaction State --- (Public for cursor access for now)
 	public inTransaction: boolean = false;
@@ -149,63 +139,67 @@ export class MemoryTable extends VirtualTable {
 		this.readOnly = readOnly;
 	}
 
-	// --- Updated setColumns to use primaryKeyDefinition ---
-	setColumns(columns: { name: string, type: SqlDataType, collation?: string }[], pkDef: ReadonlyArray<{ index: number; desc: boolean }>): void {
-		this.columns = [...columns];
+	// Fix setColumns: accept string type, convert to SqlDataType internally
+	setColumns(columns: { name: string, type: string | undefined, collation?: string }[], pkDef: ReadonlyArray<{ index: number; desc: boolean }>): void {
+		// Convert input columns (with string type) to internal format (with SqlDataType affinity)
+		this.columns = columns.map(col => ({
+			name: col.name,
+			type: getAffinity(col.type), // Determine affinity here
+			collation: col.collation
+		}));
+
+		this.primaryKeyColumnIndices = Object.freeze(pkDef.map(def => def.index)); // Store indices directly
 
 		if (pkDef.length === 0) {
 			console.log(`MemoryTable '${this.tableName}': Using rowid as BTree key.`);
 			this.keyFromEntry = (row) => row._rowid_;
-			// Explicitly define compareKeys for rowid (bigint)
-			// Ensure compareSqlValues handles BTreeKey which might be bigint
 			this.compareKeys = (a: BTreeKey, b: BTreeKey): number => compareSqlValues(a as SqlValue, b as SqlValue);
 			this.rowidToKeyMap = null;
 		} else if (pkDef.length === 1) {
 			const { index: pkIndex, desc: isDesc } = pkDef[0];
-			const pkColName = this.columns[pkIndex]?.name;
-			const pkCollation = this.columns[pkIndex]?.collation || 'BINARY'; // Get collation from column
+			const pkCol = this.columns[pkIndex]; // Use internal columns with affinity
+			const pkColName = pkCol?.name;
+			const pkCollation = pkCol?.collation || 'BINARY';
 			if (!pkColName) {
 				console.error(`MemoryTable '${this.tableName}': Invalid primary key index ${pkIndex}. Falling back to rowid key.`);
+				this.primaryKeyColumnIndices = []; // Reset PK indices
 				this.keyFromEntry = (row) => row._rowid_;
-				// Ensure compareSqlValues handles BTreeKey which might be bigint
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => compareSqlValues(a as SqlValue, b as SqlValue);
 				this.rowidToKeyMap = null;
 			} else {
 				console.log(`MemoryTable '${this.tableName}': Using PRIMARY KEY column '${pkColName}' (index ${pkIndex}, ${isDesc ? 'DESC' : 'ASC'}) as BTree key.`);
-				this.primaryKeyColumnIndices = Object.freeze([pkIndex]);
 				this.keyFromEntry = (row) => row[pkColName] as BTreeKey;
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => {
-					// Cast needed as compareSqlValues takes SqlValue, but BTreeKey might be SqlValue[]
-					// This case is for single PK, so it should be SqlValue
 					const cmp = compareSqlValues(a as SqlValue, b as SqlValue, pkCollation);
 					return isDesc ? -cmp : cmp;
 				};
 				this.rowidToKeyMap = new Map();
 			}
 		} else {
-			const pkCols = pkDef.map(def => ({
-				name: this.columns[def.index]?.name,
-				desc: def.desc,
-				collation: this.columns[def.index]?.collation || 'BINARY' // Get collation from column
-			}));
+			const pkCols = pkDef.map(def => {
+				const col = this.columns[def.index]; // Use internal columns
+				return {
+					name: col?.name,
+					desc: def.desc,
+					collation: col?.collation || 'BINARY'
+				};
+			});
 			if (pkCols.some(c => !c.name)) {
 				console.error(`MemoryTable '${this.tableName}': Invalid composite primary key indices. Falling back to rowid key.`);
+				this.primaryKeyColumnIndices = []; // Reset PK indices
 				this.keyFromEntry = (row) => row._rowid_;
-				// Ensure compareSqlValues handles BTreeKey which might be bigint
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => compareSqlValues(a as SqlValue, b as SqlValue);
 				this.rowidToKeyMap = null;
 			} else {
 				const pkColNames = pkCols.map(c => c.name!); // Safe due to check above
 				console.log(`MemoryTable '${this.tableName}': Using Composite PRIMARY KEY (${pkCols.map(c => `${c.name} ${c.desc ? 'DESC' : 'ASC'}`).join(', ')}) as BTree key.`);
 				this.keyFromEntry = (row) => pkColNames.map(name => row[name]);
-				// Use the dedicated composite key comparison function
 				this.compareKeys = (a: BTreeKey, b: BTreeKey): number => this.compareCompositeKeysWithOrder(a, b, pkCols.map(c => c.desc), pkCols.map(c => c.collation));
 				this.rowidToKeyMap = new Map();
 			}
 		}
 
-		// Initialize BTree if not already done
-		// Or re-initialize if key structure changed (which setColumns implies)
+		// Initialize BTree with key/compare functions
 		this.data = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
 	}
 	// ----------------------------------------------------
@@ -238,7 +232,7 @@ export class MemoryTable extends VirtualTable {
 	findPathByRowid(rowid: bigint): Path<BTreeKey, MemoryTableRow> | null {
 		// TODO: Check pending buffers (especially if rowid maps to an updated key)
 		if (!this.data) return null;
-		if (!this.rowidToKeyMap && this.columns.length > 0) { // Check if it's a non-rowid key table
+		if (!this.rowidToKeyMap && this.columns.length > 0 && this.primaryKeyColumnIndices.length > 0) { // Check if it's a non-rowid key table
 			// This case should use rowidToKeyMap, error if map is missing
 			console.error(`MemoryTable ${this.tableName}: Attempt to find by rowid without rowidToKeyMap on a keyed table.`);
 			return null;
@@ -636,6 +630,293 @@ export class MemoryTable extends VirtualTable {
 		this.rowidToKeyMap = null;
 	}
 	// --------------------------------------------
+
+	// --- Add internal schema modification methods ---
+
+	/** @internal Adds a new column to the table schema and data */
+	_addColumn(columnDef: ColumnDef): void {
+		if (this.isReadOnly()) {
+			throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		}
+		if (!this.data) throw new Error("MemoryTable BTree not initialized.");
+
+		const newColNameLower = columnDef.name.toLowerCase();
+		if (this.columns.some(c => c.name.toLowerCase() === newColNameLower)) {
+			throw new SqliteError(`Duplicate column name: ${columnDef.name}`, StatusCode.ERROR);
+		}
+
+		// TODO: Parse default value and NOT NULL constraints from columnDef.constraints
+		const defaultValue = null; // For now, default to NULL
+
+		// Create ColumnSchema from ColumnDef
+		const newColumnSchema = columnDefToSchema(columnDef);
+		const newColumnAffinity = getAffinity(columnDef.dataType); // Get affinity from original type
+
+		// 1. Update Schema Definitions
+		const oldColumns = [...this.columns];
+		const oldTableSchema = this.tableSchema;
+		// Push to internal columns using determined affinity
+		this.columns.push({ name: newColumnSchema.name, type: newColumnAffinity, collation: newColumnSchema.collation });
+
+		// Rebuild TableSchema (simplest way to update map and keep immutable pattern)
+		if (oldTableSchema) {
+			const updatedColumnsSchema = [...oldTableSchema.columns, newColumnSchema];
+			this.tableSchema = Object.freeze({
+				...oldTableSchema,
+				columns: updatedColumnsSchema,
+				columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
+				// PK definition doesn't change
+			});
+		}
+
+		// 2. Update Data (Slow part!)
+		try {
+			// Apply to main BTree
+			const updatedRows: MemoryTableRow[] = [];
+			for (const path of this.data.ascending(this.data.first())) {
+				const row = this.data.at(path);
+				if (row) {
+					const newRow = { ...row, [newColumnSchema.name]: defaultValue };
+					updatedRows.push(newRow); // Store updated rows
+					this.data.deleteAt(path); // Remove old row
+					if (this.rowidToKeyMap && this.keyFromEntry(row) !== row._rowid_) { // Only delete if not rowid keyed
+						this.rowidToKeyMap.delete(row._rowid_);
+					}
+				}
+			}
+			// Re-insert updated rows
+			for (const row of updatedRows) {
+				this.data.insert(row);
+				if (this.rowidToKeyMap && this.keyFromEntry(row) !== row._rowid_) { // Only add if not rowid keyed
+					this.rowidToKeyMap.set(row._rowid_, this.keyFromEntry(row));
+				}
+			}
+
+			// Apply to pending transaction buffers (add the new column with default value)
+			if (this.inTransaction) {
+				const addProp = (row: Record<string, any>) => { row[newColumnSchema.name] = defaultValue; };
+				this.pendingInserts?.forEach(addProp);
+				this.pendingUpdates?.forEach(update => { addProp(update.oldRow); addProp(update.newRow); });
+				this.pendingDeletes?.forEach(del => { addProp(del.oldRow); });
+				this.savepoints.forEach(sp => {
+					sp.inserts?.forEach(addProp);
+					sp.updates?.forEach(update => { addProp(update.oldRow); addProp(update.newRow); });
+					sp.deletes?.forEach(del => { addProp(del.oldRow); });
+				});
+			}
+			console.log(`MemoryTable ${this.tableName}: Added column ${newColumnSchema.name}`);
+
+		} catch (e) {
+			// Rollback schema changes on error
+			this.columns = oldColumns;
+			this.tableSchema = oldTableSchema;
+			// Data rollback is hard here, maybe need temp BTree? For now, log error.
+			console.error(`Error adding column ${columnDef.name}, data might be inconsistent.`, e);
+			throw new SqliteError(`Failed to add column ${columnDef.name}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
+		}
+	}
+
+	/** @internal Drops a column from the table schema and data */
+	_dropColumn(columnName: string): void {
+		if (this.isReadOnly()) {
+			throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		}
+		if (!this.data) throw new Error("MemoryTable BTree not initialized.");
+
+		const colNameLower = columnName.toLowerCase();
+		const colIndex = this.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
+		if (colIndex === -1) {
+			throw new SqliteError(`Column not found: ${columnName}`, StatusCode.ERROR);
+		}
+
+		// Check if it's part of the primary key using tableSchema
+		if (!this.tableSchema) {
+			// Should not happen if table is initialized correctly
+			throw new SqliteError(`Internal Error: Table schema not found for ${this.tableName} during DROP COLUMN.`, StatusCode.INTERNAL);
+		}
+		// Fix PK Check:
+		if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
+			throw new SqliteError(`Cannot drop column '${columnName}' because it is part of the primary key`, StatusCode.CONSTRAINT);
+		}
+		// Check table constraints (CHECK, FOREIGN KEY) - requires parsing schema TODO
+
+		// 1. Update Schema Definitions
+		const oldColumns = [...this.columns];
+		const oldTableSchema = this.tableSchema; // Keep ref to full old schema
+		this.columns.splice(colIndex, 1);
+		// Adjust PK indices stored directly on the instance (needed for keyFromEntry etc. if PK remains)
+		this.primaryKeyColumnIndices = this.primaryKeyColumnIndices.map(idx => idx > colIndex ? idx - 1 : idx);
+
+		// Rebuild TableSchema
+		const updatedColumnsSchema = oldTableSchema.columns.filter((_, idx) => idx !== colIndex);
+		// Rebuild PK definition with updated indices
+		const updatedPkDefinition = oldTableSchema.primaryKeyDefinition.map(def => {
+			// This logic is slightly flawed if multiple PK columns exist and one *before* the target is also dropped
+			// But for single drop, it works.
+			return { ...def, index: def.index > colIndex ? def.index - 1 : def.index };
+		});
+
+		this.tableSchema = Object.freeze({
+			...oldTableSchema,
+			columns: updatedColumnsSchema,
+			columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
+			primaryKeyDefinition: updatedPkDefinition,
+		});
+
+		// 2. Update Data (Slow part!)
+		try {
+			// Apply to main BTree
+			const updatedRows: MemoryTableRow[] = [];
+			for (const path of this.data.ascending(this.data.first())) {
+				const row = this.data.at(path);
+				if (row) {
+					const { [columnName]: _, ...newRow } = row; // Remove property
+					updatedRows.push(newRow as MemoryTableRow);
+					this.data.deleteAt(path);
+					// Fix comparison: Check if key is NOT rowid
+					if (this.rowidToKeyMap && this.keyFromEntry(row) !== row._rowid_) {
+						this.rowidToKeyMap.delete(row._rowid_);
+					}
+				}
+			}
+			// Re-insert updated rows
+			for (const row of updatedRows) {
+				this.data.insert(row);
+				// Fix comparison: Check if key is NOT rowid
+				if (this.rowidToKeyMap && this.keyFromEntry(row) !== row._rowid_) {
+					this.rowidToKeyMap.set(row._rowid_, this.keyFromEntry(row));
+				}
+			}
+
+			// Apply to pending transaction buffers
+			if (this.inTransaction) {
+				const removeProp = (row: Record<string, any>) => { delete row[columnName]; };
+				this.pendingInserts?.forEach(removeProp);
+				this.pendingUpdates?.forEach(update => { removeProp(update.oldRow); removeProp(update.newRow); });
+				this.pendingDeletes?.forEach(del => { removeProp(del.oldRow); });
+				// Savepoints
+				this.savepoints.forEach(sp => {
+					sp.inserts?.forEach(removeProp);
+					sp.updates?.forEach(update => { removeProp(update.oldRow); removeProp(update.newRow); });
+					sp.deletes?.forEach(del => { removeProp(del.oldRow); });
+				});
+			}
+			console.log(`MemoryTable ${this.tableName}: Dropped column ${columnName}`);
+		} catch (e) {
+			// Rollback schema changes
+			this.columns = oldColumns;
+			this.tableSchema = oldTableSchema;
+			this.primaryKeyColumnIndices = oldTableSchema?.primaryKeyDefinition.map(def => def.index) ?? [];
+			// Data rollback is hard...
+			console.error(`Error dropping column ${columnName}, data might be inconsistent.`, e);
+			throw new SqliteError(`Failed to drop column ${columnName}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
+		}
+	}
+
+	/** @internal Renames a column in the table schema and data */
+	_renameColumn(oldName: string, newName: string): void {
+		if (this.isReadOnly()) {
+			throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		}
+		if (!this.data) throw new Error("MemoryTable BTree not initialized.");
+
+		const oldNameLower = oldName.toLowerCase();
+		const newNameLower = newName.toLowerCase();
+		const colIndex = this.columns.findIndex(c => c.name.toLowerCase() === oldNameLower);
+
+		if (colIndex === -1) {
+			throw new SqliteError(`Column not found: ${oldName}`, StatusCode.ERROR);
+		}
+		if (this.columns.some(c => c.name.toLowerCase() === newNameLower)) {
+			throw new SqliteError(`Duplicate column name: ${newName}`, StatusCode.ERROR);
+		}
+		// Check if it's part of the primary key - DISALLOW for now due to complexity
+		if (!this.tableSchema) {
+			throw new SqliteError(`Internal Error: Table schema not found for ${this.tableName} during RENAME COLUMN.`, StatusCode.INTERNAL);
+		}
+		// Fix PK Check:
+		if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
+			throw new SqliteError(`Cannot rename column '${oldName}' because it is part of the primary key`, StatusCode.CONSTRAINT);
+			// If allowed later, need to update keyFromEntry, compareKeys, rowidToKeyMap, and rebuild BTree potentially
+		}
+		// Check table constraints (CHECK, FOREIGN KEY refs *to* this col) - TODO
+
+		// 1. Update Schema Definitions
+		const oldColumns = [...this.columns];
+		const oldTableSchema = this.tableSchema; // Keep ref to full old schema
+
+		this.columns[colIndex].name = newName; // Update name in place
+
+		// Rebuild TableSchema
+		const updatedColumnsSchema = oldTableSchema.columns.map((colSchema, idx) =>
+			idx === colIndex ? { ...colSchema, name: newName } : colSchema
+		);
+		this.tableSchema = Object.freeze({
+			...oldTableSchema,
+			columns: updatedColumnsSchema,
+			columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
+			// PK def doesn't change name if rename is disallowed for PKs
+		});
+
+		// 2. Update Data (Slow part!)
+		try {
+			// Apply to main BTree (key doesn't change since we disallow PK rename)
+			for (const path of this.data.ascending(this.data.first())) {
+				const row = this.data.at(path);
+				if (row && Object.prototype.hasOwnProperty.call(row, oldName)) {
+					const { [oldName]: value, ...rest } = row;
+					const newRow = { ...rest, [newName]: value };
+					// Don't need to delete/re-insert if key didn't change, just update
+					this.data.updateAt(path, newRow as MemoryTableRow);
+				} else if (row) {
+					// Row exists but somehow missing oldName? Keep it as is.
+					console.warn(`Rowid ${row._rowid_} missing column ${oldName} during rename to ${newName}`);
+				}
+			}
+
+			// Apply to pending transaction buffers
+			if (this.inTransaction) {
+				const renameProp = (row: Record<string, any>) => {
+					if (Object.prototype.hasOwnProperty.call(row, oldName)) {
+						row[newName] = row[oldName];
+						delete row[oldName];
+					}
+				};
+				this.pendingInserts?.forEach(renameProp);
+				this.pendingUpdates?.forEach(update => { renameProp(update.oldRow); renameProp(update.newRow); });
+				this.pendingDeletes?.forEach(del => { renameProp(del.oldRow); });
+				// Savepoints
+				this.savepoints.forEach(sp => {
+					sp.inserts?.forEach(renameProp);
+					sp.updates?.forEach(update => { renameProp(update.oldRow); renameProp(update.newRow); });
+					sp.deletes?.forEach(del => { renameProp(del.oldRow); });
+				});
+			}
+			console.log(`MemoryTable ${this.tableName}: Renamed column ${oldName} to ${newName}`);
+		} catch (e) {
+			// Rollback schema changes
+			this.columns = oldColumns;
+			this.tableSchema = oldTableSchema;
+			// Data rollback (rename properties back)
+			try {
+				for (const path of this.data.ascending(this.data.first())) {
+					const row = this.data.at(path);
+					if (row && Object.prototype.hasOwnProperty.call(row, newName)) {
+						row[oldName] = row[newName];
+						delete row[newName];
+						this.data.updateAt(path, row);
+					}
+				}
+				// TODO: Rollback buffers too
+			} catch (rollbackError) {
+				console.error("Error rolling back rename operation data:", rollbackError);
+			}
+			console.error(`Error renaming column ${oldName} to ${newName}, data might be inconsistent.`, e);
+			throw new SqliteError(`Failed to rename column ${oldName} to ${newName}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
+		}
+	}
+
+	// -----------------------------------------
 }
 
 /**
@@ -650,26 +931,30 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
 		console.log(`MemoryTableModule xCreate: Creating table ${schemaName}.${tableName}`);
 		const table = new MemoryTable(db, this, schemaName, tableName, options.readOnly ?? false);
-		table.setColumns(options.columns, options.primaryKey ?? []); // Use provided primary key or default (rowid handled in setColumns)
+		// Set columns on the table instance first. This populates table.columns.
+		table.setColumns(options.columns, options.primaryKey ?? []);
 
-		// Now build the full TableSchema and attach it
+		// Now, build the full ColumnSchema array for the TableSchema object.
+		// Use the *options* passed in, as they contain the original dataType string needed by columnDefToSchema.
+		const finalColumnSchemas = options.columns.map((optCol, index) => columnDefToSchema({
+			name: optCol.name,
+			dataType: optCol.type, // Pass the original string type name from options
+			constraints: [
+				// Synthesize constraints based on options for the helper
+				...(options.primaryKey?.some(pk => pk.index === index) ? [{ type: 'primaryKey' as const }] : []),
+				...(optCol.collation ? [{ type: 'collate' as const, collation: optCol.collation }] : [])
+				// TODO: Add NOT NULL, DEFAULT constraints if available in options
+			]
+		}));
+
+		// Now build the full TableSchema and attach it to the table instance
 		const tableSchema: TableSchema = {
 			name: tableName,
 			schemaName: schemaName,
-			columns: table.columns.map((col, index) => ({ // Build ColumnSchema array
-				name: col.name,
-				affinity: col.type,
-				notNull: false, // TODO: Parse from options.columns if needed?
-				primaryKey: options.primaryKey?.some(pk => pk.index === index) ?? false,
-				pkOrder: (options.primaryKey?.findIndex(pk => pk.index === index) ?? -1) + 1,
-				defaultValue: null, // TODO: Parse from options.columns?
-				collation: col.collation ?? 'BINARY',
-				hidden: false,
-				generated: false,
-			} as ColumnSchema)), // Cast needed as ColumnSchema might have more fields later
-			columnIndexMap: buildColumnIndexMap(table.columns.map(c => c as any)), // Needs Cast for now
+			columns: finalColumnSchemas, // Use the generated schemas
+			columnIndexMap: buildColumnIndexMap(finalColumnSchemas), // Build map from generated schemas
 			primaryKeyDefinition: options.primaryKey ?? [],
-			checkConstraints: options.checkConstraints ?? [], // <-- Assign check constraints
+			checkConstraints: options.checkConstraints ?? [],
 			isVirtual: true,
 			vtabModule: this,
 			vtabInstance: table,
@@ -679,7 +964,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		};
 		table.tableSchema = Object.freeze(tableSchema);
 
-		// Register the table (if needed by module lifecycle, e.g., for cross-table lookups within module)
+		// No need to register in this.tables map for transient memory tables
 		// this.tables.set(`${schemaName}.${tableName}`.toLowerCase(), table);
 
 		return table;
@@ -1266,6 +1551,33 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		table.rollbackToSavepoint(savepointIndex);
 	}
 	// -----------------------
+
+	// --- Add xAlterSchema implementation ---
+	async xAlterSchema(table: MemoryTable, changeInfo: SchemaChangeInfo): Promise<void> {
+		const lockKey = `MemoryTable.SchemaChange:${table.schemaName}.${table.tableName}`;
+		const release = await Latches.acquire(lockKey);
+		console.log(`MemoryTableModule xAlterSchema: Acquired lock for ${table.tableName}, change type: ${changeInfo.type}`);
+		try {
+			switch (changeInfo.type) {
+				case 'addColumn':
+					table._addColumn(changeInfo.columnDef);
+					break;
+				case 'dropColumn':
+					table._dropColumn(changeInfo.columnName);
+					break;
+				case 'renameColumn':
+					table._renameColumn(changeInfo.oldName, changeInfo.newName);
+					break;
+				default:
+					// Should be exhaustive based on SchemaChangeInfo type
+					throw new SqliteError(`Unsupported schema change type: ${(changeInfo as any).type}`, StatusCode.INTERNAL);
+			}
+		} finally {
+			release();
+			console.log(`MemoryTableModule xAlterSchema: Released lock for ${table.tableName}`);
+		}
+	}
+	// --------------------------------------
 
 	// --- Add seekRelative method ---
 	async seekRelative(cursor: MemoryTableCursor, basePointer: any, offset: number): Promise<SqlValue | null> {

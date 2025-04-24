@@ -12,6 +12,10 @@ import { Parser } from "../parser/parser";
 import type { SqlValue } from "../common/types";
 import type { BaseModuleConfig } from '../vtab/module';
 import type { Expression } from '../parser/ast';
+import type { P4SchemaChange } from "../vdbe/instruction";
+import type { VirtualTableModule } from "../vtab/module";
+import { columnDefToSchema } from "../schema/table";
+import type { ColumnSchema } from "../schema/column";
 
 // Define local interfaces if not exported/importable easily
 interface MemoryTableConfig extends BaseModuleConfig {
@@ -307,7 +311,105 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 }
 
 export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTableStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "ALTER TABLE (no-op in VDBE)");
+	const db = compiler.db;
+	const schemaName = stmt.table.schema || db.schemaManager.getCurrentSchemaName();
+	const tableName = stmt.table.name;
+
+	try {
+		const tableSchema = db.schemaManager.getTable(schemaName, tableName);
+
+		if (!tableSchema) {
+			throw new SqliteError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+		if ('selectAst' in tableSchema) {
+			throw new SqliteError(`${tableName} is a view, not a table`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+
+		if (stmt.action.type === 'renameTable') {
+			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `ALTER TABLE ${tableName} RENAME TO ${stmt.action.newName} (handled by DB layer)`);
+			compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after RENAME TABLE`);
+
+		} else if (stmt.action.type === 'addColumn' || stmt.action.type === 'dropColumn' || stmt.action.type === 'renameColumn') {
+			if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule) {
+				throw new SqliteError(`ALTER TABLE ${stmt.action.type} is only supported for virtual tables`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			}
+			const vtabModule = tableSchema.vtabModule as VirtualTableModule<any, any, any>;
+			if (typeof vtabModule.xAlterSchema !== 'function') {
+				throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' does not support ALTER TABLE ${stmt.action.type}`, StatusCode.MISUSE, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			}
+
+			let changeInfo: P4SchemaChange;
+			let columnName: string = '';
+
+			switch (stmt.action.type) {
+				case 'addColumn':
+					columnName = stmt.action.column.name;
+					if (tableSchema.columns.some((c: ColumnSchema) => c.name.toLowerCase() === columnName.toLowerCase())) {
+						throw new SqliteError(`duplicate column name: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+					}
+					if (stmt.action.column.constraints?.some(c => c.type === 'primaryKey' || c.type === 'unique' || c.type === 'foreignKey')) {
+						console.warn(`ALTER TABLE ADD COLUMN with complex constraints (PK, UNIQUE, FK) might not be fully enforced by all VTabs.`);
+					}
+					changeInfo = { type: 'addColumn', columnDef: stmt.action.column };
+					break;
+
+				case 'dropColumn':
+					columnName = stmt.action.name;
+					const colIndex = tableSchema.columnIndexMap.get(columnName.toLowerCase());
+					if (colIndex === undefined) {
+						throw new SqliteError(`no such column: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+					}
+					if (tableSchema.primaryKeyDefinition.some((pk: { index: number; desc: boolean }) => pk.index === colIndex)) {
+						throw new SqliteError(`cannot drop column ${columnName}: is part of primary key`, StatusCode.CONSTRAINT, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+					}
+					changeInfo = { type: 'dropColumn', columnName: columnName };
+					break;
+
+				case 'renameColumn':
+					const oldName = stmt.action.oldName;
+					const newName = stmt.action.newName;
+					columnName = oldName;
+					const oldColIndex = tableSchema.columnIndexMap.get(oldName.toLowerCase());
+					if (oldColIndex === undefined) {
+						throw new SqliteError(`no such column: ${oldName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+					}
+					if (tableSchema.columns.some((c: ColumnSchema) => c.name.toLowerCase() === newName.toLowerCase())) {
+						throw new SqliteError(`duplicate column name: ${newName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+					}
+					if (tableSchema.primaryKeyDefinition.some((pk: { index: number; desc: boolean }) => pk.index === oldColIndex)) {
+						throw new SqliteError(`cannot rename column ${oldName}: is part of primary key`, StatusCode.CONSTRAINT, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+					}
+					changeInfo = { type: 'renameColumn', oldName: oldName, newName: newName };
+					break;
+			}
+
+			let cursorIdx = -1;
+			for (const [idx, schema] of compiler.tableSchemas.entries()) {
+				if (schema === tableSchema) {
+					cursorIdx = idx;
+					break;
+				}
+			}
+			if (cursorIdx === -1) {
+				cursorIdx = compiler.allocateCursor();
+				compiler.tableSchemas.set(cursorIdx, tableSchema);
+				compiler.emit(Opcode.OpenRead, cursorIdx, 0, 0, tableSchema, 0, `Open VTab ${tableName} for ALTER`);
+			} else {
+				compiler.emit(Opcode.OpenRead, cursorIdx, 0, 0, tableSchema, 0, `Re-Open VTab ${tableName} for ALTER`);
+			}
+
+			compiler.emit(Opcode.SchemaChange, cursorIdx, 0, 0, changeInfo, 0, `ALTER TABLE ${tableName} ${stmt.action.type}`);
+			compiler.emit(Opcode.Close, cursorIdx, 0, 0, null, 0, `Close VTab cursor after ALTER`);
+			compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after ALTER TABLE`);
+
+		} else {
+			throw new SqliteError(`Unsupported ALTER TABLE action type: ${(stmt.action as any).type}`, StatusCode.INTERNAL);
+		}
+
+	} catch (e: any) {
+		if (e instanceof SqliteError) throw e;
+		throw new SqliteError(`Error processing ALTER TABLE: ${e.message}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
+	}
 }
 
 export function compileBeginStatement(compiler: Compiler, stmt: AST.BeginStmt): void {

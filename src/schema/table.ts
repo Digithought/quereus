@@ -2,6 +2,9 @@ import type { ColumnSchema } from './column';
 import type { VirtualTableModule } from '../vtab/module';
 import type { VirtualTable } from '../vtab/table';
 import type { Expression } from '../parser/ast';
+import { type ColumnDef, type ColumnConstraint } from '../parser/ast';
+import { getAffinity } from './column';
+import { SqlDataType } from '../common/types';
 
 /**
  * Represents the schema definition of a table (real or virtual).
@@ -64,3 +67,73 @@ export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): 
 export function getPrimaryKeyIndices(pkDef: ReadonlyArray<{ index: number; desc: boolean }>): ReadonlyArray<number> {
 	return Object.freeze(pkDef.map(def => def.index));
 }
+
+// --- Add columnDefToSchema helper --- //
+
+/**
+ * Converts a parsed ColumnDef AST node into a runtime ColumnSchema object.
+ * This simplifies creating schemas programmatically or during VTab creation.
+ */
+export function columnDefToSchema(def: ColumnDef): ColumnSchema {
+	const schema: Partial<ColumnSchema> & { name: string } = {
+		name: def.name,
+		affinity: getAffinity(def.dataType),
+		notNull: false,
+		primaryKey: false,
+		pkOrder: 0,
+		defaultValue: null, // DefaultValue type is now Expression | null
+		collation: 'BINARY', // Default collation
+		hidden: false,
+		generated: false,
+	};
+
+	let pkConstraint: Extract<ColumnConstraint, { type: 'primaryKey' }> | undefined;
+
+	for (const constraint of def.constraints ?? []) {
+		switch (constraint.type) {
+			case 'primaryKey':
+				schema.primaryKey = true;
+				// pkOrder needs context of table constraints, handled later if needed
+				pkConstraint = constraint as Extract<ColumnConstraint, { type: 'primaryKey' }>;
+				// Handle ON CONFLICT for PK
+				// schema.notNull = true; // PK implies NOT NULL - Handled below
+				break;
+			case 'notNull':
+				schema.notNull = true;
+				// Handle ON CONFLICT for NOT NULL
+				break;
+			case 'unique':
+				// schema.unique = true; // Add if needed
+				// Handle ON CONFLICT
+				break;
+			case 'default':
+				schema.defaultValue = constraint.expr; // Assign Expression directly
+				break;
+			case 'collate':
+				schema.collation = constraint.collation;
+				break;
+			case 'generated':
+				schema.generated = true;
+				// Store expression? Stored vs Virtual?
+				break;
+			// CHECK and FOREIGN KEY are typically table constraints or require more context
+		}
+	}
+
+	// SQLite rule: If a column has type INTEGER PRIMARY KEY, it maps to rowid
+	// Also, PK implies NOT NULL unless it's INTEGER PRIMARY KEY
+	if (schema.primaryKey) {
+		const isIntegerPk = schema.affinity === SqlDataType.INTEGER && pkConstraint;
+		if (!isIntegerPk) {
+			schema.notNull = true;
+		}
+	}
+
+	// Assign a default pkOrder if it's a PK but order isn't specified elsewhere
+	if (schema.primaryKey && schema.pkOrder === 0) {
+		schema.pkOrder = 1; // Assume order 1 if single PK
+	}
+
+	return schema as ColumnSchema;
+}
+// ------------------------------------ //
