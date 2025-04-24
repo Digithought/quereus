@@ -133,6 +133,8 @@ export enum Opcode {
 	RangeScan = 164,    // p1=cursor, p2=startPtrReg, p3=endPtrReg, p4=P4RangeScanInfo { frameDef, orderByIndices, orderByDirs, orderByColls, currPtrReg, partStartPtrReg, startBoundReg?, endBoundReg? }
 	Lag = 165,          // p1=cursor, p2=targetReg, p3=offsetReg, p4=P4LagLeadInfo { currRowPtrReg, argColIdx }, p5=defaultReg
 	Lead = 166,         // p1=cursor, p2=targetReg, p3=offsetReg, p4=P4LagLeadInfo { currRowPtrReg, argColIdx }, p5=defaultReg
+	SeekRelative = 167, // p1=cursorIdx, p2=jumpAddr, p3=offsetReg, p5=1/0 (jump fail/success)
+	SeekRowid = 168,    // p1=cursorIdx, p2=jumpAddr, p3=rowidReg, p5=1/0 (jump fail/success)
 
 } // End Opcode Enum
 

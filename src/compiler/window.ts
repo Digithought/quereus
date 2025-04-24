@@ -7,6 +7,7 @@ import { SqlDataType } from '../common/types';
 import { expressionToString } from '../util/ddl-stringify';
 import { SqliteError } from '../common/errors';
 import { StatusCode } from '../common/constants';
+import { getExpressionAffinity } from './utils'; // Assuming this helper exists or can be created
 
 /** Information about the sorter used for window functions */
 export interface WindowSorterInfo {
@@ -46,6 +47,39 @@ export function setupWindowSorter(compiler: Compiler, stmt: AST.SelectStmt): Win
 		throw new SqliteError("Internal error: setupWindowSorter called with no window functions found in SELECT list.", StatusCode.INTERNAL);
 	}
 
+	// --- Check for RANGE offset requirements ---
+	let requiresRangeOffsetCheck = false;
+	let rangeFrameDef: AST.WindowFrame | undefined | null = undefined;
+	for (const winExpr of allWindowFunctions) {
+		const windowDef = winExpr.window;
+		if (windowDef && windowDef.frame && windowDef.frame.type === 'range') {
+			rangeFrameDef = windowDef.frame;
+			if ((rangeFrameDef.start.type === 'preceding' || rangeFrameDef.start.type === 'following') && (rangeFrameDef.start as any).value) {
+				requiresRangeOffsetCheck = true;
+				break;
+			}
+			if (rangeFrameDef.end && (rangeFrameDef.end.type === 'preceding' || rangeFrameDef.end.type === 'following') && (rangeFrameDef.end as any).value) {
+				requiresRangeOffsetCheck = true;
+				break;
+			}
+		}
+	}
+
+	const firstWindowDef = allWindowFunctions[0].window;
+	const orderByClause = firstWindowDef?.orderBy;
+
+	if (requiresRangeOffsetCheck) {
+		if (!orderByClause || orderByClause.length !== 1) {
+			throw new SqliteError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
+		}
+		const orderByExpr = orderByClause[0].expr;
+		const affinity = getExpressionAffinity(compiler, orderByExpr);
+		if (affinity !== SqlDataType.INTEGER && affinity !== SqlDataType.REAL && affinity !== SqlDataType.NUMERIC) {
+			throw new SqliteError(`RANGE with offset requires ORDER BY clause with NUMERIC affinity (inferred: ${SqlDataType[affinity]})`, StatusCode.ERROR);
+		}
+	}
+	// --- End check ---
+
 	const exprToSorterIndex = new Map<string, number>();
 	const windowResultPlaceholders = new Map<AST.WindowFunctionExpr, { sorterIndex: number; resultReg: number }>();
 	const sorterColumns: ColumnSchema[] = [];
@@ -77,8 +111,6 @@ export function setupWindowSorter(compiler: Compiler, stmt: AST.SelectStmt): Win
 	// Assumption: All window functions in a SELECT share the same PARTITION BY and ORDER BY clause.
 	// We take the definition from the first window function.
 	// TODO: Verify this assumption or handle variations if needed.
-	const firstWindowDef = allWindowFunctions[0].window;
-
 	if (firstWindowDef?.partitionBy) {
 		firstWindowDef.partitionBy.forEach((expr: AST.Expression) => {
 			const idx = addExprToSorter(expr);

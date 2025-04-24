@@ -1098,6 +1098,105 @@ export class Vdbe {
 				break;
 			}
 
+			// --- New SeekRelative opcode ---
+			case Opcode.SeekRelative: {
+				const cIdx = p1; // Cursor index
+				const addrJump = p2; // Address to jump to based on seek result
+				const offsetReg = p3; // Register containing seek offset
+				const invertJump = p5 === 1; // If true, jump on failure; if false, jump on success
+
+				const cursor = this.vdbeCursors[cIdx];
+				if (!cursor || !cursor.instance) {
+					throw new SqliteError(`SeekRelative: Invalid cursor index ${cIdx}`, StatusCode.INTERNAL);
+				}
+
+				const offsetValue = this._getMemValue(offsetReg);
+				let offset: number;
+				if (typeof offsetValue === 'number') {
+					offset = offsetValue;
+				} else if (typeof offsetValue === 'bigint') {
+					offset = Number(offsetValue);
+				} else {
+					throw new SqliteError(`SeekRelative: Offset value must be a number or bigint, got ${typeof offsetValue}`, StatusCode.INTERNAL);
+				}
+
+				let seekResult = false;
+				try {
+					// Try to use xSeekRelative if available
+					const module = cursor.vtab?.module;
+					if (module && typeof (module as any).xSeekRelative === 'function') {
+						seekResult = await (module as any).xSeekRelative(cursor.instance, offset);
+						cursor.isValid = seekResult;
+						cursor.isEof = !seekResult;
+					} else {
+						// Module doesn't support xSeekRelative
+						throw new SqliteError(`Module for cursor ${cIdx} does not support xSeekRelative`, StatusCode.INTERNAL);
+					}
+				} catch (e) {
+					this.handleVTabError(e, `cursor ${cIdx}`, 'xSeekRelative', this.programCounter);
+					return; // Halt on VTab error
+				}
+
+				// Jump logic
+				if ((seekResult && !invertJump) || (!seekResult && invertJump)) {
+					this.programCounter = addrJump;
+				} else {
+					this.programCounter++;
+				}
+				return;
+			}
+
+			// --- New SeekRowid opcode ---
+			case Opcode.SeekRowid: {
+				const cIdx = p1; // Cursor index
+				const addrJump = p2; // Address to jump to based on seek result
+				const rowidReg = p3; // Register containing target rowid
+				const invertJump = p5 === 1; // If true, jump on failure; if false, jump on success
+
+				const cursor = this.vdbeCursors[cIdx];
+				if (!cursor || !cursor.instance) {
+					throw new SqliteError(`SeekRowid: Invalid cursor index ${cIdx}`, StatusCode.INTERNAL);
+				}
+
+				const rowidValue = this._getMemValue(rowidReg);
+				let targetRowid: bigint;
+				if (typeof rowidValue === 'bigint') {
+					targetRowid = rowidValue;
+				} else if (typeof rowidValue === 'number' && Number.isInteger(rowidValue)) {
+					targetRowid = BigInt(rowidValue);
+				} else {
+					throw new SqliteError(`SeekRowid: Target rowid must be an integer or bigint, got ${typeof rowidValue}`, StatusCode.INTERNAL);
+				}
+
+				let seekResult = false;
+				try {
+					const module = cursor.vtab?.module;
+					if (module && typeof (module as any).xSeekToRowid === 'function') {
+						seekResult = await (module as any).xSeekToRowid(cursor.instance, targetRowid);
+						cursor.isValid = seekResult;
+						cursor.isEof = !seekResult;
+					} else {
+						// Module doesn't support xSeekToRowid - treat as failure
+						console.warn(`SeekRowid: Module for cursor ${cIdx} does not implement xSeekToRowid.`);
+						seekResult = false;
+						cursor.isValid = false;
+						cursor.isEof = true;
+						// Optionally, could implement fallback scan here, but maybe better to require it?
+					}
+				} catch (e) {
+					this.handleVTabError(e, `cursor ${cIdx}`, 'xSeekToRowid', this.programCounter);
+					return; // Halt on VTab error
+				}
+
+				// Jump logic
+				if ((seekResult && !invertJump) || (!seekResult && invertJump)) {
+					this.programCounter = addrJump;
+				} else {
+					this.programCounter++;
+				}
+				return;
+			}
+
 			default:
 				throw new SqliteError(`Unsupported opcode: ${Opcode[inst.opcode]} (${inst.opcode})`, StatusCode.INTERNAL);
 		}

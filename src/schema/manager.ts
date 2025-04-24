@@ -237,6 +237,7 @@ export class SchemaManager {
 		const tableSchema: TableSchema = {
 			name: tableName,
 			schemaName: schema.name,
+			checkConstraints: [],
 			columns: Object.freeze(placeholderColumns),
 			columnIndexMap: Object.freeze(buildColumnIndexMap(placeholderColumns)),
 			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)), // Use helper

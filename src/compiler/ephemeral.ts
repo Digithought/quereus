@@ -27,6 +27,7 @@ export function createEphemeralSchemaHelper(
 	const tableSchema: TableSchema = {
 		name: `ephemeral_${cursorIdx}`,
 		schemaName: 'temp',
+		checkConstraints: [],
 		columns: Object.freeze(columns),
 		columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
 		primaryKeyDefinition: pkDef,
