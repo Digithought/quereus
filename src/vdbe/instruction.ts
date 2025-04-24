@@ -2,6 +2,7 @@ import { Opcode } from '../common/constants';
 import type { SqlValue } from '../common/types';
 import type { FunctionSchema } from '../schema/function';
 import type { TableSchema } from '../schema/table';
+import type { ConflictResolution } from '../common/constants';
 import type * as AST from '../parser/ast';
 
 /**
@@ -83,6 +84,16 @@ export interface P4SortKey {
 	/** Optional collation names for each key column */
 	collations?: ReadonlyArray<string | undefined>;
 	type: 'sortkey';
+}
+
+/** P4 operand for Opcode.VUpdate */
+export interface P4Update {
+	/** Conflict resolution strategy */
+	onConflict: ConflictResolution;
+	/** The schema of the table being updated */
+	table: TableSchema;
+	/** Discriminant type */
+	type: 'update';
 }
 
 // Add more P4 types as needed (P4_MEM, P4_INTARRAY, P4_SUBPROGRAM, etc.)

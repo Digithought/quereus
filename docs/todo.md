@@ -5,9 +5,7 @@ This list outlines the remaining major features and refinements needed to make S
 **I. Core Query Processing Features:**
 
 *   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
-*   [P] **Views:** Parser supports `CREATE VIEW`. Need to implement view definition storage and substitution during compilation.
 *   [ ] **Full `ALTER TABLE` Support:** Implement execution for ADD/DROP/RENAME COLUMN (Parser supports, compiler is no-op). `RENAME TABLE` seems partially handled via VTab `xRename`.
-*   [ ] **Full Constraint Enforcement:** Implement engine-level or VTab-level enforcement for `CHECK`, `NOT NULL`, `FOREIGN KEY` (if applicable), `DEFAULT`.
 
 **II. VDBE & Compiler Core:**
 

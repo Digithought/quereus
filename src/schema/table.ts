@@ -16,6 +16,8 @@ export interface TableSchema {
 	columnIndexMap: ReadonlyMap<string, number>;
 	/** Definition of the primary key, including order and direction */
 	primaryKeyDefinition: ReadonlyArray<{ index: number; desc: boolean }>;
+	/** CHECK constraints defined on the table or its columns */
+	checkConstraints: ReadonlyArray<{ name?: string, expr: import('../parser/ast').Expression }>;
 	/** Whether the table is a virtual table */
 	isVirtual: boolean;
 	/** If virtual, reference to the registered module */

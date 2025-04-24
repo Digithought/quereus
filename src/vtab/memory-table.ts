@@ -21,16 +21,22 @@ import { compareSqlValues } from '../util/comparison';
 // --- Add P4SortKey import ---
 import type { P4SortKey } from '../vdbe/instruction'; // Import P4SortKey
 // ------------------------------------
+// --- Add imports needed for TableSchema/Check Constraints ---
+import { buildColumnIndexMap, findPrimaryKeyDefinition, type TableSchema } from '../schema/table';
+import type { ColumnSchema } from '../schema/column';
+import type { Expression } from '../parser/ast';
+// -----------------------------------------------------------
 
 // Type for rows stored internally, always including the SQLite rowid
 export type MemoryTableRow = Record<string, SqlValue> & { _rowid_: bigint };
 // Type alias for the BTree key (can be rowid, single PK value, or array for composite PK)
 type BTreeKey = bigint | number | string | SqlValue[];
 
-// --- Define Configuration Interface ---
+// --- Define Configuration Interface --- Add checkConstraints
 interface MemoryTableConfig extends BaseModuleConfig {
 	columns: { name: string, type: SqlDataType, collation?: string }[];
 	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
+	checkConstraints?: ReadonlyArray<{ name?: string, expr: Expression }>; // <-- Add check constraints
 	readOnly?: boolean;
 }
 // ------------------------------------
@@ -117,6 +123,7 @@ export class MemoryTable extends VirtualTable {
 	public rowidToKeyMap: Map<bigint, BTreeKey> | null = null;
 	public isSorter: boolean = false;
 	// public sorterColumnMap: ColumnSchema[] | null = null; // Removed usage
+	public tableSchema: TableSchema | undefined = undefined; // Store TableSchema instance
 
 	// --- Transaction State --- (Public for cursor access for now)
 	public inTransaction: boolean = false;
@@ -641,31 +648,57 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	constructor() {}
 
 	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
-		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
-		if (this.tables.has(tableKey)) {
-			throw new SqliteError(`Memory table '${tableName}' already exists in schema '${schemaName}'`, StatusCode.ERROR);
-		}
+		console.log(`MemoryTableModule xCreate: Creating table ${schemaName}.${tableName}`);
+		const table = new MemoryTable(db, this, schemaName, tableName, options.readOnly ?? false);
+		table.setColumns(options.columns, options.primaryKey ?? []); // Use provided primary key or default (rowid handled in setColumns)
 
-		const table = new MemoryTable(db, this, schemaName, tableName, !!options.readOnly);
-		this.tables.set(tableKey, table);
+		// Now build the full TableSchema and attach it
+		const tableSchema: TableSchema = {
+			name: tableName,
+			schemaName: schemaName,
+			columns: table.columns.map((col, index) => ({ // Build ColumnSchema array
+				name: col.name,
+				affinity: col.type,
+				notNull: false, // TODO: Parse from options.columns if needed?
+				primaryKey: options.primaryKey?.some(pk => pk.index === index) ?? false,
+				pkOrder: (options.primaryKey?.findIndex(pk => pk.index === index) ?? -1) + 1,
+				defaultValue: null, // TODO: Parse from options.columns?
+				collation: col.collation ?? 'BINARY',
+				hidden: false,
+				generated: false,
+			} as ColumnSchema)), // Cast needed as ColumnSchema might have more fields later
+			columnIndexMap: buildColumnIndexMap(table.columns.map(c => c as any)), // Needs Cast for now
+			primaryKeyDefinition: options.primaryKey ?? [],
+			checkConstraints: options.checkConstraints ?? [], // <-- Assign check constraints
+			isVirtual: true,
+			vtabModule: this,
+			vtabInstance: table,
+			vtabAuxData: pAux,
+			vtabArgs: [], // Args are implicitly handled by options here
+			vtabModuleName: moduleName
+		};
+		table.tableSchema = Object.freeze(tableSchema);
 
-		// Directly set schema from options
-		table.setColumns(options.columns, options.primaryKey ?? []);
+		// Register the table (if needed by module lifecycle, e.g., for cross-table lookups within module)
+		// this.tables.set(`${schemaName}.${tableName}`.toLowerCase(), table);
 
-		console.log(`MemoryTable '${tableName}' created (Schema set directly from options)`);
 		return table;
 	}
 
 	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
-		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
-		const existingTable = this.tables.get(tableKey);
-		if (existingTable) {
-			console.log(`MemoryTable '${tableName}' connected (found existing instance)`);
-			return existingTable;
+		console.log(`MemoryTableModule xConnect: Connecting to table ${schemaName}.${tableName}`);
+		// In a persistent scenario, we'd load state here.
+		// For now, xConnect behaves like xCreate if the table doesn't exist in our map.
+		// This map isn't really used yet as state isn't persisted.
+		const existing = this.tables.get(`${schemaName}.${tableName}`.toLowerCase());
+		if (existing) {
+			return existing;
 		}
-		// If not existing, create it synchronously using xCreate
-		console.log(`MemoryTable '${tableName}' not found, creating new instance via xConnect...`);
-		return this.xCreate(db, pAux, moduleName, schemaName, tableName, options);
+		// Table doesn't exist in our transient map, create it.
+		// This implies CREATE TABLE must have run before connecting, which is standard.
+		// Let's throw if connect is called for a non-existent table to be stricter.
+		throw new SqliteError(`Internal error: Attempted to connect to non-existent memory table ${schemaName}.${tableName}`, StatusCode.INTERNAL);
+		// return this.xCreate(db, pAux, moduleName, schemaName, tableName, options);
 	}
 
 	async xDisconnect(table: MemoryTable): Promise<void> {

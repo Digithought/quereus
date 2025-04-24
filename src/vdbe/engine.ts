@@ -1,5 +1,5 @@
 import { StatusCode, type SqlValue, SqlDataType } from '../common/types';
-import { SqliteError } from '../common/errors';
+import { SqliteError, ConstraintError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
@@ -636,7 +636,7 @@ export class Vdbe {
 				if (p1 !== StatusCode.OK) {
 					this.error = new SqliteError(p4 ?? `Execution halted with code ${p1}`, p1);
 				}
-				return;
+				break;
 
 			case Opcode.Noop: break; // Do nothing
 
@@ -670,6 +670,13 @@ export class Vdbe {
 				break;
 			}
 
+			// --- NEW Generic Constraint Violation Opcode ---
+			case Opcode.ConstraintViolation: { // P4=ErrorContextString
+				const context = (typeof p4 === 'string' && p4) ? p4 : 'Constraint failed';
+				throw new ConstraintError(context);
+			}
+			// --- END Generic Constraint Violation Opcode ---
+
 			// --- New Opcode.StackPop ---
 			case Opcode.StackPop: { // P1=Count
 				const count = p1;
@@ -682,6 +689,11 @@ export class Vdbe {
 				break;
 			}
 			// -------------------------
+
+			case Opcode.Halt: {
+				this.done = true;
+				break;
+			}
 
 			// --- Window Function Frame Opcodes ---
 			case Opcode.MaxPtr: { // p1=ptrRegA, p2=ptrRegB, p3=targetReg
