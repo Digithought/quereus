@@ -8,6 +8,7 @@ import type { FunctionSchema } from '../schema/function'; // Import FunctionSche
 import type { P5AggFrameInfo } from '../vdbe/instruction'; // Import P5AggFrameInfo
 import type { P4RangeScanInfo } from '../vdbe/instruction'; // Import P4RangeScanInfo
 import type { P4LagLeadInfo } from '../vdbe/instruction'; // Import P4LagLeadInfo
+import { StatusCode } from '../common/types'; // Import StatusCode
 
 /**
  * Compiles the pass for calculating window functions after the data
@@ -60,11 +61,16 @@ export function compileWindowFunctionsPass(
 	let regStartBoundValue = 0;
 	let regEndBoundValue = 0;
 
+	// Allocate partition start rowid register here
+	let regPartitionStartRowid = 0;
+
 	if (frameDefinition) {
 		regFrameStartPtr = compiler.allocateMemoryCells(1);
 		regFrameEndPtr = compiler.allocateMemoryCells(1);
 		regCurrentRowPtr = compiler.allocateMemoryCells(1);
 		regPartitionStartPtr = compiler.allocateMemoryCells(1);
+		// Allocate partition start rowid register if frame definition exists
+		regPartitionStartRowid = compiler.allocateMemoryCells(1);
 		// Allocate registers for bound values if they are expressions
 		if (frameDefinition.start.type === 'preceding' || frameDefinition.start.type === 'following') {
 			if( (frameDefinition.start as { value: AST.Expression }).value ){ // Check if value exists
@@ -81,6 +87,7 @@ export function compileWindowFunctionsPass(
 		compiler.emit(Opcode.Null, 0, regFrameEndPtr, 1, null, 0, "Init Frame End Ptr");
 		compiler.emit(Opcode.Null, 0, regCurrentRowPtr, 1, null, 0, "Init Current Row Ptr");
 		compiler.emit(Opcode.Null, 0, regPartitionStartPtr, 1, null, 0, "Init Partition Start Ptr");
+		compiler.emit(Opcode.Null, 0, regPartitionStartRowid, 1, null, 0, "Init Partition Start Rowid");
 	}
 
 	// Jump addresses
@@ -140,6 +147,8 @@ export function compileWindowFunctionsPass(
 			compiler.emit(Opcode.Null, 0, regFrameEndPtr, 1, null, 0, "Reset Frame End Ptr");
 			// Set Partition Start Pointer to the current row's pointer
 			compiler.emit(Opcode.Move, regCurrentRowPtr, regPartitionStartPtr, 1, null, 0, "Set Partition Start Ptr");
+			// Store Partition Start Rowid
+			compiler.emit(Opcode.VRowid, winSortCursor, regPartitionStartRowid, 0, null, 0, "Store Partition Start Rowid");
 		}
 		compiler.emit(Opcode.Move, regWinRowKeys, regPrevPartitionKeys, numPartitionKeys, null, 0, `Update Prev Part Keys`);
 		compiler.emit(Opcode.Goto, 0, addrPostPartitionReset, 0, null, 0, "Continue after partition reset");
@@ -332,26 +341,41 @@ export function compileWindowFunctionsPass(
 			case 'max':
 				if (!frameDefinition) {
 					compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `WARN: Default frame assumed for ${functionName}`);
-					// Assume default frame (e.g., RANGE UNBOUNDED PRECEDING) - calculation still needs frame boundaries
-					// For now, just placeholder
-					compiler.emit(Opcode.Null, 0, resultReg, 1, null, 0, `Placeholder ${functionName} (Default Frame)`);
-				} else {
-					// Placeholder: Aggregate over frame
-					// Need opcode like AggFrame(cursor, func, frame_start_ptr, frame_end_ptr, value_col_idx, result_reg)
+					// Assume default frame (range unbounded preceding to current row)
+					// Use our helper function for frame-based aggregates
 					const argColIndex = winExpr.function.args.length > 0 ?
-						windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0])) : -1; // Get sorter index for arg
-					const funcDef = compiler.db._findFunction(functionName, winExpr.function.args.length);
-					if (!funcDef) throw new Error(`Window function ${functionName} not found`);
+						windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0])) ?? -1 : -1;
 
-					const p5Info: P5AggFrameInfo = {
-						type: 'aggframeinfo',
-						funcDef: funcDef,
-						argIdx: argColIndex ?? -1,
-						nArgs: winExpr.function.args.length
+					// *** Create a default frame definition for the call ***
+					const defaultFrameDef: AST.WindowFrame = {
+						type: 'rows', // Defaulting to ROWS behavior for now
+						start: { type: 'unboundedPreceding' },
+						end: { type: 'currentRow' }
 					};
-					// compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `AggFrame ${winSortCursor} func ${functionName} start ${regFrameStartPtr} end ${regFrameEndPtr} arg_idx ${argColIndex} -> ${resultReg}`);
-					compiler.emit(Opcode.AggFrame, winSortCursor, resultReg, regFrameStartPtr, p5Info, regFrameEndPtr, `AggFrame ${functionName} -> ${resultReg}`); // Correct: p4=p5Info, p5=frameEndPtrReg
-					// compiler.emit(Opcode.Null, 0, resultReg, 1, null, 0, `Placeholder ${functionName}`); // Remove placeholder null
+
+					// Use the new frame aggregate helper with the default definition
+					compileFrameAggregate(compiler, winSortCursor, functionName, winExpr, resultReg, defaultFrameDef, regStartBoundValue, regEndBoundValue, regPartitionStartRowid, numPartitionKeys, partitionKeyIndices, regWinRowKeys,
+						// *** Pass Order By Info from windowSorterInfo ***
+						{
+							keyIndices: orderKeyIndices,
+							directions: windowSorterInfo.sortKeyP4.directions.slice(numPartitionKeys),
+							collations: windowSorterInfo.sortKeyP4.collations?.slice(numPartitionKeys)
+						},
+						windowSorterInfo);
+				} else {
+					// Similar to above, but with explicit frame definition
+					const argColIndex = winExpr.function.args.length > 0 ?
+						windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0])) ?? -1 : -1;
+
+					// Use the helper function
+					compileFrameAggregate(compiler, winSortCursor, functionName, winExpr, resultReg, frameDefinition, regStartBoundValue, regEndBoundValue, regPartitionStartRowid, numPartitionKeys, partitionKeyIndices, regWinRowKeys,
+						// *** Pass Order By Info from windowSorterInfo ***
+						{
+							keyIndices: orderKeyIndices,
+							directions: windowSorterInfo.sortKeyP4.directions.slice(numPartitionKeys),
+							collations: windowSorterInfo.sortKeyP4.collations?.slice(numPartitionKeys)
+						},
+						windowSorterInfo);
 				}
 				break;
 
@@ -359,16 +383,98 @@ export function compileWindowFunctionsPass(
 			case 'last_value':
 				if (!frameDefinition) {
 					compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `WARN: Default frame assumed for ${functionName}`);
-					compiler.emit(Opcode.Null, 0, resultReg, 1, null, 0, `Placeholder ${functionName} (Default Frame)`);
-				} else {
+					// For first_value with default frame (unbounded preceding to current):
+					// - Save current position
+					// - Rewind cursor to start
+					// - Get the value
+					// - Restore cursor
+					// For last_value with default frame (unbounded preceding to current):
+					// - Current row is the last row, so just get the current value
+
 					const argColIndex = windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0]));
-					if (argColIndex === undefined) throw new Error(`${functionName} argument expression not found in sorter: ${expressionToString(winExpr.function.args[0])}`);
-					const targetPtrReg = (functionName === 'first_value') ? regFrameStartPtr : regFrameEndPtr;
-					// Placeholder: Get value from specific row in frame
-					// Need opcode like FrameValue(cursor, ptr_reg, value_col_idx, result_reg)
-					// compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `FrameValue ${winSortCursor} ptr ${targetPtrReg} arg_idx ${argColIndex} -> ${resultReg}`);
-					compiler.emit(Opcode.FrameValue, winSortCursor, resultReg, targetPtrReg, argColIndex, 0, `FrameValue ${functionName} -> ${resultReg}`); // p4=argColIndex, p5=0
-					// compiler.emit(Opcode.Null, 0, resultReg, 1, null, 0, `Placeholder ${functionName}`); // Remove placeholder null
+					if (argColIndex === undefined) {
+						throw new SqliteError(`${functionName} argument expression not found in sorter: ${expressionToString(winExpr.function.args[0])}`, StatusCode.ERROR);
+					}
+
+					if (functionName === 'first_value') {
+						// Save current position
+						const savedPosReg = compiler.allocateMemoryCells(1);
+						// Not needed if we're using SeekRelative which manages cursor pos internally
+
+						// Rewind to start of partition/frame
+						compiler.emit(Opcode.Rewind, winSortCursor, 0, 0, null, 0, "Rewind for FIRST_VALUE");
+
+						// Get the first value
+						compiler.emit(Opcode.VColumn, winSortCursor, argColIndex, resultReg, null, 0, "Get FIRST_VALUE");
+
+						// We can leave the cursor at this position since window functions
+						// are calculated one at a time per row in the Window pass
+					} else { // last_value with default frame
+						// Current row is the last row of the default frame
+						compiler.emit(Opcode.VColumn, winSortCursor, argColIndex, resultReg, null, 0, "Get LAST_VALUE (default=current row)");
+					}
+				} else {
+					// Similar to above but with explicit frame definition
+					const argColIndex = windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0]));
+					if (argColIndex === undefined) {
+						throw new SqliteError(`${functionName} argument expression not found in sorter: ${expressionToString(winExpr.function.args[0])}`, StatusCode.ERROR);
+					}
+
+					if (functionName === 'first_value') {
+						// Save current position
+						const savedPosReg = compiler.allocateMemoryCells(1);
+						const curPosReg = compiler.allocateMemoryCells(1);
+						compiler.emit(Opcode.Integer, 0, curPosReg, 0, null, 0, "Save starting position counter");
+
+						// Calculate frame start position
+						const frameStartAddrResolved = compileFrameBoundary(
+							compiler, winSortCursor, frameDefinition.start, true,
+							regStartBoundValue, regPartitionStartRowid,
+							frameDefinition.type === 'range',
+							// *** Pass Order By Info ***
+							{
+								keyIndices: orderKeyIndices,
+								directions: windowSorterInfo.sortKeyP4.directions.slice(numPartitionKeys),
+								collations: windowSorterInfo.sortKeyP4.collations?.slice(numPartitionKeys)
+							},
+							numPartitionKeys, partitionKeyIndices, regWinRowKeys // Pass partition info
+						);
+						compiler.resolveAddress(frameStartAddrResolved);
+
+						// Get the value at frame start
+						compiler.emit(Opcode.VColumn, winSortCursor, argColIndex, resultReg, null, 0, "Get FIRST_VALUE at frame start");
+
+						// *** Restore original position ***
+						compileRestoreCursorPosition(compiler, winSortCursor, savedPosReg, regPartitionStartRowid);
+
+					} else { // last_value
+						// Save current position
+						const savedPosReg = compiler.allocateMemoryCells(1);
+						const curPosReg = compiler.allocateMemoryCells(1);
+						compiler.emit(Opcode.Integer, 0, curPosReg, 0, null, 0, "Save starting position counter");
+
+						// Calculate frame end position based on frame definition
+						const endBound = frameDefinition.end || { type: 'currentRow' };
+						const frameEndAddrResolved = compileFrameBoundary(
+							compiler, winSortCursor, endBound, false,
+							regEndBoundValue, regPartitionStartRowid,
+							frameDefinition.type === 'range',
+							// *** Pass Order By Info ***
+							{
+								keyIndices: orderKeyIndices,
+								directions: windowSorterInfo.sortKeyP4.directions.slice(numPartitionKeys),
+								collations: windowSorterInfo.sortKeyP4.collations?.slice(numPartitionKeys)
+							},
+							numPartitionKeys, partitionKeyIndices, regWinRowKeys // Pass partition info
+						);
+						compiler.resolveAddress(frameEndAddrResolved);
+
+						// Get the value at frame end
+						compiler.emit(Opcode.VColumn, winSortCursor, argColIndex, resultReg, null, 0, "Get LAST_VALUE at frame end");
+
+						// *** Restore original position ***
+						compileRestoreCursorPosition(compiler, winSortCursor, savedPosReg, regPartitionStartRowid);
+					}
 				}
 				break;
 
@@ -379,51 +485,73 @@ export function compileWindowFunctionsPass(
 
 			case 'lag':
 			case 'lead': {
-				// LAG/LEAD ignore the frame clause and use offset relative to current row within partition
-				const args = winExpr.function.args;
-				const argExpr = args[0]; // Required argument
-				const offsetExpr = args.length > 1 ? args[1] : null; // Optional offset
-				const defaultExpr = args.length > 2 ? args[2] : null; // Optional default
+				// NEW IMPLEMENTATION using SeekRelative
+				const cursorIdx = winSortCursor; // The window cursor
+				const resultReg = placeholderInfo.resultReg; // The result register
 
-				// Get sorter index for the main argument
-				const argColIndex = windowSorterInfo.exprToSorterIndex.get(expressionToString(argExpr));
-				if (argColIndex === undefined) {
-					throw new Error(`${functionName} argument expression not found in sorter: ${expressionToString(argExpr)}`);
-				}
-
-				// Allocate registers and compile offset/default expressions
-				let regOffset: number;
+				// Need to compile offset, which could be a constant or expression
+				const offsetExpr = winExpr.function.args.length > 1 ? winExpr.function.args[1] : null;
+				let offsetReg = compiler.allocateMemoryCells(1); // Change to 'let' instead of 'const'
 				if (offsetExpr) {
-					regOffset = compiler.allocateMemoryCells(1);
-					compiler.compileExpression(offsetExpr, regOffset);
-					// TODO: Add check to ensure offset is a positive integer?
+					compiler.compileExpression(offsetExpr, offsetReg);
 				} else {
 					// Default offset is 1
-					regOffset = compiler.allocateMemoryCells(1);
-					compiler.emit(Opcode.Integer, 1, regOffset, 0, null, 0, "Default offset 1");
+					compiler.emit(Opcode.Integer, 1, offsetReg, 0, null, 0, "Default offset 1");
 				}
 
-				let regDefault: number;
+				// Compile default value
+				const defaultExpr = winExpr.function.args.length > 2 ? winExpr.function.args[2] : null;
+				const defaultReg = compiler.allocateMemoryCells(1);
 				if (defaultExpr) {
-					regDefault = compiler.allocateMemoryCells(1);
-					compiler.compileExpression(defaultExpr, regDefault);
+					compiler.compileExpression(defaultExpr, defaultReg);
 				} else {
-					// Default default is NULL
-					regDefault = compiler.allocateMemoryCells(1);
-					compiler.emit(Opcode.Null, 0, regDefault, 0, null, 0, "Default default NULL");
+					compiler.emit(Opcode.Null, 0, defaultReg, 0, null, 0, "Default value NULL");
 				}
 
-				// Emit the specific opcode
-				const opcode = (functionName === 'lag') ? Opcode.Lag : Opcode.Lead;
-				const lagLeadInfo: P4LagLeadInfo = {
-					type: 'lagleadinfo',
-					currRowPtrReg: regCurrentRowPtr, // Pass the current row pointer register
-					argColIdx: argColIndex
-				};
-				//compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `Placeholder: Get ${functionName} value relative to current row -> reg ${resultReg}`);
-				// compiler.emit(opcode, winSortCursor, resultReg, regOffset, regDefault, argColIndex, `${functionName} -> ${resultReg}`); // Old call
-				compiler.emit(opcode, winSortCursor, resultReg, regOffset, lagLeadInfo, regDefault, `${functionName} -> ${resultReg}`); // Correct: p4=info, p5=defaultReg
-				// compiler.emit(Opcode.Null, 0, resultReg, 1, null, 0, `Placeholder ${functionName}`); // Remove placeholder
+				// If LAG, negate the offset
+				if (functionName === 'lag') {
+					const negOffsetReg = compiler.allocateMemoryCells(1);
+					compiler.emit(Opcode.Negative, offsetReg, negOffsetReg, 0, null, 0, "Negate offset for LAG");
+					offsetReg = negOffsetReg;
+				}
+
+				// Get column index for the argument
+				const argExpr = winExpr.function.args[0];
+				const argColIndex = windowSorterInfo.exprToSorterIndex.get(expressionToString(argExpr));
+				if (argColIndex === undefined) {
+					throw new SqliteError(`${functionName} argument expression not found in sorter: ${expressionToString(argExpr)}`, StatusCode.ERROR);
+				}
+
+				// Create jump addresses for branching
+				const addrSeekFailed = compiler.allocateAddress();
+				const addrRestore = compiler.allocateAddress(); // Address to jump to for restoring position
+
+				// *** Save current cursor position ***
+				const savedPosReg = compiler.allocateMemoryCells(1);
+				compileSaveCursorPosition(compiler, cursorIdx, savedPosReg);
+
+				// Attempt to seek relative by the offset
+				// P5=1 means jump to addrSeekFailed if SeekRelative returns false
+				compiler.emit(Opcode.SeekRelative, cursorIdx, addrSeekFailed, offsetReg, null, 1,
+					`${functionName}: Seek ${functionName === 'lead' ? "forward" : "backward"} by offset`);
+
+				// Seek successful - get the column value
+				compiler.emit(Opcode.VColumn, cursorIdx, argColIndex, resultReg, null, 0,
+					`${functionName}: Get column value`);
+
+				// Skip default value logic and go directly to restore
+				compiler.emit(Opcode.Goto, 0, addrRestore, 0, null, 0, `${functionName}: Skip default value`);
+
+				// Seek failed - use default value
+				compiler.resolveAddress(addrSeekFailed);
+				compiler.emit(Opcode.SCopy, defaultReg, resultReg, 0, null, 0,
+					`${functionName}: Use default value`);
+
+				// *** Restore cursor position ***
+				compiler.resolveAddress(addrRestore);
+				compileRestoreCursorPosition(compiler, cursorIdx, savedPosReg /*, regPartitionStartRowid */);
+				// TODO: Pass regPartitionStartRowid if needed for restore optimization
+
 				break;
 			}
 
@@ -443,4 +571,697 @@ export function compileWindowFunctionsPass(
 	compiler.emit(Opcode.Goto, 0, addrWindowLoopStart, 0, null, 0, "Goto Next Window Calc");
 
 	compiler.resolveAddress(addrWindowLoopEnd);
+}
+
+/**
+ * Helper function to compute a frame boundary (start or end) using the new SeekRelative approach.
+ * This generates VDBE code to position the cursor at the appropriate frame boundary.
+ *
+ * @param compiler The compiler instance
+ * @param cursorIdx The window sorter cursor index
+ * @param bound The frame bound definition (e.g., "CURRENT ROW", "3 PRECEDING")
+ * @param isFrameStart Whether this is the start bound (true) or end bound (false)
+ * @param boundValueReg Register with the bound value if available (for N PRECEDING/FOLLOWING)
+ * @param partitionStartRowidReg Optional register with info about partition start
+ * @param isRangeFrame Whether this is a RANGE frame (vs ROWS frame)
+ * @param orderByInfo Optional information about ORDER BY keys (required for RANGE frames)
+ * @param numPartitionKeys Number of partition keys
+ * @param partitionKeyIndices Indices of partition keys in sorter
+ * @param regOriginalPartKeys Register holding original partition keys
+ * @returns The jump address to continue execution after boundary computation
+ */
+function compileFrameBoundary(
+	compiler: Compiler,
+	cursorIdx: number,
+	bound: AST.WindowFrameBound,
+	isFrameStart: boolean,
+	boundValueReg?: number,
+	partitionStartRowidReg?: number,
+	isRangeFrame: boolean = false,
+	orderByInfo?: {
+		keyIndices: number[],
+		directions: boolean[],
+		collations?: (string | undefined)[]
+	},
+	numPartitionKeys?: number,
+	partitionKeyIndices?: number[],
+	regOriginalPartKeys?: number
+): number {
+	const addrContinue = compiler.allocateAddress();
+	const savedPosReg = compiler.allocateMemoryCells(1);
+
+	compileSaveCursorPosition(compiler, cursorIdx, savedPosReg);
+
+	if (isRangeFrame) {
+		if (!orderByInfo || orderByInfo.keyIndices.length === 0) {
+			throw new SqliteError("RANGE frames require an ORDER BY clause.", StatusCode.ERROR);
+		}
+
+		// Registers for RANGE logic
+		const regCurrentOrderByKeys = compiler.allocateMemoryCells(orderByInfo.keyIndices.length);
+		const regTargetValue = compiler.allocateMemoryCells(1); // For N PRECEDING/FOLLOWING target
+		const regIterOrderByKey = compiler.allocateMemoryCells(1); // Key of row during iteration
+		const regIsDone = compiler.allocateMemoryCells(1); // Flag for loop termination
+		const addrLoopStart = compiler.allocateAddress();
+		const addrLoopExit = compiler.allocateAddress();
+		const addrPeerLoopStart = compiler.allocateAddress();
+		const addrPeerLoopExit = compiler.allocateAddress();
+
+		// Get ORDER BY keys for the *original* current row
+		for (let i = 0; i < orderByInfo.keyIndices.length; i++) {
+			compiler.emit(Opcode.VColumn, cursorIdx, orderByInfo.keyIndices[i], regCurrentOrderByKeys + i, null, 0, "RANGE: Get current row ORDER BY key");
+		}
+
+		if (bound.type === 'preceding' || bound.type === 'following') {
+			// --- RANGE N PRECEDING / N FOLLOWING ---
+			if (orderByInfo.keyIndices.length !== 1) {
+				throw new SqliteError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
+			}
+			if (!boundValueReg) {
+				throw new SqliteError(`Missing bound value register for RANGE ${bound.type}`, StatusCode.INTERNAL);
+			}
+
+			const regCurrentKey = regCurrentOrderByKeys; // Since only one key
+			const regN = boundValueReg;
+			const orderByColIdx = orderByInfo.keyIndices[0];
+
+			// TODO: Check if ORDER BY key is numeric affinity? Assume it is for now.
+
+			// Calculate target value: current_key - N (PRECEDING) or current_key + N (FOLLOWING)
+			if (bound.type === 'preceding') {
+				compiler.emit(Opcode.Subtract, regN, regCurrentKey, regTargetValue, null, 0, "RANGE: target = current_key - N");
+			} else { // following
+				compiler.emit(Opcode.Add, regN, regCurrentKey, regTargetValue, null, 0, "RANGE: target = current_key + N");
+			}
+
+			// Determine seek direction and comparison operator
+			const seekOffset = (bound.type === 'preceding') ? -1 : 1;
+			const comparisonOp = (bound.type === 'preceding') ? Opcode.Ge : Opcode.Le; // Find first row >= target (PRECEDING), last row <= target (FOLLOWING)
+			const coll = orderByInfo.collations?.[0];
+			const p4Coll = coll ? { type: 'coll' as const, name: coll } : null;
+
+			// Loop: Seek, Compare, Check Peers
+			compiler.emit(Opcode.Integer, 0, regIsDone, 0, null, 0, "RANGE: Init IsDone flag");
+			compiler.resolveAddress(addrLoopStart);
+
+			// Get current iteration row's ORDER BY key
+			compiler.emit(Opcode.VColumn, cursorIdx, orderByColIdx, regIterOrderByKey, null, 0, "RANGE: Get iter ORDER BY key");
+
+			// Compare iteration key with target value
+			// If condition met (Ge for PRECEDING, Le for FOLLOWING), jump to peer check
+			compiler.emit(comparisonOp, regIterOrderByKey, addrPeerLoopStart, regTargetValue, p4Coll, 0x01, "RANGE: Check if iter_key meets target");
+
+			// Condition not met yet, try seeking further
+			const tempOffsetReg = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.Integer, seekOffset, tempOffsetReg, 0, null, 0, `RANGE: Set seek offset ${seekOffset}`);
+			// Jump to loop exit if seek fails (hit partition boundary/EOF)
+			compiler.emit(Opcode.SeekRelative, cursorIdx, addrLoopExit, tempOffsetReg, null, 1, "RANGE: Seek next row");
+
+			// Seek succeeded, loop again
+			compiler.emit(Opcode.Goto, 0, addrLoopStart, 0, null, 0, "RANGE: Loop seek");
+
+			// --- Peer Check --- (Entered when comparisonOp condition was met)
+			compiler.resolveAddress(addrPeerLoopStart);
+			// We are potentially on a row satisfying the boundary value.
+			// Now, find the *first* peer (if PRECEDING) or *last* peer (if FOLLOWING).
+			const peerSeekOffset = (bound.type === 'preceding') ? -1 : 1; // Seek backward for PRECEDING, forward for FOLLOWING
+			const peerRegCurrentKey = compiler.allocateMemoryCells(1); // Key of the row *at the boundary*
+			const peerRegNeighborKey = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.SCopy, regIterOrderByKey, peerRegCurrentKey, 0, null, 0, "RANGE: Store boundary key");
+
+			// Loop to find edge of peer group
+			const addrPeerLoopContinue = compiler.allocateAddress();
+			compiler.resolveAddress(addrPeerLoopContinue);
+
+			// *** ADD Partition Check at start of Peer Loop ***
+			// *** Check if partition parameters are defined before using ***
+			if (numPartitionKeys !== undefined && numPartitionKeys > 0 && partitionKeyIndices && regOriginalPartKeys !== undefined) {
+				const regLoopPartKeys = compiler.allocateMemoryCells(numPartitionKeys);
+				for (let i = 0; i < numPartitionKeys; i++) {
+					compiler.emit(Opcode.VColumn, cursorIdx, partitionKeyIndices[i], regLoopPartKeys + i, null, 0, `RANGE PEER: Read Part Key ${i}`);
+					// Compare with the *original* partition key. If different, exit peer loop.
+					compiler.emit(Opcode.Ne, regLoopPartKeys + i, addrPeerLoopExit, regOriginalPartKeys + i, null, 0x01, `RANGE PEER: Check Part Key ${i} != Original`);
+				}
+			} // *** End check for defined parameters ***
+			// *** End Partition Check ***
+
+			// Save position before trying to seek to neighbor
+			const peerSavedPosReg = compiler.allocateMemoryCells(1);
+
+			const peerTempOffsetReg = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.Integer, peerSeekOffset, peerTempOffsetReg, 0, null, 0, `RANGE: Set peer seek offset ${peerSeekOffset}`);
+			// Jump to peer loop exit if seek fails
+			compiler.emit(Opcode.SeekRelative, cursorIdx, addrPeerLoopExit, peerTempOffsetReg, null, 1, "RANGE: Seek to neighbor peer");
+
+			// Seek succeeded, get neighbor's key
+			compiler.emit(Opcode.VColumn, cursorIdx, orderByColIdx, peerRegNeighborKey, null, 0, "RANGE: Get neighbor ORDER BY key");
+
+			// Compare neighbor key with the boundary key
+			// If they are *different*, the previous row (peerSavedPosReg) was the edge peer.
+			compiler.emit(Opcode.Ne, peerRegNeighborKey, addrPeerLoopExit, peerRegCurrentKey, p4Coll, 0x01, "RANGE: Check if neighbor is still a peer");
+
+			// Neighbor is still a peer, continue loop
+			compiler.emit(Opcode.Goto, 0, addrPeerLoopContinue, 0, null, 0, "RANGE: Continue seeking peers");
+
+			// --- Exit Peer Loop ---
+			compiler.resolveAddress(addrPeerLoopExit);
+			// Restore position to the last valid peer found (before the non-peer or seek failure)
+			compileRestoreCursorPosition(compiler, cursorIdx, peerSavedPosReg);
+			compiler.emit(Opcode.Integer, 1, regIsDone, 0, null, 0, "RANGE: Flag boundary found"); // Mark as done
+			compiler.emit(Opcode.Goto, 0, addrLoopExit, 0, null, 0, "RANGE: Boundary peer found, exit main loop");
+
+			// --- Exit Main Loop ---
+			compiler.resolveAddress(addrLoopExit);
+			// If regIsDone is 0, the loop finished without finding a suitable boundary row.
+			// What should the position be? Depends on PRECEDING/FOLLOWING.
+			// PRECEDING: If not found, boundary is start of partition.
+			// FOLLOWING: If not found, boundary is end of partition (EOF).
+			const addrBoundarySet = compiler.allocateAddress();
+			compiler.emit(Opcode.IfTrue, regIsDone, addrBoundarySet, 0, null, 0, "RANGE: Skip default boundary if found");
+
+			if (bound.type === 'preceding') {
+				if (partitionStartRowidReg) {
+					compileRestoreCursorPosition(compiler, cursorIdx, partitionStartRowidReg);
+				} else {
+					compiler.emit(Opcode.Rewind, cursorIdx, 0, 0, null, 0, "RANGE PRECEDING: Rewind (no boundary found)");
+				}
+			} else { // following
+				// Seek to EOF (VNext loop)
+				const addrEofLoop = compiler.allocateAddress();
+				const addrEofDone = compiler.allocateAddress();
+				compiler.resolveAddress(addrEofLoop);
+				compiler.emit(Opcode.VNext, cursorIdx, addrEofDone, 0, null, 0, `RANGE FOLLOWING: Seek EOF`);
+				compiler.emit(Opcode.Goto, 0, addrEofLoop, 0, null, 0);
+				compiler.resolveAddress(addrEofDone);
+			}
+			compiler.resolveAddress(addrBoundarySet);
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "RANGE N PRECEDING/FOLLOWING: Jump to continue");
+
+		} else if (bound.type === 'currentRow') {
+			// --- RANGE CURRENT ROW --- (Peer finding)
+			const regPeerOrderByKeys = compiler.allocateMemoryCells(orderByInfo.keyIndices.length);
+			const addrPeerLoop = compiler.allocateAddress();
+			const addrEndOfPeers = compiler.allocateAddress();
+			const seekOffset = isFrameStart ? -1 : 1; // Seek backwards for start, forwards for end
+			const jumpOnFail = 1;
+
+			compiler.resolveAddress(addrPeerLoop);
+			const tempOffsetReg = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.Integer, seekOffset, tempOffsetReg, 0, null, 0, `RANGE CUR ROW: Set seek offset ${seekOffset}`);
+			compiler.emit(Opcode.SeekRelative, cursorIdx, addrEndOfPeers, tempOffsetReg, null, jumpOnFail, "RANGE CUR ROW: Seek one step for peers");
+
+			// Check if the new row is a peer
+			for (let i = 0; i < orderByInfo.keyIndices.length; i++) {
+				compiler.emit(Opcode.VColumn, cursorIdx, orderByInfo.keyIndices[i], regPeerOrderByKeys + i, null, 0, "RANGE CUR ROW: Get peer ORDER BY key");
+				const coll = orderByInfo.collations?.[i];
+				const p4Coll = coll ? { type: 'coll' as const, name: coll } : null;
+				compiler.emit(Opcode.Ne, regCurrentOrderByKeys + i, addrEndOfPeers, regPeerOrderByKeys + i, p4Coll, 0x01, "RANGE CUR ROW: Check if peer keys differ");
+			}
+			compiler.emit(Opcode.Goto, 0, addrPeerLoop, 0, null, 0, "RANGE CUR ROW: Continue seeking peers");
+
+			compiler.resolveAddress(addrEndOfPeers);
+			if (isFrameStart) {
+				// Step forward onto the first peer
+				const tempOffsetRegFwd = compiler.allocateMemoryCells(1);
+				compiler.emit(Opcode.Integer, 1, tempOffsetRegFwd, 0, null, 0, "RANGE CUR ROW: Set seek offset 1");
+				compiler.emit(Opcode.SeekRelative, cursorIdx, addrContinue, tempOffsetRegFwd, null, 1, "RANGE CUR ROW: Step forward onto first peer"); // Jump on fail is okay
+			}
+			// For end bound, we are already on the last peer
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "RANGE CURRENT ROW: Boundary found");
+
+		} else if (bound.type === 'unboundedPreceding' && isFrameStart) {
+			// Fall through to ROWS logic below
+		} else if (bound.type === 'unboundedFollowing' && !isFrameStart) {
+			// Fall through to ROWS logic below
+		} else {
+			// Should not happen if previous checks worked
+			throw new SqliteError(`Unhandled RANGE bound type: ${bound.type}`, StatusCode.INTERNAL);
+		}
+	} // --- End of isRangeFrame block ---
+
+	// --- ROWS Frame Logic OR Fallback for UNBOUNDED RANGE ---
+	switch (bound.type) {
+		case 'unboundedPreceding':
+			if (partitionStartRowidReg) {
+				compileRestoreCursorPosition(compiler, cursorIdx, partitionStartRowidReg);
+			} else {
+				compiler.emit(Opcode.Rewind, cursorIdx, 0, 0, null, 0, "Rewind to start (UNBOUNDED PRECEDING)");
+			}
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "UNBOUNDED PRECEDING: Jump to continue");
+			break;
+		case 'unboundedFollowing':
+			const addrEofLoop = compiler.allocateAddress();
+			const addrEofDone = compiler.allocateAddress();
+			compiler.resolveAddress(addrEofLoop);
+			compiler.emit(Opcode.VNext, cursorIdx, addrEofDone, 0, null, 0, `Seek EOF (UNBOUNDED FOLLOWING)`);
+			compiler.emit(Opcode.Goto, 0, addrEofLoop, 0, null, 0);
+			compiler.resolveAddress(addrEofDone);
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "UNBOUNDED FOLLOWING: Jump to continue");
+			break;
+		case 'currentRow':
+			if (isRangeFrame) {
+				// Already handled above
+				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "RANGE CURRENT ROW: Already processed");
+			} else {
+				// ROWS CURRENT ROW: Restore position
+				compileRestoreCursorPosition(compiler, cursorIdx, savedPosReg);
+				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "ROWS CURRENT ROW: Jump to continue after restore");
+			}
+			break;
+		case 'preceding':
+			if (isRangeFrame) throw new Error("RANGE PRECEDING N NYI - Should have been caught earlier");
+			if (!boundValueReg) throw new SqliteError("Missing bound value register for PRECEDING", StatusCode.INTERNAL);
+			const negatedOffsetReg = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.Negative, boundValueReg, negatedOffsetReg, 0, null, 0, "Negate PRECEDING offset");
+			const addrPrecedingSeekFailed = compiler.allocateAddress();
+			compiler.emit(Opcode.SeekRelative, cursorIdx, addrPrecedingSeekFailed, negatedOffsetReg, null, 1, `Seek PRECEDING (jump on fail)`);
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "PRECEDING: Seek successful");
+			compiler.resolveAddress(addrPrecedingSeekFailed);
+			if (partitionStartRowidReg) {
+				compileRestoreCursorPosition(compiler, cursorIdx, partitionStartRowidReg);
+			} else {
+				compiler.emit(Opcode.Rewind, cursorIdx, 0, 0, null, 0, "Rewind (PRECEDING bound too large)");
+			}
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "PRECEDING: Jump to continue after handling fail");
+			break;
+		case 'following':
+			if (isRangeFrame) throw new Error("RANGE FOLLOWING N NYI - Should have been caught earlier");
+			if (!boundValueReg) throw new SqliteError("Missing bound value register for FOLLOWING", StatusCode.INTERNAL);
+			const addrFollowingSeekFailed = compiler.allocateAddress();
+			compiler.emit(Opcode.SeekRelative, cursorIdx, addrFollowingSeekFailed, boundValueReg, null, 1, `Seek FOLLOWING (jump on fail)`);
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "FOLLOWING: Seek successful");
+			compiler.resolveAddress(addrFollowingSeekFailed);
+			compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0, "FOLLOWING: Jump to continue after EOF");
+			break;
+		default:
+			throw new SqliteError(`Unsupported frame bound type: ${(bound as any).type}`, StatusCode.INTERNAL);
+	}
+
+	compiler.resolveAddress(addrContinue);
+	// The function used to return addrContinue, but maybe void is better?
+	// Let's keep returning it for now in case it's useful downstream.
+	return addrContinue;
+}
+
+/**
+ * Helper function to calculate an aggregate function over a window frame.
+ * Uses cursor navigation to iterate over the frame, applying aggregate steps.
+ *
+ * @param compiler The compiler instance
+ * @param cursor The cursor index
+ * @param funcName The aggregate function name
+ * @param winExpr The original window function expression (for args)
+ * @param resultReg The register to store the result in
+ * @param frameDef The frame definition
+ * @param startBoundReg Register for start bound value (if needed)
+ * @param endBoundReg Register for end bound value (if needed)
+ * @param partStartRowidReg Register for partition start rowid
+ * @param numPartitionKeys Number of partition keys
+ * @param partitionKeyIndices Indices of partition keys in sorter
+ * @param regOriginalPartKeys Register holding original partition keys
+ * @param orderByInfo Optional ORDER BY info (needed for RANGE)
+ * @param sorterInfo Full WindowSorterInfo for column mapping
+ */
+function compileFrameAggregate(
+	compiler: Compiler,
+	cursor: number,
+	funcName: string,
+	winExpr: AST.WindowFunctionExpr, // Pass the expression
+	resultReg: number,
+	frameDef: AST.WindowFrame,
+	startBoundReg: number,
+	endBoundReg: number,
+	partStartRowidReg: number,
+	numPartitionKeys: number,
+	partitionKeyIndices: number[],
+	regOriginalPartKeys: number,
+	orderByInfo: { keyIndices: number[]; directions: boolean[]; collations?: (string | undefined)[] } | undefined,
+	sorterInfo: WindowSorterInfo // Need sorter info for arg mapping
+): void {
+	// --- Basic Setup ---
+	const savedPosReg = compiler.allocateMemoryCells(1);
+	const argReg = compiler.allocateMemoryCells(1);
+	const accReg = compiler.allocateMemoryCells(1);
+	let avgCountReg = 0; // For AVG
+	const regOne = compiler.allocateMemoryCells(1);
+	compiler.emit(Opcode.Integer, 1, regOne, 0, null, 0, "Load constant 1");
+	// *** Declare and Initialize regZero here ***
+	const regZero = compiler.allocateMemoryCells(1);
+	compiler.emit(Opcode.Integer, 0, regZero, 0, null, 0, "Load 0");
+
+	// Get argument column index from sorter info
+	const argExpr = winExpr.function.args?.[0];
+	const argColIndex = argExpr
+		? sorterInfo.exprToSorterIndex.get(expressionToString(argExpr)) ?? -1
+		: -1; // -1 if no args (e.g., COUNT(*))
+
+	// 1. Save original cursor position
+	compileSaveCursorPosition(compiler, cursor, savedPosReg);
+
+	// 2. Initialize accumulator
+	switch (funcName.toLowerCase()) {
+		case 'count':
+			compiler.emit(Opcode.Integer, 0, accReg, 0, null, 0, "Initialize COUNT to 0");
+			break;
+		case 'sum':
+			compiler.emit(Opcode.Integer, 0, accReg, 0, null, 0, "Initialize SUM to 0");
+			break;
+		case 'avg':
+			avgCountReg = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.Integer, 0, accReg, 0, null, 0, "Initialize AVG_SUM to 0");
+			compiler.emit(Opcode.Integer, 0, avgCountReg, 0, null, 0, "Initialize AVG_COUNT to 0");
+			break;
+		case 'min':
+		case 'max':
+			compiler.emit(Opcode.Null, 0, accReg, 0, null, 0, "Initialize MIN/MAX to NULL");
+			break;
+		default:
+			// TODO: Handle UDFs or throw error
+			compiler.emit(Opcode.Null, 0, accReg, 0, null, 0, `Init ${funcName} accumulator`);
+	}
+
+	// --- Frame Calculation & Iteration ---
+	if (frameDef.type === 'rows') {
+		// --- ROWS Frame Logic ---
+		const regStartOffset = compiler.allocateMemoryCells(1);
+		const regEndOffset = compiler.allocateMemoryCells(1);
+		const regSteps = compiler.allocateMemoryCells(1);
+		const regMaxSteps = compiler.allocateMemoryCells(1);
+		const regCurrentPartKeys = compiler.allocateMemoryCells(numPartitionKeys > 0 ? numPartitionKeys : 1);
+		const addrLoopStart = compiler.allocateAddress();
+		const addrLoopEnd = compiler.allocateAddress();
+		const addrFrameSetupDone = compiler.allocateAddress();
+
+		// Calculate relative start offset
+		compileBoundToRelativeOffset(compiler, frameDef.start, startBoundReg, regStartOffset, true);
+		// Calculate relative end offset
+		compileBoundToRelativeOffset(compiler, frameDef.end ?? { type: 'currentRow' }, endBoundReg, regEndOffset, false);
+
+		// Calculate max steps (endOffset - startOffset + 1)
+		compiler.emit(Opcode.Subtract, regStartOffset, regEndOffset, regMaxSteps, null, 0, "endOffset - startOffset");
+		compiler.emit(Opcode.Add, regMaxSteps, regOne, regMaxSteps, null, 0, "+ 1 for step count");
+
+		// Check if frame is empty (maxSteps <= 0)
+		compiler.emit(Opcode.Le, regMaxSteps, addrLoopEnd, regZero, null, 0, "If maxSteps <= 0, skip loop");
+
+		// Seek to frame start
+		const addrSeekFailed = compiler.allocateAddress();
+		compiler.emit(Opcode.SeekRelative, cursor, addrSeekFailed, regStartOffset, null, 1,
+			`ROWS: Seek to frame start (offset: ${regStartOffset})`);
+		compiler.emit(Opcode.Goto, 0, addrFrameSetupDone, 0, null, 0, "ROWS: Seek start success");
+		compiler.resolveAddress(addrSeekFailed);
+		// Seek failed (likely hit partition boundary before finding start)
+		// Which rows should be included? If start is PRECEDING, maybe some rows are included.
+		// If start is FOLLOWING, the frame is empty.
+		// Let's assume for now seek failure means empty frame for simplicity.
+		compiler.emit(Opcode.Integer, 0, regMaxSteps, 0, null, 0, "ROWS: Set maxSteps=0 on seek fail");
+		compiler.emit(Opcode.Goto, 0, addrLoopEnd, 0, null, 0, "ROWS: Jump to end on seek fail");
+
+		compiler.resolveAddress(addrFrameSetupDone);
+		// Initialize step counter
+		compiler.emit(Opcode.Integer, 0, regSteps, 0, null, 0, "ROWS: Init step counter");
+
+		// -- Loop Start --
+		compiler.resolveAddress(addrLoopStart);
+
+		// Check partition boundary
+		if (numPartitionKeys > 0) {
+			for (let i = 0; i < numPartitionKeys; i++) {
+				compiler.emit(Opcode.VColumn, cursor, partitionKeyIndices[i], regCurrentPartKeys + i, null, 0, `ROWS: Read Part Key ${i}`);
+				compiler.emit(Opcode.Ne, regCurrentPartKeys + i, addrLoopEnd, regOriginalPartKeys + i, null, 0x01, `ROWS: Check Part Key ${i} != Original`);
+			}
+		}
+
+		// Check step count
+		compiler.emit(Opcode.Ge, regSteps, addrLoopEnd, regMaxSteps, null, 0, "ROWS: Check if steps >= maxSteps");
+
+		// Perform aggregate step
+		// ... (duplicate of the aggregate step logic from previous version) ...
+		if (argColIndex >= 0) {
+			compiler.emit(Opcode.VColumn, cursor, argColIndex, argReg, null, 0, "ROWS: Get value");
+		} else if (funcName.toLowerCase() === 'count') {
+			compiler.emit(Opcode.Integer, 1, argReg, 0, null, 0, "ROWS: COUNT(*)");
+		}
+		switch (funcName.toLowerCase()) {
+			case 'count':
+				if (argColIndex >= 0) compiler.emit(Opcode.IfNull, argReg, addrLoopStart + 2, 0, null, 0, "Skip null");
+				compiler.emit(Opcode.Add, accReg, regOne, accReg, null, 0, "Inc COUNT");
+				break;
+			case 'sum':
+			case 'avg':
+				compiler.emit(Opcode.IfNull, argReg, addrLoopStart + 2, 0, null, 0, "Skip null");
+				compiler.emit(Opcode.Add, accReg, argReg, accReg, null, 0, "Add SUM");
+				if (funcName.toLowerCase() === 'avg') compiler.emit(Opcode.Add, avgCountReg, regOne, avgCountReg, null, 0, "Inc AVG count");
+				break;
+			case 'min':
+				const skipMin = compiler.allocateAddress();
+				compiler.emit(Opcode.IfNull, argReg, skipMin, 0, null, 0);
+				const updateMin = compiler.allocateAddress();
+				compiler.emit(Opcode.IfNull, accReg, updateMin, 0, null, 0);
+				compiler.emit(Opcode.Le, argReg, skipMin, accReg, null, 0);
+				compiler.resolveAddress(updateMin);
+				compiler.emit(Opcode.SCopy, argReg, accReg, 0, null, 0);
+				compiler.resolveAddress(skipMin);
+				break;
+			case 'max':
+				const skipMax = compiler.allocateAddress();
+				compiler.emit(Opcode.IfNull, argReg, skipMax, 0, null, 0);
+				const updateMax = compiler.allocateAddress();
+				compiler.emit(Opcode.IfNull, accReg, updateMax, 0, null, 0);
+				compiler.emit(Opcode.Ge, argReg, skipMax, accReg, null, 0);
+				compiler.resolveAddress(updateMax);
+				compiler.emit(Opcode.SCopy, argReg, accReg, 0, null, 0);
+				compiler.resolveAddress(skipMax);
+				break;
+		}
+
+		// Increment step counter
+		compiler.emit(Opcode.Add, regSteps, regOne, regSteps, null, 0, "ROWS: Increment step counter");
+
+		// Advance cursor
+		compiler.emit(Opcode.VNext, cursor, addrLoopEnd, 0, null, 0, "ROWS: Advance to next frame row"); // Jump to LoopEnd on EOF
+		compiler.emit(Opcode.Goto, 0, addrLoopStart, 0, null, 0, "ROWS: Loop to next frame row");
+
+		// -- Loop End --
+		compiler.resolveAddress(addrLoopEnd);
+
+	} else { // --- RANGE Frame Logic ---
+		// Assumes compileFrameBoundary correctly positioned the cursor at the frame START for RANGE.
+		// We need to iterate until the current row's ORDER BY key is no longer
+		// equal to the ORDER BY key of the frame END boundary row.
+		const regEndBoundaryRowid = compiler.allocateMemoryCells(1);
+		const regCurrentRowid = compiler.allocateMemoryCells(1);
+		const regCurrentOrderByKeys = compiler.allocateMemoryCells(orderByInfo ? orderByInfo.keyIndices.length : 1);
+		const regEndBoundaryKeys = compiler.allocateMemoryCells(orderByInfo ? orderByInfo.keyIndices.length : 1);
+		const addrRangeLoopStart = compiler.allocateAddress();
+		const addrRangeLoopEnd = compiler.allocateAddress();
+
+		// First, find the *end* boundary and save its Rowid and ORDER BY keys
+		compileSaveCursorPosition(compiler, cursor, savedPosReg); // Save start position
+		const endBound = frameDef.end ?? { type: 'currentRow' };
+		const addrEndBoundaryFound = compileFrameBoundary(
+			compiler, cursor, endBound, false, // Find END boundary
+			endBoundReg, partStartRowidReg,
+			true, // isRangeFrame = true
+			orderByInfo, numPartitionKeys, partitionKeyIndices, regOriginalPartKeys
+		);
+		compiler.resolveAddress(addrEndBoundaryFound);
+		// Save the rowid and order by keys of the end boundary row
+		compiler.emit(Opcode.VRowid, cursor, regEndBoundaryRowid, 0, null, 0, "RANGE: Save end boundary rowid");
+		if (orderByInfo) {
+			for (let i = 0; i < orderByInfo.keyIndices.length; i++) {
+				compiler.emit(Opcode.VColumn, cursor, orderByInfo.keyIndices[i], regEndBoundaryKeys + i, null, 0, "RANGE: Save end boundary ORDER BY key");
+			}
+		}
+		// Restore cursor position back to the frame START
+		compileRestoreCursorPosition(compiler, cursor, savedPosReg, partStartRowidReg);
+
+		// --- Start RANGE Aggregation Loop ---
+		compiler.resolveAddress(addrRangeLoopStart);
+
+		// Check partition boundary first
+		if (numPartitionKeys > 0) {
+			const regLoopPartKeys = compiler.allocateMemoryCells(numPartitionKeys);
+			for (let i = 0; i < numPartitionKeys; i++) {
+				compiler.emit(Opcode.VColumn, cursor, partitionKeyIndices[i], regLoopPartKeys + i, null, 0, `RANGE: Read Part Key ${i}`);
+				compiler.emit(Opcode.Ne, regLoopPartKeys + i, addrRangeLoopEnd, regOriginalPartKeys + i, null, 0x01, `RANGE: Check Part Key ${i} != Original`);
+			}
+		}
+
+		// Check if current row is past the end boundary (using ORDER BY keys)
+		if (orderByInfo) {
+			const addrKeysLeEnd = compiler.allocateAddress();
+			let isPastEnd = false; // Flag if any key comparison indicates we are past the end
+			for (let i = 0; i < orderByInfo.keyIndices.length; i++) {
+				// Get current row's key for comparison
+				compiler.emit(Opcode.VColumn, cursor, orderByInfo.keyIndices[i], regCurrentOrderByKeys + i, null, 0, "RANGE Agg: Get current ORDER BY key");
+
+				const coll = orderByInfo.collations?.[i];
+				const p4Coll = coll ? { type: 'coll' as const, name: coll } : null;
+
+				// Determine comparison opcode based on ORDER BY direction
+				// We want to EXIT the loop if CURRENT > END (for ASC) or CURRENT < END (for DESC)
+				const comparisonOp = orderByInfo.directions[i] ? Opcode.Lt : Opcode.Gt;
+
+				// Perform the comparison. If true (current is past end), jump to loop end.
+				compiler.emit(comparisonOp, regCurrentOrderByKeys + i, addrRangeLoopEnd, regEndBoundaryKeys + i, p4Coll, 0x01,
+					`RANGE Agg: Check if current key past end key (col ${i})`);
+			}
+			// If we fall through, the current row is still within the frame boundaries (or exactly at the end)
+		}
+		// *** End End-of-Frame Check ***
+
+		// Perform aggregate step (same logic as ROWS)
+		// ... (copy aggregate step logic here) ...
+		if (argColIndex >= 0) {
+			compiler.emit(Opcode.VColumn, cursor, argColIndex, argReg, null, 0, "RANGE: Get value");
+		} else if (funcName.toLowerCase() === 'count') {
+			compiler.emit(Opcode.Integer, 1, argReg, 0, null, 0, "RANGE: COUNT(*)");
+		}
+		switch (funcName.toLowerCase()) {
+			case 'count':
+				if (argColIndex >= 0) compiler.emit(Opcode.IfNull, argReg, addrRangeLoopStart + 2, 0, null, 0, "Skip null"); // Adjust jump?
+				compiler.emit(Opcode.Add, accReg, regOne, accReg, null, 0, "Inc COUNT");
+				break;
+			case 'sum':
+			case 'avg':
+				compiler.emit(Opcode.IfNull, argReg, addrRangeLoopStart + 2, 0, null, 0, "Skip null");
+				compiler.emit(Opcode.Add, accReg, argReg, accReg, null, 0, "Add SUM");
+				if (funcName.toLowerCase() === 'avg') compiler.emit(Opcode.Add, avgCountReg, regOne, avgCountReg, null, 0, "Inc AVG count");
+				break;
+			case 'min':
+				const skipMinR = compiler.allocateAddress(); compiler.emit(Opcode.IfNull, argReg, skipMinR, 0, null, 0);
+				const updateMinR = compiler.allocateAddress(); compiler.emit(Opcode.IfNull, accReg, updateMinR, 0, null, 0);
+				compiler.emit(Opcode.Le, argReg, skipMinR, accReg, null, 0); compiler.resolveAddress(updateMinR);
+				compiler.emit(Opcode.SCopy, argReg, accReg, 0, null, 0); compiler.resolveAddress(skipMinR);
+				break;
+			case 'max':
+				const skipMaxR = compiler.allocateAddress(); compiler.emit(Opcode.IfNull, argReg, skipMaxR, 0, null, 0);
+				const updateMaxR = compiler.allocateAddress(); compiler.emit(Opcode.IfNull, accReg, updateMaxR, 0, null, 0);
+				compiler.emit(Opcode.Ge, argReg, skipMaxR, accReg, null, 0); compiler.resolveAddress(updateMaxR);
+				compiler.emit(Opcode.SCopy, argReg, accReg, 0, null, 0); compiler.resolveAddress(skipMaxR);
+				break;
+		}
+
+		// Advance cursor
+		compiler.emit(Opcode.VNext, cursor, addrRangeLoopEnd, 0, null, 0, "RANGE: Advance to next frame row"); // Jump to LoopEnd on EOF
+		compiler.emit(Opcode.Goto, 0, addrRangeLoopStart, 0, null, 0, "RANGE: Loop to next frame row");
+
+		// -- End RANGE Aggregation Loop --
+		compiler.resolveAddress(addrRangeLoopEnd);
+	}
+
+	// --- Finalize & Restore ---
+	// Handle AVG final calculation
+	if (funcName.toLowerCase() === 'avg') {
+		const addrAvgNull = compiler.allocateAddress();
+		const regZero = compiler.allocateMemoryCells(1);
+		compiler.emit(Opcode.Integer, 0, regZero, 0, null, 0, "Load 0 for AVG check");
+		// Check if count is zero
+		compiler.emit(Opcode.Eq, avgCountReg, addrAvgNull, regZero, null, 0, "AVG: Check if count is zero");
+		// Count > 0, perform division
+		compiler.emit(Opcode.Divide, avgCountReg, accReg, resultReg, null, 0, "AVG: sum / count");
+		const addrAvgDone = compiler.allocateAddress();
+		compiler.emit(Opcode.Goto, 0, addrAvgDone, 0, null, 0, "AVG: Skip null result");
+		compiler.resolveAddress(addrAvgNull);
+		// Count is zero, result is NULL
+		compiler.emit(Opcode.Null, 0, resultReg, 0, null, 0, "AVG: Result is NULL (count=0)");
+		compiler.resolveAddress(addrAvgDone);
+	} else {
+		// For other aggregates, just copy the accumulator
+		compiler.emit(Opcode.SCopy, accReg, resultReg, 0, null, 0, `Set final ${funcName} result`);
+	}
+
+	// Restore original cursor position
+	compileRestoreCursorPosition(compiler, cursor, savedPosReg, partStartRowidReg);
+}
+
+/** Helper to convert frame bound to relative offset register for ROWS */
+function compileBoundToRelativeOffset(
+	compiler: Compiler,
+	bound: AST.WindowFrameBound,
+	boundValueReg: number,
+	resultOffsetReg: number,
+	isStartBound: boolean
+): void {
+	switch (bound.type) {
+		case 'unboundedPreceding':
+			// How to represent unbounded? Use a very large negative number?
+			// Or maybe handle it outside this offset calculation.
+			// For offset calculation, let's treat it as max negative seek.
+			compiler.emit(Opcode.Integer, -2147483648, resultOffsetReg, 0, null, 0, "Offset: UNBOUNDED PRECEDING"); // Placeholder large negative
+			break;
+		case 'preceding':
+			// Value is in boundValueReg, negate it
+			compiler.emit(Opcode.Negative, boundValueReg, resultOffsetReg, 0, null, 0, "Offset: PRECEDING N");
+			break;
+		case 'currentRow':
+			compiler.emit(Opcode.Integer, 0, resultOffsetReg, 0, null, 0, "Offset: CURRENT ROW (0)");
+			break;
+		case 'following':
+			// Value is already positive
+			compiler.emit(Opcode.SCopy, boundValueReg, resultOffsetReg, 0, null, 0, "Offset: FOLLOWING N");
+			break;
+		case 'unboundedFollowing':
+			// Use a very large positive number?
+			compiler.emit(Opcode.Integer, 2147483647, resultOffsetReg, 0, null, 0, "Offset: UNBOUNDED FOLLOWING"); // Placeholder large positive
+			break;
+	}
+}
+
+/**
+ * Emits VDBE code to save the current rowid of a cursor.
+ * @param compiler The compiler instance.
+ * @param cursorIdx The index of the cursor.
+ * @param regSavedRowid The register where the rowid should be saved.
+ */
+function compileSaveCursorPosition(
+	compiler: Compiler,
+	cursorIdx: number,
+	regSavedRowid: number
+): void {
+	// Check if cursor is valid before getting rowid?
+	// Assume cursor is valid when this is called.
+	compiler.emit(Opcode.VRowid, cursorIdx, regSavedRowid, 0, null, 0, `Save cursor ${cursorIdx} rowid`);
+}
+
+/**
+ * Emits VDBE code to restore a cursor's position to a previously saved rowid.
+ * This uses a potentially inefficient rewind-and-scan approach.
+ * Assumes the target rowid is still present in the cursor's result set.
+ *
+ * @param compiler The compiler instance.
+ * @param cursorIdx The index of the cursor.
+ * @param regSavedRowid The register containing the target rowid to seek to.
+ * @param regPartitionStartRowid Optional: Register with the rowid of the partition start. If provided, rewinds only to partition start.
+ */
+function compileRestoreCursorPosition(
+	compiler: Compiler,
+	cursorIdx: number,
+	regSavedRowid: number,
+	regPartitionStartRowid?: number
+): void {
+	const addrRestoreFailed = compiler.allocateAddress(); // Jump here if SeekRowid fails
+	const addrRestoreDone = compiler.allocateAddress();
+
+	// Try seeking directly to the rowid
+	// P5=1 jumps to addrRestoreFailed if SeekRowid returns false (not found or not supported)
+	compiler.emit(Opcode.SeekRowid, cursorIdx, addrRestoreFailed, regSavedRowid, null, 1,
+		`Restore Pos: Attempt SeekRowid to restore cursor ${cursorIdx}`);
+
+	// SeekRowid succeeded
+	compiler.emit(Opcode.Goto, 0, addrRestoreDone, 0, null, 0, "Restore Pos: SeekRowid successful");
+
+	// SeekRowid failed (or not supported), fall back to scan (or just warn/error)
+	compiler.resolveAddress(addrRestoreFailed);
+	// For now, just issue a warning. A fallback scan could be added here if needed.
+	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `WARN: Cursor ${cursorIdx} position restore failed (SeekRowid failed or not supported)`);
+	// NOTE: If SeekRowid fails because the row *doesn't exist*, the cursor state might be EOF.
+	// If it fails because xSeekToRowid isn't implemented, the state is also likely EOF.
+	// We might need to explicitly handle the state or re-seek to the *original* saved position
+	// if the operation that moved the cursor needs atomicity.
+	// For current window functions, leaving it at EOF/fail state might be acceptable.
+
+	// Restore successful or handled failure
+	compiler.resolveAddress(addrRestoreDone);
 }

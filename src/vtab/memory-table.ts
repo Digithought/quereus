@@ -97,6 +97,42 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	getMergedResults(): MemoryTableRow[] {
 		return this.mergedResults;
 	}
+
+	/**
+	 * Moves the cursor position by the given relative offset.
+	 * @param offset The offset to move by (positive for forward, negative for backward)
+	 * @returns true if the cursor was moved and is on a valid row, false if moved out of bounds
+	 */
+	seekRelative(offset: number): boolean {
+		if (offset === 0) {
+			// Moving by 0 is always possible if the cursor is valid
+			return !this.isEof;
+		}
+
+		if (this.mergedResults.length === 0) {
+			// Cannot seek in empty results
+			this.reset();
+			return false;
+		}
+
+		const targetIndex = this.currentIndex + offset;
+
+		if (targetIndex < 0 || targetIndex >= this.mergedResults.length) {
+			// Target is out of bounds
+			if (targetIndex < 0) {
+				this.currentIndex = -1; // Position before the start
+			} else {
+				this.currentIndex = this.mergedResults.length; // Position after the end
+			}
+			this.isEof = true;
+			return false; // Seek failed (out of bounds)
+		} else {
+			// Target is within bounds
+			this.currentIndex = targetIndex;
+			this.isEof = false; // Cursor is now on a valid row
+			return true; // Seek successful
+		}
+	}
 }
 
 /**
@@ -1550,7 +1586,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	async xRollbackTo(table: MemoryTable, savepointIndex: number): Promise<void> {
 		table.rollbackToSavepoint(savepointIndex);
 	}
-	// -----------------------
 
 	// --- Add xAlterSchema implementation ---
 	async xAlterSchema(table: MemoryTable, changeInfo: SchemaChangeInfo): Promise<void> {
@@ -1579,178 +1614,27 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	}
 	// --------------------------------------
 
-	// --- Add seekRelative method ---
-	async seekRelative(cursor: MemoryTableCursor, basePointer: any, offset: number): Promise<SqlValue | null> {
-		// Operate on the results populated by xFilter, assuming they represent the relevant partition/order.
-		// Use the getter method to access the results
-		const results = cursor.getMergedResults(); // Use getter here
-		if (!results || results.length === 0) {
-			return null; // No results to seek within
-		}
-
-		// Find the index of the base pointer (rowid) in the current results
-		// Assuming basePointer is the rowid (_rowid_ is bigint)
-		let baseIndex = -1;
-		for (let i = 0; i < results.length; i++) {
-			if (results[i]._rowid_ === basePointer) {
-				baseIndex = i;
-				break;
-			}
-		}
-
-		if (baseIndex === -1 || baseIndex + offset < 0 || baseIndex + offset >= results.length) {
-			return null; // Out of bounds
-		}
-
-		return results[baseIndex + offset]._rowid_;
+	// --- Add xSeekRelative implementation ---
+	async xSeekRelative(cursor: MemoryTableCursor, offset: number): Promise<boolean> {
+		// Use the cursor's public seekRelative method
+		return cursor.seekRelative(offset);
 	}
 
-	// --- Add xColumnAtPointer ---
-	async xColumnAtPointer(cursor: MemoryTableCursor, pointer: any, colIdx: number): Promise<SqlValue | null> {
+	// --- Add xSeekToRowid implementation ---
+	async xSeekToRowid(cursor: MemoryTableCursor, rowid: bigint): Promise<boolean> {
 		const results = cursor.getMergedResults();
-		if (!results || results.length === 0) return null;
+		const targetIndex = results.findIndex(row => row._rowid_ === rowid);
 
-		let targetRow: MemoryTableRow | undefined;
-		try {
-			const targetRowId = BigInt(pointer);
-			targetRow = results.find(row => row._rowid_ === targetRowId);
-		} catch (e) {
-			console.error("xColumnAtPointer: Could not convert pointer to BigInt", pointer, e);
-			throw new SqliteError(`xColumnAtPointer: Invalid pointer ${pointer}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
-		}
-
-		if (!targetRow) {
-			console.warn(`xColumnAtPointer: Rowid ${pointer} not found in cursor results.`);
-			return null;
-		}
-
-		if (colIdx === -1) { // Request for rowid
-			return targetRow._rowid_;
-		}
-
-		const tableCols = cursor.table.columns;
-		if (colIdx < 0 || colIdx >= tableCols.length) {
-			console.error(`xColumnAtPointer: Invalid column index ${colIdx}`);
-			return null;
-		}
-
-		const colName = tableCols[colIdx].name;
-		return Object.prototype.hasOwnProperty.call(targetRow, colName) ? targetRow[colName] : null;
-	}
-	// ---------------------------
-
-	// --- Add xAggregateFrame ---
-	async xAggregateFrame(
-		cursor: MemoryTableCursor,
-		funcDef: FunctionSchema,
-		frameStartPtr: any,
-		frameEndPtr: any,
-		argColIdx: number
-	): Promise<SqlValue> {
-		const results = cursor.getMergedResults();
-		if (!results || results.length === 0) {
-			// Handle aggregation over empty frame - usually NULL or default value
-			const aggCtx = new FunctionContext(cursor.table.db, funcDef.userData); // Need DB access
-			if (funcDef.xFinal) {
-				funcDef.xFinal(aggCtx);
-				return aggCtx._getResult() ?? null;
-			} else {
-				return null; // Or throw error if xFinal is required?
-			}
-		}
-
-		// Find start and end indices in the results array
-		let startIndex = -1;
-		let endIndex = -1;
-
-		try {
-			const startRowId = BigInt(frameStartPtr);
-			startIndex = results.findIndex(row => row._rowid_ === startRowId);
-		} catch (e) {
-			throw new SqliteError(`xAggregateFrame: Invalid start pointer ${frameStartPtr}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
-		}
-
-		// Handle frameEndPtr (could be null for UNBOUNDED FOLLOWING - treat as end of results)
-		if (frameEndPtr === null) {
-			endIndex = results.length - 1;
+		if (targetIndex === -1) {
+			// Rowid not found, set cursor to EOF
+			(cursor as any).currentIndex = results.length;
+			(cursor as any).isEof = true;
+			return false;
 		} else {
-			try {
-				const endRowId = BigInt(frameEndPtr);
-				endIndex = results.findIndex(row => row._rowid_ === endRowId);
-			} catch (e) {
-				throw new SqliteError(`xAggregateFrame: Invalid end pointer ${frameEndPtr}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
-			}
-		}
-
-		if (startIndex === -1) {
-			throw new SqliteError(`xAggregateFrame: Start pointer row ${frameStartPtr} not found in cursor results`, StatusCode.INTERNAL);
-		}
-		if (endIndex === -1 && frameEndPtr !== null) {
-			throw new SqliteError(`xAggregateFrame: End pointer row ${frameEndPtr} not found in cursor results`, StatusCode.INTERNAL);
-		}
-		if (startIndex > endIndex) {
-			// Frame is empty due to ordering/pointer issues
-			startIndex = 0; // Set indices to make slice empty
-			endIndex = -1;
-		}
-
-		// Initialize aggregate context
-		const aggCtx = new FunctionContext(cursor.table.db, funcDef.userData);
-		const argArray: SqlValue[] = []; // Reusable array for arguments
-
-		// Iterate over the frame slice
-		for (let i = startIndex; i <= endIndex; i++) {
-			const row = results[i];
-			let argValue: SqlValue = null;
-			if (argColIdx >= 0) {
-				const tableCols = cursor.table.columns;
-				if (argColIdx >= tableCols.length) throw new Error(`Invalid argColIdx ${argColIdx}`);
-				const colName = tableCols[argColIdx].name;
-				argValue = Object.prototype.hasOwnProperty.call(row, colName) ? row[colName] : null;
-			}
-
-			aggCtx._clear(); // Clear previous result/error
-			// Prepare args for xStep (might be 0 args for COUNT(*))
-			if (funcDef.numArgs > 0) {
-				argArray[0] = argValue;
-			} else {
-				argArray.length = 0;
-			}
-
-			try {
-				if (funcDef.xStep) {
-					funcDef.xStep(aggCtx, argArray);
-					const stepError = aggCtx._getError();
-					if (stepError) throw stepError;
-				} else {
-					throw new Error(`Aggregate function ${funcDef.name} missing xStep`);
-				}
-			} catch (e) {
-				throw new SqliteError(`Error during ${funcDef.name} xStep: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR, e instanceof Error ? e : undefined);
-			}
-		}
-
-		// Finalize the result
-		aggCtx._clear();
-		try {
-			if (funcDef.xFinal) {
-				funcDef.xFinal(aggCtx);
-				const finalError = aggCtx._getError();
-				if (finalError) throw finalError;
-				return aggCtx._getResult() ?? null;
-			} else if (funcDef.xValue) {
-				// Some aggregates might just use xValue if state maps directly to result
-				funcDef.xValue(aggCtx);
-				return aggCtx._getResult() ?? null;
-			} else {
-				// Return accumulator directly if no xFinal/xValue (e.g., for simpler internal aggregates?)
-				// This might be incorrect for standard aggregates.
-				console.warn(`Aggregate function ${funcDef.name} missing xFinal/xValue, returning accumulator.`);
-				return aggCtx._getAggregateContextRef() ?? null;
-			}
-		} catch (e) {
-			throw new SqliteError(`Error during ${funcDef.name} xFinal/xValue: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR, e instanceof Error ? e : undefined);
+			// Rowid found, position cursor
+			(cursor as any).currentIndex = targetIndex;
+			(cursor as any).isEof = false;
+			return true;
 		}
 	}
-	// -------------------------
 }
