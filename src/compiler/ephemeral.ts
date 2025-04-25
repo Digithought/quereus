@@ -1,4 +1,4 @@
-import { Opcode } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import type { Compiler } from './compiler';
 import { createDefaultColumnSchema } from '../schema/column';
 import { buildColumnIndexMap } from '../schema/table';

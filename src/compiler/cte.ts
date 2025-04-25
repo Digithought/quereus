@@ -1,5 +1,6 @@
 import { SqliteError, ConstraintError } from '../common/errors';
-import { StatusCode, SqlDataType, Opcode, ConflictResolution, IndexConstraintOp } from '../common/constants';
+import { StatusCode, SqlDataType, ConflictResolution, IndexConstraintOp } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import type { SqlValue } from '../common/types';
 import type { Compiler, ColumnResultInfo, CursorPlanningResult } from './compiler';
 import type { TableSchema } from '../schema/table';

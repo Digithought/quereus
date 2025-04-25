@@ -3,7 +3,7 @@ import { SqliteError } from '../common/errors';
 import type { Compiler, SubroutineInfo } from './compiler'; // Added ColumnResultInfo
 import type * as AST from '../parser/ast';
 import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult } from './correlation';
-import { Opcode } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 
 // --- Subquery Compilation Functions --- //
 

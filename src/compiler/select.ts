@@ -1,4 +1,4 @@
-import { Opcode } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import { StatusCode, SqlDataType } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { type P4Vtab, type P4FuncDef, type P4SortKey } from '../vdbe/instruction';

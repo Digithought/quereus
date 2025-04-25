@@ -17,20 +17,20 @@ const db = new Database();
 
 ### Executing Simple Statements (`db.exec`)
 
-Use `db.exec(sql)` for executing statements without fetching results, especially for DDL (`CREATE`, `DROP`), transaction control (`BEGIN`, `COMMIT`), or simple `INSERT`/`UPDATE`/`DELETE` statements with or without parameters.
+Use `db.exec(sql)` for executing statements without fetching results, especially for DDL (`create`, `drop`), transaction control (`begin`, `commit`), or simple `insert`/`update`/`delete` statements with or without parameters.
 
 ```typescript
 // Execute DDL
-await db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
-await db.exec("CREATE INDEX idx_users_email ON users(email)");
+await db.exec("create table users (id integer primary key, name text, email text)");
+await db.exec("create index idx_users_email on users(email)");
 
 // Simple INSERT
-await db.exec("INSERT INTO users (name, email) VALUES (?, ?)", ["User A", "example@sample.com"]);
+await db.exec("insert into users (name, email) values (?, ?)", ["User A", "example@sample.com"]);
 
 // Transaction control
-await db.exec("BEGIN");
+await db.exec("begin");
 // ... operations ...
-await db.exec("COMMIT");
+await db.exec("commit");
 ```
 
 ### Inserting Data (Recommended: Prepared Statements)
@@ -39,7 +39,7 @@ For inserting data, especially multiple rows or with parameters, using prepared 
 
 ```typescript
 // Insert multiple rows with a prepared statement
-const stmt = await db.prepare("INSERT INTO users (name, email) VALUES (?, ?)");
+const stmt = await db.prepare("insert into users (name, email) values (?, ?)");
 try {
   await stmt.run(["Alice Smith", "alice@example.com"]);
   await stmt.run(["Bob Johnson", "bob@example.com"]);
@@ -59,19 +59,19 @@ The most idiomatic way to process multiple result rows is using `db.eval`, which
 ```typescript
 try {
   // Using positional parameters
-  for await (const user of db.eval("SELECT name, email FROM users WHERE status = ? ORDER BY name", ["active"])) {
+  for await (const user of db.eval("select name, email from users where status = ? order by name", ["active"])) {
     console.log(`Active user: ${user.name} (${user.email})`);
     // row is Record<string, SqlValue>
   }
 
   // Using named parameters
-  for await (const project of db.eval("SELECT * FROM projects WHERE owner = :owner AND deadline < :date", 
+  for await (const project of db.eval("select * from projects where owner = :owner and deadline < :date", 
                                     { ":owner": "Alice Smith", ":date": Date.now() })) {
     console.log(`Project: ${project.name}`);
   }
 
   // No parameters
-  for await (const item of db.eval("SELECT * FROM inventory")) {
+  for await (const item of db.eval("select * from inventory")) {
      // ...
   }
 } catch (e) {
@@ -85,7 +85,7 @@ try {
 If you expect only one row (or just need the first one), prepare the statement and use `stmt.get()`.
 
 ```typescript
-const stmt = await db.prepare("SELECT * FROM users WHERE id = ?");
+const stmt = await db.prepare("select * from users where id = ?");
 try {
   const user = await stmt.get([1]); // Get first row only (or undefined if none)
   if (user) {
@@ -96,7 +96,7 @@ try {
 }
 
 // Using named parameters
-const stmt2 = await db.prepare("SELECT * FROM users WHERE email = :email");
+const stmt2 = await db.prepare("select * from users where email = :email");
 try {
   const byEmail = await stmt2.get({ ":email": "alice@example.com" });
   // ...
@@ -110,7 +110,7 @@ try {
 To get all results buffered into an array, prepare the statement and use `stmt.all()`.
 
 ```typescript
-const stmt = await db.prepare("SELECT * FROM users WHERE role = ?");
+const stmt = await db.prepare("select * from users where role = ?");
 try {
   const admins = await stmt.all(["admin"]); // Get all rows as an array of objects
   console.log(`Found ${admins.length} admins`);
@@ -124,7 +124,7 @@ try {
 For maximum control, you can still use the manual `step()` loop with a prepared statement:
 
 ```typescript
-const stmt = await db.prepare("SELECT * FROM large_table WHERE category = ?");
+const stmt = await db.prepare("select * from large_table where category = ?");
 stmt.bind(1, "electronics"); // Bind parameters first
 try {
   while (await stmt.step() === StatusCode.ROW) {
@@ -141,38 +141,38 @@ try {
 
 ```typescript
 // Simple transaction
-await db.exec("BEGIN TRANSACTION");
+await db.exec("begin transaction");
 try {
-  await db.exec("INSERT INTO users (name) VALUES (?)", ["User 1"]);
-  await db.exec("INSERT INTO users (name) VALUES (?)", ["User 2"]);
-  await db.exec("COMMIT");
+  await db.exec("insert into users (name) values (?)", ["User 1"]);
+  await db.exec("insert into users (name) values (?)", ["User 2"]);
+  await db.exec("commit");
 } catch (e) {
-  await db.exec("ROLLBACK");
+  await db.exec("rollback");
   throw e;
 }
 
 // Transaction with savepoints
-await db.exec("BEGIN TRANSACTION");
+await db.exec("begin transaction");
 try {
-  await db.exec("INSERT INTO users (name) VALUES (?)", ["User 3"]);
+  await db.exec("insert into users (name) values (?)", ["User 3"]);
   
-  await db.exec("SAVEPOINT save1");
+  await db.exec("savepoint save1");
   try {
-    await db.exec("INSERT INTO users (name) VALUES (?)", ["User 4"]);
+    await db.exec("insert into users (name) values (?)", ["User 4"]);
     // Some condition to decide whether to keep these changes
     if (shouldRollback) {
-      await db.exec("ROLLBACK TO save1");
+      await db.exec("rollback to save1");
     } else {
-      await db.exec("RELEASE save1");
+      await db.exec("release save1");
     }
   } catch (e) {
-    await db.exec("ROLLBACK TO save1");
+    await db.exec("rollback to save1");
     // Continue with the outer transaction
   }
   
-  await db.exec("COMMIT");
+  await db.exec("commit");
 } catch (e) {
-  await db.exec("ROLLBACK");
+  await db.exec("rollback");
   throw e;
 }
 ```
@@ -219,7 +219,7 @@ await stmt.run({ ":name": "Alice", ":age": 30 }); // Named parameters
 Executes the statement and returns the first result row as an object, or undefined if no rows are returned.
 
 ```typescript
-const user = await stmt.get([1]); // e.g., "SELECT * FROM users WHERE id = ?"
+const user = await stmt.get([1]); // e.g., "select * from users where id = ?"
 if (user) {
   console.log(user.name, user.email);
 }
@@ -230,7 +230,7 @@ if (user) {
 Executes the statement and returns all result rows as an array of objects.
 
 ```typescript
-const users = await stmt.all([30]); // e.g., "SELECT * FROM users WHERE age > ?"
+const users = await stmt.all([30]); // e.g., "select * from users where age > ?"
 console.log(`Found ${users.length} users`);
 users.forEach(user => console.log(user.name));
 ```
@@ -286,22 +286,55 @@ Releases all resources associated with the statement. The statement cannot be us
 
 ## Virtual Tables
 
-One of SQLiter's key features is its support for virtual tables, which allow you to expose any data source as a SQL table:
+One of SQLiter's key features is its support for virtual tables, which allow you to expose any data source as a SQL table.
+
+### Creating virtual tables
+
+The explicit way to create a virtual table is using the `create table ... using module_name(...)` syntax. The arguments passed to the module name are specific to that module.
 
 ```typescript
-// Register a virtual table module
+// Register a virtual table module (e.g., a module for reading JSON)
 db.registerVtabModule('json_data', new JsonTableModule());
 
-// Create a virtual table using the module
-await db.exec(`
-  CREATE VIRTUAL TABLE products USING json_data(
+// Create a virtual table using the module with specific arguments
+await db.exec(\`
+  create table products using json_data(
     '{"data": [{"id": 1, "name": "Product A"}, {"id": 2, "name": "Product B"}]}'
   )
-`);
+\`);
 
 // Query it like a regular table
-const products = await db.prepare("SELECT * FROM products WHERE id > ?").all([1]);
+const products = await db.prepare("select * from products where id > ?").all([1]);
 ```
+
+### Using `create table` with a Default Module
+
+Alternatively, you can define a *default* virtual table module for the database connection using `pragma`. Any `create table` statement without the `using` clause will implicitly use this default module. This can be useful if you primarily interact with one type of virtual table or want a specific behavior for standard table creation.
+
+```typescript
+// Example: Setting the built-in 'memory' module as the default
+// The 'memory' module creates an in-memory table based on the schema
+// (Requires the MemoryTableModule to be registered)
+await db.exec("pragma default_vtab_module = 'memory'");
+
+// Optional: Set default arguments for the module (if it accepts/requires them)
+// The format is typically a JSON array string.
+// For the 'memory' module, it currently doesn't use constructor args in this way,
+// but other modules might. E.g., pragma default_vtab_args = '["arg1", {"key": "value"}]';
+await db.exec("pragma default_vtab_args = '[]'"); // Set empty args for 'memory'
+
+// Now, a standard CREATE TABLE implicitly uses the 'memory' module
+await db.exec("create table my_memory_table (col_a integer, col_b text)");
+
+// Query the implicitly created virtual table
+const results = await db.prepare("select * from my_memory_table").all();
+
+// To clear the default module:
+// await db.exec("pragma default_vtab_module = null");
+// await db.exec("pragma default_vtab_args = null");
+```
+
+**Note:** When using a default module with `create table`, the module's `xCreate` function receives the table definition (columns, constraints) parsed from the `create table` statement itself, rather than relying solely on arguments passed via `using (...)` or `pragma default_vtab_args`. The `memory` module is designed to work this way.
 
 See the [Memory Table documentation](./memory-table.md) for more details on the built-in memory table implementation.
 
@@ -319,7 +352,7 @@ db.createScalarFunction("reverse", { numArgs: 1, deterministic: true },
 );
 
 // Use it in SQL
-const result = await db.prepare("SELECT reverse(name) FROM users").all();
+const result = await db.prepare("select reverse(name) from users").all();
 ```
 
 ## Error Handling
@@ -328,7 +361,7 @@ SQLiter throws specific error types that you can catch and handle:
 
 ```typescript
 try {
-  await db.exec("INSERT INTO nonexistent_table VALUES (1)");
+  await db.exec("insert into nonexistent_table values (1)");
 } catch (err) {
   if (err instanceof SqliteError) {
     console.error(`SQLite error (code ${err.code}): ${err.message}`);

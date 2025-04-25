@@ -7,7 +7,8 @@ import { Compiler } from '../compiler/compiler';
 
 // --- Add VDBE imports ---
 import { type VdbeProgram } from '../vdbe/program';
-import { Vdbe, type MemoryCell } from '../vdbe/engine';
+import { VdbeRuntime } from '../vdbe/runtime';
+import type { MemoryCell } from '../vdbe/handler-types';
 // ------------------------
 
 /**
@@ -24,7 +25,7 @@ export class Statement {
 
 	// --- Add VDBE program and engine references ---
 	private vdbeProgram: VdbeProgram | null = null;
-	private vdbe: Vdbe | null = null;
+	private vdbe: VdbeRuntime | null = null;
 	private needsCompile = true;
 	// -----------------------------------------------
 
@@ -135,7 +136,7 @@ export class Statement {
 
 		// Initialize VDBE if this is the first step
 		if (!this.vdbe && this.vdbeProgram) {
-			this.vdbe = new Vdbe(this, this.vdbeProgram);
+			this.vdbe = new VdbeRuntime(this, this.vdbeProgram);
 			// Apply any bindings set *before* the first step
 			this.vdbe.applyBindings(this.boundParameters);
 		}

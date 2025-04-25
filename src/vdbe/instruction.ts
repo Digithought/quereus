@@ -1,10 +1,7 @@
-import { Opcode } from '../common/constants';
-import type { SqlValue } from '../common/types';
+import { Opcode } from './opcodes';
 import type { FunctionSchema } from '../schema/function';
 import type { TableSchema } from '../schema/table';
 import type { ConflictResolution } from '../common/constants';
-import type * as AST from '../parser/ast';
-import type { IndexConstraintOp } from '../common/constants';
 import type { SchemaChangeInfo } from '../vtab/module';
 
 /**

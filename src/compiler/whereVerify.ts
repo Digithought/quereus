@@ -1,4 +1,5 @@
-import { Opcode, IndexConstraintOp } from '../common/constants';
+import { IndexConstraintOp } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import type { Compiler } from './compiler';
 import type * as AST from '../parser/ast';
 

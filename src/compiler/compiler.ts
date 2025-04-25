@@ -5,7 +5,8 @@
  */
 import { StatusCode, type SqlValue } from '../common/types';
 import { SqliteError, ParseError } from '../common/errors';
-import { Opcode, ConflictResolution } from '../common/constants';
+import { ConflictResolution } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction';
 import type { VdbeProgram } from '../vdbe/program';
 import type { WithClause } from '../parser/ast';

@@ -1,4 +1,5 @@
-import { Opcode, SqlDataType } from '../common/constants';
+import { SqlDataType } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import { SqliteError } from '../common/errors';
 import { StatusCode } from '../common/types';
 import type { Compiler } from './compiler';

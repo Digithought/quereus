@@ -1,6 +1,6 @@
 import { Compiler } from './compiler';
 import type { WindowSorterInfo } from './window';
-import { Opcode } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import { SqliteError } from '../common/errors';
 import type * as AST from '../parser/ast'; // Import AST types
 import { expressionToString } from '../util/ddl-stringify'; // Import the missing function

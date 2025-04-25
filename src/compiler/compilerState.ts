@@ -1,4 +1,4 @@
-import { Opcode } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import type { SqlValue } from '../common/types';
 import { createInstruction } from '../vdbe/instruction';
 import type { Compiler } from './compiler';

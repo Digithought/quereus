@@ -6,7 +6,7 @@ import type { TableSchema } from '../schema/table';
 import type { ColumnSchema } from '../schema/column';
 import type { SubqueryCorrelationResult } from './correlation';
 import type { SqlValue } from '../common/types';
-import { Opcode } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 
 /** Determines the affinity of an expression. */
 export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {

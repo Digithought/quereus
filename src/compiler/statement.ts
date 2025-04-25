@@ -1,4 +1,5 @@
-import { Opcode, ConflictResolution } from '../common/constants';
+import { ConflictResolution } from '../common/constants';
+import { Opcode } from '../vdbe/opcodes';
 import { StatusCode } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { type P4Update, type P4Vtab } from '../vdbe/instruction';

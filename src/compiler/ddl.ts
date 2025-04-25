@@ -3,7 +3,7 @@ import type * as AST from "../parser/ast";
 import { StatusCode, SqlDataType } from "../common/constants";
 import { SqliteError } from "../common/errors";
 import { createTableToString } from "../util/ddl-stringify";
-import { Opcode } from "../common/constants";
+import { Opcode } from '../vdbe/opcodes';
 import type { Database } from '../core/database';
 import type { VirtualTable } from "../vtab/table";
 import type { ViewSchema } from '../schema/view';
