@@ -1,6 +1,9 @@
 ## Project TODO List & Future Work
 
 This list outlines the remaining major features and refinements needed to make SQLiter a more complete and robust VTab-centric SQL query processor.
+
+**I. Parser & Compiler:**
+
 *   [P] **FROM Clause Subqueries (Derived Tables):** Basic structure exists (AST, schema registration). Requires:
     *   [ ] Implement VDBE execution logic (e.g., materialization into ephemeral table).
     *   [ ] Handle correlation with outer query values correctly (re-materialization or deferred execution).
@@ -13,7 +16,6 @@ This list outlines the remaining major features and refinements needed to make S
 **II. VDBE & Compiler Core:**
 
 *   [ ] **Opcode Optimization:**
-    *   [ ] Consider opcodes for more efficient type conversions or comparisons if `Affinity` proves insufficient.
     *   [ ] Consider VDBE optimizations (e.g., peephole).
 *   [ ] **VDBE Stack Frame Robustness:** Review stack/frame pointer management for edge cases and accuracy.
 *   [ ] **Compiler/Parser Syntax Alignment:** Ensure parser, compiler, and documentation consistently reflect the intended SQL syntax (e.g., `CREATE TABLE ... USING`).
