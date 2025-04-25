@@ -100,34 +100,6 @@ export interface P4Update {
 
 // Add more P4 types as needed (P4_MEM, P4_INTARRAY, P4_SUBPROGRAM, etc.)
 
-/** P4 operand for Opcode.AggFrame */
-export interface P5AggFrameInfo {
-	type: 'aggframeinfo';
-	funcDef: FunctionSchema;
-	argIdx: number; // Index of the aggregate function argument in the sorter row, or -1 if none (e.g., COUNT(*))
-	nArgs: number; // Original number of args passed to the function (might be redundant with funcDef)
-}
-
-/** P4 operand for Opcode.RangeScan */
-export interface P4RangeScanInfo {
-	type: 'rangescaninfo';
-	frameDef: AST.WindowFrame; // The AST definition for the frame
-	orderByIndices: number[]; // Indices of ORDER BY columns in the sorter row
-	orderByDirs: boolean[]; // Directions (true=DESC) for ORDER BY columns
-	orderByColls: (string | undefined)[]; // Collations for ORDER BY columns
-	currPtrReg: number; // Register holding the pointer/rowid of the current row being processed
-	partStartPtrReg: number; // Register holding the pointer/rowid of the first row in the partition
-	startBoundReg?: number; // Optional register holding the bound value for START N PRECEDING/FOLLOWING
-	endBoundReg?: number; // Optional register holding the bound value for END N PRECEDING/FOLLOWING
-}
-
-/** P4 operand for Opcode.Lag / Opcode.Lead */
-export interface P4LagLeadInfo {
-	type: 'lagleadinfo';
-	currRowPtrReg: number; // Register holding the pointer/rowid of the current row being processed
-	argColIdx: number; // Index of the argument column in the sorter row
-}
-
 // --- Define missing placeholder P4 types --- //
 export type P4JumpTarget = any; // Placeholder - likely number (address)
 export type P4IndexDef = any; // Placeholder - structure defining index
@@ -140,19 +112,16 @@ export type P4FunctionContext = any; // Placeholder - context for function call
 export type P4SchemaChange = SchemaChangeInfo;
 // --------------------------------------------------- //
 
-// Union type for all possible P4 parameter types
-export type InstructionP4 =
-	| string
-	| number
-	| bigint
-	| P4JumpTarget // Now defined (placeholder)
+/** Union type for all possible P4 operands */
+export type P4Operand =
+	| P4Coll
+	| P4FuncDef
 	| P4SortKey
-	| P4IndexDef // Now defined (placeholder)
-	| P4TableDef // Now defined (placeholder)
-	| P4ViewDef // Now defined (placeholder)
-	| P4FunctionContext // Now defined (placeholder)
-	| P5AggFrameInfo // Use P5AggFrameInfo if P4AggFrameInfo doesn't exist
-	| P4RangeScanInfo
-	| P4LagLeadInfo
-	| P4SchemaChange
-	| null;
+	| TableSchema // For OpenWrite etc.
+	| P4SchemaChange // For SchemaChange
+	| P4IndexDef // For CreateIndex
+	| P4TableDef // For CreateTable
+	| P4ViewDef // For CreateView
+	| string // Simple string operand (e.g., Pragma name)
+	| number // Simple numeric operand
+	| null; // No operand
