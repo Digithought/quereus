@@ -1,7 +1,11 @@
 import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type { Handler } from '../handler-types';
+import { StatusCode, type SqlValue } from '../../common/types';
+import type { Handler, VmCtx, VdbeCursor, Status } from '../handler-types';
+import type { VdbeInstruction } from '../instruction';
 import { Opcode } from '../opcodes';
+import type { TableSchema } from '../../schema/table';
+import type { VirtualTable } from '../../vtab/table';
+import type { BaseModuleConfig } from '../../vtab/module';
 
 export function registerHandlers(handlers: Handler[]) {
 	// --- Result Row ---
@@ -23,42 +27,103 @@ export function registerHandlers(handlers: Handler[]) {
 		ctx.hasYielded = true;
 		return StatusCode.ROW;
 	};
+
 	// --- Cursor Management (Async) ---
-	handlers[Opcode.OpenRead] = async (ctx, inst) => {
+	const openVtabCursor = async (ctx: VmCtx, inst: VdbeInstruction): Promise<Status> => {
 		const cIdx = inst.p1;
-		const schema = inst.p4;
+		const tableSchema = inst.p4 as TableSchema | undefined;
 
-		if (!schema?.vtabInstance?.module?.xOpen) {
-			throw new SqliteError("Missing vtab instance or module.xOpen for OpenRead", StatusCode.INTERNAL);
+		if (!tableSchema?.isVirtual) {
+			throw new SqliteError("OpenRead/OpenWrite called on non-virtual table schema (or schema missing)", StatusCode.INTERNAL);
 		}
 
-		const v = schema.vtabInstance;
-		const ci = await v.module.xOpen(v);
-
-		const cursor = ctx.getCursor(cIdx);
-		if (cursor) {
-			cursor.instance = ci;
-			cursor.vtab = v;
-			cursor.sortedResults = null;
+		if (!tableSchema.vtabModuleName) {
+			throw new SqliteError(`Table schema for ${tableSchema.name} is missing vtabModuleName`, StatusCode.INTERNAL);
 		}
+
+		const moduleInfo = ctx.db._getVtabModule(tableSchema.vtabModuleName);
+		if (!moduleInfo) {
+			throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
+		}
+		const module = moduleInfo.module;
+		if (typeof module.xConnect !== 'function') {
+			throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
+		}
+
+		let vtabInstance: VirtualTable;
+		try {
+			const options: BaseModuleConfig = {};
+			vtabInstance = module.xConnect(
+				ctx.db,
+				moduleInfo.auxData,
+				tableSchema.vtabModuleName,
+				tableSchema.schemaName,
+				tableSchema.name,
+				options
+			);
+		} catch (e: any) {
+			const message = e instanceof Error ? e.message : String(e);
+			throw new SqliteError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof SqliteError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+		}
+
+		if (typeof vtabInstance.xOpen !== 'function') {
+			throw new SqliteError(`Virtual table instance for '${tableSchema.name}' does not implement xOpen`, StatusCode.MISUSE);
+		}
+		const cursorInstance = await vtabInstance.xOpen();
+
+		const vdbeCursor = ctx.getCursor(cIdx);
+		if (!vdbeCursor) {
+			await cursorInstance?.close();
+			await vtabInstance?.xDisconnect();
+			throw new SqliteError(`VDBE cursor slot ${cIdx} not found during OpenRead/Write`, StatusCode.INTERNAL);
+		}
+
+		if (vdbeCursor.instance) await vdbeCursor.instance.close();
+		if (vdbeCursor.vtab) await vdbeCursor.vtab.xDisconnect();
+
+		vdbeCursor.instance = cursorInstance;
+		vdbeCursor.vtab = vtabInstance;
+		vdbeCursor.isEphemeral = false;
+		vdbeCursor.sortedResults = null;
+
 		return undefined;
 	};
-	handlers[Opcode.OpenWrite] = handlers[Opcode.OpenRead];
+
+	handlers[Opcode.OpenRead] = openVtabCursor;
+	handlers[Opcode.OpenWrite] = openVtabCursor;
+
 	handlers[Opcode.Close] = async (ctx, inst) => {
 		const cIdx = inst.p1;
-		const cursor = ctx.getCursor(cIdx);
+		const vdbeCursor = ctx.getCursor(cIdx);
 
-		if (cursor) {
-			if (cursor.sortedResults) {
-				cursor.sortedResults = null;
+		if (vdbeCursor) {
+			if (vdbeCursor.instance) {
+				try {
+					await vdbeCursor.instance.close();
+				} catch (e) {
+					console.error(`Error closing VTab cursor instance (idx ${cIdx}):`, e);
+				} finally {
+					vdbeCursor.instance = null;
+				}
 			}
 
-			if (cursor.instance) {
-				await cursor.instance.close();
+			if (vdbeCursor.vtab) {
+				if (typeof vdbeCursor.vtab.xDisconnect === 'function') {
+					try {
+						await vdbeCursor.vtab.xDisconnect();
+					} catch (e) {
+						console.error(`Error disconnecting VTab table instance (idx ${cIdx}, name: ${vdbeCursor.vtab.tableName}):`, e);
+					}
+				} else {
+					console.warn(`VTab instance for cursor ${cIdx} (table: ${vdbeCursor.vtab.tableName}) does not implement xDisconnect.`);
+				}
+				vdbeCursor.vtab = null;
 			}
 
-			cursor.instance = null;
-			cursor.vtab = null;
+			if (vdbeCursor.sortedResults) {
+				vdbeCursor.sortedResults = null;
+			}
+			vdbeCursor.isEphemeral = false;
 		}
 		return undefined;
 	};

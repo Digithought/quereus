@@ -365,7 +365,11 @@ export function planTableAccessHelper(
 	stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt,
 	activeOuterCursors: ReadonlySet<number>
 ): void {
-	if (!tableSchema.isVirtual || !tableSchema.vtabModule?.xBestIndex || !tableSchema.vtabInstance) {
+	// Get the module associated with the table schema
+	const module = tableSchema.vtabModule;
+
+	// Check if the table is virtual and the module provides xBestIndex
+	if (!tableSchema.isVirtual || !module || typeof module.xBestIndex !== 'function') {
 		compiler.cursorPlanningInfo.set(cursorIdx, {
 			idxNum: 0,
 			idxStr: null,
@@ -449,9 +453,10 @@ export function planTableAccessHelper(
 
 	let status: number;
 	try {
-		status = tableSchema.vtabModule.xBestIndex(tableSchema.vtabInstance, indexInfo);
+		// Call xBestIndex on the *module*, passing db and table schema
+		status = module.xBestIndex(compiler.db, tableSchema, indexInfo);
 	} catch (e) {
-		console.error(`Error calling xBestIndex for ${tableSchema.name}:`, e);
+		console.error(`Error calling module xBestIndex for ${tableSchema.name}:`, e);
 		status = StatusCode.ERROR;
 	}
 

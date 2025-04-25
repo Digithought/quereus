@@ -1,15 +1,15 @@
-import { VirtualTable } from './table';
-import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule, BaseModuleConfig } from './module';
-import type { IndexInfo } from './indexInfo';
-import { type SqlValue, StatusCode, SqlDataType } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { SqliteContext } from '../func/context';
-import type { Database } from '../core/database';
-import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../func/builtins/json-helpers';
-import type { TableSchema } from '../schema/table';
-import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
+import { VirtualTable } from '../table';
+import { VirtualTableCursor } from '../cursor';
+import type { VirtualTableModule, BaseModuleConfig } from '../module';
+import type { IndexInfo } from '../indexInfo';
+import { type SqlValue, StatusCode, SqlDataType } from '../../common/types';
+import { SqliteError } from '../../common/errors';
+import type { SqliteContext } from '../../func/context';
+import type { Database } from '../../core/database';
+import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers';
+import type { TableSchema } from '../../schema/table';
+import { createDefaultColumnSchema } from '../../schema/column';
+import { buildColumnIndexMap } from '../../schema/table';
 
 // --- Define Configuration Interface ---
 interface JsonConfig extends BaseModuleConfig {
@@ -79,6 +79,43 @@ class JsonEachTable extends VirtualTable {
 			isView: false,
 		});
 	}
+
+	// --- Implement methods from VirtualTable --- //
+
+	async xOpen(): Promise<VirtualTableCursor<this, any>> {
+		// Simply instantiate the cursor
+		return new JsonEachCursor(this) as unknown as VirtualTableCursor<this, any>;
+	}
+
+	xBestIndex(indexInfo: IndexInfo): number {
+		// json_each doesn't really use indexes. It just iterates.
+		// We could potentially check if a root path argument was provided via constraints,
+		// but the filter logic already handles the root path from the table instance.
+		indexInfo.estimatedCost = 100000; // Arbitrary large cost
+		indexInfo.idxNum = 0; // Plan 0: Full iteration
+		indexInfo.idxStr = null;
+		indexInfo.orderByConsumed = false; // Output order is not guaranteed
+		// Indicate no constraints are used by the plan itself
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		return StatusCode.OK;
+	}
+
+	// Read-only methods remain
+	async xUpdate(): Promise<{ rowid?: bigint }> {
+		throw new SqliteError("json_each table is read-only", StatusCode.READONLY);
+	}
+
+	async xBegin() { return Promise.resolve(); } // No-op is fine
+	async xSync() { return Promise.resolve(); } // No-op is fine
+	async xCommit() { return Promise.resolve(); } // No-op is fine
+	async xRollback() { return Promise.resolve(); } // No-op is fine
+	async xRename() { throw new SqliteError("Cannot rename json_each table", StatusCode.ERROR); }
+
+	// Disconnect/Destroy are no-ops for this ephemeral table
+	async xDisconnect(): Promise<void> { /* No-op */ }
+	async xDestroy(): Promise<void> { /* No-op */ }
+
+	// ----------------------------------------- //
 }
 
 // --- Cursor Instance --- //
@@ -92,7 +129,7 @@ interface IterationState {
 	keys?: string[]; // Keys if iterating an object
 }
 
-class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
+class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
 	private elementIdCounter: number = 0;
@@ -261,55 +298,31 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 
 export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor, JsonConfig> {
 	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonEachTable {
-		// Args should be: module_name, schema_name, table_name, json_text, [root_path]
-		/* // Old argument parsing
-		if (args.length < 4 || args.length > 5) {
-			throw new SqliteError(`json_each requires 1 or 2 arguments (json, [path])`, StatusCode.ERROR);
-		}
-		const schemaName = args[1];
-		const tableName = args[2];
-		const jsonText = args[3];
-		const rootPath = args.length > 4 ? args[4] : undefined;
-		*/
-
+		// For TVFs like json_each, xConnect essentially creates the instance based on runtime arguments
 		const table = new JsonEachTable(db, this, schemaName, tableName, options.jsonSource, options.rootPath);
-		// Fix 3: Remove declareVtab - instantiation happens differently for table functions
-		// No need to declare vtab here, connection implies existence for TVFs
-
 		return table;
 	}
 
 	// xCreate is same as xConnect for ephemeral table functions like this
-	// xCreate = this.xConnect;
 	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonEachTable {
 		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
 	}
 
-	async xDisconnect(table: JsonEachTable): Promise<void> { /* No-op */ }
-	async xDestroy(table: JsonEachTable): Promise<void> { /* No-op */ }
-
-	async xOpen(table: JsonEachTable): Promise<JsonEachCursor> {
-		// Simply instantiate the cursor
-		return new JsonEachCursor(table);
-	}
-
-	xBestIndex(table: JsonEachTable, indexInfo: IndexInfo): number {
+	// Add missing xBestIndex implementation to the module
+	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
 		// json_each doesn't really use indexes. It just iterates.
-		// We can check if a root path argument was provided via constraints.
 		indexInfo.estimatedCost = 100000; // Arbitrary large cost
 		indexInfo.idxNum = 0; // Plan 0: Full iteration
 		indexInfo.idxStr = null;
 		indexInfo.orderByConsumed = false; // Output order is not guaranteed
+		// Indicate no constraints are used by the plan itself
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
 		return StatusCode.OK;
 	}
 
-	// Read-only methods remain
-	async xUpdate(): Promise<{ rowid?: bigint }> {
-		throw new SqliteError("json_each table is read-only", StatusCode.READONLY);
+	// Add missing xDestroy implementation to the module (no-op)
+	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
+		// json_each is ephemeral, no persistent state to destroy at the module level
+		return Promise.resolve();
 	}
-	async xBegin() { return Promise.resolve(); } // No-op is fine
-	async xSync() { return Promise.resolve(); } // No-op is fine
-	async xCommit() { return Promise.resolve(); } // No-op is fine
-	async xRollback() { return Promise.resolve(); } // No-op is fine
-	async xRename() { throw new SqliteError("Cannot rename json_each table", StatusCode.ERROR); }
 }

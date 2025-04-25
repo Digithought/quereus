@@ -6,12 +6,18 @@ import { SqliteError } from '../common/errors';
 /**
  * Base class (or interface) for virtual table cursors.
  * Module implementations will typically subclass this.
+ *
+ * @template TTable Type of the VirtualTable this cursor belongs to.
+ * @template TCursor Self-referential type for the cursor implementation.
  */
-export abstract class VirtualTableCursor<T extends VirtualTable> {
-	public readonly table: T; // Reference back to the table instance
+export abstract class VirtualTableCursor<
+	TTable extends VirtualTable,
+	TCursor extends VirtualTableCursor<TTable, TCursor> = any // Default to any for simpler cases
+> {
+	public readonly table: TTable; // Reference back to the table instance
 	protected _isEof: boolean = true; // Protected state for EOF tracking
 
-	constructor(table: T) {
+	constructor(table: TTable) {
 		this.table = table;
 	}
 

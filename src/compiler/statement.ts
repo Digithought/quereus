@@ -12,7 +12,8 @@ import { compileLiteralValue } from './utils';
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
 	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
-	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting INSERT`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	// Check only if it's a virtual table; runtime will check xUpdate existence
+	if (!tableSchema.isVirtual) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting INSERT`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	let targetColumns = stmt.columns;
 	if (!targetColumns) {
@@ -181,7 +182,8 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 			// valueRegisters.forEach(reg => compiler.freeTempRegister(reg)); // Uncomment if using temp registers
 
 			const p4Update: P4Update = { onConflict: stmt.onConflict || ConflictResolution.ABORT, table: tableSchema, type: 'update' };
-			compiler.emit(Opcode.VUpdate, tableSchema.columns.length + 1, regDataStart, regNewRowid, p4Update, 0, `VUpdate INSERT ${tableSchema.name}`);
+			// Pass the allocated cursor index in p5
+			compiler.emit(Opcode.VUpdate, tableSchema.columns.length + 1, regDataStart, regNewRowid, p4Update, cursor, `VUpdate INSERT ${tableSchema.name}`);
 		}
 	} else if (stmt.select) { throw new SqliteError("INSERT ... SELECT compilation not implemented yet.", StatusCode.ERROR, undefined, stmt.select.loc?.start.line, stmt.select.loc?.start.column); }
 	else { throw new SqliteError("INSERT statement missing VALUES or SELECT clause.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
@@ -191,7 +193,8 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
 	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
-	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting UPDATE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	// Check only if it's a virtual table; runtime will check xUpdate existence
+	if (!tableSchema.isVirtual) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting UPDATE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -336,7 +339,8 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 		}
 	}
 
-	compiler.emit(Opcode.VUpdate, numTableCols + 1, regUpdateDataStart, 0, updateP4, 0, `VUpdate UPDATE ${tableSchema.name}`);
+	// Pass the correct cursor index in p5
+	compiler.emit(Opcode.VUpdate, numTableCols + 1, regUpdateDataStart, 0, updateP4, cursor, `VUpdate UPDATE ${tableSchema.name}`);
 
 	compiler.resolveAddress(addrContinueUpdate /* Pass correlation/argMap? */);
 	compiler.emit(Opcode.VNext, cursor, addrEOF, 0, null, 0, "Advance to next row for UPDATE");
@@ -349,7 +353,8 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
 	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
-	if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule?.xUpdate) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting DELETE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	// Check only if it's a virtual table; runtime will check xUpdate existence
+	if (!tableSchema.isVirtual) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting DELETE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -390,7 +395,8 @@ export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt)
 
 	compiler.emit(Opcode.VRowid, cursor, regRowid, 0, null, 0, "Get Rowid for DELETE");
 	const p4Update = { onConflict: ConflictResolution.ABORT, table: tableSchema, type: 'update' };
-	compiler.emit(Opcode.VUpdate, 1, regRowid, 0, p4Update, 0, `VUpdate DELETE ${tableSchema.name}`);
+	// Pass the correct cursor index in p5
+	compiler.emit(Opcode.VUpdate, 1, regRowid, 0, p4Update, cursor, `VUpdate DELETE ${tableSchema.name}`);
 
 	compiler.resolveAddress(addrContinueDelete /* Pass correlation/argMap? */);
 	compiler.emit(Opcode.VNext, cursor, addrEOF, 0, null, 0, "Advance to next row for DELETE");

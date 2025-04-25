@@ -1,8 +1,8 @@
-import { VirtualTableCursor } from "./cursor";
-import type { MemoryTable, MemoryTableRow, BTreeKey } from "./memory-table";
-import { StatusCode, type SqlValue } from "../common/types";
-import type { SqliteContext } from "../func/context";
-import { SqliteError } from "../common/errors";
+import { VirtualTableCursor } from "../cursor";
+import type { MemoryTable, MemoryTableRow, BTreeKey } from "./table";
+import { StatusCode, type SqlValue } from "../../common/types";
+import type { SqliteContext } from "../../func/context";
+import { SqliteError } from "../../common/errors";
 import type { Path } from 'digitree';
 
 /**

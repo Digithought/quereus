@@ -1,6 +1,6 @@
 import { SqliteError } from '../../common/errors';
 import { StatusCode } from '../../common/types';
-import { MemoryTable } from '../../vtab/memory-table';
+import { MemoryTable } from '../../vtab/memory/table';
 import type { Handler } from '../handler-types';
 import type { P4SortKey } from '../instruction';
 import { Opcode } from '../opcodes';

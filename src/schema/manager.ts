@@ -12,7 +12,7 @@ import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table';
 import { Parser } from '../parser/parser'; // Import the parser
 import type * as AST from '../parser/ast'; // Import AST types
 import type { ViewSchema } from './view'; // Import ViewSchema
-import { SchemaTableModule } from '../vtab/schema-table';
+import { SchemaTableModule } from '../vtab/schema/table';
 import { SqlDataType } from '../common/types'; // Import SqlDataType
 
 /**
@@ -177,7 +177,7 @@ export class SchemaManager {
 				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>), // Define inline, typed, and frozen
 				isVirtual: true,
 				vtabModule: moduleInfo.module,
-				vtabInstance: undefined, // Instance created via xConnect
+				// vtabInstance: undefined, // Instance created via xConnect, not stored here
 				vtabAuxData: moduleInfo.auxData,
 				vtabArgs: [], // No creation args
 				vtabModuleName: 'sqlite_schema',
@@ -306,7 +306,6 @@ export class SchemaManager {
 			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)), // Use helper
 			isVirtual: true,
 			vtabModule: associatedVtab.module,
-			vtabInstance: associatedVtab,
 			vtabAuxData: auxData,
 			vtabArgs: Object.freeze(vtabArgs || []), // Use parsed args
 			// Store the registered module name used in the CREATE stmt
@@ -362,10 +361,18 @@ export class SchemaManager {
 		// Find the table first to potentially call vtab->xDestroy
 		const tableSchema = schema.getTable(tableName);
 		let destroyPromise: Promise<void> | null = null;
-		if (tableSchema?.isVirtual && tableSchema.vtabInstance && tableSchema.vtabModule?.xDestroy) {
-			console.log(`Calling xDestroy for VTab ${schemaName}.${tableName}`);
-			destroyPromise = tableSchema.vtabModule.xDestroy(tableSchema.vtabInstance).catch(err => {
-				console.error(`Error during VTab xDestroy for ${schemaName}.${tableName}:`, err);
+
+		// Call xDestroy on the *module*, providing table details
+		if (tableSchema?.isVirtual && tableSchema.vtabModule && tableSchema.vtabModuleName) {
+			console.log(`Calling xDestroy for VTab ${schemaName}.${tableName} via module ${tableSchema.vtabModuleName}`);
+			destroyPromise = tableSchema.vtabModule.xDestroy(
+				this.db, // Pass database
+				tableSchema.vtabAuxData, // Pass auxData
+				tableSchema.vtabModuleName, // Pass module name (checked existence)
+				schemaName,
+				tableName
+			).catch(err => {
+				console.error(`Error during VTab module xDestroy for ${schemaName}.${tableName}:`, err);
 				// Decide whether to proceed with schema removal despite xDestroy error
 			});
 		}

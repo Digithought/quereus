@@ -1,13 +1,14 @@
-import { VirtualTable } from './table';
-import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule, BaseModuleConfig } from './module';
-import type { IndexInfo } from './indexInfo';
-import { StatusCode, SqlDataType, type SqlValue } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { Database } from '../core/database';
-import type { SqliteContext } from '../func/context';
-import type { Schema } from '../schema/schema';
-import type { FunctionSchema } from '../schema/function';
+import { VirtualTable } from '../table';
+import { VirtualTableCursor } from '../cursor';
+import type { VirtualTableModule, BaseModuleConfig } from '../module';
+import type { IndexInfo } from '../indexInfo';
+import { StatusCode, SqlDataType, type SqlValue } from '../../common/types';
+import { SqliteError } from '../../common/errors';
+import type { Database } from '../../core/database';
+import type { SqliteContext } from '../../func/context';
+import type { Schema } from '../../schema/schema';
+import type { FunctionSchema } from '../../schema/function';
+import type { TableSchema } from '../../schema/table';
 
 // Define the structure of rows returned by sqlite_schema
 interface SchemaRow {
@@ -30,13 +31,69 @@ function stringifyCreateFunction(func: FunctionSchema): string {
  * Virtual Table instance for sqlite_schema. Doesn't hold much state itself.
  */
 class SchemaTable extends VirtualTable {
-	// No specific state needed for the table instance itself
+	// --- Implement methods from VirtualTable ---
+
+	async xOpen(): Promise<VirtualTableCursor<this, any>> {
+		// Just create and return the cursor instance
+		return new SchemaTableCursor(this) as unknown as VirtualTableCursor<this, any>;
+	}
+
+	xBestIndex(indexInfo: IndexInfo): number {
+		// Always a full table scan. No constraints or ordering supported.
+		indexInfo.idxNum = 0; // Plan 0: Full scan
+		indexInfo.estimatedCost = 1000.0; // Arbitrary high cost for full scan
+		indexInfo.estimatedRows = BigInt(100); // Estimate ~100 schema objects
+		indexInfo.orderByConsumed = false; // No ordering provided
+		indexInfo.idxFlags = 0;
+		// Indicate no constraints are used
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		indexInfo.idxStr = "fullscan";
+		return StatusCode.OK;
+	}
+
+	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
+		// This table is read-only
+		throw new SqliteError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
+	}
+
+	// --- Optional transaction methods ---
+	// These are likely no-ops as the schema table reflects current state
+	async xBegin(): Promise<void> {}
+	async xSync(): Promise<void> {}
+	async xCommit(): Promise<void> {}
+	async xRollback(): Promise<void> {}
+
+	// --- Optional rename ---
+	async xRename(zNew: string): Promise<void> {
+		throw new SqliteError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
+	}
+
+	// --- Optional savepoint methods ---
+	async xSavepoint(iSavepoint: number): Promise<void> {}
+	async xRelease(iSavepoint: number): Promise<void> {}
+	async xRollbackTo(iSavepoint: number): Promise<void> {}
+
+	// --- Optional shadow name check ---
+	xShadowName?(name: string): boolean {
+		// sqlite_schema itself is not a shadow name for other tables
+		return false;
+	}
+
+	// Disconnect/Destroy are no-ops for this internal table
+	async xDisconnect(): Promise<void> {
+		console.log(`Schema table '${this.tableName}' connection instance disconnected`);
+	}
+	async xDestroy(): Promise<void> {
+		console.warn(`Attempted to destroy schema table '${this.tableName}'`);
+	}
+
+	// -----------------------------------------
 }
 
 /**
  * Cursor for iterating over the generated schema rows.
  */
-class SchemaTableCursor extends VirtualTableCursor<SchemaTable> {
+class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCursor> {
 	private schemaRows: SchemaRow[] = [];
 	private currentIndex: number = -1;
 
@@ -228,6 +285,7 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 
 	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: BaseModuleConfig): SchemaTable {
 		console.log(`SchemaTableModule xCreate: ${schemaName}.${tableName}`);
+		// xCreate and xConnect return the same lightweight object for this read-only table
 		return new SchemaTable(db, this, schemaName, tableName);
 	}
 
@@ -236,20 +294,8 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 		return new SchemaTable(db, this, schemaName, tableName);
 	}
 
-	async xDisconnect(table: SchemaTable): Promise<void> {
-		console.log(`Schema table '${table.tableName}' disconnected`);
-	}
-
-	async xDestroy(table: SchemaTable): Promise<void> {
-		console.warn(`Attempted to destroy schema table '${table.tableName}'`);
-	}
-
-	async xOpen(table: SchemaTable): Promise<SchemaTableCursor> {
-		// Just create and return the cursor instance
-		return new SchemaTableCursor(table);
-	}
-
-	xBestIndex(table: SchemaTable, indexInfo: IndexInfo): number {
+	// Add missing xBestIndex implementation to the module
+	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
 		// Always a full table scan. No constraints or ordering supported.
 		indexInfo.idxNum = 0; // Plan 0: Full scan
 		indexInfo.estimatedCost = 1000.0; // Arbitrary high cost for full scan
@@ -262,27 +308,14 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 		return StatusCode.OK;
 	}
 
-	async xUpdate(table: SchemaTable, values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
-		// This table is read-only
-		throw new SqliteError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
+	// Add missing xDestroy implementation to the module (no-op)
+	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
+		console.warn(`Attempted to destroy built-in schema table definition '${tableName}' via module.`);
+		// No persistent state to destroy for the module itself
+		return Promise.resolve();
 	}
 
-	// --- Optional transaction methods ---
-	// These are likely no-ops as the schema table reflects current state
-	async xBegin(table: SchemaTable): Promise<void> {}
-	async xSync(table: SchemaTable): Promise<void> {}
-	async xCommit(table: SchemaTable): Promise<void> {}
-	async xRollback(table: SchemaTable): Promise<void> {}
-
-	// --- Optional rename ---
-	async xRename(table: SchemaTable, zNew: string): Promise<void> {
-		throw new SqliteError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
-	}
-
-	// --- Optional savepoint methods ---
-	async xSavepoint(table: SchemaTable, iSavepoint: number): Promise<void> {}
-	async xRelease(table: SchemaTable, iSavepoint: number): Promise<void> {}
-	async xRollbackTo(table: SchemaTable, iSavepoint: number): Promise<void> {}
+	// Instance-specific methods are now on SchemaTable
 
 	// --- Optional shadow name check ---
 	xShadowName?(name: string): boolean {

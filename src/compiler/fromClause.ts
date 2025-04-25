@@ -73,72 +73,13 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			compiler.tableAliases.set(lookupName, cursor);
 			currentLevelAliases.set(lookupName, cursor);
 
-			if (tableSchema.isVirtual && tableSchema.vtabInstance) {
+			// VDBE OpenRead/OpenWrite will handle xConnect, just pass schema in P4
+			if (tableSchema.isVirtual) {
 				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
 				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
-			} else if (tableSchema.isVirtual && !tableSchema.vtabInstance) {
-				// Need to connect if instance doesn't exist yet (e.g., schema load)
-				console.warn(`VTab ${tableName} found but not connected, attempting connect...`);
-				const module = compiler.db._getVtabModule(tableSchema.vtabModuleName ?? '');
-				if (!module) throw new SqliteError(`Module ${tableSchema.vtabModuleName} not found for VTab ${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
-				const moduleName = tableSchema.vtabModuleName ?? '';
-				const storedArgs = tableSchema.vtabArgs ?? [];
-				let options: BaseModuleConfig = {}; // Default
-				try {
-					if (moduleName.toLowerCase() === 'memory') {
-						// Reconstruct MemoryTableConfig from stored DDL if possible
-						// This relies on the DDL being the first arg in vtabArgs
-						if (storedArgs.length > 0 && storedArgs[0].trim().toUpperCase().startsWith('CREATE TABLE')) {
-							const ddlString = storedArgs[0];
-							const parser = new Parser();
-							const parsedAst = parser.parse(ddlString);
-							if (parsedAst.type === 'createTable') {
-								const createTableAst = parsedAst as AST.CreateTableStmt;
-								options = {
-									columns: Object.freeze(createTableAst.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }))),
-									primaryKey: parsePrimaryKeyFromAst(createTableAst.columns, createTableAst.constraints),
-									readOnly: false // Assume default, cannot easily get this from stored args
-								} as MemoryTableConfig;
-							} else {
-								console.warn(`Could not parse stored DDL argument for memory table ${tableName} during connect.`);
-							}
-						} else {
-							console.warn(`Could not reconstruct schema for memory table ${tableName} during connect: DDL argument missing or invalid.`);
-							// Cannot proceed without schema info
-							throw new SqliteError(`Cannot connect to memory table ${tableName}: schema information missing from stored arguments.`);
-						}
-					} else if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
-						if (storedArgs.length < 1 || storedArgs.length > 2) {
-							throw new Error(`${moduleName} requires 1 or 2 stored arguments (jsonSource, [rootPath])`);
-						}
-						options = {
-							jsonSource: storedArgs[0],
-							rootPath: storedArgs[1]
-						} as JsonConfig;
-					} else {
-						// Generic module - pass empty config
-						options = {};
-					}
-				} catch (e: any) {
-					throw new SqliteError(`Failed to parse stored arguments for module '${moduleName}' on connect: ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined);
-				}
-
-				// Call connect with the new signature
-				const instance = module.module.xConnect(
-					compiler.db,
-					module.auxData,
-					moduleName,
-					schemaName,
-					tableName,
-					options
-				);
-				// Update the stored schema with the instance
-				const connectedSchema = { ...tableSchema, vtabInstance: instance };
-				compiler.db.schemaManager.getSchema(schemaName)?.addTable(connectedSchema);
-				compiler.tableSchemas.set(cursor, connectedSchema);
-				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema: connectedSchema };
-				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
-			} else { throw new SqliteError("Regular tables not supported", StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column); }
+			} else {
+				throw new SqliteError("Regular tables not supported", StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
+			}
 		} else if (source.type === 'join') {
 			openCursorsRecursive(source.left, currentLevelAliases);
 			openCursorsRecursive(source.right, currentLevelAliases);

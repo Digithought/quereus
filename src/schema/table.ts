@@ -27,8 +27,6 @@ export interface TableSchema {
 	isVirtual: boolean;
 	/** If virtual, reference to the registered module */
 	vtabModule?: VirtualTableModule<any, any>; // Define specific types later
-	/** If virtual, the instantiated table object (after xConnect/xCreate) */
-	vtabInstance?: VirtualTable; // Define specific types later
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */

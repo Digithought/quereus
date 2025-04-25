@@ -12,14 +12,15 @@ export { Statement } from './core/statement';
 // Common data types and constants
 export { StatusCode, SqlDataType } from './common/types';
 export type { SqlValue } from './common/types';
-export { Opcode, ConflictResolution } from './common/constants';
+export { ConflictResolution } from './common/constants';
+export { Opcode } from './vdbe/opcodes';
 export { SqliteError, MisuseError, ConstraintError } from './common/errors';
 
 // Virtual Table API
 export { VirtualTable } from './vtab/table';
 export { VirtualTableCursor } from './vtab/cursor';
 export { type VirtualTableModule } from './vtab/module';
-export { MemoryTableModule } from './vtab/memory-module';
+export { MemoryTableModule } from './vtab/memory/module';
 
 // SQL Parser and Compiler
 export { Parser } from './parser/parser';
@@ -28,7 +29,7 @@ export { ParseError } from './parser/parser';
 export { Compiler } from './compiler/compiler';
 
 // Virtual Database Engine
-export { Vdbe } from './vdbe/engine';
+export { VdbeRuntime } from './vdbe/runtime';
 export type { VdbeProgram } from './vdbe/program';
 export { createInstruction } from './vdbe/instruction';
 export type { VdbeInstruction } from './vdbe/instruction';

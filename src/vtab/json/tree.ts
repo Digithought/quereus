@@ -1,15 +1,15 @@
-import { VirtualTable } from './table';
-import { VirtualTableCursor } from './cursor';
-import type { VirtualTableModule, BaseModuleConfig } from './module';
-import type { IndexInfo } from './indexInfo';
-import { type SqlValue, StatusCode, SqlDataType } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { SqliteContext } from '../func/context';
-import type { Database } from '../core/database';
-import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../func/builtins/json-helpers';
-import type { TableSchema } from '../schema/table';
-import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
+import { VirtualTable } from '../table';
+import { VirtualTableCursor } from '../cursor';
+import type { VirtualTableModule, BaseModuleConfig } from '../module';
+import type { IndexInfo } from '../indexInfo';
+import { type SqlValue, StatusCode, SqlDataType } from '../../common/types';
+import { SqliteError } from '../../common/errors';
+import type { SqliteContext } from '../../func/context';
+import type { Database } from '../../core/database';
+import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers';
+import type { TableSchema } from '../../schema/table';
+import { createDefaultColumnSchema } from '../../schema/column';
+import { buildColumnIndexMap } from '../../schema/table';
 
 // --- Define Configuration Interface (Shared with JsonEach) ---
 interface JsonConfig extends BaseModuleConfig {
@@ -78,6 +78,37 @@ class JsonTreeTable extends VirtualTable {
 			isView: false,
 		});
 	}
+
+	// --- Implement methods from VirtualTable --- //
+
+	async xOpen(): Promise<VirtualTableCursor<this, any>> {
+		return new JsonTreeCursor(this) as unknown as VirtualTableCursor<this, any>;
+	}
+
+	xBestIndex(indexInfo: IndexInfo): number {
+		indexInfo.estimatedCost = 100000; // Arbitrary large cost
+		indexInfo.idxNum = 0; // Plan 0: Full iteration
+		indexInfo.idxStr = null;
+		indexInfo.orderByConsumed = false; // Output order is depth-first
+		// Indicate no constraints are used by the plan itself
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		return StatusCode.OK;
+	}
+
+	async xUpdate(): Promise<{ rowid?: bigint }> {
+		throw new SqliteError("json_tree table is read-only", StatusCode.READONLY);
+	}
+	async xBegin() { return Promise.resolve(); }
+	async xSync() { return Promise.resolve(); }
+	async xCommit() { return Promise.resolve(); }
+	async xRollback() { return Promise.resolve(); }
+	async xRename() { throw new SqliteError("Cannot rename json_tree table", StatusCode.ERROR); }
+
+	// Disconnect/Destroy are no-ops for this ephemeral table
+	async xDisconnect(): Promise<void> { /* No-op */ }
+	async xDestroy(): Promise<void> { /* No-op */ }
+
+	// ----------------------------------------- //
 }
 
 // --- Cursor Instance (Must be specific due to different iteration logic) --- //
@@ -90,7 +121,7 @@ interface IterationState {
 	childrenPushed: boolean; // Flag to track if children have been added to stack
 }
 
-class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable> {
+class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
 	private elementIdCounter: number = 0;
@@ -270,27 +301,22 @@ export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTre
 		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
 	}
 
-	async xDisconnect(table: JsonTreeTable): Promise<void> { /* No-op */ }
-	async xDestroy(table: JsonTreeTable): Promise<void> { /* No-op */ }
-
-	async xOpen(table: JsonTreeTable): Promise<JsonTreeCursor> {
-		return new JsonTreeCursor(table);
-	}
-
-	xBestIndex(table: JsonTreeTable, indexInfo: IndexInfo): number {
+	// Add missing xBestIndex implementation to the module
+	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
 		indexInfo.estimatedCost = 100000; // Arbitrary large cost
 		indexInfo.idxNum = 0; // Plan 0: Full iteration
 		indexInfo.idxStr = null;
 		indexInfo.orderByConsumed = false; // Output order is depth-first
+		// Indicate no constraints are used by the plan itself
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
 		return StatusCode.OK;
 	}
 
-	async xUpdate(): Promise<{ rowid?: bigint }> {
-		throw new SqliteError("json_tree table is read-only", StatusCode.READONLY);
+	// Add missing xDestroy implementation to the module (no-op)
+	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
+		// json_tree is ephemeral, no persistent state to destroy at the module level
+		return Promise.resolve();
 	}
-	async xBegin() { return Promise.resolve(); }
-	async xSync() { return Promise.resolve(); }
-	async xCommit() { return Promise.resolve(); }
-	async xRollback() { return Promise.resolve(); }
-	async xRename() { throw new SqliteError("Cannot rename json_tree table", StatusCode.ERROR); }
+
+	// Instance-specific methods are now on JsonTreeTable
 }

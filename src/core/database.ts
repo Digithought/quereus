@@ -18,11 +18,11 @@ import { Parser } from '../parser/parser';
 import { Compiler } from '../compiler/compiler';
 import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table'; // Import helpers
 // Import default modules
-import { MemoryTableModule } from '../vtab/memory-module';
-import { JsonEachModule } from '../vtab/json-each';
-import { JsonTreeModule } from '../vtab/json-tree'; // Import JsonTreeModule
+import { MemoryTableModule } from '../vtab/memory/module';
+import { JsonEachModule } from '../vtab/json/each';
+import { JsonTreeModule } from '../vtab/json/tree'; // Import JsonTreeModule
 // --- Import SchemaTableModule ---
-import { SchemaTableModule } from '../vtab/schema-table';
+import { SchemaTableModule } from '../vtab/schema/table';
 // -------------------------------
 // Add import for collation functions
 import { registerCollation as registerCollationUtil, getCollation as getCollationUtil, type CollationFunction, BINARY_COLLATION, NOCASE_COLLATION, RTRIM_COLLATION } from '../util/comparison';

@@ -180,12 +180,26 @@ export function registerHandlers(handlers: Handler[]) {
     const regOut = inst.p3;
     const p4Info = inst.p4 as P4Update | null;
 
-    if (!p4Info || p4Info.type !== 'update' || !p4Info.table?.vtabInstance?.module?.xUpdate) {
-      throw new SqliteError("VUpdate missing P4 info, table, vtab instance, module, or xUpdate method", StatusCode.INTERNAL);
+    // Get target cursor index from p5
+    const updateCursorIdx = inst.p5;
+    if (updateCursorIdx === undefined || updateCursorIdx < 0) {
+      throw new SqliteError(`VUpdate instruction requires a valid cursor index in p5`, StatusCode.INTERNAL);
     }
 
-    const vtabInstance = p4Info.table.vtabInstance;
-    const module = vtabInstance.module;
+    const cursor = ctx.getCursor(updateCursorIdx);
+    const vtabInstance = cursor?.vtab;
+
+    if (!p4Info || p4Info.type !== 'update' || !p4Info.table) {
+      throw new SqliteError("VUpdate missing P4 info or table schema", StatusCode.INTERNAL);
+    }
+    if (!vtabInstance) {
+      throw new SqliteError(`VUpdate target cursor ${updateCursorIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
+    }
+    if (typeof vtabInstance.xUpdate !== 'function') {
+      throw new SqliteError(`VTab instance for ${vtabInstance.tableName} does not implement xUpdate`, StatusCode.MISUSE);
+    }
+
+    // const module = vtabInstance.module; // No longer needed
 
     const values: SqlValue[] = [];
     for (let i = 0; i < nData; i++) {
@@ -198,8 +212,8 @@ export function registerHandlers(handlers: Handler[]) {
     const rowidFromData = nData > 0 ? values[0] : null; // RowID is typically the first value for UPDATE/DELETE
 
     try {
-      // Call xUpdate on the module instance
-      const result = await module.xUpdate(vtabInstance, values, rowidFromData as bigint | null);
+      // Call xUpdate on the vtab instance directly
+      const result = await vtabInstance.xUpdate(values, rowidFromData as bigint | null);
 
       // Store output (e.g., new rowid for INSERT) if requested
       if (regOut > 0) {
@@ -228,15 +242,16 @@ export function registerHandlers(handlers: Handler[]) {
 
     for (let i = startCIdx; i < endCIdx; i++) {
       const cursor = ctx.getCursor(i);
-      const module = cursor?.vtab?.module as VirtualTableModule<any, any, any> | undefined;
+      // const module = cursor?.vtab?.module as VirtualTableModule<any, any, any> | undefined;
       const vtab = cursor?.vtab;
 
-      if (module && vtab && typeof module[action] === 'function') {
+      // Check if vtab exists and the action method exists on it
+      if (vtab && typeof (vtab as any)[action] === 'function') {
         try {
           if (action === 'xSavepoint' || action === 'xRelease' || action === 'xRollbackTo') {
-            await module[action]!(vtab, savepointIdx);
+            await (vtab as any)[action]!(savepointIdx);
           } else {
-            await module[action]!(vtab);
+            await (vtab as any)[action]!();
           }
         } catch (e) {
           handleVTabError(ctx, e, vtab.tableName, action);

@@ -136,7 +136,8 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 		if (!tableSchema) { throw new SqliteError(`Internal error: Schema not found for cursor ${cursor}`, StatusCode.INTERNAL); }
 		const potentialColIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
 		if (potentialColIdx === undefined) {
-			if (expr.name.toLowerCase() === 'rowid' && tableSchema.isVirtual /*&& tableSchema.vtabInstance?.supportsRowid()*/) {
+			// Rowid is implicitly supported by virtual tables unless specified otherwise
+			if (expr.name.toLowerCase() === 'rowid' && tableSchema.isVirtual) {
 				colIdx = -1;
 			} else {
 				throw new SqliteError(`Column not found in table ${expr.table}: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
@@ -162,7 +163,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 					potentialColIdx = idx;
 					potentialSchema = schema;
 					foundCount++;
-				} else if (expr.name.toLowerCase() === 'rowid' && schema.isVirtual /*&& schema.vtabInstance?.supportsRowid()*/) {
+				} else if (expr.name.toLowerCase() === 'rowid' && schema.isVirtual) {
 					if (potentialCursor !== -1) {
 						throw new SqliteError(`Ambiguous column name: ${expr.name} (rowid). Qualify with table name or alias.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 					}

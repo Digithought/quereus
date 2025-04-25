@@ -330,13 +330,11 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 			compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after RENAME TABLE`);
 
 		} else if (stmt.action.type === 'addColumn' || stmt.action.type === 'dropColumn' || stmt.action.type === 'renameColumn') {
-			if (!tableSchema.isVirtual || !tableSchema.vtabInstance || !tableSchema.vtabModule) {
-				throw new SqliteError(`ALTER TABLE ${stmt.action.type} is only supported for virtual tables`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			// Check if it's a virtual table with a module defined in the schema
+			if (!tableSchema.isVirtual || !tableSchema.vtabModule) {
+				throw new SqliteError(`ALTER TABLE ${stmt.action.type} is only supported for virtual tables with a defined module`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 			}
-			const vtabModule = tableSchema.vtabModule as VirtualTableModule<any, any, any>;
-			if (typeof vtabModule.xAlterSchema !== 'function') {
-				throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' does not support ALTER TABLE ${stmt.action.type}`, StatusCode.MISUSE, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
-			}
+			// Runtime check for xAlterSchema implementation moved to VDBE handler (Opcode.SchemaChange)
 
 			let changeInfo: P4SchemaChange;
 			let columnName: string = '';

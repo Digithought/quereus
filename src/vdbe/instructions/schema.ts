@@ -25,13 +25,13 @@ export function registerHandlers(handlers: Handler[]) {
         throw new SqliteError(`SchemaChange: Cursor ${cursorIdx} does not refer to an open virtual table`, StatusCode.INTERNAL);
       }
 
-      const module = vtab.module as VirtualTableModule<any, any, any> | undefined;
-      if (!module || typeof module.xAlterSchema !== 'function') {
+      // Check for xAlterSchema on the instance
+      if (typeof vtab.xAlterSchema !== 'function') {
         throw new SqliteError(`ALTER TABLE operation not supported by virtual table module for table '${vtab.tableName}'`, StatusCode.MISUSE);
       }
 
-      // Call the module's implementation
-      await module.xAlterSchema(vtab, changeInfo);
+      // Call the instance's implementation
+      await vtab.xAlterSchema(changeInfo);
       console.log(`VDBE SchemaChange: Successfully executed on table ${vtab.tableName}`);
 
     } catch (e: any) {

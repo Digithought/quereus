@@ -15,7 +15,9 @@ This list outlines the remaining major features and refinements needed to make S
 *   [ ] **Opcode Optimization:**
     *   [ ] Consider opcodes for more efficient type conversions or comparisons if `Affinity` proves insufficient.
     *   [ ] Consider VDBE optimizations (e.g., peephole).
+    *   [ ] Cache common allocations (e.g., small buffers for `ZeroBlob`).
 *   [ ] **VDBE Stack Frame Robustness:** Review stack/frame pointer management for edge cases and accuracy.
+*   [ ] **Runtime Checks:** Add explicit runtime checks for existence of required methods before calling (e.g., `xStep`/`xFinal` in `AggStep`/`AggFinal`).
 *   [ ] **Compiler/Parser Syntax Alignment:** Ensure parser, compiler, and documentation consistently reflect the intended SQL syntax (e.g., `CREATE TABLE ... USING`).
 
 **III. Virtual Table Enhancements:**
@@ -30,7 +32,7 @@ This list outlines the remaining major features and refinements needed to make S
         *   **Pros:** Correctly handles transactional consistency (merging pending inserts/updates/deletes) and internal sorting (when `orderByConsumed` is false), significantly simplifying the implementation of `xNext`, `xSeekRelative`, and `xSeekToRowid`.
         *   **Cons:** Can have high memory usage for large tables/unfiltered queries, potentially adds upfront latency to `xFilter` before the first row is fetched.
         *   **Future:** Explore more iterative/generator-based merging within the cursor (`xNext`). This would reduce upfront memory/latency but significantly increase complexity for transactional checks, internal sorting, and especially seeking (`xSeekRelative`/`xSeekToRowid`). May require pushing sorting back to the VDBE in more cases.
-*   [ ] **Clean up vtab module interface** - more JS idiomatic.  e.g. move cursor functions into methods on cursor interface.
+*   [ ] **Clean up vtab module interface** - more JS idiomatic.  e.g. move cursor functions into methods on cursor interface. **Consider adopting SQLite's `xCreate`/`xConnect`/`xDisconnect`/`xDestroy` pattern for better state management.**
 *   [ ] **VTab Schema Declaration:**
     *   [ ] Standardize how VTab modules declare their columns and constraints to the SchemaManager (beyond `MemoryTable`'s argument parsing). Maybe a dedicated `xDeclareSchema` method?
 *   [P] **VTab Transactionality:** Transaction hooks (`xBegin`, `xCommit`, etc.) and savepoint hooks exist in the interface and `MemoryTable`. Need more examples/guidance.

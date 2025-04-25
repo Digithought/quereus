@@ -1,8 +1,8 @@
 import { SqliteError } from '../../common/errors';
 import { StatusCode } from '../../common/types';
 import type { TableSchema } from '../../schema/table';
-import { MemoryTable } from '../../vtab/memory-table';
-import { MemoryTableModule } from '../../vtab/memory-module';
+import { MemoryTable } from '../../vtab/memory/table';
+import { MemoryTableModule } from '../../vtab/memory/module';
 import type { Handler } from '../handler-types';
 import { Opcode } from '../opcodes';
 
@@ -39,9 +39,10 @@ export function registerHandlers(handlers: Handler[]) {
       ephTable.setColumns(defaultCols, []); // Default: no explicit primary key
     }
 
-    // Open the cursor using the module's xOpen
+    // Open the cursor using the table instance's xOpen
     try {
-      const ephInstance = await ephemeralModule.xOpen(ephTable);
+      // Call xOpen on the instance, not the module
+      const ephInstance = await ephTable.xOpen();
 
       // Store cursor state in VmCtx
       const cursor = ctx.getCursor(ephCursorIdx);
