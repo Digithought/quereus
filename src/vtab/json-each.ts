@@ -74,6 +74,9 @@ class JsonEachTable extends VirtualTable {
 			vtabModule: module,
 			vtabInstance: this,
 			vtabModuleName: 'json_each',
+			isWithoutRowid: false,
+			isStrict: false,
+			isView: false,
 		});
 	}
 }
@@ -92,24 +95,23 @@ interface IterationState {
 class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
-	private isEof: boolean = true;
 	private elementIdCounter: number = 0;
 
 	constructor(table: JsonEachTable) {
 		super(table);
+		this._isEof = true; // Start as EOF
 	}
 
-	// Methods for xFilter, xNext, xEof, xColumn will go here
-	// They will manage the stack and currentRow
-
+	/** Resets the cursor state. */
 	reset(): void {
 		this.stack = [];
 		this.currentRow = null;
-		this.isEof = true;
+		this._isEof = true;
 		this.elementIdCounter = 0;
 	}
 
-	startIteration(startNode: any, rootPath: string | null): void {
+	/** Internal: Starts the iteration process for filter(). */
+	private startIteration(startNode: any, rootPath: string | null): void {
 		this.reset();
 		const initialPath = rootPath ?? '$';
 		if (startNode !== undefined) {
@@ -121,16 +123,17 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 				parentId: 0,
 				currentIndex: -1, // Indicates not currently iterating array/object keys
 			});
-			this.isEof = false;
-			this.next(); // Move to the first element (the root itself)
+			this._isEof = false;
+			this.advanceToNextRow(); // Position on the first element
 		} else {
-			this.isEof = true;
+			this._isEof = true;
 		}
 	}
 
-	next(): void {
+	/** Internal: Advances the iterator stack and sets currentRow. */
+	private advanceToNextRow(): void {
 		if (this.stack.length === 0) {
-			this.isEof = true;
+			this._isEof = true;
 			this.currentRow = null;
 			return;
 		}
@@ -140,7 +143,7 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 
 		// Determine the key/index for the *current* node based on parent state
 		const key = currentState.parentKey;
-		const id = this.elementIdCounter++;
+		const id = this.elementIdCounter++; // Generate ID for the current element
 		const path = currentState.parentPath;
 		const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
 		const type = getJsonType(currentValue);
@@ -155,6 +158,7 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 			parent: currentState.parentId,
 			fullkey: fullkey,
 			path: path,
+			_originalValue: currentValue, // Store original for potential stringification later
 		};
 
 		// Pop the current state as it's now processed (yielded)
@@ -167,7 +171,7 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 					value: currentValue[i],
 					parentPath: fullkey, // Path to this array
 					parentKey: i,
-					parentId: id,
+					parentId: id, // Use the ID generated for the current row
 					currentIndex: -1, // Reset for the child
 				});
 			}
@@ -178,44 +182,79 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable> {
 					value: currentValue[objKey],
 					parentPath: fullkey, // Path to this object
 					parentKey: objKey,
-					parentId: id,
+					parentId: id, // Use the ID generated for the current row
 					currentIndex: -1,
 				});
 			}
 		}
 
-		// Check if stack is now empty
+		// Check if stack became empty after popping and pushing children
 		if (this.stack.length === 0) {
-			// We just processed the last item, but EOF isn't reached until the *next* call to next()
-			// So, don't set isEof here. The check at the beginning of next() will handle it.
+			// This means the row we just set in `this.currentRow` was the absolute last one.
+			// The *next* call to `next()` will correctly set EOF.
 		}
+		this._isEof = false; // We successfully advanced to a row
 	}
 
-	eof(): boolean {
-		return this.isEof;
+	// --- Implement Abstract Methods --- //
+
+	async filter(idxNum: number, idxStr: string | null, args: ReadonlyArray<SqlValue>): Promise<void> {
+		const rootPath = this.table.rootPath;
+		let startNode = this.table.parsedJson;
+
+		// Apply root path if provided
+		if (rootPath) {
+			startNode = evaluateJsonPathBasic(startNode, rootPath);
+		}
+
+		this.startIteration(startNode, rootPath);
 	}
 
-	column(index: number): SqlValue {
-		if (!this.currentRow) return null;
+	async next(): Promise<void> {
+		if (this._isEof) return; // Don't advance if already EOF
+		this.advanceToNextRow();
+	}
+
+	column(context: SqliteContext, index: number): number {
+		if (!this.currentRow) {
+			context.resultNull(); // Should not happen if VDBE checks eof()
+			return StatusCode.OK;
+		}
 		const colName = JSON_EACH_COLUMNS[index]?.name;
+
 		// Handle value formatting specifically for column requests
-		if (colName === 'value' && this.currentRow) {
+		if (colName === 'value') {
 			const type = this.currentRow['type'];
-			// Return primitives directly, format objects/arrays as JSON text
 			if (type === 'object' || type === 'array') {
-				// We need the original JS value to stringify
-				// How to get it? currentRow stores stringified version.
-				// Solution: Store original value in cursor state? Or re-evaluate path?
-				// Let's try storing original value briefly.
-				const originalValue = (this.currentRow as any)._originalValue; // Need to add this
-				return originalValue ? JSON.stringify(originalValue) : null;
+				// Use the stored original value for stringification
+				const originalValue = (this.currentRow as any)._originalValue;
+				context.resultValue(originalValue !== undefined ? JSON.stringify(originalValue) : null);
 			} else {
-				return this.currentRow[colName] ?? null;
+				context.resultValue(this.currentRow[colName] ?? null);
 			}
 		} else {
-			return this.currentRow[colName] ?? null;
+			context.resultValue(this.currentRow[colName] ?? null);
 		}
+		return StatusCode.OK;
 	}
+
+	async rowid(): Promise<bigint> {
+		if (!this.currentRow) {
+			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
+		}
+		const id = this.currentRow['id'];
+		if (typeof id === 'number') {
+			return BigInt(id);
+		}
+		// Should have an ID if currentRow is set
+		throw new SqliteError("Cannot get rowid for json_each cursor (missing ID)", StatusCode.INTERNAL);
+	}
+
+	async close(): Promise<void> {
+		this.reset(); // Clear stack and state
+	}
+
+	// seekRelative/seekToRowid not supported, rely on base class default exception
 }
 
 // --- Module Implementation --- //
@@ -250,11 +289,8 @@ export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEac
 	async xDestroy(table: JsonEachTable): Promise<void> { /* No-op */ }
 
 	async xOpen(table: JsonEachTable): Promise<JsonEachCursor> {
+		// Simply instantiate the cursor
 		return new JsonEachCursor(table);
-	}
-
-	async xClose(cursor: JsonEachCursor): Promise<void> {
-		cursor.reset();
 	}
 
 	xBestIndex(table: JsonEachTable, indexInfo: IndexInfo): number {
@@ -267,45 +303,7 @@ export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEac
 		return StatusCode.OK;
 	}
 
-	async xFilter(cursor: JsonEachCursor, idxNum: number, idxStr: string | null, args: ReadonlyArray<SqlValue>): Promise<void> {
-		const rootPath = cursor.table.rootPath;
-		let startNode = cursor.table.parsedJson;
-
-		// Apply root path if provided
-		if (rootPath) {
-			// Fix 4: Use imported evaluateJsonPathBasic
-			startNode = evaluateJsonPathBasic(startNode, rootPath);
-		}
-
-		cursor.startIteration(startNode, rootPath);
-	}
-
-	async xNext(cursor: JsonEachCursor): Promise<void> {
-		cursor.next();
-	}
-
-	async xEof(cursor: JsonEachCursor): Promise<boolean> {
-		return cursor.eof();
-	}
-
-	xColumn(cursor: JsonEachCursor, context: SqliteContext, i: number): number {
-		context.resultValue(cursor.column(i));
-		return StatusCode.OK;
-	}
-
-	xRowid(cursor: JsonEachCursor): Promise<bigint> {
-		// json_each rows don't have a stable rowid in SQLite sense
-		// Use the internal element id?
-		// Fix 5: Use public column() method to get id
-		const idColIndex = JSON_EACH_COLUMN_MAP.get('id')!;
-		const id = cursor.column(idColIndex);
-		if (typeof id === 'number') {
-			return Promise.resolve(BigInt(id));
-		}
-		return Promise.reject(new SqliteError("Cannot get rowid for json_each cursor", StatusCode.ERROR));
-	}
-
-	// Fix 6: Make read-only methods async and match return type signature
+	// Read-only methods remain
 	async xUpdate(): Promise<{ rowid?: bigint }> {
 		throw new SqliteError("json_each table is read-only", StatusCode.READONLY);
 	}

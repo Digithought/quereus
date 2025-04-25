@@ -180,7 +180,11 @@ export class SchemaManager {
 				vtabInstance: undefined, // Instance created via xConnect
 				vtabAuxData: moduleInfo.auxData,
 				vtabArgs: [], // No creation args
-				vtabModuleName: 'sqlite_schema'
+				vtabModuleName: 'sqlite_schema',
+				// Add missing properties
+				isWithoutRowid: false,
+				isStrict: false,
+				isView: false,
 			} satisfies TableSchema; // Use 'satisfies' for type checking without changing type
 		}
 		// --------------------------------------
@@ -307,6 +311,10 @@ export class SchemaManager {
 			vtabArgs: Object.freeze(vtabArgs || []), // Use parsed args
 			// Store the registered module name used in the CREATE stmt
 			vtabModuleName: createVtabAst.moduleName,
+			// Add missing properties
+			isWithoutRowid: false,
+			isStrict: false,
+			isView: false,
 		};
 
 		schema.addTable(tableSchema);

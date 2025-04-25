@@ -3,7 +3,7 @@ import { SqliteError, ConstraintError } from '../common/errors';
 import type { Database } from '../core/database';
 import type { Statement } from '../core/statement';
 import type { VdbeProgram } from './program';
-import type { VdbeInstruction, P4FuncDef, P4Coll, P4SchemaChange } from './instruction';
+import type { VdbeInstruction, P4FuncDef, P4Coll, P4SchemaChange, P4SortKey } from './instruction';
 import { Opcode, ConflictResolution } from '../common/constants';
 import { evaluateIsTrue, compareSqlValues } from '../util/comparison';
 import { applyNumericAffinity, applyTextAffinity, applyIntegerAffinity, applyRealAffinity, applyBlobAffinity } from '../util/affinity';
@@ -11,8 +11,10 @@ import type { VirtualTableCursor } from '../vtab/cursor';
 import type { VirtualTable } from '../vtab/table';
 import { FunctionContext } from '../func/context';
 import type { TableSchema } from '../schema/table';
-import { MemoryTable, MemoryTableModule } from '../vtab/memory-table';
-import { type MemoryTableRow, MemoryTableCursor } from '../vtab/memory-table';
+import { MemoryTable } from '../vtab/memory-table';
+import { MemoryTableModule } from '../vtab/memory-module';
+import { type MemoryTableRow } from '../vtab/memory-table';
+import { MemoryTableCursor } from '../vtab/memory-cursor';
 import type { FunctionSchema } from '../schema/function';
 import type * as AST from '../parser/ast'; // Import AST namespace
 import type { VirtualTableModule } from '../vtab/module'; // <-- Import VirtualTableModule
@@ -22,18 +24,12 @@ export interface MemoryCell {
 	value: SqlValue;
 }
 
-/** Internal state for stack frame control info */
-// interface FrameControlInfo { // Not needed as separate type
-// 	returnAddress: number;
-// 	oldFramePointer: number;
-// }
-
 /** Internal state for a VDBE cursor */
 interface VdbeCursor {
 	instance: VirtualTableCursor<any> | null;
-	vtab: VirtualTable | null;
-	isValid: boolean;
-	isEof: boolean;
+	vtab: VirtualTable | null; // Keep vtab ref for module access (xUpdate, xBegin etc.)
+	// isValid is now implicitly handled by cursor.eof()
+	// isEof is now implicitly handled by cursor.eof()
 	isEphemeral?: boolean;
 	sortedResults?: { rows: MemoryCell[][], index: number } | null;
 }
@@ -86,8 +82,8 @@ export class Vdbe {
 		this.vdbeCursors = new Array(program.numCursors).fill(null).map(() => ({
 			instance: null,
 			vtab: null,
-			isValid: false,
-			isEof: false,
+			// Removed isValid, isEof
+			isEphemeral: false,
 			sortedResults: null
 		}));
 		this.vtabContext = new FunctionContext(this.db);
@@ -135,9 +131,9 @@ export class Vdbe {
 		for (let i = 0; i < this.vdbeCursors.length; i++) {
 			const cursor = this.vdbeCursors[i];
 			if (cursor.sortedResults) cursor.sortedResults = null;
-			if (cursor.instance) closePromises.push(cursor.vtab!.module.xClose(cursor.instance));
+			if (cursor.instance) closePromises.push(cursor.instance.close()); // Call close on cursor instance
 			if (cursor.isEphemeral) this.ephemeralTables.delete(i);
-			this.vdbeCursors[i] = { instance: null, vtab: null, isValid: false, isEof: false, sortedResults: null };
+			this.vdbeCursors[i] = { instance: null, vtab: null, sortedResults: null }; // Reset cursor info
 		}
 		this.ephemeralTables.clear();
 		await Promise.allSettled(closePromises);
@@ -228,11 +224,6 @@ export class Vdbe {
 			throw new SqliteError(`Write attempt to control info/argument area via _setMem: Offset=${frameOffset}`, StatusCode.INTERNAL);
 		}
 		const stackIndex = this.framePointer + frameOffset;
-		// Check if writing within the allocated *current* frame bounds is needed?
-		// For now, assume compiler allocated enough stack space via numMemCells.
-		// if (stackIndex >= this.stackPointer) { // This check is problematic if stack grows dynamically
-		// 	throw new SqliteError(`Write stack access potentially out of frame bounds: FP=${this.framePointer}, Offset=${frameOffset}, SP=${this.stackPointer}`, StatusCode.INTERNAL);
-		// }
 		this._setStackValue(stackIndex, value);
 	}
 	// -------------------------
@@ -257,20 +248,13 @@ export class Vdbe {
 			// --- Frame Management ---
 			case Opcode.FrameEnter: { // P1=FrameSize (num locals + control info)
 				const frameSize = p1; // Includes control info + locals
-				// Calculate new FP. Return Address should already be at SP by Subroutine call.
 				const newFP = this.stackPointer - 1; // FP points to Return Addr slot
-				// Ensure stack capacity (including locals)
 				const requiredStackTop = newFP + frameSize;
 				while (requiredStackTop > this.stack.length) this.stack.push({ value: null });
-
-				// Save Control Info: Old FP
 				this._setStackValue(newFP + 1, this.framePointer); // Save Old FP at FP+1
-
-				// Initialize locals to NULL (FP+localsStartOffset to FP+frameSize-1)
 				for (let i = this.localsStartOffset; i < frameSize; i++) {
 					this._setStackValue(newFP + i, null);
 				}
-
 				this.framePointer = newFP; // Update FP to new frame base
 				this.stackPointer = requiredStackTop; // Update SP to top of allocated frame
 				break; // PC increments normally
@@ -278,13 +262,10 @@ export class Vdbe {
 			case Opcode.FrameLeave: { // P1= Unused (Return handles jump)
 				if (this.framePointer === 0 && this._getStackValue(1) === null) { // Check if we are in the initial frame
 					console.warn("FrameLeave called on base frame? Potentially harmless if program ends.");
-					// Don't change FP or SP if it's the base frame.
 				} else {
-					// Get Old FP from current frame's control info
 					const oldFPVal = this._getStackValue(this.framePointer + 1); // Old FP is at FP+1
 					const oldFP = typeof oldFPVal === 'number' ? oldFPVal : -1;
 					if (isNaN(oldFP) || oldFP < 0) throw new SqliteError(`Invalid old frame pointer ${oldFPVal} at FP ${this.framePointer + 1}`, StatusCode.INTERNAL);
-
 					this.stackPointer = this.framePointer; // Pop frame by resetting SP to frame base (where RetAddr was)
 					this.framePointer = oldFP; // Restore caller's FP
 				}
@@ -292,34 +273,23 @@ export class Vdbe {
 			}
 			case Opcode.Push: { // P1=SrcRegOffset (relative to current FP)
 				const valueToPush = this._getMemValue(p1);
-				// Push onto the absolute top of the stack
 				this._setStackValue(this.stackPointer, valueToPush); // SP automatically increments
 				break;
 			}
 
 			// --- Subroutine/Return (Stack Frame Aware) ---
 			case Opcode.Subroutine: { // P1=NumArgsPushed, P2=addr_Target
-				const numArgs = p1; // May not be strictly needed if using negative offsets
 				const targetAddr = p2;
 				const returnAddr = this.programCounter + 1;
-
-				// Save return address at the current stack top (this becomes FP+0 of new frame)
 				this._setStackValue(this.stackPointer, returnAddr); // SP increments
-
 				this.programCounter = targetAddr; // Jump to subroutine
 				return; // PC handled
 			}
 			case Opcode.Return: { // P1=unused
-				// Assumes FrameLeave was called just before this.
-				// Get Return Addr from the base of the frame we just popped,
-				// which is where SP is currently pointing after FrameLeave.
 				const jumpTargetVal = this._getStackValue(this.stackPointer); // Read RetAddr saved by Subroutine (now at SP)
 				const jumpTarget = typeof jumpTargetVal === 'number' ? jumpTargetVal : -1;
 				if (!Number.isInteger(jumpTarget) || jumpTarget < 0) throw new SqliteError(`Invalid return address ${jumpTargetVal} at SP ${this.stackPointer} (expected after FrameLeave)`, StatusCode.INTERNAL);
-
-				// Pop the return address itself
 				this.stackPointer++; // Increment SP *after* reading the value at the old SP
-
 				this.programCounter = jumpTarget;
 				return; // PC handled
 			}
@@ -334,21 +304,10 @@ export class Vdbe {
 			case Opcode.ZeroBlob: { const s=Number(this._getMemValue(p1)); this._setMem(p2, new Uint8Array(s>=0?Math.trunc(s):0)); break; }
 			case Opcode.SCopy: this._setMem(p2, this._getMemValue(p1)); break;
 			case Opcode.Clear: {
-				const startOffset = p1;
-				const count = p2;
-				// Ensure clearing starts within the local variable area
-				if (startOffset < this.localsStartOffset) {
-					throw new SqliteError(`Clear opcode attempt to clear control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
-				}
-				const clearStartIdx = this.framePointer + startOffset;
-				const clearEndIdx = clearStartIdx + count;
-				// Bounds check against SP
-				if (clearStartIdx < 0 || clearEndIdx > this.stackPointer) {
-					throw new SqliteError(`Clear opcode stack access out of bounds: FP=${this.framePointer} Offset=${startOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
-				}
-				for (let i = clearStartIdx; i < clearEndIdx; i++) {
-					this._setStackValue(i, null);
-				}
+				const startOffset = p1; const count = p2; if (startOffset < this.localsStartOffset) throw new SqliteError(`Clear opcode attempt to clear control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
+				const clearStartIdx = this.framePointer + startOffset; const clearEndIdx = clearStartIdx + count;
+				if (clearStartIdx < 0 || clearEndIdx > this.stackPointer) throw new SqliteError(`Clear opcode stack access out of bounds: FP=${this.framePointer} Offset=${startOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
+				for (let i = clearStartIdx; i < clearEndIdx; i++) this._setStackValue(i, null);
 				break;
 			}
 			case Opcode.IfTrue: conditionalJump(evaluateIsTrue(this._getMemValue(p1))); return;
@@ -360,38 +319,22 @@ export class Vdbe {
 			case Opcode.NotNull: this._setMem(p2, this._getMemValue(p1) !== null); break;
 
 			// Comparisons use frame-relative _getMemValue implicitly
-			case Opcode.Eq:
-			case Opcode.Ne:
-			case Opcode.Lt:
-			case Opcode.Le:
-			case Opcode.Gt:
-			case Opcode.Ge: {
-				const v1 = this._getMemValue(p1);
-				const v2 = this._getMemValue(p3);
-				const jumpTarget = p2;
-				const p4Coll = p4 as P4Coll | null; // Extract collation info from P4
-				const collationName = p4Coll?.type === 'coll' ? p4Coll.name : 'BINARY'; // Default to BINARY
-
-				// Pass collation to compareSqlValues
-				const comparisonResult = compareSqlValues(v1, v2, collationName);
-
-				let conditionMet = false;
+			case Opcode.Eq: case Opcode.Ne: case Opcode.Lt: case Opcode.Le: case Opcode.Gt: case Opcode.Ge: {
+				const v1 = this._getMemValue(p1); const v2 = this._getMemValue(p3); const jumpTarget = p2;
+				const p4Coll = p4 as P4Coll | null; const collationName = p4Coll?.type === 'coll' ? p4Coll.name : 'BINARY';
+				const comparisonResult = compareSqlValues(v1, v2, collationName); let conditionMet = false;
 				switch (inst.opcode) {
-					case Opcode.Eq: conditionMet = comparisonResult === 0; break;
-					case Opcode.Ne: conditionMet = comparisonResult !== 0; break;
-					case Opcode.Lt: conditionMet = comparisonResult < 0; break;
-					case Opcode.Le: conditionMet = comparisonResult <= 0; break;
-					case Opcode.Gt: conditionMet = comparisonResult > 0; break;
-					case Opcode.Ge: conditionMet = comparisonResult >= 0; break;
+					case Opcode.Eq: conditionMet = comparisonResult === 0; break; case Opcode.Ne: conditionMet = comparisonResult !== 0; break;
+					case Opcode.Lt: conditionMet = comparisonResult < 0; break; case Opcode.Le: conditionMet = comparisonResult <= 0; break;
+					case Opcode.Gt: conditionMet = comparisonResult > 0; break; case Opcode.Ge: conditionMet = comparisonResult >= 0; break;
 				}
-				conditionalJump(conditionMet);
-				return;
+				conditionalJump(conditionMet); return;
 			}
 
 			// Arithmetic/String ops use frame-relative _getMemValue/_setMem implicitly
-			case Opcode.Add: this._binaryArithOp(p1, p2, p3, (a, b) => Number(a) + Number(b)); break; // Needs BigInt check
-			case Opcode.Subtract: this._binaryArithOp(p1, p2, p3, (a, b) => Number(b) - Number(a)); break; // Needs BigInt check
-			case Opcode.Multiply: this._binaryArithOp(p1, p2, p3, (a, b) => Number(a) * Number(b)); break; // Needs BigInt check
+			case Opcode.Add: this._binaryArithOp(p1, p2, p3, (a, b) => Number(a) + Number(b)); break;
+			case Opcode.Subtract: this._binaryArithOp(p1, p2, p3, (a, b) => Number(b) - Number(a)); break;
+			case Opcode.Multiply: this._binaryArithOp(p1, p2, p3, (a, b) => Number(a) * Number(b)); break;
 			case Opcode.Divide: { const d = this._getMemValue(p1); const n = this._getMemValue(p2); this._setMem(p3, (d === 0 || d === 0n || d === null || n === null || Number(d) === 0) ? null : Number(n) / Number(d)); } break;
 			case Opcode.Remainder: { const d = this._getMemValue(p1); const n = this._getMemValue(p2); let res: SqlValue = null; try { if(d!==null && n!==null) { if(typeof d==='bigint' || typeof n==='bigint'){const b1=BigInt(d as any);const b2=BigInt(n as any);if(b1!==0n)res=b2%b1;}else{const n1=Number(d);const n2=Number(n);if(n1!==0&&!isNaN(n1)&&!isNaN(n2))res=n2%n1;}}}catch{} this._setMem(p3, res); } break;
 			case Opcode.Concat: { let r = ''; for (let i = p1; i <= p2; i++) { const v = this._getMemValue(i); if(v!==null && !(v instanceof Uint8Array)) r += String(v); } this._setMem(p3, r); break; }
@@ -403,7 +346,6 @@ export class Vdbe {
 			// --- Function calls use frame-relative args ---
 			case Opcode.Function: {
 				const p4Func = p4 as P4FuncDef; if(!p4Func || p4Func.type !== 'funcdef') throw new SqliteError("Invalid P4 for Function", StatusCode.INTERNAL);
-				// Args start at frame offset p2
 				const args: SqlValue[] = []; for(let i=0; i<p4Func.nArgs; i++) args.push(this._getMemValue(p2 + i));
 				this.udfContext = new FunctionContext(this.db, p4Func.funcDef.userData); this.udfContext._clear();
 				try { p4Func.funcDef.xFunc!(this.udfContext, Object.freeze(args)); const err = this.udfContext._getError(); if(err) throw err; this._setMem(p3, this.udfContext._getResult()); } catch(e) { if(e instanceof Error) throw new SqliteError(`Func ${p4Func.funcDef.name}: ${e.message}`, StatusCode.ERROR); throw e; }
@@ -414,224 +356,253 @@ export class Vdbe {
 			case Opcode.MakeRecord: { const v:SqlValue[]=[]; for(let i=0; i<p2; i++) v.push(this._getMemValue(p1+i)); const serKey = JSON.stringify(v, (_,val)=>typeof val==='bigint'?val.toString()+'n':val instanceof Uint8Array?`blob:${Buffer.from(val).toString('hex')}`:val); this._setMem(p3, serKey); break; }
 			case Opcode.AggStep: {
 				const p4Func = p4 as P4FuncDef; if(!p4Func || p4Func.type !== 'funcdef') throw new SqliteError("Invalid P4 for AggStep", StatusCode.INTERNAL);
-				const serializedKey = this._getMemValue(p3) as string;
-				let mapKey:string|number = serializedKey; // TODO: Key deserialization if needed
+				const serializedKey = this._getMemValue(p3) as string; let mapKey:string|number = serializedKey;
 				const args: SqlValue[] = []; for(let i=0; i<p4Func.nArgs; i++) args.push(this._getMemValue(p2+i));
-				let entry = this.aggregateContexts.get(mapKey);
-
-				// Reuse UDF context, ensure it's clean before xStep
-				this.udfContext._clear();
-				this.udfContext._setAggregateContextRef(entry?.accumulator);
-
+				let entry = this.aggregateContexts.get(mapKey); this.udfContext._clear(); this.udfContext._setAggregateContextRef(entry?.accumulator);
 				try {
-					// Call xStep
-					p4Func.funcDef.xStep!(this.udfContext, Object.freeze(args));
-
-					// Check if xStep set an error via context.resultError()
-					const stepError = this.udfContext._getError();
-					if (stepError) {
-						throw stepError; // Throw to be caught below
-					}
-
-					// Update accumulator if necessary
+					p4Func.funcDef.xStep!(this.udfContext, Object.freeze(args)); const stepError = this.udfContext._getError(); if (stepError) throw stepError;
 					const newAcc = this.udfContext._getAggregateContextRef();
-					if(entry === undefined && newAcc !== undefined){
-						const keys=[]; for(let i=0; i<p5; i++) keys.push(this._getMemValue(p1+i));
-						this.aggregateContexts.set(mapKey, {accumulator:newAcc, keyValues:Object.freeze(keys)});
-					} else if(entry !== undefined && newAcc !== undefined && newAcc !== entry.accumulator) {
-						entry.accumulator = newAcc;
-					}
+					if(entry === undefined && newAcc !== undefined){ const keys=[]; for(let i=0; i<p5; i++) keys.push(this._getMemValue(p1+i)); this.aggregateContexts.set(mapKey, {accumulator:newAcc, keyValues:Object.freeze(keys)}); }
+					else if(entry !== undefined && newAcc !== undefined && newAcc !== entry.accumulator) { entry.accumulator = newAcc; }
 				} catch(e) {
-					// Halt VDBE execution on error from xStep
 					console.error(`VDBE AggStep Error in function ${p4Func.funcDef.name}:`, e);
-					if (e instanceof SqliteError) {
-						this.error = e;
-					} else if (e instanceof Error) {
-						this.error = new SqliteError(`Runtime error in aggregate ${p4Func.funcDef.name} xStep: ${e.message}`, StatusCode.ERROR);
-					} else {
-						this.error = new SqliteError(`Unknown runtime error in aggregate ${p4Func.funcDef.name} xStep`, StatusCode.INTERNAL);
-					}
-					this.done = true; // Halt execution
-					return; // Don't increment PC
+					if (e instanceof SqliteError) { this.error = e; } else if (e instanceof Error) { this.error = new SqliteError(`Runtime error in aggregate ${p4Func.funcDef.name} xStep: ${e.message}`, StatusCode.ERROR); }
+					else { this.error = new SqliteError(`Unknown runtime error in aggregate ${p4Func.funcDef.name} xStep`, StatusCode.INTERNAL); } this.done = true; return;
 				}
 				break;
 			}
 			case Opcode.AggFinal: {
 				const p4Func = p4 as P4FuncDef; if(!p4Func || p4Func.type !== 'funcdef') throw new SqliteError("Invalid P4 for AggFinal", StatusCode.INTERNAL);
-				const serializedKey = this._getMemValue(p1) as string; let mapKey:string|number = serializedKey; /* ... */
-				const entry = this.aggregateContexts.get(mapKey);
-				this.udfContext = new FunctionContext(this.db, p4Func.funcDef.userData); this.udfContext._clear(); this.udfContext._setAggregateContextRef(entry?.accumulator);
-				try { p4Func.funcDef.xFinal!(this.udfContext); const err = this.udfContext._getError(); if(err) throw err; this._setMem(p3, this.udfContext._getResult()); } catch(e) { /*...*/ }
+				const serializedKey = this._getMemValue(p1) as string; let mapKey:string|number = serializedKey;
+				const entry = this.aggregateContexts.get(mapKey); this.udfContext = new FunctionContext(this.db, p4Func.funcDef.userData); this.udfContext._clear(); this.udfContext._setAggregateContextRef(entry?.accumulator);
+				try { p4Func.funcDef.xFinal!(this.udfContext); const err = this.udfContext._getError(); if(err) throw err; this._setMem(p3, this.udfContext._getResult()); } catch(e) { this.handleUdfError(e, p4Func.funcDef.name, this.programCounter, 'xFinal'); return; }
 				break;
 			}
-			case Opcode.AggReset:
-				{
-					this.aggregateContexts.clear();
-					this.aggregateIterator = null;
-					this.currentAggregateEntry = null;
-					this.programCounter++; // Increment PC
-				}
-				break;
-			// Aggregation iteration uses frame-relative destinations
-			case Opcode.AggIterate: this.aggregateIterator = this.aggregateContexts.entries(); this.currentAggregateEntry = null; break;
-			case Opcode.AggNext: if(!this.aggregateIterator)throw new Error();const n=this.aggregateIterator.next();if(n.done){this.currentAggregateEntry=null;this.programCounter=p2;}else{this.currentAggregateEntry=n.value;this.programCounter++;} return;
-			case Opcode.AggKey: if(!this.currentAggregateEntry)throw new Error(); let storeKey:SqlValue=this.currentAggregateEntry[0]; /* ... deserialize key ... */ this._setMem(p2, storeKey); break;
-			case Opcode.AggContext: if(!this.currentAggregateEntry)throw new Error(); this._setMem(p2, this.currentAggregateEntry[1]?.accumulator); break;
-			case Opcode.AggGroupValue: if(!this.currentAggregateEntry)throw new Error(); this._setMem(p3, this.currentAggregateEntry[1]?.keyValues[p2]??null); break;
+			case Opcode.AggReset: { this.aggregateContexts.clear(); this.aggregateIterator = null; this.currentAggregateEntry = null; break; } // PC increments normally
+			case Opcode.AggIterate: this.aggregateIterator = this.aggregateContexts.entries(); this.currentAggregateEntry = null; break; // PC increments normally
+			case Opcode.AggNext: { if(!this.aggregateIterator) throw new SqliteError("AggNext without AggIterate", StatusCode.INTERNAL); const n=this.aggregateIterator.next(); if(n.done){this.currentAggregateEntry=null;this.programCounter=p2;}else{this.currentAggregateEntry=n.value;this.programCounter++;} return; }
+			case Opcode.AggKey: { if(!this.currentAggregateEntry) throw new SqliteError("AggKey on invalid iterator", StatusCode.INTERNAL); let storeKey:SqlValue=this.currentAggregateEntry[0]; this._setMem(p2, storeKey); break; }
+			case Opcode.AggContext: { if(!this.currentAggregateEntry) throw new SqliteError("AggContext on invalid iterator", StatusCode.INTERNAL); this._setMem(p2, this.currentAggregateEntry[1]?.accumulator); break; }
+			case Opcode.AggGroupValue: { if(!this.currentAggregateEntry) throw new SqliteError("AggGroupValue on invalid iterator", StatusCode.INTERNAL); this._setMem(p3, this.currentAggregateEntry[1]?.keyValues[p2]??null); break; }
 
 			// Affinity uses frame-relative registers
 			case Opcode.Affinity: {
-				const startOffset = p1;
-				const count = p2;
-				const affinityStr = (p4 as string).toUpperCase(); // Ensure case-insensitivity
-
-				// Ensure range is valid relative to current frame and stack
-				const startIdx = this.framePointer + startOffset;
-				const endIdx = startIdx + count;
-				if (startOffset < this.localsStartOffset) {
-					throw new SqliteError(`Affinity opcode attempt on control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
-				}
-				if (startIdx < 0 || endIdx > this.stackPointer) {
-					throw new SqliteError(`Affinity opcode stack access out of bounds: FP=${this.framePointer} Offset=${startOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
-				}
-
-				// Determine the affinity function based on p4 string
+				const startOffset = p1; const count = p2; const affinityStr = (p4 as string).toUpperCase();
+				const startIdx = this.framePointer + startOffset; const endIdx = startIdx + count;
+				if (startOffset < this.localsStartOffset) throw new SqliteError(`Affinity opcode attempt on control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
+				if (startIdx < 0 || endIdx > this.stackPointer) throw new SqliteError(`Affinity opcode stack access out of bounds: FP=${this.framePointer} Offset=${startOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
 				let applyAffinityFn: (v: SqlValue) => SqlValue;
 				switch (affinityStr) {
-					case 'NUMERIC': applyAffinityFn = applyNumericAffinity; break;
-					case 'INTEGER': applyAffinityFn = applyIntegerAffinity; break;
-					case 'REAL': applyAffinityFn = applyRealAffinity; break;
-					case 'TEXT': applyAffinityFn = applyTextAffinity; break;
-					case 'BLOB': applyAffinityFn = applyBlobAffinity; break;
-					default:
-						// NONE affinity or unknown: no-op
-						applyAffinityFn = (v) => v;
+					case 'NUMERIC': applyAffinityFn = applyNumericAffinity; break; case 'INTEGER': applyAffinityFn = applyIntegerAffinity; break;
+					case 'REAL': applyAffinityFn = applyRealAffinity; break; case 'TEXT': applyAffinityFn = applyTextAffinity; break;
+					case 'BLOB': applyAffinityFn = applyBlobAffinity; break; default: applyAffinityFn = (v) => v;
 				}
-
-				// Apply affinity to the specified range of registers
-				for (let i = 0; i < count; i++) {
-					const offset = startOffset + i;
-					const currentValue = this._getMemValue(offset);
-					const newValue = applyAffinityFn(currentValue);
-					// Only update if the value actually changed
-					if (newValue !== currentValue) {
-						this._setMem(offset, newValue);
-					}
-				}
+				for (let i = 0; i < count; i++) { const offset = startOffset + i; const currentValue = this._getMemValue(offset); const newValue = applyAffinityFn(currentValue); if (newValue !== currentValue) this._setMem(offset, newValue); }
 				break;
 			}
 
 			case Opcode.Move: {
 				const srcOffset = p1; const destOffset = p2; const count = p3;
-				const srcBaseIdx = this.framePointer + srcOffset;
-				const destBaseIdx = this.framePointer + destOffset;
-				// Bounds check required against actual allocated stack (SP)
-				if (srcBaseIdx < 0 || destBaseIdx < 0 || srcBaseIdx + count > this.stackPointer || destBaseIdx + count > this.stackPointer) {
-					 throw new SqliteError(`Move opcode stack access out of bounds: FP=${this.framePointer} SrcOff=${srcOffset} DestOff=${destOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
-				}
-				// Use absolute indices for copy logic
+				const srcBaseIdx = this.framePointer + srcOffset; const destBaseIdx = this.framePointer + destOffset;
+				if (srcBaseIdx < 0 || destBaseIdx < 0 || srcBaseIdx + count > this.stackPointer || destBaseIdx + count > this.stackPointer) throw new SqliteError(`Move opcode stack access out of bounds: FP=${this.framePointer} SrcOff=${srcOffset} DestOff=${destOffset} Count=${count} SP=${this.stackPointer}`, StatusCode.INTERNAL);
 				if (srcBaseIdx === destBaseIdx) break;
-				// Overlap check (copy backwards if dest overlaps and is higher)
-				if (destBaseIdx > srcBaseIdx && destBaseIdx < srcBaseIdx + count) {
-					for (let i = count - 1; i >= 0; i--) this._setStackValue(destBaseIdx + i, this._getStackValue(srcBaseIdx + i));
-				} else { // Copy forwards
-					for (let i = 0; i < count; i++) this._setStackValue(destBaseIdx + i, this._getStackValue(srcBaseIdx + i));
-				}
+				if (destBaseIdx > srcBaseIdx && destBaseIdx < srcBaseIdx + count) { for (let i = count - 1; i >= 0; i--) this._setStackValue(destBaseIdx + i, this._getStackValue(srcBaseIdx + i)); }
+				else { for (let i = 0; i < count; i++) this._setStackValue(destBaseIdx + i, this._getStackValue(srcBaseIdx + i)); }
 				break;
 			}
 
-			// --- Cursor Ops (vdbeCursors is global, use _setMem/_getMem for registers) ---
-			case Opcode.OpenRead: { const cIdx = p1; const schema = p4 as TableSchema; if(!schema?.vtabInstance) throw new Error("Missing vtab instance"); const v = schema.vtabInstance!; const ci = await v.module.xOpen(v); this.vdbeCursors[cIdx] = {instance:ci, vtab:v, isValid:false, isEof:false, sortedResults:null}; break; }
-			case Opcode.OpenWrite: { const cIdx = p1; const schema = p4 as TableSchema; if(!schema?.vtabInstance) throw new Error("Missing vtab instance"); const v = schema.vtabInstance!; const ci = await v.module.xOpen(v); this.vdbeCursors[cIdx] = {instance:ci, vtab:v, isValid:false, isEof:false, sortedResults:null}; break; }
-			case Opcode.Close: { const cIdx = p1; const c = this.vdbeCursors[cIdx]; if(c){ if(c.sortedResults)c.sortedResults=null; if(c.instance)await c.vtab!.module.xClose(c.instance); if(c.isEphemeral)this.ephemeralTables.delete(cIdx); this.vdbeCursors[cIdx]={instance:null,vtab:null,isValid:false,isEof:false,sortedResults:null};} break; }
-			case Opcode.VFilter: { const cIdx=p1, addr=p2, argsReg=p3, info=p4 as any; const c=this.vdbeCursors[cIdx]; if(!c?.vtab || !c.instance) throw new Error("VFilter on unopened cursor"); const args=[]; for(let i=0;i<info.nArgs;i++)args.push(this._getMemValue(argsReg+i)); await c.vtab!.module.xFilter(c.instance!,info.idxNum,info.idxStr,args); const eof=await c.vtab!.module.xEof(c.instance!); c.isEof=eof; c.isValid=!eof; if(eof)this.programCounter=addr; else this.programCounter++; return; }
-			case Opcode.VNext: { const cIdx=p1, addr=p2; const c=this.vdbeCursors[cIdx]; if(c?.sortedResults){ /*...*/ return; } if(!c?.instance)throw new Error("VNext on unopened cursor"); await c.vtab!.module.xNext(c.instance); const eof=await c.vtab!.module.xEof(c.instance); c.isEof=eof; c.isValid=!eof; if(eof)this.programCounter=addr; else this.programCounter++; return; }
-			case Opcode.Rewind: { const cIdx=p1, addr=p2; const c=this.vdbeCursors[cIdx]; if(c?.sortedResults){ /*...*/ return; } if(!c?.instance)throw new Error("Rewind on unopened cursor"); await c.vtab!.module.xFilter(c.instance,0,null,[]); const eof=await c.vtab!.module.xEof(c.instance); c.isEof=eof; c.isValid=!eof; if(eof)this.programCounter=addr; else this.programCounter++; return; }
-			// VColumn/VRowid/VUpdate use frame-relative destinations (_setMem)
-			case Opcode.VColumn: { const cIdx=p1, col=p2, destOff=p3; const c=this.vdbeCursors[cIdx]; if(c?.sortedResults){ const s=c.sortedResults; if(s.index<0||s.index>=s.rows.length)throw new Error(); const r=s.rows[s.index]; if(col<0||col>=r.length)throw new Error(); this._setMem(destOff,r[col].value); break; } if(!c?.instance||!c.isValid)throw new Error("VColumn on invalid cursor"); this.vtabContext._clear(); const st=c.vtab!.module.xColumn(c.instance,this.vtabContext,col); if(st!==StatusCode.OK)throw new SqliteError(`xColumn failed (col ${col}, cursor ${cIdx})`, st); this._setMem(destOff, this.vtabContext._getResult()); break; }
-			case Opcode.VRowid: { const cIdx=p1, destOff=p2; const c=this.vdbeCursors[cIdx]; if(!c?.instance||!c.isValid)throw new Error("VRowid on invalid cursor"); const rid=await c.vtab!.module.xRowid(c.instance); this._setMem(destOff, rid); break; }
-			case Opcode.VUpdate:				 // regno p1 p2 p3 p4 p5
+			// --- Cursor Ops (Updated to use cursor methods) ---
+			case Opcode.OpenRead: case Opcode.OpenWrite: {
+				const cIdx = p1; const schema = p4 as TableSchema;
+				if (!schema?.vtabInstance?.module?.xOpen) throw new SqliteError("Missing vtab instance or module.xOpen for OpenRead/OpenWrite", StatusCode.INTERNAL);
+				const v = schema.vtabInstance;
+				// Module's xOpen creates the cursor instance
+				const ci = await v.module.xOpen(v);
+				this.vdbeCursors[cIdx] = { instance: ci, vtab: v, sortedResults: null };
+				break;
+			}
+			case Opcode.Close: {
+				const cIdx = p1; const c = this.vdbeCursors[cIdx];
+				if (c) {
+					if (c.sortedResults) c.sortedResults = null;
+					// Call close directly on the cursor instance
+					if (c.instance) await c.instance.close();
+					if (c.isEphemeral) this.ephemeralTables.delete(cIdx);
+					this.vdbeCursors[cIdx] = { instance: null, vtab: null, sortedResults: null }; // Reset VDBE cursor state
+				}
+				break;
+			}
+			case Opcode.VFilter: {
+				const cIdx = p1, addr = p2, argsReg = p3, info = p4 as any;
+				const c = this.vdbeCursors[cIdx];
+				if (!c?.instance) throw new SqliteError("VFilter on unopened cursor", StatusCode.INTERNAL);
+				const args: SqlValue[] = []; for (let i = 0; i < info.nArgs; i++) args.push(this._getMemValue(argsReg + i));
+				try {
+					// Call filter on cursor instance
+					await c.instance.filter(info.idxNum, info.idxStr, args);
+					const eof = c.instance.eof(); // Check cursor's EOF state
+					if (eof) this.programCounter = addr; else this.programCounter++;
+				} catch (e) { this.handleVTabError(e, c.vtab?.tableName ?? `cursor ${cIdx}`, 'filter', this.programCounter); return; }
+				return;
+			}
+			case Opcode.VNext: {
+				const cIdx = p1, addr = p2;
+				const c = this.vdbeCursors[cIdx];
+				if (c?.sortedResults) { /* Sorted results logic remains the same */
+					const s = c.sortedResults;
+					s.index++;
+					if (s.index >= s.rows.length) this.programCounter = addr; // EOF for sorted results
+					else this.programCounter++;
+					return;
+				}
+				if (!c?.instance) throw new SqliteError("VNext on unopened cursor", StatusCode.INTERNAL);
+				try {
+					// Call next on cursor instance
+					await c.instance.next();
+					const eof = c.instance.eof(); // Check cursor's EOF state
+					if (eof) this.programCounter = addr; else this.programCounter++;
+				} catch (e) { this.handleVTabError(e, c.vtab?.tableName ?? `cursor ${cIdx}`, 'next', this.programCounter); return; }
+				return;
+			}
+			case Opcode.Rewind: {
+				const cIdx = p1, addr = p2;
+				const c = this.vdbeCursors[cIdx];
+				if (c?.sortedResults) { /* Sorted results logic remains the same */
+					const s = c.sortedResults;
+					s.index = 0;
+					if (s.index >= s.rows.length) this.programCounter = addr; // EOF if empty
+					else this.programCounter++;
+					return;
+				}
+				if (!c?.instance) throw new SqliteError("Rewind on unopened cursor", StatusCode.INTERNAL);
+				try {
+					// Call filter with no constraints on cursor instance
+					await c.instance.filter(0, null, []);
+					const eof = c.instance.eof(); // Check cursor's EOF state
+					if (eof) this.programCounter = addr; else this.programCounter++;
+				} catch (e) { this.handleVTabError(e, c.vtab?.tableName ?? `cursor ${cIdx}`, 'filter(rewind)', this.programCounter); return; }
+				return;
+			}
+			case Opcode.VColumn: {
+				const cIdx = p1, col = p2, destOff = p3;
+				const c = this.vdbeCursors[cIdx];
+				if (c?.sortedResults) { /* Sorted results logic remains the same */
+					const s = c.sortedResults;
+					if (s.index < 0 || s.index >= s.rows.length) throw new SqliteError("VColumn on invalid sorted cursor", StatusCode.INTERNAL);
+					const r = s.rows[s.index];
+					if (col < -1 || col >= r.length) throw new SqliteError(`VColumn index ${col} out of bounds for sorted cursor ${cIdx}`, StatusCode.INTERNAL);
+					// Assuming rowid is handled elsewhere or not needed for sorted ephemerals
+					this._setMem(destOff, r[col].value);
+					break;
+				}
+				if (!c?.instance || c.instance.eof()) throw new SqliteError("VColumn on invalid/EOF cursor", StatusCode.INTERNAL);
+				try {
+					this.vtabContext._clear();
+					// Call column on cursor instance
+					const st = c.instance.column(this.vtabContext, col);
+					if (st !== StatusCode.OK) throw new SqliteError(`column failed (col ${col}, cursor ${cIdx})`, st);
+					this._setMem(destOff, this.vtabContext._getResult());
+				} catch (e) { this.handleVTabError(e, c.vtab?.tableName ?? `cursor ${cIdx}`, 'column', this.programCounter); return; }
+				break;
+			}
+			case Opcode.VRowid: {
+				const cIdx = p1, destOff = p2;
+				const c = this.vdbeCursors[cIdx];
+				if (!c?.instance || c.instance.eof()) throw new SqliteError("VRowid on invalid/EOF cursor", StatusCode.INTERNAL);
+				try {
+					// Call rowid on cursor instance
+					const rid = await c.instance.rowid();
+					this._setMem(destOff, rid);
+				} catch (e) { this.handleVTabError(e, c.vtab?.tableName ?? `cursor ${cIdx}`, 'rowid', this.programCounter); return; }
+				break;
+			}
+			case Opcode.VUpdate:	// VUpdate still calls the module's xUpdate method
 				{
 					const regDataStart = p2; // Start register of data (rowid, col0, col1...)
 					const regOut = p3;	 	 // Register to store result (e.g., new rowid for INSERT)
 					const nData = p1; // Number of data elements (including rowid)
-					// Correctly get p4 info from the instruction
 					const p4Info = p4 as { table: TableSchema, onConflict?: ConflictResolution };
+					// Module and xUpdate method check remains on the *module* instance
 					if (!p4Info?.table?.vtabInstance?.module?.xUpdate) {
-						throw new Error("VUpdate called on non-virtual table or module lacks xUpdate");
+						throw new SqliteError("VUpdate called on non-virtual table or module lacks xUpdate", StatusCode.INTERNAL);
 					}
 
-					const values: SqlValue[] = [];
-					for (let i = 0; i < nData; i++) {
-						// Use _getMemValue which handles initialization
-						values.push(this._getMemValue(regDataStart + i) ?? null);
-					}
-					// Pass conflict policy via a non-standard property
+					const values: SqlValue[] = []; for (let i = 0; i < nData; i++) values.push(this._getMemValue(regDataStart + i) ?? null);
 					(values as any)._onConflict = p4Info.onConflict || ConflictResolution.ABORT;
-
-					const rowidFromData = values[0]; // First value is rowid (or null for insert)
+					const rowidFromData = values[0];
 
 					try {
-						// Call xUpdate asynchronously
+						// Call xUpdate on the *module* instance, passing the *table* instance
 						const result = await p4Info.table.vtabInstance.module.xUpdate(p4Info.table.vtabInstance, values, rowidFromData as bigint | null);
-
-						// Handle result based on operation and conflict policy
 						if (regOut > 0) {
 							if (values[0] === null) { // INSERT operation
-								if (result && result.rowid !== undefined) {
-									// Successful INSERT, store new rowid
-									this._setMem(regOut, result.rowid);
-								} else {
-									// INSERT failed or was ignored (due to IGNORE conflict policy)
-									// For CTE UNION DISTINCT, we need NULL in regOut if insert was ignored.
-									this._setMem(regOut, null);
-								}
-							} else {
-								// UPDATE/DELETE operation, typically don't write to regOut
-								this._setMem(regOut, null); // Set to NULL for consistency
-							}
+								if (result && result.rowid !== undefined) { this._setMem(regOut, result.rowid); }
+								else { this._setMem(regOut, null); }
+							} else { this._setMem(regOut, null); } // UPDATE/DELETE
 						}
-					} catch (e) {
-						// If xUpdate throws, halt the VDBE
-						if (e instanceof SqliteError) {
-							this.error = e;
-						} else if (e instanceof Error) {
-							this.error = new SqliteError(`Runtime error during VUpdate: ${e.message}`, StatusCode.ERROR);
-						} else {
-							this.error = new SqliteError("Unknown error during VUpdate execution", StatusCode.ERROR);
-						}
-						this.done = true; // Halt execution on error
-						return; // Exit step function
-					}
+					} catch (e) { this.handleVTabError(e, p4Info.table.name, 'xUpdate', this.programCounter); return; }
 				}
 				break;
-			// VTab transaction ops are okay
 			case Opcode.VBegin: case Opcode.VCommit: case Opcode.VRollback: case Opcode.VSync:
 			case Opcode.VSavepoint: case Opcode.VRelease: case Opcode.VRollbackTo:
-				// These ops iterate through cursors and call vtab methods
-				// They don't directly interact with VDBE stack memory in complex ways
-				// Placeholder for actual implementation:
-				console.warn(`VTab transaction Opcode ${Opcode[inst.opcode]} not fully implemented`);
+				// These still call module methods, logic remains the same
+				{
+					const vtabOp = async (action: 'xBegin' | 'xCommit' | 'xRollback' | 'xSync' | 'xSavepoint' | 'xRelease' | 'xRollbackTo', savepointIdx?: number) => {
+						for (let i = p1; i < p2; i++) {
+							const c = this.vdbeCursors[i];
+							if (c?.vtab?.module && typeof (c.vtab.module as any)[action] === 'function') {
+								try {
+									if (action === 'xSavepoint' || action === 'xRelease' || action === 'xRollbackTo') {
+										await (c.vtab.module as any)[action](c.vtab, savepointIdx);
+									} else {
+										await (c.vtab.module as any)[action](c.vtab);
+									}
+								} catch (e) { this.handleVTabError(e, c.vtab.tableName, action, this.programCounter); return false; }
+							}
+						}
+						return true;
+					};
+					let success = false;
+					switch (inst.opcode) {
+						case Opcode.VBegin: success = await vtabOp('xBegin'); break;
+						case Opcode.VCommit: success = await vtabOp('xCommit'); break;
+						case Opcode.VRollback: success = await vtabOp('xRollback'); break;
+						case Opcode.VSync: success = await vtabOp('xSync'); break;
+						case Opcode.VSavepoint: success = await vtabOp('xSavepoint', p3); break;
+						case Opcode.VRelease: success = await vtabOp('xRelease', p3); break;
+						case Opcode.VRollbackTo: success = await vtabOp('xRollbackTo', p3); break;
+					}
+					if (!success) return; // Error handled by vtabOp
+				}
 				break;
 
-			case Opcode.ResultRow: // P1=startOffset, P2=count
+			case Opcode.ResultRow: // P1=startOffset, P2=count (Unchanged)
 				const startIdx = this.framePointer + p1;
-				if (startIdx < 0 || startIdx + p2 > this.stackPointer) {
-					throw new SqliteError(`ResultRow stack access out of bounds: FP=${this.framePointer} Offset=${p1} Count=${p2} SP=${this.stackPointer}`, StatusCode.INTERNAL);
-				}
-				// Slice the stack directly for the result row
+				if (startIdx < 0 || startIdx + p2 > this.stackPointer) throw new SqliteError(`ResultRow stack access out of bounds: FP=${this.framePointer} Offset=${p1} Count=${p2} SP=${this.stackPointer}`, StatusCode.INTERNAL);
 				this.stmt.setCurrentRow(this.stack.slice(startIdx, startIdx + p2));
 				this.hasYielded = true;
 				this.programCounter++;
 				return;
 
-			case Opcode.Sort: // P1=cursorIdx, P4=SortKeyInfo
-				console.warn("Opcode.Sort execution logic needs review for stack frame compatibility.");
-				// Needs careful review of how ephemeral tables and sorting interact with frames.
-				// Placeholder: Assuming it works for now.
+			case Opcode.Sort: // P1=cursorIdx, P4=SortKeyInfo (Unchanged - still uses module methods implicitly via MemoryTable)
+				{
+					const cIdx = p1;
+					const sortInfo = p4 as P4SortKey | null;
+					const c = this.vdbeCursors[cIdx];
+					if (!c || !c.vtab || !(c.vtab instanceof MemoryTable) || !sortInfo) {
+						throw new SqliteError(`Sort requires an open ephemeral MemoryTable cursor and SortKeyInfo`, StatusCode.INTERNAL);
+					}
+					const memTable = c.vtab as MemoryTable;
+					if (!memTable.isSorter) {
+						memTable._configureAsSorter(sortInfo);
+					}
+					// The actual sorting happens implicitly via BTree insertion order.
+					// The Rewind/Next opcodes on this cursor will now yield sorted data.
+					// We *could* materialize into sortedResults here, but let's rely on BTree iteration for now.
+				}
 				break;
 
-			case Opcode.Halt:
+			case Opcode.Halt: // (Unchanged)
 				this.done = true;
 				if (p1 !== StatusCode.OK) {
 					this.error = new SqliteError(p4 ?? `Execution halted with code ${p1}`, p1);
@@ -640,204 +611,110 @@ export class Vdbe {
 
 			case Opcode.Noop: break; // Do nothing
 
-			case Opcode.OpenEphemeral: { // P1=cursorIdx, P2=numCols, P4=TableSchema? (Optional)
-				const ephCursorIdx = p1;
-				const ephNumCols = p2;
-				const providedSchema = p4 as TableSchema | null; // Schema might be passed in P4
-
-				// Create the MemoryTable instance first
+			case Opcode.OpenEphemeral: { // (Unchanged)
+				const ephCursorIdx = p1; const ephNumCols = p2; const providedSchema = p4 as TableSchema | null;
 				const ephTable = new MemoryTable(this.db, Vdbe.ephemeralModule, '_temp_internal', `_eph_${ephCursorIdx}`);
 				this.ephemeralTables.set(ephCursorIdx, { table: ephTable, module: Vdbe.ephemeralModule });
-
-				// Initialize columns and B-Tree based on whether a schema was provided
-				if (providedSchema && providedSchema.columns && providedSchema.primaryKeyDefinition) {
-					// Use the provided schema (likely for a sorter)
-					console.log(`VDBE OpenEphemeral: Initializing cursor ${ephCursorIdx} with provided schema (PK def length: ${providedSchema.primaryKeyDefinition.length})`);
-					// Map TableSchema columns to the format setColumns expects (with string | undefined type)
-					const cols = providedSchema.columns.map(c => ({ name: c.name, type: undefined, collation: c.collation })); // Pass undefined type
+				if (providedSchema?.columns && providedSchema.primaryKeyDefinition) {
+					const cols = providedSchema.columns.map(c => ({ name: c.name, type: undefined, collation: c.collation }));
 					ephTable.setColumns(cols, providedSchema.primaryKeyDefinition);
 				} else {
-					// Default initialization (basic columns, rowid key)
-					console.log(`VDBE OpenEphemeral: Initializing cursor ${ephCursorIdx} with default schema (${ephNumCols} cols)`);
-					// Pass undefined type to setColumns
 					const defaultCols = Array.from({ length: ephNumCols }, (_, i) => ({ name: `eph_col${i}`, type: undefined, collation: 'BINARY' }));
-					ephTable.setColumns(defaultCols, []); // Empty pkDef means rowid key
+					ephTable.setColumns(defaultCols, []);
 				}
-
-				// Now open the cursor on the configured table
+				// Use module xOpen to get the cursor instance
 				const ephInstance = await Vdbe.ephemeralModule.xOpen(ephTable);
-				this.vdbeCursors[ephCursorIdx] = { instance: ephInstance, vtab: ephTable, isValid: false, isEof: false, isEphemeral: true };
+				this.vdbeCursors[ephCursorIdx] = { instance: ephInstance, vtab: ephTable, isEphemeral: true, sortedResults: null };
 				break;
 			}
 
-			case Opcode.ConstraintViolation: { // P4=ErrorContextString
+			case Opcode.ConstraintViolation: { // (Unchanged)
 				const context = (typeof p4 === 'string' && p4) ? p4 : 'Constraint failed';
 				throw new ConstraintError(context);
 			}
 
-			case Opcode.StackPop: { // P1=Count
-				const count = p1;
-				if (count < 0) throw new SqliteError("StackPop count cannot be negative", StatusCode.INTERNAL);
-				if (this.stackPointer < count) {
-					throw new SqliteError(`Stack underflow during StackPop: SP=${this.stackPointer}, Count=${count}`, StatusCode.INTERNAL);
-				}
-				// Simply move the stack pointer down. No need to null out cells (lazy cleanup).
+			case Opcode.StackPop: { // P1=Count (Unchanged)
+				const count = p1; if (count < 0) throw new SqliteError("StackPop count cannot be negative", StatusCode.INTERNAL);
+				if (this.stackPointer < count) throw new SqliteError(`Stack underflow during StackPop: SP=${this.stackPointer}, Count=${count}`, StatusCode.INTERNAL);
 				this.stackPointer -= count;
 				break;
 			}
 
-			case Opcode.Halt: {
-				this.done = true;
-				break;
-			}
-
-			// --- New SeekRelative opcode ---
+			// --- New SeekRelative opcode --- (Updated to use cursor method)
 			case Opcode.SeekRelative: {
-				const cIdx = p1; // Cursor index
-				const addrJump = p2; // Address to jump to based on seek result
-				const offsetReg = p3; // Register containing seek offset
-				const invertJump = p5 === 1; // If true, jump on failure; if false, jump on success
-
+				const cIdx = p1; const addrJump = p2; const offsetReg = p3; const invertJump = p5 === 1;
 				const cursor = this.vdbeCursors[cIdx];
-				if (!cursor || !cursor.instance) {
-					throw new SqliteError(`SeekRelative: Invalid cursor index ${cIdx}`, StatusCode.INTERNAL);
-				}
+				if (!cursor?.instance) throw new SqliteError(`SeekRelative: Invalid cursor index ${cIdx}`, StatusCode.INTERNAL);
 
 				const offsetValue = this._getMemValue(offsetReg);
 				let offset: number;
-				if (typeof offsetValue === 'number') {
-					offset = offsetValue;
-				} else if (typeof offsetValue === 'bigint') {
-					offset = Number(offsetValue);
-				} else {
-					throw new SqliteError(`SeekRelative: Offset value must be a number or bigint, got ${typeof offsetValue}`, StatusCode.INTERNAL);
-				}
+				if (typeof offsetValue === 'number') offset = offsetValue;
+				else if (typeof offsetValue === 'bigint') offset = Number(offsetValue);
+				else throw new SqliteError(`SeekRelative: Offset value must be a number or bigint, got ${typeof offsetValue}`, StatusCode.INTERNAL);
 
 				let seekResult = false;
 				try {
-					// Try to use xSeekRelative if available
-					const module = cursor.vtab?.module;
-					if (module && typeof (module as any).xSeekRelative === 'function') {
-						seekResult = await (module as any).xSeekRelative(cursor.instance, offset);
-						cursor.isValid = seekResult;
-						cursor.isEof = !seekResult;
-					} else {
-						// Module doesn't support xSeekRelative
-						throw new SqliteError(`Module for cursor ${cIdx} does not support xSeekRelative`, StatusCode.INTERNAL);
-					}
-				} catch (e) {
-					this.handleVTabError(e, `cursor ${cIdx}`, 'xSeekRelative', this.programCounter);
-					return; // Halt on VTab error
-				}
+					// Call seekRelative on cursor instance
+					seekResult = await cursor.instance.seekRelative(offset);
+				} catch (e) { this.handleVTabError(e, `cursor ${cIdx}`, 'seekRelative', this.programCounter); return; }
 
 				// Jump logic
-				if ((seekResult && !invertJump) || (!seekResult && invertJump)) {
-					this.programCounter = addrJump;
-				} else {
-					this.programCounter++;
-				}
+				if ((seekResult && !invertJump) || (!seekResult && invertJump)) this.programCounter = addrJump;
+				else this.programCounter++;
 				return;
 			}
 
-			// --- New SeekRowid opcode ---
+			// --- New SeekRowid opcode --- (Updated to use cursor method)
 			case Opcode.SeekRowid: {
-				const cIdx = p1; // Cursor index
-				const addrJump = p2; // Address to jump to based on seek result
-				const rowidReg = p3; // Register containing target rowid
-				const invertJump = p5 === 1; // If true, jump on failure; if false, jump on success
-
+				const cIdx = p1; const addrJump = p2; const rowidReg = p3; const invertJump = p5 === 1;
 				const cursor = this.vdbeCursors[cIdx];
-				if (!cursor || !cursor.instance) {
-					throw new SqliteError(`SeekRowid: Invalid cursor index ${cIdx}`, StatusCode.INTERNAL);
-				}
+				if (!cursor?.instance) throw new SqliteError(`SeekRowid: Invalid cursor index ${cIdx}`, StatusCode.INTERNAL);
 
 				const rowidValue = this._getMemValue(rowidReg);
 				let targetRowid: bigint;
-				if (typeof rowidValue === 'bigint') {
-					targetRowid = rowidValue;
-				} else if (typeof rowidValue === 'number' && Number.isInteger(rowidValue)) {
-					targetRowid = BigInt(rowidValue);
-				} else {
-					throw new SqliteError(`SeekRowid: Target rowid must be an integer or bigint, got ${typeof rowidValue}`, StatusCode.INTERNAL);
-				}
+				if (typeof rowidValue === 'bigint') targetRowid = rowidValue;
+				else if (typeof rowidValue === 'number' && Number.isInteger(rowidValue)) targetRowid = BigInt(rowidValue);
+				else throw new SqliteError(`SeekRowid: Target rowid must be an integer or bigint, got ${typeof rowidValue}`, StatusCode.INTERNAL);
 
 				let seekResult = false;
 				try {
-					const module = cursor.vtab?.module;
-					if (module && typeof (module as any).xSeekToRowid === 'function') {
-						seekResult = await (module as any).xSeekToRowid(cursor.instance, targetRowid);
-						cursor.isValid = seekResult;
-						cursor.isEof = !seekResult;
-					} else {
-						// Module doesn't support xSeekToRowid - treat as failure
-						console.warn(`SeekRowid: Module for cursor ${cIdx} does not implement xSeekToRowid.`);
-						seekResult = false;
-						cursor.isValid = false;
-						cursor.isEof = true;
-						// Optionally, could implement fallback scan here, but maybe better to require it?
-					}
-				} catch (e) {
-					this.handleVTabError(e, `cursor ${cIdx}`, 'xSeekToRowid', this.programCounter);
-					return; // Halt on VTab error
-				}
+					// Call seekToRowid on cursor instance
+					seekResult = await cursor.instance.seekToRowid(targetRowid);
+				} catch (e) { this.handleVTabError(e, `cursor ${cIdx}`, 'seekToRowid', this.programCounter); return; }
 
 				// Jump logic
-				if ((seekResult && !invertJump) || (!seekResult && invertJump)) {
-					this.programCounter = addrJump;
-				} else {
-					this.programCounter++;
-				}
+				if ((seekResult && !invertJump) || (!seekResult && invertJump)) this.programCounter = addrJump;
+				else this.programCounter++;
 				return;
 			}
 
-			// --- Add SchemaChange handler ---
+			// --- Add SchemaChange handler --- (Unchanged - still uses module method)
 			case Opcode.SchemaChange:
 				{
 					const cursorIdx = p1!;
 					const changeInfo = p4 as P4SchemaChange;
 					try {
-						if (cursorIdx < 0 || cursorIdx >= this.vdbeCursors.length || !this.vdbeCursors[cursorIdx]) {
-							throw new SqliteError(`SchemaChange: Invalid cursor index ${cursorIdx}`, StatusCode.INTERNAL);
-						}
+						if (cursorIdx < 0 || cursorIdx >= this.vdbeCursors.length || !this.vdbeCursors[cursorIdx]) throw new SqliteError(`SchemaChange: Invalid cursor index ${cursorIdx}`, StatusCode.INTERNAL);
 						const cursor = this.vdbeCursors[cursorIdx];
-						const vtab = cursor.vtab; // Get vtab instance directly
-						// Simplify Check: If cursor has a vtab instance, assume it's usable
-						if (!vtab) {
-							// This could happen if cursor wasn't opened or is not for a VTab
-							throw new SqliteError(`SchemaChange: Cursor ${cursorIdx} does not refer to an open virtual table`, StatusCode.INTERNAL);
-						}
-
+						const vtab = cursor.vtab;
+						if (!vtab) throw new SqliteError(`SchemaChange: Cursor ${cursorIdx} does not refer to an open virtual table`, StatusCode.INTERNAL);
 						const module = vtab.module as VirtualTableModule<any, any, any>;
-
 						if (typeof module.xAlterSchema === 'function') {
 							await module.xAlterSchema(vtab, changeInfo);
 							console.log(`VDBE SchemaChange: Successfully executed on table ${vtab.tableName}`);
 						} else {
-							throw new SqliteError(
-								`ALTER TABLE operation not supported by virtual table module for table '${vtab.tableName}'`,
-								StatusCode.MISUSE
-							);
+							throw new SqliteError(`ALTER TABLE operation not supported by virtual table module for table '${vtab.tableName}'`, StatusCode.MISUSE);
 						}
 					} catch (e: any) {
-						// Fix Error Handling: Re-throw SqliteError or wrap others
-						if (e instanceof SqliteError) {
-							this.error = e;
-						} else {
-							const msg = `SchemaChange failed: ${e instanceof Error ? e.message : String(e)}`;
-							this.error = new SqliteError(msg, StatusCode.ERROR, e instanceof Error ? e : undefined);
-						}
-						this.done = true; // Halt execution on error
-						return; // Don't increment PC if halting
+						if (e instanceof SqliteError) { this.error = e; } else { const msg = `SchemaChange failed: ${e instanceof Error ? e.message : String(e)}`; this.error = new SqliteError(msg, StatusCode.ERROR, e instanceof Error ? e : undefined); }
+						this.done = true; return;
 					}
-					// Fix PC Increment: Always increment PC if not halting
-					this.programCounter++;
+					this.programCounter++; // Increment PC only on success
 				}
-				break;
-			// --------------------------------
+				return;
 
-			case Opcode.AlterTable: // Placeholder - No action needed yet
-				this.programCounter++; // Increment PC even for no-op
-				break;
+			case Opcode.AlterTable: // Placeholder - No action needed yet (Unchanged)
+				break; // PC increments normally
 
 			default:
 				throw new SqliteError(`Unsupported opcode: ${Opcode[inst.opcode]} (${inst.opcode})`, StatusCode.INTERNAL);
@@ -849,22 +726,12 @@ export class Vdbe {
 		}
 	}
 
-	// --- Updated binaryArithOp ---
+	// --- Updated binaryArithOp --- (Unchanged)
 	private _binaryArithOp(r1Offset: number, r2Offset: number, destOffset: number, op: (a: any, b: any) => any): void {
-		const v1 = this._getMemValue(r1Offset);
-		const v2 = this._getMemValue(r2Offset);
-		let result: SqlValue = null;
-		// Basic numeric coercion (can be refined for BigInt)
+		const v1 = this._getMemValue(r1Offset); const v2 = this._getMemValue(r2Offset); let result: SqlValue = null;
 		if (v1 !== null && v2 !== null) {
-			if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
-				try { result = op(BigInt(v1 as any), BigInt(v2 as any)); } catch { result = null; }
-			} else {
-				const n1 = Number(v1);
-				const n2 = Number(v2);
-				if (!isNaN(n1) && !isNaN(n2)) {
-					try { result = op(n1, n2); } catch { result = null; }
-				}
-			}
+			if (typeof v1 === 'bigint' || typeof v2 === 'bigint') { try { result = op(BigInt(v1 as any), BigInt(v2 as any)); } catch { result = null; } }
+			else { const n1 = Number(v1); const n2 = Number(v2); if (!isNaN(n1) && !isNaN(n2)) { try { result = op(n1, n2); } catch { result = null; } } }
 		}
 		this._setMem(destOffset, result);
 	}

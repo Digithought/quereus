@@ -32,6 +32,9 @@ export function createEphemeralSchemaHelper(
 		columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
 		primaryKeyDefinition: pkDef,
 		isVirtual: true, // Ephemeral tables are treated like virtual tables for VDBE interaction
+		isWithoutRowid: false,
+		isStrict: false,
+		isView: false,
 	};
 
 	// Register the schema with the compiler

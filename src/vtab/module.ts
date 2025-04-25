@@ -106,59 +106,6 @@ export interface VirtualTableModule<
 	xOpen(table: TTable): Promise<TCursor>;
 
 	/**
-	 * Close a virtual table cursor.
-	 * @param cursor The cursor instance.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
-	 */
-	xClose(cursor: TCursor): Promise<void>;
-
-	/**
-	 * Start or restart a search/scan on the virtual table.
-	 * @param cursor The cursor instance.
-	 * @param idxNum The index number chosen by xBestIndex.
-	 * @param idxStr The index string chosen by xBestIndex.
-	 * @param args Values corresponding to constraints marked in xBestIndex.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
-	 */
-	xFilter(cursor: TCursor, idxNum: number, idxStr: string | null, args: ReadonlyArray<SqlValue>): Promise<void>;
-
-	/**
-	 * Advance the cursor to the next row in the result set.
-	 * @param cursor The cursor instance.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
-	 */
-	xNext(cursor: TCursor): Promise<void>;
-
-	/**
-	 * Check if the cursor has reached the end of the result set.
-	 * @param cursor The cursor instance.
-	 * @returns A promise resolving to true if EOF, false otherwise, or throwing an error.
-	 * @throws SqliteError on failure.
-	 */
-	xEof(cursor: TCursor): Promise<boolean>;
-
-	/**
-	 * Return the value for the i-th column of the current row.
-	 * This method MUST be synchronous as it's called during result processing.
-	 * @param cursor The cursor instance.
-	 * @param context Context for setting the result (use context.result*(...)).
-	 * @param i The column index (0-based).
-	 * @returns StatusCode.OK on success, or an error code.
-	 */
-	xColumn(cursor: TCursor, context: SqliteContext, i: number): number; // Sync
-
-	/**
-	 * Return the rowid for the current row.
-	 * @param cursor The cursor instance.
-	 * @returns A promise resolving to the rowid (as bigint) or throwing an error.
-	 * @throws SqliteError on failure.
-	 */
-	xRowid(cursor: TCursor): Promise<bigint>;
-
-	/**
 	 * Perform an INSERT, UPDATE, or DELETE operation on the virtual table.
 	 * @param table The virtual table instance.
 	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, the old row values. Length depends on operation.
@@ -210,32 +157,6 @@ export interface VirtualTableModule<
 	 * @throws SqliteError or ConstraintError on failure (e.g., dropping PK, type mismatch).
 	 */
 	xAlterSchema?(table: TTable, changeInfo: SchemaChangeInfo): Promise<void>;
-
-	/**
-	 * Optional: Seeks the cursor forward or backward by a relative offset from its current position.
-	 * This operates on the result set established by the last xFilter call.
-	 * Used by the VDBE for window functions (ROWS frames, LAG/LEAD) and potentially other operations.
-	 * If not implemented, operations requiring relative seeking will fail for this module.
-	 * @param cursor The cursor instance to operate on.
-	 * @param offset The relative offset (positive for forward, negative for backward).
-	 * @returns A promise resolving to true if the seek was successful and the cursor points to a valid row,
-	 *          false if the seek moved the cursor out of bounds (before the first or after the last row).
-	 * @throws SqliteError on underlying errors during seeking.
-	 */
-	xSeekRelative?(cursor: TCursor, offset: number): Promise<boolean>;
-
-	/**
-	 * Optional: Seeks the cursor directly to the row matching the specified rowid.
-	 * This operates on the result set established by the last xFilter call.
-	 * Used by the VDBE for efficient cursor position restoration.
-	 * If not implemented, operations requiring direct rowid seeking might be slower or fail.
-	 * @param cursor The cursor instance to operate on.
-	 * @param rowid The target rowid to seek to.
-	 * @returns A promise resolving to true if the seek was successful and the cursor points to the target row,
-	 *          false if the rowid was not found in the cursor's current result set.
-	 * @throws SqliteError on underlying errors during seeking.
-	 */
-	xSeekToRowid?(cursor: TCursor, rowid: bigint): Promise<boolean>;
 }
 
 // --- Add Schema Change Info Type ---

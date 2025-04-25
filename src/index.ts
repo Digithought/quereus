@@ -19,7 +19,7 @@ export { SqliteError, MisuseError, ConstraintError } from './common/errors';
 export { VirtualTable } from './vtab/table';
 export { VirtualTableCursor } from './vtab/cursor';
 export { type VirtualTableModule } from './vtab/module';
-export { MemoryTableModule } from './vtab/memory-table';
+export { MemoryTableModule } from './vtab/memory-module';
 
 // SQL Parser and Compiler
 export { Parser } from './parser/parser';

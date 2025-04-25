@@ -18,7 +18,7 @@ import { Parser } from '../parser/parser';
 import { Compiler } from '../compiler/compiler';
 import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table'; // Import helpers
 // Import default modules
-import { MemoryTableModule } from '../vtab/memory-table';
+import { MemoryTableModule } from '../vtab/memory-module';
 import { JsonEachModule } from '../vtab/json-each';
 import { JsonTreeModule } from '../vtab/json-tree'; // Import JsonTreeModule
 // --- Import SchemaTableModule ---

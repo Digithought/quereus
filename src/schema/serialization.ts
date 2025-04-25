@@ -189,6 +189,10 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         vtabModuleName: jsonTable.vtabModule,
         vtabArgs: jsonTable.vtabArgs ? Object.freeze(jsonTable.vtabArgs) : undefined,
         // vtabModule, vtabInstance, vtabAuxData will be populated on connect
+        // Add missing properties - assume false for imported schemas unless specified in JSON
+        isWithoutRowid: false, // Or potentially read from jsonTable if added to JsonTableSchema later
+        isStrict: false,
+        isView: false,
       };
       schema.addTable(tableSchema);
     }
