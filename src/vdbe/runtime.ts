@@ -116,16 +116,17 @@ export class VdbeRuntime implements VmCtx {
 
       const code = this.program.instructions;
 
-      while (this.pc < code.length) {
-        const inst = code[this.pc];
+			const pc = this.pc;
+      while (pc < code.length) {
+        const inst = code[pc];
         if (!inst) {
-          this.error = new SqliteError(`Invalid program counter: ${this.pc}`, StatusCode.INTERNAL);
+          this.error = new SqliteError(`Invalid program counter: ${pc}`, StatusCode.INTERNAL);
           break;
         }
 
         // Only debug log in development
         if (process.env.NODE_ENV === 'development') {
-          console.debug(`VDBE Exec: [${this.pc}] FP=${this.framePointer} SP=${this.stackPointer} ${inst.opcode}`);
+          console.debug(`VDBE Exec: [${pc}] FP=${this.framePointer} SP=${this.stackPointer} ${inst.opcode}`);
         }
 
         // Get the handler for this opcode
