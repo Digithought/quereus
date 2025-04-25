@@ -1,10 +1,6 @@
 ## Project TODO List & Future Work
 
 This list outlines the remaining major features and refinements needed to make SQLiter a more complete and robust VTab-centric SQL query processor.
-
-**I. Core Query Processing Features:**
-
-*   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
 *   [P] **FROM Clause Subqueries (Derived Tables):** Basic structure exists (AST, schema registration). Requires:
     *   [ ] Implement VDBE execution logic (e.g., materialization into ephemeral table).
     *   [ ] Handle correlation with outer query values correctly (re-materialization or deferred execution).
