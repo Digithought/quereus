@@ -8,7 +8,12 @@ import type { ConflictResolution } from '../common/constants';
 
 // Base for all AST nodes
 export interface AstNode {
-	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select' | 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit' | 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma' | 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction' | 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following';
+	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select'
+		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit'
+		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma'
+		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
+		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
+		| 'subquerySource';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -266,14 +271,21 @@ export type ResultColumn =
 	| { type: 'all', table?: string }
 	| { type: 'column', expr: Expression, alias?: string };
 
-// FROM clause item (table, join, or function call)
-export type FromClause = TableSource | JoinClause | FunctionSource;
+// FROM clause item (table, join, function call, or subquery)
+export type FromClause = TableSource | JoinClause | FunctionSource | SubquerySource;
 
 // Table source in FROM clause
 export interface TableSource extends AstNode {
 	type: 'table';
 	table: IdentifierExpr;
 	alias?: string;
+}
+
+// --- Add SubquerySource type --- Needed before FromClause use
+export interface SubquerySource extends AstNode {
+	type: 'subquerySource'; // Distinct type for FROM clause subqueries
+	subquery: SelectStmt;
+	alias: string; // Subqueries in FROM MUST have an alias
 }
 
 // JOIN clause in FROM

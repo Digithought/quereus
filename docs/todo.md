@@ -5,6 +5,14 @@ This list outlines the remaining major features and refinements needed to make S
 **I. Core Query Processing Features:**
 
 *   [ ] **Window Functions:** Requires significant VDBE and compiler changes (partitioning, frame management).
+*   [P] **FROM Clause Subqueries (Derived Tables):** Basic structure exists (AST, schema registration). Requires:
+    *   [ ] Implement VDBE execution logic (e.g., materialization into ephemeral table).
+    *   [ ] Handle correlation with outer query values correctly (re-materialization or deferred execution).
+    *   [ ] Refactor nested loop generation logic for reuse within subquery materialization if subquery contains joins.
+*   [ ] **FROM Clause Table-Valued Functions:** Basic structure exists (AST, schema registration placeholder).
+    *   [ ] Implement schema lookup mechanism (via registry or module interface).
+    *   [ ] Define VDBE/VTab mechanism for passing arguments via VFilter.
+    *   [ ] Implement VDBE execution logic for calling functions.
 
 **II. VDBE & Compiler Core:**
 

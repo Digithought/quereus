@@ -1,5 +1,5 @@
 import { Opcode } from '../common/constants';
-import { StatusCode } from '../common/types';
+import { StatusCode, SqlDataType } from '../common/types';
 import { SqliteError } from '../common/errors';
 import { type P4Vtab, type P4FuncDef, type P4SortKey } from '../vdbe/instruction';
 import type { Compiler, ColumnResultInfo, HavingContext } from './compiler'; // Ensure HavingContext is imported
@@ -7,11 +7,251 @@ import type * as AST from '../parser/ast';
 import { compileUnhandledWhereConditions } from './whereVerify';
 import type { ArgumentMap } from './expression';
 import { analyzeSubqueryCorrelation } from './correlation'; // Added import
-import type { TableSchema } from '../schema/table';
+import type { TableSchema } from '../schema/table'; // Import TableSchema only
+import type { ColumnSchema } from '../schema/column'; // Import ColumnSchema from correct location
 import type { SubqueryCorrelationResult } from './correlation';
 import { setupWindowSorter, type WindowSorterInfo } from './window'; // Import window setup function
 import { compileWindowFunctionsPass } from './window_pass'; // Import window functions pass
 import { expressionToString } from '../util/ddl-stringify';
+
+/**
+ * Interface to hold consolidated state for each level in the join structure.
+ * This replaces multiple parallel arrays indexed by loop level.
+ */
+interface JoinLevelInfo {
+	cursor: number;                // The VDBE cursor ID for this level
+	schema: TableSchema;           // Schema for the table at this level
+	alias: string;                 // Alias used for this level (for lookups)
+	joinType?: AST.JoinClause['joinType'] | 'cross'; // Type of join connecting this level to the previous one
+	condition?: AST.Expression;    // ON condition expression for this join
+	usingColumns?: string[];       // USING columns for this join
+	// VDBE State (populated during compilation)
+	loopStartAddr?: number;        // Address of loop start
+	eofAddr?: number;              // Address to jump to when EOF reached
+	joinFailAddr?: number;         // Address to jump to when join condition fails
+	matchReg?: number;             // For LEFT JOINs: register containing match flag
+}
+
+/**
+ * Preprocesses the FROM clause AST to gather information about each join level.
+ * Returns an ordered array representing the flattened join structure.
+ */
+function preprocessJoinLevels(compiler: Compiler, sources: AST.FromClause[] | undefined): JoinLevelInfo[] {
+	if (!sources || sources.length === 0) {
+		return [];
+	}
+
+	const levels: JoinLevelInfo[] = [];
+
+	function processNode(node: AST.FromClause, previousLevelAlias?: string): string /* returns alias of this node */ {
+		if (node.type === 'table') {
+			const cursor = compiler.tableAliases.get((node.alias || node.table.name).toLowerCase());
+			if (cursor === undefined) {
+				throw new SqliteError(`Table alias ${node.alias || node.table.name} not found in compiler's alias map`, StatusCode.INTERNAL);
+			}
+			const alias = (node.alias || node.table.name).toLowerCase();
+			const schema = compiler.tableSchemas.get(cursor);
+			if (!schema) {
+				throw new SqliteError(`Schema not found for table ${alias}`, StatusCode.INTERNAL);
+			}
+			levels.push({ cursor, schema, alias });
+			return alias;
+		} else if (node.type === 'join') {
+			const leftAlias = processNode(node.left, previousLevelAlias);
+			const rightAlias = processNode(node.right, leftAlias);
+
+			// The last level added corresponds to the right side of this join
+			const rightLevelInfo = levels[levels.length - 1];
+			rightLevelInfo.joinType = node.joinType;
+			if (node.condition) {
+				rightLevelInfo.condition = node.condition;
+			} else if (node.columns) {
+				rightLevelInfo.usingColumns = node.columns;
+			} else if (node.joinType !== 'cross') {
+				// Natural join or non-cross join without ON/USING - treat as CROSS for now
+				// Note: The 'natural' keyword might be handled by the parser setting joinType='inner' and omitting condition/columns.
+				// Proper natural join column matching isn't implemented here.
+				if (node.joinType === 'inner' || node.joinType === 'left') {
+					console.warn(`Join between ${leftAlias} and ${rightAlias} of type ${node.joinType} has no ON/USING clause.`);
+					rightLevelInfo.joinType = 'cross';
+				}
+			}
+			return rightAlias;
+		} else if (node.type === 'subquerySource') { // Adjusted type check based on likely AST structure
+			// Handle subquery sources
+			const alias = node.alias.toLowerCase();
+			const cursor = compiler.tableAliases.get(alias);
+			if (cursor === undefined) {
+				throw new SqliteError(`Subquery alias ${alias} not found in compiler's alias map`, StatusCode.INTERNAL);
+			}
+			const schema = compiler.tableSchemas.get(cursor);
+			if (!schema) {
+				throw new SqliteError(`Schema not found for subquery ${alias}`, StatusCode.INTERNAL);
+			}
+			levels.push({ cursor, schema, alias });
+			return alias;
+		} else {
+			// Add checks for other valid FromClause types if necessary (e.g., FunctionSource)
+			throw new SqliteError(`Unsupported FROM clause node type: ${(node as any).type}`, StatusCode.ERROR);
+		}
+	}
+
+	if (sources.length > 1) {
+		// Implicit cross joins between top-level sources
+		let lastAlias: string | undefined = undefined;
+		for (let i = 0; i < sources.length; i++) {
+			const currentAlias = processNode(sources[i], lastAlias);
+			if (i > 0) {
+				// Mark this level as a cross join relative to the previous one
+				const currentLevelInfo = levels[levels.length - 1];
+				currentLevelInfo.joinType = 'cross';
+			}
+			lastAlias = currentAlias;
+		}
+	} else if (sources.length === 1) {
+		processNode(sources[0]);
+	}
+
+	return levels;
+}
+
+/**
+ * Compiles a subquery used as a source in the FROM clause.
+ * Determines its schema, allocates a cursor, and registers it.
+ */
+function compileSubquerySource(compiler: Compiler, node: AST.SubquerySource): void {
+	const alias = node.alias.toLowerCase();
+	if (compiler.tableAliases.has(alias)) {
+		throw new SqliteError(`Duplicate alias '${node.alias}'`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
+	}
+
+	const outerResultColumns = compiler.resultColumns;
+	const outerColumnAliases = compiler.columnAliases;
+	compiler.resultColumns = [];
+	compiler.columnAliases = [];
+
+	// TODO: Pass proper outer cursor context for correlation analysis here.
+	const subqueryResult = compiler.compileSelectCore(node.subquery, []);
+
+	const tempColumns: ColumnSchema[] = [];
+	const tempColumnIndexMap = new Map<string, number>();
+
+	subqueryResult.columnMap.forEach((colInfo, index) => {
+		let name = compiler.columnAliases[index];
+		if (!name && colInfo.expr?.type === 'column' && !colInfo.expr.table && !colInfo.expr.schema) {
+			name = colInfo.expr.name;
+		}
+		if (!name) {
+			name = `col_${index}`;
+		}
+
+		if (tempColumnIndexMap.has(name.toLowerCase())) {
+			console.warn(`Duplicate column name "${name}" in subquery ${alias}. Renaming to ${name}_${index}.`);
+			name = `${name}_${index}`;
+		}
+		// Determine affinity - default to BLOB if unknown
+		const affinity = SqlDataType.BLOB; // Default affinity
+		// We could potentially try to infer affinity from colInfo.expr later
+
+		// Ensure all mandatory fields for ColumnSchema are provided
+		const schemaCol: ColumnSchema = {
+			name,
+			affinity: affinity,
+			// Initialize other properties based on ColumnSchema definition
+			notNull: false,
+			primaryKey: false,
+			pkOrder: 0,
+			defaultValue: null,
+			hidden: false,
+			collation: 'BINARY',
+			generated: false,
+		};
+		tempColumns.push(schemaCol);
+		tempColumnIndexMap.set(name.toLowerCase(), index);
+	});
+
+	// Create the final schema object, including mandatory fields
+	const subquerySchema: TableSchema = {
+		name: alias,
+		schemaName: 'main',
+		columns: tempColumns,
+		columnIndexMap: tempColumnIndexMap,
+		primaryKeyDefinition: [],
+		checkConstraints: [],
+		isTemporary: true,
+		isView: false,
+		isVirtual: false,
+		isStrict: false,
+		isWithoutRowid: true,
+		subqueryAST: node.subquery,
+		// Initialize other mandatory TableSchema fields if necessary
+	};
+
+	compiler.resultColumns = outerResultColumns;
+	compiler.columnAliases = outerColumnAliases;
+
+	const cursor = compiler.allocateCursor();
+	compiler.tableAliases.set(alias, cursor);
+	compiler.tableSchemas.set(cursor, subquerySchema);
+
+	console.log(`Compiled subquery source '${alias}' with cursor ${cursor} and ${subquerySchema.columns.length} columns.`);
+}
+
+/**
+ * Compiles a table-valued function used as a source in the FROM clause.
+ * Retrieves its schema, allocates a cursor, and registers it.
+ * NOTE: Assumes schema is statically defined or retrievable via a handler.
+ *       Actual execution logic needs integration into the main SELECT loop.
+ */
+function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): void {
+	const functionName = node.name.name.toLowerCase(); // Assuming simple name for now
+	const alias = node.alias ? node.alias.toLowerCase() : functionName;
+
+	if (compiler.tableAliases.has(alias)) {
+		throw new SqliteError(`Duplicate alias '${alias}'`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
+	}
+
+	// --- Get Schema for the Table-Valued Function ---
+	// TODO: Implement actual schema lookup for table-valued functions.
+	// This requires a registry or mechanism on the Database/Compiler instance.
+	// Example placeholder:
+	// const functionSchema = compiler.db.findTableFunctionSchema(functionName, node.args);
+	// if (!functionSchema) { ... throw error ... }
+	console.warn(`Schema lookup for table function '${functionName}' not implemented. Using placeholder schema.`);
+
+	// Create a placeholder schema for now
+	const placeholderSchema: TableSchema = {
+		name: alias,
+		schemaName: 'main',
+		columns: [{
+			name: 'placeholder_col',
+			affinity: SqlDataType.TEXT,
+			notNull: false,
+			primaryKey: false,
+			pkOrder: 0,
+			defaultValue: null,
+			collation: 'BINARY',
+			generated: false,
+			hidden: false
+		}],
+		columnIndexMap: new Map([['placeholder_col', 0]]),
+		primaryKeyDefinition: [],
+		checkConstraints: [],
+		isTemporary: true,
+		isView: false,
+		isVirtual: false, // Or true if it uses VTab mechanism?
+		isStrict: false,
+		isWithoutRowid: true,
+	};
+	const functionSchema = placeholderSchema; // Use placeholder
+
+	// --- Allocate cursor and register ---
+	const cursor = compiler.allocateCursor();
+	compiler.tableAliases.set(alias, cursor);
+	compiler.tableSchemas.set(cursor, functionSchema); // Use the looked-up or placeholder schema
+
+	console.log(`Compiled function source '${functionName}' aliased as '${alias}' with cursor ${cursor}.`);
+}
 
 // --- SELECT Statement Compilation --- //
 
@@ -36,6 +276,42 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		return;
 	}
 
+	// --- BEGIN PRE-PASS ---
+	// Pre-compile FROM clause subquery/function sources to register their schemas/cursors
+	const pendingSubqueries: AST.SubquerySource[] = [];
+	const pendingFunctionSources: AST.FunctionSource[] = []; // Added for FunctionSource
+
+	// Renamed function to be more generic
+	function preprocessFromSources(sources: AST.FromClause[] | undefined) {
+		sources?.forEach(source => {
+			if (source.type === 'subquerySource') {
+				pendingSubqueries.push(source);
+			} else if (source.type === 'functionSource') { // Added check
+				pendingFunctionSources.push(source);
+			} else if (source.type === 'join') {
+				preprocessFromSources([source.left, source.right]); // Recurse into joins
+			}
+			// Base tables (source.type === 'table') don't need pre-compilation here
+		});
+	}
+	preprocessFromSources(stmt.from);
+
+	pendingSubqueries.forEach(subqueryNode => {
+		// TODO: Pass the correct outer context for correlation analysis
+		compileSubquerySource(compiler, subqueryNode);
+	});
+
+	// Compile Function Sources after subqueries
+	pendingFunctionSources.forEach(funcSourceNode => {
+		// TODO: Pass the correct outer context for correlation analysis if functions can be correlated
+		compileFunctionSource(compiler, funcSourceNode);
+	});
+	// --- END PRE-PASS ---
+
+	// Pre-process join levels to gather information about the structure
+	const joinLevels = preprocessJoinLevels(compiler, stmt.from);
+	const fromCursors = joinLevels.map(level => level.cursor);
+
 	// Check for window functions
 	const windowColumns = stmt.columns.filter(isWindowFunctionColumn) as {
 		type: 'column';
@@ -52,22 +328,14 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	const isSimpleAggregate = hasAggregates && !hasGroupBy; // e.g., SELECT COUNT(*) FROM t
 	const needsAggProcessing = hasAggregates || hasGroupBy;
 
-	// Determine the structure of the rows before potential sorting
-	let preSortNumCols = 0;
-	let preSortColumnMap: ColumnResultInfo[] = [];
-	let preSortResultBaseReg = 0;
-
 	// Store original result/alias state
 	const savedResultColumns = compiler.resultColumns;
 	const savedColumnAliases = compiler.columnAliases;
 	compiler.resultColumns = [];
 	compiler.columnAliases = [];
 
-	// Open cursors first based on the FROM structure
-	const fromCursors = compiler.compileFromCore(stmt.from);
-
 	// Plan table access early to determine if ORDER BY is consumed
-	const allCursors = [...fromCursors];
+	const allCursors = fromCursors;
 	allCursors.forEach(cursor => {
 		const schema = compiler.tableSchemas.get(cursor);
 		if (schema) {
@@ -127,11 +395,8 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	if (hasWindowFunctions && windowSorterInfo) {
 		// With window functions, use the window sorter for the final output structure
-		// The sorter will include all the columns needed for window calculation
-		// We'll map the original select columns to the corresponding sorter columns or window result registers
-		finalColumnMap = [];
-
 		// Map each SELECT column to either a sorter column or window function result
+		finalColumnMap = [];
 		stmt.columns.forEach((col, idx) => {
 			if (col.type === 'column') {
 				if (col.expr && col.expr.type === 'windowFunction') {
@@ -164,7 +429,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				}
 			} else if (col.type === 'all') {
 				// TODO: Handle SELECT * with window functions
-				// This requires mapping all columns from the sorter that aren't window function placeholders
 				throw new SqliteError("SELECT * with window functions is not yet supported. Please specify columns explicitly.", StatusCode.ERROR);
 			}
 		});
@@ -173,7 +437,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	} else if (needsAggProcessing) {
 		// Aggregation determines the final structure
-		// We will determine finalNumCols, finalColumnMap during the aggregation output loop.
 		// Estimate final base reg size (might need adjustment later)
 		let estimatedFinalNumCols = (stmt.groupBy?.length ?? 0) + aggregateColumns.length;
 		if (isSimpleAggregate && !hasGroupBy) estimatedFinalNumCols = aggregateColumns.length;
@@ -248,80 +511,79 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	// ----------------------------------------------------
 
 	// --- Generate Nested Loops for FROM sources --- //
-	const loopStarts: number[] = [];
-	const loopEnds: number[] = [];
-	const joinFailTargets: number[] = [];
-	const matchFoundRegs: number[] = [];
 	const activeOuterCursors = new Set<number>();
 	let innermostVNextAddr = 0; // Will hold address of innermost loop's VNext
 	let innermostProcessStartAddr = 0; // Start of WHERE/Aggregation/Output logic
 
-	fromCursors.forEach((cursor, index) => {
-		const schema = compiler.tableSchemas.get(cursor);
-		if (!schema) throw new SqliteError(`Internal error: Schema not found for cursor ${cursor}`, StatusCode.INTERNAL);
+	// Setup each join level with loops, filters, and join conditions
+	joinLevels.forEach((level, index) => {
+		// Allocate addresses and registers for this level
+		level.loopStartAddr = compiler.allocateAddress();
+		level.eofAddr = compiler.allocateAddress();
+		level.joinFailAddr = compiler.allocateAddress();
 
-		const loopStartAddr = compiler.allocateAddress();
-		const eofTarget = compiler.allocateAddress();
-		const joinFailTarget = compiler.allocateAddress(); // Target if join or WHERE fails at this level
-
-		loopStarts.push(loopStartAddr);
-		loopEnds.push(eofTarget);
-		joinFailTargets.push(joinFailTarget);
-
-		const joinType = getJoinTypeForLevel(stmt.from, index);
-		const matchReg = (joinType === 'left') ? compiler.allocateMemoryCells(1) : 0;
-		matchFoundRegs.push(matchReg);
-		if (matchReg > 0) {
-			compiler.emit(Opcode.Integer, 0, matchReg, 0, null, 0, `Init LEFT JOIN Match Flag [${index}] = 0`);
+		// For LEFT JOIN, allocate a match register
+		if (level.joinType === 'left') {
+			level.matchReg = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.Integer, 0, level.matchReg, 0, null, 0, `Init LEFT JOIN Match Flag [${index}] = 0`);
 		}
 
-		// Use planning info already computed
-		const planningInfo = compiler.cursorPlanningInfo.get(cursor);
-		let filterP4: any = { idxNum: 0, idxStr: null, nArgs: 0 };
-		let regArgsStart = 0;
+		const cursor = level.cursor;
+		const schema = level.schema;
 
-		if (planningInfo && planningInfo.idxNum !== 0) {
-			const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-			planningInfo.usage.forEach((usage, constraintIdx) => {
-				if (usage.argvIndex > 0) {
-					const expr = planningInfo.constraintExpressions?.get(constraintIdx);
-					if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx} used in VFilter`, StatusCode.INTERNAL);
-					while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
-					argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
-				}
-			});
-			const finalArgsToCompile = argsToCompile.filter(a => a !== null);
-			if (finalArgsToCompile.length > 0) {
-				regArgsStart = compiler.allocateMemoryCells(finalArgsToCompile.length);
-				finalArgsToCompile.forEach((argInfo, i) => {
-					// Pass active outer cursors for correlation analysis in constraint expressions
-					const correlation = analyzeSubqueryCorrelation(compiler, argInfo.expr, activeOuterCursors);
-					compiler.compileExpression(argInfo.expr, regArgsStart + i, correlation);
+		// --- Integrate Subquery Execution/Materialization ---
+		if (schema.subqueryAST) {
+			// TODO: Implement subquery materialization/execution logic here
+			// For now, emit a placeholder VFilter and warning.
+			console.warn(`Execution logic for subquery source '${schema.name}' (cursor ${cursor}) is not yet implemented.`);
+			// Placeholder VFilter: Assumes subquery is materialized and ready to scan.
+			// A real implementation would likely involve compiling the subqueryAST
+			// into an ephemeral table just before this loop or upon first access.
+			compiler.emit(Opcode.VFilter, cursor, level.eofAddr, 0, { idxNum: 0, idxStr: null, nArgs: 0 }, 0, `Filter/Scan Subquery Cursor ${index} (IMPLEMENTATION NEEDED)`);
+		} else {
+			// Standard VFilter logic for base tables/vtabs
+			const planningInfo = compiler.cursorPlanningInfo.get(cursor);
+			let filterP4: any = { idxNum: 0, idxStr: null, nArgs: 0 };
+			let regArgsStart = 0;
+			if (planningInfo && planningInfo.idxNum !== 0) {
+				const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
+				planningInfo.usage.forEach((usage, constraintIdx) => {
+					if (usage.argvIndex > 0) {
+						const expr = planningInfo.constraintExpressions?.get(constraintIdx);
+						if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx}`, StatusCode.INTERNAL);
+						while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
+						argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
+					}
 				});
+				const finalArgsToCompile = argsToCompile.filter(a => a !== null);
+				if (finalArgsToCompile.length > 0) {
+					regArgsStart = compiler.allocateMemoryCells(finalArgsToCompile.length);
+					finalArgsToCompile.forEach((argInfo, i) => {
+						const correlation = analyzeSubqueryCorrelation(compiler, argInfo.expr, activeOuterCursors);
+						compiler.compileExpression(argInfo.expr, regArgsStart + i, correlation);
+					});
+				}
+				filterP4 = { idxNum: planningInfo.idxNum, idxStr: planningInfo.idxStr, nArgs: finalArgsToCompile.length };
 			}
-			filterP4 = { idxNum: planningInfo.idxNum, idxStr: planningInfo.idxStr, nArgs: finalArgsToCompile.length };
+			compiler.emit(Opcode.VFilter, cursor, level.eofAddr, regArgsStart, filterP4, 0, `Filter/Scan Cursor ${index}`);
 		}
-		compiler.emit(Opcode.VFilter, cursor, eofTarget, regArgsStart, filterP4, 0, `Filter/Scan Cursor ${index}`);
-		compiler.resolveAddress(loopStartAddr);
-		compiler.verifyWhereConstraints(cursor, joinFailTarget); // Verify constraints not omitted by plan
+		// --- End Subquery/Standard VFilter Logic ---
+
+		compiler.resolveAddress(level.loopStartAddr!);
+		compiler.verifyWhereConstraints(cursor, level.joinFailAddr!); // Verify constraints not omitted by plan
 
 		// Compile explicit JOIN condition (ON/USING) if applicable
 		if (index > 0) {
-			const joinNode = findJoinNodeConnecting(stmt.from, index - 1, index, compiler);
-			if (joinNode && joinType !== 'cross') {
-				compileJoinCondition(compiler, joinNode, fromCursors.slice(0, index + 1), joinFailTarget);
-			} else if (joinType === 'inner' && !joinNode) {
-				// Implicit CROSS JOIN requires no ON/USING but acts like INNER
-				// throw new SqliteError(`Missing ON/USING clause for table at join level ${index}`, StatusCode.ERROR);
+			if (level.joinType !== 'cross') {
+				compileJoinCondition(compiler, level, joinLevels, index, level.joinFailAddr!);
 			}
 		}
 
 		// If this row satisfies join conditions, set match flag for the *outer* row (if LEFT JOIN)
 		if (index > 0) {
-			const outerLevelIndex = index - 1;
-			const outerMatchReg = matchFoundRegs[outerLevelIndex];
-			if (outerMatchReg > 0) {
-				compiler.emit(Opcode.Integer, 1, outerMatchReg, 0, null, 0, `Set LEFT JOIN Match Flag [${outerLevelIndex}] = 1`);
+			const outerLevel = joinLevels[index - 1];
+			if (outerLevel.joinType === 'left' && outerLevel.matchReg !== undefined) {
+				compiler.emit(Opcode.Integer, 1, outerLevel.matchReg, 0, null, 0, `Set LEFT JOIN Match Flag [${index-1}] = 1`);
 			}
 		}
 		activeOuterCursors.add(cursor);
@@ -384,7 +646,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	} else if (needsAggProcessing) {
 		// --- Standard Aggregation Step ---
-		// (Existing AggStep logic - calculates group key, calls AggStep for each aggregate)
+		// Calculate group key, call AggStep for each aggregate
 		let regGroupKeyStart = 0;
 		let numGroupKeys = 0;
 		let regSerializedKey = 0;
@@ -434,7 +696,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 		// If sorting needed, store in ephemeral table, otherwise output
 		if (needsExternalSort) {
-			const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1); // +1 for rowid
+			const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
 			compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Sort: NULL Rowid for Eph Insert");
 			compiler.emit(Opcode.Move, currentRowResultBase, insertDataReg + 1, finalNumCols, null, 0, "Sort: Copy result to Eph Insert Data");
 			compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Sort: Insert Row into Ephemeral");
@@ -448,7 +710,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				compiler.emit(Opcode.IfZero, regLimit, addrLimitNotZero, 0, null, 0, "Skip Limit Check if already 0"); // Skip decrement if 0
 				compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Decrement Limit");
 				// If limit becomes 0, jump to the end of the outermost loop
-				compiler.emit(Opcode.IfZero, regLimit, loopEnds[0], 0, null, 0, "Check Limit Reached");
+				compiler.emit(Opcode.IfZero, regLimit, joinLevels[0].eofAddr!, 0, null, 0, "Check Limit Reached");
 				compiler.resolveAddress(addrLimitNotZero);
 			}
 			// ------------------------------------ //
@@ -458,71 +720,42 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	}
 
 	// Jump to the VNext of the innermost loop
-	innermostVNextAddr = compiler.getCurrentAddress() + 2; // Address of the GOTO after VNext
-	compiler.emit(Opcode.Goto, 0, innermostVNextAddr, 0, null, 0, "Goto Innermost VNext");
+	const placeholderVNextAddr = compiler.allocateAddress();
+	compiler.emit(Opcode.Goto, 0, placeholderVNextAddr, 0, null, 0, "Goto Innermost VNext");
 
 	// Resolve the target for WHERE failure - jump to VNext
 	compiler.resolveAddress(innermostWhereFailTarget);
-	compiler.emit(Opcode.Goto, 0, innermostVNextAddr, 0, null, 0, "WHERE Failed, Goto VNext");
+	compiler.emit(Opcode.Goto, 0, placeholderVNextAddr, 0, null, 0, "WHERE Failed, Goto VNext");
 	// --- End Innermost Processing --- //
 
 	// --- Generate Loop Closing/VNext and LEFT JOIN NULL Padding --- //
-	for (let i = fromCursors.length - 1; i >= 0; i--) {
-		const cursor = fromCursors[i];
-		const loopStartAddr = loopStarts[i];
-		const eofAddr = loopEnds[i];
-		const joinFailAddr = joinFailTargets[i];
-		const matchReg = matchFoundRegs[i];
+	for (let i = joinLevels.length - 1; i >= 0; i--) {
+		const level = joinLevels[i];
 
 		// Resolve the target for join/where failure at this level
-		compiler.resolveAddress(joinFailAddr);
+		compiler.resolveAddress(level.joinFailAddr!);
 
 		// Resolve the target for the GOTO after innermost processing (points to VNext)
-		const currentVNextTargetAddr = compiler.getCurrentAddress(); // Address of this VNext
-		if (i === fromCursors.length - 1) {
-			compiler.resolveAddress(innermostVNextAddr - 2); // Resolve the GOTO target pointing here
-			compiler.resolveAddress(innermostVNextAddr - 1); // Resolve the WHERE failed GOTO target
-			innermostVNextAddr = currentVNextTargetAddr; // Update for outer loops
+		const currentVNextAddr = compiler.getCurrentAddress(); // Address of this VNext
+		if (i === joinLevels.length - 1) {
+			// Resolve the placeholder VNext targets for the innermost level
+			compiler.resolveAddress(placeholderVNextAddr);
 		}
 
-		compiler.emit(Opcode.VNext, cursor, eofAddr, 0, null, 0, `VNext Cursor ${i}`);
-		compiler.emit(Opcode.Goto, 0, loopStartAddr, 0, null, 0, `Goto LoopStart ${i}`);
-		compiler.resolveAddress(eofAddr);
+		compiler.emit(Opcode.VNext, level.cursor, level.eofAddr!, 0, null, 0, `VNext Cursor ${i}`);
+		compiler.emit(Opcode.Goto, 0, level.loopStartAddr!, 0, null, 0, `Goto LoopStart ${i}`);
+		compiler.resolveAddress(level.eofAddr!);
 
 		// LEFT JOIN EOF NULL Padding
-		const joinType = getJoinTypeForLevel(stmt.from, i);
-		if (joinType === 'left' && matchReg > 0) {
-			const addrSkipNullPadEof = compiler.allocateAddress();
-			compiler.emit(Opcode.IfTrue, matchReg, addrSkipNullPadEof, 0, null, 0, `LEFT JOIN EOF: Skip NULL pad if match found [${i}]`);
-
-			// Null pad columns originating from this cursor
-			// Use the *core* column map to know which original columns to null pad
-			coreColumnMap.forEach(info => {
-				if (info.sourceCursor === cursor) {
-					compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, `LEFT JOIN EOF: NULL Pad Col ${info.sourceColumnIndex} from Cursor ${cursor}`);
-				}
-			});
-
-			// If this NULL padding potentially satisfies an outer LEFT JOIN, set its flag
-			if (i > 0) {
-				const outerMatchReg = matchFoundRegs[i - 1];
-				if (outerMatchReg > 0) {
-					compiler.emit(Opcode.Integer, 1, outerMatchReg, 0, null, 0, `Set LEFT JOIN Match Flag [${i - 1}] = 1 (due to NULL pad EOF)`);
-				}
-			}
-
-			// Jump back to the *start* of the innermost processing block
-			// This will re-evaluate WHERE, recalculate aggregates/results for the NULL-padded row
-			compiler.emit(Opcode.Goto, 0, innermostProcessStartAddr, 0, null, 0, `LEFT JOIN EOF: Process NULL-padded row [${i}]`);
-
-			compiler.resolveAddress(addrSkipNullPadEof);
+		if (level.joinType === 'left' && level.matchReg !== undefined) {
+			emitLeftJoinNullPadding(compiler, level, joinLevels, i, coreColumnMap, innermostProcessStartAddr);
 		}
 
-		// Reset match flag for the level *inside* the loop we are closing
-		if (matchReg > 0) {
-			compiler.emit(Opcode.Integer, 0, matchReg, 0, null, 0, `Reset LEFT JOIN Match Flag [${i}] before outer VNext/EOF`);
+		// Reset match flag for the next outer iteration
+		if (level.matchReg !== undefined) {
+			compiler.emit(Opcode.Integer, 0, level.matchReg, 0, null, 0, `Reset LEFT JOIN Match Flag [${i}] before outer VNext/EOF`);
 		}
-		activeOuterCursors.delete(cursor);
+		activeOuterCursors.delete(level.cursor);
 	} // --- End loop closing --- //
 
 	// --- Window Function Processing (Post-looping phase) ---
@@ -637,7 +870,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 		// Reconstruct Output Row (Group Keys + Aggregates) using finalColumnMap
 		let groupKeyIndex = 0;
-		let aggIndex = 0;
 		finalColumnMap.forEach(info => {
 			if (info.expr?.type === 'function' && info.expr.isAggregate) {
 				// It's an aggregate result
@@ -645,18 +877,15 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
 				const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
 				compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
-				aggIndex++;
 			} else if (hasGroupBy) {
 				// It's a group key result
 				compiler.emit(Opcode.AggGroupValue, regMapIterator, groupKeyIndex, info.targetReg, null, 0, `Output Group Key ${groupKeyIndex}`);
 				groupKeyIndex++;
 			} else {
-				// Should be simple aggregate with no group keys - result should be aggregate
+				// Should be simple aggregate with no group keys
 				throw new Error("Internal: Unexpected column type in aggregate output loop");
 			}
 		});
-
-		// Now we have the final row for the group in registers finalResultBaseReg to finalResultBaseReg + finalNumCols - 1
 
 		// --- Compile HAVING clause --- //
 		const addrHavingFail = compiler.allocateAddress();
@@ -749,10 +978,10 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	}
 	// ------------------------ //
 
-	// Close FROM cursors if no sorter was used
-	if (!needsExternalSort) {
-		compiler.closeCursorsUsedBySelect(fromCursors);
-	}
+	// Close FROM cursors
+	joinLevels.forEach(level => {
+		compiler.emit(Opcode.Close, level.cursor, 0, 0, null, 0, `Close FROM Cursor ${level.cursor}`);
+	});
 
 	// Restore original result/alias state
 	compiler.resultColumns = savedResultColumns;
@@ -994,66 +1223,97 @@ function getJoinTypeForLevel(
 
 function compileJoinCondition(
 	compiler: Compiler,
-	joinNode: AST.JoinClause,
-	activeCursors: number[], // Cursors active up to and including the right side of this join
-	addrJoinFail: number
+	level: JoinLevelInfo,     // Current level (right side of the join)
+	allJoinLevels: JoinLevelInfo[], // All levels for context
+	levelIndex: number,       // Index of the current level
+	addrJoinFail: number      // Address to jump to if condition fails
 ): void {
-	if (activeCursors.length < 2) {
-		throw new Error("Internal: compileJoinCondition called with insufficient active cursors.");
-	}
-	const leftCursor = activeCursors[activeCursors.length - 2]; // Cursor for the left side's result
-	const rightCursor = activeCursors[activeCursors.length - 1]; // Cursor for the right side
+	if (!level.joinType || level.joinType === 'cross') return; // No condition for CROSS
 
-	if (joinNode.condition) {
+	const rightCursor = level.cursor;
+
+	// Get the left cursor - the previous level in the join sequence
+	if (levelIndex <= 0) {
+		throw new SqliteError(`Internal error: compileJoinCondition called with invalid level index ${levelIndex}`, StatusCode.INTERNAL);
+	}
+
+	const leftLevel = allJoinLevels[levelIndex - 1];
+	const leftCursor = leftLevel.cursor;
+	const leftSchema = leftLevel.schema;
+	const rightSchema = level.schema;
+
+	if (level.condition) {
 		// Compile the ON expression
 		const regJoinCondition = compiler.allocateMemoryCells(1);
-		// Correlation/ArgumentMap might be needed if the condition involves outer refs
-		compiler.compileExpression(joinNode.condition, regJoinCondition);
+		compiler.compileExpression(level.condition, regJoinCondition);
 		compiler.emit(Opcode.IfFalse, regJoinCondition, addrJoinFail, 0, null, 0, `JOIN: Check ON Condition`);
-	} else if (joinNode.columns) {
+	} else if (level.usingColumns) {
 		// Compile the USING condition
-		const regUsingOk = compiler.allocateMemoryCells(1); // Use a single register for overall result
 		const regLeftCol = compiler.allocateMemoryCells(1);
 		const regRightCol = compiler.allocateMemoryCells(1);
-		const leftSchema = compiler.tableSchemas.get(leftCursor);
-		const rightSchema = compiler.tableSchemas.get(rightCursor);
-		if (!leftSchema || !rightSchema) throw new Error("Internal: Schema not found for USING clause cursors.");
 
-		for (const colName of joinNode.columns) {
+		for (const colName of level.usingColumns) {
 			const leftColIdx = leftSchema.columnIndexMap.get(colName.toLowerCase());
 			const rightColIdx = rightSchema.columnIndexMap.get(colName.toLowerCase());
-			if (leftColIdx === undefined || rightColIdx === undefined) throw new SqliteError(`Column '${colName}' specified in USING clause not found in both tables.`, StatusCode.ERROR);
+			if (leftColIdx === undefined || rightColIdx === undefined) {
+				throw new SqliteError(`Column '${colName}' specified in USING clause not found in both tables.`, StatusCode.ERROR);
+			}
 
 			compiler.emit(Opcode.VColumn, leftCursor, leftColIdx, regLeftCol, 0, 0, `USING(${colName}) Left`);
 			compiler.emit(Opcode.VColumn, rightCursor, rightColIdx, regRightCol, 0, 0, `USING(${colName}) Right`);
 
-			// Compare columns: result is NULL if either is NULL, true if equal, false otherwise
-			// Use the full comparison logic from compileBinary for IS / IS NOT / = etc.
-			const addrColsEqual = compiler.allocateAddress();
-			const addrCompareEnd = compiler.allocateAddress();
-			const regCompareResult = compiler.allocateMemoryCells(1);
-
 			// Handle NULLs: If either is NULL, comparison fails (result 0 for JOIN)
-			compiler.emit(Opcode.IfNull, regLeftCol, addrCompareEnd, 0, null, 0, `USING: Skip if left NULL`);
-			compiler.emit(Opcode.IfNull, regRightCol, addrCompareEnd, 0, null, 0, `USING: Skip if right NULL`);
+			compiler.emit(Opcode.IfNull, regLeftCol, addrJoinFail, 0, null, 0, `USING: Skip if left NULL`);
+			compiler.emit(Opcode.IfNull, regRightCol, addrJoinFail, 0, null, 0, `USING: Skip if right NULL`);
 
-			// Compare non-null values
-			compiler.emit(Opcode.Eq, regLeftCol, addrColsEqual, regRightCol, null, 0, `USING Compare ${colName}`);
-
-			// Not Equal
-			compiler.emit(Opcode.Integer, 0, regCompareResult, 0, null, 0); // Set result to false
-			compiler.emit(Opcode.Goto, 0, addrCompareEnd, 0, null, 0);
-
-			// Equal
-			compiler.resolveAddress(addrColsEqual);
-			compiler.emit(Opcode.Integer, 1, regCompareResult, 0, null, 0); // Set result to true
-
-			compiler.resolveAddress(addrCompareEnd);
-
-			// If the comparison result is false (0), jump to failure
-			compiler.emit(Opcode.IfFalse, regCompareResult, addrJoinFail, 0, null, 0, `USING: Jump if ${colName} not equal`);
+			// Compare non-null values - Jump to fail if not equal
+			compiler.emit(Opcode.Ne, regLeftCol, addrJoinFail, regRightCol, null, 0, `USING Compare ${colName}`);
+			// If Ne doesn't jump, they are equal, continue to next column
 		}
-	} else {
-		// Natural join or cross join - no condition to compile here
 	}
+	// Natural join would need to be implemented here
+}
+
+/**
+ * Emits VDBE code to handle NULL padding for a LEFT JOIN when the EOF is reached
+ * for the right-side cursor without finding any matches.
+ */
+function emitLeftJoinNullPadding(
+	compiler: Compiler,
+	level: JoinLevelInfo,          // The current level (right side of the finished LEFT JOIN)
+	allJoinLevels: JoinLevelInfo[], // All levels for context
+	levelIndex: number,             // Index of the current level
+	coreColumnMap: ColumnResultInfo[], // Map of columns selected *before* agg/windowing
+	innermostProcessStartAddr: number // Address to jump back to process the padded row
+): void {
+	if (level.joinType !== 'left' || !level.matchReg) {
+		return; // Not a LEFT JOIN or matchReg not set
+	}
+
+	const addrSkipNullPadEof = compiler.allocateAddress();
+	compiler.emit(Opcode.IfTrue, level.matchReg, addrSkipNullPadEof, 0, null, 0, `LEFT JOIN EOF: Skip NULL pad if match found [${levelIndex}]`);
+
+	// Clarifying comment for coreColumnMap usage:
+	// Using coreColumnMap here is crucial. It represents the original structure
+	// of the SELECT clause *before* aggregation or window functions might alter
+	// the final output structure. We need to null-pad the columns as they were
+	// originally selected from the right side of this join.
+	coreColumnMap.forEach(info => {
+		if (info.sourceCursor === level.cursor) {
+			compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, `LEFT JOIN EOF: NULL Pad Col ${info.sourceColumnIndex} from Cursor ${level.cursor}`);
+		}
+	});
+
+	// If this NULL padding satisfies an outer LEFT JOIN, set its flag
+	if (levelIndex > 0) {
+		const outerLevel = allJoinLevels[levelIndex - 1];
+		if (outerLevel.matchReg) { // Check if the outer level is also a LEFT JOIN
+			compiler.emit(Opcode.Integer, 1, outerLevel.matchReg, 0, null, 0, `Set LEFT JOIN Match Flag [${levelIndex - 1}] = 1 (due to NULL pad EOF)`);
+		}
+	}
+
+	// Jump back to process the NULL-padded row
+	compiler.emit(Opcode.Goto, 0, innermostProcessStartAddr, 0, null, 0, `LEFT JOIN EOF: Process NULL-padded row [${levelIndex}]`);
+
+	compiler.resolveAddress(addrSkipNullPadEof);
 }

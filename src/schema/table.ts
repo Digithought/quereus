@@ -2,9 +2,10 @@ import type { ColumnSchema } from './column';
 import type { VirtualTableModule } from '../vtab/module';
 import type { VirtualTable } from '../vtab/table';
 import type { Expression } from '../parser/ast';
-import { type ColumnDef, type ColumnConstraint } from '../parser/ast';
+import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast';
 import { getAffinity } from './column';
 import { SqlDataType } from '../common/types';
+import type * as AST from '../parser/ast'; // Added for subqueryAST
 
 /**
  * Represents the schema definition of a table (real or virtual).
@@ -35,7 +36,19 @@ export interface TableSchema {
 	/** If virtual, the name the module was registered with */
 	vtabModuleName?: string;
 	/** Whether the table is declared WITHOUT ROWID (crucial for VTabs) */
-	// isWithoutRowid: boolean; // Let's assume VTabs *can* have rowids unless module specifies otherwise
+	isWithoutRowid: boolean;
+	/** Whether the table is a temporary table */
+	isTemporary?: boolean; // Added for subquery sources/temp tables
+	/** Whether the table is a strict table */
+	isStrict: boolean;
+	/** Whether the table is a view */
+	isView: boolean;
+	/** Whether the table is a subquery source */
+	subqueryAST?: AST.SelectStmt; // Added for subquery sources
+	/** If virtual, the view definition */
+	viewDefinition?: AST.SelectStmt; // Only for views
+	/** Table-level constraints */
+	tableConstraints?: readonly TableConstraint[];
 
 	// Add flags for other table properties if needed (e.g., isReadOnly, isEphemeral)
 }
