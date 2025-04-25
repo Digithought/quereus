@@ -357,8 +357,12 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 	const finalDt = processDateTimeArgs(timeArgs);
 	if (!finalDt) return null;
 
+	// Abbreviated month names (SQLite standard)
+	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 	try {
 		let result = format;
+		// Use replace with a callback function for better handling
 		result = result.replace(/%./g, (match) => {
 			switch (match) {
 				// Date
@@ -366,6 +370,13 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 				case '%m': return finalDt.month.toString().padStart(2, '0');
 				case '%d': return finalDt.day.toString().padStart(2, '0');
 				case '%j': return finalDt.dayOfYear.toString().padStart(3, '0');
+				case '%F': return `${finalDt.year.toString().padStart(4, '0')}-${finalDt.month.toString().padStart(2, '0')}-${finalDt.day.toString().padStart(2, '0')}`;
+				case '%D': return `${finalDt.month.toString().padStart(2, '0')}/${finalDt.day.toString().padStart(2, '0')}/${finalDt.year.toString().slice(-2)}`;
+				case '%C': return Math.floor(finalDt.year / 100).toString().padStart(2, '0');
+				case '%y': return finalDt.year.toString().slice(-2);
+				case '%h': return months[finalDt.month - 1];
+				case '%e': return finalDt.day.toString().padStart(2, ' ');
+
 				// Time
 				case '%H': return finalDt.hour.toString().padStart(2, '0');
 				case '%M': return finalDt.minute.toString().padStart(2, '0');
@@ -373,18 +384,57 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 				case '%f': // SQLite %f is .SSS
                     const msStr = finalDt.millisecond.toString().padStart(3,'0');
                     return `.${msStr}`;
-                // Use epochMilliseconds and divide for %s
 				case '%s': return Math.floor(finalDt.epochMilliseconds / 1000).toString();
+				case '%I': return (finalDt.hour % 12 || 12).toString().padStart(2, '0'); // 12-hour clock
+				case '%k': return finalDt.hour.toString().padStart(2, ' '); // 24-hour, space padded
+				case '%l': return (finalDt.hour % 12 || 12).toString().padStart(2, ' '); // 12-hour, space padded
+				case '%p': return finalDt.hour < 12 ? 'AM' : 'PM';
+				case '%P': return finalDt.hour < 12 ? 'am' : 'pm';
+				case '%T': return `${finalDt.hour.toString().padStart(2, '0')}:${finalDt.minute.toString().padStart(2, '0')}:${finalDt.second.toString().padStart(2, '0')}`;
+				case '%R': return `${finalDt.hour.toString().padStart(2, '0')}:${finalDt.minute.toString().padStart(2, '0')}`;
+				case '%r': // 12-hour time hh:mm:ss AM/PM
+					const hour12 = (finalDt.hour % 12 || 12).toString().padStart(2, '0');
+					const min = finalDt.minute.toString().padStart(2, '0');
+					const sec = finalDt.second.toString().padStart(2, '0');
+					const ampm = finalDt.hour < 12 ? 'AM' : 'PM';
+					return `${hour12}:${min}:${sec} ${ampm}`;
+
 				// Weekday / Week Number
 				case '%w': return (finalDt.dayOfWeek % 7).toString(); // 0=Sunday..6=Saturday (SQLite)
-                // Handle potentially undefined weekOfYear
-				case '%W': return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0');
+				case '%u': return finalDt.dayOfWeek.toString(); // 1=Monday..7=Sunday (ISO)
+				// Handle potentially undefined weekOfYear (though Temporal usually provides it)
+				case '%W': // Week number (Sunday start, 00-53) - SQLite specific, complex. TODO: Implement if needed.
+					console.warn('strftime %W not fully implemented');
+					return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0'); // Fallback to ISO week
+				case '%V': return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0'); // ISO 8601 week number
+				case '%g': // ISO 8601 week-based year, last two digits
+					return (finalDt.yearOfWeek ?? finalDt.year).toString().slice(-2);
+				case '%G': // ISO 8601 week-based year, four digits
+					return (finalDt.yearOfWeek ?? finalDt.year).toString().padStart(4, '0');
+
+				// Julian Day
+				case '%J':
+					const epochMillis = finalDt.toInstant().epochMilliseconds;
+					const jd = (epochMillis / MILLIS_PER_DAY) + JULIAN_DAY_UNIX_EPOCH;
+					return jd.toString();
+
+				// Timezone
+				case '%z': // +hhmm or -hhmm
+					const offsetStr = finalDt.offset;
+					const sign = offsetStr.startsWith('-') ? '-' : '+';
+					const parts = offsetStr.substring(1).split(':');
+					return `${sign}${parts[0].padStart(2, '0')}${parts[1]?.padStart(2, '0') ?? '00'}`;
+				case '%:z': // +hh:mm or -hh:mm
+					return finalDt.offset;
+				// case '%Z': // Timezone name - Complex, depends on available data. Skip for now.
+
 				// Literal Percent
 				case '%%': return '%';
-				// TODO: Add more format specifiers as needed (%J, etc.)
+
+				// TODO: Add remaining specifiers like %U if crucial
 				default:
 					console.warn(`Unsupported strftime specifier: ${match}`);
-					return match;
+					return match; // Return the specifier itself if unsupported
 			}
 		});
 		return result;

@@ -22,8 +22,6 @@ This list outlines the remaining major features and refinements needed to make S
 
 *   [P] **`MemoryTable` Improvements:**
     *   [ ] Enhance `xBestIndex` to utilize more constraint types (`LIKE`, `GLOB`, `IN`, range scans on non-leading composite key parts). Basic range/EQ planning exists.
-    *   [ ] Implement enforcement for `NOT NULL` / `CHECK` constraints defined in the schema string.
-    *   [ ] Implement `DEFAULT` value handling during inserts.
     *   [ ] Consider adding optional secondary index support (would require significant changes).
     *   [P] More efficient transactional merge/read: Reads during transactions currently perform a full merge which can be slow. Explore optimization. (`MemoryTable` uses merge logic, performance is TBD).
     *   [ ] **Improve `xFilter` in `memory-table.ts`** - use btree ranges and avoid extra sorting.  Also make the xFilter interface more explicit in general for modules.
@@ -42,7 +40,6 @@ This list outlines the remaining major features and refinements needed to make S
 
 **IV. Built-in Functions & Modules:**
 
-*   [P] **Date/Time Functions:** Core functions exist (`date`, `time`, `strftime`...). Need robust parsing (`parseTimeToMillis`) and `strftime` formatting for full SQLite compatibility.
 *   [P] **JSON Functions:** Good coverage (`json_extract`, `json_object`, `json_valid`, `json_type`, manipulation functions, aggregates). Review `json_patch` behavior and edge cases.
 *   [P] **Reflective Schema:** Virtual sqlite_schema table to expose the schema via a table
 *   [ ] **Add More Built-ins:** Consider other useful SQLite functions (e.g., math, more string functions).
