@@ -8,7 +8,14 @@ import type { SubqueryCorrelationResult } from './correlation.js';
 import type { SqlValue } from '../common/types.js';
 import { Opcode } from '../vdbe/opcodes.js';
 
-/** Determines the affinity of an expression. */
+/**
+ * Determines the affinity of an expression.
+ *
+ * @param compiler The compiler instance
+ * @param expr The expression to analyze
+ * @param correlation Optional correlation info for subqueries
+ * @returns The SQL data type affinity
+ */
 export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {
 	switch (expr.type) {
 		case 'literal':
@@ -47,12 +54,13 @@ export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, 
 				case 'IS': case 'IS NOT': case 'IN': case 'LIKE': case 'GLOB': case 'BETWEEN':
 					return SqlDataType.INTEGER;
 				case 'AND': case 'OR':
-					const affLeft = getExpressionAffinity(compiler, expr.left, correlation);
-					const affRight = getExpressionAffinity(compiler, expr.right, correlation);
-					if (affLeft === SqlDataType.TEXT || affRight === SqlDataType.TEXT) return SqlDataType.TEXT;
-					if (affLeft === SqlDataType.BLOB || affRight === SqlDataType.BLOB) return SqlDataType.BLOB;
+					const leftAff = getExpressionAffinity(compiler, expr.left, correlation);
+					const rightAff = getExpressionAffinity(compiler, expr.right, correlation);
+					if (leftAff === SqlDataType.TEXT || rightAff === SqlDataType.TEXT) return SqlDataType.TEXT;
+					if (leftAff === SqlDataType.BLOB || rightAff === SqlDataType.BLOB) return SqlDataType.BLOB;
 					return SqlDataType.NUMERIC;
-				default: return SqlDataType.BLOB;
+				default:
+					return SqlDataType.BLOB;
 			}
 		case 'subquery':
 			return SqlDataType.BLOB;
@@ -65,7 +73,14 @@ export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, 
 	}
 }
 
-/** Helper to find the schema for a column expression */
+/**
+ * Finds the schema for a column expression.
+ *
+ * @param compiler The compiler instance
+ * @param expr The column expression
+ * @param correlation Optional correlation info for subqueries
+ * @returns The table and column schema, or null if not found or ambiguous
+ */
 export function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, correlation?: SubqueryCorrelationResult): { table: TableSchema, column: ColumnSchema } | null {
 	let cursor = -1;
 	if (expr.table) {
@@ -98,7 +113,14 @@ export function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, co
 	return { table: tableSchema, column: columnSchema };
 }
 
-/** Determines the collation sequence for an expression. */
+/**
+ * Determines the collation sequence for an expression.
+ *
+ * @param compiler The compiler instance
+ * @param expr The expression to analyze
+ * @param correlation Optional correlation info for subqueries
+ * @returns The collation name
+ */
 export function getExpressionCollation(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): string {
 	switch (expr.type) {
 		case 'literal': return 'BINARY';
@@ -144,7 +166,11 @@ export function getExpressionCollation(compiler: Compiler, expr: AST.Expression,
 }
 
 /**
- * Emits the appropriate VDBE instructions to load a literal SqlValue into a target register.
+ * Emits VDBE instructions to load a literal value into a register.
+ *
+ * @param compiler The compiler instance
+ * @param value The SQL value to load
+ * @param targetReg The register to load the value into
  */
 export function compileLiteralValue(compiler: Compiler, value: SqlValue, targetReg: number): void {
 	if (value === null) {

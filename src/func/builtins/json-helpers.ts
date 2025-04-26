@@ -1,6 +1,11 @@
 import type { SqlValue } from '../../common/types.js';
 
-/** Safely parses a JSON string into a JS value, returning null on error. */
+/**
+ * Safely parses a JSON string into a JavaScript value
+ *
+ * @param jsonString The string to parse as JSON
+ * @returns The parsed value or null if parsing failed
+ */
 export function safeJsonParse(jsonString: SqlValue): any | null {
 	if (typeof jsonString !== 'string') {
 		return null;
@@ -13,18 +18,20 @@ export function safeJsonParse(jsonString: SqlValue): any | null {
 }
 
 /**
- * Parses a JSON path and returns information needed for modification.
- * Optionally creates intermediate objects/arrays for `json_set`.
- * @returns Object with { parent, key, value, exists: boolean } or null if path is invalid.
- *          `parent`: The object/array containing the target.
- *          `key`: The final key/index in the path.
- *          `value`: The value at the path (if it exists).
- *          `exists`: Whether the path fully resolved to a value.
+ * Parses a JSON path and returns information needed for modification
+ *
+ * Handles standard JSON path syntax ($, $.key, $[0], etc.) and optionally
+ * creates intermediate objects/arrays for operations like json_set.
+ *
+ * @param data The JSON data structure to traverse
+ * @param path The JSON path string
+ * @param createParents Whether to create missing intermediate objects/arrays
+ * @returns Path resolution information or null if the path is invalid
  */
 export function resolveJsonPathForModify(
 	data: any,
 	path: string,
-	createParents: boolean = false // Flag for json_set behavior
+	createParents: boolean = false
 ): { parent: any; key: string | number; value: any; exists: boolean } | null {
 	if (!path || typeof path !== 'string') return null;
 
@@ -34,7 +41,6 @@ export function resolveJsonPathForModify(
 	let remainingPath = path.startsWith('$') ? path.substring(1) : path;
 
 	if (remainingPath === '') {
-		// Path is just '$', target is the root
 		return { parent: null, key: '', value: data, exists: true };
 	}
 
@@ -42,56 +48,50 @@ export function resolveJsonPathForModify(
 		parent = current;
 		finalKey = null;
 
-		if (current === undefined || current === null) return null; // Cannot traverse undefined/null
+		if (current === undefined || current === null) return null;
 
 		if (remainingPath.startsWith('.')) {
 			remainingPath = remainingPath.substring(1);
-			let keyStr: string; // Declare key type explicitly
+			let keyStr: string;
 			if (remainingPath.startsWith('"')) {
 				const endQuote = remainingPath.indexOf('"', 1);
-				if (endQuote === -1) return null; // Invalid path
+				if (endQuote === -1) return null;
 				keyStr = remainingPath.substring(1, endQuote);
 				remainingPath = remainingPath.substring(endQuote + 1);
 			} else {
 				const match = remainingPath.match(/^([^[.\\s]+)/);
-				if (!match) return null; // Invalid path
+				if (!match) return null;
 				keyStr = match[1];
 				remainingPath = remainingPath.substring(keyStr.length);
 			}
 			if (typeof current !== 'object' || Array.isArray(current)) {
-				// Path failure unless we are creating parents
 				if (!createParents || typeof parent !== 'object' || parent === null || Array.isArray(parent) || typeof finalKey !== 'string') {
 					return { parent, key: keyStr, value: undefined, exists: false };
 				}
-				// Create the missing parent object
 				console.debug(`JSON Path: Creating intermediate object for key "${finalKey}"`);
 				parent[finalKey] = {};
-				current = parent[finalKey]; // Continue traversal from the new object
-				parent = current; // The new object becomes the parent for the next step
-				// Re-evaluate the current segment against the newly created object
+				current = parent[finalKey];
+				parent = current;
 				finalKey = keyStr;
-				current = current[keyStr]; // This will be undefined initially
+				current = current[keyStr];
 			} else {
-				// Parent is an object, proceed normally
 				finalKey = keyStr;
 				current = current[keyStr];
 			}
 
 		} else if (remainingPath.startsWith('[')) {
 			const endBracket = remainingPath.indexOf(']');
-			if (endBracket === -1) return null; // Invalid path
+			if (endBracket === -1) return null;
 			const indexStr = remainingPath.substring(1, endBracket).trim();
 			const index = parseInt(indexStr, 10);
 			remainingPath = remainingPath.substring(endBracket + 1);
 
-			if (!Number.isInteger(index) || index < 0) return null; // Invalid index
+			if (!Number.isInteger(index) || index < 0) return null;
 
 			if (!Array.isArray(current)) {
-				// Path failure unless we are creating parents
 				if (!createParents || parent === null || typeof finalKey === null) {
 					return { parent, key: index, value: undefined, exists: false };
 				}
-				// Create the missing parent array
 				let newParentArray: any[] = [];
 				if (Array.isArray(parent) && typeof finalKey === 'number') {
 					console.debug(`JSON Path: Creating intermediate array for index ${finalKey}`);
@@ -100,64 +100,69 @@ export function resolveJsonPathForModify(
 					console.debug(`JSON Path: Creating intermediate array for key "${finalKey}"`);
 					parent[finalKey] = newParentArray;
 				} else {
-					// Cannot create parent array in this context
 					return { parent, key: index, value: undefined, exists: false };
 				}
-				current = newParentArray; // Continue traversal from the new array
-				parent = current; // The new array becomes the parent
-				// Re-evaluate the current segment ([index]) against the new array
+				current = newParentArray;
+				parent = current;
 				finalKey = index;
 				current = index < current.length ? current[index] : undefined;
 			} else {
-				// Parent is an array, proceed normally
 				finalKey = index;
 				current = index < current.length ? current[index] : undefined;
 			}
 		} else {
-			return null; // Invalid path segment
+			return null;
 		}
 	}
 
-	// Path successfully traversed
-	if (finalKey === null) return null; // Should have a final key unless path was just '$'
+	if (finalKey === null) return null;
 	return { parent, key: finalKey, value: current, exists: current !== undefined };
 }
 
-/** Converts SQL value to JSON-compatible value for insertion/setting */
+/**
+ * Converts an SQL value to a JSON-compatible value for insertion or modification
+ *
+ * Handles type conversion for SQL types that don't directly map to JSON:
+ * - BigInt: Converts to number if in safe range, otherwise to string
+ * - Blob: Converts to null as blobs can't be represented in JSON
+ * - NaN/Infinity: Converts to null
+ * - JSON strings: Parses into actual objects/arrays
+ *
+ * @param value The SQL value to convert
+ * @returns A JSON-compatible value
+ */
 export function prepareJsonValue(value: SqlValue): any {
 	if (typeof value === 'bigint') {
-		// Represent BigInt as Number if safe, otherwise maybe string or error?
-		// SQLite likely stores as number if possible.
 		if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
 			return Number(value);
 		}
-		// Outside safe range - return as string? Or null?
-		return value.toString(); // String representation for large BigInts
+		return value.toString();
 	}
 	if (value instanceof Uint8Array) {
-		return null; // Blobs cannot be represented
+		return null;
 	}
 	if (typeof value === 'number' && !Number.isFinite(value)) {
-		return null; // NaN/Infinity cannot be represented
+		return null;
 	}
-	// Check if string looks like JSON itself
 	if (typeof value === 'string') {
 		try {
-			// Attempt to parse, if successful, use the parsed object/array/primitive
-			// This allows inserting pre-formed JSON objects/arrays.
 			return JSON.parse(value);
 		} catch (e) {
-			// It's just a regular string
 			return value;
 		}
 	}
-	return value; // null, boolean, safe numbers are returned as is
+	return value;
 }
 
-/** Deep copies JSON-compatible data (objects, arrays, primitives) */
+/**
+ * Creates a deep copy of JSON-compatible data
+ *
+ * @param data The data to copy
+ * @returns A deep copy of the input data
+ */
 export function deepCopyJson(data: any): any {
 	if (data === null || typeof data !== 'object') {
-		return data; // Primitives are immutable
+		return data;
 	}
 	if (Array.isArray(data)) {
 		return data.map(deepCopyJson);
@@ -171,7 +176,12 @@ export function deepCopyJson(data: any): any {
 	return copy;
 }
 
-/** Determines the SQLite JSON type name for a JS value */
+/**
+ * Determines the SQLite JSON type name for a JavaScript value
+ *
+ * @param value The value to check
+ * @returns The SQLite JSON type name ('null', 'true', 'false', 'integer', 'real', 'text', 'array', 'object')
+ */
 export function getJsonType(value: any): string {
 	if (value === null) return 'null';
 	switch (typeof value) {
@@ -181,14 +191,23 @@ export function getJsonType(value: any): string {
 		case 'object':
 			if (Array.isArray(value)) return 'array';
 			return 'object';
-		default: return 'null'; // Should not happen for valid JSON
+		default: return 'null';
 	}
 }
 
-/** Basic JSON Path evaluation - less robust than resolveJsonPathForModify */
+/**
+ * Evaluates a simple JSON path against data
+ *
+ * A simplified version of path evaluation that handles basic paths
+ * but doesn't support all features of resolveJsonPathForModify.
+ *
+ * @param data The JSON data to query
+ * @param path The path to evaluate
+ * @returns The value at the path or undefined if not found
+ */
 export function evaluateJsonPathBasic(data: any, path: string): any | undefined {
 	if (!path || path === '$') return data;
-	// Basic path splitting, doesn't handle quoted keys or complex array access well
+
 	const parts = path.startsWith('$.') ? path.substring(2).split('.') :
 					path.startsWith('$') ? path.substring(1).split('.') :
 					path.split('.');
@@ -197,17 +216,16 @@ export function evaluateJsonPathBasic(data: any, path: string): any | undefined 
 	for (const part of parts) {
 		if (current === null || current === undefined) return undefined;
 
-		// Very basic array index check
 		const arrayMatch = part.match(/^\s*\[(\d+)\]\s*$/);
 		if (arrayMatch) {
 			const index = parseInt(arrayMatch[1], 10);
 			if (Array.isArray(current) && index >= 0 && index < current.length) {
 				current = current[index];
 			} else {
-				return undefined; // Cannot index non-array or out of bounds
+				return undefined;
 			}
 		} else if (typeof current === 'object' && current !== null && Object.prototype.hasOwnProperty.call(current, part)) {
-			current = current[part]; // Simple key access
+			current = current[part];
 		} else {
 			return undefined;
 		}

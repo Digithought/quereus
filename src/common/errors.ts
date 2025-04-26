@@ -3,6 +3,7 @@ import type { Token } from '../parser/lexer.js';
 
 /**
  * Base class for SQLiter specific errors
+ * Provides location information and status code support
  */
 export class SqliteError extends Error {
 	public code: number;
@@ -31,25 +32,21 @@ export class SqliteError extends Error {
 }
 
 /**
- * Parser-specific error (includes token info)
+ * Parser-specific error that includes token information
+ * Used during SQL parsing to provide precise error locations
  */
 export class ParseError extends SqliteError {
 	public token: Token;
 
 	constructor(message: string, token: Token) {
-		// Pass token location to SqliteError constructor
 		super(message, StatusCode.ERROR, undefined, token.startLine, token.startColumn);
 		this.token = token;
 		this.name = 'ParseError';
-
-		// Don't repeat location in the base message if it's already added
-		// Let the base class handle adding location if needed.
-		// this.message = `${message} (at line ${token.startLine}, column ${token.startColumn})`;
 	}
 }
 
 /**
- * Error for constraint violations
+ * Error thrown when a database constraint is violated
  */
 export class ConstraintError extends SqliteError {
 	constructor(message: string, code: number = StatusCode.CONSTRAINT) {
@@ -58,16 +55,20 @@ export class ConstraintError extends SqliteError {
 	}
 }
 
-/** Specific error for syntax issues */
+/**
+ * Error thrown for SQL syntax issues
+ */
 export class SyntaxError extends SqliteError {
 	constructor(message: string = "SQL syntax error") {
-		super(message, StatusCode.ERROR); // Often uses generic ERROR
+		super(message, StatusCode.ERROR);
 		this.name = 'SyntaxError';
 		Object.setPrototypeOf(this, SyntaxError.prototype);
 	}
 }
 
-/** Specific error for API misuse */
+/**
+ * Error thrown when the API is used incorrectly
+ */
 export class MisuseError extends SqliteError {
 	constructor(message: string = "API misuse") {
 		super(message, StatusCode.MISUSE);

@@ -25,23 +25,16 @@ import * as AST from '../parser/ast.js';
  */
 export class Database {
 	public readonly schemaManager: SchemaManager;
-	// private readonly funcManager: FunctionManager;
 	private isOpen = true;
 	private statements = new Set<Statement>();
 	private registeredVTabs: Map<string, { module: VirtualTableModule<any, any>, auxData: unknown }> = new Map();
-	// Function registration now delegated to SchemaManager/Schema
-	// private registeredFuncs: Map<string, { /* function details */ }> = new Map();
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
-	// --- Add default module config ---
 	private defaultVtabModuleName: string = 'memory';
 	private defaultVtabModuleArgs: string[] = [];
-	// -------------------------------
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
-		// this.funcManager = new FunctionManager(this);
-		// Initialize default VFS, schema, etc. if needed
 		console.log("Database instance created.");
 
 		// Register built-in functions
@@ -49,8 +42,8 @@ export class Database {
 		// Register default virtual table modules
 		this.registerVtabModule('memory', new MemoryTableModule());
 		this.registerVtabModule('json_each', new JsonEachModule());
-		this.registerVtabModule('json_tree', new JsonTreeModule()); // Register JsonTreeModule
-		this.registerVtabModule('sqlite_schema', new SchemaTableModule()); // Register SchemaTableModule
+		this.registerVtabModule('json_tree', new JsonTreeModule());
+		this.registerVtabModule('sqlite_schema', new SchemaTableModule());
 		// Register built-in collations
 		this.registerDefaultCollations();
 	}
@@ -94,7 +87,7 @@ export class Database {
 
 		try {
 			// Attempt initial compilation within prepare to catch immediate parse errors
-			await stmt.compile(); // Use the internal compile method
+			await stmt.compile();
 
 			// Add to active statements list *after* successful initial compile check
 			this.statements.add(stmt);
@@ -174,7 +167,6 @@ export class Database {
 						} catch (cbError: any) {
 							// Handle errors from the callback itself if necessary
 							console.error("Error in exec() callback:", cbError);
-							// Decide whether to re-throw or just log
 							throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
 						}
 					}
@@ -191,7 +183,7 @@ export class Database {
 					await stmt.finalize();
 				}
 			}
-		} // End loop through statements
+		}
 	}
 
 	/**
@@ -213,9 +205,6 @@ export class Database {
 		console.log(`Registering VTab module: ${name}`);
 		this.registeredVTabs.set(lowerName, { module, auxData });
 	}
-
-	// Function registration is now handled via SchemaManager / Schema
-	// registerFunction(...) // Removed from here
 
 	/**
 	 * Begins a transaction.
@@ -290,20 +279,17 @@ export class Database {
 		this.schemaManager.clearAll();
 
 		this.registeredVTabs.clear();
-		// Registered functions are cleared within schemaManager.clearAll()
 		console.log("Database closed.");
 	}
-
-	// --- Internal methods called by Statement ---
 
 	/** @internal Called by Statement when it's finalized */
 	_statementFinalized(stmt: Statement): void {
 		this.statements.delete(stmt);
 	}
 
-	// --- Potentially public helper methods ---
-
-	/** Checks if the database connection is in autocommit mode. */
+	/**
+	 * Checks if the database connection is in autocommit mode.
+	 */
 	getAutocommit(): boolean {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
@@ -325,11 +311,6 @@ export class Database {
 		this.schemaManager.getMainSchema().addTable(definition);
 	}
 
-	// TODO: Add methods for programmatic schema definition if needed
-	// defineTable(...) - For regular tables (if ever needed)
-	// defineFunction(...) - Wraps schemaManager.getMainSchema().addFunction(...)
-
-	// Internal accessors used by parser/planner/VDBE
 	/** @internal */
 	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData: unknown } | undefined {
 		return this.registeredVTabs.get(name.toLowerCase());
@@ -357,7 +338,7 @@ export class Database {
 		options: {
 			numArgs: number;
 			deterministic?: boolean;
-			flags?: number; // Allow overriding flags completely
+			flags?: number;
 		},
 		func: (...args: any[]) => SqlValue
 	): void {
@@ -424,7 +405,6 @@ export class Database {
 	registerFunction(schema: FunctionSchema): void {
 		if (!this.isOpen) throw new MisuseError("Database is closed");
 		try {
-			// Register directly with the main schema
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
 			console.error(`Failed to register function ${schema.name}/${schema.numArgs}:`, e);
@@ -461,7 +441,7 @@ export class Database {
 	setDefaultVtabModule(name: string, args: string[] = []): void {
 		console.warn("Deprecated: Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` instead.");
 		this.setDefaultVtabName(name);
-		this.setDefaultVtabArgs(args); // Keep internal helper
+		this.setDefaultVtabArgs(args);
 	}
 
 	/** @internal Sets only the name of the default module */
@@ -491,13 +471,16 @@ export class Database {
 		}
 	}
 
+	/**
+	 * Gets the default virtual table module name and arguments.
+	 * @returns An object containing the module name and arguments.
+	 */
 	getDefaultVtabModule(): { name: string; args: string[] } {
 		return {
 			name: this.defaultVtabModuleName,
 			args: [...this.defaultVtabModuleArgs],
 		};
 	}
-	// ----------------------------------------
 
 	/**
 	 * Registers a user-defined collation sequence.
@@ -575,7 +558,6 @@ export class Database {
 			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
 				throw new SqliteError(`Iteration failed for query: ${sql}`, status);
 			}
-			// Implicitly return { done: true } when loop finishes or step returns DONE/OK
 		} finally {
 			// Always finalize the internally prepared statement
 			if (stmt) {

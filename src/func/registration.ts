@@ -3,26 +3,48 @@ import { FunctionFlags } from '../common/constants.js';
 import type { SqliteContext } from './context.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
 
-// --- Helper Interfaces for Registration ---
-
+/**
+ * Supported argument type specifications for function argument coercion
+ */
 type ExpectedArgType = 'string' | 'number' | 'bigint' | 'boolean' | 'blob' | 'any';
 
+/**
+ * Configuration options for scalar SQL functions
+ */
 interface ScalarFuncOptions {
+	/** Function name as it will be called in SQL */
 	name: string;
+	/** Number of arguments, or -1 for variable number */
 	numArgs: number;
+	/** Function behavior flags */
 	flags?: FunctionFlags;
-	argTypes?: ExpectedArgType[]; // Optional expected JS types for arguments
+	/** Optional type specifications for arguments */
+	argTypes?: ExpectedArgType[];
 }
 
+/**
+ * Configuration options for aggregate SQL functions
+ */
 interface AggregateFuncOptions {
+	/** Function name as it will be called in SQL */
 	name: string;
+	/** Number of arguments, or -1 for variable number */
 	numArgs: number;
+	/** Function behavior flags */
 	flags?: FunctionFlags;
-	initialState?: any; // Optional initial state for accumulator
-	argTypes?: ExpectedArgType[]; // Optional expected JS types for arguments
+	/** Initial state for the accumulator */
+	initialState?: any;
+	/** Optional type specifications for arguments */
+	argTypes?: ExpectedArgType[];
 }
 
-// --- Coercion Helper ---
+/**
+ * Coerces a SQL value to the specified JavaScript type
+ *
+ * @param value The SQL value to coerce
+ * @param expectedType The desired JavaScript type
+ * @returns The coerced value or null if coercion failed
+ */
 function coerceArg(value: SqlValue, expectedType: ExpectedArgType | undefined): any {
 	if (value === null || expectedType === undefined || expectedType === 'any') {
 		return value;
@@ -31,18 +53,14 @@ function coerceArg(value: SqlValue, expectedType: ExpectedArgType | undefined): 
 	try {
 		switch (expectedType) {
 			case 'string':
-				// Blobs coerce to empty string in many contexts, others use String()
 				return value instanceof Uint8Array ? '' : String(value);
 			case 'number':
-				// Explicitly handle boolean to number conversion common in SQL
 				if (typeof value === 'boolean') return value ? 1 : 0;
 				const num = Number(value);
-				return isNaN(num) ? null : num; // Return null if coercion results in NaN
+				return isNaN(num) ? null : num;
 			case 'bigint':
-				// Requires value to be string, number, boolean, or bigint itself
-				return BigInt(value as any); // Let BigInt handle conversion/errors
+				return BigInt(value as any);
 			case 'boolean':
-				// Use numeric evaluation: 0 or 0.0 is false, others true. Strings need parsing.
 				if (typeof value === 'number') return value !== 0;
 				if (typeof value === 'bigint') return value !== 0n;
 				if (typeof value === 'string') {
@@ -50,28 +68,25 @@ function coerceArg(value: SqlValue, expectedType: ExpectedArgType | undefined): 
 					if (lowerVal === 'true') return true;
 					if (lowerVal === 'false') return false;
 					const numVal = Number(value);
-					return !isNaN(numVal) && numVal !== 0; // Coerce string to number first
+					return !isNaN(numVal) && numVal !== 0;
 				}
-				return Boolean(value); // Fallback for actual boolean or blob (always true if exists)
+				return Boolean(value);
 			case 'blob':
 				return value instanceof Uint8Array ? value : null;
 		}
 	} catch (e) {
-		// Coercion failed (e.g., BigInt('abc'))
 		console.warn(`Coercion failed for value ${value} to type ${expectedType}:`, e);
 		return null;
 	}
-	return value; // Fallback if type not handled
+	return value;
 }
 
-// --- Registration Functions ---
-
 /**
- * Creates a FunctionSchema for a scalar function from a plain JavaScript function.
+ * Creates a function schema for a scalar SQL function from a JavaScript implementation
  *
- * @param options Configuration options for the function.
- * @param jsFunc The JavaScript function implementation. It should return a value compatible with SqlValue.
- * @returns The generated FunctionSchema.
+ * @param options Configuration options for the function
+ * @param jsFunc The JavaScript implementation function
+ * @returns A FunctionSchema ready for registration
  */
 export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...args: any[]) => SqlValue): FunctionSchema {
 	const schema: FunctionSchema = {
@@ -80,24 +95,20 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...arg
 		flags: options.flags ?? (FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC),
 		xFunc: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => {
 			try {
-				// Basic arity check
 				if (options.numArgs >= 0 && args.length !== options.numArgs) {
 					throw new Error(`Function ${options.name} called with ${args.length} arguments, expected ${options.numArgs}`);
 				}
 
-				// Coerce arguments based on options.argTypes
 				const coercedArgs = args.map((arg, i) => coerceArg(arg, options.argTypes?.[i]));
-
 				const result = jsFunc(...coercedArgs);
 
-				// Basic Result Handling based on JS type
 				if (result === null || result === undefined) {
 					context.resultNull();
 				} else if (typeof result === 'string') {
 					context.resultText(result);
 				} else if (typeof result === 'number') {
 					if (Number.isInteger(result)) {
-						context.resultInt64(BigInt(result)); // Prefer Int64 for integers
+						context.resultInt64(BigInt(result));
 					} else {
 						context.resultDouble(result);
 					}
@@ -106,9 +117,8 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...arg
 				} else if (result instanceof Uint8Array) {
 					context.resultBlob(result);
 				} else if (typeof result === 'boolean') {
-					context.resultInt(result ? 1 : 0); // Store booleans as 0 or 1
+					context.resultInt(result ? 1 : 0);
 				} else {
-					// Unknown result type, try converting to string or error?
 					console.warn(`Function ${options.name} returned unknown type: ${typeof result}. Coercing to NULL.`);
 					context.resultNull();
 				}
@@ -122,12 +132,12 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...arg
 }
 
 /**
- * Creates a FunctionSchema for an aggregate function from step and final JavaScript functions.
+ * Creates a function schema for an aggregate SQL function from JavaScript step and final functions
  *
- * @param options Configuration options for the function.
- * @param stepFunc The function called for each row (accumulator, ...args) => newAccumulator.
- * @param finalFunc The function called at the end (accumulator) => finalResult.
- * @returns The generated FunctionSchema.
+ * @param options Configuration options for the function
+ * @param stepFunc Function called for each row to update the accumulator
+ * @param finalFunc Function called after all rows to produce the final result
+ * @returns A FunctionSchema ready for registration
  */
 export function createAggregateFunction(
 	options: AggregateFuncOptions,
@@ -137,31 +147,20 @@ export function createAggregateFunction(
 	const schema: FunctionSchema = {
 		name: options.name,
 		numArgs: options.numArgs,
-		flags: options.flags ?? FunctionFlags.UTF8, // Aggregates often aren't deterministic by default
+		flags: options.flags ?? FunctionFlags.UTF8,
 		xStep: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => {
-			// REMOVE try...catch from xStep wrapper - let VDBE handle errors
-			// try {
-				// Basic arity check
-				if (options.numArgs >= 0 && args.length !== options.numArgs) {
-					// Throw error directly for VDBE to catch
-					throw new Error(`Aggregate ${options.name} step called with ${args.length} arguments, expected ${options.numArgs}`);
-				}
-				let accumulator = context.getAggregateContext<any>();
-				if (accumulator === undefined) {
-					accumulator = options.initialState ?? null; // Use initial state or null
-				}
+			if (options.numArgs >= 0 && args.length !== options.numArgs) {
+				throw new Error(`Aggregate ${options.name} step called with ${args.length} arguments, expected ${options.numArgs}`);
+			}
 
-				// Coerce arguments based on options.argTypes
-				const coercedArgs = args.map((arg, i) => coerceArg(arg, options.argTypes?.[i]));
+			let accumulator = context.getAggregateContext<any>();
+			if (accumulator === undefined) {
+				accumulator = options.initialState ?? null;
+			}
 
-				const newAccumulator = stepFunc(accumulator, ...coercedArgs);
-				context.setAggregateContext(newAccumulator);
-			// } catch (e) {
-				// Errors in xStep might be tricky - should they halt the query?
-				// For now, log and potentially ignore, or set an error state?
-			// REMOVED: console.error(`Error in aggregate function ${options.name} xStep:`, e);
-				// We might need a way for context to signal an error from xStep that xFinal can check.
-			// }
+			const coercedArgs = args.map((arg, i) => coerceArg(arg, options.argTypes?.[i]));
+			const newAccumulator = stepFunc(accumulator, ...coercedArgs);
+			context.setAggregateContext(newAccumulator);
 		},
 		xFinal: (context: SqliteContext) => {
 			try {
@@ -171,7 +170,6 @@ export function createAggregateFunction(
 				}
 				const result = finalFunc(accumulator);
 
-				// Basic Result Handling based on JS type (same as scalar)
 				if (result === null || result === undefined) {
 					context.resultNull();
 				} else if (typeof result === 'string') {

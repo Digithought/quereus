@@ -4,12 +4,9 @@ import type { Database } from './database.js';
 import { SqlDataType } from '../common/constants.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import { Compiler } from '../compiler/compiler.js';
-
-// --- Add VDBE imports ---
 import { type VdbeProgram } from '../vdbe/program.js';
 import { VdbeRuntime } from '../vdbe/runtime.js';
 import type { MemoryCell } from '../vdbe/handler-types.js';
-// ------------------------
 
 /**
  * Represents a prepared SQL statement.
@@ -22,12 +19,9 @@ export class Statement {
 	private boundParameters: Map<number | string, SqlValue> = new Map();
 	private columnNames: string[] = []; // Populated after first successful step
 	private currentRowInternal: MemoryCell[] | null = null; // Store raw MemoryCells from VDBE
-
-	// --- Add VDBE program and engine references ---
 	private vdbeProgram: VdbeProgram | null = null;
 	private vdbe: VdbeRuntime | null = null;
 	private needsCompile = true;
-	// -----------------------------------------------
 
 	/**
 	 * @internal - Use db.prepare()
@@ -50,13 +44,11 @@ export class Statement {
 		this.vdbeProgram = null;
 
 		try {
-			// --- Use Real Parser & Compiler ---
 			const parser = new Parser();
 			const ast = parser.parse(this.sql);
 
 			const compiler = new Compiler(this.db);
 			this.vdbeProgram = compiler.compile(ast, this.sql);
-			// ----------------------------------
 
 			this.needsCompile = false;
 			console.log("Compilation complete.");

@@ -30,7 +30,7 @@ import { compileCommonTableExpression } from './cte.js';
 import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
 
-// --- Add Result/CTE Info types --- //
+// --- Result/CTE Info types --- //
 export interface ColumnResultInfo {
 	targetReg: number;
 	sourceCursor: number; // -1 if not from a direct column
@@ -49,7 +49,6 @@ export interface CteInfo {
 	type: 'materialized';
 	cursorIdx: number;
 	schema: TableSchema;
-	// Add 'view' type later if needed
 }
 export interface CursorPlanningResult {
 	idxNum: number;
@@ -62,7 +61,6 @@ export interface CursorPlanningResult {
 	constraintExpressions: ReadonlyMap<number, AST.Expression>;
 	handledWhereNodes: ReadonlySet<AST.Expression>;
 }
-// ---------------------------------- //
 
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
@@ -80,31 +78,23 @@ export class Compiler {
 	// ---------------------------------
 	public parameters: Map<number | string, { memIdx: number }> = new Map();
 	public columnAliases: string[] = [];
-	// --- Add CTE map --- //
 	public cteMap: Map<string, CteInfo> = new Map(); // Map CTE name -> Info
-	// -------------------- //
 	public tableSchemas: Map<number, TableSchema> = new Map(); // Map cursor index to schema
 	public tableAliases: Map<string, number> = new Map(); // Map alias/name -> cursor index
-	// --- Add Ephemeral Instance Map ---
-	public ephemeralTableInstances: Map<number, MemoryTable> = new Map(); // Track instances
+	public ephemeralTableInstances: Map<number, MemoryTable> = new Map();
 	public resultColumns: { name: string, table?: string, expr?: AST.Expression }[] = [];
-	// --- Add planning info map ---
 	public cursorPlanningInfo: Map<number, CursorPlanningResult> = new Map();
-	// ----------------------------
 	// --- Subroutine State ---
 	private subroutineCode: VdbeInstruction[] = [];
 	public subroutineDefs: Map<AST.SelectStmt, SubroutineInfo> = new Map();
 	public subroutineDepth = 0;
 	private currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
 	private maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
-	// --- Add stack for nested frame context ---
 	private subroutineFrameStack: { frameEnterInsn: VdbeInstruction | null; maxOffset: number }[] = [];
-	// -----------------------------------------
 	// --- Stack Pointers ---
 	public stackPointer: number = 0; // Current stack top (absolute index)
 	public framePointer: number = 0; // Current frame base (absolute index)
-	// ----------------------
-	public outerCursors: number[] = []; // Added property
+	public outerCursors: number[] = [];
 
 	constructor(db: Database) {
 		this.db = db;
@@ -112,49 +102,47 @@ export class Compiler {
 
 	/**
 	 * Compile an AST node into a VDBE program
+	 *
+	 * @param ast The Abstract Syntax Tree node to compile
+	 * @param sql The original SQL text
+	 * @returns The compiled VDBE program
 	 */
 	compile(ast: AST.AstNode, sql: string): VdbeProgram {
 		try {
 			// Reset state
 			this.sql = sql;
 			this.constants = [];
-			// Reset main instruction stream (subroutines handled separately)
 			this.instructions = [];
 			this.numMemCells = 0;
 			this.numCursors = 0;
 			this.parameters = new Map();
 			this.columnAliases = [];
-			this.cteMap = new Map(); // Reset CTE map
+			this.cteMap = new Map();
 			this.tableSchemas = new Map();
-			this.tableAliases = new Map(); // Reset aliases
-			// Reset ephemeral instance map
+			this.tableAliases = new Map();
 			this.ephemeralTableInstances = new Map();
 			this.resultColumns = [];
-			this.cursorPlanningInfo = new Map(); // Reset planning info
-			// --- Reset subroutine state ---
+			this.cursorPlanningInfo = new Map();
 			this.subroutineCode = [];
 			this.subroutineDefs = new Map();
 			this.subroutineDepth = 0;
-			// --- Reset new fields ---
 			this.currentFrameLocals = 0;
 			this.currentFrameEnterInsn = null;
 			this.maxLocalOffsetInCurrentFrame = 0;
-			this.stackPointer = 0; // Reset stack pointers
+			this.stackPointer = 0;
 			this.framePointer = 0;
-			this.outerCursors = []; // Initialize outerCursors
-			this.subroutineFrameStack = []; // Initialize frame stack
-			// -----------------------------
+			this.outerCursors = [];
+			this.subroutineFrameStack = [];
 
 			// Add initial Init instruction
 			this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
 
-			// --- Compile WITH clause FIRST if present --- //
+			// Compile WITH clause first if present
 			let withClause: WithClause | undefined;
 			if ('withClause' in ast && (ast as any).withClause !== undefined) {
 				withClause = (ast as any).withClause;
 				this.compileWithClause(withClause);
 			}
-			// ------------------------------------------ //
 
 			// Compile by node type
 			switch (ast.type) {
@@ -170,7 +158,6 @@ export class Compiler {
 				case 'delete':
 					this.compileDelete(ast as AST.DeleteStmt);
 					break;
-				// --- Add WITH clause handling for other statements if needed --- //
 				case 'createTable':
 					this.compileCreateTable(ast as AST.CreateTableStmt);
 					break;
@@ -209,14 +196,11 @@ export class Compiler {
 					throw new SqliteError(`Unsupported statement type: ${(ast as any).type}`, StatusCode.ERROR);
 			}
 
-			// --- Append subroutines after main program --- //
+			// Append subroutines after main program
 			if (this.subroutineCode.length > 0) {
-				// Patch subroutine FrameEnter sizes before appending
-				// (This assumes endSubroutineCompilation was called correctly for each)
 				this.instructions.push(...this.subroutineCode);
-				this.subroutineCode = []; // Clear for potential reuse
+				this.subroutineCode = [];
 			}
-			// -------------------------------------------- //
 
 			// End program with Halt
 			this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
@@ -235,86 +219,80 @@ export class Compiler {
 			if (error instanceof ParseError) {
 				// Re-throw ParseError as SqliteError, preserving location and cause
 				throw new SqliteError(
-					error.message, // Original parser message (already includes location hint from token)
-					StatusCode.ERROR, // Use the correct code
-					error, // Set the original ParseError as the cause
-					error.line, // Use line from SqliteError base
-					error.column // Use column from SqliteError base
+					error.message,
+					StatusCode.ERROR,
+					error,
+					error.line,
+					error.column
 				);
 			} else if (error instanceof SqliteError) {
-				// If it's already an SqliteError, just re-throw it
 				throw error;
 			} else {
 				// Wrap other unexpected errors
 				throw new SqliteError(
 					`Unexpected compiler error: ${error instanceof Error ? error.message : String(error)}`,
 					StatusCode.INTERNAL,
-					error instanceof Error ? error : undefined // Set cause if it's an Error
+					error instanceof Error ? error : undefined
 				);
 			}
 		}
 	}
 
-	// --- Update Subroutine Compilation Context --- //
-	startSubroutineCompilation(): number { // Return address of FrameEnter
+	/**
+	 * Starts a subroutine compilation context by setting up a new frame
+	 *
+	 * @returns The address of the FrameEnter instruction
+	 */
+	startSubroutineCompilation(): number {
 		this.subroutineDepth++;
-		// --- Push current frame context onto stack ---
 		this.subroutineFrameStack.push({
 			frameEnterInsn: this.currentFrameEnterInsn,
 			maxOffset: this.maxLocalOffsetInCurrentFrame,
 		});
-		// ------------------------------------------
-		// Reset tracking for the new frame
+
 		this.maxLocalOffsetInCurrentFrame = 0;
-		// Emit FrameEnter with placeholder size (0). Will be patched in endSubroutineCompilation.
-		// Target the subroutineCode array directly for emission
 		const instruction = createInstruction(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${this.subroutineDepth}`);
 		this.subroutineCode.push(instruction);
-		const frameEnterAddr = this.subroutineCode.length - 1; // Address relative to subroutineCode
-		this.currentFrameEnterInsn = instruction; // Get ref
-		// Reserve space for control info (RetAddr, OldFP) - Frame slots 0 and 1
-		// allocateMemoryCellsHelper handles offsets correctly within the frame logic
+		const frameEnterAddr = this.subroutineCode.length - 1;
+		this.currentFrameEnterInsn = instruction;
+
 		return frameEnterAddr;
 	}
 
+	/**
+	 * Ends a subroutine compilation context by patching the frame size
+	 * and restoring the previous frame context
+	 */
 	endSubroutineCompilation(): void {
 		if (this.subroutineDepth > 0) {
-			// Patch the CURRENT FrameEnter instruction with the calculated frame size
 			if (this.currentFrameEnterInsn) {
-				// Frame size = max local offset used + 1 (since offset is 0-based)
-				// Local offsets start at 2, so max offset includes control info slots
 				const frameSize = this.maxLocalOffsetInCurrentFrame + 1;
 				this.currentFrameEnterInsn.p1 = frameSize;
-				// Do not reset currentFrameEnterInsn here, restore it from stack
 			} else {
 				console.error("Compiler Error: Missing FrameEnter tracking for the current frame being ended.");
 			}
 
 			this.subroutineDepth--;
 
-			// --- Pop previous frame context from stack and restore ---
 			const previousFrame = this.subroutineFrameStack.pop();
 			if (previousFrame) {
 				this.currentFrameEnterInsn = previousFrame.frameEnterInsn;
 				this.maxLocalOffsetInCurrentFrame = previousFrame.maxOffset;
 			} else {
-				// This happens when the outermost subroutine ends
 				this.currentFrameEnterInsn = null;
-				this.maxLocalOffsetInCurrentFrame = 0; // Reset after last pop
+				this.maxLocalOffsetInCurrentFrame = 0;
 				if (this.subroutineDepth !== 0) {
 					console.error("Compiler Error: Subroutine stack underflow or depth mismatch.");
 				}
 			}
-			// --------------------------------------------------------
 		} else {
 			console.warn("Attempted to end subroutine compilation at depth 0");
 		}
 	}
-	// -----------------------------------------------
 
 	// --- Wrapper Methods Delegating to Helpers --- //
 
-	// Compiler State Helpers (./core/compilerState)
+	// Compiler State Helpers
 	allocateMemoryCells(count: number): number { return CompilerState.allocateMemoryCellsHelper(this, count); }
 	allocateCursor(): number { return CompilerState.allocateCursorHelper(this); }
 	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
@@ -323,9 +301,8 @@ export class Compiler {
 	resolveAddress(placeholder: number): void { CompilerState.resolveAddressHelper(this, placeholder); }
 	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
 
-	// Ephemeral Table Helpers (./core/ephemeral)
+	// Ephemeral Table Helpers
 	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema {
-		// Ensure the map exists if called before compile() reset
 		if (!this.ephemeralTableInstances) {
 			this.ephemeralTableInstances = new Map<number, MemoryTable>();
 		}
@@ -333,18 +310,15 @@ export class Compiler {
 	}
 	closeCursorsUsedBySelect(cursors: number[]): void { EphemeralCore.closeCursorsUsedBySelectHelper(this, cursors); }
 
-	// FROM Clause Helper (./core/fromClause)
+	// FROM Clause Helper
 	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
 
-	// Query Planning Helpers (./planning/queryPlanner & ./planning/whereVerify)
+	// Query Planning Helpers
 	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { QueryPlanner.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
 	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
-	// compileUnhandledWhereConditions is likely called directly where needed, not via compiler instance
 
-	// Expressions (Main dispatcher in ./expression, specific handlers in ./expression/handlers)
-	// Keep the main compileExpression delegation
+	// Expressions
 	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	// Delegate specific handlers directly if needed (though maybe not necessary if compileExpression handles all)
 	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { Utils.compileLiteralValue(this, expr.value, targetReg); }
 	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
@@ -354,7 +328,7 @@ export class Compiler {
 	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprHandlers.compileParameter(this, expr, targetReg); }
 
-	// Subqueries (Delegated to SubqueryCompiler module)
+	// Subqueries
 	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
 	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileScalarSubquery(this, subQuery, targetReg); }
 	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
@@ -377,51 +351,44 @@ export class Compiler {
 	compileSavepoint(stmt: AST.SavepointStmt): void { StmtCompiler.compileSavepointStatement(this, stmt); }
 	compileRelease(stmt: AST.ReleaseStmt): void { StmtCompiler.compileReleaseStatement(this, stmt); }
 	compileSelectCore(stmt: AST.SelectStmt, outerCursorsForSelect: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
-		// Note: Changed name of outerCursors param to avoid conflict with class property
 		return SelectCompiler.compileSelectCoreStatement(this, stmt, outerCursorsForSelect, correlation, argumentMap);
 	}
 
-	// --- Add WithClause handling ---
+	/**
+	 * Compiles a WITH clause by materializing each CTE
+	 *
+	 * @param withClause The WITH clause to compile
+	 */
 	compileWithClause(withClause: WithClause | undefined): void {
 		if (!withClause) {
-			return; // No WITH clause present
+			return;
 		}
 
 		console.log(`Compiling WITH${withClause.recursive ? ' RECURSIVE' : ''} clause...`);
 
-		// Need to handle potential mutual recursion or dependencies
-		// For now, compile sequentially
 		for (const cte of withClause.ctes) {
 			const cteNameLower = cte.name.toLowerCase();
 			if (this.cteMap.has(cteNameLower)) {
 				throw new SqliteError(`Duplicate CTE name: '${cte.name}'`, StatusCode.ERROR);
 			}
-			// Pass the context (recursive or not) from the main WITH clause
-			// Call the imported function, passing `this` (the compiler instance)
 			compileCommonTableExpression(this, cte, withClause.recursive);
 		}
 		console.log("Finished compiling WITH clause.");
 	}
 
-	// Add compilePragma delegator
+	// Pragma handling
 	compilePragma(stmt: AST.PragmaStmt): void { DdlCompiler.compilePragmaStatement(this, stmt); }
 }
 
-// Remove augmentations for methods moved to helper modules
-// Keep augmentations for methods still delegated or part of core class interface if needed
-// Ideally, this block becomes smaller or disappears with better typing/imports.
-// Removing most helper declarations as they are now imported directly or handled via main dispatchers.
+// Type augmentation for methods still delegated or part of core class interface
 declare module './compiler' {
 	interface Compiler {
-		// Core properties are implicitly part of the interface
 		// Core methods
 		compile(ast: AST.AstNode, sql: string): VdbeProgram;
 		startSubroutineCompilation(): number;
 		endSubroutineCompilation(): void;
 
-		// --- Keep Delegated Methods Signatures ---
-		// (TypeScript needs these if methods are called via `compiler.methodName` elsewhere)
-		// Compiler State
+		// Delegated Methods
 		allocateMemoryCells(count: number): number;
 		allocateCursor(): number;
 		addConstant(value: SqlValue): number;
@@ -429,17 +396,12 @@ declare module './compiler' {
 		allocateAddress(): number;
 		resolveAddress(placeholder: number): void;
 		getCurrentAddress(): number;
-		// Ephemeral
 		createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema;
 		closeCursorsUsedBySelect(cursors: number[]): void;
-		// FROM Clause
 		compileFromCore(sources: AST.FromClause[] | undefined): number[];
-		// Planning
 		planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void;
 		verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void;
-		// Expressions (Main dispatcher)
 		compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
-		// Keep specific expression handlers if they might be called directly externally via compiler instance
 		compileLiteral(expr: AST.LiteralExpr, targetReg: number): void;
 		compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
@@ -448,13 +410,11 @@ declare module './compiler' {
 		compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void;
 		compileParameter(expr: AST.ParameterExpr, targetReg: number): void;
-		// Subqueries
 		compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void;
 		compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
 		compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void;
 		compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void;
 		compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void;
-		// Statements
 		compileSelect(stmt: AST.SelectStmt): void;
 		compileInsert(stmt: AST.InsertStmt): void;
 		compileUpdate(stmt: AST.UpdateStmt): void;
@@ -470,11 +430,10 @@ declare module './compiler' {
 		compileSavepoint(stmt: AST.SavepointStmt): void;
 		compileRelease(stmt: AST.ReleaseStmt): void;
 		compileSelectCore(stmt: AST.SelectStmt, outerCursorsForSelect: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] };
-		// CTE / Pragma
 		compileWithClause(withClause: WithClause | undefined): void;
 		compilePragma(stmt: AST.PragmaStmt): void;
 
-		// Keep essential public properties needed by augmented methods/helpers
+		// Essential public properties needed by helpers
 		cursorPlanningInfo: Map<number, CursorPlanningResult>;
 		tableAliases: Map<string, number>;
 		subroutineDefs: Map<AST.SelectStmt, SubroutineInfo>;
@@ -482,8 +441,8 @@ declare module './compiler' {
 		stackPointer: number;
 		framePointer: number;
 		outerCursors: number[];
-		tableSchemas: Map<number, TableSchema>; // Needed by many helpers
-		ephemeralTableInstances: Map<number, MemoryTable>; // Added
+		tableSchemas: Map<number, TableSchema>;
+		ephemeralTableInstances: Map<number, MemoryTable>;
 		db: Database;
 		constants: SqlValue[];
 		instructions: VdbeInstruction[];

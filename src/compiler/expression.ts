@@ -146,6 +146,13 @@ function getExpressionCollation(compiler: Compiler, expr: AST.Expression, correl
 /**
  * Main dispatcher for compiling any expression AST node.
  * Delegates to specific handlers in ./expression/handlers.ts
+ *
+ * @param compiler The compiler instance
+ * @param expr The expression to compile
+ * @param targetReg The register to store the result
+ * @param correlation Optional correlation info for subqueries
+ * @param havingContext Optional HAVING clause context
+ * @param argumentMap Optional mapping of argument names to registers
  */
 export function compileExpression(compiler: Compiler, expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
 	switch (expr.type) {

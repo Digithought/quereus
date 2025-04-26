@@ -3,8 +3,13 @@ import type { SqlValue } from '../common/types.js';
 import { createInstruction } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js';
 
-// --- Compiler State & VDBE Emission Helpers --- //
-
+/**
+ * Allocates memory cells within the current frame
+ *
+ * @param compiler The compiler instance
+ * @param count Number of memory cells to allocate
+ * @returns Starting offset relative to the frame pointer
+ */
 export function allocateMemoryCellsHelper(compiler: Compiler, count: number): number {
 	// Frame slots 0 and 1 are reserved for RetAddr and OldFP
 	// Locals start at offset 2
@@ -28,6 +33,12 @@ export function allocateMemoryCellsHelper(compiler: Compiler, count: number): nu
 	return baseOffset;
 }
 
+/**
+ * Allocates a new cursor index
+ *
+ * @param compiler The compiler instance
+ * @returns The allocated cursor index
+ */
 export function allocateCursorHelper(compiler: Compiler): number {
 	// Cursors are still global within a compilation context
 	const cursorIdx = compiler.numCursors;
@@ -35,6 +46,13 @@ export function allocateCursorHelper(compiler: Compiler): number {
 	return cursorIdx;
 }
 
+/**
+ * Adds a constant to the constants pool
+ *
+ * @param compiler The compiler instance
+ * @param value The constant value to add
+ * @returns The index of the constant in the pool
+ */
 export function addConstantHelper(compiler: Compiler, value: SqlValue): number {
 	// Constants are global
 	const idx = compiler.constants.length;
@@ -42,6 +60,19 @@ export function addConstantHelper(compiler: Compiler, value: SqlValue): number {
 	return idx;
 }
 
+/**
+ * Emits a VDBE instruction to the current target array
+ *
+ * @param compiler The compiler instance
+ * @param opcode The operation code
+ * @param p1 Parameter 1
+ * @param p2 Parameter 2
+ * @param p3 Parameter 3
+ * @param p4 Parameter 4 (typically complex types)
+ * @param p5 Parameter 5 (typically flags)
+ * @param comment Optional comment for debugging
+ * @returns The address of the emitted instruction
+ */
 export function emitInstruction(
 	compiler: Compiler,
 	opcode: Opcode,
@@ -60,6 +91,12 @@ export function emitInstruction(
 	return targetArray.length - 1;
 }
 
+/**
+ * Allocates an address placeholder for forward jumps
+ *
+ * @param compiler The compiler instance
+ * @returns A negative placeholder value to be resolved later
+ */
 export function allocateAddressHelper(compiler: Compiler): number {
 	// Placeholder address needs to be relative to the current code block
 	const targetArray = compiler.subroutineDepth > 0 ? (compiler as any).subroutineCode : compiler.instructions;
@@ -67,6 +104,12 @@ export function allocateAddressHelper(compiler: Compiler): number {
 	return -(targetArray.length + 1);
 }
 
+/**
+ * Resolves a previously allocated address placeholder
+ *
+ * @param compiler The compiler instance
+ * @param placeholder The negative placeholder value to resolve
+ */
 export function resolveAddressHelper(compiler: Compiler, placeholder: number): void {
 	if (placeholder >= 0) {
 		console.warn(`Attempting to resolve a non-placeholder address: ${placeholder}`);
@@ -120,6 +163,12 @@ export function resolveAddressHelper(compiler: Compiler, placeholder: number): v
 	}
 }
 
+/**
+ * Gets the current address in the instruction stream
+ *
+ * @param compiler The compiler instance
+ * @returns The current instruction address
+ */
 export function getCurrentAddressHelper(compiler: Compiler): number {
 	// Address relative to the current code block (main or subroutine)
 	const targetArray = compiler.subroutineDepth > 0 ? (compiler as any).subroutineCode : compiler.instructions;

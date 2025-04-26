@@ -19,11 +19,16 @@ export interface SubqueryCorrelationResult {
 
 /**
  * Analyzes a subquery AST to detect correlation with outer query cursors.
+ *
+ * @param compiler The compiler instance
+ * @param subqueryAst The subquery AST to analyze
+ * @param activeOuterCursors Set of cursors available in the outer scope
+ * @returns Analysis result indicating if the subquery is correlated and which columns are involved
  */
 export function analyzeSubqueryCorrelation(
 	compiler: Compiler,
 	subqueryAst: AST.AstNode,
-	activeOuterCursors: ReadonlySet<number> // Cursors available in the *outer* scope
+	activeOuterCursors: ReadonlySet<number>
 ): SubqueryCorrelationResult {
 	const result: SubqueryCorrelationResult = {
 		isCorrelated: false,
@@ -41,27 +46,22 @@ export function analyzeSubqueryCorrelation(
 			const currentLevelAliases = new Map<string, number>();
 			const currentLevelCursors = new Set<number>();
 
-			// Identify cursors defined *at this level*
+			// Identify cursors defined at this level
 			sel.from?.forEach(fromClause => {
 				const findCursors = (fc: AST.FromClause) => {
 					if (fc.type === 'table') {
 						const alias = (fc.alias || fc.table.name).toLowerCase();
-						// Need to resolve alias -> cursor mapping. Assume compiler.tableAliases is up-to-date?
-						// This is complex if called before FROM clause compilation.
-						// Assume it runs *after* FROM clause sets aliases for the current scope.
 						const cursorId = compiler.tableAliases.get(alias);
 						if (cursorId !== undefined) {
 							currentLevelAliases.set(alias, cursorId);
 							currentLevelCursors.add(cursorId);
 						} else {
-							// This might happen if the SELECT is analyzed standalone before context is set
 							console.warn(`Alias/Table ${alias} not found in global map during correlation analysis. Scope issue?`);
 						}
 					} else if (fc.type === 'join') {
 						findCursors(fc.left);
 						findCursors(fc.right);
 					} else if (fc.type === 'functionSource') {
-						// TVF introduces a cursor
 						const alias = (fc.alias || fc.name.name).toLowerCase();
 						const cursorId = compiler.tableAliases.get(alias);
 						if (cursorId !== undefined) {
@@ -71,7 +71,6 @@ export function analyzeSubqueryCorrelation(
 							console.warn(`Alias/TVF ${alias} not found in global map during correlation analysis. Scope issue?`);
 						}
 					}
-					// Add other FROM clause types if necessary
 				};
 				findCursors(fromClause);
 			});
@@ -84,12 +83,12 @@ export function analyzeSubqueryCorrelation(
 			traverse(sel.where, nextAvailableCursors);
 			sel.groupBy?.forEach(g => traverse(g, nextAvailableCursors));
 			traverse(sel.having, nextAvailableCursors);
-			// Don't traverse ORDER BY or LIMIT here, they execute after the core selection
+			// ORDER BY and LIMIT execute after the core selection
 
 			return; // Finished processing this SELECT scope
 		}
 
-		// Fix: Handle Column and Identifier References with type guards
+		// Handle Column and Identifier References
 		if (node.type === 'column' || node.type === 'identifier') {
 			let colName: string;
 			let tableQualifier: string | undefined;
@@ -97,9 +96,9 @@ export function analyzeSubqueryCorrelation(
 			if (node.type === 'column') {
 				colName = (node as AST.ColumnExpr).name;
 				tableQualifier = (node as AST.ColumnExpr).table;
-			} else { // node.type === 'identifier'
+			} else { // identifier
 				colName = (node as AST.IdentifierExpr).name;
-				tableQualifier = undefined; // Identifiers are not qualified in this context
+				tableQualifier = undefined;
 			}
 
 			let sourceCursor = -1;
@@ -147,14 +146,13 @@ export function analyzeSubqueryCorrelation(
 				}
 			}
 		}
-		// --- Recurse into other expression types --- //
+		// Recurse into other expression types
 		else if (node.type === 'binary') { traverse((node as AST.BinaryExpr).left, availableCursors); traverse((node as AST.BinaryExpr).right, availableCursors); }
 		else if (node.type === 'unary') { traverse((node as AST.UnaryExpr).expr, availableCursors); }
 		else if (node.type === 'function') { (node as AST.FunctionExpr).args.forEach(arg => traverse(arg, availableCursors)); }
 		else if (node.type === 'cast') { traverse((node as AST.CastExpr).expr, availableCursors); }
 		else if (node.type === 'subquery') { traverse((node as AST.SubqueryExpr).query, availableCursors); }
 		else if (node.type === 'collate') { traverse((node as AST.CollateExpr).expr, availableCursors); }
-		// Identifier handled above
 	};
 
 	traverse(subqueryAst, activeOuterCursors);

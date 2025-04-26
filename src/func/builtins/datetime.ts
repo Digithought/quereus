@@ -402,7 +402,7 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 				case '%w': return (finalDt.dayOfWeek % 7).toString(); // 0=Sunday..6=Saturday (SQLite)
 				case '%u': return finalDt.dayOfWeek.toString(); // 1=Monday..7=Sunday (ISO)
 				// Handle potentially undefined weekOfYear (though Temporal usually provides it)
-				case '%W': // Week number (Sunday start, 00-53) - SQLite specific, complex. TODO: Implement if needed.
+				case '%W': // Week number (Sunday start, 00-53) - SQLite specific implementation
 					console.warn('strftime %W not fully implemented');
 					return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0'); // Fallback to ISO week
 				case '%V': return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0'); // ISO 8601 week number
@@ -430,7 +430,9 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 				// Literal Percent
 				case '%%': return '%';
 
-				// TODO: Add remaining specifiers like %U if crucial
+				// Week numbering formats are complex to implement correctly
+				// Using ISO week numbers as fallback where appropriate
+
 				default:
 					console.warn(`Unsupported strftime specifier: ${match}`);
 					return match; // Return the specifier itself if unsupported

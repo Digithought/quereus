@@ -4,49 +4,44 @@ import type { Database } from '../core/database.js';
 
 /**
  * Represents the execution context passed to user-defined SQL functions
- * (scalar, aggregate, window) and to the xColumn method of virtual tables.
+ * (scalar, aggregate, window) and to virtual table methods.
  * Provides methods for setting results and accessing auxiliary data.
  *
- * Methods that set a result should typically be the last action taken by
- * a function implementation before returning. Setting multiple results or
- * setting a result then throwing an error leads to undefined behavior.
+ * Methods that set a result should be the last action in a function
+ * implementation. Setting multiple results or setting a result then
+ * throwing an error leads to undefined behavior.
  */
 export interface SqliteContext {
 	/**
 	 * Sets the result of the function to a BLOB value.
-	 * @param value The BLOB data.
-	 * @param destructor Optional hint (e.g., SQLITE_STATIC, SQLITE_TRANSIENT).
-	 *                   In TS, this might influence whether the engine copies the buffer.
-	 *                   Default behavior should probably be to copy (TRANSIENT).
+	 * @param value The BLOB data
+	 * @param destructor Optional hint that influences whether the engine copies the buffer
 	 */
 	resultBlob(value: Uint8Array, destructor?: unknown): void;
 
 	/**
-	 * Sets the result of the function to a floating-point value (JavaScript number).
-	 * @param value The double value.
+	 * Sets the result of the function to a floating-point value.
+	 * @param value The double value
 	 */
 	resultDouble(value: number): void;
 
 	/**
-	 * Causes the function to return an error state. The engine will typically
-	 * catch this and stop execution, propagating the error.
-	 * @param message The error message string.
-	 * @param code Optional specific error code (defaults to ERROR).
+	 * Causes the function to return an error state.
+	 * @param message The error message
+	 * @param code Optional error code (defaults to ERROR)
 	 */
 	resultError(message: string, code?: StatusCode): void;
 
 	/**
 	 * Sets the result of the function to a 32-bit integer value.
-	 * Note: JavaScript numbers are doubles; the engine might need to perform
-	 * truncation or range checks based on how strictly it adheres to C API behavior.
 	 * For larger integers, use resultInt64.
-	 * @param value The integer value.
+	 * @param value The integer value
 	 */
 	resultInt(value: number): void;
 
 	/**
-	 * Sets the result of the function to a 64-bit integer value (JavaScript bigint).
-	 * @param value The bigint value.
+	 * Sets the result of the function to a 64-bit integer value.
+	 * @param value The bigint value
 	 */
 	resultInt64(value: bigint): void;
 
@@ -56,89 +51,74 @@ export interface SqliteContext {
 	resultNull(): void;
 
 	/**
-	 * Sets the result of the function to a TEXT value (JavaScript string).
-	 * @param value The string value.
-	 * @param destructor Optional hint (e.g., SQLITE_STATIC, SQLITE_TRANSIENT).
-	 *                   Influences whether the engine copies the string. Default: copy.
+	 * Sets the result of the function to a TEXT value.
+	 * @param value The string value
+	 * @param destructor Optional hint that influences whether the engine copies the string
 	 */
 	resultText(value: string, destructor?: unknown): void;
 
 	/**
-	 * Sets the result of the function to be a copy of the provided SqlValue.
-	 * This is a convenient way to return values without specific type coercion.
-	 * @param value The SqlValue to set as the result.
+	 * Sets the result of the function to the provided SqlValue.
+	 * @param value The SqlValue to set as the result
 	 */
 	resultValue(value: SqlValue): void;
 
 	/**
 	 * Sets the result to a zero-filled BLOB of a specified size.
-	 * Primarily for incremental BLOB I/O placeholders (likely out of scope).
-	 * @param n The desired size of the zeroblob in bytes.
+	 * @param n The desired size of the zeroblob in bytes
 	 */
-	resultZeroblob(n: number): void; // Consider bigint for n? C API uses int.
+	resultZeroblob(n: number): void;
 
 	/**
 	 * Sets the application-defined subtype for the result value.
-	 * Subtypes can be used to convey extra application-specific type information.
-	 * @param subtype An unsigned integer representing the subtype. Only lower bits might be preserved.
+	 * @param subtype An unsigned integer representing the subtype
 	 */
 	resultSubtype(subtype: number): void;
 
 	/**
-	 * Returns the user data pointer associated with the function registration.
-	 * This was the `pApp` argument provided when registering the function.
-	 * @returns The user data specified during registration.
+	 * Returns the user data associated with the function registration.
+	 * @returns The user data specified during registration
 	 */
 	getUserData(): unknown;
 
 	/**
-	 * Returns the Database connection handle associated with this context.
-	 * Provides access to the main DB API if needed (use with caution).
+	 * Returns the Database connection associated with this context.
+	 * @returns The database connection
 	 */
 	getDbConnection(): Database;
 
 	/**
-	 * Gets auxiliary data previously associated with a function argument by `setAuxData`.
-	 * Used for caching computations across multiple calls to the same function
-	 * with the same argument value within a single query execution.
-	 * @param N The argument index (0-based).
-	 * @returns The stored auxiliary data, or undefined if none exists or it was cleared.
+	 * Gets auxiliary data previously associated with a function argument.
+	 * Used for caching computations across multiple calls with the same arguments.
+	 * @param N The argument index (0-based)
+	 * @returns The stored auxiliary data, or undefined if none exists
 	 */
 	getAuxData(N: number): unknown;
 
 	/**
 	 * Sets auxiliary data associated with a specific function argument.
-	 * The data is typically cleared when the argument value changes or the statement is reset/finalized.
-	 * @param N The argument index (0-based).
-	 * @param data The arbitrary data to store.
-	 * @param destructor Optional cleanup function called when the data is discarded by the engine.
+	 * @param N The argument index (0-based)
+	 * @param data The data to store
+	 * @param destructor Optional cleanup function called when the data is discarded
 	 */
 	setAuxData(N: number, data: unknown, destructor?: (data: unknown) => void): void;
 
-	// --- Aggregate Context Methods ---
-
 	/**
 	 * Retrieves the context (accumulator) for an aggregate function.
-	 * The VDBE manages the allocation and association of this context with the current group.
-	 * @param createIfNotFound If true and no context exists, create a new one (usually an empty object/array).
-	 * @returns The aggregate context associated with the current function invocation and group, or undefined.
+	 * @param createIfNotFound If true and no context exists, creates a new empty object
+	 * @returns The aggregate context for the current group, or undefined
 	 */
 	getAggregateContext<T = any>(createIfNotFound?: boolean): T | undefined;
 
 	/**
 	 * Sets the context (accumulator) for an aggregate function.
-	 * Should be called within xStep to update the accumulator state.
-	 * @param context The new state for the aggregate context.
+	 * @param context The new state for the aggregate context
 	 */
 	setAggregateContext<T = any>(context: T): void;
-
-	// --- Potentially add aggregate context methods if aggregates are implemented ---
-	// getAggregateContext(nBytes: number): ArrayBuffer | undefined;
 }
 
 /**
- * Concrete implementation used by the engine. Not directly exposed to UDF authors,
- * they interact via the SqliteContext interface.
+ * Concrete implementation of SqliteContext used by the engine.
  * @internal
  */
 export class FunctionContext implements SqliteContext {
@@ -148,9 +128,7 @@ export class FunctionContext implements SqliteContext {
 	private _subtype: number = 0;
 	private userData: unknown;
 	private db: Database;
-	// Simple map for aux data; a real implementation might need WeakMap or different scoping
 	private auxData: Map<number, { data: unknown, destructor?: (data: unknown) => void }> = new Map();
-	// Aggregate context - managed externally by VDBE, reference passed in
 	private _aggregateContext: any | undefined = undefined;
 
 	constructor(db: Database, userData?: unknown) {
@@ -158,37 +136,50 @@ export class FunctionContext implements SqliteContext {
 		this.userData = userData;
 	}
 
-	// --- Result Accessors (Internal use by engine) ---
+	/**
+	 * @internal Gets the function result or throws if in error state
+	 */
 	_getResult(): SqlValue | null {
 		if (this._error) throw this._error;
-		return this._result_set ? this._result! : null; // Return null if nothing was explicitly set
+		return this._result_set ? this._result! : null;
 	}
+
+	/**
+	 * @internal Gets the error if one occurred
+	 */
 	_getError(): SqliteError | null { return this._error; }
+
+	/**
+	 * @internal Gets the result subtype
+	 */
 	_getSubtype(): number { return this._subtype; }
 
+	/**
+	 * @internal Resets the context for reuse
+	 */
 	_clear(): void {
-		// Does NOT clear auxData or aggregate context - those persist across calls within a query/group
 		this._result = undefined;
 		this._result_set = false;
 		this._error = null;
 		this._subtype = 0;
 	}
 
-	// --- Aggregate Context Accessors (Internal use by VDBE) ---
-	/** @internal Sets the reference to the current aggregate context for this invocation */
+	/**
+	 * @internal Sets the aggregate context reference from VDBE
+	 */
 	_setAggregateContextRef(contextRef: any | undefined): void {
 		this._aggregateContext = contextRef;
 	}
-	/** @internal Gets the potentially modified aggregate context */
+
+	/**
+	 * @internal Gets the potentially modified aggregate context
+	 */
 	_getAggregateContextRef(): any | undefined {
 		return this._aggregateContext;
 	}
-	// ---------------------------------------------------------
-
-	// --- Public API Implementation ---
 
 	private setResult(value: SqlValue) {
-		if (this._result_set || this._error) return; // Prevent overwriting result/error
+		if (this._result_set || this._error) return;
 		this._result = value;
 		this._result_set = true;
 	}
@@ -205,52 +196,42 @@ export class FunctionContext implements SqliteContext {
 	resultText(value: string): void { this.setResult(value); }
 	resultValue(value: SqlValue): void { this.setResult(value); }
 	resultZeroblob(n: number): void { this.setResult(new Uint8Array(n)); }
-	resultSubtype(subtype: number): void { this._subtype = subtype >>> 0; } // Ensure unsigned integer
+	resultSubtype(subtype: number): void { this._subtype = subtype >>> 0; }
 
 	getUserData(): unknown { return this.userData; }
 	getDbConnection(): Database { return this.db; }
-
 
 	getAuxData(N: number): unknown {
 		return this.auxData.get(N)?.data;
 	}
 
 	setAuxData(N: number, data: unknown, destructor?: (data: unknown) => void): void {
-		if (this._error) return; // Don't modify if already in error state? C API allows? Check.
+		if (this._error) return;
 		const existing = this.auxData.get(N);
-		if (existing?.destructor && existing.data !== data) { // Only call destructor if data changes
+		if (existing?.destructor && existing.data !== data) {
 			try { existing.destructor(existing.data); } catch (e) { console.error("Internal: AuxData destructor failed", e); }
 		}
 		if (data === undefined && destructor === undefined) {
 			this.auxData.delete(N);
 		} else {
-			// Potential OOM simulation point if needed later
 			this.auxData.set(N, { data, destructor });
 		}
 	}
 
-	// --- Aggregate Context Methods Implementation ---
 	getAggregateContext<T = any>(createIfNotFound: boolean = false): T | undefined {
-		// In this model, the VDBE is responsible for providing the initial context.
-		// The context object itself holds the reference provided by the VDBE.
-		// If createIfNotFound is true, we might return an empty object as a signal,
-		// but the VDBE should ideally handle the initial creation based on grouping.
 		if (this._aggregateContext === undefined && createIfNotFound) {
-			// Return a default empty object, assuming the VDBE will store it if needed.
-			// A more robust system might involve interaction back with the VDBE here.
 			return {} as T;
 		}
 		return this._aggregateContext as T | undefined;
 	}
 
 	setAggregateContext<T = any>(context: T): void {
-		// This simply updates the reference held by the context object.
-		// The VDBE will retrieve this potentially modified context later.
 		this._aggregateContext = context;
 	}
-	// --------------------------------------------
 
-	/** @internal Cleans up auxiliary data - called by engine when appropriate (e.g., statement reset/finalize) */
+	/**
+	 * @internal Cleans up auxiliary data during statement reset/finalize
+	 */
 	_cleanupAuxData(): void {
 		this.auxData.forEach(entry => {
 			if (entry.destructor) {

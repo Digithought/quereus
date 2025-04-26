@@ -1,14 +1,23 @@
-/** Represents the primitive types SQLite can handle internally in this JS port. */
+/**
+ * Represents the primitive types SQLite can handle internally in this JS implementation.
+ * These are the values that can be stored in SQLite columns and passed as parameters.
+ */
 export type SqlValue = number | string | bigint | Uint8Array | boolean | null;
 
-/** Represents the result of an operation that might return a value or an error. */
+/**
+ * Represents the result of an operation that might return a value or an error.
+ * Used for operations where either success or failure needs to be explicitly handled.
+ */
 export interface SqlResult<T> {
 	success: boolean;
 	value?: T;
-	error?: Error; // Or a custom error type/enum
+	error?: Error;
 }
 
-/** Represents common SQLite status codes. */
+/**
+ * Standard SQLite status/error codes that match the C implementation.
+ * Used for error handling and determining operation results.
+ */
 export enum StatusCode {
 	OK = 0,
 	ERROR = 1,
@@ -41,10 +50,12 @@ export enum StatusCode {
 	WARNING = 28,
 	ROW = 100,
 	DONE = 101,
-	// Add other relevant codes as needed
 }
 
-/** Represents the fundamental SQLite datatypes/affinity types. */
+/**
+ * Fundamental SQLite datatypes/affinity types.
+ * These determine how values are stored and compared within the database.
+ */
 export enum SqlDataType {
 	INTEGER = 1,
 	REAL = 2,
@@ -52,7 +63,6 @@ export enum SqlDataType {
 	BLOB = 4,
 	NULL = 5,
 	NUMERIC = 6,
-	// NONE = 0? // Optional: Represents no affinity, behaves like BLOB
 }
 
 // Add other core types/interfaces as needed, e.g., for Error objects.

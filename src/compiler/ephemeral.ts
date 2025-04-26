@@ -14,9 +14,14 @@ import { StatusCode } from '../common/constants.js';
  * Creates an internal MemoryTable instance for ephemeral use (CTEs, sorters, subqueries)
  * and registers its schema with the compiler.
  *
- * NOTE: This function creates the schema but doesn't OPEN the cursor in VDBE.
- * The VDBE Opcode.OpenEphemeral (or similar) will need to use the created
- * instance stored in compiler.ephemeralTableInstances.
+ * This function only creates the schema and instance - it doesn't emit VDBE instructions
+ * to open the cursor. The VDBE needs to use the stored instance from compiler.ephemeralTableInstances.
+ *
+ * @param compiler The compiler instance managing the compilation
+ * @param cursorIdx The cursor index to associate with this table
+ * @param numCols Number of columns in the ephemeral table
+ * @param sortKey Optional sort key configuration for ordered tables
+ * @returns The created table schema
  */
 export function createEphemeralTableHelper(
 	compiler: Compiler,
@@ -89,6 +94,12 @@ export function createEphemeralTableHelper(
 	return tableSchema;
 }
 
+/**
+ * Cleans up cursors and associated resources used by a SELECT statement
+ *
+ * @param compiler The compiler instance managing the compilation
+ * @param cursors Array of cursor indices to close
+ */
 export function closeCursorsUsedBySelectHelper(compiler: Compiler, cursors: number[]): void {
 	cursors.forEach(cursorIdx => {
 		compiler.emit(Opcode.Close, cursorIdx, 0, 0, null, 0, `Close inner cursor ${cursorIdx}`);

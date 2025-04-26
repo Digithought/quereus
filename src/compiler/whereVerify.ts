@@ -8,11 +8,15 @@ import type * as AST from '../parser/ast.js';
 /**
  * Emits VDBE code to verify constraints that were used by the plan but not marked as 'omit'.
  * This prevents incorrect results if xFilter returns rows that don't strictly match the original WHERE clause.
+ *
+ * @param compiler The compiler instance
+ * @param cursorIdx The cursor index to verify constraints for
+ * @param jumpTargetIfFalse Address to jump to if verification fails
  */
 export function verifyWhereConstraintsHelper(
 	compiler: Compiler,
 	cursorIdx: number,
-	jumpTargetIfFalse: number // Address to jump to if verification fails
+	jumpTargetIfFalse: number
 ): void {
 	const planningInfo = compiler.cursorPlanningInfo.get(cursorIdx);
 	if (!planningInfo || planningInfo.constraints.length === 0 || planningInfo.usage.every(u => u.argvIndex === 0)) {
@@ -92,13 +96,18 @@ export function verifyWhereConstraintsHelper(
 }
 
 /**
- * Compiles only the parts of a WHERE expression that were NOT handled by
+ * Compiles only the parts of a WHERE expression that were not handled by
  * the query plan (xBestIndex or verifyWhereConstraintsHelper).
+ *
+ * @param compiler The compiler instance
+ * @param expr The WHERE expression to compile
+ * @param activeCursors Cursors active in the current loop level
+ * @param jumpTargetIfFalse Address to jump to if the condition is false
  */
 export function compileUnhandledWhereConditions(
 	compiler: Compiler,
 	expr: AST.Expression | undefined,
-	activeCursors: number[], // Cursors active in the current loop level
+	activeCursors: number[],
 	jumpTargetIfFalse: number
 ): void {
 	if (!expr) {

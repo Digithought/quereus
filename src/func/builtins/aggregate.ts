@@ -304,6 +304,3 @@ export const stdDevSampFunc = createAggregateFunction(
 	statStep,
 	stdDevSampFinal
 );
-
-// TODO: Implement COUNT(X) which counts non-NULL values of X -- Done
-// TODO: Implement GROUP_CONCAT -- Done (Revised)

@@ -166,7 +166,8 @@ function simpleLike(pattern: string, text: string): boolean {
 
 const jsLike = (text: any, pattern: any): SqlValue => {
 	if (text === null || pattern === null) return null;
-	// TODO: Add ESCAPE clause handling
+	// This is a simplified LIKE implementation without the ESCAPE clause
+	// SQLite supports a third parameter for ESCAPE which allows a custom escape character
 	return simpleLike(String(pattern), String(text));
 };
 export const likeFunc = createScalarFunction(
