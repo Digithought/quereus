@@ -1,0 +1,42 @@
+-- joins.sqllogic - Testing JOIN clauses
+
+PRAGMA default_vtab_module='memory';
+
+-- Setup tables
+CREATE TABLE t_left (id INTEGER PRIMARY KEY, val_l TEXT);
+CREATE TABLE t_right (id INTEGER PRIMARY KEY, val_r TEXT, left_id INTEGER);
+
+INSERT INTO t_left VALUES (1, 'L1'), (2, 'L2'), (3, 'L3');
+INSERT INTO t_right VALUES (10, 'R1', 1), (20, 'R2', 2), (40, 'R4', 4);
+
+-- INNER JOIN
+SELECT l.id, l.val_l, r.id, r.val_r FROM t_left l JOIN t_right r ON l.id = r.left_id ORDER BY l.id;
+→ [{"id":1,"val_l":"L1","id:1":10,"val_r":"R1"},{"id":2,"val_l":"L2","id:1":20,"val_r":"R2"}]
+
+-- INNER JOIN with aliases
+SELECT l.id as left_id, r.id as right_id FROM t_left l JOIN t_right r ON l.id = r.left_id ORDER BY left_id;
+→ [{"left_id":1,"right_id":10},{"left_id":2,"right_id":20}]
+
+-- LEFT JOIN
+SELECT l.id, l.val_l, r.id, r.val_r FROM t_left l LEFT JOIN t_right r ON l.id = r.left_id ORDER BY l.id;
+→ [{"id":1,"val_l":"L1","id:1":10,"val_r":"R1"},{"id":2,"val_l":"L2","id:1":20,"val_r":"R2"},{"id":3,"val_l":"L3","id:1":null,"val_r":null}]
+
+-- CROSS JOIN
+SELECT count(*) FROM t_left CROSS JOIN t_right;
+→ [9]
+SELECT l.id, r.id FROM t_left l CROSS JOIN t_right r ORDER BY l.id, r.id LIMIT 2;
+→ [{"id":1,"id:1":10},{"id":1,"id:1":20}]
+
+-- JOIN with WHERE clause
+SELECT l.id, r.val_r FROM t_left l JOIN t_right r ON l.id = r.left_id WHERE r.id = 10;
+→ [{"id":1,"val_r":"R1"}]
+
+-- Multiple JOINs (Conceptual: requires a third table setup)
+-- CREATE TABLE t_extra (id INTEGER PRIMARY KEY, right_id INTEGER, val_e TEXT);
+-- INSERT INTO t_extra VALUES (100, 10, 'E1'), (200, 20, 'E2');
+-- SELECT l.id, r.id, e.id FROM t_left l JOIN t_right r ON l.id = r.left_id JOIN t_extra e ON r.id = e.right_id ORDER BY l.id;
+-- → [{"id":1,"id:1":10,"id:2":100},{"id":2,"id:1":20,"id:2":200}]
+-- DROP TABLE t_extra;
+
+DROP TABLE t_left;
+DROP TABLE t_right;

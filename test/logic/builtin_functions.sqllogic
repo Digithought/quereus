@@ -1,0 +1,59 @@
+-- builtin_functions.sqllogic - Testing various built-in functions
+
+-- Scalar Functions
+SELECT lower('SQLiter'), upper('SQLiter'), length('SQLiter');
+→ [{"lower('SQLiter')":"sqliter","upper('SQLiter')":"SQLITER","length('SQLiter')":7}]
+SELECT substr('SQLiter', 2, 3), substring('SQLiter', 4);
+→ [{"substr('SQLiter', 2, 3)":"QLi","substring('SQLiter', 4)":"iter"}]
+SELECT abs(-10), round(12.345, 1), round(12.345);
+→ [{"abs(-10)":10,"round(12.345, 1)":12.3,"round(12.345)":12}]
+SELECT typeof(1), typeof(1.5), typeof('text'), typeof(x'01'), typeof(null), typeof(true);
+→ [{"typeof(1)":"integer","typeof(1.5)":"real","typeof('text')":"text","typeof(x'01')":"blob","typeof(null)":"null","typeof(true)":"integer"}]
+SELECT like('abc%', 'abcde'), glob('a*c', 'abbbc');
+→ [{"like('abc%', 'abcde')":1,"glob('a*c', 'abbbc')":1}]
+
+-- Date/Time Functions (output format depends on default build)
+SELECT date('now') IS NOT NULL;
+→ [1]
+SELECT time('now') IS NOT NULL;
+→ [1]
+SELECT datetime('now') IS NOT NULL;
+→ [1]
+SELECT julianday('2024-01-01') - julianday('2023-01-01');
+→ [365]
+SELECT strftime('%Y-%m-%d', '2024-07-26');
+→ ["2024-07-26"]
+
+-- JSON Functions
+SELECT json_valid('{"a": 1}'), json_valid('{');
+→ [{"json_valid('{"a": 1}')":1,"json_valid('{')":0}]
+SELECT json_type('{"a": 1}', '$.a'), json_type('[1, "t", null]', '[1]');
+→ [{"json_type('{"a": 1}', '$.a')":"integer","json_type('[1, "t", null]', '[1]')":"text"}]
+SELECT json_extract('{"a": [10, 20], "b": "foo"}', '$.a[1]');
+→ [20]
+SELECT json_quote(1), json_quote('text'), json_quote(null);
+→ [{"json_quote(1)":"1","json_quote('text')":"\"text\"","json_quote(null)":"null"}]
+SELECT json_array(1, 'two', null, json_object('x', 3));
+→ ["[1,\"two\",null,{\"x\":3}]"]
+SELECT json_object('a', 1, 'b', json_array(2, 3));
+→ ["{\"a\":1,\"b\":[2,3]}"]
+SELECT json_insert('{"a":1}', '$.b', 2);
+→ ["{\"a\":1,\"b\":2}"]
+SELECT json_replace('{"a":1, "b":2}', '$.a', 99);
+→ ["{\"a\":99,\"b\":2}"]
+SELECT json_set('{"a":1}', '$.a', 99, '$.c', 'new');
+→ ["{\"a\":99,\"c\":\"new\"}"]
+SELECT json_remove('{"a":1, "b":[2,3]}', '$.b[0]');
+→ ["{\"a\":1,\"b\":[3]}"]
+SELECT json_array_length('[1, 2, 3]');
+→ [3]
+
+-- Aggregate JSON Functions (Need table context)
+PRAGMA default_vtab_module='memory';
+CREATE TABLE json_agg_t (grp TEXT, val);
+INSERT INTO json_agg_t VALUES ('A', 1), ('B', 'x'), ('A', 2), ('B', 'y');
+SELECT grp, json_group_array(val) FROM json_agg_t GROUP BY grp ORDER BY grp;
+→ [{"grp":"A","json_group_array(val)":"[1,2]"},{"grp":"B","json_group_array(val)":"[\"x\",\"y\"]"}]
+SELECT grp, json_group_object(val, id) FROM (SELECT *, rowid as id FROM json_agg_t) GROUP BY grp ORDER BY grp;
+→ [{"grp":"A","json_group_object(val, id)":"{\"1\":1,\"2\":3}"},{"grp":"B","json_group_object(val, id)":"{\"x\":2,\"y\":4}"}]
+DROP TABLE json_agg_t;

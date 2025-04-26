@@ -130,14 +130,40 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   **Constraints**: `CHECK`, `NOT NULL`, `FOREIGN KEY`, `DEFAULT` constraints are parsed but generally *not* enforced by the engine or `MemoryTable`.
 *   **Advanced SQL**: Window functions, triggers, full `ALTER TABLE`, and views (parsing only) are not yet implemented.
 *   **Index Features**: Indices on expressions are not supported. Collation support in indices is basic.
-*   **Collation**: Only basic binary comparison is implemented.
 *   **Error Handling**: Error messages could be more detailed.
 *   **Optimization**: Query planning (`xBestIndex`) is basic; VDBE opcode optimization is minimal.
-*   **Testing**: Requires significantly more comprehensive unit and integration tests.
+*   **Testing**: While a comprehensive test framework is now in place (see below), more specific test cases are always needed.
+
+## Testing Strategy
+
+SQLiter employs a multi-faceted testing strategy:
+
+1.  **SQL Logic Tests (`test/logic/`)**:
+    *   Inspired by SQLite's own testing methodology.
+    *   Uses simple text files (`*.sqllogic`) containing SQL statements and their expected JSON results (using `→` marker) or expected error messages (using `-- error:` directive).
+    *   Driven by a Mocha test runner (`test/logic.spec.ts`) that executes the SQL against a fresh `Database` instance for each file.
+    *   **Diagnostics**: On unexpected failures, the test runner automatically dumps the parsed Abstract Syntax Tree (AST) and the compiled Virtual Database Engine (VDBE) bytecode, aiding in pinpointing the failure layer (Parser, Compiler, or Runtime).
+    *   Covers core functionality: basic CRUD, expressions, joins, aggregates, subqueries, CTEs, transactions, VTab planning basics, built-ins, and common error paths.
+
+2.  **Property-Based Tests (`test/property.spec.ts`)**:
+    *   Uses the `fast-check` library to generate a wide range of inputs for specific, tricky areas.
+    *   Focuses on verifying fundamental properties and invariants that should hold true across many different values.
+    *   Currently includes tests for:
+        *   **Collation Consistency**: Ensures `ORDER BY` results match the behavior of the `compareSqlValues` utility for `BINARY`, `NOCASE`, and `RTRIM` collations across various strings.
+        *   **Numeric Affinity**: Verifies that comparisons (`=`, `<`) in SQL handle mixed types (numbers, strings, booleans, nulls) consistently with SQLite's affinity rules, using `compareSqlValues` as the reference.
+        *   **JSON Roundtrip**: Confirms that arbitrary JSON values survive being processed by `json_quote()` and `json_extract('$')` without data loss or corruption.
+
+3.  **Performance Sentinels (Planned)**:
+    *   Micro-benchmarks for specific scenarios (e.g., bulk inserts, complex queries) to catch performance regressions.
+
+4.  **CI Integration (Planned)**:
+    *   Utilize GitHub Actions (or similar) to run test suites automatically, potentially with different configurations (quick checks, full runs, browser environment).
+
+This layered approach aims for broad coverage via the logic tests while using property tests to explore edge cases in specific subsystems more thoroughly.
 
 ## Supported Built-in Functions
 
-*   **Scalar:** `lower`, `upper`, `length`, `substr`/`substring`, `abs`, `round`, `coalesce`, `nullif`, `like`, `glob`
+*   **Scalar:** `lower`, `upper`, `length`, `substr`/`substring`, `abs`, `round`, `coalesce`, `nullif`, `like`, `glob`, `typeof`
 *   **Aggregate:** `count`, `sum`, `avg`, `min`, `max`, `group_concat`, `json_group_array`, `json_group_object`
 *   **Date/Time:** `date`, `time`, `datetime`, `julianday`, `strftime` (supports common formats and modifiers)
 *   **JSON:** `json_valid`, `json_type`, `json_extract`, `json_quote`, `json_array`, `json_object`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_array_length`, `json_patch`

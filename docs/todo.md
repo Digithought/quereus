@@ -46,18 +46,17 @@ This list outlines the remaining major features and refinements needed to make S
 
 *   [P] **JSON Functions:** Good coverage (`json_extract`, `json_object`, `json_valid`, `json_type`, manipulation functions, aggregates). Review `json_patch` behavior and edge cases.
 *   [P] **Reflective Schema:** Virtual sqlite_schema table to expose the schema via a table
-*   [ ] **Add More Built-ins:** Consider other useful SQLite functions (e.g., math, more string functions).
 
 **V. Testing & Documentation:**
 
 *   [ ] **Comprehensive Test Suite:**
-    *   [ ] Unit tests for parser, compiler opcodes, VDBE execution steps, VTab methods, type handling, built-in functions, transactions, subqueries, CTEs.
-    *   [ ] Integration tests covering complex queries, joins, aggregates, subqueries, VTab interactions, transactions, savepoints.
+    *   [ ] Performance/regression tests (benchmarks).
+    *   [ ] CI configuration for automated testing (quick, full, browser).
     *   [ ] Use SQL logic tests (porting relevant subsets from SQLite) if feasible.
-*   [ ] **Documentation - SQLite variances:**  Detailed description of how this system varies from SQLite
+*   [ ] **Documentation - SQLite variances:** Detailed description of how this system varies from SQLite
 *   [ ] **Documentation - API:** Generate API documentation (e.g., using TypeDoc).
 *   [ ] **Documentation - VTabs:** Write a guide on creating custom Virtual Table modules.
-*   [P] **Documentation - subsystems:** Give each subsystem it's own architectural overview document (currently `memory-table.md` exists)
+*   [P] **Documentation - subsystems:** Give each subsystem it's own architectural overview document
 
 **Legend:**
 *   `[ ]`: Not Started

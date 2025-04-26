@@ -1,0 +1,49 @@
+-- smoke.sqllogic - Basic sanity checks for core operations
+
+-- Use default MemoryTable module
+PRAGMA default_vtab_module='memory';
+
+-- Create a simple table
+CREATE TABLE t1(a INTEGER PRIMARY KEY, b TEXT);
+SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 't1';
+→ ["t1"]
+
+-- Insert some data
+INSERT INTO t1 VALUES (1, 'one');
+INSERT INTO t1 (a, b) VALUES (2, 'two');
+SELECT count(*) FROM t1;
+→ [2]
+
+-- Select data with ordering
+SELECT * FROM t1 ORDER BY a;
+→ [{"a":1,"b":"one"},{"a":2,"b":"two"}]
+
+-- Select specific columns
+SELECT b FROM t1 WHERE a = 1;
+→ ["one"]
+
+-- Update data
+UPDATE t1 SET b = 'deux' WHERE a = 2;
+SELECT b FROM t1 WHERE a = 2;
+→ ["deux"]
+SELECT * FROM t1 ORDER BY a;
+→ [{"a":1,"b":"one"},{"a":2,"b":"deux"}]
+
+-- Delete data
+DELETE FROM t1 WHERE a = 1;
+SELECT count(*) FROM t1;
+→ [1]
+SELECT * FROM t1;
+→ [{"a":2,"b":"deux"}]
+
+-- Drop the table
+DROP TABLE t1;
+SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 't1';
+→ []
+
+-- Test NULL handling
+CREATE TABLE t_null(id INTEGER PRIMARY KEY, val);
+INSERT INTO t_null VALUES (1, NULL), (2, 10), (3, 'hello');
+SELECT * FROM t_null ORDER BY id;
+→ [{"id":1,"val":null},{"id":2,"val":10},{"id":3,"val":"hello"}]
+DROP TABLE t_null;

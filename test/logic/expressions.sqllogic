@@ -1,0 +1,56 @@
+-- expressions.sqllogic - Testing various expression types and operators
+
+PRAGMA default_vtab_module='memory';
+
+CREATE TABLE expr_t (i INTEGER, n NUMERIC, t TEXT, b BLOB);
+INSERT INTO expr_t VALUES (1, 10.5, 'hello', x'01ff'), (2, -5, 'world', x'02'), (3, 0, null, null);
+
+-- Arithmetic
+SELECT i + 1, n * 2, i / 2.0, i % 2 FROM expr_t WHERE i = 1;
+→ [{"i + 1":2,"n * 2":21,"i / 2.0":0.5,"i % 2":1}]
+SELECT i + 1, n * 2, i / 2.0, i % 2 FROM expr_t WHERE i = 2;
+→ [{"i + 1":3,"n * 2":-10,"i / 2.0":1,"i % 2":0}]
+
+-- String Concatenation
+SELECT t || ' ' || t FROM expr_t WHERE i = 1;
+→ ["hello hello"]
+
+-- Comparisons
+SELECT i > 1, n <= 10.5, t = 'hello', b != x'01ff' FROM expr_t WHERE i = 1;
+→ [{"i > 1":0,"n <= 10.5":1,"t = 'hello'":1,"b != x'01ff'":0}]
+SELECT i > 1, n <= 10.5, t == 'world' FROM expr_t WHERE i = 2;
+→ [{"i > 1":1,"n <= 10.5":1,"t == 'world'":1}]
+
+-- Logical Operators
+SELECT i > 1 AND n < 0 FROM expr_t WHERE i = 2;
+→ [1]
+SELECT i = 1 OR t = 'world' FROM expr_t ORDER BY i;
+→ [1,1,0]
+SELECT NOT (n = 0) FROM expr_t WHERE i = 3;
+→ [0]
+
+-- NULL Handling
+SELECT t IS NULL, t IS NOT NULL, n + NULL FROM expr_t WHERE i = 3;
+→ [{"t IS NULL":1,"t IS NOT NULL":0,"n + NULL":null}]
+SELECT coalesce(t, 'default') FROM expr_t ORDER BY i;
+→ ["hello","world","default"]
+SELECT nullif(i, 2) FROM expr_t ORDER BY i;
+→ [1,null,3]
+
+-- CASE expressions
+SELECT CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM expr_t ORDER BY i;
+→ ["one","two","other"]
+SELECT CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END FROM expr_t ORDER BY i;
+→ ["pos","neg","zero"]
+
+-- CAST expressions
+SELECT cast(i as TEXT), cast(n as INTEGER), cast(t as REAL) FROM expr_t WHERE i = 1;
+→ [{"cast(i as TEXT)":"1","cast(n as INTEGER)":10,"cast(t as REAL)":0}]
+SELECT cast('123' as INTEGER), cast('12.3' as REAL), cast(123 as TEXT);
+→ [{"cast('123' as INTEGER)":123,"cast('12.3' as REAL)":12.3,"cast(123 as TEXT)":"123"}]
+
+-- COLLATE (basic syntax check, assumes default collation)
+SELECT t FROM expr_t WHERE t = 'HELLO' COLLATE NOCASE ORDER BY i;
+→ ["hello"]
+
+DROP TABLE expr_t;

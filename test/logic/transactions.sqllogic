@@ -1,0 +1,82 @@
+-- transactions.sqllogic - Testing BEGIN, COMMIT, ROLLBACK, SAVEPOINT
+
+PRAGMA default_vtab_module='memory';
+
+CREATE TABLE tx_t (id INTEGER PRIMARY KEY, val TEXT);
+INSERT INTO tx_t VALUES (1, 'initial');
+
+-- Basic COMMIT
+BEGIN TRANSACTION;
+INSERT INTO tx_t VALUES (2, 'tx1');
+SELECT val FROM tx_t WHERE id = 2;
+→ ["tx1"]
+COMMIT;
+SELECT val FROM tx_t WHERE id = 2;
+→ ["tx1"]
+
+-- Basic ROLLBACK
+BEGIN TRANSACTION;
+UPDATE tx_t SET val = 'tx2_update' WHERE id = 1;
+INSERT INTO tx_t VALUES (3, 'tx2');
+SELECT val FROM tx_t WHERE id = 1;
+→ ["tx2_update"]
+SELECT val FROM tx_t WHERE id = 3;
+→ ["tx2"]
+ROLLBACK;
+SELECT val FROM tx_t WHERE id = 1;
+→ ["initial"]
+SELECT count(*) FROM tx_t WHERE id = 3;
+→ [0]
+
+-- SAVEPOINT and RELEASE
+BEGIN TRANSACTION;
+INSERT INTO tx_t VALUES (4, 'before_sp1');
+SAVEPOINT sp1;
+INSERT INTO tx_t VALUES (5, 'after_sp1');
+SELECT val FROM tx_t WHERE id = 5;
+→ ["after_sp1"]
+RELEASE SAVEPOINT sp1;
+-- sp1 is now merged into the main transaction
+COMMIT;
+SELECT val FROM tx_t WHERE id = 4;
+→ ["before_sp1"]
+SELECT val FROM tx_t WHERE id = 5;
+→ ["after_sp1"]
+
+-- SAVEPOINT and ROLLBACK TO
+BEGIN TRANSACTION;
+UPDATE tx_t SET val = 'tx3_update' WHERE id = 1;
+SAVEPOINT sp2;
+INSERT INTO tx_t VALUES (6, 'after_sp2');
+DELETE FROM tx_t WHERE id = 2;
+SELECT count(*) FROM tx_t WHERE id = 6;
+→ [1]
+SELECT count(*) FROM tx_t WHERE id = 2;
+→ [0]
+ROLLBACK TO SAVEPOINT sp2;
+-- Changes after sp2 are undone
+SELECT count(*) FROM tx_t WHERE id = 6;
+→ [0]
+SELECT count(*) FROM tx_t WHERE id = 2; -- Should be back
+→ [1]
+SELECT val FROM tx_t WHERE id = 1; -- Update before sp2 remains
+→ ["tx3_update"]
+COMMIT;
+SELECT val FROM tx_t WHERE id = 1;
+→ ["tx3_update"]
+SELECT count(*) FROM tx_t WHERE id = 6;
+→ [0]
+
+-- Test nested savepoints (conceptual)
+-- BEGIN;
+-- INSERT INTO tx_t VALUES (100, 'a');
+-- SAVEPOINT s1;
+-- INSERT INTO tx_t VALUES (101, 'b');
+-- SAVEPOINT s2;
+-- INSERT INTO tx_t VALUES (102, 'c');
+-- ROLLBACK TO s1;
+-- SELECT count(*) FROM tx_t WHERE id > 99; -- Should be 1 (row 100)
+-- → [1]
+-- COMMIT;
+
+DROP TABLE tx_t;

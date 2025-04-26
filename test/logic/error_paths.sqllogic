@@ -1,0 +1,57 @@
+-- error_paths.sqllogic - Testing expected error conditions
+
+PRAGMA default_vtab_module='memory';
+
+-- Syntax Error: Incomplete statement
+SELECT * FROM
+-- → Expected error: Parse error
+
+-- Syntax Error: Misspelled keyword
+CREAT TABLE t_err (a);
+-- → Expected error: Parse error
+
+-- Semantic Error: Table not found
+SELECT * FROM non_existent_table;
+-- → Expected error: no such table
+
+-- Semantic Error: Column not found
+CREATE TABLE t_err_col (a INTEGER);
+INSERT INTO t_err_col VALUES (1);
+SELECT b FROM t_err_col;
+-- → Expected error: no such column: b
+DROP TABLE t_err_col;
+
+-- Semantic Error: Ambiguous column
+CREATE TABLE t_amb1 (id INTEGER, name TEXT);
+CREATE TABLE t_amb2 (id INTEGER, value TEXT);
+INSERT INTO t_amb1 VALUES (1, 'A');
+INSERT INTO t_amb2 VALUES (1, 'X');
+SELECT id FROM t_amb1 JOIN t_amb2 ON t_amb1.id = t_amb2.id;
+-- → Expected error: ambiguous column name: id
+DROP TABLE t_amb1;
+DROP TABLE t_amb2;
+
+-- Semantic Error: Function not found
+SELECT non_existent_function(1);
+-- → Expected error: no such function
+
+-- Runtime Error: Division by zero
+SELECT 1 / 0;
+-- → Expected error: division by zero OR result is null/inf?
+-- → [null] -- Assuming SQLite behavior returning NULL
+
+-- Runtime Error: Type mismatch (implicitly handled by affinity, but explicit CAST can fail)
+SELECT cast(x'01' as INTEGER);
+-- → Expected error: Cannot cast BLOB to INTEGER OR specific value?
+-- → [0] -- Assuming SQLite behavior
+
+-- Constraint Error: Primary Key Violation (if enforced)
+CREATE TABLE t_pk (id INTEGER PRIMARY KEY);
+INSERT INTO t_pk VALUES (1);
+INSERT INTO t_pk VALUES (1);
+-- → Expected error: PRIMARY KEY constraint failed OR UNIQUE constraint failed
+DROP TABLE t_pk;
+
+-- Misuse Error: Trying to use closed DB (cannot test directly in sqllogic)
+
+-- Misuse Error: Using finalized statement (cannot test directly in sqllogic)
