@@ -186,10 +186,10 @@ describe('SQL Logic Tests', () => {
 									const parser = new Parser();
 									// Try parsing the block that caused the error
 									const statementsAst = parser.parseAll(sqlBlock);
-									diagnosticInfo += `\n\n--- AST (Full Block, ${statementsAst.length} stmts) ---`;
-									statementsAst.forEach((ast, idx) => {
-										diagnosticInfo += `\n--- Stmt ${idx + 1} ---\n${formatAst(ast)}`;
-									});
+//									diagnosticInfo += `\n\n--- AST (Full Block, ${statementsAst.length} stmts) ---`;
+//									statementsAst.forEach((ast, idx) => {
+//										diagnosticInfo += `\n--- Stmt ${idx + 1} ---\n${formatAst(ast)}`;
+//									});
 									// Maybe try compiling the first failing statement? Too complex here.
 								} catch (parseError: any) {
 									if (parseError instanceof ParseError) { diagnosticInfo += `\n\n--- AST (Parse Error) ---\n${parseError.message}`; }
