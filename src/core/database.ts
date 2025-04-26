@@ -318,9 +318,6 @@ export class Database {
 	 */
 	defineVirtualTable(definition: TableSchema): void {
 		if (!this.isOpen) throw new MisuseError("Database is closed");
-		if (!definition.isVirtual || !definition.vtabModule) {
-			throw new MisuseError("Definition must be for a virtual table with a module");
-		}
 		if (definition.schemaName !== 'main') {
 			throw new MisuseError("Programmatic definition only supported for 'main' schema currently");
 		}

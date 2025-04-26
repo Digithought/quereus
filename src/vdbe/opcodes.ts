@@ -1,3 +1,4 @@
+// These must be < 256 unless you update handlers.ts
 export enum Opcode {
 	Init = 1,
 	Goto = 2,
@@ -136,7 +137,10 @@ export enum Opcode {
 	SchemaChange = 86,
 
 	// Window Function Opcodes
-	AggReset = 103
+	AggReset = 103,
+
+	// New opcodes
+	OpenTvf = 105,
 
 } // End Opcode Enum
 

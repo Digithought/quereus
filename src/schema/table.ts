@@ -5,6 +5,7 @@ import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../
 import { getAffinity } from './column.js';
 import { SqlDataType } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
+import { MemoryTableModule } from '../vtab/memory/module.js';
 
 /**
  * Represents the schema definition of a table (real or virtual).
@@ -22,10 +23,8 @@ export interface TableSchema {
 	primaryKeyDefinition: ReadonlyArray<{ index: number; desc: boolean }>;
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<{ name?: string, expr: Expression }>;
-	/** Whether the table is a virtual table */
-	isVirtual: boolean;
-	/** If virtual, reference to the registered module */
-	vtabModule?: VirtualTableModule<any, any>; // Define specific types later
+	/** Reference to the registered module */
+	vtabModule: VirtualTableModule<any, any>; // Now mandatory
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
@@ -49,7 +48,7 @@ export interface TableSchema {
 	/** Definitions of secondary indexes (relevant for planning) */
 	indexes?: ReadonlyArray<IndexSchema>;
 
-	// Add flags for other table properties if needed (e.g., isReadOnly, isEphemeral)
+	// TODO: Add a reference to the *specific* VirtualTable instance if needed?
 }
 
 /** Helper to build the column index map */
@@ -181,6 +180,9 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		})
 		: [];
 
+	// Instantiate the MemoryTableModule to assign to vtabModule
+	const defaultMemoryModule = new MemoryTableModule();
+
 	return Object.freeze({
 		name: name,
 		schemaName: 'main',
@@ -189,10 +191,10 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		primaryKeyDefinition: pkDef,
 		checkConstraints: [],
 		indexes: [], // Initialize empty
-		isVirtual: false,
-		vtabModule: undefined, // Use undefined instead of null
+		vtabModule: defaultMemoryModule, // Assign the default memory module instance
 		vtabAuxData: null,
 		vtabArgs: [],
+		vtabModuleName: 'memory', // Default name for basic schema
 		isWithoutRowid: false,
 		isTemporary: false,
 		isStrict: false,
@@ -200,7 +202,7 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		subqueryAST: undefined,
 		viewDefinition: undefined,
 		tableConstraints: [],
-	});
+	}) as TableSchema; // Still need assertion as TS might not infer vtabModule type perfectly here
 }
 
 /** Bitmask for row operations */

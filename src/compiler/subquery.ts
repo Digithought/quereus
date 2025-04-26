@@ -4,6 +4,10 @@ import type { Compiler, SubroutineInfo } from './compiler.js';
 import type * as AST from '../parser/ast.js';
 import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult } from './correlation.js';
 import { Opcode } from '../vdbe/opcodes.js';
+import type { P4SortKey } from '../vdbe/instruction.js';
+import { SqlDataType } from '../common/constants.js';
+import type { TableSchema } from '../schema/table.js';
+import { MemoryTable } from '../vtab/memory/table.js';
 
 // --- Subquery Compilation Functions --- //
 
@@ -531,7 +535,6 @@ function compileCorrelatedInSubquery(
 
 	// Pop Args + Result
 	compiler.emit(Opcode.StackPop, totalArgsPushed, 0, 0, null, 0, "Pop SubIN args");
-	compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0);
 
 	// Handle case where left expression was NULL
 	compiler.resolveAddress(addrIsNull);
@@ -847,4 +850,22 @@ function compileCorrelatedExistsSubquery(
 
 	// Pop Args + Result
 	compiler.emit(Opcode.StackPop, totalArgsPushed, 0, 0, null, 0, "Pop SubEXISTS args");
+}
+
+// --- Helper functions ---
+
+function saveSubqueryState(compiler: Compiler): any {
+	return {
+		tableAliases: new Map(compiler.tableAliases),
+		tableSchemas: new Map(compiler.tableSchemas),
+		ephemeralTableInstances: new Map(compiler.ephemeralTableInstances),
+		cursorPlanningInfo: new Map(compiler.cursorPlanningInfo)
+	};
+}
+
+function restoreSubqueryState(compiler: Compiler, savedState: any): void {
+	compiler.tableAliases = savedState.tableAliases;
+	compiler.tableSchemas = savedState.tableSchemas;
+	compiler.ephemeralTableInstances = savedState.ephemeralTableInstances;
+	compiler.cursorPlanningInfo = savedState.cursorPlanningInfo;
 }

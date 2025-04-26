@@ -13,6 +13,7 @@ import type { SubqueryCorrelationResult } from './correlation.js';
 import { setupWindowSorter, type WindowSorterInfo } from './window.js'; // Import window setup function
 import { compileWindowFunctionsPass } from './window_pass.js'; // Import window functions pass
 import { expressionToString } from '../util/ddl-stringify.js';
+import { MemoryTableModule } from '../vtab/memory/module.js';
 
 /**
  * Interface to hold consolidated state for each level in the join structure.
@@ -170,19 +171,23 @@ function compileSubquerySource(compiler: Compiler, node: AST.SubquerySource): vo
 		tempColumnIndexMap.set(name.toLowerCase(), index);
 	});
 
+	// Instantiate the MemoryTableModule for this subquery source
+	const subqueryMemoryModule = new MemoryTableModule();
+
 	// Create the final schema object, including mandatory fields
 	const subquerySchema: TableSchema = {
 		name: alias,
-		schemaName: 'main',
+		schemaName: 'main', // Or should this be temp? Subqueries are transient. Let's use 'main' for lookup consistency.
 		columns: tempColumns,
 		columnIndexMap: tempColumnIndexMap,
-		primaryKeyDefinition: [],
+		primaryKeyDefinition: [], // Subqueries generally don't have a defined PK unless explicit
 		checkConstraints: [],
-		isTemporary: true,
+		vtabModule: subqueryMemoryModule, // Assign module
+		vtabModuleName: 'memory', // Indicate it uses memory internally
+		isTemporary: true, // Mark as temporary
 		isView: false,
-		isVirtual: false,
 		isStrict: false,
-		isWithoutRowid: true,
+		isWithoutRowid: true, // Subquery results don't have inherent rowids
 		subqueryAST: node.subquery,
 		// Initialize other mandatory TableSchema fields if necessary
 	};
@@ -213,11 +218,14 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 
 	// --- Get Schema for the Table-Valued Function ---
 	// TODO: Implement actual schema lookup for table-valued functions.
-	// This requires a registry or mechanism on the Database/Compiler instance.
-	// Example placeholder:
-	// const functionSchema = compiler.db.findTableFunctionSchema(functionName, node.args);
-	// if (!functionSchema) { ... throw error ... }
 	console.warn(`Schema lookup for table function '${functionName}' not implemented. Using placeholder schema.`);
+
+	// Find the actual module to assign to vtabModule
+	const moduleInfo = compiler.db._getVtabModule(functionName);
+	if (!moduleInfo) {
+		// This should have been caught earlier, but double-check
+		throw new SqliteError(`Module not found for TVF ${functionName}`, StatusCode.INTERNAL);
+	}
 
 	// Create a placeholder schema for now
 	const placeholderSchema: TableSchema = {
@@ -237,13 +245,14 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 		columnIndexMap: new Map([['placeholder_col', 0]]),
 		primaryKeyDefinition: [],
 		checkConstraints: [],
-		isTemporary: true,
+		vtabModule: moduleInfo.module, // Assign the actual looked-up module
+		vtabModuleName: functionName,   // Store the name it was registered with
+		isTemporary: true, // TVF results are typically transient
 		isView: false,
-		isVirtual: false, // Or true if it uses VTab mechanism?
 		isStrict: false,
-		isWithoutRowid: true,
+		isWithoutRowid: true, // TVF results likely don't have inherent rowids
 	};
-	const functionSchema = placeholderSchema; // Use placeholder
+	const functionSchema = placeholderSchema; // Use placeholder for now
 
 	// --- Allocate cursor and register ---
 	const cursor = compiler.allocateCursor();

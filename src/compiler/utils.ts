@@ -87,7 +87,7 @@ export function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, co
 	const colIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
 	if (colIdx === undefined) {
 		// Handle implicit rowid
-		if (expr.name.toLowerCase() === 'rowid' && tableSchema.primaryKeyDefinition?.length === 0 && !tableSchema.isVirtual) {
+		if (expr.name.toLowerCase() === 'rowid' && tableSchema.primaryKeyDefinition?.length === 0) {
 			// TODO: Need a way to represent the implicit rowid column schema
 			// For now, return null, caller needs to handle this case.
 			return null;

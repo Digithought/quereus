@@ -115,36 +115,48 @@ export class VdbeRuntime implements VmCtx {
 
       const code = this.program.instructions;
 
-			const pc = this.pc;
-      while (pc < code.length) {
-        const inst = code[pc];
+      // Main execution loop
+      while (this.pc < code.length) {
+        const currentPc = this.pc; // Store PC at start of iteration
+        const inst = code[currentPc];
+
         if (!inst) {
-          this.error = new SqliteError(`Invalid program counter: ${pc}`, StatusCode.INTERNAL);
+          this.error = new SqliteError(`Invalid program counter: ${currentPc}`, StatusCode.INTERNAL);
           break;
         }
 
         // Only debug log in development
         if (process.env.NODE_ENV === 'development') {
-          console.debug(`VDBE Exec: [${pc}] FP=${this.framePointer} SP=${this.stackPointer} ${inst.opcode}`);
+          console.debug(`VDBE Exec: [${currentPc}] FP=${this.framePointer} SP=${this.stackPointer} ${inst.opcode}`);
         }
 
         // Get the handler for this opcode
-        let handler = handlers[inst.opcode];
+        const handler = handlers[inst.opcode];
+        if (!handler) {
+            this.error = new SqliteError(`No handler found for opcode ${inst.opcode}`, StatusCode.INTERNAL);
+            break;
+        }
 
         // Execute the handler
         const result = handler(this, inst);
+        let status: StatusCode | undefined = undefined;
 
         // Only await when the handler returns a Promise
         if (result instanceof Promise) {
-          const status = await result;
-          if (status !== undefined) {
-            return status;
-          }
-        } else if (result !== undefined) {
-          return result;
+          status = await result;
+        } else {
+          status = result;
         }
 
-        // Check execution status
+        // Check if handler returned a status code (e.g., ROW, DONE, ERROR)
+        if (status !== undefined) {
+          // If ROW or DONE was returned, the handler should have updated state.
+          // If ERROR was returned, the handler should have set this.error.
+          // In any case where a status is returned, we exit the loop.
+          return status;
+        }
+
+        // Post-execution checks (handler might have set these flags)
         if (this.done) {
           return StatusCode.DONE;
         }
@@ -155,10 +167,12 @@ export class VdbeRuntime implements VmCtx {
           return (this.error as SqliteError).code ?? StatusCode.MISUSE;
         }
 
-        // Update program counter (unless changed by handler)
-        if (this.pc === code.indexOf(inst)) {
+        // Update program counter *only* if the handler didn't change it.
+        // Handlers modify this.pc for jumps, yields, function calls/returns etc.
+        if (this.pc === currentPc) {
           this.pc++;
         }
+        // The loop condition `this.pc < code.length` will handle termination
       }
     } catch (e) {
       console.error("VDBE Execution Error:", e);
@@ -169,16 +183,22 @@ export class VdbeRuntime implements VmCtx {
       } else {
         this.error = new SqliteError("Unknown runtime error", StatusCode.INTERNAL);
       }
-      this.done = true;
+      this.done = true; // Mark as done on any unhandled exception
     }
 
+    // Determine final status after loop completion or error
     if (this.error) {
       return this.error.code as StatusCode;
     }
-    if (this.hasYielded) return StatusCode.ROW;
-    if (this.done) return StatusCode.DONE;
-
-    return StatusCode.INTERNAL; // Fell through
+    // If loop finished naturally (pc >= code.length) without Done being set by Halt,
+    // it implies successful completion without yielding a final row.
+    if (this.pc >= this.program.instructions.length && !this.done) {
+        this.done = true; // Ensure done is set if we reach the end
+        return StatusCode.DONE;
+    }
+    if (this.done) return StatusCode.DONE; // If Halt instruction set done=true
+    // Should not usually reach here if logic is correct
+    return StatusCode.INTERNAL;
   }
 
   // --- Stack Access Helpers (VmCtx implementation) ---
@@ -190,14 +210,17 @@ export class VdbeRuntime implements VmCtx {
     while (index >= this.stack.length) {
       // Double the stack size for better amortized performance
       const newLength = Math.max(this.stack.length * 2, index + 1);
+      const oldLength = this.stack.length;
       this.stack.length = newLength;
-      for (let i = this.stackPointer; i < newLength; i++) {
-        if (!this.stack[i]) this.stack[i] = { value: null };
+      // Initialize new cells explicitly
+      for (let i = oldLength; i < newLength; i++) {
+        this.stack[i] = { value: null };
       }
     }
 
     // Update stack pointer if writing beyond current top
-    if (index >= this.stackPointer) this.stackPointer = index + 1;
+    // Note: stackPointer points to the *next available* slot, so it should be index + 1
+    this.stackPointer = Math.max(this.stackPointer, index + 1);
 
     // Deep copy blobs, other values are immutable or primitives
     this.stack[index].value = (value instanceof Uint8Array) ? value.slice() : value;
@@ -205,10 +228,18 @@ export class VdbeRuntime implements VmCtx {
 
   /** Gets an absolute stack index */
   getStackValue(index: number): SqlValue {
-    if (index < 0 || index >= this.stackPointer) {
+    // Check if index is valid and within the allocated part of the stack
+    if (index < 0 || index >= this.stack.length) {
+      // Accessing outside allocated memory is an error or implies uninitialized read
+      // Depending on strictness, could throw or return null. Returning null is safer.
+      // console.warn(`Attempt to read potentially uninitialized stack index ${index}`);
       return null;
     }
-    return this.stack[index]?.value ?? null;
+     // Allow reads up to stackPointer, even if slightly beyond last written index, treat as null.
+     if (index >= this.stackPointer) {
+       return null;
+     }
+    return this.stack[index]?.value ?? null; // Return null if cell is unexpectedly undefined
   }
 
   /** Gets value relative to Frame Pointer */
@@ -230,7 +261,7 @@ export class VdbeRuntime implements VmCtx {
   /** Push a value onto the stack */
   pushStack(value: SqlValue): void {
     this.setStackValue(this.stackPointer, value);
-    // setStackValue already increments stackPointer
+    // setStackValue already increments stackPointer correctly
   }
 
   /** Get a cursor by index */

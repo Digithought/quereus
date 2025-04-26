@@ -68,7 +68,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			primaryKeyDefinition: options.primaryKey ?? [],
 			checkConstraints: options.checkConstraints ?? [],
 			indexes: Object.freeze(finalIndexSchemas), // <-- Add indexes to schema
-			isVirtual: true,
 			vtabModule: this,
 			vtabAuxData: pAux,
 			vtabArgs: [], // Args handled by options

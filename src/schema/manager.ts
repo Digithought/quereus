@@ -175,7 +175,6 @@ export class SchemaManager {
 				columnIndexMap: Object.freeze(columnIndexMap),
 				primaryKeyDefinition: [], // No explicit PK
 				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>), // Define inline, typed, and frozen
-				isVirtual: true,
 				vtabModule: moduleInfo.module,
 				// vtabInstance: undefined, // Instance created via xConnect, not stored here
 				vtabAuxData: moduleInfo.auxData,
@@ -304,7 +303,6 @@ export class SchemaManager {
 			columns: Object.freeze(placeholderColumns),
 			columnIndexMap: Object.freeze(buildColumnIndexMap(placeholderColumns)),
 			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)), // Use helper
-			isVirtual: true,
 			vtabModule: associatedVtab.module,
 			vtabAuxData: auxData,
 			vtabArgs: Object.freeze(vtabArgs || []), // Use parsed args
@@ -363,7 +361,7 @@ export class SchemaManager {
 		let destroyPromise: Promise<void> | null = null;
 
 		// Call xDestroy on the *module*, providing table details
-		if (tableSchema?.isVirtual && tableSchema.vtabModule && tableSchema.vtabModuleName) {
+		if (tableSchema?.vtabModuleName) {
 			console.log(`Calling xDestroy for VTab ${schemaName}.${tableName} via module ${tableSchema.vtabModuleName}`);
 			destroyPromise = tableSchema.vtabModule.xDestroy(
 				this.db, // Pass database

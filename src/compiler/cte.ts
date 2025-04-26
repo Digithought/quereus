@@ -37,21 +37,24 @@ export function compileCommonTableExpression(compiler: Compiler, cte: AST.Common
 function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): void {
 	const cteName = cte.name.toLowerCase();
 
-	// 1. Determine CTE Schema and Prepare Ephemeral Table
-	const savedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'ephemeralTables', 'cteMap', 'cursorPlanningInfo', 'resultColumns', 'columnAliases']);
-
-	let cteSchema: TableSchema;
-	let cteCursorIdx = -1;
+	// 1. Determine CTE Schema using a dry run of compileSelectCore
+	// State saving/restoring remains the same for this part
+	const savedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'ephemeralTableInstances', 'cteMap', 'cursorPlanningInfo', 'resultColumns', 'columnAliases']);
+	let cteCursorIdx = -1; // Will be allocated by createEphemeralSchemaHelper
+	let cteSchema: TableSchema; // Will be returned by createEphemeralSchemaHelper
 	let resultInfo: { resultBaseReg: number; numCols: number; columnMap: ColumnResultInfo[] };
 
 	try {
 		if (cte.query.type === 'select') {
 			const outerCursors = Array.from(savedState.tableAliases?.values() ?? []);
-			// Compile just to get the schema, don't emit population code yet
+			// Compile just to get column structure info
 			resultInfo = compiler.compileSelectCore(cte.query, outerCursors);
 
+			// Create the ephemeral table *instance* and get its schema
 			cteCursorIdx = compiler.allocateCursor();
-			// Use inferred column info to create a better schema if possible
+			cteSchema = compiler.createEphemeralSchema(cteCursorIdx, resultInfo.numCols); // Use createEphemeralSchema (wrapper)
+
+			// Overwrite schema columns based on inferred info (optional refinement)
 			const inferredColumns = resultInfo.columnMap.map((info, index) => {
 				// Basic type inference - can be improved
 				let affinity = SqlDataType.TEXT;
@@ -64,12 +67,11 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 				const name = compiler.columnAliases[resultInfo.resultBaseReg + index] ?? `cte_col_${index}`;
 				return { ...createDefaultColumnSchema(name), affinity };
 			});
-			cteSchema = compiler.createEphemeralSchema(cteCursorIdx, resultInfo.numCols);
-			// Update the created schema with inferred columns
-			(cteSchema as any).columns = Object.freeze(inferredColumns);
-			(cteSchema as any).columnIndexMap = Object.freeze(buildColumnIndexMap(inferredColumns));
+			// Note: Schema updates might be tricky if it's frozen. For now, assume the default names are okay.
+			// We're using a more sophisticated instance creation approach now, schema modification should be handled
+			// by the ephemeral table helper.
 
-			console.log(`CTE '${cteName}': Inferred ${resultInfo.numCols} columns for ephemeral table ${cteCursorIdx}`);
+			console.log(`CTE '${cteName}': Created ephemeral table instance ${cteCursorIdx} with ${resultInfo.numCols} columns.`);
 		} else {
 			throw new SqliteError(`CTE query type '${cte.query.type}' not yet supported for materialization`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 		}
@@ -81,11 +83,13 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 	// --- Now, generate code to populate the ephemeral table --- //
 	// Add the final CTE info to the *current* compiler state
 	compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: cteCursorIdx, schema: cteSchema });
-	compiler.tableSchemas.set(cteCursorIdx, cteSchema);
-	compiler.ephemeralTables.set(cteCursorIdx, cteSchema);
+	// tableSchemas and ephemeralTableInstances are already updated by createEphemeralSchemaHelper
 
-	// Open the ephemeral table for writing
-	compiler.emit(Opcode.OpenWrite, cteCursorIdx, cteSchema.columns.length, 0, cteSchema, 0, `OpenWrite Ephemeral CTE '${cteName}'`);
+	// Open the ephemeral table for writing using its cursor index.
+	// The VDBE handler for OpenWrite needs to check if the cursor index corresponds
+	// to an ephemeral instance in compiler.ephemeralTableInstances and use it.
+	// Pass the schema in P4 as before.
+	compiler.emit(Opcode.OpenWrite, cteCursorIdx, 0, 0, cteSchema, 0, `OpenWrite Ephemeral CTE '${cteName}'`);
 
 	// --- Compile the CTE query again to generate population loop --- //
 	_compileSelectAndPopulateEphemeral(compiler, cte.query as AST.SelectStmt, cteCursorIdx, cteSchema);
@@ -106,29 +110,33 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 	}
 	const isUnionAll = cte.query.unionAll ?? false; // Default to UNION (distinct)
 
-	// 1. Allocate Cursors
-	const resCursor = compiler.allocateCursor(); // Final results
-	const queueCursor = compiler.allocateCursor(); // Work queue
+	// 1. Allocate Cursors (Conceptual, helper will manage actual indices)
+	// We need two ephemeral tables: result and queue
+	let resCursor = compiler.allocateCursor();
+	let queueCursor = compiler.allocateCursor();
 
 	// 2. Determine Schema (from initial term)
-	const savedStateSchema = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'ephemeralTables', 'cteMap', 'cursorPlanningInfo', 'resultColumns', 'columnAliases']);
-	let cteSchema: TableSchema;
-	let queueSchema: TableSchema;
+	const savedStateSchema = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'ephemeralTableInstances', 'cteMap', 'cursorPlanningInfo', 'resultColumns', 'columnAliases']);
+	let cteSchema: TableSchema; // Result schema
+	let queueSchema: TableSchema; // Queue schema
 	let resultInfo: { resultBaseReg: number; numCols: number; columnMap: ColumnResultInfo[] };
 	try {
 		resultInfo = compiler.compileSelectCore(initialSelect, Array.from(savedStateSchema.tableAliases?.values() ?? []));
-		// Make Result table UNIQUE if UNION (not UNION ALL)
-		const pkDef: { index: number; desc: boolean }[] = [];
+		const numCols = resultInfo.numCols;
+
+		// Determine sort key for result table if UNION (distinct)
 		let resultSortKey: P4SortKey | undefined = undefined;
 		if (!isUnionAll) {
-			for (let i = 0; i < resultInfo.numCols; i++) pkDef.push({ index: i, desc: false });
+			const pkDef = Array.from({ length: numCols }, (_, i) => ({ index: i, desc: false }));
 			resultSortKey = { type: 'sortkey', keyIndices: pkDef.map(p => p.index), directions: pkDef.map(p => p.desc) };
-			console.log(`Recursive CTE '${cteName}': Using UNION (distinct), creating PK on all columns for Result table ${resCursor}`);
+			console.log(`Recursive CTE '${cteName}': Using UNION (distinct), creating PK on all columns for Result table`);
 		}
-		cteSchema = compiler.createEphemeralSchema(resCursor, resultInfo.numCols, resultSortKey);
-		queueSchema = compiler.createEphemeralSchema(queueCursor, resultInfo.numCols); // Queue doesn't need PK
 
-		// Update schema with inferred column names/types
+		// Create ephemeral tables using the helper
+		cteSchema = compiler.createEphemeralSchema(resCursor, numCols, resultSortKey);
+		queueSchema = compiler.createEphemeralSchema(queueCursor, numCols); // Queue doesn't need unique PK from MemoryTable perspective
+
+		// Update schema with inferred column names/types (optional refinement)
 		const inferredColumns = resultInfo.columnMap.map((info, index) => {
 			let affinity = SqlDataType.TEXT; // Default
 			if (info.expr?.type === 'literal') {
@@ -144,23 +152,24 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 		(queueSchema as any).columns = Object.freeze(inferredColumns); // Queue needs same structure
 		(queueSchema as any).columnIndexMap = Object.freeze(buildColumnIndexMap(inferredColumns));
 
+		console.log(`REC CTE '${cteName}': Created Result instance ${resCursor}, Queue instance ${queueCursor}`);
+
 	} finally {
 		_restoreCompilerState(compiler, savedStateSchema);
 	}
 
 	// Add Result CTE to map *before* compiling terms
 	compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: resCursor, schema: cteSchema });
-	compiler.tableSchemas.set(resCursor, cteSchema); // Make schema available
-	compiler.ephemeralTables.set(resCursor, cteSchema);
-	// We don't add the queue table to the main maps, it's internal
-	compiler.ephemeralTables.set(queueCursor, queueSchema); // Track ephemeral queue
+	// tableSchemas and ephemeralTableInstances updated by helpers
 
 	// Open Result and Queue tables for writing
-	compiler.emit(Opcode.OpenWrite, resCursor, cteSchema.columns.length, 0, cteSchema, 0, `OpenWrite REC CTE Result '${cteName}'`);
-	compiler.emit(Opcode.OpenWrite, queueCursor, queueSchema.columns.length, 0, queueSchema, 0, `OpenWrite REC CTE Queue '${cteName}'`);
+	// Pass the schema in P4. VDBE OpenWrite handler links cursor index to instance.
+	compiler.emit(Opcode.OpenWrite, resCursor, 0, 0, cteSchema, 0, `OpenWrite REC CTE Result '${cteName}'`);
+	compiler.emit(Opcode.OpenWrite, queueCursor, 0, 0, queueSchema, 0, `OpenWrite REC CTE Queue '${cteName}'`);
 
 	// 3. Compile Initial Term & Populate BOTH tables
 	console.log(`REC CTE '${cteName}': Compiling initial term...`);
+	// _compileSelectAndPopulateEphemeral needs to correctly use VUpdate with the cursor index
 	_compileSelectAndPopulateEphemeral(compiler, initialSelect, resCursor, cteSchema, true, queueCursor, queueSchema, true /* Always UNION ALL into queue */);
 
 	// 4. Recursive Loop
@@ -169,17 +178,18 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 	const addrLoopStart = compiler.allocateAddress(); // Address after VNext Queue
 	const addrLoopEnd = compiler.allocateAddress();   // Target when queue is empty
 
+	// Use Rewind/VNext on the queueCursor index
 	compiler.emit(Opcode.Rewind, queueCursor, addrLoopEnd, 0, null, 0, `REC CTE: Rewind Queue`);
 	compiler.resolveAddress(addrLoopStart); // Loop target
 	compiler.emit(Opcode.VNext, queueCursor, addrLoopEnd, 0, null, 0, `REC CTE: VNext Queue`);
 
 	// --- Compile Recursive Term --- //
-	const loopSavedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'cteMap', 'ephemeralTables', 'cursorPlanningInfo']);
+	const loopSavedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'cteMap', 'ephemeralTableInstances', 'cursorPlanningInfo']);
 	try {
 		// Temporarily map the CTE name to the QUEUE table for the recursive step
 		compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: queueCursor, schema: queueSchema });
 		compiler.tableAliases.set(cteName, queueCursor); // Allow direct reference
-		compiler.tableSchemas.set(queueCursor, queueSchema);
+		// compiler.tableSchemas already set for queueCursor by helper
 		console.log(`REC CTE '${cteName}': Mapping self-reference to QUEUE cursor ${queueCursor}`);
 
 		// Compile the recursive SELECT and generate loop to populate targets
@@ -197,8 +207,10 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 
 	// 5. Finalization
 	compiler.resolveAddress(addrLoopEnd);
+	// Use Close opcode with the cursor index
 	compiler.emit(Opcode.Close, queueCursor, 0, 0, null, 0, `Close REC CTE Queue '${cteName}'`);
-	compiler.ephemeralTables.delete(queueCursor); // Clean up ephemeral tracking
+	// Cleanup helper will remove the instance from the map
+	// compiler.ephemeralTableInstances.delete(queueCursor); // Now handled by closeCursorsUsedBySelectHelper
 
 	// The Result Table (resCursor) remains open and is registered in cteMap
 	console.log(`Finished compiling recursive CTE: ${cteName}`);
@@ -207,15 +219,15 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 function _compileSelectAndPopulateEphemeral(
 	compiler: Compiler,
 	selectStmt: AST.SelectStmt,
-	targetCursor: number,
+	targetCursor: number, // Index for the target ephemeral table (result or queue)
 	targetSchema: TableSchema,
 	insertIntoQueue: boolean = false,
-	queueCursor?: number,
+	queueCursor?: number, // Index for the queue ephemeral table
 	queueSchema?: TableSchema,
-	isUnionAll: boolean = true // Added flag for UNION ALL vs UNION
+	isUnionAll: boolean = true
 ): void {
-	// Save state, excluding CTE map (allow reading prior CTEs)
-	const savedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'ephemeralTables', 'cursorPlanningInfo']);
+	// Save state, excluding CTE map (allow reading prior CTEs) and instance map
+	const savedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'cursorPlanningInfo']);
 	let queryResultBase = 0;
 	let queryNumCols = 0;
 	let queryCursors: number[] = [];
@@ -224,6 +236,7 @@ function _compileSelectAndPopulateEphemeral(
 		// We need the *current* CTE map available when compiling the FROM clause
 		queryCursors = compiler.compileFromCore(selectStmt.from);
 
+		// Plan table access for each cursor
 		const outerCursorsForPlanning = new Set(Array.from(compiler.tableAliases.values()));
 		queryCursors.forEach(cursor => {
 			const schema = compiler.tableSchemas.get(cursor);
@@ -244,7 +257,7 @@ function _compileSelectAndPopulateEphemeral(
 		} else {
 			queryCursors.forEach((cursor, index) => {
 				const schema = compiler.tableSchemas.get(cursor);
-				if (!schema) throw new Error(`Internal: Schema missing for query cursor ${cursor}`);
+				if (!schema) throw new Error(`Internal: Schema not found for query cursor ${cursor}`);
 				const loopStartAddr = compiler.allocateAddress();
 				const eofTarget = compiler.allocateAddress();
 				loopStarts.push(loopStartAddr);
@@ -305,13 +318,15 @@ function _compileSelectAndPopulateEphemeral(
 		// Insert into Target Table
 		// Use IGNORE for UNION semantics, ABORT otherwise (or for UNION ALL)
 		const onConflictTarget = !isUnionAll ? ConflictResolution.IGNORE : ConflictResolution.ABORT;
+		// Pass the targetSchema in P4, VDBE handler uses it.
+		// **Crucially, pass the targetCursor index in P5** so the VDBE handler can find the correct VTab instance.
 		const p4UpdateTarget: any = { table: targetSchema, onConflict: onConflictTarget };
 		// Need to know if the insert actually happened for queue insertion
 		// Let's allocate a temp register to store the outcome (new rowid or null/error indicator)
 		const regTargetRowid = compiler.allocateMemoryCells(1);
 		// Set to known non-null value before VUpdate (helps debugging, VDBE will overwrite)
 		compiler.emit(Opcode.Integer, -1, regTargetRowid, 0, null, 0, "Populate Eph: Init target rowid check");
-		compiler.emit(Opcode.VUpdate, queryNumCols + 1, insertDataReg, regTargetRowid, p4UpdateTarget, 0, `Populate Eph: Insert Target ${targetCursor}`);
+		compiler.emit(Opcode.VUpdate, queryNumCols + 1, insertDataReg, regTargetRowid, p4UpdateTarget, targetCursor, `Populate Eph: Insert Target ${targetCursor}`);
 
 		// Insert into Queue Table if requested AND if target insert was successful (or UNION ALL)
 		if (insertIntoQueue && queueCursor !== undefined && queueSchema) {
@@ -322,7 +337,8 @@ function _compileSelectAndPopulateEphemeral(
 			}
 			// Insert into queue (always for UNION ALL, or if target insert succeeded for UNION)
 			const p4UpdateQueue: any = { table: queueSchema, onConflict: ConflictResolution.ABORT }; // Queue never ignores
-			compiler.emit(Opcode.VUpdate, queryNumCols + 1, insertDataReg, 0, p4UpdateQueue, 0, `Populate Eph: Insert Queue ${queueCursor}`);
+			// **Pass the queueCursor index in P5**
+			compiler.emit(Opcode.VUpdate, queryNumCols + 1, insertDataReg, 0, p4UpdateQueue, queueCursor, `Populate Eph: Insert Queue ${queueCursor}`);
 			compiler.resolveAddress(addrSkipQueueInsert);
 		}
 
@@ -335,7 +351,7 @@ function _compileSelectAndPopulateEphemeral(
 				const cursor = queryCursors[i];
 				const loopStartAddr = loopStarts[i];
 				const eofAddr = loopEnds[i];
-				compiler.emit(Opcode.Goto, 0, loopStartAddr -1, 0, null, 0, `Populate Eph: Goto VNext ${i}`);
+				compiler.emit(Opcode.Goto, 0, loopStartAddr, 0, null, 0, `Populate Eph: Goto VNext ${i}`);
 				compiler.resolveAddress(eofAddr);
 				activeOuterCursors.delete(cursor);
 			}
@@ -353,15 +369,20 @@ function _compileSelectAndPopulateEphemeral(
 function _saveCompilerState(compiler: Compiler, fields: Array<keyof Compiler>): Partial<Compiler> {
 	const state: Partial<Compiler> = {};
 	for (const field of fields) {
-		// Simple shallow copy for maps, arrays might need deeper clone if mutated
-		const currentValue = (compiler as any)[field];
-		if (currentValue instanceof Map) {
-			(state as any)[field] = new Map(currentValue as any);
-		} else if (Array.isArray(currentValue)) {
-			(state as any)[field] = [...(currentValue as any)];
+		// Handle ephemeralTableInstances map specifically
+		if (field === 'ephemeralTableInstances') {
+			// Shallow copy is sufficient as we don't modify the instances themselves here
+			(state as any)[field] = new Map((compiler as any)[field] as Map<number, any>);
 		} else {
-			// Handle other types if necessary (like primitive counters?)
-			(state as any)[field] = currentValue;
+			// Existing logic for other types
+			const currentValue = (compiler as any)[field];
+			if (currentValue instanceof Map) {
+				(state as any)[field] = new Map(currentValue as any);
+			} else if (Array.isArray(currentValue)) {
+				(state as any)[field] = [...(currentValue as any)];
+			} else {
+				(state as any)[field] = currentValue;
+			}
 		}
 	}
 	return state;

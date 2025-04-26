@@ -1,7 +1,7 @@
 import { SqliteError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import type { Handler, VmCtx } from '../handler-types.js';
-import type { P4Update, VdbeInstruction } from '../instruction.js';
+import type { P4Update, VdbeInstruction, P4OpenTvf } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
 import { ConflictResolution } from '../../common/constants.js';
 import type { IndexConstraint, IndexConstraintUsage } from '../../vtab/indexInfo.js';
@@ -340,5 +340,103 @@ export function registerHandlers(handlers: Handler[]) {
     }
     return undefined; // Continue execution
   };
-  // --------------------------
+
+	handlers[Opcode.OpenTvf] = async (ctx, inst) => {
+    const cIdx = inst.p1;                // Cursor index to open
+    const regArgBase = inst.p2;          // Base register for arguments
+    const nArg = inst.p3;                // Number of arguments
+    const p4 = inst.p4 as P4OpenTvf | null; // Get P4 object
+
+    if (!p4 || p4.type !== 'opentvf') {
+      throw new SqliteError(`OpenTvf P4 must be a P4OpenTvf object`, StatusCode.INTERNAL);
+    }
+    const moduleName = p4.moduleName;
+    const alias = p4.alias;
+
+    // 1. Get the VTab module
+    const moduleInfo = ctx.db._getVtabModule(moduleName);
+    if (!moduleInfo) {
+      throw new SqliteError(`Table-valued function or module not found: ${moduleName}`, StatusCode.ERROR);
+    }
+
+    // 2. Read evaluated arguments from registers
+    const args: SqlValue[] = [];
+    for (let i = 0; i < nArg; i++) {
+      args.push(ctx.getMem(regArgBase + i));
+    }
+
+    // 3. Construct the configuration/options object for xConnect
+    //    This requires a convention for mapping args. For json_each/json_tree:
+    //    arg[0] = jsonSource
+    //    arg[1] = rootPath (optional)
+    let options: any = {}; // Use 'any' for flexibility, module should validate
+    try {
+      if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
+        if (nArg < 1 || nArg > 2) {
+          throw new Error(`${moduleName} requires 1 or 2 arguments (jsonSource, [rootPath])`);
+        }
+        options.jsonSource = args[0];
+        if (nArg > 1) {
+          options.rootPath = args[1];
+        }
+      } else {
+        // Generic module: Pass args as a property? Needs a defined convention.
+        // For now, we don't have other TVFs, so we'll error or pass empty.
+        // Consider options = { runtimeArgs: args }; ?
+        if (nArg > 0) {
+             console.warn(`No standard argument mapping convention for TVF module '${moduleName}'. Passing empty options.`);
+        }
+        options = {}; // Default empty config
+      }
+    } catch (e: any) {
+        const message = `Failed to map arguments for TVF module '${moduleName}': ${e.message}`;
+        ctx.error = new SqliteError(message, StatusCode.ERROR, e instanceof Error ? e : undefined);
+        ctx.done = true;
+        return ctx.error.code;
+    }
+
+    // 4. Call xConnect to get the VTab instance
+    let vtabInstance;
+    try {
+        // Using alias as tableName for xConnect, consistent with compiler stub
+        vtabInstance = moduleInfo.module.xConnect(
+            ctx.db,
+            moduleInfo.auxData,
+            moduleName,
+            'main', // Default schema for TVFs
+            alias,    // Table name is the alias
+            options
+        );
+        if (!vtabInstance || !vtabInstance.tableSchema) {
+            throw new SqliteError(`Module ${moduleName} xConnect did not return a valid table instance or schema.`, StatusCode.INTERNAL);
+        }
+    } catch (e) {
+        handleVTabError(ctx, e, moduleName, 'xConnect');
+        return ctx.error?.code;
+    }
+
+    // 5. Call xOpen to get the cursor instance
+    let cursorInstance;
+    try {
+        cursorInstance = await vtabInstance.xOpen();
+        if (!cursorInstance) {
+            throw new SqliteError(`Module ${moduleName} xOpen did not return a cursor instance.`, StatusCode.INTERNAL);
+        }
+    } catch (e) {
+        handleVTabError(ctx, e, alias, 'xOpen');
+        return ctx.error?.code;
+    }
+
+    // 6. Store the cursor instance in the runtime
+    const vdbeCursor = ctx.getCursor(cIdx);
+    if (!vdbeCursor) {
+        // This shouldn't happen if compiler allocated cursor correctly
+        throw new SqliteError(`OpenTvf target cursor ${cIdx} not allocated in runtime`, StatusCode.INTERNAL);
+    }
+    vdbeCursor.instance = cursorInstance;
+    vdbeCursor.vtab = vtabInstance; // Store VTab instance too
+    vdbeCursor.isEphemeral = true; // TVF cursors are generally ephemeral
+
+    return undefined; // Success, continue execution
+  };
 }

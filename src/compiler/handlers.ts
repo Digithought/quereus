@@ -150,7 +150,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 		const potentialColIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
 		if (potentialColIdx === undefined) {
 			// Rowid is implicitly supported by virtual tables unless specified otherwise
-			if (expr.name.toLowerCase() === 'rowid' && tableSchema.isVirtual) {
+			if (expr.name.toLowerCase() === 'rowid') {
 				colIdx = -1;
 			} else {
 				throw new SqliteError(`Column not found in table ${expr.table}: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
@@ -176,7 +176,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 					potentialColIdx = idx;
 					potentialSchema = schema;
 					foundCount++;
-				} else if (expr.name.toLowerCase() === 'rowid' && schema.isVirtual) {
+				} else if (expr.name.toLowerCase() === 'rowid') {
 					if (potentialCursor !== -1) {
 						throw new SqliteError(`Ambiguous column name: ${expr.name} (rowid). Qualify with table name or alias.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 					}
@@ -198,11 +198,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 
 	if (!tableSchema) { throw new Error("Internal: Schema resolution failed"); }
 
-	if (tableSchema.isVirtual) {
-		compiler.emit(Opcode.VColumn, cursor, colIdx, targetReg, 0, 0, `Get column: ${tableSchema.name}.${expr.name} (idx ${colIdx})`);
-	} else {
-		throw new SqliteError("Regular tables not implemented", StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
-	}
+	compiler.emit(Opcode.VColumn, cursor, colIdx, targetReg, 0, 0, `Get column: ${tableSchema.name}.${expr.name} (idx ${colIdx})`);
 }
 
 export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {

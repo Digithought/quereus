@@ -12,8 +12,6 @@ import { RowOp, type RowConstraintSchema } from '../schema/table.js';
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
 	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
-	// Check only if it's a virtual table; runtime will check xUpdate existence
-	if (!tableSchema.isVirtual) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting INSERT`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	let targetColumns = stmt.columns;
 	if (!targetColumns) {
@@ -197,8 +195,6 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
 	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
-	// Check only if it's a virtual table; runtime will check xUpdate existence
-	if (!tableSchema.isVirtual) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting UPDATE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -366,8 +362,6 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
 	if (!tableSchema) { throw new SqliteError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
-	// Check only if it's a virtual table; runtime will check xUpdate existence
-	if (!tableSchema.isVirtual) { throw new SqliteError(`Table ${tableSchema.name} is not a virtual table supporting DELETE`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };

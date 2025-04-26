@@ -4,59 +4,109 @@ import { createDefaultColumnSchema } from '../schema/column.js';
 import { buildColumnIndexMap } from '../schema/table.js';
 import type { TableSchema } from '../schema/table.js';
 import type { P4SortKey } from '../vdbe/instruction.js';
+import { MemoryTableModule } from '../vtab/memory/module.js';
+import type { BaseModuleConfig } from '../vtab/module.js';
+import type { MemoryTable } from '../vtab/memory/table.js';
+import { MisuseError, SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
 
-export function createEphemeralSchemaHelper(
+/**
+ * Creates an internal MemoryTable instance for ephemeral use (CTEs, sorters, subqueries)
+ * and registers its schema with the compiler.
+ *
+ * NOTE: This function creates the schema but doesn't OPEN the cursor in VDBE.
+ * The VDBE Opcode.OpenEphemeral (or similar) will need to use the created
+ * instance stored in compiler.ephemeralTableInstances.
+ */
+export function createEphemeralTableHelper(
 	compiler: Compiler,
 	cursorIdx: number,
 	numCols: number,
 	sortKey?: P4SortKey
 ): TableSchema {
-	const columns = Array.from({ length: numCols }, (_, i) => createDefaultColumnSchema(`eph_col${i}`));
-	let pkDef: ReadonlyArray<{ index: number; desc: boolean }> = [];
+	const moduleInfo = compiler.db._getVtabModule('memory');
+	if (!moduleInfo || !(moduleInfo.module instanceof MemoryTableModule)) {
+		throw new SqliteError("MemoryTableModule not registered or found.", StatusCode.INTERNAL);
+	}
+	const memoryModule = moduleInfo.module as MemoryTableModule;
+
+	const columnsConfig = Array.from({ length: numCols }, (_, i) => ({
+		name: `eph_col${i}`,
+		type: 'TEXT',
+		collation: 'BINARY'
+	}));
+
+	let primaryKeyConfig: ReadonlyArray<{ index: number; desc: boolean }> | undefined = undefined;
 	if (sortKey) {
 		sortKey.keyIndices.forEach((keyIndex, i) => {
-			if (keyIndex >= 0 && keyIndex < columns.length && sortKey.collations?.[i]) {
-				columns[keyIndex].collation = sortKey.collations[i]!;
+			if (keyIndex >= 0 && keyIndex < columnsConfig.length && sortKey.collations?.[i]) {
+				columnsConfig[keyIndex].collation = sortKey.collations[i]!;
 			}
 		});
-
-		pkDef = Object.freeze(sortKey.keyIndices.map((idx, i) => ({ index: idx, desc: sortKey.directions[i] })));
-		pkDef.forEach(def => { if (def.index >= 0 && def.index < columns.length) columns[def.index].primaryKey = true; });
+		primaryKeyConfig = Object.freeze(sortKey.keyIndices.map((idx, i) => ({ index: idx, desc: sortKey.directions[i] })));
 	}
 
-	const tableSchema: TableSchema = {
-		name: `ephemeral_${cursorIdx}`,
-		schemaName: 'temp',
-		checkConstraints: [],
-		columns: Object.freeze(columns),
-		columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
-		primaryKeyDefinition: pkDef,
-		isVirtual: true, // Ephemeral tables are treated like virtual tables for VDBE interaction
-		isWithoutRowid: false,
-		isStrict: false,
-		isView: false,
+	const config: BaseModuleConfig & {
+		columns: { name: string, type: string, collation?: string }[];
+		primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
+		readOnly?: boolean;
+	} = {
+		columns: columnsConfig,
+		primaryKey: primaryKeyConfig,
+		readOnly: false,
 	};
 
-	// Register the schema with the compiler
+	const ephemeralTableName = `_ephemeral_${cursorIdx}_${Date.now()}`;
+	let tableInstance: MemoryTable;
+	try {
+		tableInstance = memoryModule.xCreate(
+			compiler.db,
+			moduleInfo.auxData,
+			'memory',
+			'temp',
+			ephemeralTableName,
+			config
+		);
+	} catch (e) {
+		console.error("Failed to create internal MemoryTable instance:", e);
+		const msg = e instanceof Error ? e.message : String(e);
+		throw new SqliteError(`Internal error creating ephemeral table: ${msg}`, StatusCode.INTERNAL);
+	}
+
+	const tableSchema = tableInstance.tableSchema;
+	if (!tableSchema) {
+		throw new SqliteError("Internal MemoryTable instance did not provide a schema.", StatusCode.INTERNAL);
+	}
+
+	(tableSchema as any).schemaName = 'temp';
+	(tableSchema as any).isTemporary = true;
+
 	compiler.tableSchemas.set(cursorIdx, tableSchema);
-	compiler.ephemeralTables.set(cursorIdx, tableSchema); // Track it specifically as ephemeral
+	compiler.ephemeralTableInstances.set(cursorIdx, tableInstance);
+
+	console.log(`Created ephemeral table instance '${ephemeralTableName}' for cursor ${cursorIdx}`);
+
 	return tableSchema;
 }
 
 export function closeCursorsUsedBySelectHelper(compiler: Compiler, cursors: number[]): void {
 	cursors.forEach(cursorIdx => {
 		compiler.emit(Opcode.Close, cursorIdx, 0, 0, null, 0, `Close inner cursor ${cursorIdx}`);
-		// Clean up compiler state associated with the cursor
+
 		compiler.tableSchemas.delete(cursorIdx);
-		compiler.ephemeralTables.delete(cursorIdx);
 		compiler.cursorPlanningInfo.delete(cursorIdx);
-        // Remove alias mapping if present
-        for (const [alias, cIdx] of compiler.tableAliases.entries()) {
-            if (cIdx === cursorIdx) {
-                compiler.tableAliases.delete(alias);
-                // Assuming an alias maps to only one cursor at a time within a scope
-                break;
-            }
-        }
+
+		for (const [alias, cIdx] of compiler.tableAliases.entries()) {
+			if (cIdx === cursorIdx) {
+				compiler.tableAliases.delete(alias);
+				break;
+			}
+		}
+
+		const instance = compiler.ephemeralTableInstances?.get(cursorIdx);
+		if (instance) {
+			compiler.ephemeralTableInstances.delete(cursorIdx);
+			console.log(`Cleaned up ephemeral table instance for cursor ${cursorIdx}`);
+		}
 	});
 }

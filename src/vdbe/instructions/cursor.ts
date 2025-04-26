@@ -33,8 +33,8 @@ export function registerHandlers(handlers: Handler[]) {
 		const cIdx = inst.p1;
 		const tableSchema = inst.p4 as TableSchema | undefined;
 
-		if (!tableSchema?.isVirtual) {
-			throw new SqliteError("OpenRead/OpenWrite called on non-virtual table schema (or schema missing)", StatusCode.INTERNAL);
+		if (!tableSchema) {
+			throw new SqliteError("OpenRead/OpenWrite called without table schema", StatusCode.INTERNAL);
 		}
 
 		if (!tableSchema.vtabModuleName) {

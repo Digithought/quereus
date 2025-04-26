@@ -33,8 +33,7 @@ export interface JsonTableSchema {
 	name: string;
 	columns: JsonColumnSchema[];
 	primaryKeyDefinition: JsonPrimaryKeyDefinition[];
-	isVirtual: boolean;
-	vtabModule?: string;
+	vtabModule: string;
 	vtabArgs?: string[];
 	indexes?: JsonIndexSchema[];
 	checkConstraints?: (JsonColumnConstraint | JsonTableConstraint)[];

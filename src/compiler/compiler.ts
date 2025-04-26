@@ -28,6 +28,7 @@ import * as SubqueryCompiler from './subquery.js';
 import type { ArgumentMap } from './handlers.js';
 import { compileCommonTableExpression } from './cte.js';
 import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js';
+import type { MemoryTable } from '../vtab/memory/table.js';
 
 // --- Add Result/CTE Info types --- //
 export interface ColumnResultInfo {
@@ -84,7 +85,8 @@ export class Compiler {
 	// -------------------- //
 	public tableSchemas: Map<number, TableSchema> = new Map(); // Map cursor index to schema
 	public tableAliases: Map<string, number> = new Map(); // Map alias/name -> cursor index
-	public ephemeralTables: Map<number, TableSchema> = new Map(); // Track ephemeral schemas
+	// --- Add Ephemeral Instance Map ---
+	public ephemeralTableInstances: Map<number, MemoryTable> = new Map(); // Track instances
 	public resultColumns: { name: string, table?: string, expr?: AST.Expression }[] = [];
 	// --- Add planning info map ---
 	public cursorPlanningInfo: Map<number, CursorPlanningResult> = new Map();
@@ -122,7 +124,8 @@ export class Compiler {
 			this.cteMap = new Map(); // Reset CTE map
 			this.tableSchemas = new Map();
 			this.tableAliases = new Map(); // Reset aliases
-			this.ephemeralTables = new Map();
+			// Reset ephemeral instance map
+			this.ephemeralTableInstances = new Map();
 			this.resultColumns = [];
 			this.cursorPlanningInfo = new Map(); // Reset planning info
 			// --- Reset subroutine state ---
@@ -296,7 +299,13 @@ export class Compiler {
 	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
 
 	// Ephemeral Table Helpers (./core/ephemeral)
-	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema { return EphemeralCore.createEphemeralSchemaHelper(this, cursorIdx, numCols, sortKey); }
+	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema {
+		// Ensure the map exists if called before compile() reset
+		if (!this.ephemeralTableInstances) {
+			this.ephemeralTableInstances = new Map<number, MemoryTable>();
+		}
+		return EphemeralCore.createEphemeralTableHelper(this, cursorIdx, numCols, sortKey);
+	}
 	closeCursorsUsedBySelect(cursors: number[]): void { EphemeralCore.closeCursorsUsedBySelectHelper(this, cursors); }
 
 	// FROM Clause Helper (./core/fromClause)
@@ -449,7 +458,7 @@ declare module './compiler' {
 		framePointer: number;
 		outerCursors: number[];
 		tableSchemas: Map<number, TableSchema>; // Needed by many helpers
-		ephemeralTables: Map<number, TableSchema>; // Needed by some helpers
+		ephemeralTableInstances: Map<number, MemoryTable>; // Added
 		db: Database;
 		constants: SqlValue[];
 		instructions: VdbeInstruction[];

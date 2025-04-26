@@ -147,16 +147,11 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 				let createSql: string | null = null;
 				try {
 					// Generate CREATE statement SQL if possible
-					if (tableSchema.isVirtual && tableSchema.vtabModuleName) {
-						// Basic representation for virtual tables without original AST
-						// TODO: Capture original arguments for better representation
-						// Note: we've changed the syntax to CREATE TABLE ... USING ...
-						createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(...)`;
-					} else if (!tableSchema.isVirtual) {
-						// Attempt to stringify standard tables (might need ddl-stringify)
-						// For now, leave null if complex
-						// createSql = stringifyCreateTable(tableSchema); // Placeholder
-					}
+
+					// Basic representation for virtual tables without original AST
+					// TODO: Capture original arguments for better representation
+					// Note: we've changed the syntax to CREATE TABLE ... USING ...
+					createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(...)`;
 				} catch (e) {
 					console.warn(`Failed to stringify CREATE TABLE for ${tableSchema.name}:`, e);
 				}

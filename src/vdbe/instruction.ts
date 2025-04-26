@@ -95,7 +95,12 @@ export interface P4Update {
 	type: 'update';
 }
 
-// Add more P4 types as needed (P4_MEM, P4_INTARRAY, P4_SUBPROGRAM, etc.)
+/** P4 operand for Opcode.OpenTvf */
+export interface P4OpenTvf {
+	moduleName: string;
+	alias: string;
+	type: 'opentvf'; // Discriminant type
+}
 
 // --- Define missing placeholder P4 types --- //
 export type P4JumpTarget = any; // Placeholder - likely number (address)
@@ -119,6 +124,7 @@ export type P4Operand =
 	| P4IndexDef // For CreateIndex
 	| P4TableDef // For CreateTable
 	| P4ViewDef // For CreateView
+	| P4OpenTvf // For OpenTvf
 	| string // Simple string operand (e.g., Pragma name)
 	| number // Simple numeric operand
 	| null; // No operand

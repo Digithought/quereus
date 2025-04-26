@@ -48,8 +48,7 @@ function findReferencedColumns(compiler: Compiler, expr: AST.Expression | undefi
 						referenced.set(foundCursor, new Set());
 					}
 					referenced.get(foundCursor)!.add(colIdx);
-				} else if (colExpr.name.toLowerCase() === 'rowid' && !schema?.isVirtual) {
-					// Handle implicit rowid for non-virtual tables
+				} else if (colExpr.name.toLowerCase() === 'rowid') {
 					if (!referenced.has(foundCursor)) {
 						referenced.set(foundCursor, new Set());
 					}
@@ -113,7 +112,7 @@ function calculateColumnUsage(
 			}
 			if (match) {
 				schema.columns.forEach((col, idx) => { if (!col.hidden) addColToMask(idx); });
-				if (!schema.isVirtual) addColToMask(-1); // Add rowid for non-WITHOUT ROWID tables
+				addColToMask(-1); // Add rowid for ROWID tables
 			}
 		} else if (rc.expr) {
 			const refs = findReferencedColumns(compiler, rc.expr, activeCursors);
@@ -368,8 +367,8 @@ export function planTableAccessHelper(
 	// Get the module associated with the table schema
 	const module = tableSchema.vtabModule;
 
-	// Check if the table is virtual and the module provides xBestIndex
-	if (!tableSchema.isVirtual || !module || typeof module.xBestIndex !== 'function') {
+	// Check if the module provides xBestIndex
+	if (typeof module.xBestIndex !== 'function') {
 		compiler.cursorPlanningInfo.set(cursorIdx, {
 			idxNum: 0,
 			idxStr: null,

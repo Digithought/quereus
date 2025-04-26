@@ -16,7 +16,7 @@ import type { ColumnSchema } from "../schema/column.js";
 
 // Define local interfaces if not exported/importable easily
 interface MemoryTableConfig extends BaseModuleConfig {
-	columns: { name: string, type: SqlDataType, collation?: string }[];
+	columns: { name: string, type: string, collation?: string }[];
 	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
 	checkConstraints?: ReadonlyArray<{ name?: string, expr: Expression, operations: RowOpMask }>;
 	readOnly?: boolean;
@@ -58,7 +58,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 
 	try {
 		if (moduleName.toLowerCase() === 'memory') {
-			let columns: { name: string, type: SqlDataType, collation?: string }[];
+			let columns: { name: string, type: string, collation?: string }[];
 			let primaryKey: ReadonlyArray<{ index: number; desc: boolean }> | undefined;
 			let checkConstraints: { name?: string, expr: Expression, operations: RowOpMask }[] = [];
 
@@ -74,8 +74,8 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 					throw new Error("Argument provided to 'USING memory(...)' did not parse as a CREATE TABLE statement.");
 				}
 				const createTableAst = parsedAst as AST.CreateTableStmt;
-				// TODO: Extract collation from AST if needed
-				columns = createTableAst.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }));
+				// Pass the original data type string, default to 'BLOB' if undefined
+				columns = createTableAst.columns.map(c => ({ name: c.name, type: c.dataType ?? 'BLOB' }));
 				primaryKey = parsePrimaryKeyFromAst(createTableAst.columns, createTableAst.constraints);
 				// Gather checks from parsed DDL AST
 				createTableAst.columns.forEach(colDef => {
@@ -97,8 +97,8 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 				if (!stmt.columns || stmt.columns.length === 0) {
 					throw new Error("Cannot create implicit memory table without column definitions.");
 				}
-				// TODO: Extract collation from AST if needed
-				columns = stmt.columns.map(c => ({ name: c.name, type: getAffinityFromTypeName(c.dataType) }));
+				// Pass the original data type string, default to 'BLOB' if undefined
+				columns = stmt.columns.map(c => ({ name: c.name, type: c.dataType ?? 'BLOB' }));
 				primaryKey = parsePrimaryKeyFromAst(stmt.columns, stmt.constraints || []);
 				// Gather checks from main statement AST
 				stmt.columns.forEach(colDef => {
@@ -205,15 +205,9 @@ export function compileCreateIndexStatement(compiler: Compiler, stmt: AST.Create
 	if (!tableSchema) {
 		throw new SqliteError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 	}
-	// Check if it's a virtual table
-	if (!tableSchema.isVirtual || !tableSchema.vtabModule) {
-		throw new SqliteError(`Cannot create index on non-virtual table or VTab without module: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-	}
 
 	// Check if the virtual table prototype supports xCreateIndex
-	// We check the prototype because the instance might not be connected yet.
-	// This assumes the module correctly implements the method on its instances.
-	if (typeof (tableSchema.vtabModule as any)?.prototype?.xCreateIndex !== 'function') {
+	if (typeof (tableSchema.vtabModule as any)?.xCreateIndex !== 'function') {
 		throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 	}
 
@@ -370,10 +364,6 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 					break;
 				}
 
-				if (!tableSchema.isVirtual || !tableSchema.vtabModule) {
-					throw new SqliteError(`Index '${objectName}' belongs to non-virtual table '${tableSchema.name}'. DROP INDEX only supported for VTabs.`, StatusCode.ERROR);
-				}
-
 				// Check if the virtual table prototype supports xDropIndex
 				if (typeof (tableSchema.vtabModule as any)?.prototype?.xDropIndex !== 'function') {
 					throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableSchema.name}' does not support DROP INDEX.`, StatusCode.ERROR);
@@ -452,10 +442,6 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 			compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after RENAME TABLE`);
 
 		} else if (stmt.action.type === 'addColumn' || stmt.action.type === 'dropColumn' || stmt.action.type === 'renameColumn') {
-			// Check if it's a virtual table with a module defined in the schema
-			if (!tableSchema.isVirtual || !tableSchema.vtabModule) {
-				throw new SqliteError(`ALTER TABLE ${stmt.action.type} is only supported for virtual tables with a defined module`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-			}
 			// Runtime check for xAlterSchema implementation moved to VDBE handler (Opcode.SchemaChange)
 
 			let changeInfo: P4SchemaChange;

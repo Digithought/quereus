@@ -7,6 +7,7 @@ import * as AST from '../parser/ast.js';
 import type { P4Vtab } from '../vdbe/instruction.js';
 import type { BaseModuleConfig } from '../vtab/module.js';
 import type { SqlValue } from '../common/types.js';
+import type { P4OpenTvf } from '../vdbe/instruction.js';
 
 // Local config interfaces (mirroring ddl.ts for now)
 interface MemoryTableConfig extends BaseModuleConfig {
@@ -72,12 +73,8 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			currentLevelAliases.set(lookupName, cursor);
 
 			// VDBE OpenRead/OpenWrite will handle xConnect, just pass schema in P4
-			if (tableSchema.isVirtual) {
-				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
-				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
-			} else {
-				throw new SqliteError("Regular tables not supported", StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
-			}
+			const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
+			compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
 		} else if (source.type === 'join') {
 			openCursorsRecursive(source.left, currentLevelAliases);
 			openCursorsRecursive(source.right, currentLevelAliases);
@@ -89,73 +86,87 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				throw new SqliteError(`Table-valued function or virtual table module not found: ${funcName}`, StatusCode.ERROR, undefined, source.name.loc?.start.line, source.name.loc?.start.column);
 			}
 
-			const compiledArgs: string[] = [];
-			for (const argExpr of source.args) {
-				const tempReg = compiler.allocateMemoryCells(1);
-				// Compile expression - assuming it doesn't involve complex logic needing VDBE execution here
-				compiler.compileExpression(argExpr, tempReg);
-				if (argExpr.type === 'literal') {
-					if (argExpr.value === null || typeof argExpr.value === 'string') {
-						compiledArgs.push(argExpr.value === null ? '' : argExpr.value);
-					} else {
-						throw new SqliteError(`Table-valued function arguments must be string literals (or NULL) for ${funcName}.`, StatusCode.ERROR, undefined, argExpr.loc?.start.line, argExpr.loc?.start.column);
-					}
-				} else if (argExpr.type === 'parameter') {
-					throw new SqliteError(`Parameters not supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR, undefined, argExpr.loc?.start.line, argExpr.loc?.start.column);
-				} else {
-					throw new SqliteError(`Only literals supported as arguments to table-valued functions like ${funcName} yet.`, StatusCode.ERROR, undefined, argExpr.loc?.start.line, argExpr.loc?.start.column);
-				}
+			// --- Compile Arguments into Registers ---
+			const numArgs = source.args.length;
+			const argBaseReg = compiler.allocateMemoryCells(numArgs); // Allocate contiguous registers for args
+			for (let i = 0; i < numArgs; i++) {
+				const argExpr = source.args[i];
+				const targetReg = argBaseReg + i;
+				// Compile the argument expression, result goes into targetReg
+				// Assume correlation/having context are not relevant for TVF args here
+				compiler.compileExpression(argExpr, targetReg);
 			}
-
-			const schemaName = 'main'; // TVFs usually don't have explicit schema in call
-			const funcAlias = source.alias || funcName;
-			// const argv: ReadonlyArray<string> = Object.freeze([funcName, schemaName, tableName, ...compiledArgs]);
-			const moduleName = funcName;
-			let options: BaseModuleConfig = {}; // Default for TVFs
-
-			try {
-				if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
-					// Expects 1 or 2 args: jsonSource, [rootPath]
-					if (compiledArgs.length < 1 || compiledArgs.length > 2) {
-						throw new Error(`${moduleName} requires 1 or 2 arguments (jsonSource, [rootPath])`);
-					}
-					options = {
-						jsonSource: compiledArgs[0], // Assume string args are handled correctly later
-						rootPath: compiledArgs[1]
-					} as JsonConfig;
-				} else {
-					// Generic TVF module - pass empty config for now
-					console.warn(`Compiler creating generic BaseModuleConfig for TVF module '${moduleName}'. Module may need specific argument parsing.`);
-					options = {};
-				}
-			} catch (e: any) {
-				throw new SqliteError(`Failed to parse arguments for TVF module '${moduleName}': ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined, source.name.loc?.start.line, source.name.loc?.start.column);
-			}
-
-			const instance = moduleInfo.module.xConnect(
-				compiler.db,
-				moduleInfo.auxData,
-				moduleName, // Pass moduleName (funcName)
-				schemaName, // Pass default schemaName
-				funcAlias,  // Pass alias or funcName as tableName
-				options     // Pass constructed options object
-			);
-			if (!instance || !instance.tableSchema) {
-				throw new SqliteError(`Module ${funcName} xConnect did not return a valid table instance or schema.`, StatusCode.INTERNAL);
-			}
+			// ---------------------------------------
 
 			const cursor = compiler.allocateCursor();
 			openedCursors.push(cursor);
-			compiler.tableSchemas.set(cursor, instance.tableSchema);
 			const lookupName = (source.alias || funcName).toLowerCase();
+
+			// We need to store the schema and alias association *after* OpenTvf runs
+			// This mapping is done within the OpenTvf handler now.
+			// compiler.tableSchemas.set(cursor, instance.tableSchema); // Moved to OpenTvf handler
 			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
 				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 			}
-			compiler.tableAliases.set(lookupName, cursor);
-			currentLevelAliases.set(lookupName, cursor);
+			compiler.tableAliases.set(lookupName, cursor); // Keep alias mapping
+			currentLevelAliases.set(lookupName, cursor); // Keep alias mapping
 
-			const p4Vtab: P4Vtab = { type: 'vtab', tableSchema: instance.tableSchema };
-			compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open TVF ${lookupName}`);
+			// Emit the new OpenTvf opcode
+			// P1: Cursor index
+			// P2: Base register of arguments
+			// P3: Number of arguments
+			// P4: P4OpenTvf object containing moduleName and alias
+			// P5: Unused (0)
+			const p4: P4OpenTvf = { type: 'opentvf', moduleName: funcName, alias: lookupName };
+			compiler.emit(Opcode.OpenTvf, cursor, argBaseReg, numArgs, p4, 0, `Open TVF ${lookupName}`);
+
+		} else if (source.type === 'subquerySource') {
+			// Handle Subquery in FROM
+			const subquery = source.subquery;
+			const alias = source.alias.toLowerCase();
+
+			if (compiler.tableAliases.has(alias) || currentLevelAliases.has(alias)) {
+				throw new SqliteError(`Duplicate table name or alias: ${alias}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+			}
+
+			// Subqueries in FROM are often treated like ephemeral tables or views.
+			// The compilation of the subquery itself will generate the necessary
+			// instructions to populate a temporary result set.
+			// We need to allocate a cursor for this result set.
+
+			// Option 1: Compile subquery directly into an ephemeral table
+			// This is similar to how non-recursive CTEs might be handled.
+			const { resultBaseReg, numCols, columnMap } = compiler.compileSelectCore(subquery, compiler.outerCursors); // Pass outer cursors if needed
+
+			// Create an ephemeral table to hold the subquery results
+			const cursor = compiler.allocateCursor();
+			openedCursors.push(cursor);
+			const ephemeralSchema = compiler.createEphemeralSchema(cursor, numCols); // Create schema based on select core result
+			compiler.tableSchemas.set(cursor, ephemeralSchema);
+			compiler.tableAliases.set(alias, cursor);
+			currentLevelAliases.set(alias, cursor);
+
+			// Emit instructions to populate the ephemeral table
+			// 1. Open the ephemeral table for writing (use a dedicated opcode or flag?)
+			//    For now, assuming OpenWrite works, but needs check
+			const p4EphemWrite: P4Vtab = { type: 'vtab', tableSchema: ephemeralSchema };
+			compiler.emit(Opcode.OpenWrite, cursor, 0, 0, p4EphemWrite, 0, `Open Ephemeral for Subquery ${alias}`);
+
+			// 2. Execute the subquery logic (already emitted by compileSelectCore)
+			//    It should end by yielding rows to a target. We need to redirect this
+			//    to insert into the ephemeral table.
+			//    This part is tricky. compileSelectCore typically prepares for result rows.
+			//    Maybe compileSelectCore needs a mode to target an ephemeral table?
+
+			// *** Revisit Subquery Compilation Strategy ***
+			// A simpler approach might be needed, possibly involving subroutines
+			// or direct iteration without materializing fully beforehand unless necessary.
+			// For now, placeholder - this needs deeper changes.
+			console.warn(`FROM clause subquery compilation for '${alias}' is incomplete.`);
+			// Placeholder: Emit a Noop or rewind for now
+			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `Placeholder for subquery ${alias} execution`);
+			// Need to ensure the cursor is positioned correctly after population.
+			// compiler.emit(Opcode.Rewind, cursor, compiler.allocateAddress(), 0); // Rewind after populating
 
 		} else {
 			throw new SqliteError(`Unsupported FROM clause type during cursor opening: ${(source as any).type}`, StatusCode.INTERNAL);

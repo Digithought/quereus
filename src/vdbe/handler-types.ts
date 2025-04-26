@@ -7,6 +7,7 @@ import type { VdbeProgram } from './program.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { VirtualTableCursor } from '../vtab/cursor.js';
 import type { MemoryIndex } from '../vtab/memory/index.js';
+import type { Statement } from '../core/statement.js';
 
 /**
  * Represents a single VDBE memory cell (register)
@@ -41,6 +42,7 @@ export interface VmCtx {
   // Core state
   readonly db: Database;
   readonly program: VdbeProgram;
+  readonly stmt: Statement;
   pc: number;
   done: boolean;
   hasYielded: boolean;

@@ -71,7 +71,6 @@ class JsonEachTable extends VirtualTable {
 			columns: JSON_EACH_COLUMNS,
 			columnIndexMap: JSON_EACH_COLUMN_MAP,
 			primaryKeyDefinition: [], // No explicit PK
-			isVirtual: true,
 			vtabModule: module,
 			vtabInstance: this,
 			vtabModuleName: 'json_each',

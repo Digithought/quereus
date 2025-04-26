@@ -71,7 +71,8 @@ The project is organized into the following main directories:
 *   `src/compiler`: Translates AST to VDBE bytecode, including CTE and subquery handling.
 *   `src/vdbe`: Runtime bytecode execution engine.
 *   `src/schema`: Management of database schemas (tables, columns, functions).
-*   `src/vtab`: Virtual table interface definitions and implementations (including `MemoryTable`, `JsonEach`, `JsonTree`, and `SchemaTable`).
+*   `src/vtab`: Virtual table interface definitions
+*   `src/vtab/*`: Vtab implementations including `memory`, `schema`, and `json`).
 *   `src/func`: User-defined function context, registration helpers, and built-in functions.
 *   `src/util`: General utility functions (e.g., value comparison, latches, DDL stringifier).
 *   `docs`: Project documentation.
@@ -88,7 +89,10 @@ The project is organized into the following main directories:
 
 ## Key Design Decisions
 
-*   **Federated / VTab-Centric**: The architecture prioritizes virtual tables as the primary data source and sink. The `CREATE TABLE ... USING module(...)` syntax is used to create tables backed by specific VTab modules. If `USING` is omitted, it defaults to the configured default module (initially `MemoryTable`).
+*   **Federated / VTab-Centric**: The architecture prioritizes virtual tables as the primary data source and sink. 
+    *   Tables can be created statically using `CREATE TABLE ... USING module(...)` syntax.
+    *   Table-valued functions (like `json_each`, `json_tree`) can be invoked dynamically in the `FROM` clause using standard function call syntax: `SELECT ... FROM my_function(arg1, arg2) [AS alias] ...`.
+    *   If `USING` is omitted in `CREATE TABLE`, it defaults to the configured default module (initially `memory` base on the `MemoryTable` module).
 *   **Async Core**: Core operations like `Statement.step()` and VDBE execution involving VTab interactions are asynchronous (`async`/`await`) to handle potentially long-running I/O from virtual tables.
 *   **Sync Callbacks**: VTab `xBestIndex` and `xColumn`, as well as UDFs, are expected to be synchronous for performance, following the SQLite C API design. `xCreate` and `xConnect` are also synchronous.
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
@@ -97,7 +101,8 @@ The project is organized into the following main directories:
 
 ## Specific variations from SQLite
 
-*   Uses `CREATE TABLE ... USING module(...)` syntax for virtual tables.  `PRAGMA default_vtab_module` can be used to set the default module.
+*   Uses `CREATE TABLE ... USING module(...)` syntax for static virtual tables. Supports dynamic invocation of table-valued functions (e.g., `json_each(...)`) in the `FROM` clause.
+*   `PRAGMA default_vtab_module` can be used to set the default module for `CREATE TABLE` without `USING`.
 *   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions in `CREATE TABLE`.
 *   Interface enhancements: `eval()` async enumerable helper on `Database`; easy to use parameters as names or indexed
 *   Core VDBE execution stepping is asynchronous.
@@ -135,7 +140,13 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   **Optimization**: Query planning (`xBestIndex`) is basic; VDBE opcode optimization is minimal.
 *   **Testing**: While a comprehensive test framework is now in place (see below), more specific test cases are always needed.
 
-## Testing Strategy
+## Testing
+
+The tests are located in `test/*.spec.ts` and are driven by Mocha via aegir.
+
+```bash
+yarn test
+```
 
 SQLiter employs a multi-faceted testing strategy:
 

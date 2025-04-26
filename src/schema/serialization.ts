@@ -10,6 +10,7 @@ import type { Database } from '../core/database.js';
 import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema,
 	JsonFunctionSchema, JsonIndexSchema, JsonIndexColumnSchema, JsonTableConstraint} from '../core/json-schema.js';
 import * as AST from '../parser/ast.js';
+import type { VirtualTableModule } from '../vtab/module.js';
 
 /** Function to convert RowOpMask to string array */
 function maskToOpsArray(mask: number): ('insert' | 'update' | 'delete')[] {
@@ -67,8 +68,7 @@ export function exportSchemaJson(db: Database): string {
           } as JsonColumnSchema;
         }),
         primaryKeyDefinition: [...tableSchema.primaryKeyDefinition],
-        isVirtual: tableSchema.isVirtual,
-        vtabModule: tableSchema.vtabModuleName,
+        vtabModule: tableSchema.vtabModuleName ?? '',
         vtabArgs: tableSchema.vtabArgs ? [...tableSchema.vtabArgs] : undefined,
         indexes: tableSchema.indexes?.map((idx: IndexSchema): JsonIndexSchema => ({
           name: idx.name,
@@ -218,6 +218,17 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         }
       }
 
+      // Find the corresponding VTab module registered in the database
+      const vtabModuleName = jsonTable.vtabModule;
+      const moduleInfo = db._getVtabModule(vtabModuleName);
+      if (!moduleInfo) {
+        // Module not found - potentially log a warning or throw an error
+        // Depending on strictness, maybe default to memory?
+        // Throwing an error is safer for now.
+        throw new SqliteError(`Virtual table module '${vtabModuleName}' for table '${jsonTable.name}' is not registered with the current Database instance. Cannot import schema.`, StatusCode.ERROR);
+      }
+      const vtabModule: VirtualTableModule<any, any> = moduleInfo.module;
+
       const tableSchema: TableSchema = {
         name: jsonTable.name,
         schemaName: schemaName,
@@ -225,8 +236,8 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         columns: Object.freeze(columns),
         columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
         primaryKeyDefinition: Object.freeze(jsonTable.primaryKeyDefinition),
-        isVirtual: jsonTable.isVirtual,
-        vtabModuleName: jsonTable.vtabModule,
+        vtabModule: vtabModule, // Assign the found module
+        vtabModuleName: vtabModuleName, // Store the name
         vtabArgs: jsonTable.vtabArgs ? Object.freeze(jsonTable.vtabArgs) : undefined,
         indexes: jsonTable.indexes ? Object.freeze(jsonTable.indexes.map((jsonIdx: JsonIndexSchema): IndexSchema => ({
           name: jsonIdx.name,
@@ -236,9 +247,9 @@ export function importSchemaJson(db: Database, jsonString: string): void {
             collation: jsonCol.collation,
           }))),
         }))) : undefined,
-        isWithoutRowid: false,
-        isStrict: false,
-        isView: false,
+        isWithoutRowid: false, // TODO: Serialize/Deserialize this property if needed
+        isStrict: false,      // TODO: Serialize/Deserialize this property if needed
+        isView: false,        // Views are handled separately
       };
       schema.addTable(tableSchema);
     }

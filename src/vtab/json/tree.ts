@@ -70,7 +70,6 @@ class JsonTreeTable extends VirtualTable {
 			columns: JSON_TREE_COLUMNS,
 			columnIndexMap: JSON_TREE_COLUMN_MAP,
 			primaryKeyDefinition: [],
-			isVirtual: true,
 			vtabModule: module,
 			vtabInstance: this,
 			vtabModuleName: 'json_tree', // Correct module name
