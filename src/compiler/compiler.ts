@@ -6,7 +6,7 @@
 import { StatusCode, type SqlValue } from '../common/types.js';
 import { SqliteError, ParseError } from '../common/errors.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction.js';
+import { type P4SortKey, type VdbeInstruction, createInstruction, type P4FuncDef } from '../vdbe/instruction.js';
 import type { VdbeProgram } from '../vdbe/program.js';
 import type { WithClause } from '../parser/ast.js';
 import type { Database } from '../core/database.js';
@@ -97,6 +97,9 @@ export class Compiler {
 	public subroutineDepth = 0;
 	private currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
 	private maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
+	// --- Add stack for nested frame context ---
+	private subroutineFrameStack: { frameEnterInsn: VdbeInstruction | null; maxOffset: number }[] = [];
+	// -----------------------------------------
 	// --- Stack Pointers ---
 	public stackPointer: number = 0; // Current stack top (absolute index)
 	public framePointer: number = 0; // Current frame base (absolute index)
@@ -139,6 +142,7 @@ export class Compiler {
 			this.stackPointer = 0; // Reset stack pointers
 			this.framePointer = 0;
 			this.outerCursors = []; // Initialize outerCursors
+			this.subroutineFrameStack = []; // Initialize frame stack
 			// -----------------------------
 
 			// Add initial Init instruction
@@ -254,6 +258,12 @@ export class Compiler {
 	// --- Update Subroutine Compilation Context --- //
 	startSubroutineCompilation(): number { // Return address of FrameEnter
 		this.subroutineDepth++;
+		// --- Push current frame context onto stack ---
+		this.subroutineFrameStack.push({
+			frameEnterInsn: this.currentFrameEnterInsn,
+			maxOffset: this.maxLocalOffsetInCurrentFrame,
+		});
+		// ------------------------------------------
 		// Reset tracking for the new frame
 		this.maxLocalOffsetInCurrentFrame = 0;
 		// Emit FrameEnter with placeholder size (0). Will be patched in endSubroutineCompilation.
@@ -269,18 +279,33 @@ export class Compiler {
 
 	endSubroutineCompilation(): void {
 		if (this.subroutineDepth > 0) {
-			// Patch the FrameEnter instruction with the calculated frame size
+			// Patch the CURRENT FrameEnter instruction with the calculated frame size
 			if (this.currentFrameEnterInsn) {
 				// Frame size = max local offset used + 1 (since offset is 0-based)
 				// Local offsets start at 2, so max offset includes control info slots
 				const frameSize = this.maxLocalOffsetInCurrentFrame + 1;
 				this.currentFrameEnterInsn.p1 = frameSize;
-				this.currentFrameEnterInsn = null; // Clear for next subroutine
+				// Do not reset currentFrameEnterInsn here, restore it from stack
 			} else {
-				console.error("Compiler Error: Mismatched start/endSubroutineCompilation or missing FrameEnter tracking.");
+				console.error("Compiler Error: Missing FrameEnter tracking for the current frame being ended.");
 			}
+
 			this.subroutineDepth--;
-			// No need to restore max offset tracking, handled by new frame start
+
+			// --- Pop previous frame context from stack and restore ---
+			const previousFrame = this.subroutineFrameStack.pop();
+			if (previousFrame) {
+				this.currentFrameEnterInsn = previousFrame.frameEnterInsn;
+				this.maxLocalOffsetInCurrentFrame = previousFrame.maxOffset;
+			} else {
+				// This happens when the outermost subroutine ends
+				this.currentFrameEnterInsn = null;
+				this.maxLocalOffsetInCurrentFrame = 0; // Reset after last pop
+				if (this.subroutineDepth !== 0) {
+					console.error("Compiler Error: Subroutine stack underflow or depth mismatch.");
+				}
+			}
+			// --------------------------------------------------------
 		} else {
 			console.warn("Attempted to end subroutine compilation at depth 0");
 		}
