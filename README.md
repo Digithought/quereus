@@ -116,10 +116,11 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   Basic Aggregation (`GROUP BY`, `HAVING` with functions like `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP_CONCAT`, `JSON_GROUP_ARRAY`, `JSON_GROUP_OBJECT`).
 *   Basic `ORDER BY` and `LIMIT`/`OFFSET` (with VDBE-level sorting via `MemoryTable` if needed).
 *   Transactions (`BEGIN`, `COMMIT`, `ROLLBACK`) and Savepoints (`SAVEPOINT`, `RELEASE`, `ROLLBACK TO`).
-*   Virtual Table implementations: `MemoryTable` (B+Tree based, supports transactions/savepoints), `JsonEach`, `JsonTree`.
+*   Virtual Table implementations: `MemoryTable` (B+Tree based, supports transactions/savepoints and secondary indexes), `JsonEach`, `JsonTree`.
 *   Extensive built-in functions: scalar (string, math), date/time, and JSON manipulation/querying.
 *   `PRAGMA` support for setting default VTab module.
 *   Basic `CREATE TABLE`/`DROP TABLE` for managing VTabs.
+*   `CREATE INDEX`/`DROP INDEX` support for virtual tables that implement `xCreateIndex`/`xDropIndex` (like `MemoryTable`).
 *   Schema export/import via JSON.
 *   Basic read-only access to `sqlite_schema` for introspection.
 
@@ -127,6 +128,7 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 
 *   **Constraints**: `CHECK`, `NOT NULL`, `FOREIGN KEY`, `DEFAULT` constraints are parsed but generally *not* enforced by the engine or `MemoryTable`.
 *   **Advanced SQL**: Window functions, triggers, full `ALTER TABLE`, and views (parsing only) are not yet implemented.
+*   **Index Features**: Indices on expressions are not supported. Collation support in indices is basic.
 *   **Collation**: Only basic binary comparison is implemented.
 *   **Error Handling**: Error messages could be more detailed.
 *   **Optimization**: Query planning (`xBestIndex`) is basic; VDBE opcode optimization is minimal.

@@ -2,6 +2,7 @@ import type { VirtualTable } from './table';
 import type { SqliteContext } from '../func/context';
 import { StatusCode, type SqlValue } from '../common/types';
 import { SqliteError } from '../common/errors';
+import type { IndexConstraint } from './indexInfo';
 
 /**
  * Base class (or interface) for virtual table cursors.
@@ -30,11 +31,17 @@ export abstract class VirtualTableCursor<
 	 * Start or restart a search/scan on the virtual table.
 	 * @param idxNum The index number chosen by xBestIndex.
 	 * @param idxStr The index string chosen by xBestIndex.
+	 * @param constraints The list of constraints relevant to this plan, linked to their arg index.
 	 * @param args Values corresponding to constraints marked in xBestIndex.
 	 * @returns A promise resolving on completion or throwing an error.
 	 * @throws SqliteError on failure.
 	 */
-	abstract filter(idxNum: number, idxStr: string | null, args: ReadonlyArray<SqlValue>): Promise<void>;
+	abstract filter(
+		idxNum: number,
+		idxStr: string | null,
+		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
+		args: ReadonlyArray<SqlValue>
+	): Promise<void>;
 
 	/**
 	 * Advance the cursor to the next row in the result set.

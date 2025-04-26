@@ -8,17 +8,20 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
 **Key Features:**
 
 *   **B+Tree Backend:** Uses the `digitree` library for efficient, sorted storage.
-*   **Flexible Indexing:** Data is primarily indexed by either the implicit SQLite `rowid` (default) or by a user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
+*   **Flexible Primary Indexing:** Data is primarily indexed by either the implicit SQLite `rowid` (default) or by a user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
+*   **Secondary Index Support:** Allows creation of secondary indexes on one or more columns using `CREATE INDEX`. These are also backed by B+Trees for efficient lookups.
 *   **Query Planning:** Implements `xBestIndex` to provide basic query plans:
-    *   Full table scans (ascending or descending based on BTree key).
-    *   Fast point lookups (`WHERE key = ?`).
-    *   Range scans (`WHERE key > ?`, `WHERE key <= ?`, `WHERE key BETWEEN ? AND ?`) based on the *first* component of the BTree key.
-    *   Satisfies `ORDER BY` clauses that match the BTree key order (ascending or descending).
-*   **CRUD Operations:** Supports `INSERT`, `UPDATE`, and `DELETE` via the `xUpdate` method.
+    *   Considers both primary and secondary indexes.
+    *   Full table scans (ascending or descending based on primary key).
+    *   Fast equality lookups (`WHERE indexed_col = ?`) on single or composite keys using the most appropriate index.
+    *   Range scans (`WHERE indexed_col > ?`, etc.) based on the *first* column of the chosen index.
+    *   Satisfies `ORDER BY` clauses that match the chosen index order.
+*   **CRUD Operations:** Supports `INSERT`, `UPDATE`, and `DELETE` via the `xUpdate` method, maintaining both primary and secondary indexes.
+*   **Transactions & Savepoints:** Supports transactional operations (`BEGIN`, `COMMIT`, `ROLLBACK`) and savepoints using internal buffering for inserts, updates, and deletes.
 
 **Usage Examples:**
 
-*   **Internal Engine Use (Ephemeral Tables):** The VDBE can use `MemoryTable` internally for operations requiring temporary storage, such as materializing subquery results or sorting data (though sorting opcodes are not yet fully implemented). The `Opcode.OpenEphemeral` instruction leverages this, creating a `MemoryTable` keyed by `rowid`.
+*   **Internal Engine Use (Ephemeral Tables):** The VDBE uses `MemoryTable` internally for operations requiring temporary storage, such as materializing subquery results or sorting data. The `Opcode.OpenEphemeral` and `Opcode.Sort` instructions leverage this.
 *   **User-Defined In-Memory Tables:** Users can register the `MemoryTableModule` and create persistent (for the `Database` instance lifetime) or temporary in-memory tables using SQL:
 
     ```typescript
@@ -56,15 +59,24 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
     await db.exec("INSERT INTO my_data (id, name, value) VALUES (1, 'alpha', 1.23), (2, 'beta', 4.56)");
     await db.exec("INSERT INTO keyed_data VALUES ('A', 10, x'0102'), ('B', 5, x'0304')");
 
-    // Query using the index
+    // Create a secondary index
+    await db.exec("CREATE INDEX my_data_name_idx ON my_data (name)");
+
+    // Query using the secondary index
+    const resultByName = await db.prepare("SELECT * FROM my_data WHERE name = 'beta'").get();
+
+    // Query using the primary key index
     const results = await db.prepare("SELECT * FROM keyed_data WHERE key_part1 = 'A'").all();
     // Query using rowid
     const row2 = await db.prepare("SELECT value FROM my_data WHERE rowid = 2").get();
+
+    // Drop the secondary index
+    await db.exec("DROP INDEX my_data_name_idx");
     ```
 
 **Current Limitations:**
 
-*   **Constraint Enforcement:** Only the `UNIQUE` constraint on the effective BTree key (rowid or PRIMARY KEY) is currently enforced. Other constraints like `NOT NULL`, `CHECK`, `FOREIGN KEY` defined in the `CREATE TABLE` string are parsed but *not* enforced by `MemoryTable` itself during `INSERT` or `UPDATE`.
+*   **Constraint Enforcement:** Only the `UNIQUE` constraint on the primary BTree key (rowid or PRIMARY KEY) is currently enforced. Other constraints like `NOT NULL`, `CHECK`, `FOREIGN KEY` defined in the `CREATE TABLE` string are parsed but *not* enforced by `MemoryTable` itself during `INSERT` or `UPDATE`.
 *   **Default Values:** `DEFAULT` clauses are not applied during `INSERT`.
-*   **Advanced Planning:** `xBestIndex` planning is basic. It doesn't utilize indexes for `LIKE`, `GLOB`, or range scans on non-leading components of composite keys. Cost estimation is heuristic.
-*   **Transactionality:** `xBegin`, `xCommit`, `xRollback` are no-ops. Data modifications are directly applied to the BTree. Atomicity relies on the higher-level database transaction mechanism (if used) and `Latches` for operation serialization.
+*   **Advanced Planning:** `xBestIndex` planning is basic. Cost estimation is heuristic. It only considers range scans on the *first* column of an index.
+*   **Index Features:** Indices on expressions are not supported. Collation support in indices is basic (inherits from column).

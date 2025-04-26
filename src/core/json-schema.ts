@@ -11,6 +11,18 @@ export interface JsonColumnSchema {
 	generated: boolean;
 }
 
+export interface JsonIndexColumnSchema {
+	index: number;
+	desc: boolean;
+	collation?: string; // Optional collation
+}
+
+export interface JsonIndexSchema {
+	name: string;
+	columns: JsonIndexColumnSchema[];
+	// unique?: boolean; // Add if unique indexes are serialized
+}
+
 export interface JsonPrimaryKeyDefinition {
 	index: number;
 	desc: boolean;
@@ -23,6 +35,7 @@ export interface JsonTableSchema {
 	isVirtual: boolean;
 	vtabModule?: string;
 	vtabArgs?: string[];
+	indexes?: JsonIndexSchema[]; // Added optional indexes
 }
 
 export interface JsonFunctionSchema {

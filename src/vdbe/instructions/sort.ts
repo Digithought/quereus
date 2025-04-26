@@ -4,6 +4,7 @@ import { MemoryTable } from '../../vtab/memory/table';
 import type { Handler } from '../handler-types';
 import type { P4SortKey } from '../instruction';
 import { Opcode } from '../opcodes';
+import { MemoryTableCursor } from '../../vtab/memory/cursor';
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.Sort] = (ctx, inst) => {
@@ -26,11 +27,20 @@ export function registerHandlers(handlers: Handler[]) {
     // The actual sorting happens implicitly via B-tree insertion order based on this config.
     // This opcode itself doesn't *perform* the sort, it configures the cursor for sorted reads.
     try {
-      memTable._configureAsSorter(sortInfo);
+      // Create an ephemeral index containing sorted row copies
+      const ephemeralIndex = memTable.createEphemeralSorterIndex(sortInfo);
+      // Store this index on the cursor state for filter/next/rewind to use
+      if (!cursor.instance) {
+        throw new SqliteError("Cannot attach sorter index to a closed or invalid cursor instance.", StatusCode.INTERNAL);
+      }
+      // Attach the ephemeral index directly to the cursor instance
+      (cursor.instance as MemoryTableCursor).ephemeralSortingIndex = ephemeralIndex;
+      // Clear any previous sorted results array if present
+      cursor.sortedResults = null;
     } catch (e) {
-      console.error(`Error configuring sorter for cursor ${cIdx}:`, e);
+      console.error(`Error creating ephemeral sorter index for cursor ${cIdx}:`, e);
       if (e instanceof SqliteError) throw e;
-      throw new SqliteError(`Failed to configure sorter: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
+      throw new SqliteError(`Failed to create sorter index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
     }
 
     // TODO: Optionally, could materialize sorted results here into cursor.sortedResults

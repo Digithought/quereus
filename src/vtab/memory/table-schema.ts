@@ -11,7 +11,7 @@ export function addColumnLogic(self: MemoryTable, columnDef: ColumnDef): void {
 	if (self.isReadOnly()) {
 		throw new SqliteError(`Table '${self.tableName}' is read-only`, StatusCode.READONLY);
 	}
-	if (!self.data) throw new Error("MemoryTable BTree not initialized.");
+	if (!self.primaryTree) throw new Error("MemoryTable BTree not initialized.");
 
 	const newColNameLower = columnDef.name.toLowerCase();
 	if (self.columns.some(c => c.name.toLowerCase() === newColNameLower)) {
@@ -37,19 +37,19 @@ export function addColumnLogic(self: MemoryTable, columnDef: ColumnDef): void {
 
 	try {
 		const updatedRows: MemoryTableRow[] = [];
-		for (const path of self.data.ascending(self.data.first())) {
-			const row = self.data.at(path);
+		for (const path of self.primaryTree.ascending(self.primaryTree.first())) {
+			const row = self.primaryTree.at(path);
 			if (row) {
 				const newRow = { ...row, [newColumnSchema.name]: defaultValue };
 				updatedRows.push(newRow);
-				self.data.deleteAt(path);
+				self.primaryTree.deleteAt(path);
 				if (self.rowidToKeyMap && self.keyFromEntry(row) !== row._rowid_) {
 					self.rowidToKeyMap.delete(row._rowid_);
 				}
 			}
 		}
 		for (const row of updatedRows) {
-			self.data.insert(row);
+			self.primaryTree.insert(row);
 			if (self.rowidToKeyMap && self.keyFromEntry(row) !== row._rowid_) {
 				self.rowidToKeyMap.set(row._rowid_, self.keyFromEntry(row));
 			}
@@ -80,7 +80,7 @@ export function dropColumnLogic(self: MemoryTable, columnName: string): void {
 	if (self.isReadOnly()) {
 		throw new SqliteError(`Table '${self.tableName}' is read-only`, StatusCode.READONLY);
 	}
-	if (!self.data) throw new Error("MemoryTable BTree not initialized.");
+	if (!self.primaryTree) throw new Error("MemoryTable BTree not initialized.");
 
 	const colNameLower = columnName.toLowerCase();
 	const colIndex = self.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
@@ -111,19 +111,19 @@ export function dropColumnLogic(self: MemoryTable, columnName: string): void {
 
 	try {
 		const updatedRows: MemoryTableRow[] = [];
-		for (const path of self.data.ascending(self.data.first())) {
-			const row = self.data.at(path);
+		for (const path of self.primaryTree.ascending(self.primaryTree.first())) {
+			const row = self.primaryTree.at(path);
 			if (row) {
 				const { [columnName]: _, ...newRow } = row;
 				updatedRows.push(newRow as MemoryTableRow);
-				self.data.deleteAt(path);
+				self.primaryTree.deleteAt(path);
 				if (self.rowidToKeyMap && self.keyFromEntry(row) !== row._rowid_) {
 					self.rowidToKeyMap.delete(row._rowid_);
 				}
 			}
 		}
 		for (const row of updatedRows) {
-			self.data.insert(row);
+			self.primaryTree.insert(row);
 			if (self.rowidToKeyMap && self.keyFromEntry(row) !== row._rowid_) {
 				self.rowidToKeyMap.set(row._rowid_, self.keyFromEntry(row));
 			}
@@ -154,7 +154,7 @@ export function renameColumnLogic(self: MemoryTable, oldName: string, newName: s
 	if (self.isReadOnly()) {
 		throw new SqliteError(`Table '${self.tableName}' is read-only`, StatusCode.READONLY);
 	}
-	if (!self.data) throw new Error("MemoryTable BTree not initialized.");
+	if (!self.primaryTree) throw new Error("MemoryTable BTree not initialized.");
 
 	const oldNameLower = oldName.toLowerCase();
 	const newNameLower = newName.toLowerCase();
@@ -186,12 +186,12 @@ export function renameColumnLogic(self: MemoryTable, oldName: string, newName: s
 	});
 
 	try {
-		for (const path of self.data.ascending(self.data.first())) {
-			const row = self.data.at(path);
+		for (const path of self.primaryTree.ascending(self.primaryTree.first())) {
+			const row = self.primaryTree.at(path);
 			if (row && Object.prototype.hasOwnProperty.call(row, oldName)) {
 				const { [oldName]: value, ...rest } = row;
 				const newRow = { ...rest, [newName]: value };
-				self.data.updateAt(path, newRow as MemoryTableRow);
+				self.primaryTree.updateAt(path, newRow as MemoryTableRow);
 			} else if (row) {
 				console.warn(`Rowid ${row._rowid_} missing column ${oldName} during rename to ${newName}`);
 			}
@@ -218,12 +218,12 @@ export function renameColumnLogic(self: MemoryTable, oldName: string, newName: s
 		self.columns = oldColumns;
 		self.tableSchema = oldTableSchema;
 		try {
-			for (const path of self.data.ascending(self.data.first())) {
-				const row = self.data.at(path);
+			for (const path of self.primaryTree.ascending(self.primaryTree.first())) {
+				const row = self.primaryTree.at(path);
 				if (row && Object.prototype.hasOwnProperty.call(row, newName)) {
 					row[oldName] = row[newName];
 					delete row[newName];
-					self.data.updateAt(path, row);
+					self.primaryTree.updateAt(path, row);
 				}
 			}
 		} catch (rollbackError) {
@@ -232,7 +232,9 @@ export function renameColumnLogic(self: MemoryTable, oldName: string, newName: s
 		console.error(`Error renaming column ${oldName} to ${newName}, data might be inconsistent.`, e);
 		throw new SqliteError(`Failed to rename column ${oldName} to ${newName}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
 	}
-}export async function xRenameLogic(self: MemoryTable, newName: string): Promise<void> {
+}
+
+export async function xRenameLogic(self: MemoryTable, newName: string): Promise<void> {
 	// Access module's registry via this.module
 	const module = self.module as any; // Cast needed to access potentially private 'tables'
 	if (!module || typeof module.tables?.delete !== 'function' || typeof module.tables?.set !== 'function' || typeof module.tables?.has !== 'function') {
@@ -256,6 +258,7 @@ export function renameColumnLogic(self: MemoryTable, oldName: string, newName: s
 	}
 	console.log(`Memory table renamed from '${oldTableKey}' to '${newName}'`);
 }
+
 export async function xAlterSchemaLogic(self: MemoryTable, changeInfo: SchemaChangeInfo): Promise<void> {
 	const lockKey = `MemoryTable.SchemaChange:${self.schemaName}.${self.tableName}`;
 	const release = await Latches.acquire(lockKey); // Keep lock for safety

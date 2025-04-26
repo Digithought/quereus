@@ -5,6 +5,8 @@ import type { P4Update, VdbeInstruction } from '../instruction';
 import { Opcode } from '../opcodes';
 import { ConflictResolution } from '../../common/constants';
 import type { VirtualTableModule } from '../../vtab/module';
+import type { IndexConstraint, IndexConstraintUsage } from '../../vtab/indexInfo';
+import type { IndexSchema, TableSchema } from '../../schema/table';
 
 // Helper for handling errors from VTab methods
 function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {
@@ -22,7 +24,7 @@ export function registerHandlers(handlers: Handler[]) {
     const cIdx = inst.p1;
     const addrIfEmpty = inst.p2;
     const argsReg = inst.p3;
-    const p4Info = inst.p4 as { idxNum: number; idxStr: string | null; nArgs: number } | null;
+    const p4Info = inst.p4 as { idxNum: number; idxStr: string | null; nArgs: number; aConstraint: ReadonlyArray<IndexConstraint>; aConstraintUsage: IndexConstraintUsage[] } | null;
 
     const cursor = ctx.getCursor(cIdx);
     if (!cursor?.instance) {
@@ -37,8 +39,21 @@ export function registerHandlers(handlers: Handler[]) {
       args.push(ctx.getMem(argsReg + i));
     }
 
+    // Prepare the constraints array for the filter call
+    const constraintsToPass: { constraint: IndexConstraint, argvIndex: number }[] = [];
+    if (p4Info.aConstraint && p4Info.aConstraintUsage) {
+      p4Info.aConstraintUsage.forEach((usage, constraintIdx) => {
+        if (usage.argvIndex > 0 && constraintIdx < p4Info.aConstraint.length) {
+          constraintsToPass.push({
+            constraint: p4Info.aConstraint[constraintIdx],
+            argvIndex: usage.argvIndex
+          });
+        }
+      });
+    }
+
     try {
-      await cursor.instance.filter(p4Info.idxNum, p4Info.idxStr, args);
+      await cursor.instance.filter(p4Info.idxNum, p4Info.idxStr, constraintsToPass, args);
       const eof = cursor.instance.eof();
       ctx.pc = eof ? addrIfEmpty : ctx.pc + 1;
     } catch (e) {
@@ -96,7 +111,7 @@ export function registerHandlers(handlers: Handler[]) {
 
     try {
       // Rewind is equivalent to a filter with no constraints
-      await cursor.instance.filter(0, null, []);
+      await cursor.instance.filter(0, null, [], []);
       const eof = cursor.instance.eof();
       ctx.pc = eof ? addrIfEmpty : ctx.pc + 1;
     } catch (e) {
@@ -269,4 +284,62 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.VSavepoint] = (ctx, inst) => vtabTxOp(ctx, inst, 'xSavepoint');
   handlers[Opcode.VRelease] = (ctx, inst) => vtabTxOp(ctx, inst, 'xRelease');
   handlers[Opcode.VRollbackTo] = (ctx, inst) => vtabTxOp(ctx, inst, 'xRollbackTo');
+
+  // --- Add VTab DDL Handlers ---
+
+  handlers[Opcode.VCreateIndex] = async (ctx, inst) => {
+    const cIdx = inst.p1;
+    const indexSchema = inst.p4 as IndexSchema;
+    // const tableSchema = inst.p5 as TableSchema | undefined; // Assuming table schema might be in P5
+
+    const cursor = ctx.getCursor(cIdx);
+    const vtabInstance = cursor?.vtab;
+
+    if (!vtabInstance) {
+      throw new SqliteError(`VCreateIndex target cursor ${cIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
+    }
+    if (typeof vtabInstance.xCreateIndex !== 'function') {
+      throw new SqliteError(`VTab instance for ${vtabInstance.tableName} does not implement xCreateIndex`, StatusCode.MISUSE);
+    }
+    if (!indexSchema) {
+      throw new SqliteError(`VCreateIndex missing IndexSchema info in P4`, StatusCode.INTERNAL);
+    }
+
+    try {
+      await vtabInstance.xCreateIndex(indexSchema);
+      // VCreateIndex modifies state but doesn't advance PC or return data directly
+    } catch (e) {
+      handleVTabError(ctx, e, vtabInstance.tableName, 'xCreateIndex');
+      return ctx.error?.code; // Stop on error
+    }
+    return undefined; // Continue execution
+  };
+
+  handlers[Opcode.VDropIndex] = async (ctx, inst) => {
+    const cIdx = inst.p1;
+    const indexName = inst.p4 as string;
+
+    const cursor = ctx.getCursor(cIdx);
+    const vtabInstance = cursor?.vtab;
+
+    if (!vtabInstance) {
+      throw new SqliteError(`VDropIndex target cursor ${cIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
+    }
+    if (typeof vtabInstance.xDropIndex !== 'function') {
+      throw new SqliteError(`VTab instance for ${vtabInstance.tableName} does not implement xDropIndex`, StatusCode.MISUSE);
+    }
+    if (typeof indexName !== 'string' || !indexName) {
+      throw new SqliteError(`VDropIndex missing index name string in P4`, StatusCode.INTERNAL);
+    }
+
+    try {
+      await vtabInstance.xDropIndex(indexName);
+      // VDropIndex modifies state but doesn't advance PC or return data directly
+    } catch (e) {
+      handleVTabError(ctx, e, vtabInstance.tableName, 'xDropIndex');
+      return ctx.error?.code; // Stop on error
+    }
+    return undefined; // Continue execution
+  };
+  // --------------------------
 }

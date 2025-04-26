@@ -5,14 +5,14 @@ import type { MemoryTable, MemoryTableRow, BTreeKey } from './table';
 import { ConflictResolution } from '../../common/constants';
 
 export function addRowLogic(self: MemoryTable, row: Record<string, SqlValue>): { rowid?: bigint; } {
-	if (!self.data) throw new Error("MemoryTable BTree not initialized.");
+	if (!self.primaryTree) throw new Error("MemoryTable primaryTree not initialized.");
 
 	const rowid = self.nextRowid;
 	const rowWithId: MemoryTableRow = { ...row, _rowid_: rowid };
 	const key = self.keyFromEntry(rowWithId);
 	let existingKeyFound = false;
 
-	if (self.data.get(key) !== undefined) {
+	if (self.primaryTree.get(key) !== undefined) {
 		existingKeyFound = true;
 	}
 
@@ -48,9 +48,26 @@ export function addRowLogic(self: MemoryTable, row: Record<string, SqlValue>): {
 			}
 			self.pendingInserts.set(key, rowWithId);
 		} else {
-			self.data.insert(rowWithId);
+			self.primaryTree.insert(rowWithId);
 			if (self.rowidToKeyMap) {
 				self.rowidToKeyMap.set(rowid, key);
+			}
+			// Add to secondary indexes immediately
+			for (const index of self.secondary.values()) {
+				try {
+					index.addEntry(rowWithId);
+				} catch (e) {
+					console.error(`Insert: Failed adding entry rowid ${rowid} to sec index '${index.name}'`, e);
+					// Attempt to roll back primary insert for consistency
+					try {
+						const path = self.primaryTree.find(key);
+						if (path.on) self.primaryTree.deleteAt(path);
+						if (self.rowidToKeyMap) self.rowidToKeyMap.delete(rowid);
+					} catch (rollbackError) {
+						console.error("Insert: Failed to rollback primary insert after secondary index failure.", rollbackError);
+					}
+					throw e; // Re-throw the secondary index error
+				}
 			}
 		}
 		return { rowid: rowid }; // SUCCESS
@@ -61,7 +78,7 @@ export function addRowLogic(self: MemoryTable, row: Record<string, SqlValue>): {
 }
 
 export function updateRowLogic(self: MemoryTable, rowid: bigint, newData: Record<string, SqlValue>): boolean {
-	if (!self.data) throw new Error("MemoryTable BTree not initialized.");
+	if (!self.primaryTree) throw new Error("MemoryTable primaryTree not initialized.");
 
 	let existingRow: MemoryTableRow | undefined | null;
 	let oldKey: BTreeKey | undefined;
@@ -91,7 +108,7 @@ export function updateRowLogic(self: MemoryTable, rowid: bigint, newData: Record
 	if (!existingRow) {
 		path = self.findPathByRowid(rowid);
 		if (!path) return false;
-		existingRow = self.data.at(path);
+		existingRow = self.primaryTree.at(path);
 		if (!existingRow) return false;
 		oldKey = self.keyFromEntry(existingRow);
 	}
@@ -103,7 +120,7 @@ export function updateRowLogic(self: MemoryTable, rowid: bigint, newData: Record
 
 	if (keyChanged) {
 		let conflictingKeyFound = false;
-		if (self.data.get(newKey) !== undefined) conflictingKeyFound = true;
+		if (self.primaryTree.get(newKey) !== undefined) conflictingKeyFound = true;
 		if (!conflictingKeyFound && self.inTransaction) {
 			if (self.pendingInserts?.has(newKey)) conflictingKeyFound = true;
 			else if (self.pendingUpdates) {
@@ -136,17 +153,57 @@ export function updateRowLogic(self: MemoryTable, rowid: bigint, newData: Record
 			return true;
 		} else {
 			if (keyChanged) {
-				if (!path) path = self.data.find(oldKey);
+				if (!path) path = self.primaryTree.find(oldKey);
 				if (!path || !path.on) throw new Error("Cannot find original row path for key change update");
-				self.data.deleteAt(path);
+				const originalRow = self.primaryTree.at(path);
+				if (!originalRow) throw new Error("Cannot find original row data for key change update");
+
+				// 1. Remove old entries from secondary indexes
+				for (const index of self.secondary.values()) {
+					try {
+						index.removeEntry(originalRow);
+					} catch (e) { /* Ignore remove error? */ }
+				}
+				// 2. Remove old entry from primary index
+				self.primaryTree.deleteAt(path);
 				if (self.rowidToKeyMap) self.rowidToKeyMap.delete(rowid);
-				self.data.insert(potentialNewRow);
+				// 3. Insert new entry into primary index
+				try {
+					self.primaryTree.insert(potentialNewRow);
+				} catch (e) {
+					// Rollback secondary deletes?
+					try { self.primaryTree.insert(originalRow); } catch { } // Attempt primary rollback
+					throw e; // Re-throw primary insert error
+				}
 				if (self.rowidToKeyMap) self.rowidToKeyMap.set(rowid, newKey);
+				// 4. Add new entries to secondary indexes
+				for (const index of self.secondary.values()) {
+					try {
+						index.addEntry(potentialNewRow);
+					} catch (e) { /* How to handle secondary insert failure after primary success? */ }
+				}
 				return true;
 			} else {
-				if (!path) path = self.data.find(oldKey);
+				// Key did not change, update in-place
+				if (!path) path = self.primaryTree.find(oldKey);
 				if (!path || !path.on) throw new Error("Cannot find original row path for same key update");
-				self.data.updateAt(path, potentialNewRow);
+				const originalRow = self.primaryTree.at(path);
+				if (!originalRow) throw new Error("Cannot find original row data for same key update");
+				// 1. Update primary tree
+				self.primaryTree.updateAt(path, potentialNewRow);
+				// 2. Update secondary indexes ONLY IF non-key columns relevant to them changed
+				for (const index of self.secondary.values()) {
+					const oldSecKey = index.keyFromRow(originalRow);
+					const newSecKey = index.keyFromRow(potentialNewRow);
+					if (index.compareKeys(oldSecKey, newSecKey) !== 0) {
+						// This technically shouldn't happen if the PRIMARY key didn't change,
+						// unless the secondary index IS the primary key (redundant index?)
+						// OR if the key extraction logic is complex.
+						// For safety, perform remove/add if secondary key differs.
+						try { index.removeEntry(originalRow); } catch (e) { }
+						try { index.addEntry(potentialNewRow); } catch (e) { }
+					}
+				}
 				return true;
 			}
 		}
@@ -154,14 +211,14 @@ export function updateRowLogic(self: MemoryTable, rowid: bigint, newData: Record
 		if (e instanceof ConstraintError) throw e;
 		console.error("Failed to update row:", e);
 		if (!self.inTransaction && keyChanged && existingRow) {
-			try { if (path) self.data.deleteAt(path); self.data.insert(existingRow); if (self.rowidToKeyMap) self.rowidToKeyMap.set(rowid, oldKey); } catch { }
+			try { if (path) self.primaryTree.deleteAt(path); self.primaryTree.insert(existingRow); if (self.rowidToKeyMap) self.rowidToKeyMap.set(rowid, oldKey); } catch { }
 		}
 		throw new SqliteError(`Internal BTree error during update: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 	}
 }
 
 export function deleteRowLogic(self: MemoryTable, rowid: bigint): boolean {
-	if (!self.data) throw new Error("MemoryTable BTree not initialized.");
+	if (!self.primaryTree) throw new Error("MemoryTable primaryTree not initialized.");
 
 	if (self.inTransaction) {
 		let foundPendingInsert = false;
@@ -186,21 +243,33 @@ export function deleteRowLogic(self: MemoryTable, rowid: bigint): boolean {
 
 		const path = self.findPathByRowid(rowid);
 		if (!path) return false;
-		const oldRow = self.data.at(path);
+		const oldRow = self.primaryTree.at(path);
 		if (!oldRow) return false;
 		const oldKey = self.keyFromEntry(oldRow);
 
 		if (!self.pendingDeletes) self.pendingDeletes = new Map();
 		self.pendingDeletes.set(rowid, { oldRow, oldKey });
 		return true;
-
 	} else {
 		const path = self.findPathByRowid(rowid);
 		if (!path) return false;
 		try {
-			self.data.deleteAt(path);
+			// Find the row before deleting from primary to remove from secondary
+			const oldRow = self.primaryTree.at(path);
+			if (!oldRow) return false; // Should not happen
+
+			self.primaryTree.deleteAt(path);
 			if (self.rowidToKeyMap) {
 				self.rowidToKeyMap.delete(rowid);
+			}
+			// Delete from secondary indexes
+			for (const index of self.secondary.values()) {
+				try {
+					index.removeEntry(oldRow);
+				} catch (e) {
+					// Log error but continue? If primary succeeded, secondary failure leaves inconsistency.
+					console.error(`Delete: Failed removing entry rowid ${rowid} from sec index '${index.name}'`, e);
+				}
 			}
 			return true;
 		} catch (e) {
@@ -211,14 +280,16 @@ export function deleteRowLogic(self: MemoryTable, rowid: bigint): boolean {
 }
 
 export function clearLogic(self: MemoryTable): void {
-	if (self.data) {
-		self.data = new BTree<BTreeKey, MemoryTableRow>(self.keyFromEntry, self.compareKeys);
+	if (self.primaryTree) {
+		self.primaryTree = new BTree<BTreeKey, MemoryTableRow>(self.keyFromEntry, self.compareKeys);
 	}
 	if (self.rowidToKeyMap) {
 		self.rowidToKeyMap.clear();
 	}
 	self.nextRowid = BigInt(1);
-}export async function xUpdateLogic(self: MemoryTable, values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint; }> {
+}
+
+export async function xUpdateLogic(self: MemoryTable, values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint; }> {
 	if (self.isReadOnly()) {
 		throw new SqliteError(`Table '${self.tableName}' is read-only`, StatusCode.READONLY);
 	}

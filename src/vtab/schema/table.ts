@@ -9,6 +9,7 @@ import type { SqliteContext } from '../../func/context';
 import type { Schema } from '../../schema/schema';
 import type { FunctionSchema } from '../../schema/function';
 import type { TableSchema } from '../../schema/table';
+import type { IndexConstraint } from '../indexInfo';
 
 // Define the structure of rows returned by sqlite_schema
 interface SchemaRow {
@@ -128,7 +129,7 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 		return row?._rowid_ ?? null;
 	}
 
-	async filter(idxNum: number, idxStr: string | null, args: ReadonlyArray<SqlValue>): Promise<void> {
+	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
 		this.reset();
 		const db = this.table.db;
 		const schemaManager = db.schemaManager;

@@ -8,6 +8,7 @@ import type { FunctionSchema } from '../schema/function';
 import type { Statement } from '../core/statement';
 import { StatusCode } from '../common/types';
 import { SqliteError } from '../common/errors';
+import type { IndexSchema } from '../schema/table';
 
 /**
  * Base class (or interface) representing an instance of a virtual table,
@@ -102,6 +103,12 @@ export abstract class VirtualTable {
 	 * @throws SqliteError or ConstraintError on failure.
 	 */
 	xAlterSchema?(changeInfo: SchemaChangeInfo): Promise<void>;
+
+	/** Optional: Create a secondary index on the virtual table instance. */
+	xCreateIndex?(indexInfo: IndexSchema): Promise<void>;
+
+	/** Optional: Drop a secondary index from the virtual table instance. */
+	xDropIndex?(indexName: string): Promise<void>;
 
 	// ------------------------------------------------------------------- //
 }

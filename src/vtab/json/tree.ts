@@ -10,6 +10,7 @@ import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/bu
 import type { TableSchema } from '../../schema/table';
 import { createDefaultColumnSchema } from '../../schema/column';
 import { buildColumnIndexMap } from '../../schema/table';
+import type { IndexConstraint } from '../indexInfo';
 
 // --- Define Configuration Interface (Shared with JsonEach) ---
 interface JsonConfig extends BaseModuleConfig {
@@ -237,7 +238,7 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 
 	// --- Implement Abstract Methods --- //
 
-	async filter(idxNum: number, idxStr: string | null, args: ReadonlyArray<SqlValue>): Promise<void> {
+	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
 		const rootPath = this.table.rootPath;
 		let startNode = this.table.parsedJson;
 		if (rootPath) {

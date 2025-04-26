@@ -47,6 +47,8 @@ export interface TableSchema {
 	viewDefinition?: AST.SelectStmt; // Only for views
 	/** Table-level constraints */
 	tableConstraints?: readonly TableConstraint[];
+	/** Definitions of secondary indexes (relevant for planning) */
+	indexes?: ReadonlyArray<IndexSchema>;
 
 	// Add flags for other table properties if needed (e.g., isReadOnly, isEphemeral)
 }
@@ -148,3 +150,56 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 	return schema as ColumnSchema;
 }
 // ------------------------------------ //
+
+// --- Add Index Definition for Schema --- //
+export interface IndexColumnSchema {
+	index: number;    // Column index in TableSchema.columns
+	desc: boolean;
+	collation?: string;
+}
+
+export interface IndexSchema {
+	name: string;
+	columns: ReadonlyArray<IndexColumnSchema>;
+	// unique?: boolean;
+	// where?: Expression; // For partial indexes
+}
+// -------------------------------------- //
+
+/** Helper to create a basic TableSchema (useful for testing or simple vtabs) */
+export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): TableSchema {
+	const columnSchemas = columns.map(c => columnDefToSchema({
+		name: c.name,
+		dataType: c.type,
+		constraints: [] // Add empty constraints array
+	}));
+	const columnIndexMap = buildColumnIndexMap(columnSchemas);
+	const pkDef = pkColNames
+		? pkColNames.map(pkName => {
+			const idx = columnIndexMap.get(pkName.toLowerCase());
+			if (idx === undefined) throw new Error(`PK column ${pkName} not found`);
+			return { index: idx, desc: false };
+		})
+		: [];
+
+	return Object.freeze({
+		name: name,
+		schemaName: 'main',
+		columns: columnSchemas,
+		columnIndexMap: columnIndexMap,
+		primaryKeyDefinition: pkDef,
+		checkConstraints: [],
+		indexes: [], // Initialize empty
+		isVirtual: false,
+		vtabModule: undefined, // Use undefined instead of null
+		vtabAuxData: null,
+		vtabArgs: [],
+		isWithoutRowid: false,
+		isTemporary: false,
+		isStrict: false,
+		isView: false,
+		subqueryAST: undefined,
+		viewDefinition: undefined,
+		tableConstraints: [],
+	});
+}

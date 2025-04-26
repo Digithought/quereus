@@ -14,7 +14,7 @@ import type { BaseModuleConfig } from '../vtab/module';
 import type { Expression } from '../parser/ast';
 import type { P4SchemaChange } from "../vdbe/instruction";
 import type { VirtualTableModule } from "../vtab/module";
-import { columnDefToSchema } from "../schema/table";
+import { columnDefToSchema, type IndexSchema, type TableSchema } from "../schema/table";
 import type { ColumnSchema } from "../schema/column";
 
 // Define local interfaces if not exported/importable easily
@@ -198,7 +198,84 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 }
 
 export function compileCreateIndexStatement(compiler: Compiler, stmt: AST.CreateIndexStmt): void {
-	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, "CREATE INDEX (no-op in VDBE)");
+	const db = compiler.db;
+	const schemaName = stmt.table.schema || 'main';
+	const tableName = stmt.table.name;
+	const indexName = stmt.index.name;
+
+	// Find the table schema
+	const tableSchema = db.schemaManager.getTable(schemaName, tableName);
+	if (!tableSchema) {
+		throw new SqliteError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+	}
+	// Check if it's a virtual table
+	if (!tableSchema.isVirtual || !tableSchema.vtabModule) {
+		throw new SqliteError(`Cannot create index on non-virtual table or VTab without module: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+	}
+
+	// Check if the virtual table prototype supports xCreateIndex
+	// We check the prototype because the instance might not be connected yet.
+	// This assumes the module correctly implements the method on its instances.
+	if (typeof (tableSchema.vtabModule as any)?.prototype?.xCreateIndex !== 'function') {
+		throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+	}
+
+	// Convert AST columns to IndexSchema columns
+	const indexColumns = stmt.columns.map((indexedCol: AST.IndexedColumn) => {
+		if (indexedCol.expr) {
+			throw new SqliteError(`Indices on expressions are not supported yet.`, StatusCode.ERROR, undefined, indexedCol.expr.loc?.start.line, indexedCol.expr.loc?.start.column);
+		}
+		const colName = indexedCol.name;
+		if (!colName) {
+			// Should not happen if expr is checked first
+			throw new SqliteError(`Indexed column must be a simple column name.`, StatusCode.ERROR);
+		}
+		const tableColIndex = tableSchema.columnIndexMap.get(colName.toLowerCase());
+		if (tableColIndex === undefined) {
+			throw new SqliteError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		}
+		const tableColSchema = tableSchema.columns[tableColIndex];
+		return {
+			index: tableColIndex,
+			desc: indexedCol.direction === 'desc',
+			collation: tableColSchema.collation // Inherit collation from table column for now
+		};
+	});
+
+	// Construct the IndexSchema object
+	const indexSchema: IndexSchema = {
+		name: indexName,
+		columns: Object.freeze(indexColumns),
+		// unique: stmt.isUnique, // Add if needed
+		// where: stmt.where ? stringifyExpr(stmt.where) : undefined, // Add if needed
+	};
+
+	// Allocate a cursor for the target table
+	let cursorIdx = -1;
+	for (const [idx, schema] of compiler.tableSchemas.entries()) {
+		if (schema === tableSchema) {
+			cursorIdx = idx;
+			break;
+		}
+	}
+	if (cursorIdx === -1) {
+		cursorIdx = compiler.allocateCursor();
+		compiler.tableSchemas.set(cursorIdx, tableSchema);
+		// Use OpenWrite as CREATE INDEX modifies the VTab state
+		compiler.emit(Opcode.OpenWrite, cursorIdx, 0, 0, tableSchema, 0, `Open VTab ${tableName} for CREATE INDEX`);
+	} else {
+		// Re-open if already open (might be needed if used earlier in a multi-stmt script)
+		compiler.emit(Opcode.OpenWrite, cursorIdx, 0, 0, tableSchema, 0, `Re-Open VTab ${tableName} for CREATE INDEX`);
+	}
+
+	// Emit the VCreateIndex opcode
+	compiler.emit(Opcode.VCreateIndex, cursorIdx, 0, 0, indexSchema, 0, `CREATE INDEX ${indexName} ON ${tableName}`);
+
+	// Close the cursor
+	compiler.emit(Opcode.Close, cursorIdx, 0, 0, null, 0, `Close VTab cursor after CREATE INDEX`);
+
+	// Invalidate schema cache as structure changed
+	compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after CREATE INDEX`);
 }
 
 export function compileCreateViewStatement(compiler: Compiler, stmt: AST.CreateViewStmt): void {
@@ -273,15 +350,63 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 			case 'view':
 				success = compiler.db.schemaManager.dropView(schemaName, objectName);
 				break;
-			case 'index':
-				// Dropping indexes might require more complex handling (e.g., finding associated table)
-				// For now, assume SchemaManager handles it or we add specific logic later.
-				// success = compiler.db.schemaManager.dropIndex(schemaName, objectName);
-				compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `DROP INDEX ${schemaName}.${objectName} (Not fully implemented)`);
-				success = true; // Assume success for now to avoid error below
-				itemType = 'index'; // Ensure correct item type for error message
-				console.warn(`DROP INDEX compilation is a placeholder.`);
+			case 'index': {
+				// Find the schema and check if it's a virtual table index
+				// We need the table schema to find the VTab instance
+				// This requires iterating tables to find which one owns the index, which is inefficient.
+				// TODO: Improve schema management to track index->table relationship.
+				let tableSchema: TableSchema | undefined;
+				const schema = compiler.db.schemaManager.getSchema(schemaName);
+				if (schema) {
+					for (const ts of schema.getAllTables()) {
+						if (ts.indexes?.some(idx => idx.name.toLowerCase() === objectName.toLowerCase())) {
+							tableSchema = ts;
+							break;
+						}
+					}
+				}
+
+				if (!tableSchema) {
+					if (!stmt.ifExists) throw new SqliteError(`no such index: ${objectName}`, StatusCode.ERROR);
+					compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `DROP INDEX ${schemaName}.${objectName} (Not found, IF EXISTS)`);
+					success = true; // Report success if IF EXISTS
+					break;
+				}
+
+				if (!tableSchema.isVirtual || !tableSchema.vtabModule) {
+					throw new SqliteError(`Index '${objectName}' belongs to non-virtual table '${tableSchema.name}'. DROP INDEX only supported for VTabs.`, StatusCode.ERROR);
+				}
+
+				// Check if the virtual table prototype supports xDropIndex
+				if (typeof (tableSchema.vtabModule as any)?.prototype?.xDropIndex !== 'function') {
+					throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableSchema.name}' does not support DROP INDEX.`, StatusCode.ERROR);
+				}
+
+				// Allocate a cursor for the target table
+				let cursorIdx = -1;
+				for (const [idx, schema] of compiler.tableSchemas.entries()) {
+					if (schema === tableSchema) {
+						cursorIdx = idx;
+						break;
+					}
+				}
+				if (cursorIdx === -1) {
+					cursorIdx = compiler.allocateCursor();
+					compiler.tableSchemas.set(cursorIdx, tableSchema);
+					compiler.emit(Opcode.OpenWrite, cursorIdx, 0, 0, tableSchema, 0, `Open VTab ${tableSchema.name} for DROP INDEX`);
+				} else {
+					compiler.emit(Opcode.OpenWrite, cursorIdx, 0, 0, tableSchema, 0, `Re-Open VTab ${tableSchema.name} for DROP INDEX`);
+				}
+
+				// Emit the VDropIndex opcode, passing index name as p4
+				compiler.emit(Opcode.VDropIndex, cursorIdx, 0, 0, objectName, 0, `DROP INDEX ${objectName} ON ${tableSchema.name}`);
+				// Close the cursor
+				compiler.emit(Opcode.Close, cursorIdx, 0, 0, null, 0, `Close VTab cursor after DROP INDEX`);
+				// Invalidate schema cache
+				compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after DROP INDEX`);
+				success = true; // Indicate VDBE code was generated
 				break;
+			}
 			// case 'trigger': // Add if triggers are supported later
 			// 	 success = compiler.db.schemaManager.dropTrigger(schemaName, objectName);
 			// 	 break;

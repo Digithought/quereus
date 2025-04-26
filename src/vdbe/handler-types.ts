@@ -6,6 +6,7 @@ import type { VdbeInstruction } from './instruction';
 import type { VdbeProgram } from './program';
 import type { VirtualTable } from '../vtab/table';
 import type { VirtualTableCursor } from '../vtab/cursor';
+import type { MemoryIndex } from '../vtab/memory/index';
 
 /**
  * Represents a single VDBE memory cell (register)
@@ -22,6 +23,7 @@ export interface VdbeCursor {
   vtab: VirtualTable | null;
   isEphemeral?: boolean;
   sortedResults?: { rows: MemoryCell[][], index: number } | null;
+  sortingIndex?: MemoryIndex | null;
 }
 
 /**

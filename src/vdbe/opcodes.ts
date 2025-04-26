@@ -1,4 +1,3 @@
-
 export enum Opcode {
 	Init = 1,
 	Goto = 2,
@@ -83,6 +82,11 @@ export enum Opcode {
 	VRelease = 74,
 	VRollbackTo = 75,
 	ConstraintViolation = 87,
+
+	// --- Add new VTab DDL opcodes --- //
+	VCreateIndex = 170, // Arbitrary high number
+	VDropIndex = 171,   // Arbitrary high number
+	// -------------------------------- //
 
 	// Results
 	ResultRow = 76,

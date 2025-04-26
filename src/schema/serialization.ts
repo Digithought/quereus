@@ -4,7 +4,7 @@ import { SqlDataType } from '../common/constants';
 import type { SqlValue } from '../common/types';
 import type { SchemaManager } from './manager';
 import type { ColumnSchema } from './column';
-import type { TableSchema } from './table';
+import type { TableSchema, IndexSchema } from './table';
 import { buildColumnIndexMap } from './table';
 import type { FunctionSchema } from './function';
 import type { Database } from '../core/database';
@@ -13,7 +13,9 @@ import type {
   JsonSchema,
   JsonTableSchema,
   JsonColumnSchema,
-  JsonFunctionSchema
+  JsonFunctionSchema,
+  JsonIndexSchema,
+  JsonIndexColumnSchema
 } from '../core/json-schema';
 
 /**
@@ -66,6 +68,14 @@ export function exportSchemaJson(db: Database): string {
         isVirtual: tableSchema.isVirtual,
         vtabModule: tableSchema.vtabModuleName,
         vtabArgs: tableSchema.vtabArgs ? [...tableSchema.vtabArgs] : undefined,
+        indexes: tableSchema.indexes?.map((idx: IndexSchema): JsonIndexSchema => ({
+          name: idx.name,
+          columns: idx.columns.map((col): JsonIndexColumnSchema => ({
+            index: col.index,
+            desc: col.desc,
+            collation: col.collation,
+          })),
+        })),
       };
       jsonSchema.tables.push(jsonTable);
     }
@@ -188,9 +198,15 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         isVirtual: jsonTable.isVirtual,
         vtabModuleName: jsonTable.vtabModule,
         vtabArgs: jsonTable.vtabArgs ? Object.freeze(jsonTable.vtabArgs) : undefined,
-        // vtabModule, vtabInstance, vtabAuxData will be populated on connect
-        // Add missing properties - assume false for imported schemas unless specified in JSON
-        isWithoutRowid: false, // Or potentially read from jsonTable if added to JsonTableSchema later
+        indexes: jsonTable.indexes ? Object.freeze(jsonTable.indexes.map((jsonIdx: JsonIndexSchema): IndexSchema => ({
+          name: jsonIdx.name,
+          columns: Object.freeze(jsonIdx.columns.map((jsonCol: JsonIndexColumnSchema) => ({
+            index: jsonCol.index,
+            desc: jsonCol.desc,
+            collation: jsonCol.collation,
+          }))),
+        }))) : undefined,
+        isWithoutRowid: false,
         isStrict: false,
         isView: false,
       };

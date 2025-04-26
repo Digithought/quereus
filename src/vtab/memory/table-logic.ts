@@ -8,66 +8,15 @@ import { IndexConstraintOp } from '../../common/constants';
 import { MemoryTable, type BTreeKey, type MemoryTableRow } from './table';
 import { compareSqlValues } from '../../util/comparison';
 
-export function configureAsSorterLogic(self: MemoryTable, sortInfo: P4SortKey): void {
-	if (self.isSorter) {
-		console.warn(`MemoryTable ${self.tableName}: Already configured as sorter.`);
-		return;
-	}
-	console.log(`MemoryTable ${self.tableName}: Configuring BTree for sorting with keys:`, sortInfo.keyIndices, `directions:`, sortInfo.directions);
-
-	const sorterColumnMap = self.columns.map(c => c.name);
-
-	const keyFromEntry = (row: MemoryTableRow): BTreeKey => {
-		const keyValues = sortInfo.keyIndices.map(index => {
-			const colName = sorterColumnMap[index];
-			return colName ? (row as any)[colName] : null;
-		});
-		keyValues.push(row._rowid_); // Tie-breaker
-		return keyValues;
-	};
-
-	const compareKeys = (a: BTreeKey, b: BTreeKey): number => {
-		const arrA = a as SqlValue[];
-		const arrB = b as SqlValue[];
-		const len = Math.min(arrA.length, arrB.length) - 1;
-
-		for (let i = 0; i < len; i++) {
-			const dirMultiplier = sortInfo.directions[i] ? -1 : 1;
-			const collation = sortInfo.collations?.[i] || 'BINARY';
-			const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
-			if (cmp !== 0) return cmp;
-		}
-		const rowidA = arrA[len];
-		const rowidB = arrB[len];
-		return compareSqlValues(rowidA, rowidB);
-	};
-
-	self.keyFromEntry = keyFromEntry;
-	self.compareKeys = compareKeys;
-	self.isSorter = true;
-	self.data = new BTree<BTreeKey, MemoryTableRow>(keyFromEntry, compareKeys);
-	self.rowidToKeyMap = null;
-}
-
 export async function xOpenLogic(self: MemoryTable): Promise<VirtualTableCursor<MemoryTable, any>> {
-	if (!self.data) {
-		self.data = new BTree<BTreeKey, MemoryTableRow>(self.keyFromEntry, self.compareKeys);
+	if (!self.primaryTree) {
+		console.warn(`MemoryTable ${self.tableName}: primaryTree not initialized in xOpen. Re-initializing.`);
+		self.primaryTree = new BTree<BTreeKey, MemoryTableRow>(self.keyFromEntry, self.compareKeys);
 	}
 	return new MemoryTableCursor(self);
 }
 
 export function xBestIndexLogic(self: MemoryTable, indexInfo: IndexInfo): number {
-	if (self.isSorter) {
-		indexInfo.idxNum = 0;
-		indexInfo.estimatedCost = 1.0;
-		indexInfo.estimatedRows = BigInt(self.size || 1);
-		indexInfo.orderByConsumed = true;
-		indexInfo.idxFlags = 0;
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
-		indexInfo.idxStr = "sortplan";
-		return StatusCode.OK;
-	}
-
 	const constraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
 	const pkIndices = self.primaryKeyColumnIndices;
 	const keyIsRowid = pkIndices.length === 0;
