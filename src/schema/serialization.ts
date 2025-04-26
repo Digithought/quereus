@@ -3,12 +3,22 @@ import { StatusCode } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 import type { SqlValue } from '../common/types.js';
 import type { ColumnSchema } from './column.js';
-import type { TableSchema, IndexSchema } from './table.js';
-import { buildColumnIndexMap } from './table.js';
+import type { TableSchema, IndexSchema, RowConstraintSchema } from './table.js';
+import { buildColumnIndexMap, opsToMask, RowOp } from './table.js';
 import type { FunctionSchema } from './function.js';
 import type { Database } from '../core/database.js';
 import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema,
-	JsonFunctionSchema, JsonIndexSchema, JsonIndexColumnSchema } from '../core/json-schema.js';
+	JsonFunctionSchema, JsonIndexSchema, JsonIndexColumnSchema, JsonTableConstraint} from '../core/json-schema.js';
+import * as AST from '../parser/ast.js';
+
+/** Function to convert RowOpMask to string array */
+function maskToOpsArray(mask: number): ('insert' | 'update' | 'delete')[] {
+  const ops: ('insert' | 'update' | 'delete')[] = [];
+  if (mask & RowOp.INSERT) ops.push('insert');
+  if (mask & RowOp.UPDATE) ops.push('update');
+  if (mask & RowOp.DELETE) ops.push('delete');
+  return ops;
+}
 
 /**
  * Exports a database schema (tables and function signatures) to a JSON string.
@@ -68,6 +78,15 @@ export function exportSchemaJson(db: Database): string {
             collation: col.collation,
           })),
         })),
+        checkConstraints: tableSchema.checkConstraints?.map((constraint): JsonTableConstraint => {
+          const rowConstraint = constraint as RowConstraintSchema;
+          return {
+            type: 'check',
+            name: rowConstraint.name,
+            expr: null,
+            operations: maskToOpsArray(rowConstraint.operations),
+          };
+        }),
       };
       jsonSchema.tables.push(jsonTable);
     }
@@ -180,10 +199,29 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         } as ColumnSchema;
       });
 
+      // Deserialize checkConstraints (without expr for now)
+      const checkConstraints: RowConstraintSchema[] = [];
+      if (jsonTable.checkConstraints) {
+        for (const jsonCheck of jsonTable.checkConstraints) {
+          if (jsonCheck.type === 'check') {
+            // TODO: Deserialize expression properly
+            // We need a way to parse expression strings reliably.
+            // For now, we store a dummy/placeholder expression.
+            const placeholderExpr: AST.LiteralExpr = { type: 'literal', value: null }; // Placeholder
+
+            checkConstraints.push({
+              name: jsonCheck.name,
+              expr: placeholderExpr, // Use placeholder
+              operations: opsToMask(jsonCheck.operations as any),
+            });
+          }
+        }
+      }
+
       const tableSchema: TableSchema = {
         name: jsonTable.name,
         schemaName: schemaName,
-        checkConstraints: [],
+        checkConstraints: Object.freeze(checkConstraints),
         columns: Object.freeze(columns),
         columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
         primaryKeyDefinition: Object.freeze(jsonTable.primaryKeyDefinition),

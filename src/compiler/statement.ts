@@ -7,6 +7,7 @@ import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
 import { compileUnhandledWhereConditions } from './whereVerify.js';
 import { compileLiteralValue } from './utils.js';
+import { RowOp, type RowConstraintSchema } from '../schema/table.js';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
@@ -79,17 +80,22 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 
 			// --- Compile CHECK constraints ---
 			if (tableSchema.checkConstraints && tableSchema.checkConstraints.length > 0) {
-				// Create the argument map for CHECK constraints: string(colIndex) -> register
-				// Use mutable Map locally, but pass as ArgumentMap (ReadonlyMap)
-				const checkArgMap: Map<string, number> = new Map<string, number>();
-				valueRegisters.forEach((reg, index) => {
-					checkArgMap.set(`${index}`, reg); // Key is stringified index
+				// Build argument map for NEW values
+				const argMap = new Map<string, number>();
+				valueRegisters.forEach((reg, colIdx) => {
+					const name = tableSchema.columns[colIdx].name.toLowerCase();
+					argMap.set(name, reg);          // unqualified / NEW default
+					argMap.set(`new.${name}`, reg); // explicit NEW alias
 				});
-				// Also add rowid if needed? Assume VColumn handles rowid for now.
 
 				tableSchema.checkConstraints.forEach((constraint, idx) => {
-					const checkExpr = constraint.expr;
-					const constraintName = constraint.name ?? `check_${idx}`;
+					const rowConstraint = constraint as RowConstraintSchema;
+					// --- Filter by Operation --- //
+					if (!(rowConstraint.operations & RowOp.INSERT)) return; // Use cast variable
+					// ------------------------- //
+
+					const checkExpr = rowConstraint.expr;
+					const constraintName = rowConstraint.name ?? `check_${idx}`;
 					const constraintContext = `CHECK constraint ${constraintName} on ${tableSchema.name}`;
 
 					// Allocate register for check result
@@ -98,8 +104,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 					const addrCheckOK = compiler.allocateAddress();
 
 					// Compile the CHECK expression, passing the map of new values.
-					// compileColumn handler should now prioritize this map.
-					compiler.compileExpression(checkExpr, regCheckResult, undefined, undefined, checkArgMap);
+					compiler.compileExpression(checkExpr, regCheckResult, undefined, undefined, argMap);
 
 					// If result is TRUE (non-zero, non-null), jump past the failure.
 					// Otherwise, fall through to the ConstraintViolation.
@@ -276,38 +281,47 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 
 	// --- Gather Full Proposed Row & Compile CHECK constraints ---
 	if (tableSchema.checkConstraints && tableSchema.checkConstraints.length > 0) {
-		// Map to hold registers for ALL columns (new or old values)
-		const updateValueRegisters = new Map<number, number>();
+		// Prepare OLD and NEW value maps
+		const oldRegs = new Map<number, number>();
+		const newRegs = new Map<number, number>();
 
-		// Populate with SET values and fetch old values for non-SET columns
+		// Fetch OLD values and determine NEW values
 		for (let i = 0; i < tableSchema.columns.length; i++) {
-			if (assignmentRegs.has(i)) {
-				// Use the already calculated new value
-				updateValueRegisters.set(i, assignmentRegs.get(i)!);
-			} else {
-				// Fetch the old value for columns not being updated
-				const regOldValue = compiler.allocateMemoryCells(1);
-				compiler.emit(Opcode.VColumn, cursor, i, regOldValue, 0, 0, `Get old value ${tableSchema.columns[i].name}`);
-				updateValueRegisters.set(i, regOldValue);
-			}
+			// Fetch OLD value
+			const rOld = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.VColumn, cursor, i, rOld, 0, 0, `Get old value ${tableSchema.columns[i].name} for CHECK`);
+			oldRegs.set(i, rOld);
+
+			// Determine NEW value (use provided assignment or the old value)
+			const rNew = assignmentRegs.has(i) ? assignmentRegs.get(i)! : rOld;
+			newRegs.set(i, rNew);
 		}
 
-		// Create the argument map for CHECK constraints: string(colIndex) -> register
-		const checkArgMap: Map<string, number> = new Map<string, number>();
-		updateValueRegisters.forEach((reg, index) => {
-			checkArgMap.set(`${index}`, reg);
-		});
+		// Build the combined argument map for CHECK constraints
+		const argMap = new Map<string, number>();
+		for (let i = 0; i < tableSchema.columns.length; i++) {
+			const name = tableSchema.columns[i].name.toLowerCase();
+			argMap.set(name, newRegs.get(i)!);        // unqualified defaults to NEW
+			argMap.set(`new.${name}`, newRegs.get(i)!); // explicit NEW
+			argMap.set(`old.${name}`, oldRegs.get(i)!); // explicit OLD
+		}
 
-		// Now compile each CHECK constraint using the combined values
+		// Now compile each CHECK constraint using the combined values, filtered by operation
 		tableSchema.checkConstraints.forEach((constraint, idx) => {
-			const checkExpr = constraint.expr;
-			const constraintName = constraint.name ?? `check_${idx}`;
+			const rowConstraint = constraint as RowConstraintSchema;
+			// --- Filter by Operation --- //
+			if (!(rowConstraint.operations & RowOp.UPDATE)) return; // Use cast variable
+			// ------------------------- //
+
+			const checkExpr = rowConstraint.expr;
+			const constraintName = rowConstraint.name ?? `check_${idx}`;
 			const constraintContext = `CHECK constraint ${constraintName} on ${tableSchema.name}`;
 
 			const regCheckResult = compiler.allocateMemoryCells(1);
 			const addrCheckOK = compiler.allocateAddress();
 
-			compiler.compileExpression(checkExpr, regCheckResult, undefined, undefined, checkArgMap);
+			// Compile the CHECK expression, passing the combined NEW/OLD map.
+			compiler.compileExpression(checkExpr, regCheckResult, undefined, undefined, argMap);
 			compiler.emit(Opcode.IfTrue, regCheckResult, addrCheckOK, 0, null, 0, `If true, skip violation ${constraintName}`);
 
 			// Failure Handler
@@ -391,6 +405,45 @@ export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt)
 	compiler.resolveAddress(addrLoopStart);
 
 	compileUnhandledWhereConditions(compiler, stmt.where, [cursor], addrContinueDelete /* Pass correlation/argMap? */);
+
+	// --- Compile CHECK constraints for DELETE --- //
+	if (tableSchema.checkConstraints && tableSchema.checkConstraints.some(c => (c as RowConstraintSchema).operations & RowOp.DELETE)) {
+		const argMap = new Map<string, number>();
+
+		// Fetch OLD values into registers and populate the argument map
+		for (let i = 0; i < tableSchema.columns.length; i++) {
+			const rOld = compiler.allocateMemoryCells(1);
+			compiler.emit(Opcode.VColumn, cursor, i, rOld, 0, 0, `Get old value ${tableSchema.columns[i].name} for DELETE CHECK`);
+			const nameLower = tableSchema.columns[i].name.toLowerCase();
+			argMap.set(nameLower, rOld);       // unqualified defaults to OLD
+			argMap.set(`old.${nameLower}`, rOld); // explicit OLD
+		}
+
+		tableSchema.checkConstraints.forEach((constraint, idx) => {
+			const rowConstraint = constraint as RowConstraintSchema; // Explicit cast
+			// --- Filter by Operation --- //
+			if (!(rowConstraint.operations & RowOp.DELETE)) return; // Skip if not for DELETE
+			// ------------------------- //
+
+			const checkExpr = rowConstraint.expr;
+			const constraintName = rowConstraint.name ?? `check_${idx}`;
+			const constraintContext = `CHECK constraint ${constraintName} on ${tableSchema.name}`;
+
+			const regCheckResult = compiler.allocateMemoryCells(1);
+			const addrCheckOK = compiler.allocateAddress();
+
+			// Compile the CHECK expression, passing the OLD value map.
+			compiler.compileExpression(checkExpr, regCheckResult, undefined, undefined, argMap);
+			compiler.emit(Opcode.IfTrue, regCheckResult, addrCheckOK, 0, null, 0, `If true, skip violation ${constraintName}`);
+
+			// Failure Handler
+			const errorMsg = `CHECK constraint failed: ${constraintName}`;
+			compiler.emit(Opcode.ConstraintViolation, 0, 0, 0, errorMsg, 0, `THROW ${constraintName}`);
+
+			compiler.resolveAddress(addrCheckOK);
+		});
+	}
+	// --- End CHECK constraints --- //
 
 	compiler.emit(Opcode.VRowid, cursor, regRowid, 0, null, 0, "Get Rowid for DELETE");
 	const p4Update = { onConflict: ConflictResolution.ABORT, table: tableSchema, type: 'update' };

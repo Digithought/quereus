@@ -312,11 +312,15 @@ export interface ColumnDef {
 	constraints: ColumnConstraint[];
 }
 
+// New type for row operations
+export type RowOp = 'insert' | 'update' | 'delete';
+
 // Column constraint (PRIMARY KEY, NOT NULL, etc.)
 export interface ColumnConstraint extends AstNode {
 	type: 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'collate' | 'generated';
 	name?: string;
 	expr?: Expression;          // For CHECK or DEFAULT
+	operations?: RowOp[];       // ADDED: For CHECK ON (...)
 	collation?: string;         // For COLLATE
 	autoincrement?: boolean;    // For PRIMARY KEY AUTOINCREMENT
 	direction?: 'asc' | 'desc'; // ADDED: For PRIMARY KEY ASC/DESC
@@ -329,11 +333,12 @@ export interface ColumnConstraint extends AstNode {
 }
 
 // Table constraint (PRIMARY KEY, UNIQUE, etc.)
-export interface TableConstraint {
+export interface TableConstraint extends AstNode {
 	type: 'primaryKey' | 'unique' | 'check' | 'foreignKey';
 	name?: string;
 	columns?: { name: string; direction?: 'asc' | 'desc' }[];
 	expr?: Expression;         // For CHECK
+	operations?: RowOp[];       // ADDED: For CHECK ON (...)
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;
 }

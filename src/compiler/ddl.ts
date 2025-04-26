@@ -11,14 +11,14 @@ import type { SqlValue } from "../common/types.js";
 import type { BaseModuleConfig } from '../vtab/module.js';
 import type { Expression } from '../parser/ast.js';
 import type { P4SchemaChange } from "../vdbe/instruction.js";
-import { type IndexSchema, type TableSchema } from "../schema/table.js";
+import { opsToMask, type IndexSchema, type RowOpMask, type TableSchema } from "../schema/table.js";
 import type { ColumnSchema } from "../schema/column.js";
 
 // Define local interfaces if not exported/importable easily
 interface MemoryTableConfig extends BaseModuleConfig {
 	columns: { name: string, type: SqlDataType, collation?: string }[];
 	primaryKey?: ReadonlyArray<{ index: number; desc: boolean }>;
-	checkConstraints?: ReadonlyArray<{ name?: string, expr: Expression }>;
+	checkConstraints?: ReadonlyArray<{ name?: string, expr: Expression, operations: RowOpMask }>;
 	readOnly?: boolean;
 }
 interface JsonConfig extends BaseModuleConfig {
@@ -60,7 +60,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		if (moduleName.toLowerCase() === 'memory') {
 			let columns: { name: string, type: SqlDataType, collation?: string }[];
 			let primaryKey: ReadonlyArray<{ index: number; desc: boolean }> | undefined;
-			let checkConstraints: { name?: string, expr: Expression }[] = [];
+			let checkConstraints: { name?: string, expr: Expression, operations: RowOpMask }[] = [];
 
 			if (usingExplicitModule) {
 				// Case: CREATE TABLE ... USING memory('CREATE TABLE ...');
@@ -81,13 +81,13 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 				createTableAst.columns.forEach(colDef => {
 					colDef.constraints?.forEach(con => {
 						if (con.type === 'check' && con.expr) {
-							checkConstraints.push({ name: con.name, expr: con.expr });
+							checkConstraints.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
 						}
 					});
 				});
 				createTableAst.constraints?.forEach(con => {
 					if (con.type === 'check' && con.expr) {
-						checkConstraints.push({ name: con.name, expr: con.expr });
+						checkConstraints.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
 					}
 				});
 				// TODO: Parse readOnly from subsequent args if desired? e.g., USING memory(ddl, 'readOnly=true')
@@ -104,13 +104,13 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 				stmt.columns.forEach(colDef => {
 					colDef.constraints?.forEach(con => {
 						if (con.type === 'check' && con.expr) {
-							checkConstraints.push({ name: con.name, expr: con.expr });
+							checkConstraints.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
 						}
 					});
 				});
 				stmt.constraints?.forEach(con => {
 					if (con.type === 'check' && con.expr) {
-						checkConstraints.push({ name: con.name, expr: con.expr });
+						checkConstraints.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
 					}
 				});
 			}
