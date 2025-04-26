@@ -1,15 +1,15 @@
-import { VirtualTable } from '../table';
-import { VirtualTableCursor } from '../cursor';
-import type { VirtualTableModule, BaseModuleConfig } from '../module';
-import type { IndexInfo } from '../indexInfo';
-import { StatusCode, SqlDataType, type SqlValue } from '../../common/types';
-import { SqliteError } from '../../common/errors';
-import type { Database } from '../../core/database';
-import type { SqliteContext } from '../../func/context';
-import type { Schema } from '../../schema/schema';
-import type { FunctionSchema } from '../../schema/function';
-import type { TableSchema } from '../../schema/table';
-import type { IndexConstraint } from '../indexInfo';
+import { VirtualTable } from '../table.js';
+import { VirtualTableCursor } from '../cursor.js';
+import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
+import type { IndexInfo } from '../indexInfo.js';
+import { StatusCode, SqlDataType, type SqlValue } from '../../common/types.js';
+import { SqliteError } from '../../common/errors.js';
+import type { Database } from '../../core/database.js';
+import type { SqliteContext } from '../../func/context.js';
+import type { Schema } from '../../schema/schema.js';
+import type { FunctionSchema } from '../../schema/function.js';
+import type { TableSchema } from '../../schema/table.js';
+import type { IndexConstraint } from '../indexInfo.js';
 
 // Define the structure of rows returned by sqlite_schema
 interface SchemaRow {

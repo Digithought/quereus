@@ -1,8 +1,7 @@
-import type { FunctionSchema } from '../schema/function';
-import { FunctionFlags } from '../common/constants';
-import type { SqliteContext } from './context';
-import { type SqlValue, SqlDataType, StatusCode } from '../common/types';
-import { SqliteError } from '../common/errors';
+import type { FunctionSchema } from '../schema/function.js';
+import { FunctionFlags } from '../common/constants.js';
+import type { SqliteContext } from './context.js';
+import { type SqlValue, StatusCode } from '../common/types.js';
 
 // --- Helper Interfaces for Registration ---
 

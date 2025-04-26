@@ -1,11 +1,10 @@
-import type { ColumnSchema } from './column';
-import type { VirtualTableModule } from '../vtab/module';
-import type { VirtualTable } from '../vtab/table';
-import type { Expression } from '../parser/ast';
-import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast';
-import { getAffinity } from './column';
-import { SqlDataType } from '../common/types';
-import type * as AST from '../parser/ast'; // Added for subqueryAST
+import type { ColumnSchema } from './column.js';
+import type { VirtualTableModule } from '../vtab/module.js';
+import type { Expression } from '../parser/ast.js';
+import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast.js';
+import { getAffinity } from './column.js';
+import { SqlDataType } from '../common/types.js';
+import type * as AST from '../parser/ast.js';
 
 /**
  * Represents the schema definition of a table (real or virtual).

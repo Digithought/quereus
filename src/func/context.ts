@@ -1,6 +1,6 @@
-import { type SqlValue, StatusCode } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { Database } from '../core/database';
+import { type SqlValue, StatusCode } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import type { Database } from '../core/database.js';
 
 /**
  * Represents the execution context passed to user-defined SQL functions

@@ -1,20 +1,17 @@
-import { StatusCode, SqlDataType } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { Compiler, HavingContext, SubroutineInfo } from './compiler';
-import type * as AST from '../parser/ast';
-import { type SubqueryCorrelationResult } from './correlation';
-import type { TableSchema } from '../schema/table';
-import type { ColumnSchema } from '../schema/column';
-import { getAffinityForType } from '../schema/schema'; // Need a way to get affinity from type string
-import type { ArgumentMap } from './handlers'; // Removed .ts extension
+import { StatusCode, SqlDataType } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import type { Compiler, HavingContext } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import { type SubqueryCorrelationResult } from './correlation.js';
+import type { TableSchema } from '../schema/table.js';
+import type { ColumnSchema } from '../schema/column.js';
+import { getAffinityForType } from '../schema/schema.js'; // Need a way to get affinity from type string
+import type { ArgumentMap } from './handlers.js';
 // Import specific handlers
-import { compileColumn, compileBinary, compileUnary, compileCast, compileFunction, compileParameter, compileCollate } from './handlers'; // Removed .ts extension
-import { compileLiteralValue } from './utils';
+import { compileColumn, compileBinary, compileUnary, compileCast, compileFunction, compileParameter, compileCollate } from './handlers.js';
+import { compileLiteralValue } from './utils.js';
 // Subquery compilation is delegated differently in Compiler class, handled there.
 // No need to import subquery handlers here.
-
-// Export ArgumentMap type
-export type { ArgumentMap } from './handlers'; // Removed .ts extension
 
 // --- Expression Affinity Determination ---
 

@@ -1,11 +1,11 @@
-import { Compiler } from './compiler';
-import type { WindowSorterInfo } from './window';
-import { Opcode } from '../vdbe/opcodes';
-import { SqliteError } from '../common/errors';
-import type * as AST from '../parser/ast'; // Import AST types
-import { expressionToString } from '../util/ddl-stringify'; // Import the missing function
-import type { P4FuncDef } from '../vdbe/instruction'; // Import P5AggFrameInfo & P4FuncDef
-import { StatusCode, SqlDataType } from '../common/types'; // Import StatusCode & SqlDataType
+import { Compiler } from './compiler.js';
+import type { WindowSorterInfo } from './window.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import { SqliteError } from '../common/errors.js';
+import type * as AST from '../parser/ast.js';
+import { expressionToString } from '../util/ddl-stringify.js';
+import type { P4FuncDef } from '../vdbe/instruction.js';
+import { StatusCode } from '../common/types.js';
 
 /**
  * Helper function to compute a frame boundary (start or end).

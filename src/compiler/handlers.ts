@@ -1,14 +1,14 @@
-import { ConflictResolution, SqlDataType } from '../common/constants';
-import { Opcode } from '../vdbe/opcodes';
-import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError } from '../common/errors';
-import { type P4FuncDef } from '../vdbe/instruction';
-import type { Compiler, HavingContext } from './compiler';
-import type * as AST from '../parser/ast';
-import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './correlation';
-import type { TableSchema } from '../schema/table';
-import { getAffinityForType } from '../schema/schema';
-import { getExpressionAffinity, getExpressionCollation, compileLiteralValue } from './utils';
+import { SqlDataType } from '../common/constants.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import { type P4FuncDef } from '../vdbe/instruction.js';
+import type { Compiler, HavingContext } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './correlation.js';
+import type { TableSchema } from '../schema/table.js';
+import { getAffinityForType } from '../schema/schema.js';
+import { getExpressionAffinity, getExpressionCollation, compileLiteralValue } from './utils.js';
 
 /** Map column name/alias to register holding its value */
 export type ArgumentMap = ReadonlyMap<string, number>;

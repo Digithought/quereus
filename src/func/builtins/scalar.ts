@@ -1,7 +1,7 @@
-import { FunctionFlags } from '../../common/constants';
-import type { SqlValue } from '../../common/types';
-import { createScalarFunction } from '../registration'; // Import helper
-import { getSqlDataTypeName } from '../../util/comparison'; // Use the correct helper
+import { FunctionFlags } from '../../common/constants.js';
+import type { SqlValue } from '../../common/types.js';
+import { createScalarFunction } from '../registration.js';
+import { compareSqlValues, getSqlDataTypeName } from '../../util/comparison.js';
 
 // --- lower(X) ---
 const jsLower = (arg: any): SqlValue => {
@@ -139,8 +139,7 @@ export const coalesceFunc = createScalarFunction(
 );
 
 // --- nullif(X, Y) ---
-import { compareSqlValues } from '../../util/comparison'; // Need comparison
-const jsNullif = (argX: any, argY: any): SqlValue => {
+const jsNullif = (argX: SqlValue, argY: SqlValue): SqlValue | null => {
 	// Use the SQL comparison logic
 	const comparison = compareSqlValues(argX, argY);
 	return comparison === 0 ? null : argX;

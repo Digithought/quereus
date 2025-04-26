@@ -1,13 +1,12 @@
-import { ConflictResolution } from '../common/constants';
-import { Opcode } from '../vdbe/opcodes';
-import { StatusCode } from '../common/types';
-import { SqliteError } from '../common/errors';
-import { type P4Update, type P4Vtab } from '../vdbe/instruction';
-import type { Compiler } from './compiler';
-import type * as AST from '../parser/ast';
-import { compileUnhandledWhereConditions } from './whereVerify';
-import { compileExpression, type ArgumentMap } from './expression';
-import { compileLiteralValue } from './utils';
+import { ConflictResolution } from '../common/constants.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import { StatusCode } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import { type P4Update, type P4Vtab } from '../vdbe/instruction.js';
+import type { Compiler } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import { compileUnhandledWhereConditions } from './whereVerify.js';
+import { compileLiteralValue } from './utils.js';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);

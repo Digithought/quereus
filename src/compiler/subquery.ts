@@ -1,9 +1,9 @@
-import { StatusCode } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { Compiler, SubroutineInfo } from './compiler'; // Added ColumnResultInfo
-import type * as AST from '../parser/ast';
-import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult } from './correlation';
-import { Opcode } from '../vdbe/opcodes';
+import { StatusCode } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import type { Compiler, SubroutineInfo } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult } from './correlation.js';
+import { Opcode } from '../vdbe/opcodes.js';
 
 // --- Subquery Compilation Functions --- //
 

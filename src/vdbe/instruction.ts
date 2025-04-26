@@ -1,8 +1,8 @@
-import { Opcode } from './opcodes';
-import type { FunctionSchema } from '../schema/function';
-import type { TableSchema } from '../schema/table';
-import type { ConflictResolution } from '../common/constants';
-import type { SchemaChangeInfo } from '../vtab/module';
+import { Opcode } from './opcodes.js';
+import type { FunctionSchema } from '../schema/function.js';
+import type { TableSchema } from '../schema/table.js';
+import type { ConflictResolution } from '../common/constants.js';
+import type { SchemaChangeInfo } from '../vtab/module.js';
 
 /**
  * Represents a single instruction in the VDBE program.

@@ -1,8 +1,7 @@
-import { FunctionFlags } from '../../common/constants';
-import { SqliteError } from '../../common/errors';
-import type { SqlValue } from '../../common/types';
-import { createScalarFunction } from '../registration';
 import { Temporal } from 'temporal-polyfill';
+import { FunctionFlags } from '../../common/constants.js';
+import type { SqlValue } from '../../common/types.js';
+import { createScalarFunction } from '../registration.js';
 
 // --- Constants ---
 const MILLIS_PER_DAY = 86400000;

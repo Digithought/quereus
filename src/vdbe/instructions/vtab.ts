@@ -1,12 +1,11 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode, type SqlValue } from '../../common/types';
-import type { Handler, VmCtx } from '../handler-types';
-import type { P4Update, VdbeInstruction } from '../instruction';
-import { Opcode } from '../opcodes';
-import { ConflictResolution } from '../../common/constants';
-import type { VirtualTableModule } from '../../vtab/module';
-import type { IndexConstraint, IndexConstraintUsage } from '../../vtab/indexInfo';
-import type { IndexSchema, TableSchema } from '../../schema/table';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode, type SqlValue } from '../../common/types.js';
+import type { Handler, VmCtx } from '../handler-types.js';
+import type { P4Update, VdbeInstruction } from '../instruction.js';
+import { Opcode } from '../opcodes.js';
+import { ConflictResolution } from '../../common/constants.js';
+import type { IndexConstraint, IndexConstraintUsage } from '../../vtab/indexInfo.js';
+import type { IndexSchema } from '../../schema/table.js';
 
 // Helper for handling errors from VTab methods
 function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {

@@ -1,4 +1,4 @@
-import { IndexConstraintOp } from '../common/constants';
+import { IndexConstraintOp } from '../common/constants.js';
 
 /** Information about a specific constraint in the WHERE clause */
 export interface IndexConstraint {

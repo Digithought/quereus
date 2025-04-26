@@ -3,32 +3,31 @@
  *
  * Translates SQL AST into VDBE instructions
  */
-import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError, ParseError } from '../common/errors';
-import { ConflictResolution } from '../common/constants';
-import { Opcode } from '../vdbe/opcodes';
-import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction';
-import type { VdbeProgram } from '../vdbe/program';
-import type { WithClause } from '../parser/ast';
-import type { Database } from '../core/database';
-import type { TableSchema } from '../schema/table';
-import type * as AST from '../parser/ast';
-import * as CompilerState from './compilerState';
-import * as EphemeralCore from './ephemeral';
-import * as FromClauseCore from './fromClause';
-import * as QueryPlanner from './queryPlanner';
-import * as WhereVerify from './whereVerify';
-import * as ExprHandlers from './handlers';
-import { compileExpression } from './expression';
-import * as StmtCompiler from './statement';
-import * as DdlCompiler from './ddl';
-import * as SelectCompiler from './select';
-import * as Utils from './utils';
-import type { SubqueryCorrelationResult } from './correlation';
-import * as SubqueryCompiler from './subquery';
-import type { ArgumentMap } from './handlers';
-import { compileCommonTableExpression } from './cte';
-import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import { SqliteError, ParseError } from '../common/errors.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import { type P4SortKey, type VdbeInstruction, createInstruction } from '../vdbe/instruction.js';
+import type { VdbeProgram } from '../vdbe/program.js';
+import type { WithClause } from '../parser/ast.js';
+import type { Database } from '../core/database.js';
+import type { TableSchema } from '../schema/table.js';
+import type * as AST from '../parser/ast.js';
+import * as CompilerState from './compilerState.js';
+import * as EphemeralCore from './ephemeral.js';
+import * as FromClauseCore from './fromClause.js';
+import * as QueryPlanner from './queryPlanner.js';
+import * as WhereVerify from './whereVerify.js';
+import * as ExprHandlers from './handlers.js';
+import { compileExpression } from './expression.js';
+import * as StmtCompiler from './statement.js';
+import * as DdlCompiler from './ddl.js';
+import * as SelectCompiler from './select.js';
+import * as Utils from './utils.js';
+import type { SubqueryCorrelationResult } from './correlation.js';
+import * as SubqueryCompiler from './subquery.js';
+import type { ArgumentMap } from './handlers.js';
+import { compileCommonTableExpression } from './cte.js';
+import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js';
 
 // --- Add Result/CTE Info types --- //
 export interface ColumnResultInfo {

@@ -1,15 +1,14 @@
-import { SqliteError, ConstraintError } from '../common/errors';
-import { StatusCode, SqlDataType, ConflictResolution, IndexConstraintOp } from '../common/constants';
-import { Opcode } from '../vdbe/opcodes';
-import type { SqlValue } from '../common/types';
-import type { Compiler, ColumnResultInfo, CursorPlanningResult } from './compiler';
-import type { TableSchema } from '../schema/table';
-import type * as AST from '../parser/ast';
-import type { P4SortKey } from '../vdbe/instruction';
-import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
-import { compileUnhandledWhereConditions } from './whereVerify';
-import { analyzeSubqueryCorrelation } from './correlation';
+import { SqliteError } from '../common/errors.js';
+import { StatusCode, SqlDataType, ConflictResolution } from '../common/constants.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import type { Compiler, ColumnResultInfo } from './compiler.js';
+import type { TableSchema } from '../schema/table.js';
+import type * as AST from '../parser/ast.js';
+import type { P4SortKey } from '../vdbe/instruction.js';
+import { createDefaultColumnSchema } from '../schema/column.js';
+import { buildColumnIndexMap } from '../schema/table.js';
+import { compileUnhandledWhereConditions } from './whereVerify.js';
+import { analyzeSubqueryCorrelation } from './correlation.js';
 
 // --- Add CTE compilation ---\
 export function compileCommonTableExpression(compiler: Compiler, cte: AST.CommonTableExpr, isRecursiveContext: boolean): void {

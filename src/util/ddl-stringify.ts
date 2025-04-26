@@ -11,8 +11,8 @@
  *   - `VIRTUAL` storage for generated columns
  *   - (TODO: `FOREIGN KEY` default actions and deferrability)
  */
-import type * as AST from '../parser/ast';
-import { ConflictResolution } from '../common/constants';
+import type * as AST from '../parser/ast.js';
+import { ConflictResolution } from '../common/constants.js';
 
 // --- Identifier Quoting Logic ---
 

@@ -1,33 +1,23 @@
-import { MisuseError, SqliteError } from '../common/errors';
-import { StatusCode } from '../common/constants';
-import type { VirtualTableModule } from '../vtab/module';
-import { Statement } from './statement';
-import type { SqlValue } from '../common/types';
-import { SchemaManager } from '../schema/manager';
-import type { TableSchema } from '../schema/table';
-import type { ColumnSchema } from '../schema/column';
-import type { FunctionSchema } from '../schema/function';
-// Placeholder for Function management
-// import { FunctionManager } from '../func/manager';
-import { BUILTIN_FUNCTIONS } from '../func/builtins'; // Import built-ins
-import { createScalarFunction, createAggregateFunction } from '../func/registration'; // Import registration helpers
-import { FunctionFlags } from '../common/constants'; // Import FunctionFlags
-import { SqlDataType } from '../common/constants';
-import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema, JsonFunctionSchema } from './json-schema';
-import { Parser } from '../parser/parser';
-import { Compiler } from '../compiler/compiler';
-import { buildColumnIndexMap, findPrimaryKeyDefinition } from '../schema/table'; // Import helpers
-// Import default modules
-import { MemoryTableModule } from '../vtab/memory/module';
-import { JsonEachModule } from '../vtab/json/each';
-import { JsonTreeModule } from '../vtab/json/tree'; // Import JsonTreeModule
-// --- Import SchemaTableModule ---
-import { SchemaTableModule } from '../vtab/schema/table';
-// -------------------------------
-// Add import for collation functions
-import { registerCollation as registerCollationUtil, getCollation as getCollationUtil, type CollationFunction, BINARY_COLLATION, NOCASE_COLLATION, RTRIM_COLLATION } from '../util/comparison';
-// Import schema serialization functions
-import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization';
+import { MisuseError, SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
+import type { VirtualTableModule } from '../vtab/module.js';
+import { Statement } from './statement.js';
+import type { SqlValue } from '../common/types.js';
+import { SchemaManager } from '../schema/manager.js';
+import type { TableSchema } from '../schema/table.js';
+import type { FunctionSchema } from '../schema/function.js';
+import { BUILTIN_FUNCTIONS } from '../func/builtins/index.js';
+import { createScalarFunction, createAggregateFunction } from '../func/registration.js';
+import { FunctionFlags } from '../common/constants.js';
+import { MemoryTableModule } from '../vtab/memory/module.js';
+import { JsonEachModule } from '../vtab/json/each.js';
+import { JsonTreeModule } from '../vtab/json/tree.js';
+import { SchemaTableModule } from '../vtab/schema/table.js';
+import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
+import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization.js';
+import { Parser } from '../parser/parser.js';
+import { Compiler } from '../compiler/compiler.js';
+import * as AST from '../parser/ast.js';
 
 /**
  * Represents a connection to an SQLite database (in-memory in this port).
@@ -81,9 +71,9 @@ export class Database {
 	/** @internal Registers default collation sequences */
 	private registerDefaultCollations(): void {
 		// Register the built-in collations
-		registerCollationUtil('BINARY', BINARY_COLLATION);
-		registerCollationUtil('NOCASE', NOCASE_COLLATION);
-		registerCollationUtil('RTRIM', RTRIM_COLLATION);
+		registerCollation('BINARY', BINARY_COLLATION);
+		registerCollation('NOCASE', NOCASE_COLLATION);
+		registerCollation('RTRIM', RTRIM_COLLATION);
 		console.log("Default collations registered (BINARY, NOCASE, RTRIM)");
 	}
 
@@ -99,26 +89,28 @@ export class Database {
 		}
 		console.log(`Preparing SQL: ${sql}`);
 
-		// Create the statement
+		// Create the statement using the standard constructor (compilation deferred)
 		const stmt = new Statement(this, sql);
 
 		try {
-			// Add to active statements list
-			this.statements.add(stmt);
+			// Attempt initial compilation within prepare to catch immediate parse errors
+			await stmt.compile(); // Use the internal compile method
 
+			// Add to active statements list *after* successful initial compile check
+			this.statements.add(stmt);
 			return stmt;
 		} catch (error) {
-			// Clean up if prepare fails
-			this.statements.delete(stmt);
+			// Clean up is not needed as it wasn't added to the set
 			throw error;
 		}
 	}
 
 	/**
 	 * Executes one or more SQL statements directly.
+	 * The callback, if provided, is invoked for each result row of the *last* statement executed.
 	 * @param sql The SQL string(s) to execute.
-	 * @param params Optional parameters to bind (array or object).
-	 * @param callback Optional callback to process result rows.
+	 * @param params Optional parameters to bind (only applicable if the SQL string contains exactly one statement).
+	 * @param callback Optional callback to process result rows of the last statement.
 	 * @returns A Promise resolving when execution completes.
 	 * @throws SqliteError on failure.
 	 */
@@ -131,47 +123,75 @@ export class Database {
 			throw new MisuseError("Database is closed");
 		}
 
-		// Check if the first argument is the callback (no params)
+		// Handle overloaded signature where params is the callback
 		if (typeof params === 'function' && callback === undefined) {
 			callback = params as (row: Record<string, SqlValue>, columns: string[]) => void;
 			params = undefined;
 		}
 
-		console.log(`Executing SQL: ${sql}`);
+		console.log(`Executing SQL block: ${sql}`);
 
-		// TODO: Split multiple statements
-		// For now, we'll assume a single statement
+		// 1. Parse all statements
+		const parser = new Parser();
+		const statementsAst = parser.parseAll(sql);
 
-		const stmt = await this.prepare(sql);
+		if (statementsAst.length === 0) {
+			return; // No statements to execute
+		}
 
-		try {
-			// Bind parameters if provided
-			if (params && typeof params !== 'function') {
-				stmt.bindAll(params);
-			}
+		// 2. Check for params with multiple statements (disallowed)
+		if (params && typeof params !== 'function' && statementsAst.length > 1) {
+			throw new MisuseError("Binding parameters is only supported for single-statement execution in exec().");
+		}
 
-			// Execute the statement
-			let result = await stmt.step();
+		// 3. Execute statements sequentially
+		const compiler = new Compiler(this);
+		for (let i = 0; i < statementsAst.length; i++) {
+			const ast = statementsAst[i];
+			const isLastStatement = (i === statementsAst.length - 1);
+			let stmt: Statement | null = null;
 
-			while (result === StatusCode.ROW) {
-				// Process row if callback provided
-				if (callback) {
-					const rowData = stmt.getAsObject();
-					const colNames = stmt.getColumnNames();
-					callback(rowData, colNames);
+			try {
+				// Create a temporary statement object for compilation and execution
+				// We don't need the full `prepare` logic that adds to the DB's statement set
+				const program = compiler.compile(ast, sql);
+				stmt = new Statement(this, sql, program); // Pass program directly
+
+				// Bind parameters ONLY if it's the single statement being executed
+				if (isLastStatement && params && typeof params !== 'function') {
+					stmt.bindAll(params);
 				}
 
-				// Step to next row
-				result = await stmt.step();
-			}
+				// Execute the statement steps
+				let result: StatusCode;
+				while ((result = await stmt.step()) === StatusCode.ROW) {
+					// Process row ONLY if it's the last statement and a callback exists
+					if (isLastStatement && callback) {
+						try {
+							const rowData = stmt.getAsObject();
+							const colNames = stmt.getColumnNames();
+							callback(rowData, colNames);
+						} catch (cbError: any) {
+							// Handle errors from the callback itself if necessary
+							console.error("Error in exec() callback:", cbError);
+							// Decide whether to re-throw or just log
+							throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
+						}
+					}
+				}
 
-			if (result !== StatusCode.DONE && result !== StatusCode.OK) {
-				throw new SqliteError("Execution failed", result);
+				// Check final status code after stepping
+				if (result !== StatusCode.DONE && result !== StatusCode.OK) {
+					throw new SqliteError(`Execution failed for statement ${i + 1}: ${ast.type}`, result);
+				}
+
+			} finally {
+				// Finalize the temporary statement for this iteration
+				if (stmt) {
+					await stmt.finalize();
+				}
 			}
-		} finally {
-			// Always finalize the statement
-			await stmt.finalize();
-		}
+		} // End loop through statements
 	}
 
 	/**
@@ -503,13 +523,13 @@ export class Database {
 		if (!this.isOpen) {
 			throw new SqliteError("Database is closed", StatusCode.ERROR);
 		}
-		registerCollationUtil(name, func);
+		registerCollation(name, func);
 		console.log(`Registered collation: ${name}`);
 	}
 
 	/** @internal Gets a registered collation function */
 	_getCollation(name: string): CollationFunction | undefined {
-		return getCollationUtil(name);
+		return getCollation(name);
 	}
 
 	/**

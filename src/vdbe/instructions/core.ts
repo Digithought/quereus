@@ -1,8 +1,8 @@
-import { ConstraintError, SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import { evaluateIsTrue } from '../../util/comparison';
-import type { Handler } from '../handler-types';
-import { Opcode } from '../opcodes';
+import { ConstraintError, SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import { evaluateIsTrue } from '../../util/comparison.js';
+import type { Handler } from '../handler-types.js';
+import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	// --- Control Flow ---

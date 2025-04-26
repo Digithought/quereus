@@ -1,12 +1,11 @@
-import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError, ConstraintError } from '../common/errors';
-import type { Database } from '../core/database';
-import type { Statement } from '../core/statement';
-import type { VdbeProgram } from './program';
-import type { VdbeInstruction } from './instruction';
-import { FunctionContext } from '../func/context';
-import type { VmCtx, VdbeCursor, MemoryCell, Status } from './handler-types';
-import { handlers } from './handlers';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import type { Database } from '../core/database.js';
+import type { Statement } from '../core/statement.js';
+import type { VdbeProgram } from './program.js';
+import { FunctionContext } from '../func/context.js';
+import type { VmCtx, VdbeCursor, MemoryCell } from './handler-types.js';
+import { handlers } from './handlers.js';
 
 /**
  * Represents an execution instance of a VDBE program.

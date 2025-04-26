@@ -1,7 +1,7 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type { Handler } from '../handler-types';
-import { Opcode } from '../opcodes';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { Handler } from '../handler-types.js';
+import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.FrameEnter] = (ctx, inst) => {

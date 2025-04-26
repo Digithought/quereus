@@ -3,6 +3,7 @@
         "autoincrement",
         "Backpatch",
         "backpatched",
+        "digitree",
         "LPAREN",
         "RPAREN",
         "SAVEPOINT",

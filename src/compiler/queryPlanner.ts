@@ -1,9 +1,9 @@
-import { IndexConstraintOp, StatusCode } from '../common/constants';
-import { SqliteError } from '../common/errors';
-import type { Compiler, CursorPlanningResult } from './compiler';
-import type { TableSchema } from '../schema/table';
-import type * as AST from '../parser/ast';
-import type { IndexInfo, IndexConstraint, IndexOrderBy, IndexConstraintUsage } from '../vtab/indexInfo';
+import { IndexConstraintOp, StatusCode } from '../common/constants.js';
+import { SqliteError } from '../common/errors.js';
+import type { Compiler, CursorPlanningResult } from './compiler.js';
+import type { TableSchema } from '../schema/table.js';
+import type * as AST from '../parser/ast.js';
+import type { IndexInfo, IndexConstraint, IndexOrderBy } from '../vtab/indexInfo.js';
 
 // --- Query Planning Helpers --- //
 

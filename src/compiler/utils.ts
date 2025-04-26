@@ -1,12 +1,12 @@
-import type { Compiler } from './compiler';
-import type * as AST from '../parser/ast';
-import { SqlDataType } from '../common/constants';
-import { getAffinityForType } from '../schema/schema';
-import type { TableSchema } from '../schema/table';
-import type { ColumnSchema } from '../schema/column';
-import type { SubqueryCorrelationResult } from './correlation';
-import type { SqlValue } from '../common/types';
-import { Opcode } from '../vdbe/opcodes';
+import type { Compiler } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import { SqlDataType } from '../common/constants.js';
+import { getAffinityForType } from '../schema/schema.js';
+import type { TableSchema } from '../schema/table.js';
+import type { ColumnSchema } from '../schema/column.js';
+import type { SubqueryCorrelationResult } from './correlation.js';
+import type { SqlValue } from '../common/types.js';
+import { Opcode } from '../vdbe/opcodes.js';
 
 /** Determines the affinity of an expression. */
 export function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {

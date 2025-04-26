@@ -1,9 +1,9 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode, type SqlValue } from '../../common/types';
-import { FunctionContext } from '../../func/context';
-import type { Handler } from '../handler-types';
-import type { P4FuncDef } from '../instruction';
-import { Opcode } from '../opcodes';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode, type SqlValue } from '../../common/types.js';
+import { FunctionContext } from '../../func/context.js';
+import type { Handler } from '../handler-types.js';
+import type { P4FuncDef } from '../instruction.js';
+import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.Function] = (ctx, inst) => {

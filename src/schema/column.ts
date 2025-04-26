@@ -1,5 +1,5 @@
-import { type SqlValue, SqlDataType } from '../common/types';
-import type { Expression } from '../parser/ast'; // Import Expression
+import { SqlDataType } from '../common/types.js';
+import type { Expression } from '../parser/ast.js';
 
 /**
  * Represents the schema definition of a single column.

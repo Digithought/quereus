@@ -1,16 +1,16 @@
-import { VirtualTable } from '../table';
-import { VirtualTableCursor } from '../cursor';
-import type { VirtualTableModule, BaseModuleConfig } from '../module';
-import type { IndexInfo } from '../indexInfo';
-import { type SqlValue, StatusCode, SqlDataType } from '../../common/types';
-import { SqliteError } from '../../common/errors';
-import type { SqliteContext } from '../../func/context';
-import type { Database } from '../../core/database';
-import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers';
-import type { TableSchema } from '../../schema/table';
-import { createDefaultColumnSchema } from '../../schema/column';
-import { buildColumnIndexMap } from '../../schema/table';
-import type { IndexConstraint } from '../indexInfo';
+import { VirtualTable } from '../table.js';
+import { VirtualTableCursor } from '../cursor.js';
+import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
+import type { IndexInfo } from '../indexInfo.js';
+import { type SqlValue, StatusCode, SqlDataType } from '../../common/types.js';
+import { SqliteError } from '../../common/errors.js';
+import type { SqliteContext } from '../../func/context.js';
+import type { Database } from '../../core/database.js';
+import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
+import type { TableSchema } from '../../schema/table.js';
+import { createDefaultColumnSchema } from '../../schema/column.js';
+import { buildColumnIndexMap } from '../../schema/table.js';
+import type { IndexConstraint } from '../indexInfo.js';
 
 // --- Define Configuration Interface (Shared with JsonEach) ---
 interface JsonConfig extends BaseModuleConfig {

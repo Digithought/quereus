@@ -1,9 +1,9 @@
-import type { Database } from '../core/database'; // Assuming Database class exists
-import type { VirtualTable } from './table';
-import type { VirtualTableCursor } from './cursor';
-import type { IndexInfo } from './indexInfo';
-import type { ColumnDef } from '../parser/ast'; // <-- Add parser AST import
-import type { TableSchema } from '../schema/table'; // Add import for TableSchema
+import type { Database } from '../core/database.js'; // Assuming Database class exists
+import type { VirtualTable } from './table.js';
+import type { VirtualTableCursor } from './cursor.js';
+import type { IndexInfo } from './indexInfo.js';
+import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
+import type { TableSchema } from '../schema/table.js'; // Add import for TableSchema
 
 /**
  * Base interface for module-specific configuration passed to xCreate/xConnect.

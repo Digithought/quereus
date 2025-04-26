@@ -1,4 +1,4 @@
-import type * as AST from '../parser/ast';
+import type * as AST from '../parser/ast.js';
 
 /**
  * Represents the schema definition of a database view.

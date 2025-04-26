@@ -1,7 +1,7 @@
 import type { SqliteContext } from '../func/context';
-import type { SqlValue } from '../common/types';
-import { FunctionFlags } from '../common/constants';
-import { SqlDataType } from '../common/types';
+import type { SqlValue } from '../common/types.js';
+import { FunctionFlags } from '../common/constants.js';
+import { SqlDataType } from '../common/types.js';
 
 /**
  * Represents the registered definition of a user-defined function

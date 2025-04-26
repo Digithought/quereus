@@ -1,22 +1,14 @@
-import { MisuseError, SqliteError } from '../common/errors';
-import { StatusCode } from '../common/constants';
-import { SqlDataType } from '../common/constants';
-import type { SqlValue } from '../common/types';
-import type { SchemaManager } from './manager';
-import type { ColumnSchema } from './column';
-import type { TableSchema, IndexSchema } from './table';
-import { buildColumnIndexMap } from './table';
-import type { FunctionSchema } from './function';
-import type { Database } from '../core/database';
-import type {
-  JsonDatabaseSchema,
-  JsonSchema,
-  JsonTableSchema,
-  JsonColumnSchema,
-  JsonFunctionSchema,
-  JsonIndexSchema,
-  JsonIndexColumnSchema
-} from '../core/json-schema';
+import { MisuseError, SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
+import { SqlDataType } from '../common/types.js';
+import type { SqlValue } from '../common/types.js';
+import type { ColumnSchema } from './column.js';
+import type { TableSchema, IndexSchema } from './table.js';
+import { buildColumnIndexMap } from './table.js';
+import type { FunctionSchema } from './function.js';
+import type { Database } from '../core/database.js';
+import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema,
+	JsonFunctionSchema, JsonIndexSchema, JsonIndexColumnSchema } from '../core/json-schema.js';
 
 /**
  * Exports a database schema (tables and function signatures) to a JSON string.

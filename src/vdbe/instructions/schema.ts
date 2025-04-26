@@ -1,9 +1,8 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type { VirtualTableModule } from '../../vtab/module';
-import type { Handler, VmCtx } from '../handler-types';
-import type { P4SchemaChange } from '../instruction';
-import { Opcode } from '../opcodes';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { Handler } from '../handler-types.js';
+import type { P4SchemaChange } from '../instruction.js';
+import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.SchemaChange] = async (ctx, inst) => {

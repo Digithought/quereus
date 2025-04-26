@@ -1,16 +1,22 @@
 import { expect } from 'aegir/chai';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Database } from '../src/core/database'; // Adjust path as needed
-import { SqliteError, ParseError } from '../src/common/errors';
-import { StatusCode } from '../src/common/types';
-import { Parser } from '../src/parser/parser';
-import { Compiler } from '../src/compiler/compiler';
-import type * as AST from '../src/parser/ast';
-import type { VdbeInstruction } from '../src/vdbe/instruction';
-import { Opcode } from '../src/vdbe/opcodes'; // <-- ADD Opcode enum import
+import { fileURLToPath } from 'node:url';
+import { Database } from '../src/core/database.js';
+import { ParseError } from '../src/common/errors.js';
+import { Parser } from '../src/parser/parser.js';
+import type * as AST from '../src/parser/ast.js';
+import type { VdbeInstruction } from '../src/vdbe/instruction.js';
+import { Opcode } from '../src/vdbe/opcodes.js';
 
-const logicTestDir = path.join(__dirname, 'logic');
+// ESM equivalent for __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename); // This will be C:\...\dist\test when running compiled code
+
+// Adjust path to point to the source logic directory relative to the project root
+// Go up two levels from __dirname (dist/test -> project root) then down to test/logic
+const projectRoot = path.resolve(__dirname, '..', '..');
+const logicTestDir = path.join(projectRoot, 'test', 'logic');
 
 // --- Helper Function to Format AST ---
 function formatAst(ast: AST.AstNode): string {
@@ -106,8 +112,8 @@ describe('SQL Logic Tests', () => {
 					}
 
 					// Execute when we have a full SQL block AND either an expected result or expected error
-					const sqlToRun = currentSql.trim();
-					if (sqlToRun && (expectedResultJson !== null || expectedErrorSubstring !== null)) {
+					const sqlBlock = currentSql.trim(); // Keep sqlBlock variable
+					if (sqlBlock && (expectedResultJson !== null || expectedErrorSubstring !== null)) {
 
 						if (expectedResultJson !== null && expectedErrorSubstring !== null) {
 							throw new Error(`[${file}:${lineNumber}] Cannot expect both a result and an error for the same SQL block.`);
@@ -115,56 +121,82 @@ describe('SQL Logic Tests', () => {
 
 						try {
 							if (expectedResultJson !== null) {
-								// --- Handle Expected Result ---
-								console.log(`Executing (expect results): ${sqlToRun}`);
-								const actualResult: Record<string, any>[] = [];
-								for await (const row of db.eval(sqlToRun)) {
-									actualResult.push(row);
+								// --- Handle Expected Result (Potentially Multi-Statement) ---
+								console.log(`Executing block (expect results):\n${sqlBlock}`);
+								// Split statements
+								const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
+								const lastStatementIndex = statements.length - 1;
+
+								// Execute all but the last statement using exec
+								for (let i = 0; i < lastStatementIndex; i++) {
+									console.log(`  -> Executing setup statement: ${statements[i]}`);
+									await db.exec(statements[i]);
 								}
+
+								// Execute the last statement using eval and collect results
+								const lastStatement = statements[lastStatementIndex];
+								console.log(`  -> Executing final statement (eval): ${lastStatement}`);
+								const actualResult: Record<string, any>[] = [];
+								if (lastStatement) { // Ensure there is a last statement
+									for await (const row of db.eval(lastStatement)) {
+										actualResult.push(row);
+									}
+								}
+
+								// Compare results
 								let expectedResult: any;
 								try {
 									expectedResult = JSON.parse(expectedResultJson);
 								} catch (jsonError: any) {
 									throw new Error(`[${file}:${lineNumber}] Invalid expected JSON: ${jsonError.message} - JSON: ${expectedResultJson}`);
 								}
-								expect(actualResult).to.deep.equal(expectedResult, `[${file}:${lineNumber}] SQL: ${sqlToRun}`);
+								expect(actualResult).to.deep.equal(expectedResult, `[${file}:${lineNumber}] Block: ${sqlBlock}`);
+								console.log("   -> Results match!");
 							} else if (expectedErrorSubstring !== null) {
-								// --- Handle Expected Error ---
-								console.log(`Executing (expect error "${expectedErrorSubstring}"): ${sqlToRun}`);
+								// --- Handle Expected Error (Multi-statement ok via db.exec) ---
+								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
 								try {
-									// Attempt execution - we expect this to throw
-									// Need to decide if SELECT errors come from prepare or step. `exec` covers both.
-									await db.exec(sqlToRun);
-									// If exec completes without error, it's a test failure
-									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL executed successfully.\nSQL: ${sqlToRun}`);
+									await db.exec(sqlBlock); // Use db.exec directly
+									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
 								} catch (actualError: any) {
-									// Check if the actual error message includes the expected substring (case-insensitive)
 									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
-										`[${file}:${lineNumber}] SQL: ${sqlToRun}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
+										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
 									);
 									console.log(`   -> Caught expected error: ${actualError.message}`);
 								}
 							}
 						} catch (error: any) {
-							// Handle unexpected errors during execution or assertion
-							if (expectedErrorSubstring !== null && error.message.includes('Expected error matching')) {
-								// This is the failure case where we expected an error but didn't get one.
-								throw error; // Rethrow the assertion failure
-							}
-							// Otherwise, it's an unexpected runtime error, dump diagnostics
-							let diagnosticInfo = '';
-							try {
-								const parser = new Parser(); const ast = parser.parse(sqlToRun);
-								diagnosticInfo += `\n\n--- AST ---\n${formatAst(ast)}`;
+							// Handle unexpected errors - Check if an error was expected FIRST
+							if (expectedErrorSubstring !== null) {
+								// Error occurred, and we expected one. Check if it matches.
+								expect(error.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
+									`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${error.message}"`
+								);
+								console.log(`   -> Caught expected error: ${error.message}`);
+								// Error was expected and matched, proceed normally
+							} else {
+								// Error occurred, but we did NOT expect one (or expected a specific non-matching one).
+								// OR it's the specific assertion failure from the error handling block above.
+								if (error.message.includes('Expected error matching')) {
+									throw error; // Rethrow assertion failure
+								}
+								// Unexpected runtime error, dump diagnostics
+								let diagnosticInfo = '';
 								try {
-									const compiler = new Compiler(db); const program = compiler.compile(ast, sqlToRun);
-									diagnosticInfo += `\n\n--- VDBE ---\n${formatVdbe(program.instructions)}`;
-								} catch (compileError: any) { diagnosticInfo += `\n\n--- VDBE (Compilation Error) ---\n${compileError.message}`; }
-							} catch (parseError: any) {
-								if (parseError instanceof ParseError) { diagnosticInfo += `\n\n--- AST (Parse Error) ---\n${parseError.message}`; }
-								else { diagnosticInfo += `\n\n--- AST (Unknown Parsing Error) ---\n${parseError.message}`; }
+									const parser = new Parser();
+									// Try parsing the block that caused the error
+									const statementsAst = parser.parseAll(sqlBlock);
+									diagnosticInfo += `\n\n--- AST (Full Block, ${statementsAst.length} stmts) ---`;
+									statementsAst.forEach((ast, idx) => {
+										diagnosticInfo += `\n--- Stmt ${idx + 1} ---\n${formatAst(ast)}`;
+									});
+									// Maybe try compiling the first failing statement? Too complex here.
+								} catch (parseError: any) {
+									if (parseError instanceof ParseError) { diagnosticInfo += `\n\n--- AST (Parse Error) ---\n${parseError.message}`; }
+									else { diagnosticInfo += `\n\n--- AST (Unknown Parsing Error) ---\n${parseError.message}`; }
+								}
+								throw new Error(`[${file}:${lineNumber}] Failed executing SQL block: ${sqlBlock} - Unexpected Error: ${error.message}${diagnosticInfo}`);
 							}
-							throw new Error(`[${file}:${lineNumber}] Failed executing SQL: ${sqlToRun} - Unexpected Error: ${error.message}${diagnosticInfo}`);
 						}
 
 						// Reset for the next block

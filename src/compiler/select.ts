@@ -1,18 +1,18 @@
-import { Opcode } from '../vdbe/opcodes';
-import { StatusCode, SqlDataType } from '../common/types';
-import { SqliteError } from '../common/errors';
-import { type P4Vtab, type P4FuncDef, type P4SortKey } from '../vdbe/instruction';
-import type { Compiler, ColumnResultInfo, HavingContext } from './compiler'; // Ensure HavingContext is imported
-import type * as AST from '../parser/ast';
-import { compileUnhandledWhereConditions } from './whereVerify';
-import type { ArgumentMap } from './expression';
-import { analyzeSubqueryCorrelation } from './correlation'; // Added import
-import type { TableSchema } from '../schema/table'; // Import TableSchema only
-import type { ColumnSchema } from '../schema/column'; // Import ColumnSchema from correct location
-import type { SubqueryCorrelationResult } from './correlation';
-import { setupWindowSorter, type WindowSorterInfo } from './window'; // Import window setup function
-import { compileWindowFunctionsPass } from './window_pass'; // Import window functions pass
-import { expressionToString } from '../util/ddl-stringify';
+import { Opcode } from '../vdbe/opcodes.js';
+import { StatusCode, SqlDataType } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import { type P4FuncDef, type P4SortKey } from '../vdbe/instruction.js';
+import type { Compiler, ColumnResultInfo, HavingContext } from './compiler.js'; // Ensure HavingContext is imported
+import type * as AST from '../parser/ast.js';
+import { compileUnhandledWhereConditions } from './whereVerify.js';
+import type { ArgumentMap } from './handlers.js';
+import { analyzeSubqueryCorrelation } from './correlation.js'; // Added import
+import type { TableSchema } from '../schema/table.js'; // Import TableSchema only
+import type { ColumnSchema } from '../schema/column.js'; // Import ColumnSchema from correct location
+import type { SubqueryCorrelationResult } from './correlation.js';
+import { setupWindowSorter, type WindowSorterInfo } from './window.js'; // Import window setup function
+import { compileWindowFunctionsPass } from './window_pass.js'; // Import window functions pass
+import { expressionToString } from '../util/ddl-stringify.js';
 
 /**
  * Interface to hold consolidated state for each level in the join structure.

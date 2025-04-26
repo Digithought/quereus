@@ -1,5 +1,5 @@
-import type { VdbeInstruction } from './instruction';
-import type { SqlValue } from '../common/types';
+import type { VdbeInstruction } from './instruction.js';
+import type { SqlValue } from '../common/types.js';
 
 /**
  * Represents a compiled VDBE program.

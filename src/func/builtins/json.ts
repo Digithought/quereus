@@ -1,21 +1,11 @@
-import { FunctionFlags } from '../../common/constants';
-import type { SqlValue } from '../../common/types';
-import { createScalarFunction, createAggregateFunction } from '../registration';
-import type { SqliteContext } from '../context';
-// Import helpers from the new location
-import { safeJsonParse, resolveJsonPathForModify, prepareJsonValue, deepCopyJson, getJsonType } from './json-helpers';
-// Import fast-json-patch
-import { applyPatch, type Operation } from 'fast-json-patch';
+import fastJsonPatch from 'fast-json-patch';
+import type { Operation } from 'fast-json-patch';
+const { applyPatch } = fastJsonPatch;
 
-/* --- REMOVED HELPER DEFINITIONS --- */
-/*
-function safeJsonParse(jsonString: SqlValue): any | null { ... }
-function evaluateJsonPath(data: any, path: string): any | undefined { ... }
-function resolveJsonPathForModify(data: any, path: string): { ... } | null { ... }
-function prepareJsonValue(value: SqlValue): any { ... }
-function deepCopyJson(data: any): any { ... }
-function getJsonType(value: any): string { ... }
-*/
+import { FunctionFlags } from '../../common/constants.js';
+import type { SqlValue } from '../../common/types.js';
+import { createScalarFunction, createAggregateFunction } from '../registration.js';
+import { safeJsonParse, resolveJsonPathForModify, prepareJsonValue, deepCopyJson, getJsonType } from './json-helpers.js';
 
 // --- JSON Functions --- //
 
@@ -203,16 +193,22 @@ export const jsonArrayLengthFunc = createScalarFunction(
 const jsonPatchFuncImpl = (json: SqlValue, patchVal: SqlValue): SqlValue => {
 	const data = safeJsonParse(json);
 	// JSON Patches must be JSON arrays
-	const patch = safeJsonParse(patchVal);
+	const patchData = safeJsonParse(patchVal);
 
 	if (data === null && typeof json === 'string') return null; // Invalid target JSON
-	if (!Array.isArray(patch)) return null; // Invalid patch JSON (must be array)
+	if (!Array.isArray(patchData)) return null; // Invalid patch JSON (must be array)
+
+	// Ensure patch operations have the correct structure (basic check)
+	const patch = patchData as Operation[];
+	if (!patch.every(op => typeof op === 'object' && op !== null && 'op' in op && 'path' in op)) {
+		return null; // Invalid operation structure
+	}
 
 	try {
 		// fast-json-patch might throw on invalid patch operations or test failures
 		// applyPatch mutates by default, but since `data` is freshly parsed, it's okay.
 		// If data came from elsewhere, we might need deepCopyJson first.
-		const result = applyPatch(data, patch as Operation[], true /* validate operations */).newDocument;
+		const result = applyPatch(data, patch, true /* validate operations */).newDocument;
 		return JSON.stringify(result);
 	} catch (e: any) {
 		console.error(`json_patch failed: ${e?.message}`, e);
@@ -474,3 +470,25 @@ export const jsonGroupObjectFunc = createAggregateFunction(
 	jsonGroupObjectStep,
 	jsonGroupObjectFinal
 );
+
+// Re-add the missing jsJsonPatch function implementation
+const jsJsonPatch = (jsonDoc: SqlValue, patchVal: SqlValue): string | null => {
+	const data = safeJsonParse(jsonDoc);
+	const patchData = safeJsonParse(patchVal);
+
+	if (data === null && typeof jsonDoc === 'string') return null; // Invalid target JSON
+	if (!Array.isArray(patchData)) return null; // Invalid patch JSON (must be array)
+
+	const patch = patchData as Operation[];
+	if (!patch.every(op => typeof op === 'object' && op !== null && 'op' in op && 'path' in op)) {
+		return null; // Invalid operation structure
+	}
+
+	try {
+		const result = applyPatch(data, patch, true).newDocument;
+		return JSON.stringify(result);
+	} catch (e: any) {
+		console.error(`json_patch failed: ${e?.message}`, e);
+		return null; // Return NULL on patch failure
+	}
+};

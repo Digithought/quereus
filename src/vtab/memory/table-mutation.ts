@@ -1,8 +1,8 @@
 import { Path, BTree } from 'digitree';
-import { SqliteError, ConstraintError } from '../../common/errors';
-import { type SqlValue, StatusCode } from '../../common/types';
-import type { MemoryTable, MemoryTableRow, BTreeKey } from './table';
-import { ConflictResolution } from '../../common/constants';
+import { SqliteError, ConstraintError } from '../../common/errors.js';
+import { type SqlValue, StatusCode } from '../../common/types.js';
+import type { MemoryTable, MemoryTableRow, BTreeKey } from './table.js';
+import { ConflictResolution } from '../../common/constants.js';
 
 export function addRowLogic(self: MemoryTable, row: Record<string, SqlValue>): { rowid?: bigint; } {
 	if (!self.primaryTree) throw new Error("MemoryTable primaryTree not initialized.");

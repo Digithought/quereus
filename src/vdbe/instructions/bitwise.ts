@@ -1,5 +1,5 @@
-import type { Handler } from '../handler-types';
-import { Opcode } from '../opcodes';
+import type { Handler } from '../handler-types.js';
+import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.BitAnd] = (ctx, inst) => {

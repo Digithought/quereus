@@ -1,21 +1,18 @@
-import type { Compiler } from "./compiler";
-import type * as AST from "../parser/ast";
-import { StatusCode, SqlDataType } from "../common/constants";
-import { SqliteError } from "../common/errors";
-import { createTableToString } from "../util/ddl-stringify";
-import { Opcode } from '../vdbe/opcodes';
-import type { Database } from '../core/database';
-import type { VirtualTable } from "../vtab/table";
-import type { ViewSchema } from '../schema/view';
-import type { Schema } from '../schema/schema';
-import { Parser } from "../parser/parser";
-import type { SqlValue } from "../common/types";
-import type { BaseModuleConfig } from '../vtab/module';
-import type { Expression } from '../parser/ast';
-import type { P4SchemaChange } from "../vdbe/instruction";
-import type { VirtualTableModule } from "../vtab/module";
-import { columnDefToSchema, type IndexSchema, type TableSchema } from "../schema/table";
-import type { ColumnSchema } from "../schema/column";
+import type { Compiler } from "./compiler.js";
+import type * as AST from "../parser/ast.js";
+import { StatusCode, SqlDataType } from "../common/constants.js";
+import { SqliteError } from "../common/errors.js";
+import { Opcode } from '../vdbe/opcodes.js';
+import type { VirtualTable } from "../vtab/table.js";
+import type { ViewSchema } from '../schema/view.js';
+import type { Schema } from '../schema/schema.js';
+import { Parser } from "../parser/parser.js";
+import type { SqlValue } from "../common/types.js";
+import type { BaseModuleConfig } from '../vtab/module.js';
+import type { Expression } from '../parser/ast.js';
+import type { P4SchemaChange } from "../vdbe/instruction.js";
+import { type IndexSchema, type TableSchema } from "../schema/table.js";
+import type { ColumnSchema } from "../schema/column.js";
 
 // Define local interfaces if not exported/importable easily
 interface MemoryTableConfig extends BaseModuleConfig {

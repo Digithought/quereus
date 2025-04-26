@@ -1,8 +1,8 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode, type SqlValue } from '../../common/types';
-import { applyNumericAffinity, applyIntegerAffinity, applyRealAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity';
-import type { Handler } from '../handler-types';
-import { Opcode } from '../opcodes';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode, type SqlValue } from '../../common/types.js';
+import { applyNumericAffinity, applyIntegerAffinity, applyRealAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity.js';
+import type { Handler } from '../handler-types.js';
+import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	// --- Type Affinity/Conversion ---

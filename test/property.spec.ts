@@ -1,8 +1,7 @@
 import { expect } from 'aegir/chai';
 import * as fc from 'fast-check';
-import { Database } from '../src/core/database'; // Adjust path as needed
-import { compareSqlValues } from '../src/util/comparison'; // Import compare helper
-import { SqliteError } from '../src/common/errors';
+import { Database } from '../src/core/database.js'; // Adjust path as needed
+import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
 
 describe('Property-Based Tests', () => {
 	let db: Database;

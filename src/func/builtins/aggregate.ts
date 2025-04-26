@@ -1,9 +1,7 @@
-import type { FunctionSchema } from '../../schema/function';
-import { FunctionFlags } from '../../common/constants';
-import type { SqliteContext } from '../context';
-import type { SqlValue } from '../../common/types';
-import { createAggregateFunction } from '../registration'; // Import helper
-import { compareSqlValues } from '../../util/comparison'; // Need comparison for MIN/MAX
+import { FunctionFlags } from '../../common/constants.js';
+import type { SqlValue } from '../../common/types.js';
+import { createAggregateFunction } from '../registration.js';
+import { compareSqlValues } from '../../util/comparison.js';
 
 // --- count(*) ---
 const countStarStep = (acc: number | undefined): number => {

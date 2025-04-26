@@ -1,4 +1,4 @@
-import { type SqlValue } from '../common/types';
+import type { SqlValue } from '../common/types.js';
 
 // --- Add Collation Function Type ---
 export type CollationFunction = (a: string, b: string) => number;

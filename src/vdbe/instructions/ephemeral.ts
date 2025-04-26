@@ -1,10 +1,10 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type { TableSchema } from '../../schema/table';
-import { MemoryTable } from '../../vtab/memory/table';
-import { MemoryTableModule } from '../../vtab/memory/module';
-import type { Handler } from '../handler-types';
-import { Opcode } from '../opcodes';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { TableSchema } from '../../schema/table.js';
+import { MemoryTable } from '../../vtab/memory/table.js';
+import { MemoryTableModule } from '../../vtab/memory/module.js';
+import type { Handler } from '../handler-types.js';
+import { Opcode } from '../opcodes.js';
 
 // Potentially share this instance if MemoryTableModule is stateless
 const ephemeralModule = new MemoryTableModule();

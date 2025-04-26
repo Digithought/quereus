@@ -1,7 +1,7 @@
-import type { Compiler } from './compiler';
-import type * as AST from '../parser/ast';
-import { SqliteError } from '../common/errors';
-import { StatusCode } from '../common/constants';
+import type { Compiler } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import { SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
 
 // --- Exports for Correlation Analysis ---
 /** Type definition for correlated column info */

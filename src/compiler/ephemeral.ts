@@ -1,9 +1,9 @@
-import { Opcode } from '../vdbe/opcodes';
-import type { Compiler } from './compiler';
-import { createDefaultColumnSchema } from '../schema/column';
-import { buildColumnIndexMap } from '../schema/table';
-import type { TableSchema } from '../schema/table';
-import type { P4SortKey } from '../vdbe/instruction';
+import { Opcode } from '../vdbe/opcodes.js';
+import type { Compiler } from './compiler.js';
+import { createDefaultColumnSchema } from '../schema/column.js';
+import { buildColumnIndexMap } from '../schema/table.js';
+import type { TableSchema } from '../schema/table.js';
+import type { P4SortKey } from '../vdbe/instruction.js';
 
 export function createEphemeralSchemaHelper(
 	compiler: Compiler,

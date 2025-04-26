@@ -1,19 +1,19 @@
-import { Schema } from './schema';
-import type { Database } from '../core/database'; // Use Database type
-import type { TableSchema } from './table';
-import type { FunctionSchema } from './function';
-import { SqliteError, MisuseError } from '../common/errors';
-import { StatusCode } from '../common/constants';
-import type { VirtualTableModule } from '../vtab/module';
-import type { VirtualTable } from '../vtab/table';
-import type { ColumnSchema } from './column';
-import { createDefaultColumnSchema } from './column';
-import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table';
-import { Parser } from '../parser/parser'; // Import the parser
-import type * as AST from '../parser/ast'; // Import AST types
-import type { ViewSchema } from './view'; // Import ViewSchema
-import { SchemaTableModule } from '../vtab/schema/table';
-import { SqlDataType } from '../common/types'; // Import SqlDataType
+import { Schema } from './schema.js';
+import type { Database } from '../core/database.js';
+import type { TableSchema } from './table.js';
+import type { FunctionSchema } from './function.js';
+import { SqliteError, MisuseError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
+import type { VirtualTableModule } from '../vtab/module.js';
+import type { VirtualTable } from '../vtab/table.js';
+import type { ColumnSchema } from './column.js';
+import { createDefaultColumnSchema } from './column.js';
+import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table.js';
+import { Parser } from '../parser/parser.js';
+import type * as AST from '../parser/ast.js';
+import type { ViewSchema } from './view.js';
+import { SchemaTableModule } from '../vtab/schema/table.js';
+import { SqlDataType } from '../common/types.js';
 
 /**
  * Manages all schemas associated with a database connection (main, temp, attached).

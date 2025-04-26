@@ -1,15 +1,12 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode, type SqlValue } from '../../common/types';
-import type { Database } from '../../core/database';
-import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table';
-import { MemoryTable, type MemoryTableConfig } from './table';
-import type { VirtualTableModule } from '../module';
-import { MemoryTableCursor } from './cursor';
-import type { SqliteContext } from "../../func/context";
-import type { Path } from 'digitree';
-import { IndexConstraintOp } from '../../common/constants';
-import { compareSqlValues } from '../../util/comparison';
-import type { IndexInfo } from '../indexInfo';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode, type SqlValue } from '../../common/types.js';
+import type { Database } from '../../core/database.js';
+import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table.js';
+import { MemoryTable, type MemoryTableConfig } from './table.js';
+import type { VirtualTableModule } from '../module.js';
+import { MemoryTableCursor } from './cursor.js';
+import { IndexConstraintOp } from '../../common/constants.js';
+import type { IndexInfo } from '../indexInfo.js';
 
 /**
  * A module that provides in-memory table functionality using digitree.

@@ -1,7 +1,7 @@
-import { IndexConstraintOp } from '../common/constants';
-import { Opcode } from '../vdbe/opcodes';
-import type { Compiler } from './compiler';
-import type * as AST from '../parser/ast';
+import { IndexConstraintOp } from '../common/constants.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import type { Compiler } from './compiler.js';
+import type * as AST from '../parser/ast.js';
 
 // --- WHERE Clause Verification and Unhandled Compilation --- //
 

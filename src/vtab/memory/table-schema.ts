@@ -1,11 +1,11 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type { ColumnDef } from '../../parser';
-import { getAffinity } from '../../schema/column';
-import { columnDefToSchema, buildColumnIndexMap } from '../../schema/table';
-import { Latches } from '../../util/latches';
-import type { MemoryTable, MemoryTableRow } from './table';
-import type { SchemaChangeInfo } from '../module';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { ColumnDef } from '../../parser/index.js';
+import { getAffinity } from '../../schema/column.js';
+import { columnDefToSchema, buildColumnIndexMap } from '../../schema/table.js';
+import { Latches } from '../../util/latches.js';
+import type { MemoryTable, MemoryTableRow } from './table.js';
+import type { SchemaChangeInfo } from '../module.js';
 
 export function addColumnLogic(self: MemoryTable, columnDef: ColumnDef): void {
 	if (self.isReadOnly()) {

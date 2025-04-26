@@ -1,8 +1,8 @@
-import type { VirtualTable } from './table';
-import type { SqliteContext } from '../func/context';
-import { StatusCode, type SqlValue } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { IndexConstraint } from './indexInfo';
+import type { VirtualTable } from './table.js';
+import type { SqliteContext } from '../func/context.js';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
+import type { IndexConstraint } from './indexInfo.js';
 
 /**
  * Base class (or interface) for virtual table cursors.

@@ -1,5 +1,5 @@
-import type { SqlValue } from '../common/types';
-import type { ConflictResolution } from '../common/constants';
+import type { SqlValue } from '../common/types.js';
+import type { ConflictResolution } from '../common/constants.js';
 
 /**
  * SQL Abstract Syntax Tree (AST) definitions
@@ -391,3 +391,21 @@ export interface CollateExpr extends AstNode {
 	expr: Expression;
 	collation: string;
 }
+
+// --- Utility Type for Top-Level Statements ---
+export type Statement =
+	| SelectStmt
+	| InsertStmt
+	| UpdateStmt
+	| DeleteStmt
+	| CreateTableStmt
+	| CreateIndexStmt
+	| CreateViewStmt
+	| DropStmt
+	| AlterTableStmt
+	| BeginStmt
+	| CommitStmt
+	| RollbackStmt
+	| SavepointStmt
+	| ReleaseStmt
+	| PragmaStmt;

@@ -1,12 +1,12 @@
-import { SqliteError } from '../common/errors';
-import type { StatusCode, SqlValue } from '../common/types';
-import type { Database } from '../core/database';
-import type { FunctionContext } from '../func/context';
-import type { VdbeInstruction } from './instruction';
-import type { VdbeProgram } from './program';
-import type { VirtualTable } from '../vtab/table';
-import type { VirtualTableCursor } from '../vtab/cursor';
-import type { MemoryIndex } from '../vtab/memory/index';
+import { SqliteError } from '../common/errors.js';
+import type { StatusCode, SqlValue } from '../common/types.js';
+import type { Database } from '../core/database.js';
+import type { FunctionContext } from '../func/context.js';
+import type { VdbeInstruction } from './instruction.js';
+import type { VdbeProgram } from './program.js';
+import type { VirtualTable } from '../vtab/table.js';
+import type { VirtualTableCursor } from '../vtab/cursor.js';
+import type { MemoryIndex } from '../vtab/memory/index.js';
 
 /**
  * Represents a single VDBE memory cell (register)

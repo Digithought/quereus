@@ -1,11 +1,11 @@
-import { Compiler } from './compiler';
-import type { WindowSorterInfo } from './window';
-import { Opcode } from '../vdbe/opcodes';
-import { SqliteError } from '../common/errors';
-import type * as AST from '../parser/ast'; // Import AST types
-import { expressionToString } from '../util/ddl-stringify'; // Import the missing function
-import { StatusCode } from '../common/types'; // Import StatusCode & SqlDataType
-import { compileFrameAggregate, compileFrameBoundary, compileRestoreCursorPosition, compileSaveCursorPosition } from './window_frame';
+import { Compiler } from './compiler.js';
+import type { WindowSorterInfo } from './window.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import { SqliteError } from '../common/errors.js';
+import type * as AST from '../parser/ast.js';
+import { expressionToString } from '../util/ddl-stringify.js';
+import { StatusCode } from '../common/types.js';
+import { compileFrameAggregate, compileFrameBoundary, compileRestoreCursorPosition, compileSaveCursorPosition } from './window_frame.js';
 
 /**
  * Compiles the pass for calculating window functions after the data

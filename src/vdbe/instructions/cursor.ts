@@ -1,11 +1,11 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode, type SqlValue } from '../../common/types';
-import type { Handler, VmCtx, VdbeCursor, Status } from '../handler-types';
-import type { VdbeInstruction } from '../instruction';
-import { Opcode } from '../opcodes';
-import type { TableSchema } from '../../schema/table';
-import type { VirtualTable } from '../../vtab/table';
-import type { BaseModuleConfig } from '../../vtab/module';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { Handler, VmCtx, Status } from '../handler-types.js';
+import type { VdbeInstruction } from '../instruction.js';
+import { Opcode } from '../opcodes.js';
+import type { TableSchema } from '../../schema/table.js';
+import type { VirtualTable } from '../../vtab/table.js';
+import type { BaseModuleConfig } from '../../vtab/module.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	// --- Result Row ---

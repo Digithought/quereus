@@ -1,10 +1,3 @@
-/**
- * SQL Lexer for SQLiter
- *
- * This module provides tokenization of SQL statements following SQLite syntax.
- */
-
-// Token types
 export enum TokenType {
 	// Literals
 	INTEGER = 'INTEGER',

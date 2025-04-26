@@ -1,14 +1,9 @@
-import type { VirtualTableModule, SchemaChangeInfo } from './module';
-import type { Database } from '../core/database';
-import type { TableSchema } from '../schema/table';
-import type { VirtualTableCursor } from './cursor';
-import type { IndexInfo } from './indexInfo';
-import type { SqlValue } from '../common/types';
-import type { FunctionSchema } from '../schema/function';
-import type { Statement } from '../core/statement';
-import { StatusCode } from '../common/types';
-import { SqliteError } from '../common/errors';
-import type { IndexSchema } from '../schema/table';
+import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
+import type { Database } from '../core/database.js';
+import type { TableSchema } from '../schema/table.js';
+import type { VirtualTableCursor } from './cursor.js';
+import type { SqlValue } from '../common/types.js';
+import type { IndexSchema } from '../schema/table.js';
 
 /**
  * Base class (or interface) representing an instance of a virtual table,

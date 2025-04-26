@@ -1,4 +1,4 @@
-import type { SqlDataType } from '../common/types';
+import type { SqlDataType } from '../common/types.js';
 
 export interface JsonColumnSchema {
 	name: string;
@@ -35,7 +35,7 @@ export interface JsonTableSchema {
 	isVirtual: boolean;
 	vtabModule?: string;
 	vtabArgs?: string[];
-	indexes?: JsonIndexSchema[]; // Added optional indexes
+	indexes?: JsonIndexSchema[];
 }
 
 export interface JsonFunctionSchema {

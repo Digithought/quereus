@@ -1,6 +1,6 @@
-export * from './ast';
-export * from './parser';
-export * from './lexer';
+export * from './ast.js';
+export * from './parser.js';
+export * from './lexer.js';
 
 import { Parser, ParseError } from './parser';
 import type { SelectStmt, InsertStmt } from './ast';

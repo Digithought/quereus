@@ -1,14 +1,14 @@
-import { type SqlValue, StatusCode } from '../common/types';
-import { MisuseError, SqliteError } from '../common/errors';
-import type { Database } from './database';
-import { SqlDataType } from '../common/constants';
-import { Parser, ParseError } from '../parser/parser';
-import { Compiler } from '../compiler/compiler';
+import { type SqlValue, StatusCode } from '../common/types.js';
+import { MisuseError, SqliteError } from '../common/errors.js';
+import type { Database } from './database.js';
+import { SqlDataType } from '../common/constants.js';
+import { Parser, ParseError } from '../parser/parser.js';
+import { Compiler } from '../compiler/compiler.js';
 
 // --- Add VDBE imports ---
-import { type VdbeProgram } from '../vdbe/program';
-import { VdbeRuntime } from '../vdbe/runtime';
-import type { MemoryCell } from '../vdbe/handler-types';
+import { type VdbeProgram } from '../vdbe/program.js';
+import { VdbeRuntime } from '../vdbe/runtime.js';
+import type { MemoryCell } from '../vdbe/handler-types.js';
 // ------------------------
 
 /**
@@ -29,15 +29,21 @@ export class Statement {
 	private needsCompile = true;
 	// -----------------------------------------------
 
-	/** @internal */
-	constructor(db: Database, sql: string) {
+	/**
+	 * @internal - Use db.prepare()
+	 * Pass program directly only when creating transient statements inside db.exec()
+	 */
+	constructor(db: Database, sql: string, program?: VdbeProgram) {
 		this.db = db;
 		this.sql = sql;
-		// Defer compilation until first step or explicit compile call
+		if (program) {
+			this.vdbeProgram = program;
+			this.needsCompile = false;
+		}
 	}
 
 	/** @internal */
-	private async compile(): Promise<VdbeProgram> {
+	public async compile(): Promise<VdbeProgram> {
 		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
 		if (this.finalized) { throw new MisuseError("Statement finalized"); }
 		console.log("Compiling statement...");

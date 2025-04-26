@@ -1,13 +1,13 @@
-import { VirtualTableCursor } from "../cursor";
-import type { MemoryTable, MemoryTableRow, BTreeKey } from "./table";
-import { StatusCode, type SqlValue } from "../../common/types";
-import type { SqliteContext } from "../../func/context";
-import { SqliteError } from "../../common/errors";
 import { BTree, type Path } from 'digitree';
-import type { MemoryIndex } from './index'; // Import MemoryIndex
-import { compareSqlValues } from "../../util/comparison";
-import { IndexConstraintOp } from '../../common/constants';
-import type { IndexConstraint } from '../indexInfo'; // <-- Import IndexConstraint
+import { VirtualTableCursor } from "../cursor.js";
+import type { MemoryTable, MemoryTableRow, BTreeKey } from "./table.js";
+import { StatusCode, type SqlValue } from "../../common/types.js";
+import type { SqliteContext } from "../../func/context.js";
+import { SqliteError } from "../../common/errors.js";
+import type { MemoryIndex } from './index.js';
+import { compareSqlValues } from "../../util/comparison.js";
+import { IndexConstraintOp } from '../../common/constants.js';
+import type { IndexConstraint } from '../indexInfo.js';
 
 type IndexBound = { value: SqlValue, op: IndexConstraintOp };
 

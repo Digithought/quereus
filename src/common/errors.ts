@@ -1,5 +1,5 @@
-import { StatusCode } from './constants';
-import type { Token } from '../parser/lexer';
+import { StatusCode } from './constants.js';
+import type { Token } from '../parser/lexer.js';
 
 /**
  * Base class for SQLiter specific errors

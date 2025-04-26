@@ -1,10 +1,10 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import { MemoryTable } from '../../vtab/memory/table';
-import type { Handler } from '../handler-types';
-import type { P4SortKey } from '../instruction';
-import { Opcode } from '../opcodes';
-import { MemoryTableCursor } from '../../vtab/memory/cursor';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import { MemoryTable } from '../../vtab/memory/table.js';
+import type { Handler } from '../handler-types.js';
+import type { P4SortKey } from '../instruction.js';
+import { Opcode } from '../opcodes.js';
+import { MemoryTableCursor } from '../../vtab/memory/cursor.js';
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.Sort] = (ctx, inst) => {

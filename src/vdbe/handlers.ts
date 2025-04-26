@@ -1,21 +1,21 @@
-import type { Handler } from './handler-types';
-import { Opcode } from './opcodes';
-import { SqliteError } from '../common/errors';
-import { StatusCode } from '../common/types';
-import * as Core from './instructions/core';
-import * as Compare from './instructions/compare';
-import * as Arith from './instructions/arith';
-import * as Bitwise from './instructions/bitwise';
-import * as Subroutine from './instructions/subroutine';
-import * as Cursor from './instructions/cursor';
-import * as Types from './instructions/types';
-import * as Func from './instructions/function';
-import * as Aggregate from './instructions/aggregate';
-import * as Ephemeral from './instructions/ephemeral';
-import * as Sort from './instructions/sort';
-import * as VTab from './instructions/vtab';
-import * as Schema from './instructions/schema';
-import * as Seek from './instructions/seek';
+import type { Handler } from './handler-types.js';
+import { Opcode } from './opcodes.js';
+import { SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
+import * as Core from './instructions/core.js';
+import * as Compare from './instructions/compare.js';
+import * as Arith from './instructions/arith.js';
+import * as Bitwise from './instructions/bitwise.js';
+import * as Subroutine from './instructions/subroutine.js';
+import * as Cursor from './instructions/cursor.js';
+import * as Types from './instructions/types.js';
+import * as Func from './instructions/function.js';
+import * as Aggregate from './instructions/aggregate.js';
+import * as Ephemeral from './instructions/ephemeral.js';
+import * as Sort from './instructions/sort.js';
+import * as VTab from './instructions/vtab.js';
+import * as Schema from './instructions/schema.js';
+import * as Seek from './instructions/seek.js';
 
 /**
  * Table of handlers for each opcode

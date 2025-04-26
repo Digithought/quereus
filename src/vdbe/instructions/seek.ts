@@ -1,7 +1,7 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode, type SqlValue } from '../../common/types';
-import type { Handler, VmCtx } from '../handler-types';
-import { Opcode } from '../opcodes';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { Handler, VmCtx } from '../handler-types.js';
+import { Opcode } from '../opcodes.js';
 
 // Re-use VTab error helper if applicable, or define a local one
 function handleSeekError(ctx: VmCtx, e: any, cursorIdx: number, method: string) {

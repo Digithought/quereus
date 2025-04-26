@@ -1,14 +1,12 @@
-import { SqlDataType } from '../common/constants';
-import { Opcode } from '../vdbe/opcodes';
-import { SqliteError } from '../common/errors';
-import { StatusCode } from '../common/types';
-import type { Compiler } from './compiler';
-import * as AST from '../parser/ast';
-import type { P4Vtab } from '../vdbe/instruction';
-import { getAffinityFromTypeName, parsePrimaryKeyFromAst } from './ddl'; // Import helpers
-import type { BaseModuleConfig } from '../vtab/module';
-import type { SqlValue } from '../common/types';
-import { Parser } from '../parser/parser'; // Import Parser
+import { SqlDataType } from '../common/constants.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import { SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
+import type { Compiler } from './compiler.js';
+import * as AST from '../parser/ast.js';
+import type { P4Vtab } from '../vdbe/instruction.js';
+import type { BaseModuleConfig } from '../vtab/module.js';
+import type { SqlValue } from '../common/types.js';
 
 // Local config interfaces (mirroring ddl.ts for now)
 interface MemoryTableConfig extends BaseModuleConfig {

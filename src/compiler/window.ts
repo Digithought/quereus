@@ -1,13 +1,13 @@
-import type { Compiler } from './compiler';
-import type * as AST from '../parser/ast';
-import type { ColumnSchema } from '../schema/column';
-import type { P4SortKey } from '../vdbe/instruction';
-import { createDefaultColumnSchema } from '../schema/column';
-import { SqlDataType } from '../common/types';
-import { expressionToString } from '../util/ddl-stringify';
-import { SqliteError } from '../common/errors';
-import { StatusCode } from '../common/constants';
-import { getExpressionAffinity } from './utils'; // Assuming this helper exists or can be created
+import type { Compiler } from './compiler.js';
+import type * as AST from '../parser/ast.js';
+import type { ColumnSchema } from '../schema/column.js';
+import type { P4SortKey } from '../vdbe/instruction.js';
+import { createDefaultColumnSchema } from '../schema/column.js';
+import { SqlDataType } from '../common/types.js';
+import { expressionToString } from '../util/ddl-stringify.js';
+import { SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
+import { getExpressionAffinity } from './utils.js';
 
 /** Information about the sorter used for window functions */
 export interface WindowSorterInfo {

@@ -1,4 +1,4 @@
-import { type SqlValue } from '../common/types';
+import type { SqlValue } from '../common/types.js';
 
 /**
  * Attempts to parse a string as an integer according to SQLite rules.

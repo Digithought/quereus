@@ -1,8 +1,8 @@
-import { SqliteError } from "../../common/errors";
-import { StatusCode } from "../../common/types";
-import type { Handler } from "../handler-types";
-import type { Status, VmCtx } from "../handler-types";
-import { Opcode } from "../opcodes";
+import { SqliteError } from "../../common/errors.js";
+import { StatusCode } from "../../common/types.js";
+import type { Handler } from "../handler-types.js";
+import type { Status, VmCtx } from "../handler-types.js";
+import { Opcode } from "../opcodes.js";
 
 function binaryArithOp(ctx: VmCtx, r1: number, r2: number, dest: number, op: (a: any, b: any) => any): Status {
 	const v1 = ctx.getMem(r1);

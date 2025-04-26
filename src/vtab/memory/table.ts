@@ -1,22 +1,22 @@
 // src/vtab/memory-table.ts
-import { VirtualTable } from '../table';
-import { VirtualTableCursor } from '../cursor';
-import type { VirtualTableModule, BaseModuleConfig, SchemaChangeInfo } from '../module';
-import type { IndexInfo } from '../indexInfo';
-import type { Database } from '../../core/database';
-import { type SqlValue, SqlDataType, StatusCode } from '../../common/types';
-import { BTree, Path } from 'digitree';
-import { compareSqlValues } from '../../util/comparison';
-import type { P4SortKey } from '../../vdbe/instruction';
-import { type TableSchema, type IndexSchema } from '../../schema/table';
-import { getAffinity } from '../../schema/column'; // Use value import for getAffinity
-import type { Expression, ColumnDef } from '../../parser/ast';
-import * as Logic from './table-logic';
-import * as SchemaLogic from './table-schema';
-import * as TrxLogic from './table-trx';
-import * as MutationLogic from './table-mutation';
-import { MemoryIndex, type IndexSpec } from './index';
-import { SqliteError } from '../../common/errors';
+import { VirtualTable } from '../table.js';
+import { VirtualTableCursor } from '../cursor.js';
+import type { VirtualTableModule, BaseModuleConfig, SchemaChangeInfo } from '../module.js';
+import type { IndexInfo } from '../indexInfo.js';
+import type { Database } from '../../core/database.js';
+import { type SqlValue, SqlDataType, StatusCode } from '../../common/types.js';
+import { BTree, Path } from "digitree";
+import { compareSqlValues } from '../../util/comparison.js';
+import type { P4SortKey } from '../../vdbe/instruction.js';
+import { type TableSchema, type IndexSchema } from '../../schema/table.js';
+import { getAffinity } from '../../schema/column.js';
+import type { Expression, ColumnDef } from '../../parser/ast.js';
+import * as Logic from './table-logic.js';
+import * as SchemaLogic from './table-schema.js';
+import * as TrxLogic from './table-trx.js';
+import * as MutationLogic from './table-mutation.js';
+import { MemoryIndex, type IndexSpec } from './index.js';
+import { SqliteError } from '../../common/errors.js';
 
 // Type for rows stored internally, always including the SQLite rowid
 export type MemoryTableRow = Record<string, SqlValue> & { _rowid_: bigint };

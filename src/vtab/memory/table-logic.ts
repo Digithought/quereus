@@ -1,12 +1,10 @@
-import { VirtualTableCursor } from '../cursor';
-import type { IndexInfo } from '../indexInfo';
-import { type SqlValue, StatusCode } from '../../common/types';
+import { VirtualTableCursor } from '../cursor.js';
+import type { IndexInfo } from '../indexInfo.js';
+import { StatusCode } from '../../common/types.js';
 import { BTree } from 'digitree';
-import type { P4SortKey } from '../../vdbe/instruction';
-import { MemoryTableCursor } from './cursor';
-import { IndexConstraintOp } from '../../common/constants';
-import { MemoryTable, type BTreeKey, type MemoryTableRow } from './table';
-import { compareSqlValues } from '../../util/comparison';
+import { MemoryTableCursor } from './cursor.js';
+import { IndexConstraintOp } from '../../common/constants.js';
+import { MemoryTable, type BTreeKey, type MemoryTableRow } from './table.js';
 
 export async function xOpenLogic(self: MemoryTable): Promise<VirtualTableCursor<MemoryTable, any>> {
 	if (!self.primaryTree) {

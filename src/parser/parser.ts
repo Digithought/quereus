@@ -1,17 +1,7 @@
-/**
- * SQL Parser for SQLiter
- *
- * Implements a recursive descent parser for SQL statements
- * with initial focus on SELECT statements
- */
+import { Lexer, type Token, TokenType } from './lexer.js';
+import * as AST from './ast.js';
+import { ConflictResolution } from '../common/constants.js';
 
-import { Lexer, type Token, TokenType } from './lexer';
-import * as AST from './ast';
-import { ConflictResolution } from '../common/constants'; // Needed for constraints
-
-/**
- * SQL Parser error
- */
 export class ParseError extends Error {
 	token: Token;
 
@@ -38,9 +28,6 @@ function _createLoc(startToken: Token, endToken: Token): AST.AstNode['loc'] {
 	};
 }
 
-/**
- * SQL Parser class
- */
 export class Parser {
 	private tokens: Token[] = [];
 	private current = 0;
@@ -68,47 +55,81 @@ export class Parser {
 	}
 
 	/**
-	 * Parse SQL text into an AST
+	 * Parse SQL text into an array of ASTs
 	 */
-	parse(sql: string): AST.AstNode {
+	parseAll(sql: string): AST.Statement[] {
 		this.initialize(sql);
+		const statements: AST.Statement[] = [];
 
-		// Parse statement
-		try {
-			// --- Parse optional WITH clause first ---
-			const withClause = this.tryParseWithClause();
-			// --- Then parse the main statement ---
-			const startOfMainStmtToken = this.peek();
-			const mainStatement = this.statement(startOfMainStmtToken);
-			// --- Attach WITH clause if present ---
-			if (withClause && 'withClause' in mainStatement) {
-				(mainStatement as any).withClause = withClause;
-				if (withClause.loc && mainStatement.loc) {
-					mainStatement.loc.start = withClause.loc.start;
+		while (!this.isAtEnd()) {
+			try {
+				// Parse optional WITH clause first
+				const withClause = this.tryParseWithClause();
+				// Then parse the main statement
+				const startOfMainStmtToken = this.peek();
+				// Need to check for EOF *before* calling statement()
+				if (startOfMainStmtToken.type === TokenType.EOF) {
+					if (withClause) {
+						// Dangling WITH clause without a main statement
+						throw this.error(this.previous(), "WITH clause must be followed by a statement.");
+					}
+					break; // Normal end of parsing
 				}
-			} else if (withClause) {
-				// Throw error if WITH is used with unsupported statement type
-				throw this.error(this.previous(), `WITH clause cannot be used with ${mainStatement.type} statement.`);
-			}
-			// Consume optional semicolon at the end
-			this.match(TokenType.SEMICOLON);
-			if (!this.isAtEnd()) {
-				throw this.error(this.peek(), `Unexpected token after end of statement: ${this.peek().lexeme}`);
-			}
-			return mainStatement;
-		} catch (e) {
-			if (e instanceof ParseError) {
-				// Add location to the error message if not already present
-				if (!e.message.includes(`at line ${e.token.startLine}`)) {
-					const locationInfo = ` at line ${e.token.startLine}, column ${e.token.startColumn}`;
-					(e as any).message = e.message + locationInfo;
+				const mainStatement = this.statement(startOfMainStmtToken);
+
+				// Attach WITH clause if present
+				if (withClause && 'withClause' in mainStatement) {
+					(mainStatement as any).withClause = withClause;
+					if (withClause.loc && mainStatement.loc) {
+						mainStatement.loc.start = withClause.loc.start;
+					}
+				} else if (withClause) {
+					throw this.error(this.previous(), `WITH clause cannot be used with ${mainStatement.type} statement.`);
 				}
-				throw e;
+
+				statements.push(mainStatement as AST.Statement); // Cast needed as statement() returns AstNode
+
+				// Consume optional semicolon at the end of the statement
+				this.match(TokenType.SEMICOLON);
+
+			} catch (e) {
+				if (e instanceof ParseError) {
+					if (!e.message.includes(`at line ${e.token.startLine}`)) {
+						const locationInfo = ` at line ${e.token.startLine}, column ${e.token.startColumn}`;
+						(e as any).message = e.message + locationInfo;
+					}
+					throw e;
+				}
+				console.error("Unhandled parser error:", e);
+				throw new Error(`Parser error: ${e instanceof Error ? e.message : e}`);
 			}
-			// Unknown error
-			console.error("Unhandled parser error:", e); // Log unexpected errors
-			throw new Error(`Parser error: ${e instanceof Error ? e.message : e}`);
 		}
+
+		// If we consumed all tokens and didn't parse any statements (e.g., empty input or only comments/whitespace),
+		// return an empty array instead of throwing an error.
+		return statements;
+	}
+
+	/**
+	 * Parse SQL text into a single AST node.
+	 * Use parseAll instead for potentially multi-statement strings.
+	 * Throws error if more than one statement is found after the first.
+	 */
+	parse(sql: string): AST.Statement {
+		const statements = this.parseAll(sql);
+		if (statements.length === 0) {
+			// Handle case of empty input or input with only comments/whitespace
+			// Depending on desired behavior, could return null, undefined, or throw.
+			// Throwing seems reasonable as prepare/eval expect a statement.
+			throw new Error("No SQL statement found to parse.");
+		}
+		if (statements.length > 1) {
+			// Find the token that starts the second statement for better error location
+			const secondStatementStartToken = statements[1]?.loc?.start;
+			const errToken = this.tokens.find(t => t.startOffset === secondStatementStartToken?.offset) ?? this.peek();
+			throw this.error(errToken, "Provided SQL string contains multiple statements. Use exec() for multi-statement execution.");
+		}
+		return statements[0];
 	}
 
 	/**

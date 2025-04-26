@@ -1,4 +1,4 @@
-import type { SqlValue } from '../../common/types';
+import type { SqlValue } from '../../common/types.js';
 
 /** Safely parses a JSON string into a JS value, returning null on error. */
 export function safeJsonParse(jsonString: SqlValue): any | null {

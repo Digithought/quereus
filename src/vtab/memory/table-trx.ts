@@ -1,4 +1,4 @@
-import type { MemoryTable, BTreeKey, MemoryTableRow } from './table';
+import type { MemoryTable, BTreeKey, MemoryTableRow } from './table.js';
 
 export function xBeginLogic(self: MemoryTable): Promise<void> {
 	try {

@@ -1,9 +1,9 @@
-import type { TableSchema } from './table';
-import type { FunctionSchema } from './function';
-import { getFunctionKey } from './function';
-import { SqlDataType } from '../common/types'; // Import SqlDataType
-import type { ViewSchema } from './view'; // Import the new ViewSchema type
-import { SqliteError } from '../common/errors'; // Import SqliteError for conflict checking
+import type { TableSchema } from './table.js';
+import type { FunctionSchema } from './function.js';
+import { getFunctionKey } from './function.js';
+import { SqlDataType } from '../common/types.js';
+import type { ViewSchema } from './view.js';
+import { SqliteError } from '../common/errors.js';
 
 /**
  * Determines the affinity of a column based on its declared type name.

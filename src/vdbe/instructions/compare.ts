@@ -1,7 +1,7 @@
-import { compareSqlValues } from '../../util/comparison';
-import type { VmCtx, Status, Handler } from '../handler-types';
-import type { P4Coll } from '../instruction';
-import { Opcode } from '../opcodes';
+import { compareSqlValues } from '../../util/comparison.js';
+import type { VmCtx, Status, Handler } from '../handler-types.js';
+import type { P4Coll } from '../instruction.js';
+import { Opcode } from '../opcodes.js';
 
 // --- Comparisons ---
 function handleComparison(ctx: VmCtx, inst: any, compareOp: (result: number) => boolean): Status {
