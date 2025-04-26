@@ -109,8 +109,9 @@ export enum Opcode {
 	AggIterate = 52,
 	AggNext = 53,
 	AggKey = 54,
-	AggContext = 55,
-	AggGroupValue = 56,
+	AggContext = 152,
+	AggGroupValue = 153,
+	AggGetContext = 154,
 
 	// Misc
 	CollSeq = 120,
@@ -141,6 +142,9 @@ export enum Opcode {
 
 	// New opcodes
 	OpenTvf = 105,
+
+	// --- Window Functions --- //
+	WindowSort = 160, // Sort the window ephemeral table
 
 } // End Opcode Enum
 

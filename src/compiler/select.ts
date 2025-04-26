@@ -654,78 +654,174 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			"Insert Row into Window Sorter");
 
 	} else if (needsAggProcessing) {
-		// --- Standard Aggregation Step ---
-		// Calculate group key, call AggStep for each aggregate
-		let regGroupKeyStart = 0;
-		let numGroupKeys = 0;
-		let regSerializedKey = 0;
+		// --- Final Aggregation Result Output --- //
+		finalColumnMap = [];
+		let currentResultReg = finalResultBaseReg;
 
+		// Add group key columns to map (only if GROUP BY exists)
 		if (hasGroupBy) {
-			numGroupKeys = stmt.groupBy!.length;
-			regGroupKeyStart = compiler.allocateMemoryCells(numGroupKeys);
 			stmt.groupBy!.forEach((expr, i) => {
-				compiler.compileExpression(expr, regGroupKeyStart + i);
+				finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: expr });
 			});
-			regSerializedKey = compiler.allocateMemoryCells(1);
-			compiler.emit(Opcode.MakeRecord, regGroupKeyStart, numGroupKeys, regSerializedKey, null, 0, "Make GROUP BY Key");
-		} else {
-			// Simple aggregate (no GROUP BY) - use a constant key (e.g., 0)
-			regSerializedKey = compiler.allocateMemoryCells(1);
-			compiler.emit(Opcode.Integer, 0, regSerializedKey, 0, null, 0, "Use constant key 0 for simple aggregate");
+		}
+		// Add aggregate columns to map
+		aggregateColumns.forEach(aggCol => {
+			finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: aggCol.expr });
+		});
+		finalNumCols = finalColumnMap.length;
+		if (finalNumCols === 0 && !hasGroupBy) {
+			finalNumCols = 1; // Ensure at least one cell for simple aggregate even if no columns are selected (e.g. SELECT COUNT(*))
+			// Allocate the cell if it wasn't already part of finalResultBaseReg
+			if (finalResultBaseReg + 1 > currentResultReg) {
+				finalResultBaseReg = compiler.allocateMemoryCells(1);
+			}
 		}
 
-		// Call AggStep for each aggregate function
-		aggregateColumns.forEach(aggCol => {
-			const funcExpr = aggCol.expr;
-			const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length);
-			if (!funcDef) throw new Error("Aggregate function definition disappeared?");
-
-			const firstArgReg = compiler.allocateMemoryCells(funcExpr.args.length || 1); // Need at least 1 for COUNT(*)
-			funcExpr.args.forEach((argExpr, i) => {
-				compiler.compileExpression(argExpr, firstArgReg + i);
-			});
-
-			const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-			compiler.emit(Opcode.AggStep, regGroupKeyStart, firstArgReg, regSerializedKey, p4, numGroupKeys, `AggStep for ${funcExpr.name}`);
+		// Set column names based on the final structure
+		compiler.columnAliases = finalColumnMap.map((info, idx) => {
+			return (info.expr as any)?.alias
+				?? (info.expr?.type === 'column' ? (info.expr as AST.ColumnExpr).name : `col${idx}`);
 		});
 
-	} else {
-		// Not aggregating - process directly
-		const addrSkipRow = compiler.allocateAddress(); // Jump target to skip output
+		if (hasGroupBy) {
+			// --- GROUP BY Aggregation Output (Looping) ---
+			const addrAggLoopStart = compiler.allocateAddress();
+			const addrAggLoopEnd = compiler.allocateAddress();
+			const regMapIterator = compiler.allocateMemoryCells(1); // Conceptual iterator register
+			const regGroupKey = compiler.allocateMemoryCells(1);
+			const regAggContext = compiler.allocateMemoryCells(1); // Holds accumulator from iterator
 
-		// Apply LIMIT/OFFSET *before* outputting or sorting
-		if (regLimit > 0) {
-			// Offset Check
-			const addrPostOffset = compiler.allocateAddress();
-			compiler.emit(Opcode.IfZero, regOffset, addrPostOffset, 0, null, 0, "Check Offset == 0");
-			compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Decrement Offset");
-			compiler.emit(Opcode.Goto, 0, addrSkipRow, 0, null, 0, "Skip Row (Offset)"); // Jump past output/sort
-			compiler.resolveAddress(addrPostOffset);
-		}
+			compiler.emit(Opcode.AggIterate, regMapIterator, 0, 0, null, 0, "Start Aggregate Result Iteration");
+			compiler.resolveAddress(addrAggLoopStart);
+			compiler.emit(Opcode.AggNext, regMapIterator, addrAggLoopEnd, 0, null, 0, "Next Aggregate Group");
 
-		// If sorting needed, store in ephemeral table, otherwise output
-		if (needsExternalSort) {
-			const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
-			compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Sort: NULL Rowid for Eph Insert");
-			compiler.emit(Opcode.Move, currentRowResultBase, insertDataReg + 1, finalNumCols, null, 0, "Sort: Copy result to Eph Insert Data");
-			compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Sort: Insert Row into Ephemeral");
-		} else {
-			// Output directly
-			compiler.emit(Opcode.ResultRow, currentRowResultBase, finalNumCols, 0, null, 0, "Output result row");
+			// Get Key (for completeness/debug, not used by AggFinal now) and Context for the current group
+			compiler.emit(Opcode.AggKey, regMapIterator, regGroupKey, 0, null, 0, "Get Group Key");
+			compiler.emit(Opcode.AggContext, regMapIterator, regAggContext, 0, null, 0, "Get Aggregate Context");
 
-			// --- Limit Check after outputting --- //
-			if (regLimit > 0) {
-				const addrLimitNotZero = compiler.allocateAddress();
-				compiler.emit(Opcode.IfZero, regLimit, addrLimitNotZero, 0, null, 0, "Skip Limit Check if already 0"); // Skip decrement if 0
-				compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Decrement Limit");
-				// If limit becomes 0, jump to the end of the outermost loop
-				compiler.emit(Opcode.IfZero, regLimit, joinLevels[0].eofAddr!, 0, null, 0, "Check Limit Reached");
-				compiler.resolveAddress(addrLimitNotZero);
+			// Reconstruct Output Row (Group Keys + Aggregates) using finalColumnMap
+			let groupKeyIndex = 0;
+			finalColumnMap.forEach(info => {
+				if (info.expr?.type === 'function' && info.expr.isAggregate) {
+					// It's an aggregate result
+					const funcExpr = info.expr as AST.FunctionExpr;
+					const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
+					const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
+					// Pass the context register offset (regAggContext) to AggFinal
+					compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
+				} else {
+					// It's a group key result
+					compiler.emit(Opcode.AggGroupValue, regMapIterator, groupKeyIndex, info.targetReg, null, 0, `Output Group Key ${groupKeyIndex}`);
+					groupKeyIndex++;
+				}
+			});
+
+			// --- Compile HAVING clause --- //
+			const addrHavingFail = compiler.allocateAddress();
+			if (stmt.having) {
+				const havingReg = compiler.allocateMemoryCells(1);
+				const havingContext: HavingContext = { finalColumnMap };
+				compiler.compileExpression(stmt.having, havingReg, undefined, havingContext);
+				compiler.emit(Opcode.IfFalse, havingReg, addrHavingFail, 0, null, 0, "Check HAVING Clause");
 			}
-			// ------------------------------------ //
-		}
+			// --------------------------- //
 
-		compiler.resolveAddress(addrSkipRow); // Target for offset skip or end of non-agg path
+			// Store in ephemeral sort table or output directly
+			if (needsExternalSort) {
+				const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
+				compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Agg Sort: NULL Rowid");
+				compiler.emit(Opcode.Move, finalResultBaseReg, insertDataReg + 1, finalNumCols, null, 0, "Agg Sort: Copy group result");
+				compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Agg Sort: Insert Group Row");
+			} else {
+				// Apply Limit/Offset for non-sorted aggregated results
+				const addrSkipAggRow = compiler.allocateAddress();
+				if (regLimit > 0) {
+					const addrPostAggOffset = compiler.allocateAddress();
+					compiler.emit(Opcode.IfZero, regOffset, addrPostAggOffset, 0, null, 0, "Agg Check Offset == 0");
+					compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Agg Decrement Offset");
+					compiler.emit(Opcode.Goto, 0, addrSkipAggRow, 0, null, 0, "Agg Skip Row (Offset)");
+					compiler.resolveAddress(addrPostAggOffset);
+				}
+
+				compiler.emit(Opcode.ResultRow, finalResultBaseReg, finalNumCols, 0, null, 0, "Output Aggregate Group Row");
+
+				if (regLimit > 0) {
+					const addrAggLimitNotZero = compiler.allocateAddress();
+					compiler.emit(Opcode.IfZero, regLimit, addrAggLimitNotZero, 0, null, 0, "Agg Skip Limit Check if 0");
+					compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Agg Decrement Limit");
+					compiler.emit(Opcode.IfZero, regLimit, addrAggLoopEnd, 0, null, 0, "Agg Check Limit Reached"); // Jump to end of agg loop
+					compiler.resolveAddress(addrAggLimitNotZero);
+				}
+				compiler.resolveAddress(addrSkipAggRow); // Target if row skipped by offset
+			}
+
+			compiler.resolveAddress(addrHavingFail); // Jump here if HAVING is false
+			compiler.emit(Opcode.Goto, 0, addrAggLoopStart, 0, null, 0, "Loop Aggregate Results");
+			compiler.resolveAddress(addrAggLoopEnd);
+		} else {
+			// --- Simple Aggregate Output (No GROUP BY - Always one row) ---
+			const regSimpleAggKey = compiler.allocateMemoryCells(1);
+			const regAggContext = compiler.allocateMemoryCells(1); // Holds accumulator from AggGetContext
+			// Get the constant key "0" used during AggStep
+			compiler.emit(Opcode.String8, 0, regSimpleAggKey, 0, '0', 0, "Get simple aggregate key '0'");
+			// Retrieve the final aggregate context (accumulator) using the key
+			compiler.emit(Opcode.AggGetContext, regSimpleAggKey, regAggContext, 0, null, 0, "Get simple aggregate context");
+
+			// Compute final aggregate values
+			finalColumnMap.forEach(info => {
+				if (info.expr?.type === 'function' && info.expr.isAggregate) {
+					const funcExpr = info.expr as AST.FunctionExpr;
+					const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
+					const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
+					// Pass the context register offset (regAggContext) to AggFinal
+					compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
+				} else if (info.expr) {
+					// This case shouldn't happen with simple aggregates (no group keys)
+					// But if a non-aggregate expression somehow slipped through, evaluate it.
+					compiler.compileExpression(info.expr, info.targetReg);
+				} else if (finalNumCols === 1 && finalColumnMap.length === 0) {
+					// Handle SELECT COUNT(*) which results in finalNumCols=1 but no finalColumnMap entry
+					// AggFinal should have populated the targetReg (finalResultBaseReg)
+					// No extra emission needed here.
+				} else {
+					// Fallback: Put NULL in the result register
+					compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, "NULL for unexpected simple agg col");
+				}
+			});
+
+			// --- Compile HAVING clause --- //
+			const addrHavingFailSimple = compiler.allocateAddress(); // Address to jump to if HAVING fails
+			const addrPastHavingSimple = compiler.allocateAddress(); // Address after HAVING check
+			if (stmt.having) {
+				const havingReg = compiler.allocateMemoryCells(1);
+				const havingContext: HavingContext = { finalColumnMap }; // Use the final column map
+				compiler.compileExpression(stmt.having, havingReg, undefined, havingContext);
+				// If HAVING is false, jump past the output/sort logic
+				compiler.emit(Opcode.IfFalse, havingReg, addrHavingFailSimple, 0, null, 0, "Check HAVING Clause (Simple Agg)");
+			}
+			// --------------------------- //
+
+			// Store in ephemeral sort table or output directly (only if HAVING passed)
+			if (needsExternalSort) {
+				const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
+				compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Simple Agg Sort: NULL Rowid");
+				compiler.emit(Opcode.Move, finalResultBaseReg, insertDataReg + 1, finalNumCols, null, 0, "Simple Agg Sort: Copy result");
+				compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Simple Agg Sort: Insert Row");
+			} else {
+				// Apply Limit/Offset (will always be 0 or 1 row for simple agg)
+				const addrSkipOutputSimple = compiler.allocateAddress();
+				if (regLimit > 0) {
+					// Only output if offset is 0
+					compiler.emit(Opcode.IfZero, regOffset, addrSkipOutputSimple, 1, null, 0, "Simple Agg Check Offset != 0");
+				}
+				// Output the single row
+				compiler.emit(Opcode.ResultRow, finalResultBaseReg, finalNumCols, 0, null, 0, "Output Simple Aggregate Row");
+				compiler.resolveAddress(addrSkipOutputSimple);
+			}
+			compiler.emit(Opcode.Goto, 0, addrPastHavingSimple, 0, null, 0, "Skip HAVING fail target");
+			compiler.resolveAddress(addrHavingFailSimple); // Jump here if HAVING fails
+			compiler.resolveAddress(addrPastHavingSimple); // Continue after simple agg output/having logic
+		}
 	}
 
 	// Jump to the VNext of the innermost loop
@@ -836,108 +932,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 		// Close window sorter cursor
 		compiler.emit(Opcode.Close, windowSorterInfo.cursor, 0, 0, null, 0, "Close Window Sorter");
-	}
-
-	// --- Final Aggregation Result Output --- //
-	if (needsAggProcessing && !hasWindowFunctions) {
-		const addrAggLoopStart = compiler.allocateAddress();
-		const addrAggLoopEnd = compiler.allocateAddress();
-		const regMapIterator = compiler.allocateMemoryCells(1); // Conceptual iterator register
-		const regGroupKey = compiler.allocateMemoryCells(1);
-		const regAggContext = compiler.allocateMemoryCells(1);
-
-		// Determine final column map *before* the loop
-		finalColumnMap = [];
-		let currentResultReg = finalResultBaseReg;
-
-		// Add group key columns to map
-		if (hasGroupBy) {
-			stmt.groupBy!.forEach((expr, i) => {
-				finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: expr });
-			});
-		}
-		// Add aggregate columns to map
-		aggregateColumns.forEach(aggCol => {
-			finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: aggCol.expr });
-		});
-		finalNumCols = finalColumnMap.length;
-		if (finalNumCols === 0 && !hasGroupBy) finalNumCols = 1; // Ensure at least one column for simple aggregate if no columns selected
-
-		// Set column names based on the final structure
-		compiler.columnAliases = finalColumnMap.map((info, idx) => {
-			return (info.expr as any)?.alias
-				?? (info.expr?.type === 'column' ? (info.expr as AST.ColumnExpr).name : `col${idx}`);
-		});
-
-		compiler.emit(Opcode.AggIterate, regMapIterator, 0, 0, null, 0, "Start Aggregate Result Iteration");
-		compiler.resolveAddress(addrAggLoopStart);
-		compiler.emit(Opcode.AggNext, regMapIterator, addrAggLoopEnd, 0, null, 0, "Next Aggregate Group");
-
-		// Get Key and Context for the current group
-		compiler.emit(Opcode.AggKey, regMapIterator, regGroupKey, 0, null, 0, "Get Group Key");
-		compiler.emit(Opcode.AggContext, regMapIterator, regAggContext, 0, null, 0, "Get Aggregate Context");
-
-		// Reconstruct Output Row (Group Keys + Aggregates) using finalColumnMap
-		let groupKeyIndex = 0;
-		finalColumnMap.forEach(info => {
-			if (info.expr?.type === 'function' && info.expr.isAggregate) {
-				// It's an aggregate result
-				const funcExpr = info.expr as AST.FunctionExpr;
-				const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
-				const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-				compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
-			} else if (hasGroupBy) {
-				// It's a group key result
-				compiler.emit(Opcode.AggGroupValue, regMapIterator, groupKeyIndex, info.targetReg, null, 0, `Output Group Key ${groupKeyIndex}`);
-				groupKeyIndex++;
-			} else {
-				// Should be simple aggregate with no group keys
-				throw new Error("Internal: Unexpected column type in aggregate output loop");
-			}
-		});
-
-		// --- Compile HAVING clause --- //
-		const addrHavingFail = compiler.allocateAddress();
-		if (stmt.having) {
-			const havingReg = compiler.allocateMemoryCells(1);
-			const havingContext: HavingContext = { finalColumnMap };
-			compiler.compileExpression(stmt.having, havingReg, undefined, havingContext);
-			compiler.emit(Opcode.IfFalse, havingReg, addrHavingFail, 0, null, 0, "Check HAVING Clause");
-		}
-		// --------------------------- //
-
-		// Store in ephemeral sort table or output directly
-		if (needsExternalSort) {
-			const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
-			compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Agg Sort: NULL Rowid");
-			compiler.emit(Opcode.Move, finalResultBaseReg, insertDataReg + 1, finalNumCols, null, 0, "Agg Sort: Copy group result");
-			compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Agg Sort: Insert Group Row");
-		} else {
-			// Apply Limit/Offset for non-sorted aggregated results
-			const addrSkipAggRow = compiler.allocateAddress();
-			if (regLimit > 0) {
-				const addrPostAggOffset = compiler.allocateAddress();
-				compiler.emit(Opcode.IfZero, regOffset, addrPostAggOffset, 0, null, 0, "Agg Check Offset == 0");
-				compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Agg Decrement Offset");
-				compiler.emit(Opcode.Goto, 0, addrSkipAggRow, 0, null, 0, "Agg Skip Row (Offset)");
-				compiler.resolveAddress(addrPostAggOffset);
-			}
-
-			compiler.emit(Opcode.ResultRow, finalResultBaseReg, finalNumCols, 0, null, 0, "Output Aggregate Group Row");
-
-			if (regLimit > 0) {
-				const addrAggLimitNotZero = compiler.allocateAddress();
-				compiler.emit(Opcode.IfZero, regLimit, addrAggLimitNotZero, 0, null, 0, "Agg Skip Limit Check if 0");
-				compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Agg Decrement Limit");
-				compiler.emit(Opcode.IfZero, regLimit, addrAggLoopEnd, 0, null, 0, "Agg Check Limit Reached"); // Jump to end of agg loop
-				compiler.resolveAddress(addrAggLimitNotZero);
-			}
-			compiler.resolveAddress(addrSkipAggRow); // Target if row skipped by offset
-		}
-
-		compiler.resolveAddress(addrHavingFail); // Jump here if HAVING is false
-		compiler.emit(Opcode.Goto, 0, addrAggLoopStart, 0, null, 0, "Loop Aggregate Results");
-		compiler.resolveAddress(addrAggLoopEnd);
 	}
 
 	// --- Output from Sorter --- //
@@ -1301,27 +1295,7 @@ function emitLeftJoinNullPadding(
 
 	const addrSkipNullPadEof = compiler.allocateAddress();
 	compiler.emit(Opcode.IfTrue, level.matchReg, addrSkipNullPadEof, 0, null, 0, `LEFT JOIN EOF: Skip NULL pad if match found [${levelIndex}]`);
-
-	// Clarifying comment for coreColumnMap usage:
-	// Using coreColumnMap here is crucial. It represents the original structure
-	// of the SELECT clause *before* aggregation or window functions might alter
-	// the final output structure. We need to null-pad the columns as they were
-	// originally selected from the right side of this join.
-	coreColumnMap.forEach(info => {
-		if (info.sourceCursor === level.cursor) {
-			compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, `LEFT JOIN EOF: NULL Pad Col ${info.sourceColumnIndex} from Cursor ${level.cursor}`);
-		}
-	});
-
-	// If this NULL padding satisfies an outer LEFT JOIN, set its flag
-	if (levelIndex > 0) {
-		const outerLevel = allJoinLevels[levelIndex - 1];
-		if (outerLevel.matchReg) { // Check if the outer level is also a LEFT JOIN
-			compiler.emit(Opcode.Integer, 1, outerLevel.matchReg, 0, null, 0, `Set LEFT JOIN Match Flag [${levelIndex - 1}] = 1 (due to NULL pad EOF)`);
-		}
-	}
-
-	// Jump back to process the NULL-padded row
+	// ... existing code ...
 	compiler.emit(Opcode.Goto, 0, innermostProcessStartAddr, 0, null, 0, `LEFT JOIN EOF: Process NULL-padded row [${levelIndex}]`);
 
 	compiler.resolveAddress(addrSkipNullPadEof);

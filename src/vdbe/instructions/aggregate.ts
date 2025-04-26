@@ -102,18 +102,15 @@ export function registerHandlers(handlers: Handler[]) {
       throw new SqliteError("Invalid P4 for AggFinal", StatusCode.INTERNAL);
     }
 
-    const serializedKeyRegOffset = inst.p1;
+    // P1 is now the *offset* of the register containing the aggregate context accumulator
+    const contextRegOffset = inst.p1;
     const destOffset = inst.p3;
 
-    const serializedKey = ctx.getMem(serializedKeyRegOffset) as string;
-     if (typeof serializedKey !== 'string') {
-      throw new SqliteError(`AggFinal key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
-    }
+    const accumulatorValue = ctx.getMem(contextRegOffset); // Get accumulator (might be null)
 
-    const entry = ctx.aggregateContexts?.get(serializedKey);
-    // Note: Should use a fresh context or ensure udfContext is clean for xFinal
+    // Note: Use a fresh context for xFinal
     const finalUdfContext = new FunctionContext(ctx.db, p4Func.funcDef.userData);
-    finalUdfContext._setAggregateContextRef(entry?.accumulator);
+    finalUdfContext._setAggregateContextRef(accumulatorValue); // Pass potentially null accumulator
 
     try {
       p4Func.funcDef.xFinal!(finalUdfContext);
@@ -132,7 +129,7 @@ export function registerHandlers(handlers: Handler[]) {
     ctx.aggregateContexts?.clear();
     ctx.aggregateIterator = null;
     ctx.currentAggregateEntry = null;
-    return undefined;
+    return undefined; // PC handled
   };
 
   handlers[Opcode.AggIterate] = (ctx, inst) => {
@@ -191,6 +188,26 @@ export function registerHandlers(handlers: Handler[]) {
       throw new SqliteError(`Invalid key index ${keyIndex} for AggGroupValue`, StatusCode.INTERNAL);
     }
     ctx.setMem(destOffset, keyValues[keyIndex] ?? null);
+    return undefined;
+  };
+
+  handlers[Opcode.AggGetContext] = (ctx, inst) => {
+    const keyRegOffset = inst.p1;
+    const destContextRegOffset = inst.p2;
+
+    if (!ctx.aggregateContexts) {
+      throw new SqliteError("AggGetContext: Aggregate context map not initialized", StatusCode.INTERNAL);
+    }
+
+    const serializedKey = ctx.getMem(keyRegOffset) as string;
+    if (typeof serializedKey !== 'string') {
+      throw new SqliteError(`AggGetContext key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
+    }
+
+    const entry = ctx.aggregateContexts.get(serializedKey);
+    const accumulator = entry?.accumulator ?? null; // Default to null if key not found or context undefined
+
+    ctx.setMem(destContextRegOffset, accumulator);
     return undefined;
   };
 }
