@@ -200,5 +200,112 @@ export const groupConcatFuncRev = createAggregateFunction(
     groupConcatFinalRev
 );
 
+// --- TOTAL(X) ---
+// Similar to SUM, but always returns a FLOAT and returns 0.0 for empty set.
+const totalStep = (acc: { total: number } | undefined, value: any): { total: number } => {
+	const currentTotal = acc?.total ?? 0.0;
+	let numValue = 0.0;
+	if (value !== null) {
+		try {
+			// Attempt numeric conversion, default to 0.0 if not possible
+			numValue = Number(value);
+			if (isNaN(numValue)) {
+				numValue = 0.0;
+			}
+		} catch {
+			numValue = 0.0;
+		}
+	}
+	// Always use floating-point arithmetic
+	return { total: currentTotal + numValue };
+};
+const totalFinal = (acc: { total: number } | undefined): number => {
+	// Returns 0.0 for empty set or only NULL inputs
+	return acc?.total ?? 0.0;
+};
+export const totalFunc = createAggregateFunction(
+	{ name: 'total', numArgs: 1, flags: FunctionFlags.UTF8, initialState: { total: 0.0 } },
+	totalStep,
+	totalFinal
+);
+
+// --- Statistical Aggregates (Variance, Standard Deviation) ---
+interface StatAccumulator {
+	count: number;
+	sum: number;
+	sumSq: number;
+}
+
+const statStep = (acc: StatAccumulator | undefined, value: any): StatAccumulator => {
+	const currentAcc = acc ?? { count: 0, sum: 0, sumSq: 0 };
+	if (value === null) {
+		return currentAcc; // Ignore NULLs
+	}
+	try {
+		const numValue = Number(value);
+		if (isNaN(numValue)) {
+			return currentAcc; // Ignore non-numeric
+		}
+		// Use floating-point for calculations
+		return {
+			count: currentAcc.count + 1,
+			sum: currentAcc.sum + numValue,
+			sumSq: currentAcc.sumSq + (numValue * numValue),
+		};
+	} catch (e) {
+		console.warn("Error during statistical aggregate step coercion:", e);
+		return currentAcc;
+	}
+};
+
+// Population Variance (VAR_POP)
+const varPopFinal = (acc: StatAccumulator | undefined): number | null => {
+	if (!acc || acc.count === 0) return null; // NULL for empty set
+	const avg = acc.sum / acc.count;
+	const variance = (acc.sumSq / acc.count) - (avg * avg);
+	return variance;
+};
+export const varPopFunc = createAggregateFunction(
+	{ name: 'var_pop', numArgs: 1, flags: FunctionFlags.UTF8, initialState: { count: 0, sum: 0, sumSq: 0 } },
+	statStep,
+	varPopFinal
+);
+
+// Sample Variance (VAR_SAMP)
+const varSampFinal = (acc: StatAccumulator | undefined): number | null => {
+	if (!acc || acc.count <= 1) return null; // NULL if count is 0 or 1
+	const avg = acc.sum / acc.count;
+	// Sample variance: (sumSq - n*avg^2) / (n-1) == (sumSq - sum*sum/n) / (n-1)
+	const variance = (acc.sumSq - (acc.sum * acc.sum) / acc.count) / (acc.count - 1);
+	return variance;
+};
+export const varSampFunc = createAggregateFunction(
+	{ name: 'var_samp', numArgs: 1, flags: FunctionFlags.UTF8, initialState: { count: 0, sum: 0, sumSq: 0 } },
+	statStep,
+	varSampFinal
+);
+
+// Population Standard Deviation (STDDEV_POP)
+const stdDevPopFinal = (acc: StatAccumulator | undefined): number | null => {
+	const variance = varPopFinal(acc);
+	return variance === null || variance < 0 ? null : Math.sqrt(variance);
+};
+export const stdDevPopFunc = createAggregateFunction(
+	{ name: 'stddev_pop', numArgs: 1, flags: FunctionFlags.UTF8, initialState: { count: 0, sum: 0, sumSq: 0 } },
+	statStep,
+	stdDevPopFinal
+);
+
+// Sample Standard Deviation (STDDEV_SAMP)
+const stdDevSampFinal = (acc: StatAccumulator | undefined): number | null => {
+	const variance = varSampFinal(acc);
+	return variance === null || variance < 0 ? null : Math.sqrt(variance);
+};
+export const stdDevSampFunc = createAggregateFunction(
+	{ name: 'stddev_samp', numArgs: 1, flags: FunctionFlags.UTF8, initialState: { count: 0, sum: 0, sumSq: 0 } },
+	statStep,
+	stdDevSampFinal
+);
+
 // TODO: Implement COUNT(X) which counts non-NULL values of X -- Done
 // TODO: Implement GROUP_CONCAT -- Done (Revised)

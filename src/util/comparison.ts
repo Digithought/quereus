@@ -104,6 +104,24 @@ function getStorageClass(v: SqlValue): StorageClass {
 }
 
 /**
+ * Returns the SQLite fundamental datatype name ('null', 'integer', 'real', 'text', 'blob').
+ * @param v The value.
+ * @returns The datatype name as a string.
+ */
+export function getSqlDataTypeName(v: SqlValue): 'null' | 'integer' | 'real' | 'text' | 'blob' {
+	if (v === null || v === undefined) return 'null';
+	const type = typeof v;
+	if (type === 'boolean') return 'integer'; // Booleans treated as integers
+	if (type === 'number') {
+		return Number.isInteger(v) ? 'integer' : 'real';
+	}
+	if (type === 'bigint') return 'integer';
+	if (type === 'string') return 'text';
+	if (type === 'object' && v instanceof Uint8Array) return 'blob';
+	return 'null'; // Should not happen, but default to null
+}
+
+/**
  * Compares two SqlValue types based on SQLite's comparison rules for storage classes.
  * Order: NULL < Numeric (INTEGER/REAL/BOOLEAN) < TEXT < BLOB.
  * Note: This does not implement full SQLite type affinity rules which might apply
