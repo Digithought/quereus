@@ -14,68 +14,81 @@ import { getExpressionAffinity, getExpressionCollation, compileLiteralValue } fr
 export type ArgumentMap = ReadonlyMap<string, number>;
 
 export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
-	// --- Contextual Column Value Lookup (INSERT/UPDATE/CHECK) ---
-	// Check if an argumentMap (mapping stringified column index to register) is provided
-	// This allows overriding the default VColumn read for contexts like CHECK constraints.
+	// --- Row-constraint alias lookup (NEW/OLD) or Contextual Value (CHECK) ---
 	if (argumentMap) {
-		// We need to resolve the column index first to check the map.
-		// This duplicates some logic from the VColumn path, but is necessary to check the map *before* other lookups.
+		const colNameLower = expr.name.toLowerCase();
+		const aliasLower = expr.table?.toLowerCase();
+
+		// 1. Check for explicit "new.<col>" or "old.<col>"
+		if (aliasLower && (aliasLower === 'new' || aliasLower === 'old')) {
+			const key = `${aliasLower}.${colNameLower}`;
+			const sourceReg = argumentMap.get(key);
+			if (sourceReg !== undefined) {
+				compiler.emit(Opcode.SCopy, sourceReg, targetReg, 0, null, 0, `RowChk: ${aliasLower.toUpperCase()}.${expr.name} from r${sourceReg}`);
+				return; // Found explicit NEW/OLD value
+			}
+		}
+
+		// 2. Check for unqualified name ("<col_name>") - default depends on context (filled by caller)
+		// Caller (INSERT/UPDATE/DELETE) should populate this key appropriately.
+		const unqualifiedKey = colNameLower;
+		const sourceRegUnqualified = argumentMap.get(unqualifiedKey);
+		if (sourceRegUnqualified !== undefined) {
+			compiler.emit(Opcode.SCopy, sourceRegUnqualified, targetReg, 0, null, 0, `RowChk/Set: ${expr.name} (Default Context) from r${sourceRegUnqualified}`);
+			return; // Found default contextual value
+		}
+
+		// 3. Check for CHECK constraint context using column index "<col_index>"
+		// This path is mainly for the original INSERT CHECK implementation, might be superseded
+		// by the unqualified name lookup, but kept for safety/potential specific uses.
 		let resolvedColIdx = -99;
 		let resolvedCursor = -1;
-		let resolvedTableSchema: TableSchema | undefined;
-
 		if (expr.table) {
 			const aliasOrTableName = expr.table.toLowerCase();
 			const foundCursor = compiler.tableAliases.get(aliasOrTableName);
 			if (foundCursor !== undefined) {
 				resolvedCursor = foundCursor;
-				resolvedTableSchema = compiler.tableSchemas.get(resolvedCursor);
+				const resolvedTableSchema = compiler.tableSchemas.get(resolvedCursor);
 				if (resolvedTableSchema) {
 					resolvedColIdx = resolvedTableSchema.columnIndexMap.get(expr.name.toLowerCase()) ?? -99;
-					if (resolvedColIdx === -99 && expr.name.toLowerCase() === 'rowid') resolvedColIdx = -1; // rowid check
+					if (resolvedColIdx === -99 && expr.name.toLowerCase() === 'rowid') resolvedColIdx = -1;
 				}
 			}
 		} else {
-			// Search across all aliases for non-ambiguous match
 			let foundCount = 0;
 			for (const [_, cursorId] of compiler.tableAliases.entries()) {
 				const schema = compiler.tableSchemas.get(cursorId);
 				if (schema) {
 					const idx = schema.columnIndexMap.get(expr.name.toLowerCase());
 					if (idx !== undefined) {
-						if (foundCount > 0) { resolvedCursor = -2; break; } // Ambiguous
+						if (foundCount > 0) { resolvedCursor = -2; break; }
 						resolvedCursor = cursorId;
 						resolvedColIdx = idx;
-						resolvedTableSchema = schema;
 						foundCount++;
 					} else if (expr.name.toLowerCase() === 'rowid') {
-						if (foundCount > 0) { resolvedCursor = -2; break; } // Ambiguous
+						if (foundCount > 0) { resolvedCursor = -2; break; }
 						resolvedCursor = cursorId;
-						resolvedColIdx = -1; // rowid
-						resolvedTableSchema = schema;
+						resolvedColIdx = -1;
 						foundCount++;
 					}
 				}
 			}
-			if (resolvedCursor === -2) resolvedColIdx = -99; // Ensure ambiguous doesn't match map key
+			if (resolvedCursor === -2) resolvedColIdx = -99; // Ambiguous
 		}
 
-		// If we successfully resolved a non-ambiguous column index, check the map
 		if (resolvedColIdx !== -99 && resolvedCursor >= 0) {
-			const argKey = `${resolvedColIdx}`; // Key is stringified column index
-			const sourceRegFromArgs = argumentMap.get(argKey);
-			if (sourceRegFromArgs !== undefined) {
-				// Found the value in the provided argument map (e.g., new value for CHECK)
-				compiler.emit(Opcode.SCopy, sourceRegFromArgs, targetReg, 0, null, 0, `CHECK/SET: Use new val ${expr.name} from reg ${sourceRegFromArgs}`);
-				return; // Value obtained, skip further checks/VColumn
+			const indexKey = `${resolvedColIdx}`; // Key is stringified column index
+			const sourceRegFromIndex = argumentMap.get(indexKey);
+			if (sourceRegFromIndex !== undefined) {
+				compiler.emit(Opcode.SCopy, sourceRegFromIndex, targetReg, 0, null, 0, `CHECK: Use new val ${expr.name} from index key ${indexKey} (reg ${sourceRegFromIndex})`);
+				return; // Value obtained via index key
 			}
 		}
 	}
-	// --- End Contextual Column Value Lookup ---
+	// --- End Row-constraint / Contextual Lookup ---
 
-	// --- Correlated Subquery / HAVING clause Lookup --- (Existing logic)
+	// --- Correlated Subquery / HAVING clause Lookup --- (Existing logic, check argumentMap first)
 	if (compiler.subroutineDepth > 0 && argumentMap) {
-		// Check for correlated column ONLY if not found in the primary argumentMap check above
 		const correlatedColInfo = correlation?.correlatedColumns.find((cc: CorrelatedColumnInfo) => {
 			const outerSchema = compiler.tableSchemas.get(cc.outerCursor);
 			const outerColName = outerSchema?.columns[cc.outerColumnIndex]?.name.toLowerCase();

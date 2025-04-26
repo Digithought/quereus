@@ -1,4 +1,6 @@
 import type { SqlDataType } from '../common/types';
+import type { SqlValue } from '../common/types';
+import type { FunctionFlags, ConflictResolution } from '../common/constants';
 
 export interface JsonColumnSchema {
 	name: string;
@@ -35,7 +37,8 @@ export interface JsonTableSchema {
 	isVirtual: boolean;
 	vtabModule?: string;
 	vtabArgs?: string[];
-	indexes?: JsonIndexSchema[]; // Added optional indexes
+	indexes?: JsonIndexSchema[];
+	checkConstraints?: (JsonColumnConstraint | JsonTableConstraint)[];
 }
 
 export interface JsonFunctionSchema {
@@ -54,4 +57,34 @@ export interface JsonDatabaseSchema {
 	schemas: {
 		[schemaName: string]: JsonSchema;
 	};
+}
+
+/** Base for constraints */
+interface JsonConstraint {
+	name?: string;
+}
+
+/** Column constraints in JSON */
+export interface JsonColumnConstraint extends JsonConstraint {
+	type: 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'collate' | 'generated';
+	expr?: string | number | null; // For CHECK or DEFAULT (simplified to string/number/null for JSON)
+	operations?: ('insert' | 'update' | 'delete')[];
+	collation?: string;
+	autoincrement?: boolean;
+	direction?: 'asc' | 'desc';
+}
+
+export interface JsonTableConstraint extends JsonConstraint {
+	type: 'primaryKey' | 'unique' | 'check' | 'foreignKey';
+	columns?: { name: string; direction?: 'asc' | 'desc' }[];
+	expr?: string | number | null; // For CHECK (simplified)
+	operations?: ('insert' | 'update' | 'delete')[];
+	onConflict?: ConflictResolution;
+	foreignKey?: JsonForeignKeyClause;
+}
+
+/** Foreign key clause in JSON */
+export interface JsonForeignKeyClause {
+	table: string;
+	columns?: string[];
 }

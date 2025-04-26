@@ -124,10 +124,11 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   `CREATE INDEX`/`DROP INDEX` support for virtual tables that implement `xCreateIndex`/`xDropIndex` (like `MemoryTable`).
 *   Schema export/import via JSON.
 *   Basic read-only access to `sqlite_schema` for introspection.
+*   Row-level `CHECK` constraints with `ON (INSERT|UPDATE|DELETE)` clause and support for `NEW`/`OLD` row aliases.
 
 **Limitations & Missing Features:**
 
-*   **Constraints**: `CHECK`, `NOT NULL`, `FOREIGN KEY`, `DEFAULT` constraints are parsed but generally *not* enforced by the engine or `MemoryTable`.
+*   **Constraints**: `FOREIGN KEY` constraints are parsed but not enforced. `DEFAULT` values are used, but complex default expressions might have limitations. (`NOT NULL` and `CHECK` constraints *are* enforced).
 *   **Advanced SQL**: Window functions, triggers, full `ALTER TABLE`, and views (parsing only) are not yet implemented.
 *   **Index Features**: Indices on expressions are not supported. Collation support in indices is basic.
 *   **Error Handling**: Error messages could be more detailed.

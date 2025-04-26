@@ -2,7 +2,7 @@ import type { ColumnSchema } from './column';
 import type { VirtualTableModule } from '../vtab/module';
 import type { VirtualTable } from '../vtab/table';
 import type { Expression } from '../parser/ast';
-import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast';
+import { type ColumnDef, type ColumnConstraint, type TableConstraint, type RowOp as AstRowOp } from '../parser/ast';
 import { getAffinity } from './column';
 import { SqlDataType } from '../common/types';
 import type * as AST from '../parser/ast'; // Added for subqueryAST
@@ -202,4 +202,36 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		viewDefinition: undefined,
 		tableConstraints: [],
 	});
+}
+
+/** Bitmask for row operations */
+export const enum RowOp {
+	INSERT = 1,
+	UPDATE = 2,
+	DELETE = 4
+}
+export type RowOpMask = RowOp; // Export RowOpMask type
+export const DEFAULT_ROWOP_MASK = RowOp.INSERT | RowOp.UPDATE;
+
+// --- Helper to convert AST RowOp[] to RowOpMask --- //
+export function opsToMask(list?: AstRowOp[]): RowOpMask {
+	if (!list || list.length === 0) {
+		return DEFAULT_ROWOP_MASK; // Default to INSERT | UPDATE
+	}
+	let mask: RowOpMask = 0 as RowOpMask;
+	list.forEach(op => {
+		switch (op) {
+			case 'insert': mask |= RowOp.INSERT; break;
+			case 'update': mask |= RowOp.UPDATE; break;
+			case 'delete': mask |= RowOp.DELETE; break;
+		}
+	});
+	return mask;
+}
+
+/** Interface for a runtime check constraint schema */
+export interface RowConstraintSchema {
+	name?: string;
+	expr: Expression;
+	operations: RowOpMask;
 }

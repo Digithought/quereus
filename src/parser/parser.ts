@@ -1596,7 +1596,14 @@ export class Parser {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			return { type: 'check', name, expr, loc: _createLoc(startToken, endToken) };
+			// --- Parse optional ON clause --- //
+			let operations: AST.RowOp[] | undefined;
+			if (this.matchKeyword('ON')) {
+				operations = this.parseRowOpList();
+				endToken = this.previous(); // Update end token to last parsed operation or comma
+			}
+			// --- End Parse ON clause --- //
+			return { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.DEFAULT)) {
 			const expr = this.expression();
 			endToken = this.previous();
@@ -1635,36 +1642,50 @@ export class Parser {
 	/** @internal Parses a table constraint */
 	private tableConstraint(): AST.TableConstraint {
 		let name: string | undefined;
+		const startToken = this.peek(); // Capture start token
+		let endToken = startToken; // Initialize end token
+
 		if (this.match(TokenType.CONSTRAINT)) {
 			name = this.consumeIdentifier("Expected constraint name after CONSTRAINT.");
+			endToken = this.previous();
 		}
 
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			this.consume(TokenType.LPAREN, "Expected '(' before PRIMARY KEY columns.");
 			const columns = this.identifierListWithDirection();
-			this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
-			return { type: 'primaryKey', name, columns, onConflict };
+			if (onConflict) endToken = this.previous();
+			return { type: 'primaryKey', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.UNIQUE)) {
 			this.consume(TokenType.LPAREN, "Expected '(' before UNIQUE columns.");
 			const columnsSimple = this.identifierList();
 			const columns = columnsSimple.map(name => ({ name }));
-			this.consume(TokenType.RPAREN, "Expected ')' after UNIQUE columns.");
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after UNIQUE columns.");
 			const onConflict = this.parseConflictClause();
-			return { type: 'unique', name, columns, onConflict };
+			if (onConflict) endToken = this.previous();
+			return { type: 'unique', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
-			this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			return { type: 'check', name, expr };
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
+			// --- Parse optional ON clause --- //
+			let operations: AST.RowOp[] | undefined;
+			if (this.matchKeyword('ON')) {
+				operations = this.parseRowOpList();
+				endToken = this.previous(); // Update end token after ON clause
+			}
+			// --- End Parse ON clause --- //
+			return { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.FOREIGN)) {
 			this.consume(TokenType.KEY, "Expected KEY after FOREIGN.");
 			this.consume(TokenType.LPAREN, "Expected '(' before FOREIGN KEY columns.");
 			const columns = this.identifierList().map(name => ({ name }));
 			this.consume(TokenType.RPAREN, "Expected ')' after FOREIGN KEY columns.");
 			const fkClause = this.foreignKeyClause();
-			return { type: 'foreignKey', name, columns, foreignKey: fkClause };
+			endToken = this.previous(); // End token is end of FK clause
+			return { type: 'foreignKey', name, columns, foreignKey: fkClause, loc: _createLoc(startToken, endToken) };
 		}
 
 		throw this.error(this.peek(), "Expected table constraint type (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY).");
@@ -1813,5 +1834,23 @@ export class Parser {
 		}
 
 		return expr;
+	}
+
+	/** NEW: Parses the list of operations for CHECK ON */
+	private parseRowOpList(): AST.RowOp[] {
+		const operations: AST.RowOp[] = [];
+		do {
+			if (this.matchKeyword('INSERT')) {
+				operations.push('insert');
+			} else if (this.matchKeyword('UPDATE')) {
+				operations.push('update');
+			} else if (this.matchKeyword('DELETE')) {
+				operations.push('delete');
+			} else {
+				throw this.error(this.peek(), "Expected INSERT, UPDATE, or DELETE after ON.");
+			}
+		} while (this.match(TokenType.COMMA));
+		// Optional: Check for duplicates? The design allows them but ignores them.
+		return operations;
 	}
 }
