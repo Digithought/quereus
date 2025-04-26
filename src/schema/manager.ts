@@ -23,9 +23,14 @@ export class SchemaManager {
 	private schemas: Map<string, Schema> = new Map();
 	private currentSchemaName: string = 'main';
 	private modules: Map<string, VirtualTableModule<any, any>> = new Map();
-	private defaultVTabModule: string | null = null; // Default module name
-	private db: Database; // Reference back to the Database instance
+	private defaultVTabModule: string | null = null;
+	private db: Database;
 
+	/**
+	 * Creates a new schema manager
+	 *
+	 * @param db Reference to the parent Database instance
+	 */
 	constructor(db: Database) {
 		this.db = db;
 		// Ensure 'main' and 'temp' schemas always exist
@@ -33,7 +38,11 @@ export class SchemaManager {
 		this.schemas.set('temp', new Schema('temp'));
 	}
 
-	/** Sets the current default schema for unqualified names. */
+	/**
+	 * Sets the current default schema for unqualified names
+	 *
+	 * @param name Schema name to set as current
+	 */
 	setCurrentSchema(name: string): void {
 		if (this.schemas.has(name.toLowerCase())) {
 			this.currentSchemaName = name.toLowerCase();
@@ -42,12 +51,21 @@ export class SchemaManager {
 		}
 	}
 
-	/** Gets the name of the current default schema. */
+	/**
+	 * Gets the name of the current default schema
+	 *
+	 * @returns Current schema name
+	 */
 	getCurrentSchemaName(): string {
 		return this.currentSchemaName;
 	}
 
-	/** Registers a virtual table module. */
+	/**
+	 * Registers a virtual table module
+	 *
+	 * @param name Module name
+	 * @param module Module implementation
+	 */
 	registerModule(name: string, module: VirtualTableModule<any, any>): void {
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
@@ -57,12 +75,22 @@ export class SchemaManager {
 		console.log(`Registered VTab module: ${lowerName}`);
 	}
 
-	/** Retrieves a registered virtual table module by name. */
+	/**
+	 * Retrieves a registered virtual table module by name
+	 *
+	 * @param name Module name to look up
+	 * @returns The module or undefined if not found
+	 */
 	getModule(name: string): VirtualTableModule<any, any> | undefined {
 		return this.modules.get(name.toLowerCase());
 	}
 
-	/** Sets the default virtual table module to use when USING is omitted. */
+	/**
+	 * Sets the default virtual table module to use when USING is omitted
+	 *
+	 * @param name Module name or null to clear the default
+	 * @throws SqliteError if the module name is not registered
+	 */
 	setDefaultVTabModule(name: string | null): void {
 		if (name === null) {
 			this.defaultVTabModule = null;
@@ -78,32 +106,57 @@ export class SchemaManager {
 		}
 	}
 
-	/** Gets the currently configured default virtual table module name. */
+	/**
+	 * Gets the currently configured default virtual table module name
+	 *
+	 * @returns The default module name or null if none set
+	 */
 	getDefaultVTabModuleName(): string | null {
 		return this.defaultVTabModule;
 	}
 
-	/** Gets a specific schema by name, or undefined if not found. */
+	/**
+	 * Gets a specific schema by name
+	 *
+	 * @param name Schema name to retrieve
+	 * @returns The schema or undefined if not found
+	 */
 	getSchema(name: string): Schema | undefined {
 		return this.schemas.get(name.toLowerCase());
 	}
 
-	/** Gets the 'main' schema. */
+	/**
+	 * Gets the 'main' schema
+	 *
+	 * @returns The main schema
+	 */
 	getMainSchema(): Schema {
-		return this.schemas.get('main')!; // Should always exist
+		return this.schemas.get('main')!;
 	}
 
-	/** Gets the 'temp' schema. */
+	/**
+	 * Gets the 'temp' schema
+	 *
+	 * @returns The temp schema
+	 */
 	getTempSchema(): Schema {
-		return this.schemas.get('temp')!; // Should always exist
+		return this.schemas.get('temp')!;
 	}
 
-	/** @internal Returns iterator over managed schemas */
+	/**
+	 * @internal Returns iterator over all managed schemas
+	 */
 	_getAllSchemas(): IterableIterator<Schema> {
 		return this.schemas.values();
 	}
 
-	/** Adds a schema (e.g., for ATTACH). Throws if name conflicts. */
+	/**
+	 * Adds a new schema (e.g., for ATTACH)
+	 *
+	 * @param name Name of the schema to add
+	 * @returns The newly created schema
+	 * @throws SqliteError if the name conflicts with an existing schema
+	 */
 	addSchema(name: string): Schema {
 		const lowerName = name.toLowerCase();
 		if (this.schemas.has(lowerName)) {
@@ -115,7 +168,13 @@ export class SchemaManager {
 		return schema;
 	}
 
-	/** Removes a schema (e.g., for DETACH). Returns true if found and removed. */
+	/**
+	 * Removes a schema (e.g., for DETACH)
+	 *
+	 * @param name Name of the schema to remove
+	 * @returns true if found and removed, false otherwise
+	 * @throws SqliteError if attempting to remove 'main' or 'temp'
+	 */
 	removeSchema(name: string): boolean {
 		const lowerName = name.toLowerCase();
 		if (lowerName === 'main' || lowerName === 'temp') {
@@ -123,10 +182,7 @@ export class SchemaManager {
 		}
 		const schema = this.schemas.get(lowerName);
 		if (schema) {
-			// TODO: Need to ensure associated VTabs are disconnected/destroyed?
-			// This might require iterating tables and calling module methods.
-			// For now, just remove the schema container.
-			schema.clearFunctions(); // Call function destructors
+			schema.clearFunctions();
 			schema.clearTables();
 			schema.clearViews();
 			this.schemas.delete(lowerName);
@@ -137,56 +193,49 @@ export class SchemaManager {
 	}
 
 	/**
-	 * @internal Finds a table or virtual table by name across schemas.
+	 * @internal Finds a table or virtual table by name across schemas
 	 */
 	_findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
 		const lowerTableName = tableName.toLowerCase();
 
-		// --- Handle sqlite_schema dynamically ---
+		// Handle sqlite_schema dynamically
 		if (lowerTableName === 'sqlite_schema') {
 			const moduleInfo = this.db._getVtabModule('sqlite_schema');
 			if (!moduleInfo) {
 				console.error("sqlite_schema module not registered!");
-				return undefined; // Should not happen if registered in Database constructor
+				return undefined;
 			}
-			// Dynamically construct the TableSchema for sqlite_schema
-			// Use the columns defined statically in the module
+
 			const columns: ColumnSchema[] = SchemaTableModule.COLUMNS.map((col: { name: string; type: SqlDataType; collation?: string }) => ({
 				name: col.name,
 				affinity: col.type,
 				notNull: false,
-				primaryKey: false, // sqlite_schema has no explicit PK in this representation
+				primaryKey: false,
 				pkOrder: 0,
 				defaultValue: null,
-				collation: col.collation ?? 'BINARY', // Ensure collation exists
+				collation: col.collation ?? 'BINARY',
 				hidden: false,
 				generated: false,
 			}));
-			// Convert the static record into a ReadonlyMap
-			const columnIndexMap = new Map<string, number>(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP));
 
-			// Define checkConstraints explicitly as required by TableSchema - Removed intermediate variable
-			// const checkConstraints: ReadonlyArray<{ name?: string, expr: AST.Expression }> = [];
+			const columnIndexMap = new Map<string, number>(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP));
 
 			return {
 				name: 'sqlite_schema',
-				schemaName: 'main', // Belongs conceptually to main
+				schemaName: 'main',
 				columns: Object.freeze(columns),
 				columnIndexMap: Object.freeze(columnIndexMap),
-				primaryKeyDefinition: [], // No explicit PK
-				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>), // Define inline, typed, and frozen
+				primaryKeyDefinition: [],
+				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>),
 				vtabModule: moduleInfo.module,
-				// vtabInstance: undefined, // Instance created via xConnect, not stored here
 				vtabAuxData: moduleInfo.auxData,
-				vtabArgs: [], // No creation args
+				vtabArgs: [],
 				vtabModuleName: 'sqlite_schema',
-				// Add missing properties
 				isWithoutRowid: false,
 				isStrict: false,
 				isView: false,
-			} satisfies TableSchema; // Use 'satisfies' for type checking without changing type
+			} satisfies TableSchema;
 		}
-		// --------------------------------------
 
 		if (dbName) {
 			// Search specific schema
@@ -200,54 +249,48 @@ export class SchemaManager {
 
 			const tempSchema = this.schemas.get('temp');
 			table = tempSchema?.getTable(lowerTableName);
-			return table; // Return temp table if found, otherwise undefined
+			return table;
 		}
 	}
 
 	/**
-	 * Finds a table by name, searching schemas according to SQLite rules.
-	 * If dbName is provided, searches only that schema.
-	 * Otherwise, searches current (usually 'main'), then 'temp'.
-	 * (Note: Attach search order would be added later if needed).
-	 * @param tableName Name of the table.
-	 * @param dbName Optional specific schema name to search.
-	 * @returns The TableSchema or undefined if not found.
+	 * Finds a table by name, searching schemas according to SQLite rules
+	 *
+	 * @param tableName Name of the table
+	 * @param dbName Optional specific schema name to search
+	 * @returns The TableSchema or undefined if not found
 	 */
 	findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
 		return this._findTable(tableName, dbName);
 	}
 
 	/**
-	* Finds a function by name and arg count, searching schemas.
-	* SQLite looks in the connection-global space first, then potentially schema-specific?
-	* For now, let's assume functions are global across the connection (simpler).
-	* We'll register them on the 'main' schema internally, but lookup won't require schema name.
-	* @param funcName Name of the function.
-	* @param nArg Number of arguments.
-	* @returns The FunctionSchema or undefined if not found.
-	*/
+	 * Finds a function by name and arg count, searching schemas
+	 *
+	 * @param funcName Name of the function
+	 * @param nArg Number of arguments
+	 * @returns The FunctionSchema or undefined if not found
+	 */
 	findFunction(funcName: string, nArg: number): FunctionSchema | undefined {
-		// Simplified: Assume functions are connection-global for now
-		// Look up in the 'main' schema where we store them
 		return this.getMainSchema().getFunction(funcName, nArg);
 	}
 
 	/**
-	 * Declares a virtual table's schema based on a CREATE VIRTUAL TABLE string.
-	 * This is intended to be called from VTab `xCreate`/`xConnect` methods.
+	 * Declares a virtual table's schema based on a CREATE VIRTUAL TABLE string
+	 * This is intended to be called from VTab `xCreate`/`xConnect` methods
+	 *
 	 * @param schemaName The schema the table belongs to ('main', 'temp', etc.)
-	 * @param createTableSql The full `CREATE VIRTUAL TABLE ...` string.
-	 * @param associatedVtab The VirtualTable instance to link.
-	 * @param auxData The auxData associated with the module registration.
-	 * @returns The created TableSchema.
-	 * @throws SqliteError on parsing or definition errors.
+	 * @param createTableSql The full `CREATE VIRTUAL TABLE ...` string
+	 * @param associatedVtab The VirtualTable instance to link
+	 * @param auxData The auxData associated with the module registration
+	 * @returns The created TableSchema
+	 * @throws SqliteError on parsing or definition errors
 	 */
 	declareVtab(
 		schemaName: string,
-		createTableSql: string, // Expecting full CREATE TABLE statement
+		createTableSql: string,
 		associatedVtab: VirtualTable,
 		auxData?: unknown,
-		// vtabArgs are now parsed from the SQL
 	): TableSchema {
 		const schema = this.schemas.get(schemaName.toLowerCase());
 		if (!schema) {
@@ -256,7 +299,7 @@ export class SchemaManager {
 
 		console.log(`SchemaManager: Declaring VTab in '${schemaName}' using SQL: ${createTableSql}`);
 
-		// --- Use the Parser ---
+		// Parse the CREATE TABLE statement
 		let createVtabAst: AST.CreateTableStmt;
 		try {
 			const parser = new Parser();
@@ -270,31 +313,23 @@ export class SchemaManager {
 		}
 
 		const tableName = createVtabAst.table.name;
-		const vtabArgs = createVtabAst.moduleArgs; // Get args from AST
+		const vtabArgs = createVtabAst.moduleArgs;
 
 		if (schema.getTable(tableName)) {
 			// Handle IF NOT EXISTS
 			if (createVtabAst.ifNotExists) {
 				console.log(`SchemaManager: VTab ${tableName} already exists in schema ${schemaName}, skipping creation (IF NOT EXISTS).`);
-				// Return existing schema? Or should xCreate/xConnect handle this?
-				// For now, let's return the existing one, assuming xConnect logic handles it.
 				return schema.getTable(tableName)!;
 			}
 			throw new SqliteError(`Table ${tableName} already exists in schema ${schemaName}`, StatusCode.ERROR);
 		}
 
-		// --- Simplified Column Definition (Placeholder) ---
-		// A robust implementation requires the module to provide its schema definition,
-		// often by parsing the arguments passed (vtabArgs) or having a predefined structure.
-		// The `CREATE VIRTUAL TABLE` statement itself doesn't define columns directly.
-		// For now, we create a placeholder schema. Modules like MemoryTable will
-		// override this with their actual columns during their setup.
+		// Create placeholder schema - modules should override with actual columns
 		console.warn(`SchemaManager.declareVtab: Using placeholder column definition for ${tableName}. VTab module should define actual columns.`);
 		const placeholderColumns: ColumnSchema[] = [
 			createDefaultColumnSchema('column1'),
 			createDefaultColumnSchema('column2')
 		];
-		// --- End Simplified Column Definition ---
 
 		const tableSchema: TableSchema = {
 			name: tableName,
@@ -302,13 +337,11 @@ export class SchemaManager {
 			checkConstraints: [],
 			columns: Object.freeze(placeholderColumns),
 			columnIndexMap: Object.freeze(buildColumnIndexMap(placeholderColumns)),
-			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)), // Use helper
+			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)),
 			vtabModule: associatedVtab.module,
 			vtabAuxData: auxData,
-			vtabArgs: Object.freeze(vtabArgs || []), // Use parsed args
-			// Store the registered module name used in the CREATE stmt
+			vtabArgs: Object.freeze(vtabArgs || []),
 			vtabModuleName: createVtabAst.moduleName,
-			// Add missing properties
 			isWithoutRowid: false,
 			isStrict: false,
 			isView: false,
@@ -319,38 +352,42 @@ export class SchemaManager {
 	}
 
 	/**
-	 * Retrieves a view schema definition.
-	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema.
-	 * @param viewName The name of the view.
-	 * @returns The ViewSchema or undefined if not found.
+	 * Retrieves a view schema definition
+	 *
+	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema
+	 * @param viewName The name of the view
+	 * @returns The ViewSchema or undefined if not found
 	 */
-	getView(schemaName: string | null, viewName: string): ViewSchema | undefined { // NEW METHOD
+	getView(schemaName: string | null, viewName: string): ViewSchema | undefined {
 		const targetSchemaName = schemaName ?? this.currentSchemaName;
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getView(viewName);
 	}
 
 	/**
-	 * Retrieves any schema item (table or view) by name. Checks views first.
-	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema.
-	 * @param itemName The name of the table or view.
-	 * @returns The TableSchema or ViewSchema, or undefined if not found.
+	 * Retrieves any schema item (table or view) by name. Checks views first
+	 *
+	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema
+	 * @param itemName The name of the table or view
+	 * @returns The TableSchema or ViewSchema, or undefined if not found
 	 */
-	getSchemaItem(schemaName: string | null, itemName: string): TableSchema | ViewSchema | undefined { // UPDATED METHOD
+	getSchemaItem(schemaName: string | null, itemName: string): TableSchema | ViewSchema | undefined {
 		const targetSchemaName = schemaName ?? this.currentSchemaName;
 		const schema = this.schemas.get(targetSchemaName);
 		if (!schema) return undefined;
-		// Prioritize views over tables if names conflict (consistent with some DBs)
+
+		// Prioritize views over tables if names conflict
 		const view = schema.getView(itemName);
 		if (view) return view;
 		return schema.getTable(itemName);
 	}
 
 	/**
-	 * Drops a table from the specified schema.
-	 * @param schemaName The name of the schema.
-	 * @param tableName The name of the table to drop.
-	 * @returns True if the table was found and dropped, false otherwise.
+	 * Drops a table from the specified schema
+	 *
+	 * @param schemaName The name of the schema
+	 * @param tableName The name of the table to drop
+	 * @returns True if the table was found and dropped, false otherwise
 	 */
 	dropTable(schemaName: string, tableName: string): boolean {
 		const schema = this.schemas.get(schemaName);
@@ -360,28 +397,25 @@ export class SchemaManager {
 		const tableSchema = schema.getTable(tableName);
 		let destroyPromise: Promise<void> | null = null;
 
-		// Call xDestroy on the *module*, providing table details
+		// Call xDestroy on the module, providing table details
 		if (tableSchema?.vtabModuleName) {
 			console.log(`Calling xDestroy for VTab ${schemaName}.${tableName} via module ${tableSchema.vtabModuleName}`);
 			destroyPromise = tableSchema.vtabModule.xDestroy(
-				this.db, // Pass database
-				tableSchema.vtabAuxData, // Pass auxData
-				tableSchema.vtabModuleName, // Pass module name (checked existence)
+				this.db,
+				tableSchema.vtabAuxData,
+				tableSchema.vtabModuleName,
 				schemaName,
 				tableName
 			).catch(err => {
 				console.error(`Error during VTab module xDestroy for ${schemaName}.${tableName}:`, err);
-				// Decide whether to proceed with schema removal despite xDestroy error
 			});
 		}
 
 		// Remove from schema map immediately
 		const removed = schema.removeTable(tableName);
 
-		// Await destruction if needed *after* removing from schema map
-		// Consider the implications if xDestroy fails - the schema entry is gone.
+		// Process destruction asynchronously
 		if (destroyPromise) {
-			// We don't await here directly to avoid blocking, but maybe should?
 			destroyPromise.then(() => console.log(`xDestroy completed for VTab ${schemaName}.${tableName}`));
 		}
 
@@ -389,35 +423,36 @@ export class SchemaManager {
 	}
 
 	/**
-	 * Drops a view from the specified schema.
-	 * @param schemaName The name of the schema.
-	 * @param viewName The name of the view to drop.
-	 * @returns True if the view was found and dropped, false otherwise.
+	 * Drops a view from the specified schema
+	 *
+	 * @param schemaName The name of the schema
+	 * @param viewName The name of the view to drop
+	 * @returns True if the view was found and dropped, false otherwise
 	 */
-	dropView(schemaName: string, viewName: string): boolean { // NEW METHOD
+	dropView(schemaName: string, viewName: string): boolean {
 		const schema = this.schemas.get(schemaName);
 		if (!schema) return false;
 		return schema.removeView(viewName);
 	}
 
-	/** Clears all schema items (tables, functions, views) */
-	clearAll(): void { // UPDATED METHOD
+	/**
+	 * Clears all schema items (tables, functions, views)
+	 */
+	clearAll(): void {
 		this.schemas.forEach(schema => {
-			// Call clearTables which might handle VTab disconnect later?
-			// For now, just clear maps. VTab disconnect happens at DB close.
 			schema.clearTables();
-			schema.clearFunctions(); // Calls destructors
+			schema.clearFunctions();
 			schema.clearViews();
 		});
-		// Optionally re-initialize built-ins? Or assume they are added again externally.
 		console.log("SchemaManager: Cleared all schemas.");
 	}
 
 	/**
-	 * Retrieves a schema object, throwing if it doesn't exist.
-	 * @param name Schema name ('main', 'temp', or custom). Case-insensitive.
-	 * @returns The Schema object.
-	 * @throws SqliteError if the schema does not exist.
+	 * Retrieves a schema object, throwing if it doesn't exist
+	 *
+	 * @param name Schema name ('main', 'temp', or custom). Case-insensitive
+	 * @returns The Schema object
+	 * @throws SqliteError if the schema does not exist
 	 */
 	getSchemaOrFail(name: string): Schema {
 		const schema = this.schemas.get(name.toLowerCase());
@@ -428,10 +463,11 @@ export class SchemaManager {
 	}
 
 	/**
-	 * Retrieves a table from the specified schema.
-	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema.
-	 * @param tableName The name of the table.
-	 * @returns The TableSchema or undefined if not found.
+	 * Retrieves a table from the specified schema
+	 *
+	 * @param schemaName The name of the schema ('main', 'temp', etc.). Defaults to current schema
+	 * @param tableName The name of the table
+	 * @returns The TableSchema or undefined if not found
 	 */
 	getTable(schemaName: string | null, tableName: string): TableSchema | undefined {
 		const targetSchemaName = schemaName ?? this.currentSchemaName;

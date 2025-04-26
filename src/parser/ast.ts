@@ -391,6 +391,10 @@ export interface CommonTableExpr extends AstNode {
 	query: SelectStmt | InsertStmt | UpdateStmt | DeleteStmt; // CTE body
 }
 
+/**
+ * Represents a COLLATE expression in SQL, which specifies the collation sequence
+ * to use for a string operation
+ */
 export interface CollateExpr extends AstNode {
 	type: 'collate';
 	expr: Expression;

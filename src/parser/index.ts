@@ -8,8 +8,10 @@ import { TokenType } from './lexer';
 
 /**
  * Parse a SQL SELECT statement
- * @param sql SQL statement
+ *
+ * @param sql SQL SELECT statement
  * @returns AST for the SELECT statement
+ * @throws ParseError if the SQL is invalid or not a SELECT statement
  */
 export function parseSelect(sql: string): SelectStmt {
 	const parser = new Parser();
@@ -18,8 +20,10 @@ export function parseSelect(sql: string): SelectStmt {
 
 /**
  * Parse a SQL INSERT statement
- * @param sql SQL statement
+ *
+ * @param sql SQL INSERT statement
  * @returns AST for the INSERT statement
+ * @throws Error if the SQL is not an INSERT statement
  */
 export function parseInsert(sql: string): InsertStmt {
 	const stmt = parse(sql);
@@ -30,15 +34,16 @@ export function parseInsert(sql: string): InsertStmt {
 }
 
 /**
- * Parse any SQL statement (currently only supports SELECT and INSERT)
+ * Parse a SQL statement
+ *
  * @param sql SQL statement
  * @returns AST for the statement
+ * @throws Error if the statement type is not supported
  */
 export function parse(sql: string): SelectStmt | InsertStmt {
 	const parser = new Parser();
 	const stmt = parser.parse(sql);
 
-	// Check statement type
 	if (stmt.type === 'select') {
 		return stmt as SelectStmt;
 	} else if (stmt.type === 'insert') {

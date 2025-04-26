@@ -13,6 +13,11 @@ This list outlines the remaining major features and refinements needed to make S
     *   [ ] Define VDBE/VTab mechanism for passing arguments via VFilter.
     *   [ ] Implement VDBE execution logic for calling functions.
 
+*   [ ] In SchemaManager.declareVtab(), there's a placeholder schema pattern where virtual table modules should override the placeholder columns. This could be clearer with a base interface or method.
+*   [ ] In importSchemaJson(), the constraint expressions are deserialized as placeholder null literals. This is a known limitation but could pose problems if the schema is being used with actual constraints.
+*   [ ] Some of the type casting with satisfies in _findTable() is a good pattern but might be unnecessary in some places.
+*   [ ] The error handling for vtab destruction in dropTable() is asynchronous but doesn't fully handle the failure case. This could be improved, potentially by returning the promise to the caller.
+
 **II. VDBE & Compiler Core:**
 
 *   [ ] **Opcode Optimization:**

@@ -2,41 +2,39 @@ import { SqlDataType } from '../common/types.js';
 import type { Expression } from '../parser/ast.js';
 
 /**
- * Represents the schema definition of a single column.
+ * Represents the schema definition of a single column in a table.
  */
 export interface ColumnSchema {
 	/** Column name */
 	name: string;
-	/** Declared type affinity (TEXT, INTEGER, REAL, BLOB, NUMERIC - or just use SqlDataType?) */
-	affinity: SqlDataType; // Or maybe allow a string type name? Let's stick to enum for now.
+	/** Data type affinity (TEXT, INTEGER, REAL, BLOB, NUMERIC) */
+	affinity: SqlDataType;
 	/** Whether the column has a NOT NULL constraint */
 	notNull: boolean;
 	/** Whether the column is part of the primary key */
 	primaryKey: boolean;
 	/** Order within the primary key (1-based) or 0 if not PK */
 	pkOrder: number;
-	/** Default value (might be complex, start simple) */
-	defaultValue: Expression | null; // Store the AST Expression or null
+	/** Default value expression */
+	defaultValue: Expression | null;
 	/** Declared collation sequence name (e.g., "BINARY", "NOCASE", "RTRIM") */
-	collation: string; // Default to 'BINARY'
+	collation: string;
 	/** Is the column hidden (e.g., implicit rowid for non-WITHOUT ROWID vtabs)? */
 	hidden: boolean;
-	/** Is the column generated? (Likely false for VTabs, but good for completeness) */
-	generated: boolean; // Default false
-
-	// Add other properties if needed, e.g., from sqlite3_table_column_metadata
-	// isAutoIncrement?: boolean; // Explicitly skipping based on requirements
+	/** Is the column generated? */
+	generated: boolean;
 }
 
 /**
  * Determines the column affinity based on SQLite rules.
- * See: https://www.sqlite.org/datatype3.html#determination_of_column_affinity
- * @param typeName The declared type name (case-insensitive).
- * @returns The determined SqlDataType affinity.
+ * @see https://www.sqlite.org/datatype3.html#determination_of_column_affinity
+ *
+ * @param typeName The declared type name (case-insensitive)
+ * @returns The determined SqlDataType affinity
  */
 export function getAffinity(typeName: string | undefined): SqlDataType {
 	if (!typeName) {
-		return SqlDataType.BLOB; // Or NUMERIC? SQLite docs say BLOB if no type.
+		return SqlDataType.BLOB;
 	}
 	const typeUpper = typeName.toUpperCase();
 	if (typeUpper.includes('INT')) {
@@ -55,12 +53,15 @@ export function getAffinity(typeName: string | undefined): SqlDataType {
 }
 
 /**
- * Creates a default ColumnSchema, useful for initialization.
+ * Creates a default ColumnSchema with basic properties
+ *
+ * @param name The name for the column
+ * @returns A new column schema with default values
  */
 export function createDefaultColumnSchema(name: string): ColumnSchema {
 	return {
 		name: name,
-		affinity: SqlDataType.TEXT, // Default affinity often TEXT or BLOB/NUMERIC in SQLite
+		affinity: SqlDataType.TEXT,
 		notNull: false,
 		primaryKey: false,
 		pkOrder: 0,

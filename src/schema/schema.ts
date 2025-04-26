@@ -8,12 +8,13 @@ import { SqliteError } from '../common/errors.js';
 /**
  * Determines the affinity of a column based on its declared type name.
  * Follows SQLite affinity rules: https://www.sqlite.org/datatype3.html#type_affinity
- * @param typeName The declared type name (case-insensitive).
- * @returns The determined affinity.
+ *
+ * @param typeName The declared type name (case-insensitive)
+ * @returns The determined affinity
  */
 export function getAffinityForType(typeName: string | undefined | null): SqlDataType {
 	if (!typeName) {
-		return SqlDataType.BLOB; // Or NONE? Defaulting to BLOB (no affinity)
+		return SqlDataType.BLOB;
 	}
 	const type = typeName.toUpperCase();
 
@@ -29,7 +30,6 @@ export function getAffinityForType(typeName: string | undefined | null): SqlData
 	if (type.includes('REAL') || type.includes('FLOA') || type.includes('DOUB')) {
 		return SqlDataType.REAL;
 	}
-	// Default affinity
 	return SqlDataType.NUMERIC;
 }
 
@@ -40,19 +40,28 @@ export function getAffinityForType(typeName: string | undefined | null): SqlData
 export class Schema {
 	public readonly name: string;
 	private tables: Map<string, TableSchema> = new Map();
-	private functions: Map<string, FunctionSchema> = new Map(); // Key uses getFunctionKey()
-	private views: Map<string, ViewSchema> = new Map(); // ADDED: Map for views
+	private functions: Map<string, FunctionSchema> = new Map();
+	private views: Map<string, ViewSchema> = new Map();
 
+	/**
+	 * Creates a new schema instance
+	 *
+	 * @param name The schema name (e.g. "main", "temp")
+	 */
 	constructor(name: string) {
 		this.name = name;
 	}
 
-	/** Adds or replaces a table definition in the schema. */
+	/**
+	 * Adds or replaces a table definition in the schema
+	 *
+	 * @param table The table schema to add
+	 * @throws Error if table's schema name doesn't match or a view with same name exists
+	 */
 	addTable(table: TableSchema): void {
 		if (table.schemaName !== this.name) {
 			throw new Error(`Table ${table.name} has wrong schema name ${table.schemaName}, expected ${this.name}`);
 		}
-		// Check for conflict with existing views
 		if (this.views.has(table.name.toLowerCase())) {
 			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
 		}
@@ -60,17 +69,31 @@ export class Schema {
 		console.log(`Schema '${this.name}': Added/Updated table '${table.name}'`);
 	}
 
-	/** Gets a table definition by name (case-insensitive). */
+	/**
+	 * Gets a table definition by name (case-insensitive)
+	 *
+	 * @param tableName The table name to look up
+	 * @returns The table schema or undefined if not found
+	 */
 	getTable(tableName: string): TableSchema | undefined {
 		return this.tables.get(tableName.toLowerCase());
 	}
 
-	/** Returns an iterator over all tables in the schema. */
+	/**
+	 * Returns an iterator over all tables in the schema
+	 *
+	 * @returns Iterator of table schemas
+	 */
 	getAllTables(): IterableIterator<TableSchema> {
 		return this.tables.values();
 	}
 
-	/** Removes a table definition from the schema. Returns true if found and removed. */
+	/**
+	 * Removes a table definition from the schema
+	 *
+	 * @param tableName The name of the table to remove
+	 * @returns true if found and removed, false otherwise
+	 */
 	removeTable(tableName: string): boolean {
 		const key = tableName.toLowerCase();
 		const exists = this.tables.has(key);
@@ -81,17 +104,23 @@ export class Schema {
 		return exists;
 	}
 
-	/** Clears all tables (does not call VTable disconnect/destroy). */
+	/**
+	 * Clears all tables (does not call VTable disconnect/destroy)
+	 */
 	clearTables(): void {
 		this.tables.clear();
 	}
 
-	/** Adds or replaces a view definition in the schema. */
+	/**
+	 * Adds or replaces a view definition in the schema
+	 *
+	 * @param view The view schema to add
+	 * @throws Error if view's schema name doesn't match or a table with same name exists
+	 */
 	addView(view: ViewSchema): void {
 		if (view.schemaName !== this.name) {
 			throw new Error(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
 		}
-		// Check for conflict with existing tables
 		if (this.tables.has(view.name.toLowerCase())) {
 			throw new SqliteError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
 		}
@@ -99,17 +128,31 @@ export class Schema {
 		console.log(`Schema '${this.name}': Added/Updated view '${view.name}'`);
 	}
 
-	/** Gets a view definition by name (case-insensitive). */
+	/**
+	 * Gets a view definition by name (case-insensitive)
+	 *
+	 * @param viewName The view name to look up
+	 * @returns The view schema or undefined if not found
+	 */
 	getView(viewName: string): ViewSchema | undefined {
 		return this.views.get(viewName.toLowerCase());
 	}
 
-	/** Returns an iterator over all views in the schema. */
+	/**
+	 * Returns an iterator over all views in the schema
+	 *
+	 * @returns Iterator of view schemas
+	 */
 	getAllViews(): IterableIterator<ViewSchema> {
 		return this.views.values();
 	}
 
-	/** Removes a view definition from the schema. Returns true if found and removed. */
+	/**
+	 * Removes a view definition from the schema
+	 *
+	 * @param viewName The name of the view to remove
+	 * @returns true if found and removed, false otherwise
+	 */
 	removeView(viewName: string): boolean {
 		const key = viewName.toLowerCase();
 		const exists = this.views.has(key);
@@ -120,16 +163,22 @@ export class Schema {
 		return exists;
 	}
 
-	/** Clears all views. */
+	/**
+	 * Clears all views
+	 */
 	clearViews(): void {
 		this.views.clear();
 	}
 
-	/** Adds or replaces a function definition in the schema. */
+	/**
+	 * Adds or replaces a function definition in the schema
+	 * Calls the destructor for any existing function being replaced
+	 *
+	 * @param func The function schema to add
+	 */
 	addFunction(func: FunctionSchema): void {
 		const key = getFunctionKey(func.name, func.numArgs);
 		const existing = this.functions.get(key);
-		// Call destructor for existing function's user data if replaced
 		if (existing?.xDestroy && existing.userData !== func.userData) {
 			try { existing.xDestroy(existing.userData); } catch (e) { console.error(`Destructor failed for function ${key}`, e); }
 		}
@@ -137,20 +186,34 @@ export class Schema {
 		console.log(`Schema '${this.name}': Added/Updated function '${func.name}/${func.numArgs}'`);
 	}
 
-	/** Gets a function definition by name and argument count (case-insensitive name). */
+	/**
+	 * Gets a function definition by name and argument count (case-insensitive name)
+	 * First checks for exact argument count match, then tries variable args (-1)
+	 *
+	 * @param name The function name
+	 * @param numArgs The number of arguments
+	 * @returns The function schema or undefined if not found
+	 */
 	getFunction(name: string, numArgs: number): FunctionSchema | undefined {
-		// Check specific arity first, then varargs (-1)
 		const key = getFunctionKey(name, numArgs);
 		const varArgsKey = getFunctionKey(name, -1);
 		return this.functions.get(key) ?? this.functions.get(varArgsKey);
 	}
 
-	/** @internal Returns iterator over managed functions */
+	/**
+	 * @internal Returns iterator over managed functions
+	 */
 	_getAllFunctions(): IterableIterator<FunctionSchema> {
 		return this.functions.values();
 	}
 
-	/** Removes a function definition. Returns true if found and removed. */
+	/**
+	 * Removes a function definition, calling its destructor if needed
+	 *
+	 * @param name The function name
+	 * @param numArgs The number of arguments
+	 * @returns true if found and removed, false otherwise
+	 */
 	removeFunction(name: string, numArgs: number): boolean {
 		const key = getFunctionKey(name, numArgs);
 		const func = this.functions.get(key);
@@ -164,7 +227,9 @@ export class Schema {
 		return false;
 	}
 
-	/** Clears all functions, calling destructors if needed. */
+	/**
+	 * Clears all functions, calling destructors if needed
+	 */
 	clearFunctions(): void {
 		this.functions.forEach(func => {
 			if (func.xDestroy && func.userData) {

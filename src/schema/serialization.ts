@@ -12,7 +12,12 @@ import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema,
 import * as AST from '../parser/ast.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 
-/** Function to convert RowOpMask to string array */
+/**
+ * Converts a RowOpMask bitmask to an array of operation strings
+ *
+ * @param mask The RowOpMask bitmask
+ * @returns Array of operation strings
+ */
 function maskToOpsArray(mask: number): ('insert' | 'update' | 'delete')[] {
   const ops: ('insert' | 'update' | 'delete')[] = [];
   if (mask & RowOp.INSERT) ops.push('insert');
@@ -22,9 +27,11 @@ function maskToOpsArray(mask: number): ('insert' | 'update' | 'delete')[] {
 }
 
 /**
- * Exports a database schema (tables and function signatures) to a JSON string.
- * @param db The database to export the schema from.
- * @returns A JSON string representing the schema.
+ * Exports a database schema (tables and function signatures) to a JSON string
+ *
+ * @param db The database to export the schema from
+ * @returns A JSON string representing the schema
+ * @throws MisuseError if the database is closed
  */
 export function exportSchemaJson(db: Database): string {
   if (!db['isOpen']) throw new MisuseError("Database is closed");
@@ -107,13 +114,14 @@ export function exportSchemaJson(db: Database): string {
 }
 
 /**
- * Imports a database schema from a JSON string.
+ * Imports a database schema from a JSON string
  * Clears existing non-core schemas (like attached) before importing.
- * Function implementations must be re-registered manually after import.
- * Virtual tables will need to be reconnected (potentially requires a separate step or lazy connect).
- * @param db The database to import the schema into.
- * @param jsonString The JSON string representing the schema.
- * @throws Error on parsing errors or invalid schema format.
+ * Note: Function implementations must be re-registered manually after import.
+ * Virtual tables will need to be reconnected separately.
+ *
+ * @param db The database to import the schema into
+ * @param jsonString The JSON string representing the schema
+ * @throws Error on parsing errors, invalid schema format, or missing VTab modules
  */
 export function importSchemaJson(db: Database, jsonString: string): void {
   if (!db['isOpen']) throw new MisuseError("Database is closed");
@@ -134,10 +142,7 @@ export function importSchemaJson(db: Database, jsonString: string): void {
     throw new Error(`Unsupported schema version: ${jsonData.schemaVersion}. Expected version 1.`);
   }
 
-  // Clear existing user-defined schemas before import
-  // Keep 'main' and 'temp' but clear their contents?
-  // Let's clear tables/functions from main/temp for now.
-  schemaManager.clearAll(); // Don't disconnect VTabs yet
+  schemaManager.clearAll();
 
   for (const schemaName in jsonData.schemas) {
     if (!Object.prototype.hasOwnProperty.call(jsonData.schemas, schemaName)) continue;
@@ -151,7 +156,6 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         schema = schemaManager.addSchema(schemaName);
       }
     } else {
-      // Clear existing contents of main/temp if they weren't cleared by clearAll
       schema.clearTables();
       schema.clearFunctions();
     }
@@ -199,19 +203,16 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         } as ColumnSchema;
       });
 
-      // Deserialize checkConstraints (without expr for now)
+      // Deserialize checkConstraints
       const checkConstraints: RowConstraintSchema[] = [];
       if (jsonTable.checkConstraints) {
         for (const jsonCheck of jsonTable.checkConstraints) {
           if (jsonCheck.type === 'check') {
-            // TODO: Deserialize expression properly
-            // We need a way to parse expression strings reliably.
-            // For now, we store a dummy/placeholder expression.
-            const placeholderExpr: AST.LiteralExpr = { type: 'literal', value: null }; // Placeholder
+            const placeholderExpr: AST.LiteralExpr = { type: 'literal', value: null };
 
             checkConstraints.push({
               name: jsonCheck.name,
-              expr: placeholderExpr, // Use placeholder
+              expr: placeholderExpr,
               operations: opsToMask(jsonCheck.operations as any),
             });
           }
@@ -222,9 +223,6 @@ export function importSchemaJson(db: Database, jsonString: string): void {
       const vtabModuleName = jsonTable.vtabModule;
       const moduleInfo = db._getVtabModule(vtabModuleName);
       if (!moduleInfo) {
-        // Module not found - potentially log a warning or throw an error
-        // Depending on strictness, maybe default to memory?
-        // Throwing an error is safer for now.
         throw new SqliteError(`Virtual table module '${vtabModuleName}' for table '${jsonTable.name}' is not registered with the current Database instance. Cannot import schema.`, StatusCode.ERROR);
       }
       const vtabModule: VirtualTableModule<any, any> = moduleInfo.module;
@@ -236,8 +234,8 @@ export function importSchemaJson(db: Database, jsonString: string): void {
         columns: Object.freeze(columns),
         columnIndexMap: Object.freeze(buildColumnIndexMap(columns)),
         primaryKeyDefinition: Object.freeze(jsonTable.primaryKeyDefinition),
-        vtabModule: vtabModule, // Assign the found module
-        vtabModuleName: vtabModuleName, // Store the name
+        vtabModule: vtabModule,
+        vtabModuleName: vtabModuleName,
         vtabArgs: jsonTable.vtabArgs ? Object.freeze(jsonTable.vtabArgs) : undefined,
         indexes: jsonTable.indexes ? Object.freeze(jsonTable.indexes.map((jsonIdx: JsonIndexSchema): IndexSchema => ({
           name: jsonIdx.name,
@@ -247,22 +245,19 @@ export function importSchemaJson(db: Database, jsonString: string): void {
             collation: jsonCol.collation,
           }))),
         }))) : undefined,
-        isWithoutRowid: false, // TODO: Serialize/Deserialize this property if needed
-        isStrict: false,      // TODO: Serialize/Deserialize this property if needed
-        isView: false,        // Views are handled separately
+        isWithoutRowid: false,
+        isStrict: false,
+        isView: false,
       };
       schema.addTable(tableSchema);
     }
 
     // Import Functions (stubs only)
     for (const jsonFunc of jsonSchema.functions) {
-      // Check if it's a built-in function and skip if so?
-      // Or just allow overriding? Let's allow overriding for now.
       const funcSchema: FunctionSchema = {
         name: jsonFunc.name,
         numArgs: jsonFunc.numArgs,
         flags: jsonFunc.flags,
-        // Implementations (xFunc, xStep, xFinal) are NOT restored
       };
       schema.addFunction(funcSchema);
     }

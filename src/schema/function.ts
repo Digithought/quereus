@@ -32,8 +32,13 @@ export interface FunctionSchema {
 	affinity?: SqlDataType;
 }
 
-/** Key for storing/looking up functions */
+/**
+ * Creates a consistent key for storing/looking up functions
+ *
+ * @param name Function name
+ * @param numArgs Number of arguments (-1 for variable argument count)
+ * @returns A string key in the format "name/numArgs"
+ */
 export function getFunctionKey(name: string, numArgs: number): string {
-	// Normalize name and handle varargs for consistent lookup
 	return `${name.toLowerCase()}/${numArgs}`;
 }

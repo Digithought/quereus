@@ -24,34 +24,37 @@ export interface TableSchema {
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<{ name?: string, expr: Expression }>;
 	/** Reference to the registered module */
-	vtabModule: VirtualTableModule<any, any>; // Now mandatory
+	vtabModule: VirtualTableModule<any, any>;
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
 	vtabArgs?: ReadonlyArray<string>;
 	/** If virtual, the name the module was registered with */
 	vtabModuleName?: string;
-	/** Whether the table is declared WITHOUT ROWID (crucial for VTabs) */
+	/** Whether the table is declared WITHOUT ROWID */
 	isWithoutRowid: boolean;
 	/** Whether the table is a temporary table */
-	isTemporary?: boolean; // Added for subquery sources/temp tables
+	isTemporary?: boolean;
 	/** Whether the table is a strict table */
 	isStrict: boolean;
 	/** Whether the table is a view */
 	isView: boolean;
 	/** Whether the table is a subquery source */
-	subqueryAST?: AST.SelectStmt; // Added for subquery sources
+	subqueryAST?: AST.SelectStmt;
 	/** If virtual, the view definition */
-	viewDefinition?: AST.SelectStmt; // Only for views
+	viewDefinition?: AST.SelectStmt;
 	/** Table-level constraints */
 	tableConstraints?: readonly TableConstraint[];
 	/** Definitions of secondary indexes (relevant for planning) */
 	indexes?: ReadonlyArray<IndexSchema>;
-
-	// TODO: Add a reference to the *specific* VirtualTable instance if needed?
 }
 
-/** Helper to build the column index map */
+/**
+ * Builds a map from column names to their indices in the columns array
+ *
+ * @param columns Array of column schemas
+ * @returns Map of lowercase column names to their indices
+ */
 export function buildColumnIndexMap(columns: ReadonlyArray<ColumnSchema>): Map<string, number> {
 	const map = new Map<string, number>();
 	columns.forEach((col, index) => {
@@ -60,30 +63,36 @@ export function buildColumnIndexMap(columns: ReadonlyArray<ColumnSchema>): Map<s
 	return map;
 }
 
-/** Helper to find primary key indices and directions */
+/**
+ * Extracts primary key information from column definitions
+ *
+ * @param columns Array of column schemas
+ * @returns Array of objects with index and direction for primary key columns
+ */
 export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<{ index: number; desc: boolean }> {
-	// Default direction is ASC (false for desc)
-	// Currently, ColumnSchema doesn't store direction, assume ASC for real PKs
-	// This function is now more relevant for dynamically created sorter schemas.
 	const pkCols = columns
-		.map((col, index) => ({ ...col, index })) // Add original index
-		.filter(col => col.primaryKey) // Filter PK columns
-		.sort((a, b) => a.pkOrder - b.pkOrder); // Sort by PK order
+		.map((col, index) => ({ ...col, index }))
+		.filter(col => col.primaryKey)
+		.sort((a, b) => a.pkOrder - b.pkOrder);
 
-	// Assume ASC for standard PKs found via ColumnSchema.primaryKey
 	return Object.freeze(pkCols.map(col => ({ index: col.index, desc: false })));
 }
 
-/** Helper to extract just the indices from the definition */
+/**
+ * Extracts just the column indices from a primary key definition
+ *
+ * @param pkDef Primary key definition array
+ * @returns Array of column indices that form the primary key
+ */
 export function getPrimaryKeyIndices(pkDef: ReadonlyArray<{ index: number; desc: boolean }>): ReadonlyArray<number> {
 	return Object.freeze(pkDef.map(def => def.index));
 }
 
-// --- Add columnDefToSchema helper --- //
-
 /**
- * Converts a parsed ColumnDef AST node into a runtime ColumnSchema object.
- * This simplifies creating schemas programmatically or during VTab creation.
+ * Converts a parsed ColumnDef AST node into a runtime ColumnSchema object
+ *
+ * @param def Column definition AST node
+ * @returns A runtime ColumnSchema object
  */
 export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 	const schema: Partial<ColumnSchema> & { name: string } = {
@@ -92,8 +101,8 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		notNull: false,
 		primaryKey: false,
 		pkOrder: 0,
-		defaultValue: null, // DefaultValue type is now Expression | null
-		collation: 'BINARY', // Default collation
+		defaultValue: null,
+		collation: 'BINARY',
 		hidden: false,
 		generated: false,
 	};
@@ -104,30 +113,22 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		switch (constraint.type) {
 			case 'primaryKey':
 				schema.primaryKey = true;
-				// pkOrder needs context of table constraints, handled later if needed
 				pkConstraint = constraint as Extract<ColumnConstraint, { type: 'primaryKey' }>;
-				// Handle ON CONFLICT for PK
-				// schema.notNull = true; // PK implies NOT NULL - Handled below
 				break;
 			case 'notNull':
 				schema.notNull = true;
-				// Handle ON CONFLICT for NOT NULL
 				break;
 			case 'unique':
-				// schema.unique = true; // Add if needed
-				// Handle ON CONFLICT
 				break;
 			case 'default':
-				schema.defaultValue = constraint.expr; // Assign Expression directly
+				schema.defaultValue = constraint.expr;
 				break;
 			case 'collate':
 				schema.collation = constraint.collation;
 				break;
 			case 'generated':
 				schema.generated = true;
-				// Store expression? Stored vs Virtual?
 				break;
-			// CHECK and FOREIGN KEY are typically table constraints or require more context
 		}
 	}
 
@@ -142,34 +143,47 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 
 	// Assign a default pkOrder if it's a PK but order isn't specified elsewhere
 	if (schema.primaryKey && schema.pkOrder === 0) {
-		schema.pkOrder = 1; // Assume order 1 if single PK
+		schema.pkOrder = 1;
 	}
 
 	return schema as ColumnSchema;
 }
-// ------------------------------------ //
 
-// --- Add Index Definition for Schema --- //
+/**
+ * Defines a column in an index
+ */
 export interface IndexColumnSchema {
-	index: number;    // Column index in TableSchema.columns
+	/** Column index in TableSchema.columns */
+	index: number;
+	/** Whether the index should sort in descending order */
 	desc: boolean;
+	/** Optional collation sequence for the column */
 	collation?: string;
 }
 
+/**
+ * Represents an index definition
+ */
 export interface IndexSchema {
+	/** Index name */
 	name: string;
+	/** Columns in the index */
 	columns: ReadonlyArray<IndexColumnSchema>;
-	// unique?: boolean;
-	// where?: Expression; // For partial indexes
 }
-// -------------------------------------- //
 
-/** Helper to create a basic TableSchema (useful for testing or simple vtabs) */
+/**
+ * Creates a basic TableSchema with minimal configuration
+ *
+ * @param name Table name
+ * @param columns Array of column name and type objects
+ * @param pkColNames Optional array of primary key column names
+ * @returns A frozen TableSchema object
+ */
 export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): TableSchema {
 	const columnSchemas = columns.map(c => columnDefToSchema({
 		name: c.name,
 		dataType: c.type,
-		constraints: [] // Add empty constraints array
+		constraints: []
 	}));
 	const columnIndexMap = buildColumnIndexMap(columnSchemas);
 	const pkDef = pkColNames
@@ -180,7 +194,6 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		})
 		: [];
 
-	// Instantiate the MemoryTableModule to assign to vtabModule
 	const defaultMemoryModule = new MemoryTableModule();
 
 	return Object.freeze({
@@ -190,11 +203,11 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		columnIndexMap: columnIndexMap,
 		primaryKeyDefinition: pkDef,
 		checkConstraints: [],
-		indexes: [], // Initialize empty
-		vtabModule: defaultMemoryModule, // Assign the default memory module instance
+		indexes: [],
+		vtabModule: defaultMemoryModule,
 		vtabAuxData: null,
 		vtabArgs: [],
-		vtabModuleName: 'memory', // Default name for basic schema
+		vtabModuleName: 'memory',
 		isWithoutRowid: false,
 		isTemporary: false,
 		isStrict: false,
@@ -202,7 +215,7 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		subqueryAST: undefined,
 		viewDefinition: undefined,
 		tableConstraints: [],
-	}) as TableSchema; // Still need assertion as TS might not infer vtabModule type perfectly here
+	}) as TableSchema;
 }
 
 /** Bitmask for row operations */
@@ -211,13 +224,18 @@ export const enum RowOp {
 	UPDATE = 2,
 	DELETE = 4
 }
-export type RowOpMask = RowOp; // Export RowOpMask type
+export type RowOpMask = RowOp;
 export const DEFAULT_ROWOP_MASK = RowOp.INSERT | RowOp.UPDATE;
 
-// --- Helper to convert AST RowOp[] to RowOpMask --- //
+/**
+ * Converts an array of row operations to a bitmask
+ *
+ * @param list Optional array of operation types
+ * @returns A bitmask representing the operations
+ */
 export function opsToMask(list?: AST.RowOp[]): RowOpMask {
 	if (!list || list.length === 0) {
-		return DEFAULT_ROWOP_MASK; // Default to INSERT | UPDATE
+		return DEFAULT_ROWOP_MASK;
 	}
 	let mask: RowOpMask = 0 as RowOpMask;
 	list.forEach(op => {
@@ -230,9 +248,14 @@ export function opsToMask(list?: AST.RowOp[]): RowOpMask {
 	return mask;
 }
 
-/** Interface for a runtime check constraint schema */
+/**
+ * Represents a CHECK constraint with operation flags
+ */
 export interface RowConstraintSchema {
+	/** Optional constraint name */
 	name?: string;
+	/** Constraint expression */
 	expr: Expression;
+	/** Bitmask of operations the constraint applies to */
 	operations: RowOpMask;
 }
