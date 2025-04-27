@@ -117,6 +117,8 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 
 *   Parsing and execution of `SELECT`, `INSERT`, `UPDATE`, `DELETE` statements.
 *   Support for Common Table Expressions (CTEs), including basic recursive CTEs.
+    *   Non-recursive CTEs are automatically materialized only if referenced more than once, otherwise they behave like views (materialized on first use).
+    *   Behavior can be overridden using `AS MATERIALIZED` or `AS NOT MATERIALIZED` hints.
 *   Support for various subquery types (scalar, comparison, `IN`, `EXISTS`), including correlated subqueries.
 *   Joins (`INNER`, `LEFT`, `CROSS`).
 *   Basic Aggregation (`GROUP BY`, `HAVING` with functions like `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP_CONCAT`, `JSON_GROUP_ARRAY`, `JSON_GROUP_OBJECT`).

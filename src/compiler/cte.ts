@@ -1,7 +1,7 @@
 import { SqliteError } from '../common/errors.js';
 import { StatusCode, SqlDataType, ConflictResolution } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import type { Compiler, ColumnResultInfo } from './compiler.js';
+import type { Compiler, ColumnResultInfo, CteInfo } from './compiler.js';
 import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
 import type { P4SortKey } from '../vdbe/instruction.js';
@@ -10,31 +10,37 @@ import { buildColumnIndexMap } from '../schema/table.js';
 import { compileUnhandledWhereConditions } from './whereVerify.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
 
-// --- Add CTE compilation ---\
-export function compileCommonTableExpression(compiler: Compiler, cte: AST.CommonTableExpr, isRecursiveContext: boolean): void {
+// --- Updated signature to accept CteInfo --- //
+export function compileCommonTableExpression(compiler: Compiler, cteInfo: CteInfo, isRecursive: boolean): void {
+	const cte = cteInfo.node; // Get the AST node from CteInfo
 	const cteName = cte.name.toLowerCase();
-	console.log(`Compiling CTE: ${cteName}, Recursive Context: ${isRecursiveContext}`);
+	console.log(`Compiling MATERIALIZED CTE: ${cteName}, Recursive: ${isRecursive}`);
+
+	// The decision to materialize (and check for recursive misuse) is now done in compileWithClause.
+	// We only compile if the strategy is 'materialized'.
+	if (cteInfo.strategy !== 'materialized') {
+		throw new Error(`Internal: compileCommonTableExpression called for non-materialized CTE '${cteName}'`);
+	}
 
 	// --- Recursive CTE Handling --- //
-	if (isRecursiveContext && isRecursiveCteQuery(compiler, cte, cteName)) {
+	if (isRecursive) {
 		console.log(`Compiling RECURSIVE CTE: ${cteName}`);
-		_compileRecursiveCte(compiler, cte); // Call private helper with compiler
-		return; // Handled by recursive logic
+		// Pass the CteInfo object down
+		_compileRecursiveCte(compiler, cteInfo);
+		return;
 	}
 
 	// --- Non-Recursive CTE Handling --- //
-	// Check if it *looks* recursive but wasn't declared in a RECURSIVE context
-	if (!isRecursiveContext && isRecursiveCteQuery(compiler, cte, cteName)) {
-		throw new SqliteError(`Recursive CTE '${cteName}' used without 'RECURSIVE' keyword`, StatusCode.ERROR, undefined, cte.loc?.start.line, cte.loc?.start.column);
-	}
-
-	console.log(`Compiling Non-Recursive CTE (Materializing): ${cteName}`);
-	_compileMaterializedCte(compiler, cte); // Call private helper with compiler
+	console.log(`Compiling Non-Recursive Materialized CTE: ${cteName}`);
+	// Pass the CteInfo object down
+	_compileMaterializedCte(compiler, cteInfo);
 }
 
 // --- Private Helper Methods for CTE Compilation --- //
 
-function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): void {
+// Updated signature
+function _compileMaterializedCte(compiler: Compiler, cteInfo: CteInfo): void {
+	const cte = cteInfo.node;
 	const cteName = cte.name.toLowerCase();
 
 	// 1. Determine CTE Schema using a dry run of compileSelectCore
@@ -81,8 +87,16 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 	}
 
 	// --- Now, generate code to populate the ephemeral table --- //
-	// Add the final CTE info to the *current* compiler state
-	compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: cteCursorIdx, schema: cteSchema });
+	// Retrieve the existing CteInfo from the map and update it
+	const existingCteInfo = compiler.cteMap.get(cteName);
+	if (!existingCteInfo) {
+		// This shouldn't happen if called from compileWithClause
+		throw new SqliteError(`Internal: CteInfo not found for '${cteName}' during materialization.`, StatusCode.INTERNAL);
+	}
+	// Update the existing CteInfo object with materialization details
+	existingCteInfo.cursorIdx = cteCursorIdx;
+	existingCteInfo.schema = cteSchema;
+	// compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: cteCursorIdx, schema: cteSchema }); // OLD
 	// tableSchemas and ephemeralTableInstances are already updated by createEphemeralSchemaHelper
 
 	// Open the ephemeral table for writing using its cursor index.
@@ -97,7 +111,9 @@ function _compileMaterializedCte(compiler: Compiler, cte: AST.CommonTableExpr): 
 	console.log(`Finished compiling materialized CTE: ${cteName}`);
 }
 
-function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): void {
+// Updated signature
+function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
+	const cte = cteInfo.node;
 	const cteName = cte.name.toLowerCase();
 	if (cte.query.type !== 'select' || (!cte.query.union && !cte.query.unionAll)) {
 		throw new SqliteError(`Recursive CTE '${cteName}' must use UNION or UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
@@ -158,8 +174,16 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 		_restoreCompilerState(compiler, savedStateSchema);
 	}
 
+	// Update the existing CteInfo in the map with materialization details
 	// Add Result CTE to map *before* compiling terms
-	compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: resCursor, schema: cteSchema });
+	const existingCteInfo = compiler.cteMap.get(cteName);
+	if (!existingCteInfo) {
+		// This shouldn't happen if called from compileWithClause
+		throw new SqliteError(`Internal: CteInfo not found for '${cteName}' during recursive materialization.`, StatusCode.INTERNAL);
+	}
+	existingCteInfo.cursorIdx = resCursor; // Result table cursor
+	existingCteInfo.schema = cteSchema;
+	// compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: resCursor, schema: cteSchema }); // OLD
 	// tableSchemas and ephemeralTableInstances updated by helpers
 
 	// Open Result and Queue tables for writing
@@ -187,7 +211,15 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 	const loopSavedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'cteMap', 'ephemeralTableInstances', 'cursorPlanningInfo']);
 	try {
 		// Temporarily map the CTE name to the QUEUE table for the recursive step
-		compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: queueCursor, schema: queueSchema });
+		// Create a *temporary* CteInfo for the recursive step referencing the queue
+		const recursiveStepCteInfo: CteInfo = {
+			strategy: 'materialized', // Still materialized conceptually for this step
+			node: cte, // Same AST node
+			cursorIdx: queueCursor,
+			schema: queueSchema
+		};
+		compiler.cteMap.set(cteName, recursiveStepCteInfo);
+		// compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: queueCursor, schema: queueSchema }); // OLD
 		compiler.tableAliases.set(cteName, queueCursor); // Allow direct reference
 		// compiler.tableSchemas already set for queueCursor by helper
 		console.log(`REC CTE '${cteName}': Mapping self-reference to QUEUE cursor ${queueCursor}`);
@@ -213,6 +245,7 @@ function _compileRecursiveCte(compiler: Compiler, cte: AST.CommonTableExpr): voi
 	// compiler.ephemeralTableInstances.delete(queueCursor); // Now handled by closeCursorsUsedBySelectHelper
 
 	// The Result Table (resCursor) remains open and is registered in cteMap
+	// (The restoreCompilerState in the finally block above put the *original* CteInfo back in the map)
 	console.log(`Finished compiling recursive CTE: ${cteName}`);
 }
 
@@ -397,27 +430,10 @@ function _restoreCompilerState(compiler: Compiler, savedState: Partial<Compiler>
 }
 
 // --- Helper Function (can go in helpers.ts later) ---
+/* MOVED to compiler.ts
 function isRecursiveCteQuery(compiler: Compiler, cte: AST.CommonTableExpr, cteName: string): boolean {
 	if (cte.query.type !== 'select') return false;
-	const sel = cte.query as AST.SelectStmt;
-	// Check the recursive part of a UNION/UNION ALL query
-	if (sel.union) {
-		const checkClause = (clause: AST.FromClause): boolean => {
-			if (!clause) return false;
-			if (clause.type === 'table') {
-				// Need to check against CTE name, not compiler.tableAliases during initial check
-				if (clause.table.name.toLowerCase() === cteName.toLowerCase()) {
-					return true;
-				}
-			} else if (clause.type === 'join') {
-				return checkClause(clause.left) || checkClause(clause.right);
-			}
-			// Add other FROM clause types if needed (e.g., subqueries, functions)
-			// Important: Subqueries need careful scope checking here. Assume non-recursive for now.
-			return false;
-		};
-		// Check if the recursive select statement's FROM clause references the CTE
-		return sel.union.from?.some(checkClause) ?? false;
-	}
+    // ... implementation ...
 	return false;
 }
+*/

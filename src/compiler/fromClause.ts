@@ -3,11 +3,13 @@ import { Opcode } from '../vdbe/opcodes.js';
 import { SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import type { Compiler } from './compiler.js';
+import type { TableSchema } from '../schema/table.js';
 import * as AST from '../parser/ast.js';
 import type { P4Vtab } from '../vdbe/instruction.js';
 import type { BaseModuleConfig } from '../vtab/module.js';
 import type { SqlValue } from '../common/types.js';
 import type { P4OpenTvf } from '../vdbe/instruction.js';
+import { compileCommonTableExpression } from './cte.js'; // Import for on-demand compilation
 
 // Local configuration interfaces for virtual tables
 interface MemoryTableConfig extends BaseModuleConfig {
@@ -47,23 +49,49 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			// Check if this is a CTE reference
 			const cteInfo = compiler.cteMap.get(cteNameLower);
 			if (cteInfo) {
-				if (cteInfo.type === 'materialized') {
-					const cursor = cteInfo.cursorIdx;
-					openedCursors.push(cursor);
-					const tableSchema = cteInfo.schema;
-					compiler.tableSchemas.set(cursor, tableSchema);
+				// --- Handle CTE Reference --- //
+				let resolvedCursor: number | undefined;
+				let resolvedSchema: TableSchema | undefined;
 
-					if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-						throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+				if (cteInfo.strategy === 'materialized') {
+					// Already materialized (or recursive), use existing info
+					resolvedCursor = cteInfo.cursorIdx;
+					resolvedSchema = cteInfo.schema;
+					console.log(`FROM: Using PRE-materialized CTE '${cteNameLower}' (cursor ${resolvedCursor}) for alias '${lookupName}'`);
+				} else if (cteInfo.strategy === 'view') {
+					// View strategy: Materialize on first use
+					if (!cteInfo.isCompiled) {
+						console.log(`FROM: Materializing VIEW CTE '${cteNameLower}' on first reference...`);
+						// Determine if the original context was recursive (should always be false here if strategy is 'view')
+						const isRecursiveContext = false; // View strategy implies not recursive
+						// Compile it now (this will populate cursorIdx and schema in cteInfo)
+						compileCommonTableExpression(compiler, cteInfo, isRecursiveContext);
+						cteInfo.isCompiled = true;
+						console.log(`FROM: Finished materializing VIEW CTE '${cteNameLower}' (cursor ${cteInfo.cursorIdx})`);
+					} else {
+						console.log(`FROM: Using ALREADY-materialized VIEW CTE '${cteNameLower}' (cursor ${cteInfo.cursorIdx}) for alias '${lookupName}'`);
 					}
-
-					compiler.tableAliases.set(lookupName, cursor);
-					currentLevelAliases.set(lookupName, cursor);
-					console.log(`FROM: Using materialized CTE '${cteNameLower}' with cursor ${cursor} for alias '${lookupName}'`);
-				} else {
-					throw new SqliteError(`Unsupported CTE type '${(cteInfo as any).type}' found for ${cteNameLower}`, StatusCode.INTERNAL);
+					resolvedCursor = cteInfo.cursorIdx;
+					resolvedSchema = cteInfo.schema;
 				}
+
+				if (resolvedCursor === undefined || resolvedSchema === undefined) {
+					throw new SqliteError(`Internal: Failed to resolve cursor/schema for CTE '${cteNameLower}' with strategy '${cteInfo.strategy}'`, StatusCode.INTERNAL);
+				}
+
+				// Use the resolved cursor and schema
+				openedCursors.push(resolvedCursor);
+				compiler.tableSchemas.set(resolvedCursor, resolvedSchema);
+
+				if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
+					throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+				}
+
+				compiler.tableAliases.set(lookupName, resolvedCursor);
+				currentLevelAliases.set(lookupName, resolvedCursor);
+				// No need to emit OpenRead, as the CTE compilation (now or earlier) opened it
 				return;
+				// --- End Handle CTE Reference --- //
 			}
 
 			// Regular table/view processing

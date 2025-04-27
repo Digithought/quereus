@@ -1,8 +1,3 @@
-/**
- * SQL Compiler for SQLiter
- *
- * Translates SQL AST into VDBE instructions
- */
 import { StatusCode, type SqlValue } from '../common/types.js';
 import { SqliteError, ParseError } from '../common/errors.js';
 import { Opcode } from '../vdbe/opcodes.js';
@@ -29,6 +24,7 @@ import type { ArgumentMap } from './handlers.js';
 import { compileCommonTableExpression } from './cte.js';
 import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
+import { traverseAst, type AstVisitorCallbacks } from '../parser/visitor.js';
 
 // --- Result/CTE Info types --- //
 export interface ColumnResultInfo {
@@ -45,11 +41,17 @@ export interface SubroutineInfo {
 	correlation: SubqueryCorrelationResult;
 	regSubqueryHasNullOutput?: number;
 }
+
+export type CteStrategy = 'materialized' | 'view';
 export interface CteInfo {
-	type: 'materialized';
-	cursorIdx: number;
-	schema: TableSchema;
+	strategy: CteStrategy;
+	node: AST.CommonTableExpr;
+	// Fields specific to 'materialized' strategy:
+	cursorIdx?: number;
+	schema?: TableSchema;
+	isCompiled?: boolean; // Flag for on-demand compilation of 'view' strategy
 }
+
 export interface CursorPlanningResult {
 	idxNum: number;
 	idxStr: string | null;
@@ -84,6 +86,7 @@ export class Compiler {
 	public ephemeralTableInstances: Map<number, MemoryTable> = new Map();
 	public resultColumns: { name: string, table?: string, expr?: AST.Expression }[] = [];
 	public cursorPlanningInfo: Map<number, CursorPlanningResult> = new Map();
+	public cteReferenceCounts: Map<string, number> = new Map(); // Map lower-case CTE name -> reference count
 	// --- Subroutine State ---
 	private subroutineCode: VdbeInstruction[] = [];
 	public subroutineDefs: Map<AST.SelectStmt, SubroutineInfo> = new Map();
@@ -123,6 +126,9 @@ export class Compiler {
 			this.ephemeralTableInstances = new Map();
 			this.resultColumns = [];
 			this.cursorPlanningInfo = new Map();
+			// --- ADDED: Reset CTE Reference Count --- //
+			this.cteReferenceCounts = new Map();
+			// ---------------------------------------
 			this.subroutineCode = [];
 			this.subroutineDefs = new Map();
 			this.subroutineDepth = 0;
@@ -137,14 +143,27 @@ export class Compiler {
 			// Add initial Init instruction
 			this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
 
-			// Compile WITH clause first if present
+			// --- Analyze CTE references before compiling WITH --- //
 			let withClause: WithClause | undefined;
 			if ('withClause' in ast && (ast as any).withClause !== undefined) {
 				withClause = (ast as any).withClause;
+				if (withClause) {
+					// Initialize counts for all defined CTEs
+					for (const cte of withClause.ctes) {
+						this.cteReferenceCounts.set(cte.name.toLowerCase(), 0);
+					}
+					// Perform the analysis
+					this._analyzeCteReferences(ast, withClause);
+				}
+			}
+			// -------------------------------------------------------- //
+
+			// Compile WITH clause (Now uses the counts)
+			if (withClause) {
 				this.compileWithClause(withClause);
 			}
 
-			// Compile by node type
+			// Compile main statement (references should be handled by compileFromCore now)
 			switch (ast.type) {
 				case 'select':
 					this.compileSelect(ast as AST.SelectStmt);
@@ -371,12 +390,110 @@ export class Compiler {
 			if (this.cteMap.has(cteNameLower)) {
 				throw new SqliteError(`Duplicate CTE name: '${cte.name}'`, StatusCode.ERROR);
 			}
-			compileCommonTableExpression(this, cte, withClause.recursive);
+
+			// --- Determine CTE Strategy --- //
+			let strategy: CteStrategy = 'view'; // Default to view
+			const isRecursive = withClause.recursive && this.isRecursiveCteQuery(cte, cteNameLower);
+
+			if (isRecursive) {
+				strategy = 'materialized'; // Recursive MUST be materialized
+				console.log(`CTE '${cteNameLower}': Determined Strategy=materialized (recursive)`);
+			} else if (cte.materializationHint === 'materialized') {
+				strategy = 'materialized';
+				console.log(`CTE '${cteNameLower}': Determined Strategy=materialized (hint)`);
+			} else if (cte.materializationHint === 'not_materialized') {
+				strategy = 'view'; // User explicitly requested view
+				console.log(`CTE '${cteNameLower}': Determined Strategy=view (hint)`);
+			} else {
+				// Default logic: materialize if referenced more than once
+				const refCount = this.cteReferenceCounts.get(cteNameLower) ?? 0;
+				if (refCount > 1) {
+					strategy = 'materialized';
+					console.log(`CTE '${cteNameLower}': Determined Strategy=materialized (refCount=${refCount})`);
+				} else {
+					strategy = 'view';
+					console.log(`CTE '${cteNameLower}': Determined Strategy=view (refCount=${refCount})`);
+				}
+			}
+
+			// Store the decision and the AST node reference
+			const cteInfo: CteInfo = { strategy, node: cte };
+			this.cteMap.set(cteNameLower, cteInfo);
+
+			// --- Compile based on strategy --- //
+			if (strategy === 'materialized') {
+				// Call the existing compilation function (which needs slight modification)
+				compileCommonTableExpression(this, cteInfo, isRecursive);
+			} else {
+				// View strategy: Do nothing here, compilation happens on reference in FROM clause
+				console.log(`CTE '${cteNameLower}': Deferred compilation (view strategy)`);
+			}
 		}
-		console.log("Finished compiling WITH clause.");
+		console.log("Finished preliminary compilation of WITH clause.");
 	}
 
 	// Pragma handling
 	compilePragma(stmt: AST.PragmaStmt): void { DdlCompiler.compilePragmaStatement(this, stmt); }
+
+	// --- Helper for CTE Reference Counting (using generic visitor) --- //
+	private _analyzeCteReferences(node: AST.AstNode, withClause: AST.WithClause): void {
+		const definedCteNames = new Set(withClause.ctes.map(c => c.name.toLowerCase()));
+
+		// Define the specific callback for visiting table sources
+		const callbacks: AstVisitorCallbacks = {
+			visitTableSource: (tableSourceNode: AST.TableSource) => {
+				const tableNameLower = tableSourceNode.table.name.toLowerCase();
+				if (definedCteNames.has(tableNameLower)) {
+					const currentCount = this.cteReferenceCounts.get(tableNameLower) ?? 0;
+					this.cteReferenceCounts.set(tableNameLower, currentCount + 1);
+				}
+			}
+		};
+
+		// Start traversal from the main statement
+		traverseAst(node, callbacks);
+
+		// Also traverse the queries within each CTE definition itself
+		for (const cte of withClause.ctes) {
+			traverseAst(cte.query, callbacks);
+		}
+	}
+	// ---------------------------------------------- //
+
+	// --- ADDED: Moved isRecursiveCteQuery from cte.ts --- //
+	/**
+	 * Checks if a CTE's query references itself, indicating recursion.
+	 * This check must happen *before* compilation modifies alias maps.
+	 */
+	private isRecursiveCteQuery(cte: AST.CommonTableExpr, cteNameLower: string): boolean {
+		if (cte.query.type !== 'select') return false;
+		const sel = cte.query as AST.SelectStmt;
+		// Check the recursive part of a UNION/UNION ALL query
+		if (sel.union) {
+			const checkClause = (clause: AST.FromClause | undefined): boolean => {
+				if (!clause) return false;
+				if (clause.type === 'table') {
+					// Check against the CTE name itself during this analysis phase
+					if (clause.table.name.toLowerCase() === cteNameLower) {
+						return true;
+					}
+				} else if (clause.type === 'join') {
+					return checkClause(clause.left) || checkClause(clause.right);
+				} else if (clause.type === 'subquerySource') {
+					// Recursively check inside subqueries in FROM
+					// This requires a visitor pattern similar to _analyzeCteReferences
+					// For now, assume subqueries don't directly cause recursion here for simplicity,
+					// but a robust implementation would need full traversal.
+					// return containsCteReference(clause.subquery, cteNameLower);
+				}
+				// Add other FROM clause types if needed (e.g., functions)
+				return false;
+			};
+			// Check if the recursive select statement's FROM clause references the CTE
+			return sel.union.from?.some(checkClause) ?? false;
+		}
+		return false;
+	}
+	// -------------------------------------------------- //
 }
 

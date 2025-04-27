@@ -389,6 +389,7 @@ export interface CommonTableExpr extends AstNode {
 	name: string;
 	columns?: string[];
 	query: SelectStmt | InsertStmt | UpdateStmt | DeleteStmt; // CTE body
+	materializationHint?: 'materialized' | 'not_materialized';
 }
 
 /**

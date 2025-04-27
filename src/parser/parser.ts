@@ -161,7 +161,7 @@ export class Parser {
 	private commonTableExpression(): AST.CommonTableExpr {
 		const startToken = this.peek(); // Peek before consuming name
 		const name = this.consumeIdentifier("Expected CTE name.");
-		let endToken: Token = this.previous(); // End token initially is the name
+		let endToken = this.previous(); // End token initially is the name
 
 		let columns: string[] | undefined;
 		if (this.match(TokenType.LPAREN)) {
@@ -175,6 +175,15 @@ export class Parser {
 		}
 
 		this.consume(TokenType.AS, "Expected 'AS' after CTE name.");
+
+		let materializationHint: AST.CommonTableExpr['materializationHint'];
+		if (this.matchKeyword('MATERIALIZED')) {
+			materializationHint = 'materialized';
+		} else if (this.matchKeyword('NOT')) {
+			this.consumeKeyword('MATERIALIZED', "Expected 'MATERIALIZED' after 'NOT'.");
+			materializationHint = 'not_materialized';
+		}
+
 		this.consume(TokenType.LPAREN, "Expected '(' before CTE query.");
 
 		// Parse the CTE query (can be SELECT, VALUES (via SELECT), INSERT, UPDATE, DELETE)
@@ -196,7 +205,7 @@ export class Parser {
 
 		endToken = this.consume(TokenType.RPAREN, "Expected ')' after CTE query."); // Capture ')' as end token
 
-		return { type: 'commonTableExpr', name, columns, query, loc: _createLoc(startToken, endToken) };
+		return { type: 'commonTableExpr', name, columns, query, materializationHint, loc: _createLoc(startToken, endToken) };
 	}
 
 	/**
