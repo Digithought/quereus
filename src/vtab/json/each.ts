@@ -12,24 +12,25 @@ import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 
-// --- Define Configuration Interface ---
+/**
+ * Configuration interface for JSON virtual tables
+ */
 interface JsonConfig extends BaseModuleConfig {
 	jsonSource: SqlValue;
-	runtimeArgs?: ReadonlyArray<SqlValue>; // For future use if needed
+	runtimeArgs?: ReadonlyArray<SqlValue>;
 	rootPath?: SqlValue;
 }
-// ------------------------------------
 
-// --- Constants for json_each Schema ---
-const JSON_EACH_SCHEMA: ReadonlyArray<{ name: string, affinity: SqlDataType }> = Object.freeze([
-	{ name: 'key', affinity: SqlDataType.INTEGER | SqlDataType.TEXT }, // INTEGER for array index, TEXT for object key
-	{ name: 'value', affinity: SqlDataType.TEXT }, // Can be any JSON value, TEXT is safest representation
-	{ name: 'type', affinity: SqlDataType.TEXT }, // 'object', 'array', 'string', 'integer', 'real', 'true', 'false', 'null'
-	{ name: 'atom', affinity: SqlDataType.TEXT }, // Fix 1: Use TEXT affinity for atoms
-	{ name: 'id', affinity: SqlDataType.INTEGER }, // Unique integer ID for each element
-	{ name: 'parent', affinity: SqlDataType.INTEGER }, // ID of the parent element (0 for root elements)
-	{ name: 'fullkey', affinity: SqlDataType.TEXT }, // Full path to the element
-	{ name: 'path', affinity: SqlDataType.TEXT }, // Path relative to the starting point
+// Schema definition for json_each table
+const JSON_EACH_SCHEMA = Object.freeze([
+	{ name: 'key', affinity: SqlDataType.INTEGER | SqlDataType.TEXT },
+	{ name: 'value', affinity: SqlDataType.TEXT },
+	{ name: 'type', affinity: SqlDataType.TEXT },
+	{ name: 'atom', affinity: SqlDataType.TEXT },
+	{ name: 'id', affinity: SqlDataType.INTEGER },
+	{ name: 'parent', affinity: SqlDataType.INTEGER },
+	{ name: 'fullkey', affinity: SqlDataType.TEXT },
+	{ name: 'path', affinity: SqlDataType.TEXT },
 ]);
 
 const JSON_EACH_COLUMNS = Object.freeze(
@@ -40,8 +41,9 @@ const JSON_EACH_COLUMNS = Object.freeze(
 );
 const JSON_EACH_COLUMN_MAP = Object.freeze(buildColumnIndexMap(JSON_EACH_COLUMNS));
 
-// --- Table Instance --- //
-
+/**
+ * Virtual table implementation for json_each function
+ */
 class JsonEachTable extends VirtualTable {
 	public readonly parsedJson: any;
 	public readonly rootPath: string | null;
@@ -63,14 +65,14 @@ class JsonEachTable extends VirtualTable {
 			throw new SqliteError(`Invalid JSON provided to ${tableName}`, StatusCode.ERROR);
 		}
 
-		// Define the fixed schema for this instance
+		// Define fixed schema
 		this.tableSchema = Object.freeze({
 			name: tableName,
 			schemaName: schemaName,
 			checkConstraints: [],
 			columns: JSON_EACH_COLUMNS,
 			columnIndexMap: JSON_EACH_COLUMN_MAP,
-			primaryKeyDefinition: [], // No explicit PK
+			primaryKeyDefinition: [],
 			vtabModule: module,
 			vtabInstance: this,
 			vtabModuleName: 'json_each',
@@ -80,55 +82,56 @@ class JsonEachTable extends VirtualTable {
 		});
 	}
 
-	// --- Implement methods from VirtualTable --- //
-
 	async xOpen(): Promise<VirtualTableCursor<this, any>> {
-		// Simply instantiate the cursor
 		return new JsonEachCursor(this) as unknown as VirtualTableCursor<this, any>;
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
-		// json_each doesn't really use indexes. It just iterates.
-		// We could potentially check if a root path argument was provided via constraints,
-		// but the filter logic already handles the root path from the table instance.
-		indexInfo.estimatedCost = 100000; // Arbitrary large cost
-		indexInfo.idxNum = 0; // Plan 0: Full iteration
+		// json_each doesn't use indexes, it just iterates
+		indexInfo.estimatedCost = 100000;
+		indexInfo.idxNum = 0;
 		indexInfo.idxStr = null;
-		indexInfo.orderByConsumed = false; // Output order is not guaranteed
-		// Indicate no constraints are used by the plan itself
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		indexInfo.orderByConsumed = false;
+
+		// No constraints are used
+		indexInfo.aConstraintUsage = Array.from(
+			{ length: indexInfo.nConstraint },
+			() => ({ argvIndex: 0, omit: false })
+		);
 		return StatusCode.OK;
 	}
 
-	// Read-only methods remain
 	async xUpdate(): Promise<{ rowid?: bigint }> {
 		throw new SqliteError("json_each table is read-only", StatusCode.READONLY);
 	}
 
-	async xBegin() { return Promise.resolve(); } // No-op is fine
-	async xSync() { return Promise.resolve(); } // No-op is fine
-	async xCommit() { return Promise.resolve(); } // No-op is fine
-	async xRollback() { return Promise.resolve(); } // No-op is fine
-	async xRename() { throw new SqliteError("Cannot rename json_each table", StatusCode.ERROR); }
+	async xBegin() { return Promise.resolve(); }
+	async xSync() { return Promise.resolve(); }
+	async xCommit() { return Promise.resolve(); }
+	async xRollback() { return Promise.resolve(); }
+	async xRename() {
+		throw new SqliteError("Cannot rename json_each table", StatusCode.ERROR);
+	}
 
-	// Disconnect/Destroy are no-ops for this ephemeral table
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
-
-	// ----------------------------------------- //
 }
 
-// --- Cursor Instance --- //
-
+/**
+ * Represents the state of an iteration through the JSON structure
+ */
 interface IterationState {
 	value: any;
 	parentPath: string;
 	parentKey: string | number | null;
 	parentId: number;
-	currentIndex: number; // Index if iterating an array
-	keys?: string[]; // Keys if iterating an object
+	currentIndex: number;
+	keys?: string[];
 }
 
+/**
+ * Cursor implementation for json_each table
+ */
 class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
@@ -136,10 +139,12 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 
 	constructor(table: JsonEachTable) {
 		super(table);
-		this._isEof = true; // Start as EOF
+		this._isEof = true;
 	}
 
-	/** Resets the cursor state. */
+	/**
+	 * Resets the cursor state
+	 */
 	reset(): void {
 		this.stack = [];
 		this.currentRow = null;
@@ -147,7 +152,9 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 		this.elementIdCounter = 0;
 	}
 
-	/** Internal: Starts the iteration process for filter(). */
+	/**
+	 * Initializes iteration based on the JSON start node and optional root path
+	 */
 	private startIteration(startNode: any, rootPath: string | null): void {
 		this.reset();
 		const initialPath = rootPath ?? '$';
@@ -155,10 +162,10 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 			// Push the root node to start
 			this.stack.push({
 				value: startNode,
-				parentPath: '', // Root has no parent path segment
-				parentKey: null, // Root has no key/index relative to parent
+				parentPath: '',
+				parentKey: null,
 				parentId: 0,
-				currentIndex: -1, // Indicates not currently iterating array/object keys
+				currentIndex: -1,
 			});
 			this._isEof = false;
 			this.advanceToNextRow(); // Position on the first element
@@ -167,7 +174,10 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 		}
 	}
 
-	/** Internal: Advances the iterator stack and sets currentRow. */
+	/**
+	 * Advances to the next row by moving through the JSON structure
+	 * The iterator processes each node and then places all its children on the stack
+	 */
 	private advanceToNextRow(): void {
 		if (this.stack.length === 0) {
 			this._isEof = true;
@@ -178,9 +188,9 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 		const currentState = this.stack[this.stack.length - 1];
 		const currentValue = currentState.value;
 
-		// Determine the key/index for the *current* node based on parent state
+		// Determine key/index for the current node based on parent state
 		const key = currentState.parentKey;
-		const id = this.elementIdCounter++; // Generate ID for the current element
+		const id = this.elementIdCounter++;
 		const path = currentState.parentPath;
 		const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
 		const type = getJsonType(currentValue);
@@ -198,7 +208,7 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 			_originalValue: currentValue, // Store original for potential stringification later
 		};
 
-		// Pop the current state as it's now processed (yielded)
+		// Pop the current state as it's now processed
 		this.stack.pop();
 
 		// If the current node is an array or object, push its children (in reverse order for stack processing)
@@ -206,36 +216,38 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 			for (let i = currentValue.length - 1; i >= 0; i--) {
 				this.stack.push({
 					value: currentValue[i],
-					parentPath: fullkey, // Path to this array
+					parentPath: fullkey,
 					parentKey: i,
-					parentId: id, // Use the ID generated for the current row
-					currentIndex: -1, // Reset for the child
+					parentId: id,
+					currentIndex: -1,
 				});
 			}
 		} else if (typeof currentValue === 'object' && currentValue !== null) {
-			const keys = Object.keys(currentValue).sort().reverse(); // Process keys in reverse for stack
+			const keys = Object.keys(currentValue).sort().reverse();
 			for (const objKey of keys) {
 				this.stack.push({
 					value: currentValue[objKey],
-					parentPath: fullkey, // Path to this object
+					parentPath: fullkey,
 					parentKey: objKey,
-					parentId: id, // Use the ID generated for the current row
+					parentId: id,
 					currentIndex: -1,
 				});
 			}
 		}
 
-		// Check if stack became empty after popping and pushing children
-		if (this.stack.length === 0) {
-			// This means the row we just set in `this.currentRow` was the absolute last one.
-			// The *next* call to `next()` will correctly set EOF.
-		}
-		this._isEof = false; // We successfully advanced to a row
+		this._isEof = false;
 	}
 
-	// --- Implement Abstract Methods --- //
-
-	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
+	/**
+	 * Initializes cursor for a new query
+	 * For json_each, we don't use the query constraints - we iterate the entire JSON structure
+	 */
+	async filter(
+		idxNum: number,
+		idxStr: string | null,
+		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
+		args: ReadonlyArray<SqlValue>
+	): Promise<void> {
 		const rootPath = this.table.rootPath;
 		let startNode = this.table.parsedJson;
 
@@ -247,14 +259,20 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 		this.startIteration(startNode, rootPath);
 	}
 
+	/**
+	 * Advances the cursor to the next row in the result set
+	 */
 	async next(): Promise<void> {
-		if (this._isEof) return; // Don't advance if already EOF
+		if (this._isEof) return;
 		this.advanceToNextRow();
 	}
 
+	/**
+	 * Returns the value for the specified column index of the current row
+	 */
 	column(context: SqliteContext, index: number): number {
 		if (!this.currentRow) {
-			context.resultNull(); // Should not happen if VDBE checks eof()
+			context.resultNull();
 			return StatusCode.OK;
 		}
 		const colName = JSON_EACH_COLUMNS[index]?.name;
@@ -275,6 +293,9 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 		return StatusCode.OK;
 	}
 
+	/**
+	 * Returns the rowid for the current row
+	 */
 	async rowid(): Promise<bigint> {
 		if (!this.currentRow) {
 			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
@@ -283,46 +304,65 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 		if (typeof id === 'number') {
 			return BigInt(id);
 		}
-		// Should have an ID if currentRow is set
 		throw new SqliteError("Cannot get rowid for json_each cursor (missing ID)", StatusCode.INTERNAL);
 	}
 
+	/**
+	 * Closes this cursor and releases resources
+	 */
 	async close(): Promise<void> {
-		this.reset(); // Clear stack and state
+		this.reset();
 	}
-
-	// seekRelative/seekToRowid not supported, rely on base class default exception
 }
 
-// --- Module Implementation --- //
-
+/**
+ * Module implementation for json_each virtual table function
+ */
 export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor, JsonConfig> {
-	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonEachTable {
-		// For TVFs like json_each, xConnect essentially creates the instance based on runtime arguments
+	xConnect(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: JsonConfig
+	): JsonEachTable {
 		const table = new JsonEachTable(db, this, schemaName, tableName, options.jsonSource, options.rootPath);
 		return table;
 	}
 
-	// xCreate is same as xConnect for ephemeral table functions like this
-	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonEachTable {
+	xCreate(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: JsonConfig
+	): JsonEachTable {
 		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
 	}
 
-	// Add missing xBestIndex implementation to the module
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		// json_each doesn't really use indexes. It just iterates.
-		indexInfo.estimatedCost = 100000; // Arbitrary large cost
-		indexInfo.idxNum = 0; // Plan 0: Full iteration
+		indexInfo.estimatedCost = 100000;
+		indexInfo.idxNum = 0;
 		indexInfo.idxStr = null;
-		indexInfo.orderByConsumed = false; // Output order is not guaranteed
-		// Indicate no constraints are used by the plan itself
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		indexInfo.orderByConsumed = false;
+
+		// No constraints are used
+		indexInfo.aConstraintUsage = Array.from(
+			{ length: indexInfo.nConstraint },
+			() => ({ argvIndex: 0, omit: false })
+		);
 		return StatusCode.OK;
 	}
 
-	// Add missing xDestroy implementation to the module (no-op)
-	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
-		// json_each is ephemeral, no persistent state to destroy at the module level
+	async xDestroy(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string
+	): Promise<void> {
 		return Promise.resolve();
 	}
 }

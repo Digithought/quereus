@@ -27,16 +27,17 @@ export interface VirtualTableModule<
 > {
 
 	/**
-	 * Create the persistent definition of a virtual table. Called by CREATE VIRTUAL TABLE.
-	 * This defines the schema and potentially initializes storage.
-	 * @param db The database connection.
-	 * @param pAux Client data passed during module registration.
-	 * @param moduleName The name the module was registered with.
-	 * @param schemaName The name of the database schema (e.g., 'main', 'temp').
-	 * @param tableName The name of the virtual table being created.
-	 * @param options Module-specific configuration options derived from the USING clause arguments.
-	 * @returns The new VirtualTable instance (representing the schema definition).
-	 * @throws SqliteError on failure.
+	 * Creates the persistent definition of a virtual table.
+	 * Called by CREATE VIRTUAL TABLE to define schema and initialize storage.
+	 *
+	 * @param db The database connection
+	 * @param pAux Client data passed during module registration
+	 * @param moduleName The name the module was registered with
+	 * @param schemaName The name of the database schema (e.g., 'main', 'temp')
+	 * @param tableName The name of the virtual table being created
+	 * @param options Module-specific configuration options from the USING clause
+	 * @returns The new VirtualTable instance
+	 * @throws SqliteError on failure
 	 */
 	xCreate(
 		db: Database,
@@ -45,20 +46,20 @@ export interface VirtualTableModule<
 		schemaName: string,
 		tableName: string,
 		options: TConfig
-	): TTable; // Returns the created table instance/definition
+	): TTable;
 
 	/**
-	 * Connect to an existing virtual table definition. Called when the schema is loaded
-	 * or a connection needs to interact with the table.
-	 * This returns a connection-specific instance.
-	 * @param db The database connection.
-	 * @param pAux Client data passed during module registration.
-	 * @param moduleName The name the module was registered with.
-	 * @param schemaName The name of the database schema.
-	 * @param tableName The name of the virtual table being connected to.
-	 * @param options Module-specific configuration options derived from the original CREATE VIRTUAL TABLE arguments.
-	 * @returns The connection-specific VirtualTable instance.
-	 * @throws SqliteError on failure.
+	 * Connects to an existing virtual table definition.
+	 * Called when the schema is loaded or a connection needs to interact with the table.
+	 *
+	 * @param db The database connection
+	 * @param pAux Client data passed during module registration
+	 * @param moduleName The name the module was registered with
+	 * @param schemaName The name of the database schema
+	 * @param tableName The name of the virtual table to connect to
+	 * @param options Module-specific configuration options from the original CREATE VIRTUAL TABLE
+	 * @returns The connection-specific VirtualTable instance
+	 * @throws SqliteError on failure
 	 */
 	xConnect(
 		db: Database,
@@ -67,29 +68,29 @@ export interface VirtualTableModule<
 		schemaName: string,
 		tableName: string,
 		options: TConfig
-	): TTable; // Returns the connection-specific table instance
+	): TTable;
 
 	/**
-	 * Determine the best query plan (index) for a given set of constraints and orderings.
+	 * Determines the best query plan for a given set of constraints and orderings.
 	 * This method MUST be synchronous for performance. It modifies the passed IndexInfo object.
-	 * Called by the compiler during query planning.
-	 * @param db The database connection (for context, potentially accessing schema).
-	 * @param tableInfo The schema information for the specific table instance being planned.
-	 * @param indexInfo Input constraints/orderings and output plan details.
-	 * @returns StatusCode.OK on success, or an error code.
+	 *
+	 * @param db The database connection
+	 * @param tableInfo The schema information for the table being planned
+	 * @param indexInfo Input constraints/orderings and output plan details
+	 * @returns StatusCode.OK on success, or an error code
 	 */
-	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number; // Sync
+	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number;
 
 	/**
-	 * Destroy the underlying persistent representation of the virtual table, if applicable.
+	 * Destroys the underlying persistent representation of the virtual table.
 	 * Called by DROP TABLE.
-	 * @param db The database connection.
-	 * @param pAux Client data passed during module registration.
-	 * @param moduleName The name the module was registered with.
-	 * @param schemaName The name of the database schema.
-	 * @param tableName The name of the virtual table being destroyed.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
+	 *
+	 * @param db The database connection
+	 * @param pAux Client data passed during module registration
+	 * @param moduleName The name the module was registered with
+	 * @param schemaName The name of the database schema
+	 * @param tableName The name of the virtual table being destroyed
+	 * @throws SqliteError on failure
 	 */
 	xDestroy(
 		db: Database,
@@ -99,15 +100,18 @@ export interface VirtualTableModule<
 		tableName: string
 	): Promise<void>;
 
-	/** Optional: Check for shadow table name conflicts (this is usually static per module). */
-	xShadowName?(name: string): boolean; // Sync
+	/**
+	 * Checks for shadow table name conflicts
+	 * @param name The name to check
+	 * @returns true if the name would conflict
+	 */
+	xShadowName?(name: string): boolean;
 }
 
-// --- Add Schema Change Info Type --- //
-// Keep this here as it's part of the interface contract, even if xAlterSchema moved
-/** Defines the structure for schema change information passed to xAlterSchema */
+/**
+ * Defines the structure for schema change information passed to xAlterSchema
+ */
 export type SchemaChangeInfo =
 	| { type: 'addColumn'; columnDef: ColumnDef }
 	| { type: 'dropColumn'; columnName: string }
 	| { type: 'renameColumn'; oldName: string; newName: string };
-// ----------------------------------- //

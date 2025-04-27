@@ -11,88 +11,72 @@ import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 
-// Define the structure of rows returned by sqlite_schema
+/**
+ * Structure of rows returned by sqlite_schema
+ */
 interface SchemaRow {
 	type: 'table' | 'index' | 'view' | 'trigger' | 'function' | 'module';
 	name: string;
 	tbl_name: string;
 	rootpage: number;
 	sql: string | null;
-	_rowid_: bigint; // Internal rowid for cursor tracking
+	_rowid_: bigint;
 }
-
-// --- Simple helper to generate function signature ---
-function stringifyCreateFunction(func: FunctionSchema): string {
-	// Basic representation, could be enhanced
-	return `FUNCTION ${func.name}(${Array(func.numArgs).fill('?').join(', ')})`;
-}
-// --------------------------------------------------
 
 /**
- * Virtual Table instance for sqlite_schema. Doesn't hold much state itself.
+ * Generates a function signature string for display
+ */
+function stringifyCreateFunction(func: FunctionSchema): string {
+	return `FUNCTION ${func.name}(${Array(func.numArgs).fill('?').join(', ')})`;
+}
+
+/**
+ * Virtual Table implementation for sqlite_schema
  */
 class SchemaTable extends VirtualTable {
-	// --- Implement methods from VirtualTable ---
-
 	async xOpen(): Promise<VirtualTableCursor<this, any>> {
-		// Just create and return the cursor instance
 		return new SchemaTableCursor(this) as unknown as VirtualTableCursor<this, any>;
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
-		// Always a full table scan. No constraints or ordering supported.
-		indexInfo.idxNum = 0; // Plan 0: Full scan
-		indexInfo.estimatedCost = 1000.0; // Arbitrary high cost for full scan
-		indexInfo.estimatedRows = BigInt(100); // Estimate ~100 schema objects
-		indexInfo.orderByConsumed = false; // No ordering provided
+		// Always a full table scan
+		indexInfo.idxNum = 0;
+		indexInfo.estimatedCost = 1000.0;
+		indexInfo.estimatedRows = BigInt(100);
+		indexInfo.orderByConsumed = false;
 		indexInfo.idxFlags = 0;
-		// Indicate no constraints are used
 		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
 		indexInfo.idxStr = "fullscan";
 		return StatusCode.OK;
 	}
 
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
-		// This table is read-only
 		throw new SqliteError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
 	}
 
-	// --- Optional transaction methods ---
-	// These are likely no-ops as the schema table reflects current state
 	async xBegin(): Promise<void> {}
 	async xSync(): Promise<void> {}
 	async xCommit(): Promise<void> {}
 	async xRollback(): Promise<void> {}
 
-	// --- Optional rename ---
 	async xRename(zNew: string): Promise<void> {
 		throw new SqliteError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
 	}
 
-	// --- Optional savepoint methods ---
 	async xSavepoint(iSavepoint: number): Promise<void> {}
 	async xRelease(iSavepoint: number): Promise<void> {}
 	async xRollbackTo(iSavepoint: number): Promise<void> {}
 
-	// --- Optional shadow name check ---
 	xShadowName?(name: string): boolean {
-		// sqlite_schema itself is not a shadow name for other tables
 		return false;
 	}
 
-	// Disconnect/Destroy are no-ops for this internal table
-	async xDisconnect(): Promise<void> {
-		console.log(`Schema table '${this.tableName}' connection instance disconnected`);
-	}
-	async xDestroy(): Promise<void> {
-		console.warn(`Attempted to destroy schema table '${this.tableName}'`);
-	}
-
-	// -----------------------------------------
+	async xDisconnect(): Promise<void> {}
+	async xDestroy(): Promise<void> {}
 }
 
 /**
- * Cursor for iterating over the generated schema rows.
+ * Cursor for iterating over sqlite_schema rows
  */
 class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCursor> {
 	private schemaRows: SchemaRow[] = [];
@@ -139,63 +123,55 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 		const processSchema = (schema: Schema) => {
 			// Process Tables
 			for (const tableSchema of schema.getAllTables()) {
-				// Skip the schema table itself if it somehow appears in the list
+				// Skip the schema table itself
 				if (tableSchema.name.toLowerCase() === 'sqlite_schema' && tableSchema.schemaName === 'main') {
 					continue;
 				}
 
 				let createSql: string | null = null;
 				try {
-					// Generate CREATE statement SQL if possible
-
-					// Basic representation for virtual tables without original AST
-					// TODO: Capture original arguments for better representation
-					// Note: we've changed the syntax to CREATE TABLE ... USING ...
+					// Basic representation for virtual tables
 					createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(...)`;
 				} catch (e) {
-					console.warn(`Failed to stringify CREATE TABLE for ${tableSchema.name}:`, e);
+					createSql = null;
 				}
 
 				generatedRows.push({
-					type: 'table', // TODO: Differentiate views/indexes later
+					type: 'table',
 					name: tableSchema.name,
 					tbl_name: tableSchema.name,
-					rootpage: 1, // Use 1 for tables
+					rootpage: 1,
 					sql: createSql,
 					_rowid_: rowidCounter++,
 				});
 			}
 
-			// Process Functions (only non-internal ones?)
+			// Process Functions
 			for (const funcSchema of schema._getAllFunctions()) {
-				// Maybe filter internal/built-in functions? For now, list all.
 				generatedRows.push({
 					type: 'function',
 					name: funcSchema.name,
-					tbl_name: funcSchema.name, // Use name for tbl_name for functions
-					rootpage: 0, // Use 0 for functions/non-tables
-					sql: stringifyCreateFunction(funcSchema), // Generate signature
+					tbl_name: funcSchema.name,
+					rootpage: 0,
+					sql: stringifyCreateFunction(funcSchema),
 					_rowid_: rowidCounter++,
 				});
 			}
-
-            // TODO: Add modules? Indexes? Triggers? Views?
 		};
 
-		// Iterate through 'main' and 'temp' schemas
+		// Iterate through schemas
 		processSchema(schemaManager.getMainSchema());
 		processSchema(schemaManager.getTempSchema());
-        // TODO: Iterate attached schemas if/when they are implemented
 
 		this.setResults(generatedRows);
 	}
 
 	async next(): Promise<void> {
-		if (this._isEof) return; // Already at end
+		if (this._isEof) return;
 
 		if (this.currentIndex >= this.schemaRows.length - 1) {
 			this._isEof = true;
-			this.currentIndex = this.schemaRows.length; // Position after the end
+			this.currentIndex = this.schemaRows.length;
 		} else {
 			this.currentIndex++;
 			this._isEof = false;
@@ -205,13 +181,10 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 	column(context: SqliteContext, columnIndex: number): number {
 		const row = this.getCurrentRow();
 		if (!row) {
-			// Should not happen if VDBE checks eof() before calling column(), but handle defensively
 			context.resultNull();
 			return StatusCode.OK;
 		}
 
-		// Find column name by index (more robust than assuming order)
-		// Use SchemaTableModule static property for column definitions
 		const columnName = SchemaTableModule.COLUMNS[columnIndex]?.name;
 
 		switch (columnName) {
@@ -235,7 +208,6 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 				}
 				break;
 			default:
-				// Handle -1 rowid request or invalid index
 				if (columnIndex === -1) {
 					context.resultInt64(row._rowid_);
 				} else {
@@ -256,16 +228,14 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 	}
 
 	async close(): Promise<void> {
-		this.reset(); // Clear internal state
-		// No external resources to release
+		this.reset();
 	}
 }
 
 /**
- * Virtual table module implementation for sqlite_schema.
+ * Module implementation for sqlite_schema virtual table
  */
 export class SchemaTableModule implements VirtualTableModule<SchemaTable, SchemaTableCursor> {
-	// Define the columns for the sqlite_schema table
 	static readonly COLUMNS = [
 		{ name: 'type', type: SqlDataType.TEXT, collation: 'BINARY' },
 		{ name: 'name', type: SqlDataType.TEXT, collation: 'BINARY' },
@@ -280,42 +250,29 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 	constructor() {}
 
 	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: BaseModuleConfig): SchemaTable {
-		console.log(`SchemaTableModule xCreate: ${schemaName}.${tableName}`);
-		// xCreate and xConnect return the same lightweight object for this read-only table
 		return new SchemaTable(db, this, schemaName, tableName);
 	}
 
 	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: BaseModuleConfig): SchemaTable {
-		console.log(`SchemaTableModule xConnect: ${schemaName}.${tableName}`);
 		return new SchemaTable(db, this, schemaName, tableName);
 	}
 
-	// Add missing xBestIndex implementation to the module
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		// Always a full table scan. No constraints or ordering supported.
-		indexInfo.idxNum = 0; // Plan 0: Full scan
-		indexInfo.estimatedCost = 1000.0; // Arbitrary high cost for full scan
-		indexInfo.estimatedRows = BigInt(100); // Estimate ~100 schema objects
-		indexInfo.orderByConsumed = false; // No ordering provided
+		indexInfo.idxNum = 0;
+		indexInfo.estimatedCost = 1000.0;
+		indexInfo.estimatedRows = BigInt(100);
+		indexInfo.orderByConsumed = false;
 		indexInfo.idxFlags = 0;
-		// Indicate no constraints are used
 		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
 		indexInfo.idxStr = "fullscan";
 		return StatusCode.OK;
 	}
 
-	// Add missing xDestroy implementation to the module (no-op)
 	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
-		console.warn(`Attempted to destroy built-in schema table definition '${tableName}' via module.`);
-		// No persistent state to destroy for the module itself
 		return Promise.resolve();
 	}
 
-	// Instance-specific methods are now on SchemaTable
-
-	// --- Optional shadow name check ---
 	xShadowName?(name: string): boolean {
-		// sqlite_schema itself is not a shadow name for other tables
 		return false;
 	}
 }

@@ -12,16 +12,17 @@ import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 
-// --- Define Configuration Interface (Shared with JsonEach) ---
+/**
+ * Configuration interface for JSON virtual tables
+ */
 interface JsonConfig extends BaseModuleConfig {
 	jsonSource: SqlValue;
 	runtimeArgs?: ReadonlyArray<SqlValue>;
 	rootPath?: SqlValue;
 }
-// ----------------------------------------------------------
 
-// --- Constants for json_tree Schema (Identical to json_each) ---
-const JSON_TREE_SCHEMA: ReadonlyArray<{ name: string, affinity: SqlDataType }> = Object.freeze([
+// Schema definition for json_tree table (identical to json_each)
+const JSON_TREE_SCHEMA = Object.freeze([
 	{ name: 'key', affinity: SqlDataType.INTEGER | SqlDataType.TEXT },
 	{ name: 'value', affinity: SqlDataType.TEXT },
 	{ name: 'type', affinity: SqlDataType.TEXT },
@@ -40,8 +41,9 @@ const JSON_TREE_COLUMNS = Object.freeze(
 );
 const JSON_TREE_COLUMN_MAP = Object.freeze(buildColumnIndexMap(JSON_TREE_COLUMNS));
 
-// --- Table Instance (Can potentially inherit if no differences needed) ---
-// For now, keep separate to set correct vtabModuleName in schema
+/**
+ * Virtual table implementation for json_tree function
+ */
 class JsonTreeTable extends VirtualTable {
 	public readonly parsedJson: any;
 	public readonly rootPath: string | null;
@@ -72,146 +74,167 @@ class JsonTreeTable extends VirtualTable {
 			primaryKeyDefinition: [],
 			vtabModule: module,
 			vtabInstance: this,
-			vtabModuleName: 'json_tree', // Correct module name
+			vtabModuleName: 'json_tree',
 			isWithoutRowid: false,
 			isStrict: false,
 			isView: false,
 		});
 	}
 
-	// --- Implement methods from VirtualTable --- //
-
 	async xOpen(): Promise<VirtualTableCursor<this, any>> {
 		return new JsonTreeCursor(this) as unknown as VirtualTableCursor<this, any>;
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
-		indexInfo.estimatedCost = 100000; // Arbitrary large cost
-		indexInfo.idxNum = 0; // Plan 0: Full iteration
+		indexInfo.estimatedCost = 100000;
+		indexInfo.idxNum = 0;
 		indexInfo.idxStr = null;
-		indexInfo.orderByConsumed = false; // Output order is depth-first
-		// Indicate no constraints are used by the plan itself
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		indexInfo.orderByConsumed = false;
+
+		// No constraints are used
+		indexInfo.aConstraintUsage = Array.from(
+			{ length: indexInfo.nConstraint },
+			() => ({ argvIndex: 0, omit: false })
+		);
 		return StatusCode.OK;
 	}
 
 	async xUpdate(): Promise<{ rowid?: bigint }> {
 		throw new SqliteError("json_tree table is read-only", StatusCode.READONLY);
 	}
+
 	async xBegin() { return Promise.resolve(); }
 	async xSync() { return Promise.resolve(); }
 	async xCommit() { return Promise.resolve(); }
 	async xRollback() { return Promise.resolve(); }
-	async xRename() { throw new SqliteError("Cannot rename json_tree table", StatusCode.ERROR); }
+	async xRename() {
+		throw new SqliteError("Cannot rename json_tree table", StatusCode.ERROR);
+	}
 
-	// Disconnect/Destroy are no-ops for this ephemeral table
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
-
-	// ----------------------------------------- //
 }
 
-// --- Cursor Instance (Must be specific due to different iteration logic) --- //
-
+/**
+ * Represents the state of a depth-first iteration through the JSON structure
+ */
 interface IterationState {
 	value: any;
 	parentPath: string;
 	parentKey: string | number | null;
 	parentId: number;
-	childrenPushed: boolean; // Flag to track if children have been added to stack
+	childrenPushed: boolean;
 }
 
+/**
+ * Cursor implementation for json_tree table
+ * Uses depth-first traversal, including both nodes and their children
+ */
 class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
+	private currentState: IterationState | null = null;
+	private originalValue: any = null;
 	private elementIdCounter: number = 0;
 
 	constructor(table: JsonTreeTable) {
 		super(table);
-		this._isEof = true; // Start as EOF
+		this._isEof = true;
 	}
 
-	/** Resets the cursor state. */
+	/**
+	 * Resets the cursor state
+	 */
 	reset(): void {
 		this.stack = [];
 		this.currentRow = null;
+		this.currentState = null;
+		this.originalValue = null;
 		this._isEof = true;
 		this.elementIdCounter = 0;
 	}
 
-	/** Internal: Starts the iteration process for filter(). */
+	/**
+	 * Initializes iteration based on the JSON start node and optional root path
+	 */
 	private startIteration(startNode: any, rootPath: string | null): void {
 		this.reset();
 		if (startNode !== undefined) {
 			this.stack.push({
 				value: startNode,
-				parentPath: '', // Root has no parent path
-				parentKey: null, // Root has no key relative to parent
+				parentPath: '',
+				parentKey: null,
 				parentId: 0,
-				childrenPushed: false, // Start with children not pushed
+				childrenPushed: false,
 			});
 			this._isEof = false;
-			this.advanceToNextRow(); // Immediately try to position on the first element
+			this.advanceToNextRow();
 		} else {
 			this._isEof = true;
 		}
 	}
 
-	/** Internal: Advances the depth-first stack and sets currentRow. */
+	/**
+	 * Advances to the next row in the JSON tree using depth-first traversal
+	 * First visits each node, then processes its children
+	 */
 	private advanceToNextRow(): void {
 		while (this.stack.length > 0) {
-			const currentState = this.stack[this.stack.length - 1]; // Peek top
-			const currentValue = currentState.value;
-			const isContainer = typeof currentValue === 'object' && currentValue !== null;
+			const state = this.stack[this.stack.length - 1];
+			const value = state.value;
+			const isContainer = typeof value === 'object' && value !== null;
 
 			// If we haven't processed this node (yielded its row) yet...
-			if (!this.currentRow || currentState !== (this.currentRow as any)._stateRef) {
-				const key = currentState.parentKey;
+			if (!this.currentState || this.currentState !== state) {
+				const key = state.parentKey;
 				const id = ++this.elementIdCounter;
-				const path = currentState.parentPath;
+				const path = state.parentPath;
 				const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
-				const type = getJsonType(currentValue);
-				const atom = !isContainer ? currentValue : null;
+				const type = getJsonType(value);
+				const atom = !isContainer ? value : null;
 
 				this.currentRow = {
 					key: key,
-					value: isContainer ? JSON.stringify(currentValue) : currentValue,
+					value: isContainer ? JSON.stringify(value) : value,
 					type: type,
 					atom: atom,
 					id: id,
-					parent: currentState.parentId,
+					parent: state.parentId,
 					fullkey: fullkey,
 					path: path,
-					_originalValue: isContainer ? currentValue : undefined, // Store original container
 				};
 
-				// We found a row to yield, break the loop and return
+				// Save references to current state and original value for later use
+				this.currentState = state;
+				this.originalValue = isContainer ? value : undefined;
+
+				// Found a row to yield, break the loop and return
 				this._isEof = false;
 				return;
 			}
 
 			// If we have processed this node and its children haven't been pushed yet...
-			if (isContainer && !currentState.childrenPushed) {
-				currentState.childrenPushed = true; // Mark children as pushed
-				const parentId = (this.currentRow as any).id;
-				const parentFullKey = (this.currentRow as any).fullkey;
+			if (isContainer && !state.childrenPushed) {
+				state.childrenPushed = true;
+				const parentId = this.currentRow?.id as number;
+				const parentFullKey = this.currentRow?.fullkey as string;
 
 				// Push children in reverse order
-				if (Array.isArray(currentValue)) {
-					for (let i = currentValue.length - 1; i >= 0; i--) {
+				if (Array.isArray(value)) {
+					for (let i = value.length - 1; i >= 0; i--) {
 						this.stack.push({
-							value: currentValue[i],
+							value: value[i],
 							parentPath: parentFullKey,
 							parentKey: i,
 							parentId: parentId,
 							childrenPushed: false,
 						});
 					}
-				} else { // Must be an object
-					const keys = Object.keys(currentValue).sort().reverse();
+				} else {
+					const keys = Object.keys(value).sort().reverse();
 					for (const objKey of keys) {
 						this.stack.push({
-							value: currentValue[objKey],
+							value: value[objKey],
 							parentPath: parentFullKey,
 							parentKey: objKey,
 							parentId: parentId,
@@ -219,25 +242,38 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 						});
 					}
 				}
-				// Reset currentRow so the next loop iteration processes the first child
+
+				// Reset current state so the next loop iteration processes the first child
 				this.currentRow = null;
-				continue; // Go back to the start of the loop to process the newly pushed child
+				this.currentState = null;
+				this.originalValue = null;
+				continue;
 			}
 
-			// If we're here, it means we've processed the node and its children (if any)
-			// So, pop it from the stack and reset currentRow to null, continuing the loop
+			// If we've processed the node and its children, pop it from the stack
 			this.stack.pop();
 			this.currentRow = null;
+			this.currentState = null;
+			this.originalValue = null;
 		}
 
 		// If the loop finishes, the stack is empty, so we are EOF
 		this._isEof = true;
 		this.currentRow = null;
+		this.currentState = null;
+		this.originalValue = null;
 	}
 
-	// --- Implement Abstract Methods --- //
-
-	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
+	/**
+	 * Initializes the cursor for a new query with the given constraints
+	 * For json_tree, we don't use the constraints - we just traverse the entire JSON structure
+	 */
+	async filter(
+		idxNum: number,
+		idxStr: string | null,
+		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
+		args: ReadonlyArray<SqlValue>
+	): Promise<void> {
 		const rootPath = this.table.rootPath;
 		let startNode = this.table.parsedJson;
 		if (rootPath) {
@@ -246,12 +282,17 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 		this.startIteration(startNode, rootPath);
 	}
 
+	/**
+	 * Advances the cursor to the next row in the result set
+	 */
 	async next(): Promise<void> {
 		if (this._isEof) return;
-		// Advance the state machine
 		this.advanceToNextRow();
 	}
 
+	/**
+	 * Returns the value for the specified column of the current row
+	 */
 	column(context: SqliteContext, index: number): number {
 		if (!this.currentRow) {
 			context.resultNull();
@@ -262,8 +303,7 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 		if (colName === 'value') {
 			const type = this.currentRow['type'];
 			if (type === 'object' || type === 'array') {
-				const originalValue = (this.currentRow as any)._originalValue;
-				context.resultValue(originalValue !== undefined ? JSON.stringify(originalValue) : null);
+				context.resultValue(this.originalValue !== undefined ? JSON.stringify(this.originalValue) : null);
 			} else {
 				context.resultValue(this.currentRow[colName] ?? null);
 			}
@@ -273,6 +313,9 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 		return StatusCode.OK;
 	}
 
+	/**
+	 * Returns the rowid for the current row
+	 */
 	async rowid(): Promise<bigint> {
 		if (!this.currentRow) {
 			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
@@ -284,39 +327,62 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 		throw new SqliteError("Cannot get rowid for json_tree cursor (missing ID)", StatusCode.INTERNAL);
 	}
 
+	/**
+	 * Closes the cursor and releases resources
+	 */
 	async close(): Promise<void> {
 		this.reset();
 	}
 }
 
-// --- Module Implementation (No Inheritance) --- //
-
+/**
+ * Module implementation for json_tree virtual table function
+ */
 export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTreeCursor, JsonConfig> {
-	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonTreeTable {
+	xConnect(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: JsonConfig
+	): JsonTreeTable {
 		const table = new JsonTreeTable(db, this, schemaName, tableName, options.jsonSource, options.rootPath);
 		return table;
 	}
 
-	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: JsonConfig): JsonTreeTable {
+	xCreate(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: JsonConfig
+	): JsonTreeTable {
 		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
 	}
 
-	// Add missing xBestIndex implementation to the module
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		indexInfo.estimatedCost = 100000; // Arbitrary large cost
-		indexInfo.idxNum = 0; // Plan 0: Full iteration
+		indexInfo.estimatedCost = 100000;
+		indexInfo.idxNum = 0;
 		indexInfo.idxStr = null;
-		indexInfo.orderByConsumed = false; // Output order is depth-first
-		// Indicate no constraints are used by the plan itself
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		indexInfo.orderByConsumed = false;
+
+		// No constraints are used
+		indexInfo.aConstraintUsage = Array.from(
+			{ length: indexInfo.nConstraint },
+			() => ({ argvIndex: 0, omit: false })
+		);
 		return StatusCode.OK;
 	}
 
-	// Add missing xDestroy implementation to the module (no-op)
-	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
-		// json_tree is ephemeral, no persistent state to destroy at the module level
+	async xDestroy(
+		db: Database,
+		pAux: unknown,
+		moduleName: string,
+		schemaName: string,
+		tableName: string
+	): Promise<void> {
 		return Promise.resolve();
 	}
-
-	// Instance-specific methods are now on JsonTreeTable
 }

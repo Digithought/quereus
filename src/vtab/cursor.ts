@@ -5,36 +5,36 @@ import { SqliteError } from '../common/errors.js';
 import type { IndexConstraint } from './indexInfo.js';
 
 /**
- * Base class (or interface) for virtual table cursors.
- * Module implementations will typically subclass this.
+ * Base class for virtual table cursors.
+ * Module implementations should subclass this to provide specific iteration behavior.
  *
- * @template TTable Type of the VirtualTable this cursor belongs to.
- * @template TCursor Self-referential type for the cursor implementation.
+ * @template TTable Type of the VirtualTable this cursor belongs to
+ * @template TCursor Self-referential type for the cursor implementation
  */
 export abstract class VirtualTableCursor<
 	TTable extends VirtualTable,
-	TCursor extends VirtualTableCursor<TTable, TCursor> = any // Default to any for simpler cases
+	TCursor extends VirtualTableCursor<TTable, TCursor> = any
 > {
-	public readonly table: TTable; // Reference back to the table instance
-	protected _isEof: boolean = true; // Protected state for EOF tracking
+	public readonly table: TTable;
+	protected _isEof: boolean = true;
 
 	constructor(table: TTable) {
 		this.table = table;
 	}
 
-	/** Checks if the cursor has reached the end of the result set. */
+	/** Checks if the cursor has reached the end of the result set */
 	eof(): boolean {
 		return this._isEof;
 	}
 
 	/**
-	 * Start or restart a search/scan on the virtual table.
-	 * @param idxNum The index number chosen by xBestIndex.
-	 * @param idxStr The index string chosen by xBestIndex.
-	 * @param constraints The list of constraints relevant to this plan, linked to their arg index.
-	 * @param args Values corresponding to constraints marked in xBestIndex.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
+	 * Starts or restarts a search/scan on the virtual table
+	 *
+	 * @param idxNum The index number chosen by xBestIndex
+	 * @param idxStr The index string chosen by xBestIndex
+	 * @param constraints The list of constraints relevant to this plan, linked to their arg index
+	 * @param args Values corresponding to constraints marked in xBestIndex
+	 * @throws SqliteError on failure
 	 */
 	abstract filter(
 		idxNum: number,
@@ -44,65 +44,59 @@ export abstract class VirtualTableCursor<
 	): Promise<void>;
 
 	/**
-	 * Advance the cursor to the next row in the result set.
-	 * Sets internal EOF state.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
+	 * Advances the cursor to the next row in the result set
+	 * Sets internal EOF state
+	 *
+	 * @throws SqliteError on failure
 	 */
 	abstract next(): Promise<void>;
 
 	/**
-	 * Return the value for the i-th column of the current row.
-	 * This method MUST be synchronous as it's called during result processing.
-	 * @param context Context for setting the result (use context.result*(...)).
-	 * @param i The column index (0-based).
-	 * @returns StatusCode.OK on success, or an error code.
+	 * Returns the value for the specified column of the current row
+	 * This method MUST be synchronous as it's called during result processing
+	 *
+	 * @param context Context for setting the result (use context.result*(...))
+	 * @param i The column index (0-based)
+	 * @returns StatusCode.OK on success, or an error code
 	 */
-	abstract column(context: SqliteContext, i: number): number; // Sync
+	abstract column(context: SqliteContext, i: number): number;
 
 	/**
-	 * Return the rowid for the current row.
-	 * @returns A promise resolving to the rowid (as bigint) or throwing an error.
-	 * @throws SqliteError on failure.
+	 * Returns the rowid for the current row
+	 *
+	 * @returns The rowid as bigint
+	 * @throws SqliteError if cursor is not positioned on a valid row
 	 */
 	abstract rowid(): Promise<bigint>;
 
 	/**
-	 * Close the virtual table cursor, releasing any resources.
-	 * @returns A promise resolving on completion or throwing an error.
-	 * @throws SqliteError on failure.
+	 * Closes the cursor and releases any resources
+	 *
+	 * @throws SqliteError on failure
 	 */
 	abstract close(): Promise<void>;
 
 	/**
-	 * Optional: Seeks the cursor forward or backward by a relative offset from its current position.
-	 * This operates on the result set established by the last filter call.
-	 * Used by the VDBE for window functions (ROWS frames, LAG/LEAD) and potentially other operations.
-	 * If not implemented, operations requiring relative seeking will fail for this module.
-	 * Sets internal EOF state based on seek result.
-	 * @param offset The relative offset (positive for forward, negative for backward).
-	 * @returns A promise resolving to true if the seek was successful and the cursor points to a valid row,
-	 *          false if the seek moved the cursor out of bounds (before the first or after the last row).
-	 * @throws SqliteError on underlying errors during seeking.
+	 * Seeks the cursor forward or backward by a relative offset from current position
+	 * Used by window functions (ROWS frames, LAG/LEAD) and other operations
+	 *
+	 * @param offset The relative offset (positive for forward, negative for backward)
+	 * @returns true if seek was successful, false if cursor moved out of bounds
+	 * @throws SqliteError if seeking is not supported or other errors occur
 	 */
 	async seekRelative(offset: number): Promise<boolean> {
-		// Default implementation: throw error if not overridden
 		throw new SqliteError(`seekRelative not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
 	}
 
 	/**
-	 * Optional: Seeks the cursor directly to the row matching the specified rowid.
-	 * This operates on the result set established by the last filter call.
-	 * Used by the VDBE for efficient cursor position restoration.
-	 * If not implemented, operations requiring direct rowid seeking might be slower or fail.
-	 * Sets internal EOF state based on seek result.
-	 * @param rowid The target rowid to seek to.
-	 * @returns A promise resolving to true if the seek was successful and the cursor points to the target row,
-	 *          false if the rowid was not found in the cursor's current result set.
-	 * @throws SqliteError on underlying errors during seeking.
+	 * Seeks the cursor directly to the row matching the specified rowid
+	 * Used for efficient cursor position restoration
+	 *
+	 * @param rowid The target rowid to seek to
+	 * @returns true if seek was successful, false if rowid not found
+	 * @throws SqliteError if seeking is not supported or other errors occur
 	 */
 	async seekToRowid(rowid: bigint): Promise<boolean> {
-		// Default implementation: throw error if not overridden
 		throw new SqliteError(`seekToRowid not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
 	}
 }
