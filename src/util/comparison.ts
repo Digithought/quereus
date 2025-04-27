@@ -1,43 +1,58 @@
 import type { SqlValue } from '../common/types.js';
 
-// --- Add Collation Function Type ---
+/**
+ * Function type for SQLite collation functions.
+ * Takes two strings and returns a comparison result (-1, 0, 1)
+ */
 export type CollationFunction = (a: string, b: string) => number;
 
-// --- Create a map to store registered collations ---
+// Map to store registered collations
 const collations = new Map<string, CollationFunction>();
 
-// --- Export the built-in collation functions directly ---
-// BINARY (Default)
+/**
+ * Binary (default) collation function.
+ * Performs standard lexicographical comparison of strings.
+ */
 export const BINARY_COLLATION: CollationFunction = (a, b) => {
 	return a < b ? -1 : a > b ? 1 : 0;
 };
 
-// NOCASE
+/**
+ * Case-insensitive collation function.
+ * Compares strings after converting them to lowercase.
+ */
 export const NOCASE_COLLATION: CollationFunction = (a, b) => {
 	const lowerA = a.toLowerCase();
 	const lowerB = b.toLowerCase();
 	return lowerA < lowerB ? -1 : lowerA > lowerB ? 1 : 0;
 };
 
-// RTRIM
+/**
+ * Right-trim collation function.
+ * Compares strings after removing trailing spaces.
+ */
 export const RTRIM_COLLATION: CollationFunction = (a, b) => {
 	let lenA = a.length;
 	let lenB = b.length;
-	// Find end of non-space characters
+
 	while (lenA > 0 && a[lenA - 1] === ' ') lenA--;
 	while (lenB > 0 && b[lenB - 1] === ' ') lenB--;
-	// Compare the trimmed parts
+
 	const minLen = Math.min(lenA, lenB);
 	for (let i = 0; i < minLen; i++) {
 		if (a[i] !== b[i]) {
 			return a[i] < b[i] ? -1 : 1;
 		}
 	}
-	// If prefixes match, the shorter (trimmed) string comes first
+
 	return lenA - lenB;
 };
 
-// --- Collation Registration Functions ---
+/**
+ * Registers a collation function with the given name.
+ * @param name The name of the collation (case-insensitive)
+ * @param func The collation function to register
+ */
 export function registerCollation(name: string, func: CollationFunction): void {
     const upperName = name.toUpperCase();
     if (collations.has(upperName)) {
@@ -46,20 +61,26 @@ export function registerCollation(name: string, func: CollationFunction): void {
     collations.set(upperName, func);
 }
 
+/**
+ * Gets a registered collation function by name.
+ * @param name The collation name (case-insensitive)
+ * @returns The collation function, or undefined if not found
+ */
 export function getCollation(name: string): CollationFunction | undefined {
 	return collations.get(name.toUpperCase());
 }
 
 /**
  * Evaluates a JavaScript value according to simplified, JS-idiomatic truthiness rules.
- * - null/undefined are false.
- * - boolean is its own value.
- * - number: 0 is false, non-zero is true.
- * - bigint: 0n is false, non-zero is true.
- * - string: empty string is false, non-empty is true.
- * - Uint8Array (BLOB): always false.
- * @param value The value to evaluate.
- * @returns True or false.
+ * - null/undefined are false
+ * - boolean is its own value
+ * - number: 0 is false, non-zero is true
+ * - bigint: 0n is false, non-zero is true
+ * - string: empty string is false, non-empty is true
+ * - Uint8Array (BLOB): always false
+ *
+ * @param value The value to evaluate
+ * @returns True or false
  */
 export function evaluateIsTrue(value: SqlValue): boolean {
 	if (value === null || value === undefined) {
@@ -76,15 +97,15 @@ export function evaluateIsTrue(value: SqlValue): boolean {
 			return value.length > 0;
 		case 'object':
 			if (value instanceof Uint8Array) {
-				return false; // BLOBs are false
+				return false;
 			}
-			return false; // Other objects are false
+			return false;
 		default:
 			return false;
 	}
 }
 
-/** Represents SQLite storage classes for comparison purposes. */
+/** Represents SQLite storage classes for comparison purposes */
 enum StorageClass {
 	NULL = 0,
 	NUMERIC = 1, // INTEGER or REAL
@@ -93,70 +114,65 @@ enum StorageClass {
 	UNKNOWN = 99
 }
 
-/** Determines the effective storage class for comparison, converting boolean to numeric. */
+/** Determines the effective storage class for comparison, converting boolean to numeric */
 function getStorageClass(v: SqlValue): StorageClass {
 	if (v === null || v === undefined) return StorageClass.NULL;
 	const type = typeof v;
 	if (type === 'number' || type === 'bigint' || type === 'boolean') return StorageClass.NUMERIC;
 	if (type === 'string') return StorageClass.TEXT;
 	if (type === 'object' && v instanceof Uint8Array) return StorageClass.BLOB;
-	return StorageClass.UNKNOWN; // Should not happen with SqlValue
+	return StorageClass.UNKNOWN;
 }
 
 /**
- * Returns the SQLite fundamental datatype name ('null', 'integer', 'real', 'text', 'blob').
- * @param v The value.
- * @returns The datatype name as a string.
+ * Returns the SQLite fundamental datatype name of a value.
+ * @param v The value
+ * @returns The datatype name as a string
  */
 export function getSqlDataTypeName(v: SqlValue): 'null' | 'integer' | 'real' | 'text' | 'blob' {
 	if (v === null || v === undefined) return 'null';
 	const type = typeof v;
-	if (type === 'boolean') return 'integer'; // Booleans treated as integers
+	if (type === 'boolean') return 'integer';
 	if (type === 'number') {
 		return Number.isInteger(v) ? 'integer' : 'real';
 	}
 	if (type === 'bigint') return 'integer';
 	if (type === 'string') return 'text';
 	if (type === 'object' && v instanceof Uint8Array) return 'blob';
-	return 'null'; // Should not happen, but default to null
+	return 'null';
 }
 
 /**
- * Compares two SqlValue types based on SQLite's comparison rules for storage classes.
- * Order: NULL < Numeric (INTEGER/REAL/BOOLEAN) < TEXT < BLOB.
- * Note: This does not implement full SQLite type affinity rules which might apply
- * before comparison, nor does it handle collations beyond basic lexicographical for TEXT.
- * @param a First value.
- * @param b Second value.
- * @param collationName The collation to use for text comparison (defaults to BINARY).
- * @returns -1 if a < b, 0 if a === b, 1 if a > b.
+ * Compares two SQLite values based on SQLite's comparison rules.
+ * Follows SQLite's type ordering: NULL < Numeric < TEXT < BLOB
+ *
+ * @param a First value
+ * @param b Second value
+ * @param collationName The collation to use for text comparison (defaults to BINARY)
+ * @returns -1 if a < b, 0 if a === b, 1 if a > b
  */
 export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string = 'BINARY'): number {
 	const classA = getStorageClass(a);
 	const classB = getStorageClass(b);
 
 	if (classA === StorageClass.NULL && classB === StorageClass.NULL) return 0;
-	if (classA === StorageClass.NULL) return -1; // null < non-null
-	if (classB === StorageClass.NULL) return 1; // non-null > null
+	if (classA === StorageClass.NULL) return -1;
+	if (classB === StorageClass.NULL) return 1;
 
 	if (classA !== classB) {
-		return classA - classB; // Compare based on storage class order
+		return classA - classB;
 	}
 
-	// --- Values are of the same storage class ---
-
-	// Convert booleans to numbers for consistent comparison within NUMERIC class
+	// Convert booleans to numbers for consistent comparison
 	const valA = typeof a === 'boolean' ? (a ? 1 : 0) : a;
 	const valB = typeof b === 'boolean' ? (b ? 1 : 0) : b;
 
 	switch (classA) {
 		case StorageClass.NUMERIC:
-			// JS comparison operators handle number/bigint comparison correctly
 			return (valA as number | bigint) < (valB as number | bigint) ? -1 :
 			       (valA as number | bigint) > (valB as number | bigint) ? 1 : 0;
 
 		case StorageClass.TEXT:
-            // Use the specified collation for text comparison
             const collationFunc = collations.get(collationName.toUpperCase());
             if (!collationFunc) {
                 console.warn(`Unknown collation requested: ${collationName}. Falling back to BINARY.`);
@@ -165,7 +181,6 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
             return collationFunc(valA as string, valB as string);
 
 		case StorageClass.BLOB:
-			// Lexicographical comparison of byte arrays
 			const blobA = valA as Uint8Array;
 			const blobB = valB as Uint8Array;
 			const len = Math.min(blobA.length, blobB.length);
@@ -176,7 +191,7 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
 			}
 			return blobA.length < blobB.length ? -1 : blobA.length > blobB.length ? 1 : 0;
 
-		default: // UNKNOWN - should not happen
+		default:
 			return 0;
 	}
 }

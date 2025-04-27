@@ -9,7 +9,7 @@ import type { SchemaChangeInfo } from '../vtab/module.js';
  * Mimics the structure of SQLite's VdbeOp.
  */
 export interface VdbeInstruction {
-	/** The operation code (e.g., Halt, Goto, Column, ResultRow) */
+	/** The operation code */
 	opcode: Opcode;
 	/** First operand */
 	p1: number;
@@ -18,22 +18,24 @@ export interface VdbeInstruction {
 	/** Third operand */
 	p3: number;
 	/** Fourth operand (often a string, pointer, or complex object) */
-	p4: any | null; // Type depends heavily on the opcode
-	/** Fifth operand (added later in SQLite, can store extra info) */
-	p5: number; // Typically flags or counts
-	/** Optional comment for debugging/explanation (not used by execution) */
+	p4: any | null;
+	/** Fifth operand (typically flags or counts) */
+	p5: number;
+	/** Optional comment for debugging/explanation */
 	comment?: string;
 }
 
 /**
  * Creates a VDBE instruction.
- * @param opcode The operation code.
- * @param p1 Operand 1.
- * @param p2 Operand 2.
- * @param p3 Operand 3.
- * @param p4 Operand 4 (optional, type varies).
- * @param p5 Operand 5 (optional, flags).
- * @param comment Optional descriptive comment.
+ *
+ * @param opcode The operation code
+ * @param p1 Operand 1
+ * @param p2 Operand 2
+ * @param p3 Operand 3
+ * @param p4 Operand 4 (type varies by opcode)
+ * @param p5 Operand 5 (typically flags)
+ * @param comment Optional descriptive comment
+ * @returns The created instruction object
  */
 export function createInstruction(
 	opcode: Opcode,
@@ -47,34 +49,41 @@ export function createInstruction(
 	return { opcode, p1, p2, p3, p4, p5, comment };
 }
 
-// --- Concrete types for P4 operands ---
+// --- P4 Operand Types ---
 
 /** P4 operand for Opcode.Function */
 export interface P4FuncDef {
-	funcDef: FunctionSchema; // The actual function definition/callbacks
-	nArgs: number; // Number of arguments expected (or taken from funcDef?)
+	/** The actual function definition/callbacks */
+	funcDef: FunctionSchema;
+	/** Number of arguments expected */
+	nArgs: number;
+	/** Discriminant type */
 	type: 'funcdef';
 }
 
-/** Placeholder for P4 when it refers to a virtual table cursor (or its schema?) */
+/** P4 operand for virtual table opcodes */
 export interface P4Vtab {
-	tableSchema: TableSchema; // Store the resolved schema
+	/** Store the resolved schema */
+	tableSchema: TableSchema;
+	/** Discriminant type */
 	type: 'vtab';
 }
 
-/** Placeholder for P4 when it refers to collation sequence */
+/** P4 operand for collation sequence */
 export interface P4Coll {
-	name: string; // Collation sequence name (e.g., "BINARY", "NOCASE")
+	/** Collation sequence name (e.g., "BINARY", "NOCASE") */
+	name: string;
+	/** Discriminant type */
 	type: 'coll';
 }
 
-/** Placeholder for P4 storing multiple values (e.g., for comparisons) */
+/** P4 operand for key information */
 export interface P4KeyInfo {
-	// columns: { index: number, sortOrder: 'ASC' | 'DESC', collation?: P4Coll }[];
+	/** Discriminant type */
 	type: 'keyinfo';
 }
 
-/** Placeholder for P4 when sorting using MemoryTable */
+/** P4 operand for sorting with MemoryTable */
 export interface P4SortKey {
 	/** Indices of columns in the input row used for sorting */
 	keyIndices: ReadonlyArray<number>;
@@ -82,6 +91,7 @@ export interface P4SortKey {
 	directions: ReadonlyArray<boolean>;
 	/** Optional collation names for each key column */
 	collations?: ReadonlyArray<string | undefined>;
+	/** Discriminant type */
 	type: 'sortkey';
 }
 
@@ -97,34 +107,35 @@ export interface P4Update {
 
 /** P4 operand for Opcode.OpenTvf */
 export interface P4OpenTvf {
+	/** Name of table-valued function module */
 	moduleName: string;
+	/** Alias for the TVF in the current query */
 	alias: string;
-	type: 'opentvf'; // Discriminant type
+	/** Discriminant type */
+	type: 'opentvf';
 }
 
-// --- Define missing placeholder P4 types --- //
-export type P4JumpTarget = any; // Placeholder - likely number (address)
-export type P4IndexDef = any; // Placeholder - structure defining index
-export type P4TableDef = any; // Placeholder - structure defining table
-export type P4ViewDef = any; // Placeholder - structure defining view
-export type P4FunctionContext = any; // Placeholder - context for function call
-// ----------------------------------------- //
+// --- Placeholder P4 Types ---
+export type P4JumpTarget = any;
+export type P4IndexDef = any;
+export type P4TableDef = any;
+export type P4ViewDef = any;
+export type P4FunctionContext = any;
 
-// --- Add P4 type for SchemaChange (before union) --- //
+/** P4 type for SchemaChange */
 export type P4SchemaChange = SchemaChangeInfo;
-// --------------------------------------------------- //
 
 /** Union type for all possible P4 operands */
 export type P4Operand =
 	| P4Coll
 	| P4FuncDef
 	| P4SortKey
-	| TableSchema // For OpenWrite etc.
-	| P4SchemaChange // For SchemaChange
-	| P4IndexDef // For CreateIndex
-	| P4TableDef // For CreateTable
-	| P4ViewDef // For CreateView
-	| P4OpenTvf // For OpenTvf
-	| string // Simple string operand (e.g., Pragma name)
-	| number // Simple numeric operand
-	| null; // No operand
+	| TableSchema
+	| P4SchemaChange
+	| P4IndexDef
+	| P4TableDef
+	| P4ViewDef
+	| P4OpenTvf
+	| string
+	| number
+	| null;

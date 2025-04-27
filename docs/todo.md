@@ -13,10 +13,17 @@ This list outlines the remaining major features and refinements needed to make S
     *   [ ] Define VDBE/VTab mechanism for passing arguments via VFilter.
     *   [ ] Implement VDBE execution logic for calling functions.
 
+Review items:
+
 *   [ ] In SchemaManager.declareVtab(), there's a placeholder schema pattern where virtual table modules should override the placeholder columns. This could be clearer with a base interface or method.
 *   [ ] In importSchemaJson(), the constraint expressions are deserialized as placeholder null literals. This is a known limitation but could pose problems if the schema is being used with actual constraints.
 *   [ ] Some of the type casting with satisfies in _findTable() is a good pattern but might be unnecessary in some places.
 *   [ ] The error handling for vtab destruction in dropTable() is asynchronous but doesn't fully handle the failure case. This could be improved, potentially by returning the promise to the caller.
+*   [ ] In affinity.ts, there was a TODO comment about more robust SQLite-like parsing for edge cases in the tryParseReal function. This might need future attention to fully match SQLite's behavior.
+*   [ ] In comparison.ts, the collation system relies on a global map of collation functions. This works, but you might want to consider making it instance-based in the future for better isolation.
+*   [ ] The VdbeRuntime in runtime.ts has fairly complex stack management logic. It might be worth considering additional bounds checking to prevent potential issues.
+*   [ ] The error handling in several of the instruction handlers seems robust, but error propagation between async calls should be carefully tested, especially in the VTab-related code.
+*   [ ] The P4 operand types in instruction.ts have several placeholder types that might need to be fully implemented as the codebase evolves.
 
 **II. VDBE & Compiler Core:**
 

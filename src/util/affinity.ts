@@ -16,127 +16,126 @@ function tryParseInt(str: string): bigint | number | null {
 		if (str[i] >= '0' && str[i] <= '9') {
 			numStr += str[i];
 		} else {
-			break; // Stop at first non-digit
+			break;
 		}
 	}
 
-	if (!numStr) return null; // No digits found
+	if (!numStr) return null;
 
 	try {
-		// Use BigInt for potentially large integers
 		const bigIntValue = BigInt(numStr) * BigInt(sign);
-		// If it fits within safe integer range, return number, otherwise BigInt
 		if (bigIntValue >= Number.MIN_SAFE_INTEGER && bigIntValue <= Number.MAX_SAFE_INTEGER) {
 			return Number(bigIntValue);
 		}
 		return bigIntValue;
 	} catch {
-		return null; // Error during BigInt conversion (should be rare with the regex check)
+		return null;
 	}
 }
 
 /**
  * Attempts to parse a string as a floating-point number.
  * Returns null if the string doesn't represent a valid number.
- * Handles Infinity and NaN correctly.
  */
 function tryParseReal(str: string): number | null {
 	str = str.trim();
 	if (!str) return null;
-	// Very basic check, rely on parseFloat but handle empty string case
-	// TODO: More robust SQLite-like parsing might be needed for edge cases
 	const num = parseFloat(str);
-	// Check if the string *only* contained numeric-related characters initially?
-	// For now, simple parseFloat is likely sufficient.
 	return isNaN(num) ? null : num;
 }
 
-// --- Affinity Application Functions ---
-
+/**
+ * Applies SQLite INTEGER affinity to a value.
+ * Converts numeric strings to integers, rounds non-integer numbers toward zero.
+ */
 export function applyIntegerAffinity(value: SqlValue): SqlValue {
 	if (value === null || typeof value === 'bigint') return value;
 	if (typeof value === 'number') {
-		// SQLite rounds towards zero for REAL -> INTEGER
 		const intVal = Math.trunc(value);
-		// Check if still representable as JS number accurately (avoid large float conversion issues)
 		if (intVal >= Number.MIN_SAFE_INTEGER && intVal <= Number.MAX_SAFE_INTEGER) {
 			return intVal;
 		} else {
-			// Potentially too large for standard number, try BigInt, else fallback to REAL
 			try {
-				return BigInt(intVal); // This might still lose precision if original number was huge float
+				return BigInt(intVal);
 			} catch {
-				return value; // Fallback to original REAL if BigInt fails
+				return value;
 			}
 		}
 	}
 	if (typeof value === 'string') {
 		const intAttempt = tryParseInt(value);
 		if (intAttempt !== null) return intAttempt;
-		// If integer parse fails, check if it looks like a REAL
 		const realAttempt = tryParseReal(value);
 		if (realAttempt !== null) {
-			// Convert the parsed REAL to INTEGER (round towards zero)
 			return applyIntegerAffinity(realAttempt);
 		}
-		return null; // Failed to parse as INTEGER or REAL
+		return null;
 	}
 	if (value instanceof Uint8Array) {
-		return null; // BLOB -> INTEGER = NULL
+		return null;
 	}
-	return value; // Boolean is handled implicitly via NUMERIC rules usually
+	return value;
 }
 
+/**
+ * Applies SQLite REAL affinity to a value.
+ * Converts numeric strings and integers to floating point numbers.
+ */
 export function applyRealAffinity(value: SqlValue): SqlValue {
 	if (value === null) return null;
 	if (typeof value === 'number' || typeof value === 'bigint') {
-		return Number(value); // Convert INTEGER/BigInt to REAL (float)
+		return Number(value);
 	}
 	if (typeof value === 'string') {
 		return tryParseReal(value);
 	}
 	if (value instanceof Uint8Array) {
-		return null; // BLOB -> REAL = NULL
+		return null;
 	}
 	return value;
 }
 
+/**
+ * Applies SQLite NUMERIC affinity to a value.
+ * Attempts to convert strings to INTEGER first, then REAL if INTEGER fails.
+ * BLOBs remain unchanged.
+ */
 export function applyNumericAffinity(value: SqlValue): SqlValue {
 	if (value === null || typeof value === 'number' || typeof value === 'bigint') {
-		return value; // No change for NULL or existing numerics
+		return value;
 	}
 	if (typeof value === 'string') {
 		const intAttempt = tryParseInt(value);
 		if (intAttempt !== null) return intAttempt;
 		const realAttempt = tryParseReal(value);
 		if (realAttempt !== null) return realAttempt;
-		// If it cannot be parsed as INTEGER or REAL, keep original TEXT
 		return value;
 	}
 	if (value instanceof Uint8Array) {
-		return value; // BLOB remains BLOB for NUMERIC affinity
+		return value;
 	}
 	return value;
 }
 
+/**
+ * Applies SQLite TEXT affinity to a value.
+ * Converts numbers to strings, leaves BLOBs unchanged.
+ */
 export function applyTextAffinity(value: SqlValue): SqlValue {
 	if (value === null || typeof value === 'string') return value;
 	if (typeof value === 'number' || typeof value === 'bigint') {
 		return String(value);
 	}
 	if (value instanceof Uint8Array) {
-		// How SQLite converts BLOB to TEXT is complex (depends on encoding context).
-		// For simplicity, let's represent it as a hex string like `X'...'`?
-		// Or just return the BLOB itself? Let's return BLOB for now.
-		// return `X'${Buffer.from(value).toString('hex')}'`;
-		return value; // Keep BLOB as BLOB when applying TEXT affinity
+		return value;
 	}
-	return String(value); // Catch-all (e.g., boolean)
+	return String(value);
 }
 
+/**
+ * Applies SQLite BLOB affinity to a value.
+ * This is essentially a no-op in SQLite terms.
+ */
 export function applyBlobAffinity(value: SqlValue): SqlValue {
-	// BLOB affinity is essentially a no-op in SQLite terms.
-	// It doesn't convert other types *to* BLOB automatically.
-	// It just stores the value as-is.
 	return value;
 }

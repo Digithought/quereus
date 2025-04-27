@@ -18,18 +18,19 @@ import * as Schema from './instructions/schema.js';
 import * as Seek from './instructions/seek.js';
 
 /**
- * Table of handlers for each opcode
- * This provides a fast lookup for execution and avoids the large switch statement
+ * Table of handlers for each opcode.
+ * Provides fast lookup for execution and avoids large switch statements.
  */
 export const handlers: Handler[] = new Array(256);
 
-// Initialize with fallback handler that throws
+// Initialize with fallback handler that throws for unsupported opcodes
 for (let i = 0; i < handlers.length; i++) {
 	handlers[i] = (ctx, inst) => {
 		throw new SqliteError(`Unsupported opcode: ${Opcode[inst.opcode] || inst.opcode}`, StatusCode.INTERNAL);
 	};
 }
 
+// Register handlers from each module
 Core.registerHandlers(handlers);
 Compare.registerHandlers(handlers);
 Arith.registerHandlers(handlers);

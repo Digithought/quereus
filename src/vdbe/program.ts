@@ -16,7 +16,7 @@ export interface VdbeProgram {
 	readonly numCursors: number;
 
 	/** Constants used by the program (strings, numbers, etc.) */
-	readonly constants: ReadonlyArray<SqlValue>; // For Opcode.String, Opcode.Int, etc.
+	readonly constants: ReadonlyArray<SqlValue>;
 
 	/** Information about bound parameters (name/index -> target memory cell) */
 	readonly parameters: ReadonlyMap<string | number, { memIdx: number }>;
@@ -34,7 +34,7 @@ export interface VdbeProgram {
 }
 
 /**
- * Simple builder for VDBE programs during compilation.
+ * Builder for VDBE programs during compilation.
  * @internal
  */
 export class VdbeProgramBuilder {
@@ -46,19 +46,39 @@ export class VdbeProgramBuilder {
 	private _columnNames: string[] = [];
 	private _sql: string;
 
+	/**
+	 * Creates a new program builder.
+	 * @param sql The SQL statement being compiled
+	 */
 	constructor(sql: string) {
 		this._sql = sql;
 	}
 
+	/**
+	 * Adds an instruction to the program.
+	 * @param instruction The instruction to add
+	 * @returns The address (index) of the added instruction
+	 */
 	addInstruction(instruction: VdbeInstruction): number {
 		this._instructions.push(instruction);
-		return this._instructions.length - 1; // Return address of instruction
+		return this._instructions.length - 1;
 	}
 
+	/**
+	 * Gets an instruction at the specified address.
+	 * @param address The instruction address
+	 * @returns The instruction, or undefined if not found
+	 */
 	getInstruction(address: number): VdbeInstruction | undefined {
 		return this._instructions[address];
 	}
 
+	/**
+	 * Updates the P2 parameter of an instruction.
+	 * Typically used for fixing jump targets.
+	 * @param address The instruction address
+	 * @param p2 The new P2 value
+	 */
 	updateInstructionP2(address: number, p2: number): void {
 		const instruction = this._instructions[address];
 		if (instruction) {
@@ -68,42 +88,69 @@ export class VdbeProgramBuilder {
 		}
 	}
 
+	/**
+	 * Gets the current instruction count.
+	 * @returns The next instruction address
+	 */
 	getCurrentAddress(): number {
-		return this._instructions.length; // Next instruction address
+		return this._instructions.length;
 	}
 
-
+	/**
+	 * Sets the required number of memory cells.
+	 * @param count The required memory cell count
+	 */
 	setRequiredMemCells(count: number): void {
 		this._numMemCells = Math.max(this._numMemCells, count);
 	}
 
+	/**
+	 * Sets the required number of cursors.
+	 * @param count The required cursor count
+	 */
 	setRequiredCursors(count: number): void {
 		this._numCursors = Math.max(this._numCursors, count);
 	}
 
+	/**
+	 * Adds a constant to the program's constant pool.
+	 * @param value The constant value to add
+	 * @returns The index of the added constant
+	 */
 	addConstant(value: SqlValue): number {
-		// TODO: Could optimize by reusing existing constants
 		this._constants.push(value);
-		return this._constants.length - 1; // Return index
+		return this._constants.length - 1;
 	}
 
+	/**
+	 * Registers a parameter with its memory cell location.
+	 * @param name The parameter name or index
+	 * @param memIdx The memory cell index for this parameter
+	 */
 	registerParameter(name: string | number, memIdx: number): void {
-		// Store the memory cell index where the parameter's value should be placed
 		this._parameters.set(name, { memIdx });
 	}
 
+	/**
+	 * Sets the column names for the result set.
+	 * @param names The column names
+	 */
 	setColumnNames(names: string[]): void {
 		this._columnNames = [...names];
 	}
 
+	/**
+	 * Builds and returns the immutable program.
+	 * @returns The built VDBE program
+	 */
 	build(): VdbeProgram {
 		return {
 			instructions: Object.freeze([...this._instructions]),
 			numMemCells: this._numMemCells,
 			numCursors: this._numCursors,
 			constants: Object.freeze([...this._constants]),
-			parameters: Object.freeze(new Map(this._parameters)), // Make map readonly
-			columnNames: Object.freeze([...this._columnNames]), // Freeze column names
+			parameters: Object.freeze(new Map(this._parameters)),
+			columnNames: Object.freeze([...this._columnNames]),
 			sql: this._sql,
 		};
 	}
