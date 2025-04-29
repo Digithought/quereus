@@ -1,7 +1,7 @@
 import { BTree } from 'digitree';
 import type { SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
-import type { MemoryTableRow, BTreeKey } from './table.js';
+import type { MemoryTableRow, BTreeKey } from './types.js';
 
 /** Definition for creating a memory index */
 export interface IndexSpec {

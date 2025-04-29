@@ -2,18 +2,16 @@ import type { VirtualTable } from './table.js';
 import type { SqliteContext } from '../func/context.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
-import type { IndexConstraint } from './indexInfo.js';
+import type { IndexConstraint, IndexInfo } from './indexInfo.js';
 
 /**
  * Base class for virtual table cursors.
  * Module implementations should subclass this to provide specific iteration behavior.
  *
  * @template TTable Type of the VirtualTable this cursor belongs to
- * @template TCursor Self-referential type for the cursor implementation
  */
 export abstract class VirtualTableCursor<
-	TTable extends VirtualTable,
-	TCursor extends VirtualTableCursor<TTable, TCursor> = any
+	TTable extends VirtualTable
 > {
 	public readonly table: TTable;
 	protected _isEof: boolean = true;
@@ -35,12 +33,14 @@ export abstract class VirtualTableCursor<
 	 * @param constraints The list of constraints relevant to this plan, linked to their arg index
 	 * @param args Values corresponding to constraints marked in xBestIndex
 	 * @throws SqliteError on failure
+	 * @param indexInfo Full IndexInfo object from xBestIndex (contains aConstraintUsage, etc.)
 	 */
 	abstract filter(
 		idxNum: number,
 		idxStr: string | null,
 		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
-		args: ReadonlyArray<SqlValue>
+		args: ReadonlyArray<SqlValue>,
+		indexInfo: IndexInfo
 	): Promise<void>;
 
 	/**

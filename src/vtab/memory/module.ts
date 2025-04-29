@@ -2,11 +2,13 @@ import { SqliteError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table.js';
-import { MemoryTable, type MemoryTableConfig } from './table.js';
+import { MemoryTable } from './table.js';
 import type { VirtualTableModule } from '../module.js';
 import { MemoryTableCursor } from './cursor.js';
 import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexInfo } from '../indexInfo.js';
+import { MemoryTableManager } from './layer/manager.js';
+import type { MemoryTableConfig } from './types.js';
 
 /**
  * A module that provides in-memory table functionality using digitree.
@@ -14,8 +16,8 @@ import type { IndexInfo } from '../indexInfo.js';
  * database connection.
  */
 export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableCursor, MemoryTableConfig> {
-	private static SCHEMA_VERSION = 1;
-	private tables: Map<string, MemoryTable> = new Map();
+	private static SCHEMA_VERSION = 2; // Incremented for layer-based implementation
+	public readonly tables: Map<string, MemoryTableManager> = new Map();
 
 	constructor() { }
 
@@ -28,12 +30,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		if (this.tables.has(tableKey)) {
 			throw new SqliteError(`Memory table '${tableName}' already exists in schema '${schemaName}'.`, StatusCode.ERROR);
 		}
-
-		// Create the table instance
-		const table = new MemoryTable(db, this, schemaName, tableName, options.readOnly ?? false);
-
-		// Set columns and keying strategy based on options
-		table.setColumns(options.columns, options.primaryKey ?? []);
 
 		// Build the full ColumnSchema array for the TableSchema
 		const finalColumnSchemas = options.columns.map((optCol, index) => columnDefToSchema({
@@ -61,13 +57,13 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		});
 
 		// Build and freeze the definitive TableSchema
-		const tableSchema: TableSchema = Object.freeze({
+		const tableSchema = {
 			name: tableName,
 			schemaName: schemaName,
 			columns: finalColumnSchemas,
 			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
 			primaryKeyDefinition: options.primaryKey ?? [],
-			checkConstraints: options.checkConstraints ?? [],
+			checkConstraints: (options.checkConstraints ?? []) as unknown as any[],
 			indexes: Object.freeze(finalIndexSchemas),
 			vtabModule: this,
 			vtabAuxData: pAux,
@@ -76,27 +72,25 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			isWithoutRowid: false,
 			isStrict: false,
 			isView: false,
-		});
-		table.tableSchema = tableSchema;
+		} as unknown as TableSchema; // Handle type incompatibilities with double casting
 
-		// Register the created table definition
-		this.tables.set(tableKey, table);
+		// Create the MemoryTableManager instance
+		const manager = new MemoryTableManager(
+			db,
+			this,
+			pAux,
+			moduleName,
+			schemaName,
+			tableName,
+			tableSchema,
+			options.readOnly ?? false
+		);
 
-		// Add secondary indexes if specified
-		if (options.indexes && options.indexes.length > 0) {
-			try {
-				options.indexes.forEach(indexSpec => {
-					table.addIndex(indexSpec);
-				});
-			} catch (e) {
-				// Clean up partially created table if index creation fails
-				this.tables.delete(tableKey);
-				table.clear();
-				throw new SqliteError(`Failed to create index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR, e instanceof Error ? e : undefined);
-			}
-		}
+		// Register the manager
+		this.tables.set(tableKey, manager);
 
-		return table;
+		// Create and return the MemoryTable instance
+		return new MemoryTable(db, this, manager);
 	}
 
 	/**
@@ -104,13 +98,14 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 */
 	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
-		const existingDefinition = this.tables.get(tableKey);
+		const existingManager = this.tables.get(tableKey);
 
-		if (!existingDefinition) {
+		if (!existingManager) {
 			throw new SqliteError(`Memory table definition for '${tableName}' not found. Cannot connect.`, StatusCode.INTERNAL);
 		}
 
-		return existingDefinition;
+		// Create a new MemoryTable instance connected to the existing manager
+		return new MemoryTable(db, this, existingManager);
 	}
 
 	/**
@@ -331,10 +326,11 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 */
 	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
 		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
-		const tableDefinition = this.tables.get(tableKey);
+		const manager = this.tables.get(tableKey);
 
-		if (tableDefinition) {
-			tableDefinition.clear();
+		if (manager) {
+			// This will call the manager's destroy method which handles cleaning up resources
+			await manager.destroy?.();
 			this.tables.delete(tableKey);
 		}
 	}

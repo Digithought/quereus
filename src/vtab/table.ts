@@ -44,7 +44,7 @@ export abstract class VirtualTable {
 	 * @returns A new cursor instance for this table
 	 * @throws SqliteError on failure
 	 */
-	abstract xOpen(): Promise<VirtualTableCursor<this, any>>;
+	abstract xOpen(): Promise<VirtualTableCursor<this>>;
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation

@@ -1,619 +1,417 @@
-import { BTree, type Path } from 'digitree';
 import { VirtualTableCursor } from "../cursor.js";
-import type { MemoryTable, MemoryTableRow, BTreeKey } from "./table.js";
+import type { MemoryTable } from "./table.js";
+import type { MemoryTableRow, BTreeKey } from "./types.js";
 import { StatusCode, type SqlValue } from "../../common/types.js";
 import type { SqliteContext } from "../../func/context.js";
 import { SqliteError } from "../../common/errors.js";
-import type { MemoryIndex } from './index.js';
-import { compareSqlValues } from "../../util/comparison.js";
+import type { MemoryIndex } from './index.js'; // Keep for sorter index type hint
 import { IndexConstraintOp } from '../../common/constants.js';
-import type { IndexConstraint } from '../indexInfo.js';
-
-type IndexBound = { value: SqlValue, op: IndexConstraintOp };
+import type { IndexConstraint, IndexInfo } from '../indexInfo.js'; // Keep for filter signature
+import type { MemoryTableConnection } from './layer/connection.js';
+import type { LayerCursorInternal } from './layer/cursor.js';
+import type { ScanPlan, ScanPlanEqConstraint, ScanPlanRangeBound } from './layer/scan-plan.js'; // Import ScanPlan
+import { BTree } from 'digitree'; // Needed for sorter logic
 
 /**
- * Cursor for the MemoryTable using BTree paths and iterators.
- * Now needs to handle transaction buffers via a merged result set.
+ * Public-facing cursor for the MemoryTable using the layer-based MVCC model.
+ * Delegates operations to an internal cursor chain created based on connection state.
  */
 export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
-	// State for iterating over merged results prepared by filter
-	private mergedResults: MemoryTableRow[] = [];
-	private currentIndex: number = -1;
-	// Inherited: protected _isEof: boolean = true;
+	private readonly connection: MemoryTableConnection;
+	private internalCursor: LayerCursorInternal | null = null;
 
-	// --- Add state for the chosen index --- //
-	private chosenIndex: MemoryIndex | null = null; // Secondary index instance
-	private iteratePrimary: boolean = true; // True if iterating primaryTree, false for secondary
-	private scanIsDesc: boolean = false;
-	private isUniqueScan: boolean = false; // Set if planType is EQ
 	// --- Add state for ephemeral sorter --- //
+	// TODO: How does ephemeral sorting fit with layers?
+	// Option 1: Sorter operates on a snapshot from the connection's readLayer.
+	// Option 2: Sorter tries to incorporate pending layer changes (more complex).
+	// Let's assume Option 1 for now. Sorter index is created based on connection's readLayer.
 	public ephemeralSortingIndex: MemoryIndex | null = null; // Set by Sort opcode handler
+	private sorterResults: MemoryTableRow[] = [];
+	private sorterIndex: number = -1;
+	private isUsingSorter: boolean = false;
 	// -------------------------------------- //
 
-	constructor(table: MemoryTable) {
+	constructor(table: MemoryTable, connection: MemoryTableConnection) {
 		super(table);
+		this.connection = connection;
+		this._isEof = true; // Start as EOF until filter is called
 	}
 
-	/** Resets the cursor state. */
-	reset(): void {
-		this.mergedResults = [];
-		this.currentIndex = -1;
+	/** Resets the cursor state, closing any internal cursor. */
+	private reset(): void {
+		if (this.internalCursor) {
+			try {
+				this.internalCursor.close();
+			} catch (e) {
+				console.error("Error closing internal cursor during reset:", e);
+			}
+			this.internalCursor = null;
+		}
 		this._isEof = true;
-		this.chosenIndex = null;
-		this.iteratePrimary = true;
-		this.scanIsDesc = false;
-		this.isUniqueScan = false;
-		// Clear sorter if present (its BTree will be garbage collected)
+		this.isUsingSorter = false;
+		this.sorterResults = [];
+		this.sorterIndex = -1;
+
+		// Clear sorter index if present (assuming Option 1: sorter is temporary for the query)
 		if (this.ephemeralSortingIndex) {
-			// We don't need to call clear() on it as it's temporary
+			// No need to clear its BTree data, it will be GC'd.
 			this.ephemeralSortingIndex = null;
 		}
 	}
 
-	/** Gets the currently pointed-to row, or null if EOF or invalid. */
-	getCurrentRow(): MemoryTableRow | null {
-		if (this._isEof || this.currentIndex < 0 || this.currentIndex >= this.mergedResults.length) {
-			return null;
+	/**
+	 * Creates the ScanPlan object based on filter arguments.
+	 * This logic was previously part of the old filter method.
+	 */
+	private buildScanPlan(
+		idxNum: number,
+		idxStr: string | null,
+		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
+		args: ReadonlyArray<SqlValue>,
+		indexInfo: IndexInfo // Pass the full IndexInfo from xBestIndex
+	): ScanPlan {
+		// --- Decode Index and Plan Type from idxNum ---
+		// This assumes the encoding used in MemoryTableModule.xBestIndex
+		// indexId = 0 for primary, > 0 for secondary index list + 1
+		// planType = 0: FULL_ASC, 1: FULL_DESC, 2: EQ, 3: RANGE_ASC, 4: RANGE_DESC
+		// const indexId = idxNum >> 3;
+		// const planType = idxNum & 0b111; // Mask last 3 bits
+
+		// --- Instead of decoding idxNum, let's parse idxStr which should contain necessary info ---
+		// Example idxStr: "idx=my_index(2);plan=3;ordCons=ASC;argvMap=[[1,0],[2,2]]"
+		let indexName: string | 'primary' = 'primary';
+		let descending = false;
+		let equalityKey: BTreeKey | undefined = undefined;
+		let lowerBound: ScanPlanRangeBound | undefined = undefined;
+		let upperBound: ScanPlanRangeBound | undefined = undefined;
+
+		// Parse idxStr (more robust than relying solely on idxNum encoding)
+		const params = new Map<string, string>();
+		idxStr?.split(';').forEach(part => {
+			const [key, value] = part.split('=', 2);
+			if (key && value !== undefined) {
+				params.set(key, value);
+			}
+		});
+
+		const idxNameMatch = params.get('idx')?.match(/^(.*?)\((\d+)\)$/);
+		if (idxNameMatch) {
+			indexName = idxNameMatch[1] === '_rowid_' || idxNameMatch[1] === '_primary_' ? 'primary' : idxNameMatch[1];
+			// const indexId = parseInt(idxNameMatch[2], 10); // We have the name now
+		} else {
+			// Default to primary if idxStr doesn't specify or is malformed
+			indexName = 'primary';
+			console.warn(`Could not parse index name from idxStr: "${idxStr}". Defaulting to primary.`);
 		}
-		return this.mergedResults[this.currentIndex];
-	}
 
-	/** Gets the rowid of the current row, or null. */
-	getCurrentRowId(): bigint | null {
-		const row = this.getCurrentRow();
-		return row?._rowid_ ?? null;
-	}
+		const planTypeStr = params.get('plan');
+		const planType = planTypeStr ? parseInt(planTypeStr, 10) : 0; // Default to FULL_ASC
 
-	/** Internal helper called by filter to set the results to iterate over */
-	setResults(results: MemoryTableRow[]): void {
-		this.mergedResults = results;
-		this.currentIndex = -1;
-		this._isEof = this.mergedResults.length === 0;
-		if (!this._isEof) {
-			// Start at the first element
-			this.currentIndex = 0;
+		// Determine direction based on plan type or ordCons
+		const ordCons = params.get('ordCons');
+		if (ordCons) {
+			descending = ordCons === 'DESC';
+		} else {
+			descending = planType === 1 /* FULL_DESC */ || planType === 4 /* RANGE_DESC */;
 		}
+
+		// Extract EQ key or Range bounds based on plan type and argvMap
+		const argvMap = new Map<number, number>(); // Map argvIndex -> constraintIndex
+		params.get('argvMap')?.match(/\[(\d+),(\d+)\]/g)?.forEach(match => {
+			const parts = match.match(/\[(\d+),(\d+)\]/);
+			if (parts) {
+				argvMap.set(parseInt(parts[1], 10), parseInt(parts[2], 10));
+			}
+		});
+
+		if (planType === 2 /* EQ */) {
+			// Find the schema definition for the chosen index
+			const schema = this.table.getSchema();
+			if (!schema) {
+				throw new SqliteError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
+			}
+			const indexSchema = indexName === 'primary'
+				? { name: '_primary_', columns: schema.primaryKeyDefinition ?? [{ index: -1, desc: false }] }
+				: schema.indexes?.find(idx => idx.name === indexName);
+
+			if (indexSchema) {
+				if (!indexSchema || !indexSchema.columns) {
+					throw new SqliteError(`Internal error: Index schema or columns not found for index '${indexName}'`, StatusCode.INTERNAL);
+				}
+				const keyParts: SqlValue[] = [];
+				let keyComplete = true;
+				for (let k = 0; k < indexSchema.columns.length; k++) {
+					const idxCol = indexSchema.columns[k].index;
+					let foundArg = false;
+					// Find the constraint corresponding to this column index and EQ op
+					for (const cUsage of indexInfo.aConstraintUsage) {
+						const constraintIdx = argvMap.get(cUsage.argvIndex);
+						if (constraintIdx !== undefined) {
+							const constraint = indexInfo.aConstraint[constraintIdx];
+							if (constraint.iColumn === idxCol && constraint.op === IndexConstraintOp.EQ) {
+								if (cUsage.argvIndex > 0 && args.length >= cUsage.argvIndex) {
+									keyParts.push(args[cUsage.argvIndex - 1]);
+									foundArg = true;
+									break;
+								}
+							}
+						}
+					}
+					if (!foundArg) {
+						// Check constraints not in argvMap as well (sometimes planner might not map all EQ args)
+						for (const cInfo of constraints) {
+							const c = cInfo.constraint;
+							if (c.iColumn === idxCol && c.op === IndexConstraintOp.EQ && cInfo.argvIndex > 0 && args.length >= cInfo.argvIndex) {
+								keyParts.push(args[cInfo.argvIndex - 1]);
+								foundArg = true;
+								break;
+							}
+						}
+					}
+
+					if (!foundArg) {
+						keyComplete = false;
+						console.warn(`EQ plan used, but constraint/arg for index column ${k} (schema idx ${idxCol}) not found via argvMap or direct constraints.`);
+						break;
+					}
+				}
+				if (keyComplete) {
+					equalityKey = keyParts.length === 1 && indexSchema.columns.length === 1 ? keyParts[0] : keyParts;
+				}
+			} else {
+				console.error(`Could not find schema for index '${indexName}' to build EQ key.`);
+			}
+
+		} else if (planType === 3 /* RANGE_ASC */ || planType === 4 /* RANGE_DESC */) {
+			// Find the first column of the index
+			const schema = this.table.getSchema();
+			if (!schema) {
+				throw new SqliteError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
+			}
+			const indexSchema = indexName === 'primary'
+				? { name: '_primary_', columns: schema.primaryKeyDefinition ?? [{ index: -1, desc: false }] }
+				: schema.indexes?.find(idx => idx.name === indexName);
+			const firstColIdx = indexSchema?.columns?.[0]?.index;
+
+			if (firstColIdx !== undefined) {
+				// Find bounds from used constraints (via argvMap)
+				for (const [argIdx, constraintIdx] of argvMap.entries()) {
+					const constraint = indexInfo.aConstraint[constraintIdx];
+					if (constraint.iColumn === firstColIdx) {
+						const val = args[argIdx - 1];
+						const op = constraint.op;
+						if (op === IndexConstraintOp.GT || op === IndexConstraintOp.GE) {
+							if (!lowerBound || op > lowerBound.op) { // Prefer stricter bound (GT over GE)
+								lowerBound = { value: val, op: op };
+							}
+						} else if (op === IndexConstraintOp.LT || op === IndexConstraintOp.LE) {
+							if (!upperBound || op < upperBound.op) { // Prefer stricter bound (LT over LE)
+								upperBound = { value: val, op: op };
+							}
+						}
+					}
+				}
+				// Also check constraints directly (in case planner didn't map them)
+				constraints.forEach(cInfo => {
+					const c = cInfo.constraint;
+					if (c.iColumn === firstColIdx && cInfo.argvIndex > 0 && args.length >= cInfo.argvIndex) {
+						const val = args[cInfo.argvIndex - 1];
+						const op = c.op;
+						if (op === IndexConstraintOp.GT || op === IndexConstraintOp.GE) {
+							if (!lowerBound || op > lowerBound.op) { lowerBound = { value: val, op: op }; }
+						} else if (op === IndexConstraintOp.LT || op === IndexConstraintOp.LE) {
+							if (!upperBound || op < upperBound.op) { upperBound = { value: val, op: op }; }
+						}
+					}
+				});
+			}
+		}
+
+		return {
+			indexName,
+			descending,
+			equalityKey,
+			lowerBound,
+			upperBound,
+			idxNum: idxNum, // Keep original values for reference/debugging
+			idxStr: idxStr
+		};
 	}
 
-	// --- Implementation of Abstract Methods --- //
 
 	async filter(
 		idxNum: number,
 		idxStr: string | null,
 		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
-		args: ReadonlyArray<SqlValue>
+		args: ReadonlyArray<SqlValue>,
+		indexInfo: IndexInfo // Pass full IndexInfo to filter
 	): Promise<void> {
-		this.reset();
-		const table = this.table; // Access table from base class
+		this.reset(); // Close existing internal cursor, clear state
 
 		// --- Check for Ephemeral Sorter Index FIRST --- //
 		if (this.ephemeralSortingIndex) {
-			console.log(`MemoryTableCursor Filter: Using ephemeral sorting index.`);
+			console.debug(`MemoryTableCursor Filter: Using ephemeral sorting index.`);
+			this.isUsingSorter = true;
 			const sorterIndex = this.ephemeralSortingIndex;
-			// The sorter index BTree actually stores <SortKey, RowObject> directly.
-			const sorterTree = sorterIndex.data as unknown as BTree<BTreeKey, MemoryTableRow>; // Cast to actual type
-			const finalResults: MemoryTableRow[] = [];
+			// Cast BTree type stored in MemoryIndex wrapper
+			const sorterTree = sorterIndex.data as unknown as BTree<BTreeKey, MemoryTableRow>;
+			this.sorterResults = []; // Clear previous sorter results
+			this.sorterIndex = -1;
 			try {
-				// Use the sorter's comparator implicitly via the BTree iteration order
-				for (const path of sorterTree.ascending(sorterTree.first())) {
+				// Iterate the sorter BTree (which is implicitly sorted)
+				// TODO: Respect ORDER BY direction if needed (sorter currently assumes ASC)
+				const iterator = sorterTree.ascending(sorterTree.first());
+				for (const path of iterator) {
 					const row = sorterTree.at(path);
 					if (row) {
-						finalResults.push(row); // Already has row copies
+						// Apply remaining constraints NOT handled by the sort key itself
+						// This part is tricky - how do we know which constraints apply?
+						// Assume for now that sorter is only used when WHERE clause is simple or absent.
+						// If complex filters needed post-sort, VDBE might handle it.
+						// Let's assume constraints *are* handled by VDBE after sort for now.
+						this.sorterResults.push(row); // Store row copy
 					}
 				}
 			} catch (e) {
 				console.error("Error iterating ephemeral sorter index:", e);
+				this.reset(); // Clear state on error
 				throw e instanceof SqliteError ? e : new SqliteError(`Sorter iteration error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 			}
-			this.setResults(finalResults);
-			// Note: No need to handle transactions here, sorter operates on a snapshot.
-			return; // Skip normal index processing
+
+			// Set initial sorter position
+			if (this.sorterResults.length > 0) {
+				this.sorterIndex = 0;
+				this._isEof = false;
+			} else {
+				this._isEof = true;
+			}
+			return; // Skip normal layer cursor creation
 		}
 		// -------------------------------------------- //
 
-		// --- Normal Index Processing --- //
-		const primaryTree = table.primaryTree;
-		const secondaryIndexes = table.secondary;
-		const inTransaction = table.inTransaction;
-		const pendingInserts = table.pendingInserts;
-		const pendingUpdates = table.pendingUpdates;
-		const pendingDeletes = table.pendingDeletes;
-
-		if (!primaryTree) throw new SqliteError("MemoryTable BTree not initialized in filter.", StatusCode.INTERNAL);
-
-		// --- Decode Plan --- //
-		const indexId = idxNum >> 3;
-		const planType = idxNum & 0b111; // Mask last 3 bits
-		this.scanIsDesc = planType === 1 /*FULL_DESC*/ || planType === 4 /*RANGE_DESC*/;
-		this.isUniqueScan = planType === 2 /*EQ*/;
-
-		if (indexId === 0) {
-			this.iteratePrimary = true;
-			this.chosenIndex = null;
-		} else {
-			const indexList = table.getIndexList();
-			if (indexId - 1 >= 0 && indexId - 1 < indexList.length) {
-				this.iteratePrimary = false;
-				this.chosenIndex = indexList[indexId - 1];
-			} else {
-				throw new SqliteError(`Invalid indexId ${indexId} derived from idxNum ${idxNum}`, StatusCode.INTERNAL);
-			}
-		}
-		const currentKeyFromRow = this.iteratePrimary ? table.keyFromEntry : this.chosenIndex!.keyFromRow;
-		const currentCompareKeys = this.iteratePrimary ? table.compareKeys : this.chosenIndex!.compareKeys;
-		const indexColumns = this.iteratePrimary ? (table.primaryKeyColumnIndices.length > 0 ? table.primaryKeyColumnIndices.map(idx => ({ index: idx, desc: false })) : [{ index: -1, desc: false }]) : this.chosenIndex!.columns.map((idx, i) => ({ index: idx, desc: this.chosenIndex!.directions[i] }));
-		const firstIndexColSchema = indexColumns[0];
-		// --------------------- //
-
-		// --- Declare variables outside try block --- //
-		let eqKey: BTreeKey | undefined = undefined;
-		let lowerBound: IndexBound | null = null;
-		let upperBound: IndexBound | null = null;
-		let baseIterator: IterableIterator<any> | null = null;
-		// ----------------------------------------- //
-
-		// --- Extract Bounds/Keys and Prepare Iterator --- //
-		// Use a temporary variable for the iterator to avoid potential issues with try/catch scoping
-		let preparedIterator: IterableIterator<any> | null = null;
+		// --- Normal Layer-Based Scan --- //
+		this.isUsingSorter = false;
 		try {
-			// Extract keys/bounds using the passed constraints array
-			if (planType === 2 /*EQ*/) {
-				const keyParts: SqlValue[] = [];
-				let keyComplete = true;
-				for (let i = 0; i < indexColumns.length; i++) {
-					const idxCol = indexColumns[i].index;
-					const constraintInfo = constraints.find(c => c.constraint.iColumn === idxCol && c.constraint.op === IndexConstraintOp.EQ);
-					if (constraintInfo && constraintInfo.argvIndex > 0 && args.length >= constraintInfo.argvIndex) {
-						keyParts.push(args[constraintInfo.argvIndex - 1]);
-					} else {
-						keyComplete = false;
-						console.warn(`EQ plan used, but constraint for index column ${i} (schema idx ${idxCol}) not found or arg missing.`);
-						break;
-					}
-				}
-				if (keyComplete) {
-					// Cast single value to BTreeKey, array is already compatible
-					eqKey = keyParts.length === 1 ? keyParts[0] as BTreeKey : keyParts;
-				}
-			} else if (planType === 3 /*RANGE_ASC*/ || planType === 4 /*RANGE_DESC*/) {
-				const firstColIdx = firstIndexColSchema?.index;
-				if (firstColIdx !== undefined) {
-					constraints.forEach(cinfo => {
-						if (cinfo.constraint.iColumn === firstColIdx && cinfo.argvIndex > 0 && args.length >= cinfo.argvIndex) {
-							const val = args[cinfo.argvIndex - 1];
-							const op = cinfo.constraint.op;
-							if (op === IndexConstraintOp.GT || op === IndexConstraintOp.GE) {
-								if (!lowerBound || op > lowerBound.op) { lowerBound = { value: val, op: op }; }
-							} else if (op === IndexConstraintOp.LT || op === IndexConstraintOp.LE) {
-								if (!upperBound || op < upperBound.op) { upperBound = { value: val, op: op }; }
-							}
-						}
-					});
-				}
-			}
-			// Determine iterator based on extracted keys/bounds
-			const targetTree = this.iteratePrimary ? primaryTree : this.chosenIndex!.data;
-			let startPath: Path<any, any> | null = null;
+			// 1. Build the ScanPlan
+			const plan = this.buildScanPlan(idxNum, idxStr, constraints, args, indexInfo);
 
-			if (planType === 2 /*EQ*/ && eqKey !== undefined) {
-				// Use find for EQ. Need to construct the value BTree expects.
-				// For primary: key is the value. For secondary: [key, dummy_rowid] is value.
-				const findValue = this.iteratePrimary ? eqKey : [eqKey, BigInt(0)];
-				startPath = (targetTree as BTree<any, any>).find(findValue);
-				if (startPath?.on) {
-					// Start iteration from the found path (always ascending for EQ check)
-					baseIterator = (targetTree as BTree<any, any>).ascending(startPath);
-				} else {
-					baseIterator = [][Symbol.iterator](); // Empty iterator
-				}
-			} else {
-				// For Range or Full scans, start at beginning or end
-				startPath = this.scanIsDesc ? (targetTree as BTree<any, any>).last() : (targetTree as BTree<any, any>).first();
-				if (this.scanIsDesc) {
-					baseIterator = (targetTree as BTree<any, any>).descending(startPath);
-				} else {
-					baseIterator = (targetTree as BTree<any, any>).ascending(startPath);
-				}
-			}
-			preparedIterator = baseIterator; // Assign to temporary variable after successful preparation
+			// 2. Create the internal layer cursor chain using the connection
+			this.internalCursor = this.connection.createLayerCursor(plan);
+
+			// 3. Set initial EOF state from the internal cursor
+			this._isEof = this.internalCursor.isEof();
+
 		} catch (e) {
-			console.error(`Error preparing BTree iterator (idxNum=${idxNum}, planType=${planType}, indexId=${indexId}):`, e);
-			this.reset();
-			throw e instanceof SqliteError ? e : new SqliteError(`BTree iterator error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+			console.error(`Error during MemoryTableCursor filter (idxNum=${idxNum}, idxStr=${idxStr}):`, e);
+			this.reset(); // Ensure cursor is reset on error
+			throw e instanceof SqliteError ? e : new SqliteError(`Filter error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 		}
-		// Assign the prepared iterator back to the main variable outside the try-catch
-		baseIterator = preparedIterator;
-		// ---------------------------------------------- //
-
-		// Prepare Merged Results
-		const finalResults: MemoryTableRow[] = [];
-
-		// Helper to fetch full row (needed for secondary index iteration)
-		const fetchRow = (rowid: bigint): MemoryTableRow | null => {
-			// 1. Check pending updates/inserts first
-			if (inTransaction) {
-				// Check pending updates
-				const pendingUpdate = pendingUpdates?.get(rowid);
-				if (pendingUpdate) {
-					return pendingUpdate.newRow; // Return the updated row data
-				}
-				// Check pending inserts (less likely for existing rowid, but possible)
-				for (const insertedRow of pendingInserts?.values() ?? []) {
-					if (insertedRow._rowid_ === rowid) {
-						return insertedRow;
-					}
-				}
-				// Check if row was deleted in this transaction
-				if (pendingDeletes?.has(rowid)) {
-					return null; // Row doesn't exist from perspective of this transaction
-				}
-			}
-			// 2. Fetch from primary tree
-			const primaryPath = table.findPathByRowid(rowid);
-			if (primaryPath) {
-				return primaryTree.at(primaryPath) ?? null;
-			}
-			return null;
-		};
-
-		if (!inTransaction) {
-			// No transaction - iterate chosen index and apply filters
-			if (baseIterator) {
-				for (const item of baseIterator) {
-					let row: MemoryTableRow | null = null;
-					let currentKey: BTreeKey | undefined = undefined;
-					let rowid: bigint | undefined = undefined;
-
-					// Get row, key, and rowid based on iteration type
-					if (this.iteratePrimary) {
-						row = primaryTree.at(item as Path<BTreeKey, MemoryTableRow>) ?? null;
-						if (row) { currentKey = currentKeyFromRow(row); rowid = row._rowid_; }
-					} else {
-						const entry = this.chosenIndex!.data.at(item as Path<[BTreeKey, bigint], [BTreeKey, bigint]>);
-						if (entry) { currentKey = entry[0]; rowid = entry[1]; row = fetchRow(rowid); }
-					}
-
-					if (row && currentKey !== undefined) {
-						// Apply plan-specific filtering
-						let passesFilter = true;
-						if (planType === 2 /*EQ*/) {
-							if (eqKey === undefined || currentCompareKeys(currentKey, eqKey) !== 0) {
-								passesFilter = false;
-								break; // EQ scan can stop immediately if key mismatch
-							}
-						} else {
-							// Apply range bounds for RANGE or FULL scans
-							const firstColKey = Array.isArray(currentKey) ? currentKey[0] : currentKey;
-							if (lowerBound) { // Check the bound variable directly now
-								const lb = lowerBound as IndexBound;	// HACK: Typescript doesn't seem to be inferring this correctly
-								const cmp = compareSqlValues(firstColKey, lb.value);
-								if (cmp < 0 || (cmp === 0 && lb.op === IndexConstraintOp.GT)) {
-									passesFilter = false;
-									// If descending, hitting lower bound means we can stop
-									if (this.scanIsDesc) break;
-								}
-							}
-							if (passesFilter && upperBound) { // Check the bound variable directly
-								const ub = upperBound as IndexBound;	// HACK: Typescript doesn't seem to be inferring this correctly
-								const cmp = compareSqlValues(firstColKey, ub.value);
-								if (cmp > 0 || (cmp === 0 && ub.op === IndexConstraintOp.LT)) {
-									passesFilter = false;
-									// If ascending, hitting upper bound means we can stop
-									if (!this.scanIsDesc) break;
-								}
-							}
-						}
-
-						if (passesFilter) {
-							// Apply remaining filter constraints not handled by the index scan
-							for (const cInfo of constraints) {
-								const c = cInfo.constraint;
-								// Skip EQ constraints if EQ plan was used (already checked)
-								if (planType === 2 /*EQ*/ && c.op === IndexConstraintOp.EQ) continue;
-								// Skip range constraints if RANGE plan was used (already checked)
-								if ((planType === 3 || planType === 4) &&
-									(c.iColumn === firstIndexColSchema?.index) &&
-									(c.op >= IndexConstraintOp.GT && c.op <= IndexConstraintOp.LE)) {
-									continue;
-								}
-
-								const colIdx = c.iColumn;
-								let colValue: SqlValue;
-								if (colIdx === -1) {
-									colValue = row._rowid_;
-								} else if (colIdx >= 0 && colIdx < table.columns.length) {
-									const colName = table.columns[colIdx].name;
-									colValue = Object.prototype.hasOwnProperty.call(row, colName) ? row[colName] : null;
-								} else {
-									console.warn(`Invalid column index ${colIdx} in constraint during filter.`);
-									passesFilter = false; // Treat invalid index as filter failure
-									break;
-								}
-
-								const argValue = args[cInfo.argvIndex - 1]; // argvIndex is 1-based
-								const comparisonResult = compareSqlValues(colValue, argValue);
-
-								let constraintSatisfied = false;
-								switch (c.op) {
-									case IndexConstraintOp.EQ: constraintSatisfied = comparisonResult === 0; break;
-									case IndexConstraintOp.GT: constraintSatisfied = comparisonResult > 0; break;
-									case IndexConstraintOp.LE: constraintSatisfied = comparisonResult <= 0; break;
-									case IndexConstraintOp.LT: constraintSatisfied = comparisonResult < 0; break;
-									case IndexConstraintOp.GE: constraintSatisfied = comparisonResult >= 0; break;
-									// TODO: Implement other operators like LIKE, GLOB, NE, IS, IS NOT, ISNULL, NOTNULL if needed
-									default:
-										console.warn(`Unsupported constraint operator ${c.op} during filter.`);
-										constraintSatisfied = true; // Be permissive for unsupported ops? Or fail?
-								}
-
-								if (!constraintSatisfied) {
-									passesFilter = false;
-									break; // Stop checking constraints for this row
-								}
-							}
-
-							if (passesFilter) {
-								finalResults.push(row);
-								if (this.isUniqueScan) {
-									// Added break for unique EQ scan optimization
-									break; // Found the unique match
-								}
-							}
-						}
-					}
-				}
-			}
-		} else {
-			// Transaction active - merge BTree and buffers
-			// TODO: Adapt merge logic
-			// For now, reuse the simplified full-scan merge logic
-			// This is INEFFICIENT for EQ/Range scans but correct.
-			if (this.iteratePrimary) {
-				// Original logic: Iterate primary, merge with buffers
-				const btreeRows = new Map<BTreeKey, MemoryTableRow>();
-				const compareKeys = table.compareKeys; // Primary key comparison
-				const keyFromEntry = table.keyFromEntry; // Primary key extraction
-
-				// 1. Gather relevant BTree rows
-				if (baseIterator) {
-					for (const path of baseIterator as IterableIterator<Path<BTreeKey, MemoryTableRow>>) {
-						const row = primaryTree.at(path);
-						if (row && !pendingDeletes?.has(row._rowid_)) { // Skip deleted rows
-							const key = keyFromEntry(row); // Primary key
-							btreeRows.set(key, row);
-							if (this.isUniqueScan) break;
-						}
-					}
-				}
-
-				// 2. Apply pending updates to the gathered BTree rows
-				if (pendingUpdates) {
-					for (const updateInfo of pendingUpdates.values()) {
-						// If the original key was in our BTree set, replace the row data
-						if (btreeRows.has(updateInfo.oldKey)) {
-							btreeRows.set(updateInfo.oldKey, updateInfo.newRow); // Update in place
-							// If the key *also* changed, remove the old key entry and add the new one
-							if (compareKeys(updateInfo.oldKey, updateInfo.newKey) !== 0) {
-								btreeRows.delete(updateInfo.oldKey);
-								btreeRows.set(updateInfo.newKey, updateInfo.newRow);
-							}
-						}
-						// TODO: Handle case where updated row might now fall into range
-					}
-				}
-
-				// 3. Add pending inserts (apply filter args if needed)
-				const mergedRows = new Map(btreeRows);
-				if (pendingInserts) {
-					for (const [key, row] of pendingInserts.entries()) {
-						// TODO: Check if inserted row matches filter args if provided
-						mergedRows.set(key, row);
-					}
-				}
-
-				// 4. Convert map values to array and sort (using primary key comparator)
-				finalResults.push(...mergedRows.values());
-				finalResults.sort((a, b) => {
-					const keyA = keyFromEntry(a);
-					const keyB = keyFromEntry(b);
-					const cmp = compareKeys(keyA, keyB);
-					return this.scanIsDesc ? -cmp : cmp;
-				});
-			} else {
-				// Iterating secondary index - harder merge
-				// Gather rowids from index, fetch rows (checking buffers), then merge inserts.
-				const finalRowids = new Set<bigint>();
-				const secondaryTree = this.chosenIndex!.data;
-				const indexCompareKeys = this.chosenIndex!.compareKeys;
-				const indexKeyFromRow = this.chosenIndex!.keyFromRow;
-
-				// 1. Gather rowids from secondary index scan
-				if (baseIterator) {
-					for (const path of baseIterator as IterableIterator<Path<[BTreeKey, bigint], [BTreeKey, bigint]>>) {
-						const entry = secondaryTree.at(path);
-						if (entry) {
-							const rowid = entry[1];
-							// Check if deleted in this transaction BEFORE adding
-							if (!pendingDeletes?.has(rowid)) {
-								finalRowids.add(rowid);
-							}
-							if (this.isUniqueScan) break;
-						}
-					}
-				}
-
-				// 2. Incorporate rowids from relevant pending updates
-				// An updated row might now match the index criteria, or might no longer match.
-				if (pendingUpdates) {
-					for (const [rowid, updateInfo] of pendingUpdates.entries()) {
-						const oldSecKey = indexKeyFromRow(updateInfo.oldRow);
-						const newSecKey = indexKeyFromRow(updateInfo.newRow);
-						// TODO: Check if oldSecKey/newSecKey match the index filter range/EQ value
-						// This is complex without the filter args.
-						// Simplified: If the secondary key changed, remove the rowid if it was present
-						// from the BTree scan, and add it if the new key potentially matches.
-						if (indexCompareKeys(oldSecKey, newSecKey) !== 0) {
-							// If the old key might have been included by the scan, remove rowid
-							finalRowids.delete(rowid); // Might not be present, safe to call
-							// Add rowid if new key might match (assume it might for now)
-							// But only if not deleted
-							if (!pendingDeletes?.has(rowid)) {
-								finalRowids.add(rowid);
-							}
-						}
-					}
-				}
-
-				// 3. Incorporate rowids from relevant pending inserts
-				if (pendingInserts) {
-					for (const row of pendingInserts.values()) {
-						// TODO: Check if inserted row's secondary key matches filter
-						// Assume it might match for now.
-						finalRowids.add(row._rowid_);
-					}
-				}
-
-				// 4. Fetch actual row data for the final set of rowids
-				const potentialRows: MemoryTableRow[] = [];
-				for (const rowid of finalRowids) {
-					const row = fetchRow(rowid);
-					if (row) {
-						potentialRows.push(row);
-					}
-				}
-
-				// 5. Sort the resulting rows based on the chosen index's key
-				potentialRows.sort((a, b) => {
-					const keyA = indexKeyFromRow(a);
-					const keyB = indexKeyFromRow(b);
-					const cmp = indexCompareKeys(keyA, keyB);
-					// Add rowid tie-breaker if keys are equal
-					if (cmp === 0) {
-						return compareSqlValues(a._rowid_, b._rowid_);
-					}
-					return this.scanIsDesc ? -cmp : cmp;
-				});
-				finalResults.push(...potentialRows);
-			}
-		}
-
-		// Set results in cursor and update EOF state
-		this.setResults(finalResults);
 	}
 
 	async next(): Promise<void> {
-		if (this._isEof) return; // Already at end
+		if (this._isEof) return;
 
-		if (this.currentIndex >= this.mergedResults.length - 1) {
-			this._isEof = true;
-			this.currentIndex = this.mergedResults.length; // Position after the end
+		if (this.isUsingSorter) {
+			// Advance sorter cursor
+			if (this.sorterIndex >= this.sorterResults.length - 1) {
+				this._isEof = true;
+				this.sorterIndex = this.sorterResults.length; // Position after end
+			} else {
+				this.sorterIndex++;
+				this._isEof = false;
+			}
 		} else {
-			this.currentIndex++;
-			this._isEof = false;
+			// Advance internal layer cursor
+			if (!this.internalCursor) {
+				this._isEof = true; // Should not happen if filter succeeded
+				return;
+			}
+			try {
+				await this.internalCursor.next();
+				this._isEof = this.internalCursor.isEof();
+			} catch (e) {
+				console.error("Error during internal cursor next():", e);
+				this.reset(); // Reset cursor state on error
+				throw e instanceof SqliteError ? e : new SqliteError(`Cursor next error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+			}
+		}
+	}
+
+	/** Gets the currently pointed-to row */
+	private getCurrentRow(): MemoryTableRow | null {
+		if (this._isEof) return null;
+
+		if (this.isUsingSorter) {
+			if (this.sorterIndex < 0 || this.sorterIndex >= this.sorterResults.length) {
+				return null;
+			}
+			return this.sorterResults[this.sorterIndex];
+		} else {
+			return this.internalCursor?.getCurrentRow() ?? null;
 		}
 	}
 
 	column(context: SqliteContext, columnIndex: number): number {
 		const row = this.getCurrentRow();
 		if (!row) {
-			// Should not happen if VDBE checks eof() before calling column(), but handle defensively
+			// Per SQLite docs, behavior is undefined if called when EOF.
+			// Returning NULL seems safest.
+			// console.warn("MemoryTableCursor.column() called while EOF.");
 			context.resultNull();
-			return StatusCode.OK;
+			return StatusCode.OK; // Or MISUSE? OK seems standard.
+		}
+
+		const schema = this.table.getSchema();
+		if (!schema) {
+			context.resultError("Internal error: Table schema not available in cursor", StatusCode.INTERNAL);
+			return StatusCode.INTERNAL;
 		}
 
 		if (columnIndex === -1) {
+			// Requesting rowid
 			context.resultInt64(row._rowid_);
 			return StatusCode.OK;
 		}
 
-		if (columnIndex < 0 || columnIndex >= this.table.columns.length) {
+		if (columnIndex < 0 || columnIndex >= schema.columns.length) {
 			context.resultError(`Invalid column index ${columnIndex}`, StatusCode.RANGE);
 			return StatusCode.RANGE;
 		}
-		const columnName = this.table.columns[columnIndex].name;
+		const columnName = schema.columns[columnIndex].name;
 
-		// Access potentially non-existent columns safely (e.g., during ALTER ADD)
+		// Access row property. Handle potential missing columns gracefully (e.g., after ALTER ADD).
 		const value = Object.prototype.hasOwnProperty.call(row, columnName) ? row[columnName] : null;
-		context.resultValue(value ?? null);
+		context.resultValue(value ?? null); // Ensure null is passed if property is undefined
 		return StatusCode.OK;
 	}
 
 	async rowid(): Promise<bigint> {
-		const rowid = this.getCurrentRowId();
-		if (rowid === null) {
+		const row = this.getCurrentRow();
+		if (row === null) {
+			// Match SQLite C API behavior - accessing rowid when EOF is an error
 			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
-		return rowid;
+		return row._rowid_;
 	}
 
 	async close(): Promise<void> {
-		this.reset(); // Clear internal state
-		// No external resources to release for MemoryTableCursor
+		this.reset(); // Reset should handle closing internal cursor
 	}
 
 	// --- Optional Seek Methods --- //
+	// Seek operations are complex with the layer model and internal cursors.
+	// Implementing them efficiently would likely require modifications to the
+	// LayerCursorInternal interface and implementations.
+	// For now, leave them as not implemented.
 
-	/**
-	 * Moves the cursor position by the given relative offset.
-	 * Updates the internal EOF state.
-	 */
 	async seekRelative(offset: number): Promise<boolean> {
-		if (offset === 0) {
-			// Moving by 0 is always possible if the cursor is valid (not EOF)
-			return !this._isEof;
-		}
-
-		if (this.mergedResults.length === 0) {
-			// Cannot seek in empty results
-			this.reset(); // Ensure state is EOF
-			return false;
-		}
-
-		const targetIndex = this.currentIndex + offset;
-
-		if (targetIndex < 0 || targetIndex >= this.mergedResults.length) {
-			// Target is out of bounds
-			if (targetIndex < 0) {
-				this.currentIndex = -1; // Position before the start
-			} else {
-				this.currentIndex = this.mergedResults.length; // Position after the end
-			}
-			this._isEof = true;
-			return false; // Seek failed (out of bounds)
-		} else {
-			// Target is within bounds
-			this.currentIndex = targetIndex;
-			this._isEof = false; // Cursor is now on a valid row
-			return true; // Seek successful
-		}
+		console.warn("MemoryTableCursor.seekRelative() not implemented for layered model.");
+		throw new SqliteError(`seekRelative not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 
-	/**
-	 * Seeks the cursor directly to the row matching the specified rowid.
-	 * Updates the internal EOF state.
-	 */
 	async seekToRowid(rowid: bigint): Promise<boolean> {
-		const results = this.mergedResults;
-		const targetIndex = results.findIndex((row: MemoryTableRow) => row._rowid_ === rowid);
-
-		if (targetIndex === -1) {
-			// Rowid not found, set cursor to EOF
-			this.currentIndex = results.length;
-			this._isEof = true;
-			return false;
-		} else {
-			// Rowid found, position cursor
-			this.currentIndex = targetIndex;
-			this._isEof = false;
-			return true;
-		}
-	}
-
-	// --- Helper Methods (if any, kept from original MemoryTableCursor) --- //
-
-	/** Exposes merged results - used internally by seekToRowid for now */
-	getMergedResults(): MemoryTableRow[] {
-		return this.mergedResults;
+		console.warn("MemoryTableCursor.seekToRowid() not implemented for layered model.");
+		throw new SqliteError(`seekToRowid not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 }
 
