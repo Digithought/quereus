@@ -1,0 +1,203 @@
+-- constraints.sqllogic - Testing integrity constraints
+
+PRAGMA default_vtab_module='memory';
+
+-- === NOT NULL Constraints ===
+
+CREATE TABLE t_notnull (
+    id INTEGER PRIMARY KEY,
+    req TEXT NOT NULL,
+    opt TEXT
+);
+
+-- Insert valid row
+INSERT INTO t_notnull (id, req, opt) VALUES (1, 'required', 'optional');
+SELECT req, opt FROM t_notnull WHERE id = 1;
+→ ["required","optional"]
+
+-- Insert omitting NOT NULL column (no default)
+INSERT INTO t_notnull (id, opt) VALUES (2, 'no_req');
+-- error: NOT NULL constraint failed: t_notnull.req (no default)
+
+-- Insert explicit NULL into NOT NULL column
+INSERT INTO t_notnull (id, req) VALUES (3, NULL);
+-- error: NOT NULL constraint failed: t_notnull.req
+
+-- Update optional to NULL (allowed)
+UPDATE t_notnull SET opt = NULL WHERE id = 1;
+SELECT opt FROM t_notnull WHERE id = 1;
+→ [null]
+
+-- Update required to NULL (fail)
+UPDATE t_notnull SET req = NULL WHERE id = 1;
+-- error: NOT NULL constraint failed: t_notnull.req
+
+-- Verify state after failed update
+SELECT req FROM t_notnull WHERE id = 1;
+→ ["required"]
+
+DROP TABLE t_notnull;
+
+-- === Simple CHECK Constraints (Default ON INSERT, UPDATE) ===
+
+CREATE TABLE t_check (
+    id INTEGER PRIMARY KEY,
+    pos INT CHECK(pos > 0),
+    bal REAL CHECK(bal >= 0)
+);
+
+-- Insert valid
+INSERT INTO t_check VALUES (1, 10, 100.5);
+SELECT pos, bal FROM t_check WHERE id = 1;
+→ [10,100.5]
+
+-- Insert invalid pos
+INSERT INTO t_check VALUES (2, -5, 50);
+-- error: CHECK constraint failed: check_0
+
+-- Insert invalid bal
+INSERT INTO t_check VALUES (3, 5, -0.01);
+-- error: CHECK constraint failed: check_1
+
+-- Update valid to valid
+UPDATE t_check SET pos = 20, bal = 99.9 WHERE id = 1;
+SELECT pos, bal FROM t_check WHERE id = 1;
+→ [20,99.9]
+
+-- Update valid to invalid pos
+UPDATE t_check SET pos = 0 WHERE id = 1;
+-- error: CHECK constraint failed: check_0
+
+-- Update valid to invalid bal
+UPDATE t_check SET bal = -10 WHERE id = 1;
+-- error: CHECK constraint failed: check_1
+
+-- Verify state after failed updates
+SELECT pos, bal FROM t_check WHERE id = 1;
+→ [20,99.9]
+
+DROP TABLE t_check;
+
+-- === Row-Level CHECK ON ... Constraints ===
+
+CREATE TABLE t_check_on (
+    id INTEGER PRIMARY KEY,
+    status TEXT CHECK(status IN ('active', 'inactive')) ON INSERT,
+    val INTEGER,
+    CONSTRAINT positive_val CHECK(NEW.val >= 0) ON UPDATE,
+    CONSTRAINT no_delete CHECK(FALSE) ON DELETE
+);
+
+-- Insert valid (status check applies)
+INSERT INTO t_check_on (id, status, val) VALUES (1, 'active', 100);
+SELECT status, val FROM t_check_on WHERE id = 1;
+→ ["active",100]
+
+-- Insert invalid status
+INSERT INTO t_check_on (id, status, val) VALUES (2, 'pending', 200);
+-- error: CHECK constraint failed: check_0
+
+-- Update status (check does NOT apply on UPDATE)
+UPDATE t_check_on SET status = 'archived' WHERE id = 1;
+SELECT status FROM t_check_on WHERE id = 1;
+→ ["archived"]
+
+-- Update val valid (positive_val check applies)
+UPDATE t_check_on SET val = 50 WHERE id = 1;
+SELECT val FROM t_check_on WHERE id = 1;
+→ [50]
+
+-- Update val invalid (positive_val check applies)
+UPDATE t_check_on SET val = -1 WHERE id = 1;
+-- error: CHECK constraint failed: positive_val
+
+-- Verify state after failed update
+SELECT val FROM t_check_on WHERE id = 1;
+→ [50]
+
+-- Attempt DELETE (no_delete check applies)
+DELETE FROM t_check_on WHERE id = 1;
+-- error: CHECK constraint failed: no_delete
+
+-- Verify state after failed delete
+SELECT count(*) FROM t_check_on WHERE id = 1;
+→ [1]
+
+DROP TABLE t_check_on;
+
+-- === CHECK ON with NEW/OLD aliases ===
+
+CREATE TABLE t_check_alias (
+    id INTEGER PRIMARY KEY,
+    version INTEGER DEFAULT 1,
+    payload TEXT,
+    CONSTRAINT version_increase CHECK(NEW.version > OLD.version) ON UPDATE
+);
+
+INSERT INTO t_check_alias (id, payload) VALUES (10, 'initial data');
+SELECT version FROM t_check_alias WHERE id = 10;
+→ [1]
+
+-- Valid update (increasing version)
+UPDATE t_check_alias SET version = 2, payload = 'updated data' WHERE id = 10;
+SELECT version, payload FROM t_check_alias WHERE id = 10;
+→ [2,"updated data"]
+
+-- Invalid update (same version)
+UPDATE t_check_alias SET version = 2, payload = 'no change' WHERE id = 10;
+-- error: CHECK constraint failed: version_increase
+
+-- Invalid update (decreasing version)
+UPDATE t_check_alias SET version = 1, payload = 'revert?' WHERE id = 10;
+-- error: CHECK constraint failed: version_increase
+
+-- Verify state after failed updates
+SELECT version, payload FROM t_check_alias WHERE id = 10;
+→ [2,"updated data"]
+
+DROP TABLE t_check_alias;
+
+-- === CHECK ON with Subquery ===
+
+CREATE TABLE products (sku TEXT PRIMARY KEY, price REAL);
+CREATE TABLE inventory (loc TEXT, sku TEXT, qty INTEGER CHECK(qty >= 0) /* Simple check */,
+    FOREIGN KEY (sku) REFERENCES products(sku));
+ALTER TABLE inventory ADD CONSTRAINT enough_stock CHECK(
+        NEW.qty <= (SELECT sum(s.qty) FROM inventory s WHERE s.sku = NEW.sku)
+    ) ON UPDATE;
+ALTER TABLE inventory ADD CONSTRAINT no_delete_if_positive CHECK(
+        OLD.qty <= 0
+    ) ON DELETE;
+
+INSERT INTO products VALUES ('A1', 10.0), ('B2', 20.0);
+INSERT INTO inventory VALUES ('W1', 'A1', 50), ('W2', 'A1', 30), ('W1', 'B2', 100);
+
+SELECT sku, sum(qty) FROM inventory GROUP BY sku ORDER BY sku;
+→ ["A1",80]
+→ ["B2",100]
+
+-- Valid update (decreasing stock is allowed by enough_stock on update)
+UPDATE inventory SET qty = 25 WHERE loc = 'W1' AND sku = 'A1';
+SELECT qty FROM inventory WHERE loc = 'W1' AND sku = 'A1';
+→ [25]
+
+-- Invalid update (cannot set negative simple check)
+UPDATE inventory SET qty = -5 WHERE loc = 'W1' AND sku = 'A1';
+-- error: CHECK constraint failed: check_0
+
+-- Attempt to delete row with positive quantity
+DELETE FROM inventory WHERE loc = 'W1' AND sku = 'A1';
+-- error: CHECK constraint failed: no_delete_if_positive
+
+-- Set quantity to 0
+UPDATE inventory SET qty = 0 WHERE loc = 'W1' AND sku = 'A1';
+SELECT qty FROM inventory WHERE loc = 'W1' AND sku = 'A1';
+→ [0]
+
+-- Now delete should work
+DELETE FROM inventory WHERE loc = 'W1' AND sku = 'A1';
+SELECT count(*) FROM inventory WHERE loc = 'W1' AND sku = 'A1';
+→ [0]
+
+DROP TABLE inventory;
+DROP TABLE products;

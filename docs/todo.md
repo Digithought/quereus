@@ -38,26 +38,13 @@ Review items:
 
 *   [P] **`MemoryTable` Improvements:**
     *   [ ] Enhance `xBestIndex` to utilize more constraint types (`LIKE`, `GLOB`, `IN`, range scans on non-leading composite key parts). Basic range/EQ planning exists.
-    *   [ ] Consider adding optional secondary index support (would require significant changes).
-    *   [P] More efficient transactional merge/read: Reads during transactions currently perform a full merge which can be slow. Explore optimization. (`MemoryTable` uses merge logic, performance is TBD).
-    *   [ ] **Improve `xFilter` in `memory-table.ts`** - use btree ranges and avoid extra sorting.  Also make the xFilter interface more explicit in general for modules.
-    *   [ ] **Refine `mergedResults` approach:**
-        *   Current approach in `xFilter` materializes a `mergedResults` array upfront.
-        *   **Pros:** Correctly handles transactional consistency (merging pending inserts/updates/deletes) and internal sorting (when `orderByConsumed` is false), significantly simplifying the implementation of `xNext`, `xSeekRelative`, and `xSeekToRowid`.
-        *   **Cons:** Can have high memory usage for large tables/unfiltered queries, potentially adds upfront latency to `xFilter` before the first row is fetched.
-        *   **Future:** Explore more iterative/generator-based merging within the cursor (`xNext`). This would reduce upfront memory/latency but significantly increase complexity for transactional checks, internal sorting, and especially seeking (`xSeekRelative`/`xSeekToRowid`). May require pushing sorting back to the VDBE in more cases.
-*   [ ] **Clean up vtab module interface** - more JS idiomatic.  e.g. move cursor functions into methods on cursor interface. **Consider adopting SQLite's `xCreate`/`xConnect`/`xDisconnect`/`xDestroy` pattern for better state management.**
-*   [ ] **VTab Schema Declaration:**
-    *   [ ] Standardize how VTab modules declare their columns and constraints to the SchemaManager (beyond `MemoryTable`'s argument parsing). Maybe a dedicated `xDeclareSchema` method?
+    *   [P] More efficient transactional merge/read: Layer cursors merge modifications, but performance under heavy load or deep layer chains could be optimized.
+    *   [ ] Improve `xBestIndex` and layer cursor scan planning to better utilize B-Tree ranges.
+*   [ ] **Clean up vtab module interface** - more JS idiomatic.  e.g. move cursor functions into methods on cursor interface.
 *   [P] **VTab Transactionality:** Transaction hooks (`xBegin`, `xCommit`, etc.) and savepoint hooks exist in the interface and `MemoryTable`. Need more examples/guidance.
 *   [ ] **VTab Shadow Names:**
     *   [ ] Implement `xShadowName` VTab module method check. (Interface method exists, check not implemented).
 *   [ ] **Indexable VTabs:** Support `CREATE INDEX` on virtual tables that implement necessary methods (e.g., `xFindFunction` for indexed lookups). (Parser supports, compiler no-op).
-
-**IV. Built-in Functions & Modules:**
-
-*   [P] **JSON Functions:** Good coverage (`json_extract`, `json_object`, `json_valid`, `json_type`, manipulation functions, aggregates). Review `json_patch` behavior and edge cases.
-*   [P] **Reflective Schema:** Virtual sqlite_schema table to expose the schema via a table
 
 **V. Testing & Documentation:**
 
