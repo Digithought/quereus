@@ -1,6 +1,6 @@
 import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import type { Handler, VmCtx, Status } from '../handler-types.js';
+import type { Handler, VmCtx, Status, MemoryCell } from '../handler-types.js';
 import type { VdbeInstruction } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -22,22 +22,36 @@ export function registerHandlers(handlers: Handler[]) {
 			);
 		}
 
-		// This requires access to the statement object through ctx
-		// We'll rely on the executor to handle this in the run method
+		// Extract the MemoryCell objects for the current row using getStackValue
+		const rowCells: MemoryCell[] = [];
+		for (let i = 0; i < count; i++) {
+			// Construct a MemoryCell object. Note: This assumes MemoryCell only needs 'value'.
+			// If MemoryCell has other properties (like type flags) managed by VDBE,
+			// we might need to expose the raw stack or a getMemoryCell function.
+			rowCells.push({ value: ctx.getStackValue(startIdx + i) });
+		}
+
+		// Call the statement's method to store the current row data
+		ctx.stmt.setCurrentRow(rowCells);
+
+		// Set the yield flag, but don't return ROW directly
 		ctx.hasYielded = true;
-		return StatusCode.ROW;
+		return undefined; // Let VdbeRuntime return ROW based on hasYielded flag
 	};
 
 	// --- Cursor Management (Async) ---
 	const openVtabCursor = async (ctx: VmCtx, inst: VdbeInstruction): Promise<Status> => {
 		const cIdx = inst.p1;
-		const tableSchema = inst.p4 as TableSchema | undefined;
+		// Cast p4 to the expected P4Vtab type or similar structure
+		const p4Info = inst.p4 as { type: 'vtab', tableSchema: TableSchema } | undefined;
 
-		if (!tableSchema) {
-			throw new SqliteError("OpenRead/OpenWrite called without table schema", StatusCode.INTERNAL);
+		if (!p4Info || !p4Info.tableSchema) {
+			throw new SqliteError("OpenRead/OpenWrite called without valid p4 table schema info", StatusCode.INTERNAL);
 		}
+		const tableSchema = p4Info.tableSchema; // Extract the actual schema
 
 		if (!tableSchema.vtabModuleName) {
+			// Keep the detailed error message using the extracted tableSchema
 			throw new SqliteError(`Table schema for ${tableSchema.name} is missing vtabModuleName`, StatusCode.INTERNAL);
 		}
 

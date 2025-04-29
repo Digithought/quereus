@@ -11,7 +11,7 @@ import * as CompilerState from './compilerState.js';
 import * as EphemeralCore from './ephemeral.js';
 import * as FromClauseCore from './fromClause.js';
 import * as QueryPlanner from './queryPlanner.js';
-import * as WhereVerify from './whereVerify.js';
+import * as WhereVerify from './where-verify.js';
 import * as ExprHandlers from './handlers.js';
 import { compileExpression } from './expression.js';
 import * as StmtCompiler from './statement.js';
@@ -78,6 +78,10 @@ export class Compiler {
 	private currentFrameLocals = 0; // Tracks highest local offset used in the *current* frame
 	public numCursors = 0;
 	// ---------------------------------
+	// --- Placeholder Management (NEW) ---
+	public pendingPlaceholders: Map<number, { instructionIndex: number, targetArray: VdbeInstruction[], purpose: string }> = new Map();
+	private nextPlaceholderId: number = -1; // Use unique negative IDs
+	// ------------------------------------
 	public parameters: Map<number | string, { memIdx: number }> = new Map();
 	public columnAliases: string[] = [];
 	public cteMap: Map<string, CteInfo> = new Map(); // Map CTE name -> Info
@@ -126,9 +130,11 @@ export class Compiler {
 			this.ephemeralTableInstances = new Map();
 			this.resultColumns = [];
 			this.cursorPlanningInfo = new Map();
-			// --- ADDED: Reset CTE Reference Count --- //
 			this.cteReferenceCounts = new Map();
-			// ---------------------------------------
+			// --- Reset Placeholder State (NEW) ---
+			this.pendingPlaceholders = new Map();
+			this.nextPlaceholderId = -1;
+			// -------------------------------------
 			this.subroutineCode = [];
 			this.subroutineDefs = new Map();
 			this.subroutineDepth = 0;
@@ -316,7 +322,7 @@ export class Compiler {
 	allocateCursor(): number { return CompilerState.allocateCursorHelper(this); }
 	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
 	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
-	allocateAddress(): number { return CompilerState.allocateAddressHelper(this); }
+	allocateAddress(purpose: string = 'unknown'): number { return CompilerState.allocateAddressHelper(this, purpose); }
 	resolveAddress(placeholder: number): void { CompilerState.resolveAddressHelper(this, placeholder); }
 	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
 

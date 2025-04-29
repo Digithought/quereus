@@ -89,6 +89,8 @@ export function verifyWhereConstraintsHelper(
 			if (verificationExpr) {
 				compiler.compileExpression(verificationExpr, tempReg);
 				const opStr = (verificationExpr.type === 'unary' ? verificationExpr.operator : (verificationExpr.type === 'binary' ? verificationExpr.operator : `op${constraint.op}`));
+
+				// Emit the jump
 				compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Verify constraint ${i} (${opStr})`);
 			}
 		}
@@ -136,20 +138,24 @@ export function compileUnhandledWhereConditions(
 				compiler.compileExpression(node.left, orReg);
 				compiler.emit(Opcode.IfTrue, orReg, addrOrTrue, 0, null, 0, "OR: check left");
 				compiler.compileExpression(node.right, orReg);
+				// Emit the jump
 				compiler.emit(Opcode.IfFalse, orReg, jumpTargetIfFalse, 0, null, 0, "OR: check right, jump if false");
 				compiler.resolveAddress(addrOrTrue);
 			} else {
 				const tempReg = compiler.allocateMemoryCells(1);
 				compiler.compileExpression(node, tempReg);
+				// Emit the jump
 				compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: ${node.operator}`);
 			}
 		} else if (node.type === 'unary') {
 			const tempReg = compiler.allocateMemoryCells(1);
 			compiler.compileExpression(node, tempReg);
+			// Emit the jump
 			compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: ${node.operator}`);
 		} else {
 			const tempReg = compiler.allocateMemoryCells(1);
 			compiler.compileExpression(node, tempReg);
+			// Emit the jump
 			compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: ${node.type}`);
 		}
 	};

@@ -5,7 +5,7 @@ import { SqliteError } from '../common/errors.js';
 import { type P4Update, type P4Vtab } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
-import { compileUnhandledWhereConditions } from './whereVerify.js';
+import { compileUnhandledWhereConditions } from './where-verify.js';
 import { compileLiteralValue } from './utils.js';
 import { RowOp, type RowConstraintSchema } from '../schema/table.js';
 

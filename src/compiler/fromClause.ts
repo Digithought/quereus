@@ -46,7 +46,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const lookupName = (source.alias || tableName).toLowerCase();
 			const cteNameLower = tableName.toLowerCase();
 
-			// Check if this is a CTE reference
+			// 1. Check if this is a CTE reference
 			const cteInfo = compiler.cteMap.get(cteNameLower);
 			if (cteInfo) {
 				// --- Handle CTE Reference --- //
@@ -54,17 +54,13 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				let resolvedSchema: TableSchema | undefined;
 
 				if (cteInfo.strategy === 'materialized') {
-					// Already materialized (or recursive), use existing info
 					resolvedCursor = cteInfo.cursorIdx;
 					resolvedSchema = cteInfo.schema;
 					console.log(`FROM: Using PRE-materialized CTE '${cteNameLower}' (cursor ${resolvedCursor}) for alias '${lookupName}'`);
 				} else if (cteInfo.strategy === 'view') {
-					// View strategy: Materialize on first use
 					if (!cteInfo.isCompiled) {
 						console.log(`FROM: Materializing VIEW CTE '${cteNameLower}' on first reference...`);
-						// Determine if the original context was recursive (should always be false here if strategy is 'view')
-						const isRecursiveContext = false; // View strategy implies not recursive
-						// Compile it now (this will populate cursorIdx and schema in cteInfo)
+						const isRecursiveContext = false;
 						compileCommonTableExpression(compiler, cteInfo, isRecursiveContext);
 						cteInfo.isCompiled = true;
 						console.log(`FROM: Finished materializing VIEW CTE '${cteNameLower}' (cursor ${cteInfo.cursorIdx})`);
@@ -79,7 +75,6 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 					throw new SqliteError(`Internal: Failed to resolve cursor/schema for CTE '${cteNameLower}' with strategy '${cteInfo.strategy}'`, StatusCode.INTERNAL);
 				}
 
-				// Use the resolved cursor and schema
 				openedCursors.push(resolvedCursor);
 				compiler.tableSchemas.set(resolvedCursor, resolvedSchema);
 
@@ -89,26 +84,33 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 
 				compiler.tableAliases.set(lookupName, resolvedCursor);
 				currentLevelAliases.set(lookupName, resolvedCursor);
-				// No need to emit OpenRead, as the CTE compilation (now or earlier) opened it
-				return;
+				return; // Handled CTE, exit this path
 				// --- End Handle CTE Reference --- //
 			}
 
-			// Regular table/view processing
-			const cursor = compiler.allocateCursor();
-			openedCursors.push(cursor);
+			// 2. If not a CTE, check schema manager for regular table/view
 			const tableSchema = compiler.db._findTable(tableName, schemaName);
-			if (!tableSchema) throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
+			if (tableSchema) {
+				// --- Handle Regular Table/View Found in Schema --- //
+				const cursor = compiler.allocateCursor();
+				openedCursors.push(cursor);
+				compiler.tableSchemas.set(cursor, tableSchema);
 
-			compiler.tableSchemas.set(cursor, tableSchema);
-			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-				throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+				if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
+					throw new SqliteError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+				}
+				compiler.tableAliases.set(lookupName, cursor);
+				currentLevelAliases.set(lookupName, cursor);
+
+				const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
+				compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
+				return; // Handled table from schema, exit this path
+				// --- End Handle Regular Table/View --- //
 			}
-			compiler.tableAliases.set(lookupName, cursor);
-			currentLevelAliases.set(lookupName, cursor);
 
-			const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
-			compiler.emit(Opcode.OpenRead, cursor, 0, 0, p4Vtab, 0, `Open VTab ${source.alias || tableName}`);
+			// 3. If not CTE and not found in schema, throw error
+			throw new SqliteError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
+
 		} else if (source.type === 'join') {
 			openCursorsRecursive(source.left, currentLevelAliases);
 			openCursorsRecursive(source.right, currentLevelAliases);

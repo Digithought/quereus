@@ -32,6 +32,9 @@ export class VdbeRuntime implements VmCtx {
   private vdbeCursors: VdbeCursor[] = [];
   private appliedBindings: boolean = false;
   private readonly localsStartOffset = 2; // Locals start after control info
+  aggregateContexts?: Map<string, { accumulator: any, keyValues: ReadonlyArray<SqlValue> }>;
+  aggregateIterator?: Iterator<[string, { accumulator: any; keyValues: ReadonlyArray<SqlValue>; }]>;
+  currentAggregateEntry?: [string, { accumulator: any; keyValues: ReadonlyArray<SqlValue>; }] | null;
 
   constructor(stmt: Statement, program: VdbeProgram) {
     this.stmt = stmt;
@@ -53,6 +56,9 @@ export class VdbeRuntime implements VmCtx {
       isEphemeral: false,
       sortedResults: null
     }));
+
+    // --- Initialize aggregate contexts --- //
+    this.aggregateContexts = new Map();
   }
 
   /**
@@ -164,9 +170,6 @@ export class VdbeRuntime implements VmCtx {
         if (this.done) {
           return StatusCode.DONE;
         }
-        if (this.hasYielded) {
-          return StatusCode.ROW;
-        }
         if (this.error) {
           return (this.error as SqliteError).code ?? StatusCode.MISUSE;
         }
@@ -194,10 +197,8 @@ export class VdbeRuntime implements VmCtx {
     }
     if (this.pc >= this.program.instructions.length && !this.done) {
         this.done = true;
-        return StatusCode.DONE;
     }
-    if (this.done) return StatusCode.DONE;
-    return StatusCode.INTERNAL;
+    return this.done ? StatusCode.DONE : StatusCode.INTERNAL;
   }
 
   // --- VmCtx Implementation ---

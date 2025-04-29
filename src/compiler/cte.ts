@@ -7,7 +7,7 @@ import type * as AST from '../parser/ast.js';
 import type { P4SortKey } from '../vdbe/instruction.js';
 import { createDefaultColumnSchema } from '../schema/column.js';
 import { buildColumnIndexMap } from '../schema/table.js';
-import { compileUnhandledWhereConditions } from './whereVerify.js';
+import { compileUnhandledWhereConditions } from './where-verify.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
 
 // --- Updated signature to accept CteInfo --- //
