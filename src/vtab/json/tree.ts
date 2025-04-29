@@ -81,8 +81,8 @@ class JsonTreeTable extends VirtualTable {
 		});
 	}
 
-	async xOpen(): Promise<VirtualTableCursor<this, any>> {
-		return new JsonTreeCursor(this) as unknown as VirtualTableCursor<this, any>;
+	async xOpen(): Promise<JsonTreeCursor<this>> {
+		return new JsonTreeCursor(this);
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
@@ -130,14 +130,14 @@ interface IterationState {
  * Cursor implementation for json_tree table
  * Uses depth-first traversal, including both nodes and their children
  */
-class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
+class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
 	private currentState: IterationState | null = null;
 	private originalValue: any = null;
 	private elementIdCounter: number = 0;
 
-	constructor(table: JsonTreeTable) {
+	constructor(table: T) {
 		super(table);
 		this._isEof = true;
 	}
@@ -338,7 +338,7 @@ class JsonTreeCursor extends VirtualTableCursor<JsonTreeTable, JsonTreeCursor> {
 /**
  * Module implementation for json_tree virtual table function
  */
-export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTreeCursor, JsonConfig> {
+export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTreeCursor<JsonTreeTable>, JsonConfig> {
 	xConnect(
 		db: Database,
 		pAux: unknown,

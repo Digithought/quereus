@@ -34,8 +34,8 @@ function stringifyCreateFunction(func: FunctionSchema): string {
  * Virtual Table implementation for sqlite_schema
  */
 class SchemaTable extends VirtualTable {
-	async xOpen(): Promise<VirtualTableCursor<this, any>> {
-		return new SchemaTableCursor(this) as unknown as VirtualTableCursor<this, any>;
+	async xOpen(): Promise<SchemaTableCursor<this>> {
+		return new SchemaTableCursor(this);
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
@@ -78,11 +78,11 @@ class SchemaTable extends VirtualTable {
 /**
  * Cursor for iterating over sqlite_schema rows
  */
-class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCursor> {
+class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 	private schemaRows: SchemaRow[] = [];
 	private currentIndex: number = -1;
 
-	constructor(table: SchemaTable) {
+	constructor(table: T) {
 		super(table);
 	}
 
@@ -235,7 +235,7 @@ class SchemaTableCursor extends VirtualTableCursor<SchemaTable, SchemaTableCurso
 /**
  * Module implementation for sqlite_schema virtual table
  */
-export class SchemaTableModule implements VirtualTableModule<SchemaTable, SchemaTableCursor> {
+export class SchemaTableModule implements VirtualTableModule<SchemaTable, SchemaTableCursor<SchemaTable>> {
 	static readonly COLUMNS = [
 		{ name: 'type', type: SqlDataType.TEXT, collation: 'BINARY' },
 		{ name: 'name', type: SqlDataType.TEXT, collation: 'BINARY' },

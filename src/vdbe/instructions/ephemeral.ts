@@ -3,51 +3,86 @@ import { StatusCode } from '../../common/types.js';
 import type { TableSchema } from '../../schema/table.js';
 import { MemoryTable } from '../../vtab/memory/table.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
+import { MemoryTableManager } from '../../vtab/memory/layer/manager.js';
 import type { Handler } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
+import { createDefaultColumnSchema } from '../../schema/column.js';
+import { buildColumnIndexMap } from '../../schema/table.js';
 
-// Potentially share this instance if MemoryTableModule is stateless
-const ephemeralModule = new MemoryTableModule();
+// Create one instance of the module to be shared
+const ephemeralMemoryModule = new MemoryTableModule();
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.OpenEphemeral] = async (ctx, inst) => {
     const ephCursorIdx = inst.p1;
     const ephNumCols = inst.p2;
-    const providedSchema = inst.p4 as TableSchema | null;
+    const p4Schema = inst.p4 as TableSchema | null;
 
-    // Create a new MemoryTable instance for this ephemeral table
-    const ephTable = new MemoryTable(
-      ctx.db,
-      ephemeralModule,
-      `_temp_internal_${ephCursorIdx}`,
-      `_eph_${ephCursorIdx}`
-    );
+    // Define schema for the ephemeral table
+    let tableSchema: TableSchema;
+    const schemaName = '_temp_internal';
+    const tableName = `_eph_${ephCursorIdx}`;
+    const moduleName = 'memory';
 
-    // Register the ephemeral table with the context (needed? maybe just manage cursor)
-    // ctx.registerEphemeralTable(ephCursorIdx, ephTable); // Assuming VmCtx has such a method
-
-    // Configure columns - Use provided schema if available, otherwise default
-    if (providedSchema?.columns && providedSchema.primaryKeyDefinition) {
-      const cols = providedSchema.columns.map(c => ({ name: c.name, type: undefined, collation: c.collation }));
-      ephTable.setColumns(cols, providedSchema.primaryKeyDefinition);
+    if (p4Schema?.columns && p4Schema?.columns.length === ephNumCols) {
+      tableSchema = {
+        ...p4Schema,
+        name: tableName,
+        schemaName: schemaName,
+        vtabModule: ephemeralMemoryModule,
+        vtabModuleName: moduleName,
+        isView: false,
+        isStrict: false,
+        isWithoutRowid: p4Schema.isWithoutRowid ?? false,
+        primaryKeyDefinition: p4Schema.primaryKeyDefinition ?? [],
+        columnIndexMap: buildColumnIndexMap(p4Schema.columns),
+        checkConstraints: p4Schema.checkConstraints ?? [],
+      };
     } else {
-      const defaultCols = Array.from({ length: ephNumCols }, (_, i) => ({
-        name: `eph_col${i}`,
-        type: undefined,
-        collation: 'BINARY' // Default collation
-      }));
-      ephTable.setColumns(defaultCols, []); // Default: no explicit primary key
+      const defaultCols = Array.from({ length: ephNumCols }, (_, i) =>
+        createDefaultColumnSchema(`eph_col${i}`)
+      );
+      tableSchema = {
+        name: tableName,
+        schemaName: schemaName,
+        columns: defaultCols,
+        columnIndexMap: buildColumnIndexMap(defaultCols),
+        primaryKeyDefinition: [],
+        checkConstraints: [],
+        vtabModule: ephemeralMemoryModule,
+        vtabModuleName: moduleName,
+        isWithoutRowid: false,
+        isStrict: false,
+        isView: false,
+      };
     }
 
-    // Open the cursor using the table instance's xOpen
     try {
-      // Call xOpen on the instance, not the module
+      // 1. Create a NEW manager for this specific ephemeral table
+      const manager = new MemoryTableManager(
+        ctx.db,
+        ephemeralMemoryModule,
+        undefined,
+        moduleName,
+        schemaName,
+        tableName,
+        tableSchema,
+        false
+      );
+
+      // 2. Create the MemoryTable instance (connection wrapper) using the manager
+      const ephTable = new MemoryTable(
+        ctx.db,
+        ephemeralMemoryModule,
+        manager
+      );
+
+      // 3. Open the cursor using the table instance's xOpen
       const ephInstance = await ephTable.xOpen();
 
-      // Store cursor state in VmCtx
+      // 4. Store cursor state in VmCtx
       const cursor = ctx.getCursor(ephCursorIdx);
       if (!cursor) {
-        // This case might imply VmCtx needs to pre-allocate cursor slots
         throw new SqliteError(`Cursor slot ${ephCursorIdx} not available for ephemeral table`, StatusCode.INTERNAL);
       }
       cursor.instance = ephInstance;

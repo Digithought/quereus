@@ -4,7 +4,7 @@ import type { Handler, VmCtx } from '../handler-types.js';
 import type { P4Update, VdbeInstruction, P4OpenTvf } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
 import { ConflictResolution } from '../../common/constants.js';
-import type { IndexConstraint, IndexConstraintUsage } from '../../vtab/indexInfo.js';
+import type { IndexConstraint, IndexConstraintUsage, IndexInfo } from '../../vtab/indexInfo.js';
 import type { IndexSchema } from '../../schema/table.js';
 
 // Helper for handling errors from VTab methods
@@ -23,7 +23,20 @@ export function registerHandlers(handlers: Handler[]) {
     const cIdx = inst.p1;
     const addrIfEmpty = inst.p2;
     const argsReg = inst.p3;
-    const p4Info = inst.p4 as { idxNum: number; idxStr: string | null; nArgs: number; aConstraint: ReadonlyArray<IndexConstraint>; aConstraintUsage: IndexConstraintUsage[] } | null;
+    const p4Info = inst.p4 as {
+      idxNum: number;
+      idxStr: string | null;
+      nArgs: number;
+      aConstraint: ReadonlyArray<IndexConstraint>;
+      aConstraintUsage: IndexConstraintUsage[];
+      nOrderBy?: number;
+      aOrderBy?: ReadonlyArray<{ iColumn: number; desc: boolean }>;
+      colUsed?: bigint;
+      idxFlags?: number;
+      estimatedCost?: number;
+      estimatedRows?: bigint;
+      orderByConsumed?: boolean;
+    } | null;
 
     const cursor = ctx.getCursor(cIdx);
     if (!cursor?.instance) {
@@ -38,7 +51,6 @@ export function registerHandlers(handlers: Handler[]) {
       args.push(ctx.getMem(argsReg + i));
     }
 
-    // Prepare the constraints array for the filter call
     const constraintsToPass: { constraint: IndexConstraint, argvIndex: number }[] = [];
     if (p4Info.aConstraint && p4Info.aConstraintUsage) {
       p4Info.aConstraintUsage.forEach((usage, constraintIdx) => {
@@ -51,8 +63,23 @@ export function registerHandlers(handlers: Handler[]) {
       });
     }
 
+    const indexInfo: IndexInfo = {
+      nConstraint: p4Info.aConstraint?.length ?? 0,
+      aConstraint: p4Info.aConstraint ?? [],
+      nOrderBy: p4Info.nOrderBy ?? 0,
+      aOrderBy: p4Info.aOrderBy ?? [],
+      colUsed: p4Info.colUsed ?? BigInt(-1),
+      aConstraintUsage: p4Info.aConstraintUsage ?? [],
+      idxNum: p4Info.idxNum,
+      idxStr: p4Info.idxStr,
+      orderByConsumed: p4Info.orderByConsumed ?? false,
+      estimatedCost: p4Info.estimatedCost ?? 0,
+      estimatedRows: p4Info.estimatedRows ?? BigInt(0),
+      idxFlags: p4Info.idxFlags ?? 0,
+    };
+
     try {
-      await cursor.instance.filter(p4Info.idxNum, p4Info.idxStr, constraintsToPass, args);
+      await cursor.instance.filter(p4Info.idxNum, p4Info.idxStr, constraintsToPass, args, indexInfo);
       const eof = cursor.instance.eof();
       ctx.pc = eof ? addrIfEmpty : ctx.pc + 1;
     } catch (e) {
@@ -108,9 +135,23 @@ export function registerHandlers(handlers: Handler[]) {
       throw new SqliteError(`Rewind on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
+    const defaultIndexInfo: IndexInfo = {
+      nConstraint: 0,
+      aConstraint: [],
+      nOrderBy: 0,
+      aOrderBy: [],
+      colUsed: BigInt(-1),
+      aConstraintUsage: [],
+      idxNum: 0,
+      idxStr: null,
+      orderByConsumed: false,
+      estimatedCost: 0,
+      estimatedRows: BigInt(0),
+      idxFlags: 0,
+    };
+
     try {
-      // Rewind is equivalent to a filter with no constraints
-      await cursor.instance.filter(0, null, [], []);
+      await cursor.instance.filter(0, null, [], [], defaultIndexInfo);
       const eof = cursor.instance.eof();
       ctx.pc = eof ? addrIfEmpty : ctx.pc + 1;
     } catch (e) {
