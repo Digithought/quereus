@@ -302,7 +302,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	const pendingSubqueries: AST.SubquerySource[] = [];
 	const pendingFunctionSources: AST.FunctionSource[] = []; // Added for FunctionSource
 
-	// Renamed function to be more generic
 	function preprocessFromSources(sources: AST.FromClause[] | undefined) {
 		sources?.forEach(source => {
 			if (source.type === 'subquerySource') {
@@ -390,7 +389,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		}
 	}
 
-	// Declarations moved up
 	let windowSorterInfo: WindowSorterInfo | undefined;
 	let sharedFrameDefinition: AST.WindowFrame | undefined;
 	let ephSortCursor = -1;
@@ -513,10 +511,17 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 		// Set column aliases based on the final structure *now*
 		// This is needed *before* potentially setting up the sorter based on aliases
-		compiler.columnAliases = finalColumnMap.map((info, idx) => {
-			return (info.expr as any)?.alias
-				?? (info.expr?.type === 'column' ? (info.expr as AST.ColumnExpr).name : `col${idx}`);
-		});
+		compiler.columnAliases = finalColumnMap.map((info, idx) =>
+			// Use alias if provided
+			(info.expr as any)?.alias
+			// Use column name if it's a simple column expression without alias
+			?? (info.expr?.type === 'column') ? (info.expr as AST.ColumnExpr).name : (
+				// Use stringified expression if possible
+				(info.expr && expressionToString(info.expr))
+					// Fallback to default colN name
+					?? `col${idx}`
+			)
+		);
 
 	} else {
 		// Direct output uses core structure initially
@@ -574,9 +579,28 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
 		) => processRowWindow(compiler, stmt, coreColumnMap, windowSorterInfo!); // Use core map for window input
 	} else if (needsAggProcessing) {
+		const maxAggArgs = aggregateColumns.reduce((max, col) => Math.max(max, col.expr.args.length), 0);
+		regAggArgs = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
+		regAggSerializedKey = compiler.allocateMemoryCells(1);
+		// ---------------------------------
+		console.log(`DEBUG: Allocated agg regs: Key=${regAggKey}, Args=${regAggArgs}, SerKey=${regAggSerializedKey}`); // <-- Log allocated values
+
+		// Store allocated regs in separate consts for clarity in closure
+		const allocatedAggKeyReg = regAggKey;
+		const allocatedAggArgsReg = regAggArgs;
+		const allocatedAggSerKeyReg = regAggSerializedKey;
+
+		console.log(`DEBUG: Values passed to callback: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`); // <-- Log values going into closure
+
 		processRowCallback = (
 			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
-		) => processRowAggregate(compiler, stmt, aggregateColumns, regAggKey, regAggArgs, regAggSerializedKey, hasGroupBy);
+		) => processRowAggregate(
+			compiler, stmt, aggregateColumns,
+			allocatedAggKeyReg,
+			allocatedAggArgsReg, // Pass via new const
+			allocatedAggSerKeyReg,
+			hasGroupBy
+		);
 	} else {
 		processRowCallback = (
 			_compiler, _stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner
@@ -612,7 +636,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	}
 
 	// Resolve the final exit point AFTER all post-processing
-	compiler.resolveAddress(finalExitAddr);
+	compiler.resolveAddress(finalExitAddr); // The above Goto jumps here
 
 	// --- Close Cursors ---
 	if (ephSortCursor !== -1) {

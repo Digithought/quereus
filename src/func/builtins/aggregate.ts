@@ -2,14 +2,17 @@ import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createAggregateFunction } from '../registration.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import { FunctionContext } from '../context.js';
 
 // --- count(*) ---
 const countStarStep = (acc: number | undefined): number => {
 	return (acc ?? 0) + 1;
 };
+
 const countStarFinal = (acc: number | undefined): number => {
 	return acc ?? 0;
 };
+
 export const countStarFunc = createAggregateFunction(
 	{ name: 'count', numArgs: 0, flags: FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC, initialState: 0 },
 	countStarStep,

@@ -112,6 +112,7 @@ export enum Opcode {
 	AggContext = 152,
 	AggGroupValue = 153,
 	AggGetContext = 154,
+	AggGetAccumulatorByKey = 155,
 
 	// Misc
 	CollSeq = 120,

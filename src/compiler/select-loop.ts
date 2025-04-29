@@ -43,6 +43,9 @@ export function compileSelectLoop(
 		const cursor = level.cursor;
 		const schema = level.schema;
 
+		// Temporarily store placeholder ID
+		const loopStartPlaceholder = level.loopStartAddr!;
+
 		// --- Integrate Subquery Execution/Materialization ---
 		if (schema.subqueryAST) {
 			// Placeholder logic remains for now
@@ -81,14 +84,16 @@ export function compileSelectLoop(
 			compiler.emit(Opcode.VFilter, cursor, vFilterEofAddr, regArgsStart, filterP4, 0, `Filter/Scan Cursor ${index}`);
 		}
 
-		// Resolve loop start address (should be the VFilter/Scan instruction)
-		// compiler.resolveAddress(level.loopStartAddr!); // Resolve loopStartAddr at the Goto instruction later - Actually, loop start IS the VFilter
+		// Resolve loop start address here - points to VFilter or subsequent verification jumps
+		// Store the *resolved* address back into level.loopStartAddr
+		level.loopStartAddr = compiler.resolveAddress(loopStartPlaceholder);
+		if (level.loopStartAddr < 0) {
+			// This indicates resolveAddress failed, which shouldn't happen here
+			throw new Error(`Internal Compiler Error: Failed to resolve loopStart placeholder ${loopStartPlaceholder}`);
+		}
 
 		// verifyWhereConstraints needs to be called *before* resolving loopStartAddr
 		compiler.verifyWhereConstraints(cursor, level.joinFailAddr!);
-
-		// Resolve loop start address here - points to VFilter or subsequent verification jumps
-		compiler.resolveAddress(level.loopStartAddr!);
 
 		// Compile JOIN condition
 		if (index > 0) {
@@ -151,6 +156,7 @@ export function compileSelectLoop(
 		const eofAddrPlaceholder = compiler.allocateAddress(`vNextEof[${i}]`);
 		level.eofAddr = eofAddrPlaceholder;
 		compiler.emit(Opcode.VNext, level.cursor, eofAddrPlaceholder, 0, null, 0, `VNext Cursor ${i}`);
+		// Use the resolved address stored in level.loopStartAddr
 		compiler.emit(Opcode.Goto, 0, level.loopStartAddr!, 0, null, 0, `Goto LoopStart ${i}`);
 		compiler.resolveAddress(eofAddrPlaceholder); // Resolves the VNext jump target
 

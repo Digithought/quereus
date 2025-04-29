@@ -126,10 +126,23 @@ export class MemoryTableManager {
 	disconnect(connectionId: number): void {
 		const connection = this.connections.get(connectionId);
 		if (connection) {
-			// If the connection had pending changes, roll them back
+			// If the connection had pending changes, commit or roll them back
 			if (connection.pendingTransactionLayer) {
-				console.warn(`Connection ${connectionId} disconnected with pending transaction; rolling back.`);
-				connection.rollback(); // Or just discard the layer
+				// Check autocommit status of the parent DB
+				if (this.db.getAutocommit()) {
+					console.warn(`Connection ${connectionId} disconnecting with pending transaction in autocommit mode; committing.`);
+					// Commit the transaction instead of rolling back in autocommit mode
+					// Need to await commit, making disconnect async
+					// Use a separate async function to handle this to keep disconnect sync if possible?
+					// Let's make disconnect async for simplicity for now.
+					this.commitTransaction(connection).catch(err => {
+						console.error(`Error during implicit commit on disconnect for connection ${connectionId}:`, err);
+						// Even if commit fails, proceed with disconnect cleanup
+					});
+				} else {
+					console.warn(`Connection ${connectionId} disconnected with pending transaction (explicit transaction active); rolling back.`);
+					connection.rollback(); // Standard rollback if not in autocommit
+				}
 			}
 			this.connections.delete(connectionId);
 			// After disconnecting, try to collapse layers as this connection might have been holding one up

@@ -15,33 +15,45 @@ export function processRowAggregate(
 	hasGroupBy: boolean
 ): number {
 	const callbackStartAddr = compiler.getCurrentAddress();
+	const baseKeyReg = compiler.allocateMemoryCells(1);
+	const compoundKeyReg = compiler.allocateMemoryCells(1);
 
-	// Compile group key expressions for this row (needed for MakeRecord)
+	// Compile group key expressions (only used if hasGroupBy)
 	getGroupKeyExpressions(stmt).forEach((expr, i) => {
 		compiler.compileExpression(expr, regAggKey + i);
 	});
 
 	if (hasGroupBy) {
-		// Make the key record from the group key expression results
-		compiler.emit(Opcode.MakeRecord, regAggKey, getGroupKeyExpressions(stmt).length, regAggSerializedKey, null, 0, "Make group key for AggStep");
+		compiler.emit(Opcode.MakeRecord, regAggKey, getGroupKeyExpressions(stmt).length, baseKeyReg, null, 0, "Make base group key");
+	} else {
+		const keyConstantIndex = compiler.addConstant('0');
+		compiler.emit(Opcode.String8, 0, baseKeyReg, 0, keyConstantIndex, 0, "Load simple agg base key '0'");
 	}
-	// Note: For simple agg, regAggSerializedKey already contains '0' from before the loop
 
-	// Call AggStep for each aggregate function
-	aggregateColumns.forEach(aggCol => {
+	// Call AggStep for each aggregate function with a compound key
+	aggregateColumns.forEach((aggCol, index) => {
 		const funcExpr = aggCol.expr;
 		const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length);
 		if (!funcDef || !funcDef.xStep) {
 			throw new Error(`Aggregate function ${funcExpr.name} not found or missing xStep`);
 		}
+
+		// --- Create Compound Key: baseKey + "_" + index --- //
+		const suffix = `_${index}`;
+		const suffixReg = compiler.allocateMemoryCells(1);
+		const suffixConstantIndex = compiler.addConstant(suffix);
+		compiler.emit(Opcode.String8, 0, suffixReg, 0, suffixConstantIndex, 0, `Load key suffix ${suffix}`)
+		compiler.emit(Opcode.Concat, baseKeyReg, suffixReg, compoundKeyReg, null, 0, "Create compound key");
+		// ------------------------------------------------- //
+
 		// Compile arguments into their registers
 		funcExpr.args.forEach((arg, i) => {
 			compiler.compileExpression(arg, regAggArgs + i);
 		});
 
 		const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-		// P1 = Group Key Regs, P2 = Arg Regs, P3 = Serialized Key Reg, P5 = Num Group Keys
-		compiler.emit(Opcode.AggStep, regAggKey, regAggArgs, regAggSerializedKey, p4, getGroupKeyExpressions(stmt).length, `AggStep for ${funcExpr.name}`);
+		// P3 is now compoundKeyReg. P1/P5 are less relevant for simple agg but needed by handler logic.
+		compiler.emit(Opcode.AggStep, regAggKey, regAggArgs, compoundKeyReg, p4, getGroupKeyExpressions(stmt).length, `AggStep for ${funcExpr.name} (idx ${index})`);
 	});
 
 	return callbackStartAddr;
@@ -134,22 +146,44 @@ export function compileAggregateOutput(
 
 	} else {
 		// --- Simple Aggregate Output ---
-		const regSimpleAggKey = compiler.allocateMemoryCells(1);
-		const regAggContext = compiler.allocateMemoryCells(1);
-		compiler.emit(Opcode.String8, 0, regSimpleAggKey, 0, '0', 0, "Get simple aggregate key '0'");
-		compiler.emit(Opcode.AggGetContext, regSimpleAggKey, regAggContext, 0, null, 0, "Get simple aggregate context");
+		const baseKeyReg = compiler.allocateMemoryCells(1);
+		const compoundKeyReg = compiler.allocateMemoryCells(1);
+		const regTempAccumulator = compiler.allocateMemoryCells(1);
 
-		finalColumnMap.forEach(info => {
-			if (info.expr?.type === 'function' && info.expr.isAggregate) {
-				const funcExpr = info.expr as AST.FunctionExpr;
-				const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
-				const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-				compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
-			} // (Handle other cases as before)
-			else if (info.expr) { compiler.compileExpression(info.expr, info.targetReg); }
-			else if (!(finalNumCols === 1 && finalColumnMap.length === 0)) {
-				compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, "NULL for unexpected simple agg col");
-			}
+		// --- Load Base Key '0' --- //
+		const keyConstantIndex = compiler.addConstant('0');
+		compiler.emit(Opcode.String8, 0, baseKeyReg, 0, keyConstantIndex, 0, "Load simple agg base key '0'");
+
+		// --- Iterate original aggregateColumns, get context, finalize --- //
+		if (finalNumCols !== aggregateColumns.length) {
+			console.warn(`Mismatch between finalNumCols (${finalNumCols}) and aggregateColumns count (${aggregateColumns.length}) in simple aggregate.`);
+		}
+		if (finalResultBaseReg === 0 && finalNumCols > 0) {
+			 finalResultBaseReg = compiler.allocateMemoryCells(finalNumCols);
+		}
+
+		aggregateColumns.forEach((aggCol, index) => {
+			if (index >= finalNumCols) return; // Avoid writing past allocated space
+
+			// --- Create Compound Key --- //
+			const suffix = `_${index}`;
+			const suffixReg = compiler.allocateMemoryCells(1);
+			const suffixConstantIndex = compiler.addConstant(suffix);
+			compiler.emit(Opcode.String8, 0, suffixReg, 0, suffixConstantIndex, 0, `Load key suffix ${suffix}`)
+			compiler.emit(Opcode.Concat, baseKeyReg, suffixReg, compoundKeyReg, null, 0, "Create compound key");
+			// ------------------------ //
+
+			// --- Get Accumulator using Compound Key --- //
+			compiler.emit(Opcode.AggGetAccumulatorByKey, compoundKeyReg, regTempAccumulator, 0, null, 0, `Get accumulator for key in reg ${compoundKeyReg}`)
+			// ------------------------------------------ //
+
+			const funcExpr = aggCol.expr;
+			const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
+			const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
+			const targetReg = finalResultBaseReg + index;
+
+			// AggFinal: P1=regTempAccumulator, P3=targetReg
+			compiler.emit(Opcode.AggFinal, regTempAccumulator, 0, targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
 		});
 
 		// Compile HAVING clause
@@ -175,8 +209,6 @@ export function compileAggregateOutput(
 			}
 			compiler.emit(Opcode.ResultRow, finalResultBaseReg, finalNumCols, 0, null, 0, "Output Simple Aggregate Row");
 			compiler.resolveAddress(addrSkipOutputSimple);
-			// If limit > 0, we should jump to end here if the single row is output.
-			// Limit check is effectively handled by only outputting one row.
 		}
 
 		compiler.emit(Opcode.Goto, 0, addrPastHavingSimple, 0, null, 0, "Skip HAVING fail target");

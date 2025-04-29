@@ -323,7 +323,7 @@ export class Compiler {
 	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
 	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
 	allocateAddress(purpose: string = 'unknown'): number { return CompilerState.allocateAddressHelper(this, purpose); }
-	resolveAddress(placeholder: number): void { CompilerState.resolveAddressHelper(this, placeholder); }
+	resolveAddress(placeholder: number): number { return CompilerState.resolveAddressHelper(this, placeholder); }
 	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
 
 	// Ephemeral Table Helpers

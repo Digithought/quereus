@@ -582,12 +582,25 @@ export class Parser {
 		this.consume(TokenType.LPAREN, "Expected '(' after table function name.");
 
 		const args: AST.Expression[] = [];
-		let lastArgToken = this.previous(); // After LPAREN
 		if (!this.check(TokenType.RPAREN)) {
-			do {
-				args.push(this.expression());
-				lastArgToken = this.previous(); // After parsing argument
-			} while (this.match(TokenType.COMMA));
+			// Handle DISTINCT inside function calls like COUNT(DISTINCT col)
+			const distinct = this.matchKeyword('DISTINCT');
+			// Handle * argument AFTER checking for distinct
+			if (this.match(TokenType.ASTERISK)) {
+				// Do not add '*' as an argument to the list for aggregates like COUNT(*)
+				if (args.length > 0 || distinct) {
+					// '*' is only valid as the *only* argument, potentially after DISTINCT
+					// e.g. COUNT(*), COUNT(DISTINCT *) - though DISTINCT * might not be standard SQL?
+					// For now, disallow '*' if other args exist.
+					throw this.error(this.previous(), "'*' cannot be used with other arguments in function call.");
+				}
+				// If we parsed '*', the args list remains empty.
+			} else {
+				// Parse regular arguments if '*' wasn't found
+				do {
+					args.push(this.expression());
+				} while (this.match(TokenType.COMMA));
+			}
 		}
 
 		endToken = this.consume(TokenType.RPAREN, "Expected ')' after table function arguments.");
@@ -873,13 +886,24 @@ export class Parser {
 
 			const args: AST.Expression[] = [];
 			if (!this.check(TokenType.RPAREN)) {
-				do {
-					if (this.match(TokenType.ASTERISK)) {
-						args.push({ type: 'literal', value: '*' } as any);
-					} else {
-						args.push(this.expression());
+				// Handle DISTINCT inside function calls like COUNT(DISTINCT col)
+				const distinct = this.matchKeyword('DISTINCT');
+				// Handle * argument AFTER checking for distinct
+				if (this.match(TokenType.ASTERISK)) {
+					// Do not add '*' as an argument to the list for aggregates like COUNT(*)
+					if (args.length > 0 || distinct) {
+						// '*' is only valid as the *only* argument, potentially after DISTINCT
+						// e.g. COUNT(*), COUNT(DISTINCT *) - though DISTINCT * might not be standard SQL?
+						// For now, disallow '*' if other args exist.
+						throw this.error(this.previous(), "'*' cannot be used with other arguments in function call.");
 					}
-				} while (this.match(TokenType.COMMA));
+					// If we parsed '*', the args list remains empty.
+				} else {
+					// Parse regular arguments if '*' wasn't found
+					do {
+						args.push(this.expression());
+					} while (this.match(TokenType.COMMA));
+				}
 			}
 
 			const endToken = this.consume(TokenType.RPAREN, "Expected ')' after function arguments.");

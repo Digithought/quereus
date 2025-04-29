@@ -151,37 +151,29 @@ export class Statement {
 		// Execute the VDBE until it yields a row, completes, or errors
 		const status = await this.vdbe.run();
 
-		// After VDBE finishes a cycle (returns DONE or error):
-		// Check if a row was yielded during that cycle.
-		if (status === StatusCode.DONE && this.vdbe.hasYielded) {
-			// Execution finished, and a row is available
+		// After VDBE returns a status:
+		if (status === StatusCode.ROW) {
+			// Row is ready
 			if (!this.currentRowInternal) {
-				// This should ideally not happen if hasYielded is true and ResultRow worked
 				this.busy = false;
-				throw new SqliteError("VDBE yielded row but setCurrentRow failed to set data", StatusCode.INTERNAL);
+				throw new SqliteError("VDBE returned ROW but setCurrentRow failed to store data", StatusCode.INTERNAL);
 			}
-			// We have a row, return ROW status to the caller
-			console.log(`Step result: ${StatusCode[StatusCode.ROW]}`);
+			console.log(`Step result: ${StatusCode[status]}`);
 			return StatusCode.ROW;
-		} else if (status === StatusCode.DONE /* && !this.vdbe.hasYielded */) {
-			// Execution finished, no row available
+		} else if (status === StatusCode.DONE || status === StatusCode.OK) {
+			// Execution finished successfully (DONE for SELECT/yielding, OK for non-yielding like INSERT/PRAGMA)
 			this.busy = false;
 			this.currentRowInternal = null;
 			console.log(`Step result: ${StatusCode[status]}`);
-			return status; // Return DONE
-		} else if (status !== StatusCode.OK) {
-			// Error occurred during execution
-			this.busy = false;
-			this.currentRowInternal = null;
-			console.error(`VDBE execution failed with status: ${StatusCode[status]}`);
-			throw new SqliteError(`VDBE execution failed with status: ${StatusCode[status]}`, status);
-		} else {
-			// Should not receive OK status directly from run() based on current VDBE logic
-			// But handle defensively
-			this.busy = false;
-			this.currentRowInternal = null;
-			console.warn(`Unexpected OK status from VDBE run: ${StatusCode[status]}`);
 			return status;
+		} else {
+			// Any other status indicates an error reported by vdbe.run()
+			this.busy = false;
+			this.currentRowInternal = null;
+			const errorDetail = this.vdbe?.error?.message || `Status code ${status}`;
+			console.error(`VDBE execution failed: ${errorDetail}`);
+			// Re-throw the error, preserving the original code if available
+			throw this.vdbe?.error || new SqliteError(`VDBE execution failed with status: ${StatusCode[status] || status}`, status);
 		}
 	}
 
@@ -229,7 +221,8 @@ export class Statement {
 		const obj: Record<string, SqlValue> = {};
 		for (let i = 0; i < names.length; i++) {
 			const name = names[i];
-			if (!(name in obj)) { obj[name] = this.currentRowInternal[i].value; }
+			const value = this.currentRowInternal[i].value;
+			if (!(name in obj)) { obj[name] = value; }
 		}
 		return obj;
 	}

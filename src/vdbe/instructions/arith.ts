@@ -106,14 +106,23 @@ export function registerHandlers(handlers: Handler[]) {
   };
 
   handlers[Opcode.Concat] = (ctx, inst) => {
-    let result = '';
-    for (let i = inst.p1; i <= inst.p2; i++) {
-      const val = ctx.getMem(i);
-      if (val !== null && !(val instanceof Uint8Array)) {
-        result += String(val);
-      }
+    const reg1Offset = inst.p1;
+    const reg2Offset = inst.p2;
+    const destOffset = inst.p3;
+
+    const val1 = ctx.getMem(reg1Offset);
+    const val2 = ctx.getMem(reg2Offset);
+
+    let s1 = '';
+    if (val1 !== null && !(val1 instanceof Uint8Array)) {
+        s1 = String(val1);
     }
-    ctx.setMem(inst.p3, result);
+    let s2 = '';
+    if (val2 !== null && !(val2 instanceof Uint8Array)) {
+        s2 = String(val2);
+    }
+
+    ctx.setMem(destOffset, s1 + s2);
     return undefined;
   };
 

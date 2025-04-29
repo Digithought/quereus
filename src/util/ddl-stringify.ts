@@ -72,6 +72,11 @@ export function expressionToString(expr: AST.Expression): string {
 			return `(${expressionToString(expr.left)} ${expr.operator} ${expressionToString(expr.right)})`;
 		case 'unary':
 			return `${expr.operator} (${expressionToString(expr.expr)})`;
+		case 'function':
+			const argsStr = expr.args.map(arg => expressionToString(arg)).join(', ');
+			return `${expr.name}(${argsStr})`;
+		case 'cast':
+			return `cast(${expressionToString(expr.expr)} as ${expr.targetType})`;
 		// Add other expression types if needed (function, cast, etc.)
 		default:
 			return '?'; // Placeholder for complex expressions

@@ -118,19 +118,20 @@ export function allocateAddressHelper(compiler: Compiler, purpose: string = 'unk
  *
  * @param compiler The compiler instance
  * @param placeholder The negative placeholder value to resolve
+ * @returns The resolved target address, or -1 if placeholder was invalid
  */
-export function resolveAddressHelper(compiler: Compiler, placeholderId: number): void {
+export function resolveAddressHelper(compiler: Compiler, placeholderId: number): number {
 	if (placeholderId >= 0) {
-		console.warn(`DEBUG: Attempting to resolve a non-placeholder ID: ${placeholderId}`);
-		return;
+		//console.warn(`DEBUG: Attempting to resolve a non-placeholder ID: ${placeholderId}`);
+		return -1; // Indicate invalid placeholder
 	}
 
 	// Retrieve the intended instruction index and target array from the map
 	const placeholderInfo = compiler.pendingPlaceholders.get(placeholderId);
 
 	if (!placeholderInfo) {
-		console.warn(`DEBUG: Attempting to resolve unknown or already resolved placeholder ID: ${placeholderId}`);
-		return;
+		//console.warn(`DEBUG: Attempting to resolve unknown or already resolved placeholder ID: ${placeholderId}`);
+		return -1; // Indicate invalid placeholder
 	}
 
 	const { instructionIndex: predictedIndex, targetArray, purpose } = placeholderInfo;
@@ -139,7 +140,7 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 	// Remove the placeholder from the map now that we are resolving it
 	compiler.pendingPlaceholders.delete(placeholderId);
 
-	console.log(`DEBUG: Resolving placeholder ID ${placeholderId} (purpose: ${purpose}, predicted instr index ${predictedIndex}) to target address ${targetAddress} (current length ${targetArray.length}, subroutineDepth=${compiler.subroutineDepth})`);
+	//console.log(`DEBUG: Resolving placeholder ID ${placeholderId} (purpose: ${purpose}, predicted instr index ${predictedIndex}) to target address ${targetAddress} (current length ${targetArray.length}, subroutineDepth=${compiler.subroutineDepth})`);
 
 	// Opcodes whose P2 parameter holds a jump target address
 	const jumpOpcodes = new Set<Opcode>([
@@ -156,7 +157,7 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 		const instr = targetArray[i];
 		// Check if this opcode uses P2 for jumps and if P2 matches the placeholder ID
 		if (jumpOpcodes.has(instr.opcode) && instr.p2 === placeholderId) {
-			console.log(`DEBUG: Patching instruction at index ${i} (${Opcode[instr.opcode]}): Setting P2 from ${instr.p2} to ${targetAddress}`);
+			//console.log(`DEBUG: Patching instruction at index ${i} (${Opcode[instr.opcode]}): Setting P2 from ${instr.p2} to ${targetAddress}`);
 			instr.p2 = targetAddress;
 			patchedCount++;
 		}
@@ -166,13 +167,16 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 	if (patchedCount === 0) {
 		// This is unexpected if the placeholder was allocated and resolved.
 		// It might mean the instruction using the placeholder was never emitted, or used a different parameter.
-		console.warn(`DEBUG: Placeholder ID ${placeholderId} (purpose: ${purpose}) resolved, but no instructions were found using it in P2.`);
+		//console.warn(`DEBUG: Placeholder ID ${placeholderId} (purpose: ${purpose}) resolved, but no instructions were found using it in P2.`);
 		// Log the instruction at the predicted index for extra info, if it exists
 		if (predictedIndex >= 0 && predictedIndex < targetAddress) {
 			const predictedInstr = targetArray[predictedIndex];
-			console.log(`DEBUG: Instruction at predicted index ${predictedIndex}: ${Opcode[predictedInstr.opcode]} P1=${predictedInstr.p1} P2=${predictedInstr.p2} P3=${predictedInstr.p3}`);
+			//console.log(`DEBUG: Instruction at predicted index ${predictedIndex}: ${Opcode[predictedInstr.opcode]} P1=${predictedInstr.p1} P2=${predictedInstr.p2} P3=${predictedInstr.p3}`);
 		}
 	}
+
+	// Return the resolved address
+	return targetAddress;
 }
 
 /**

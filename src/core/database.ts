@@ -156,25 +156,35 @@ export class Database {
 				}
 
 				// Execute the statement steps
-				let result: StatusCode;
-				while ((result = await stmt.step()) === StatusCode.ROW) {
-					// Process row ONLY if it's the last statement and a callback exists
-					if (isLastStatement && callback) {
-						try {
-							const rowData = stmt.getAsObject();
-							const colNames = stmt.getColumnNames();
-							callback(rowData, colNames);
-						} catch (cbError: any) {
-							// Handle errors from the callback itself if necessary
-							console.error("Error in exec() callback:", cbError);
-							throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
-						}
+				let resultStatus: StatusCode;
+				do {
+					resultStatus = await stmt.step();
+					// Check only for actual errors, allow ROW and DONE/OK
+					if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK && resultStatus !== StatusCode.ROW) {
+						// step() should throw an error in this case, but re-throw defensively
+						throw new SqliteError(`VDBE execution failed unexpectedly with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
 					}
+				} while (resultStatus === StatusCode.ROW); // Continue stepping ONLY if a row was returned
+
+				// After the loop, status should be DONE or OK.
+				// If it's ROW, it implies an issue as exec should run to completion.
+				// If it's another error status, step() should have already thrown.
+				if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK) {
+					// This path indicates something went wrong, likely step() returning ROW unexpectedly at the end
+					throw new SqliteError(`VDBE execution finished unexpectedly with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
 				}
 
-				// Check final status code after stepping
-				if (result !== StatusCode.DONE && result !== StatusCode.OK) {
-					throw new SqliteError(`Execution failed for statement ${i + 1}: ${ast.type}`, result);
+				// Process row ONLY if it's the last statement and a callback exists
+				if (isLastStatement && callback) {
+					try {
+						const rowData = stmt.getAsObject();
+						const colNames = stmt.getColumnNames();
+						callback(rowData, colNames);
+					} catch (cbError: any) {
+						// Handle errors from the callback itself if necessary
+						console.error("Error in exec() callback:", cbError);
+						throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
+					}
 				}
 
 			} finally {

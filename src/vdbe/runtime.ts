@@ -6,6 +6,7 @@ import type { VdbeProgram } from './program.js';
 import { FunctionContext } from '../func/context.js';
 import type { VmCtx, VdbeCursor, MemoryCell } from './handler-types.js';
 import { handlers } from './handlers.js';
+import { Opcode } from './opcodes.js';
 
 /**
  * Represents an execution instance of a VDBE program.
@@ -99,6 +100,9 @@ export class VdbeRuntime implements VmCtx {
     this.error = undefined;
     this.udfContext._clear();
     this.udfContext._cleanupAuxData();
+    this.aggregateContexts?.clear();
+    this.aggregateIterator = undefined;
+    this.currentAggregateEntry = null;
 
     const closePromises: Promise<void>[] = [];
     for (let i = 0; i < this.vdbeCursors.length; i++) {
@@ -138,10 +142,13 @@ export class VdbeRuntime implements VmCtx {
           break;
         }
 
-        // Only debug log in development
-        if (process.env.NODE_ENV === 'development') {
-          console.debug(`VDBE Exec: [${currentPc}] FP=${this.framePointer} SP=${this.stackPointer} ${inst.opcode}`);
-        }
+        // Enhanced VDBE Logging
+        const p4Str = inst.p4 ? JSON.stringify(inst.p4).substring(0, 50) : ''; // Truncate long P4
+        const comment = inst.comment ? `// ${inst.comment}` : '';
+        console.debug(
+          `VDBE Exec: [${currentPc.toString().padStart(3)}] ${Opcode[inst.opcode]?.padEnd(15) ?? 'UNKNOWN'} ` +
+          `P1=${inst.p1}\tP2=${inst.p2}\tP3=${inst.p3}\tP4=${p4Str}\tP5=${inst.p5}\t${comment}`
+        );
 
         // Get the handler for this opcode
         const handler = handlers[inst.opcode];
@@ -164,6 +171,15 @@ export class VdbeRuntime implements VmCtx {
         // Check if handler returned a status code
         if (status !== undefined) {
           return status;
+        }
+
+        // Check if the instruction yielded a row
+        if (this.hasYielded) {
+          this.hasYielded = false; // Reset for next step
+          if (this.pc === currentPc) { // Ensure handler didn't already jump
+            this.pc++;
+          }
+          return StatusCode.ROW;
         }
 
         // Post-execution checks

@@ -175,7 +175,9 @@ export function createAggregateFunction(
 				} else if (typeof result === 'string') {
 					context.resultText(result);
 				} else if (typeof result === 'number') {
-					if (Number.isInteger(result)) {
+					if (Number.isSafeInteger(result)) {
+						context.resultInt(result);
+					} else if (Number.isInteger(result)) {
 						context.resultInt64(BigInt(result));
 					} else {
 						context.resultDouble(result);
