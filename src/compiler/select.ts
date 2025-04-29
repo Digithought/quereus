@@ -4,22 +4,26 @@ import { SqliteError } from '../common/errors.js';
 import { type P4FuncDef, type P4SortKey } from '../vdbe/instruction.js';
 import type { Compiler, ColumnResultInfo, HavingContext } from './compiler.js'; // Ensure HavingContext is imported
 import type * as AST from '../parser/ast.js';
-import { compileUnhandledWhereConditions } from './whereVerify.js';
 import type { ArgumentMap } from './handlers.js';
-import { analyzeSubqueryCorrelation } from './correlation.js'; // Added import
 import type { TableSchema } from '../schema/table.js'; // Import TableSchema only
 import type { ColumnSchema } from '../schema/column.js'; // Import ColumnSchema from correct location
 import type { SubqueryCorrelationResult } from './correlation.js';
 import { setupWindowSorter, type WindowSorterInfo } from './window.js'; // Import window setup function
-import { compileWindowFunctionsPass } from './window_pass.js'; // Import window functions pass
 import { expressionToString } from '../util/ddl-stringify.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
+// --- NEW IMPORTS for Refactoring ---
+import { compileSelectLoop, type ProcessRowCallback } from './select-loop.js';
+import { processRowAggregate, compileAggregateOutput } from './select-aggregate.js';
+import { processRowDirect, compileSortOutput } from './select-output.js';
+import { processRowWindow, compileWindowOutput } from './select-window.js';
+import { compileJoinCondition, emitLeftJoinNullPadding } from './join.js'; // Added emitLeftJoinNullPadding
+import { getExpressionCollation } from './utils.js'; // Import needed utility
 
 /**
  * Interface to hold consolidated state for each level in the join structure.
  * This replaces multiple parallel arrays indexed by loop level.
  */
-interface JoinLevelInfo {
+export interface JoinLevelInfo {
 	cursor: number;                // The VDBE cursor ID for this level
 	schema: TableSchema;           // Schema for the table at this level
 	alias: string;                 // Alias used for this level (for lookups)
@@ -28,9 +32,10 @@ interface JoinLevelInfo {
 	usingColumns?: string[];       // USING columns for this join
 	// VDBE State (populated during compilation)
 	loopStartAddr?: number;        // Address of loop start
-	eofAddr?: number;              // Address to jump to when EOF reached
+	eofAddr?: number;              // Address to jump to when EOF reached (for VNext)
 	joinFailAddr?: number;         // Address to jump to when join condition fails
 	matchReg?: number;             // For LEFT JOINs: register containing match flag
+	vFilterEofPlaceholder?: number; // Dedicated placeholder for VFilter jump
 }
 
 /**
@@ -265,8 +270,15 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 // --- SELECT Statement Compilation --- //
 
 // Helper function to check if a result column is an aggregate function call
-function isAggregateResultColumn(col: AST.ResultColumn): boolean {
-	return col.type === 'column' && col.expr?.type === 'function' && col.expr.isAggregate === true;
+function isAggregateResultColumn(compiler: Compiler, col: AST.ResultColumn): boolean {
+	if (col.type !== 'column' || col.expr?.type !== 'function') {
+		return false;
+	}
+	const funcExpr = col.expr as AST.FunctionExpr;
+	// Look up function definition in the schema
+	const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length);
+	// It's an aggregate if xStep or xFinal is defined
+	return !!(funcDef && (funcDef.xStep || funcDef.xFinal));
 }
 
 // Helper function to check if a result column is a window function
@@ -275,7 +287,7 @@ function isWindowFunctionColumn(col: AST.ResultColumn): boolean {
 }
 
 // Helper function to get expressions from a GROUP BY clause
-function getGroupKeyExpressions(stmt: AST.SelectStmt): AST.Expression[] {
+export function getGroupKeyExpressions(stmt: AST.SelectStmt): AST.Expression[] {
 	return stmt.groupBy || [];
 }
 
@@ -317,9 +329,22 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	});
 	// --- END PRE-PASS ---
 
+	// --- Call compileFromCoreHelper EARLY to populate alias map --- //
+	const fromCursors = compiler.compileFromCore(stmt.from);
+	if (fromCursors.length === 0 && stmt.from && stmt.from.length > 0) {
+		// This might happen if FROM contains only CTEs that aren't materialized yet
+		// Revisit if this scenario causes issues.
+		console.warn("compileFromCore returned no cursors for a non-empty FROM clause. Check CTE handling.");
+	}
+	// ------------------------------------------------------------------ //
+
 	// Pre-process join levels to gather information about the structure
 	const joinLevels = preprocessJoinLevels(compiler, stmt.from);
-	const fromCursors = joinLevels.map(level => level.cursor);
+	// Ensure fromCursors count matches joinLevels count (sanity check)
+	if (fromCursors.length !== joinLevels.length) {
+		console.error(`Mismatch between fromCursors (${fromCursors.length}) and joinLevels (${joinLevels.length})`);
+		// Potentially throw an error here or try to reconcile
+	}
 
 	// Check for window functions
 	const windowColumns = stmt.columns.filter(isWindowFunctionColumn) as {
@@ -328,13 +353,11 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		alias?: string;
 	}[];
 	const hasWindowFunctions = windowColumns.length > 0;
-	let windowSorterInfo: WindowSorterInfo | undefined;
-	let sharedFrameDefinition: AST.WindowFrame | undefined; // To store the shared frame definition
 
 	const hasGroupBy = !!stmt.groupBy && stmt.groupBy.length > 0;
-	const aggregateColumns = stmt.columns.filter(isAggregateResultColumn) as ({ type: 'column', expr: AST.FunctionExpr, alias?: string })[];
+	const aggregateColumns = stmt.columns.filter(col => isAggregateResultColumn(compiler, col)) as ({ type: 'column', expr: AST.FunctionExpr, alias?: string })[];
 	const hasAggregates = aggregateColumns.length > 0;
-	const isSimpleAggregate = hasAggregates && !hasGroupBy; // e.g., SELECT COUNT(*) FROM t
+	const isSimpleAggregate = hasAggregates && !hasGroupBy;
 	const needsAggProcessing = hasAggregates || hasGroupBy;
 
 	// Store original result/alias state
@@ -344,6 +367,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	compiler.columnAliases = [];
 
 	// Plan table access early to determine if ORDER BY is consumed
+	// Use the `fromCursors` obtained earlier
 	const allCursors = fromCursors;
 	allCursors.forEach(cursor => {
 		const schema = compiler.tableSchemas.get(cursor);
@@ -362,8 +386,29 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		});
 		if (!orderByConsumed) {
 			needsExternalSort = true;
+			// Sort key info will be constructed later, after finalColumnMap is known
 		}
 	}
+
+	// Declarations moved up
+	let windowSorterInfo: WindowSorterInfo | undefined;
+	let sharedFrameDefinition: AST.WindowFrame | undefined;
+	let ephSortCursor = -1;
+	let ephSortSchema: TableSchema | undefined;
+	let regLimit = 0;
+	let regOffset = 0;
+	let coreResultBaseReg = 0;
+	let coreNumCols = 0;
+	let coreColumnMap: ColumnResultInfo[] = [];
+	let finalResultBaseReg = 0;
+	let finalNumCols = 0;
+	let finalColumnMap: ColumnResultInfo[] = [];
+	// Aggregate specific registers
+	let regAggKey: number = 0;
+	let regAggArgs: number = 0;
+	let regAggSerializedKey: number = 0;
+	// Placeholder for innermost loop jump target
+	let placeholderVNextAddr: number = 0;
 
 	// Prepare for window functions if needed
 	if (hasWindowFunctions) {
@@ -387,14 +432,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		compiler.emit(Opcode.OpenEphemeral, winSortCursor, windowSorterInfo.schema.columns.length, 0, winSortSchema, 0, "Open Window Function Sorter");
 	}
 
-	// Compile the core SELECT structure once to get the column map
-	// This map is needed for aggregation, sorting key mapping, and LEFT JOIN padding.
-	let coreResultBaseReg = 0;
-	let coreNumCols = 0;
-	let coreColumnMap: ColumnResultInfo[] = [];
-	let finalResultBaseReg = 0; // Base reg for final output or sorter input
-	let finalNumCols = 0;       // Num cols for final output or sorter input
-	let finalColumnMap: ColumnResultInfo[] = []; // Map for final output or sorter input
 
 	// Compile core once to get the structure
 	const coreResult = compiler.compileSelectCore(stmt, fromCursors);
@@ -445,218 +482,10 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		finalNumCols = finalColumnMap.length;
 
 	} else if (needsAggProcessing) {
-		// Aggregation determines the final structure
-		// Estimate final base reg size (might need adjustment later)
-		let estimatedFinalNumCols = (stmt.groupBy?.length ?? 0) + aggregateColumns.length;
-		if (isSimpleAggregate && !hasGroupBy) estimatedFinalNumCols = aggregateColumns.length;
-		if (estimatedFinalNumCols === 0 && hasGroupBy) estimatedFinalNumCols = stmt.groupBy!.length;
-		if (estimatedFinalNumCols === 0) estimatedFinalNumCols = 1;
-		finalResultBaseReg = compiler.allocateMemoryCells(estimatedFinalNumCols); // Allocate space for aggregated results
-	} else {
-		// No aggregation, core result is the final structure before sorting
-		finalResultBaseReg = coreResultBaseReg;
-		finalNumCols = coreNumCols;
-		finalColumnMap = coreColumnMap;
-	}
-
-	// Calculate sorter info if needed, using the *final* structure map
-	let ephSortCursor = -1;
-	let ephSortSchema: TableSchema | undefined;
-	if (needsExternalSort) {
-		const sortTerms = stmt.orderBy!;
-		const keyIndices: number[] = [];
-		const directions: boolean[] = [];
-
-		// Map ORDER BY expressions to the indices in the final result columns
-		sortTerms.forEach(term => {
-			const colIndex = finalColumnMap.findIndex(info => {
-				// Attempt matching (similar logic to HAVING clause)
-				const exprAlias = (info.expr as any)?.alias?.toLowerCase();
-				const termAlias = (term.expr as any)?.alias?.toLowerCase();
-				if (termAlias && exprAlias === termAlias) return true;
-				if (term.expr.type === 'column' && info.expr?.type === 'column' && !termAlias && !(info.expr as any)?.alias) {
-					// Match by name if both are unaliased columns
-					return (term.expr as AST.ColumnExpr).name.toLowerCase() === (info.expr as AST.ColumnExpr).name.toLowerCase();
-				}
-				// Fallback to structural comparison (less reliable)
-				return JSON.stringify(term.expr) === JSON.stringify(info.expr);
-			});
-			if (colIndex === -1) {
-				throw new SqliteError(`ORDER BY term "${JSON.stringify(term.expr)}" not found in result columns`);
-			}
-			keyIndices.push(colIndex);
-			directions.push(term.direction === 'desc');
-		});
-
-		sortKeyInfo = { keyIndices, directions, type: 'sortkey' };
-
-		console.log(`Memory Sort: ${finalNumCols} cols, keys: ${keyIndices.join(',')}, dirs: ${directions.join(',')}`);
-		ephSortCursor = compiler.allocateCursor();
-		ephSortSchema = compiler.createEphemeralSchema(ephSortCursor, finalNumCols, sortKeyInfo);
-		compiler.emit(Opcode.OpenEphemeral, ephSortCursor, finalNumCols, 0, ephSortSchema, 0, "Open Ephemeral Sorter");
-	}
-
-	// Reset aggregate context map before processing rows
-	if (needsAggProcessing) {
-		compiler.emit(Opcode.AggReset, 0, 0, 0, null, 0, "Reset Aggregation Context");
-	}
-
-	// --- Initialize Limit/Offset Counters (if needed) ---
-	let regLimit = 0;
-	let regOffset = 0;
-	if (stmt.limit) {
-		regLimit = compiler.allocateMemoryCells(1);
-		compiler.compileExpression(stmt.limit, regLimit);
-		if (stmt.offset) {
-			regOffset = compiler.allocateMemoryCells(1);
-			compiler.compileExpression(stmt.offset, regOffset);
-		} else {
-			regOffset = compiler.allocateMemoryCells(1);
-			compiler.emit(Opcode.Integer, 0, regOffset, 0, null, 0, "Default OFFSET 0");
-		}
-	} else if (stmt.offset) {
-		throw new SqliteError("OFFSET requires a LIMIT clause", StatusCode.ERROR);
-	}
-	// ----------------------------------------------------
-
-	// --- Generate Nested Loops for FROM sources --- //
-	const activeOuterCursors = new Set<number>();
-	let innermostVNextAddr = 0; // Will hold address of innermost loop's VNext
-	let innermostProcessStartAddr = 0; // Start of WHERE/Aggregation/Output logic
-
-	// Setup each join level with loops, filters, and join conditions
-	joinLevels.forEach((level, index) => {
-		// Allocate addresses and registers for this level
-		level.loopStartAddr = compiler.allocateAddress();
-		level.eofAddr = compiler.allocateAddress();
-		level.joinFailAddr = compiler.allocateAddress();
-
-		// For LEFT JOIN, allocate a match register
-		if (level.joinType === 'left') {
-			level.matchReg = compiler.allocateMemoryCells(1);
-			compiler.emit(Opcode.Integer, 0, level.matchReg, 0, null, 0, `Init LEFT JOIN Match Flag [${index}] = 0`);
-		}
-
-		const cursor = level.cursor;
-		const schema = level.schema;
-
-		// --- Integrate Subquery Execution/Materialization ---
-		if (schema.subqueryAST) {
-			// TODO: Implement subquery materialization/execution logic here
-			// For now, emit a placeholder VFilter and warning.
-			console.warn(`Execution logic for subquery source '${schema.name}' (cursor ${cursor}) is not yet implemented.`);
-			// Placeholder VFilter: Assumes subquery is materialized and ready to scan.
-			// A real implementation would likely involve compiling the subqueryAST
-			// into an ephemeral table just before this loop or upon first access.
-			compiler.emit(Opcode.VFilter, cursor, level.eofAddr, 0, { idxNum: 0, idxStr: null, nArgs: 0 }, 0, `Filter/Scan Subquery Cursor ${index} (IMPLEMENTATION NEEDED)`);
-		} else {
-			// Standard VFilter logic for base tables/vtabs
-			const planningInfo = compiler.cursorPlanningInfo.get(cursor);
-			let filterP4: any = { idxNum: 0, idxStr: null, nArgs: 0 };
-			let regArgsStart = 0;
-			if (planningInfo && planningInfo.idxNum !== 0) {
-				const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-				planningInfo.usage.forEach((usage, constraintIdx) => {
-					if (usage.argvIndex > 0) {
-						const expr = planningInfo.constraintExpressions?.get(constraintIdx);
-						if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx}`, StatusCode.INTERNAL);
-						while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
-						argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
-					}
-				});
-				const finalArgsToCompile = argsToCompile.filter(a => a !== null);
-				if (finalArgsToCompile.length > 0) {
-					regArgsStart = compiler.allocateMemoryCells(finalArgsToCompile.length);
-					finalArgsToCompile.forEach((argInfo, i) => {
-						const correlation = analyzeSubqueryCorrelation(compiler, argInfo.expr, activeOuterCursors);
-						compiler.compileExpression(argInfo.expr, regArgsStart + i, correlation);
-					});
-				}
-				filterP4 = { idxNum: planningInfo.idxNum, idxStr: planningInfo.idxStr, nArgs: finalArgsToCompile.length };
-			}
-			compiler.emit(Opcode.VFilter, cursor, level.eofAddr, regArgsStart, filterP4, 0, `Filter/Scan Cursor ${index}`);
-		}
-		// --- End Subquery/Standard VFilter Logic ---
-
-		compiler.resolveAddress(level.loopStartAddr!);
-		compiler.verifyWhereConstraints(cursor, level.joinFailAddr!); // Verify constraints not omitted by plan
-
-		// Compile explicit JOIN condition (ON/USING) if applicable
-		if (index > 0) {
-			if (level.joinType !== 'cross') {
-				compileJoinCondition(compiler, level, joinLevels, index, level.joinFailAddr!);
-			}
-		}
-
-		// If this row satisfies join conditions, set match flag for the *outer* row (if LEFT JOIN)
-		if (index > 0) {
-			const outerLevel = joinLevels[index - 1];
-			if (outerLevel.joinType === 'left' && outerLevel.matchReg !== undefined) {
-				compiler.emit(Opcode.Integer, 1, outerLevel.matchReg, 0, null, 0, `Set LEFT JOIN Match Flag [${index-1}] = 1`);
-			}
-		}
-		activeOuterCursors.add(cursor);
-	}); // End of FROM loop setup
-
-	// --- Innermost Processing --- //
-	innermostProcessStartAddr = compiler.getCurrentAddress();
-	const innermostWhereFailTarget = compiler.allocateAddress(); // Target if WHERE fails
-
-	// Compile remaining WHERE conditions not handled by plans/joins
-	compileUnhandledWhereConditions(compiler, stmt.where, fromCursors, innermostWhereFailTarget);
-
-	// Re-calculate core results inside the loop to have current row values
-	const { resultBaseReg: currentRowResultBase, numCols: currentRowNumCols, columnMap: currentRowColumnMap } =
-		compiler.compileSelectCore(stmt, fromCursors); // Re-compile expressions for current row
-	if (currentRowNumCols !== coreNumCols) {
-		throw new Error("Internal: Column count mismatch during loop recompilation");
-	}
-
-	if (hasWindowFunctions && windowSorterInfo) {
-		// --- Step 1: Calculate the row values and store in the window sorter ---
-		// Populate window sorter registers with the current row data
-		const sorterDataReg = windowSorterInfo.dataBaseReg;
-		windowSorterInfo.schema.columns.forEach((col, i) => {
-			const sourceExpr = windowSorterInfo.indexToExpression.get(i);
-			if (sourceExpr) {
-				// This is a data column needed for partition/order/args
-				// Find the expression's value in the current row
-				const coreColInfo = currentRowColumnMap.find(info =>
-					info.expr && expressionToString(info.expr) === expressionToString(sourceExpr));
-
-				if (coreColInfo) {
-					// Move value from core result register to sorter data register
-					compiler.emit(Opcode.Move, coreColInfo.targetReg, sorterDataReg + i, 1, null, 0,
-						`Move ${i}: ${expressionToString(sourceExpr).substring(0, 20)}`);
-				} else {
-					// Column not found in current row (shouldn't happen)
-					compiler.emit(Opcode.Null, 0, sorterDataReg + i, 1, null, 0,
-						`NULL for sorter col ${i} (expr not found in current row)`);
-				}
-			} else {
-				// This is a placeholder for window function result (will be calculated in window pass)
-				compiler.emit(Opcode.Null, 0, sorterDataReg + i, 1, null, 0,
-					`NULL placeholder for window result col ${i}`);
-			}
-		});
-
-		// Insert the data into the window sorter
-		const recordReg = compiler.allocateMemoryCells(1);
-		const rowidReg = compiler.allocateMemoryCells(1);
-		compiler.emit(Opcode.Null, 0, rowidReg, 0, null, 0, "Window Sort: NULL Rowid");
-		compiler.emit(Opcode.MakeRecord, sorterDataReg, windowSorterInfo.schema.columns.length, recordReg, null, 0,
-			"Make Window Sort Record");
-		// Use a combined data array that starts with rowid
-		const insertDataReg = compiler.allocateMemoryCells(windowSorterInfo.schema.columns.length + 1);
-		compiler.emit(Opcode.Move, rowidReg, insertDataReg, 1, null, 0, "Copy rowid for insert");
-		compiler.emit(Opcode.Move, sorterDataReg, insertDataReg + 1, windowSorterInfo.schema.columns.length, null, 0, "Copy data for insert");
-		compiler.emit(Opcode.VUpdate, windowSorterInfo.schema.columns.length + 1, insertDataReg, windowSorterInfo.cursor, { table: windowSorterInfo.schema }, 0,
-			"Insert Row into Window Sorter");
-
-	} else if (needsAggProcessing) {
-		// --- Final Aggregation Result Output --- //
+		// Determine final structure for Aggregation
 		finalColumnMap = [];
-		let currentResultReg = finalResultBaseReg;
+		let currentResultReg = compiler.allocateMemoryCells(1); // Start allocating regs for final results
+		finalResultBaseReg = currentResultReg; // Store the base
 
 		// Add group key columns to map (only if GROUP BY exists)
 		if (hasGroupBy) {
@@ -669,319 +498,129 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: aggCol.expr });
 		});
 		finalNumCols = finalColumnMap.length;
+
+		// Handle cases like SELECT COUNT(*) where finalColumnMap might be empty but we need a result column
 		if (finalNumCols === 0 && !hasGroupBy) {
-			finalNumCols = 1; // Ensure at least one cell for simple aggregate even if no columns are selected (e.g. SELECT COUNT(*))
-			// Allocate the cell if it wasn't already part of finalResultBaseReg
-			if (finalResultBaseReg + 1 > currentResultReg) {
+			finalNumCols = 1; // Ensure at least one cell for simple aggregate
+			// Re-allocate base register if needed (should usually be covered by initial allocation)
+			if (finalResultBaseReg === 0) { // Check if it wasn't allocated
 				finalResultBaseReg = compiler.allocateMemoryCells(1);
 			}
+			// Add a placeholder entry if needed for alias setting?
+			// Or rely on compileAggregateOutput to handle this case?
+			// Let's assume compileAggregateOutput handles the AggFinal into finalResultBaseReg correctly.
 		}
 
-		// Set column names based on the final structure
+		// Set column aliases based on the final structure *now*
+		// This is needed *before* potentially setting up the sorter based on aliases
 		compiler.columnAliases = finalColumnMap.map((info, idx) => {
 			return (info.expr as any)?.alias
 				?? (info.expr?.type === 'column' ? (info.expr as AST.ColumnExpr).name : `col${idx}`);
 		});
 
-		if (hasGroupBy) {
-			// --- GROUP BY Aggregation Output (Looping) ---
-			const addrAggLoopStart = compiler.allocateAddress();
-			const addrAggLoopEnd = compiler.allocateAddress();
-			const regMapIterator = compiler.allocateMemoryCells(1); // Conceptual iterator register
-			const regGroupKey = compiler.allocateMemoryCells(1);
-			const regAggContext = compiler.allocateMemoryCells(1); // Holds accumulator from iterator
-
-			compiler.emit(Opcode.AggIterate, regMapIterator, 0, 0, null, 0, "Start Aggregate Result Iteration");
-			compiler.resolveAddress(addrAggLoopStart);
-			compiler.emit(Opcode.AggNext, regMapIterator, addrAggLoopEnd, 0, null, 0, "Next Aggregate Group");
-
-			// Get Key (for completeness/debug, not used by AggFinal now) and Context for the current group
-			compiler.emit(Opcode.AggKey, regMapIterator, regGroupKey, 0, null, 0, "Get Group Key");
-			compiler.emit(Opcode.AggContext, regMapIterator, regAggContext, 0, null, 0, "Get Aggregate Context");
-
-			// Reconstruct Output Row (Group Keys + Aggregates) using finalColumnMap
-			let groupKeyIndex = 0;
-			finalColumnMap.forEach(info => {
-				if (info.expr?.type === 'function' && info.expr.isAggregate) {
-					// It's an aggregate result
-					const funcExpr = info.expr as AST.FunctionExpr;
-					const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
-					const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-					// Pass the context register offset (regAggContext) to AggFinal
-					compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
-				} else {
-					// It's a group key result
-					compiler.emit(Opcode.AggGroupValue, regMapIterator, groupKeyIndex, info.targetReg, null, 0, `Output Group Key ${groupKeyIndex}`);
-					groupKeyIndex++;
-				}
-			});
-
-			// --- Compile HAVING clause --- //
-			const addrHavingFail = compiler.allocateAddress();
-			if (stmt.having) {
-				const havingReg = compiler.allocateMemoryCells(1);
-				const havingContext: HavingContext = { finalColumnMap };
-				compiler.compileExpression(stmt.having, havingReg, undefined, havingContext);
-				compiler.emit(Opcode.IfFalse, havingReg, addrHavingFail, 0, null, 0, "Check HAVING Clause");
-			}
-			// --------------------------- //
-
-			// Store in ephemeral sort table or output directly
-			if (needsExternalSort) {
-				const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
-				compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Agg Sort: NULL Rowid");
-				compiler.emit(Opcode.Move, finalResultBaseReg, insertDataReg + 1, finalNumCols, null, 0, "Agg Sort: Copy group result");
-				compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Agg Sort: Insert Group Row");
-			} else {
-				// Apply Limit/Offset for non-sorted aggregated results
-				const addrSkipAggRow = compiler.allocateAddress();
-				if (regLimit > 0) {
-					const addrPostAggOffset = compiler.allocateAddress();
-					compiler.emit(Opcode.IfZero, regOffset, addrPostAggOffset, 0, null, 0, "Agg Check Offset == 0");
-					compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Agg Decrement Offset");
-					compiler.emit(Opcode.Goto, 0, addrSkipAggRow, 0, null, 0, "Agg Skip Row (Offset)");
-					compiler.resolveAddress(addrPostAggOffset);
-				}
-
-				compiler.emit(Opcode.ResultRow, finalResultBaseReg, finalNumCols, 0, null, 0, "Output Aggregate Group Row");
-
-				if (regLimit > 0) {
-					const addrAggLimitNotZero = compiler.allocateAddress();
-					compiler.emit(Opcode.IfZero, regLimit, addrAggLimitNotZero, 0, null, 0, "Agg Skip Limit Check if 0");
-					compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Agg Decrement Limit");
-					compiler.emit(Opcode.IfZero, regLimit, addrAggLoopEnd, 0, null, 0, "Agg Check Limit Reached"); // Jump to end of agg loop
-					compiler.resolveAddress(addrAggLimitNotZero);
-				}
-				compiler.resolveAddress(addrSkipAggRow); // Target if row skipped by offset
-			}
-
-			compiler.resolveAddress(addrHavingFail); // Jump here if HAVING is false
-			compiler.emit(Opcode.Goto, 0, addrAggLoopStart, 0, null, 0, "Loop Aggregate Results");
-			compiler.resolveAddress(addrAggLoopEnd);
-		} else {
-			// --- Simple Aggregate Output (No GROUP BY - Always one row) ---
-			const regSimpleAggKey = compiler.allocateMemoryCells(1);
-			const regAggContext = compiler.allocateMemoryCells(1); // Holds accumulator from AggGetContext
-			// Get the constant key "0" used during AggStep
-			compiler.emit(Opcode.String8, 0, regSimpleAggKey, 0, '0', 0, "Get simple aggregate key '0'");
-			// Retrieve the final aggregate context (accumulator) using the key
-			compiler.emit(Opcode.AggGetContext, regSimpleAggKey, regAggContext, 0, null, 0, "Get simple aggregate context");
-
-			// Compute final aggregate values
-			finalColumnMap.forEach(info => {
-				if (info.expr?.type === 'function' && info.expr.isAggregate) {
-					const funcExpr = info.expr as AST.FunctionExpr;
-					const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
-					const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-					// Pass the context register offset (regAggContext) to AggFinal
-					compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
-				} else if (info.expr) {
-					// This case shouldn't happen with simple aggregates (no group keys)
-					// But if a non-aggregate expression somehow slipped through, evaluate it.
-					compiler.compileExpression(info.expr, info.targetReg);
-				} else if (finalNumCols === 1 && finalColumnMap.length === 0) {
-					// Handle SELECT COUNT(*) which results in finalNumCols=1 but no finalColumnMap entry
-					// AggFinal should have populated the targetReg (finalResultBaseReg)
-					// No extra emission needed here.
-				} else {
-					// Fallback: Put NULL in the result register
-					compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, "NULL for unexpected simple agg col");
-				}
-			});
-
-			// --- Compile HAVING clause --- //
-			const addrHavingFailSimple = compiler.allocateAddress(); // Address to jump to if HAVING fails
-			const addrPastHavingSimple = compiler.allocateAddress(); // Address after HAVING check
-			if (stmt.having) {
-				const havingReg = compiler.allocateMemoryCells(1);
-				const havingContext: HavingContext = { finalColumnMap }; // Use the final column map
-				compiler.compileExpression(stmt.having, havingReg, undefined, havingContext);
-				// If HAVING is false, jump past the output/sort logic
-				compiler.emit(Opcode.IfFalse, havingReg, addrHavingFailSimple, 0, null, 0, "Check HAVING Clause (Simple Agg)");
-			}
-			// --------------------------- //
-
-			// Store in ephemeral sort table or output directly (only if HAVING passed)
-			if (needsExternalSort) {
-				const insertDataReg = compiler.allocateMemoryCells(finalNumCols + 1);
-				compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Simple Agg Sort: NULL Rowid");
-				compiler.emit(Opcode.Move, finalResultBaseReg, insertDataReg + 1, finalNumCols, null, 0, "Simple Agg Sort: Copy result");
-				compiler.emit(Opcode.VUpdate, finalNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Simple Agg Sort: Insert Row");
-			} else {
-				// Apply Limit/Offset (will always be 0 or 1 row for simple agg)
-				const addrSkipOutputSimple = compiler.allocateAddress();
-				if (regLimit > 0) {
-					// Only output if offset is 0
-					compiler.emit(Opcode.IfZero, regOffset, addrSkipOutputSimple, 1, null, 0, "Simple Agg Check Offset != 0");
-				}
-				// Output the single row
-				compiler.emit(Opcode.ResultRow, finalResultBaseReg, finalNumCols, 0, null, 0, "Output Simple Aggregate Row");
-				compiler.resolveAddress(addrSkipOutputSimple);
-			}
-			compiler.emit(Opcode.Goto, 0, addrPastHavingSimple, 0, null, 0, "Skip HAVING fail target");
-			compiler.resolveAddress(addrHavingFailSimple); // Jump here if HAVING fails
-			compiler.resolveAddress(addrPastHavingSimple); // Continue after simple agg output/having logic
-		}
+	} else {
+		// Direct output uses core structure initially
+		finalResultBaseReg = coreResultBaseReg;
+		finalColumnMap = coreColumnMap;
+		finalNumCols = coreNumCols;
 	}
 
-	// Jump to the VNext of the innermost loop
-	const placeholderVNextAddr = compiler.allocateAddress();
-	compiler.emit(Opcode.Goto, 0, placeholderVNextAddr, 0, null, 0, "Goto Innermost VNext");
+	// --- Build Sort Key Info and Prepare External Sorter (if needed) ---
+	if (needsExternalSort && !hasWindowFunctions) {
+		const columnMapForSort = needsAggProcessing ? finalColumnMap : coreColumnMap;
+		const keyIndices: number[] = [];
+		const collations: string[] = [];
+		const directions: boolean[] = []; // true for DESC, false for ASC
 
-	// Resolve the target for WHERE failure - jump to VNext
-	compiler.resolveAddress(innermostWhereFailTarget);
-	compiler.emit(Opcode.Goto, 0, placeholderVNextAddr, 0, null, 0, "WHERE Failed, Goto VNext");
-	// --- End Innermost Processing --- //
-
-	// --- Generate Loop Closing/VNext and LEFT JOIN NULL Padding --- //
-	for (let i = joinLevels.length - 1; i >= 0; i--) {
-		const level = joinLevels[i];
-
-		// Resolve the target for join/where failure at this level
-		compiler.resolveAddress(level.joinFailAddr!);
-
-		// Resolve the target for the GOTO after innermost processing (points to VNext)
-		const currentVNextAddr = compiler.getCurrentAddress(); // Address of this VNext
-		if (i === joinLevels.length - 1) {
-			// Resolve the placeholder VNext targets for the innermost level
-			compiler.resolveAddress(placeholderVNextAddr);
-		}
-
-		compiler.emit(Opcode.VNext, level.cursor, level.eofAddr!, 0, null, 0, `VNext Cursor ${i}`);
-		compiler.emit(Opcode.Goto, 0, level.loopStartAddr!, 0, null, 0, `Goto LoopStart ${i}`);
-		compiler.resolveAddress(level.eofAddr!);
-
-		// LEFT JOIN EOF NULL Padding
-		if (level.joinType === 'left' && level.matchReg !== undefined) {
-			emitLeftJoinNullPadding(compiler, level, joinLevels, i, coreColumnMap, innermostProcessStartAddr);
-		}
-
-		// Reset match flag for the next outer iteration
-		if (level.matchReg !== undefined) {
-			compiler.emit(Opcode.Integer, 0, level.matchReg, 0, null, 0, `Reset LEFT JOIN Match Flag [${i}] before outer VNext/EOF`);
-		}
-		activeOuterCursors.delete(level.cursor);
-	} // --- End loop closing --- //
-
-	// --- Window Function Processing (Post-looping phase) ---
-	if (hasWindowFunctions && windowSorterInfo) {
-		// Now that all rows are in the sorter, sort it
-		compiler.emit(Opcode.Sort, windowSorterInfo.cursor, 0, 0, null, 0, "Sort Window Function Data");
-
-		// We need a new set of registers for the final output row
-		// since the window functions need to be calculated
-		const outputBaseReg = compiler.allocateMemoryCells(finalColumnMap.length);
-
-		// Set up the loop to iterate through the sorter and calculate window functions
-		const addrWinLoopStart = compiler.allocateAddress();
-		const addrWinLoopEnd = compiler.allocateAddress();
-
-		// Run the window functions pass with the frame definition
-		compileWindowFunctionsPass(compiler, windowSorterInfo, outputBaseReg, finalColumnMap.length, sharedFrameDefinition);
-
-		// Now loop through the sorted data again and build final output
-		compiler.emit(Opcode.Rewind, windowSorterInfo.cursor, addrWinLoopEnd, 0, null, 0, "Rewind Window Sorter for Output");
-		compiler.resolveAddress(addrWinLoopStart);
-
-		// For each output column, move data from either the sorter or the calculated function result
-		finalColumnMap.forEach((colInfo, i) => {
-			if (colInfo.expr?.type === 'windowFunction') {
-				// Window function result is already in the placeholder register
-				const placeholderInfo = windowSorterInfo!.windowResultPlaceholders.get(colInfo.expr);
-				if (!placeholderInfo) {
-					throw new SqliteError(`Internal error: Window placeholder not found for output column ${i}`, StatusCode.INTERNAL);
+		stmt.orderBy!.forEach(orderTerm => {
+			let found = false;
+			const exprStr = expressionToString(orderTerm.expr);
+			for (let i = 0; i < columnMapForSort.length; i++) {
+				const colInfo = columnMapForSort[i];
+				if (colInfo.expr && expressionToString(colInfo.expr) === exprStr) {
+					keyIndices.push(i); // Index within the ephemeral sorter table
+					// Get collation directly from the expression
+					const collation = getExpressionCollation(compiler, orderTerm.expr).toUpperCase()
+						|| 'BINARY'; // Default to BINARY if somehow not determined
+					collations.push(collation);
+					// Convert direction to uppercase for comparison
+					directions.push(orderTerm.direction?.toUpperCase() === 'DESC');
+					found = true;
+					break;
 				}
-				compiler.emit(Opcode.Move, placeholderInfo.resultReg, outputBaseReg + i, 1, null, 0,
-					`Move window result to output ${i}`);
-			} else {
-				// Regular column - read from sorter
-				const sorterColIdx = colInfo.sourceColumnIndex;
-				compiler.emit(Opcode.VColumn, windowSorterInfo!.cursor, sorterColIdx, outputBaseReg + i, null, 0,
-					`Read sorter col ${sorterColIdx} to output ${i}`);
+			}
+			if (!found) {
+				// Handle ORDER BY expressions not directly in the SELECT list (e.g., ORDER BY hidden_col)
+				// This requires adding the expression to the sorter table which isn't implemented yet.
+				throw new SqliteError(`ORDER BY expression '${exprStr}' not found in result columns. Sorting by complex expressions not directly selected is not yet supported.`, StatusCode.ERROR);
 			}
 		});
 
-		// Apply LIMIT/OFFSET if present
-		const addrSkipWinRow = compiler.allocateAddress();
-		if (regLimit > 0) {
-			const addrPostWinOffset = compiler.allocateAddress();
-			compiler.emit(Opcode.IfZero, regOffset, addrPostWinOffset, 0, null, 0, "Window: Check Offset == 0");
-			compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Window: Decrement Offset");
-			compiler.emit(Opcode.Goto, 0, addrSkipWinRow, 0, null, 0, "Window: Skip Row (Offset)");
-			compiler.resolveAddress(addrPostWinOffset);
+		// Add the required 'type' property and ensure it's not null
+		if (keyIndices.length > 0) { // Only create sortKeyInfo if there are keys
+			sortKeyInfo = { type: 'sortkey', keyIndices, collations, directions };
 		}
 
-		// Output the window function row
-		compiler.emit(Opcode.ResultRow, outputBaseReg, finalColumnMap.length, 0, null, 0,
-			"Output Window Function Row");
+		ephSortCursor = compiler.allocateCursor();
+		// Pass sortKeyInfo which is now P4SortKey | null, handle null case
+		ephSortSchema = compiler.createEphemeralSchema(ephSortCursor, finalNumCols, sortKeyInfo ?? undefined);
+		compiler.emit(Opcode.OpenEphemeral, ephSortCursor, finalNumCols, 0, ephSortSchema, 0, "Open ORDER BY Sorter");
+	}
 
-		// Apply LIMIT check
-		if (regLimit > 0) {
-			const addrWinLimitNotZero = compiler.allocateAddress();
-			compiler.emit(Opcode.IfZero, regLimit, addrWinLimitNotZero, 0, null, 0, "Window: Skip Limit Check if 0");
-			compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Window: Decrement Limit");
-			compiler.emit(Opcode.IfZero, regLimit, addrWinLoopEnd, 0, null, 0, "Window: Check Limit Reached");
-			compiler.resolveAddress(addrWinLimitNotZero);
-		}
+	// --- Define Row Processing Callback ---
+	let processRowCallback: ProcessRowCallback;
+	if (hasWindowFunctions && windowSorterInfo) {
+		processRowCallback = (
+			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
+		) => processRowWindow(compiler, stmt, coreColumnMap, windowSorterInfo!); // Use core map for window input
+	} else if (needsAggProcessing) {
+		processRowCallback = (
+			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
+		) => processRowAggregate(compiler, stmt, aggregateColumns, regAggKey, regAggArgs, regAggSerializedKey, hasGroupBy);
+	} else {
+		processRowCallback = (
+			_compiler, _stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner
+		) => processRowDirect(
+			compiler, stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner,
+			needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset
+		);
+	}
 
-		compiler.resolveAddress(addrSkipWinRow);
-		// Advance to next row in the sorted window data
-		compiler.emit(Opcode.VNext, windowSorterInfo.cursor, addrWinLoopEnd, 0, null, 0, "Next Window Row");
-		compiler.emit(Opcode.Goto, 0, addrWinLoopStart, 0, null, 0, "Window Loop");
-		compiler.resolveAddress(addrWinLoopEnd);
+	// --- Compile Main Loop ---
+	const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compileSelectLoop(
+		compiler,
+		stmt,
+		joinLevels,
+		fromCursors,
+		processRowCallback
+	);
 
-		// Close window sorter cursor
+	// --- DEFINE finalExitAddr Placeholder --- //
+	// This is the target address for jumps when LIMIT is reached or processing finishes.
+	const finalExitAddr = compiler.allocateAddress("finalSelectExit");
+
+	// Resolve the placeholder for the end of all loops (jumps here before post-processing)
+	compiler.resolveAddress(innermostLoopEndAddrPlaceholder);
+
+	// --- Compile Post-Loop Output Processing ---
+	if (hasWindowFunctions && windowSorterInfo) {
+		compileWindowOutput(compiler, windowSorterInfo, finalColumnMap, sharedFrameDefinition, regLimit, regOffset, finalExitAddr);
+	} else if (needsAggProcessing) {
+		compileAggregateOutput(compiler, stmt, finalColumnMap, finalResultBaseReg, finalNumCols, needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset, hasGroupBy, aggregateColumns, finalExitAddr);
+	} else if (needsExternalSort) {
+		compileSortOutput(compiler, ephSortCursor, ephSortSchema!, finalNumCols, regLimit, regOffset, finalExitAddr);
+	}
+
+	// Resolve the final exit point AFTER all post-processing
+	compiler.resolveAddress(finalExitAddr);
+
+	// --- Close Cursors ---
+	if (ephSortCursor !== -1) {
+		compiler.emit(Opcode.Close, ephSortCursor, 0, 0, null, 0, "Close ORDER BY Sorter");
+	}
+	if (windowSorterInfo) {
 		compiler.emit(Opcode.Close, windowSorterInfo.cursor, 0, 0, null, 0, "Close Window Sorter");
 	}
-
-	// --- Output from Sorter --- //
-	if (needsExternalSort && !hasWindowFunctions) {
-		const addrSortLoopStart = compiler.allocateAddress();
-		const addrSortLoopEnd = compiler.allocateAddress();
-		const sortedResultBaseReg = compiler.allocateMemoryCells(finalNumCols); // Num cols from sorter matches final output
-
-		compiler.emit(Opcode.Rewind, ephSortCursor, addrSortLoopEnd, 0, null, 0, "Rewind Sorter");
-		compiler.resolveAddress(addrSortLoopStart);
-
-		// Apply Limit/Offset during sorter output
-		const addrSkipSortedRow = compiler.allocateAddress();
-		if (regLimit > 0) {
-			// Offset Check
-			const addrPostSortOffsetCheck = compiler.allocateAddress();
-			compiler.emit(Opcode.IfZero, regOffset, addrPostSortOffsetCheck, 0, null, 0, "Sort Check Offset == 0");
-			compiler.emit(Opcode.Subtract, 1, regOffset, regOffset, null, 0, "Sort Decrement Offset");
-			compiler.emit(Opcode.Goto, 0, addrSkipSortedRow, 0, null, 0, "Sort Skip Row (Offset)");
-			compiler.resolveAddress(addrPostSortOffsetCheck);
-		}
-
-		// Read sorted row from ephemeral table
-		for (let i = 0; i < finalNumCols; i++) {
-			compiler.emit(Opcode.VColumn, ephSortCursor, i, sortedResultBaseReg + i, 0, 0, `Read Sorted Col ${i}`);
-		}
-		// Output the sorted row
-		compiler.emit(Opcode.ResultRow, sortedResultBaseReg, finalNumCols, 0, null, 0, "Output sorted row");
-
-		// Limit Check
-		if (regLimit > 0) {
-			const addrSortLimitNotZero = compiler.allocateAddress();
-			compiler.emit(Opcode.IfZero, regLimit, addrSortLimitNotZero, 0, null, 0, "Sort Skip Limit Check if already 0");
-			compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Sort Decrement Limit");
-			compiler.emit(Opcode.IfZero, regLimit, addrSortLoopEnd, 0, null, 0, "Sort Check Limit Reached"); // Jump to end if limit hit
-			compiler.resolveAddress(addrSortLimitNotZero);
-		}
-
-		// Advance sorter cursor
-		compiler.resolveAddress(addrSkipSortedRow); // Target for offset GOTO
-		compiler.emit(Opcode.VNext, ephSortCursor, addrSortLoopEnd, 0, null, 0, "VNext Sorter");
-		compiler.emit(Opcode.Goto, 0, addrSortLoopStart, 0, null, 0, "Loop Sorter Results");
-
-		compiler.resolveAddress(addrSortLoopEnd);
-		// Close sorter cursor AND original cursors
-		compiler.emit(Opcode.Close, ephSortCursor, 0, 0, null, 0, "Close Sorter");
-	}
-	// ------------------------ //
-
-	// Close FROM cursors
 	joinLevels.forEach(level => {
 		compiler.emit(Opcode.Close, level.cursor, 0, 0, null, 0, `Close FROM Cursor ${level.cursor}`);
 	});
@@ -1005,7 +644,7 @@ function compileSelectNoFrom(compiler: Compiler, stmt: AST.SelectStmt): void {
 	// --- Compile WHERE clause if present (rare for no FROM, but possible) --- //
 	if (stmt.where) {
 		const whereReg = compiler.allocateMemoryCells(1);
-		const addrSkipResult = compiler.allocateAddress();
+		const addrSkipResult = compiler.allocateAddress('noFromResultSkip');
 		compiler.compileExpression(stmt.where, whereReg);
 		compiler.emit(Opcode.IfFalse, whereReg, addrSkipResult, 0, null, 0, "Check WHERE for constant SELECT");
 		compiler.emit(Opcode.ResultRow, resultBaseReg, numCols, 0, null, 0, "Output constant result row");
@@ -1135,168 +774,4 @@ export function compileSelectCoreStatement(
 	compiler.resultColumns = savedResultColumns;
 	compiler.columnAliases = savedColumnAliases;
 	return { resultBaseReg: resultBase, numCols: actualNumCols, columnMap };
-}
-
-// --- Helper Functions Moved from statement.ts --- //
-
-function findJoinNodeConnecting(
-	sources: AST.FromClause[] | undefined,
-	leftLevelIndex: number,
-	rightLevelIndex: number,
-	compiler: Compiler // Needs compiler to resolve aliases if necessary
-): AST.JoinClause | undefined {
-	if (!sources || sources.length !== 1 || sources[0].type !== 'join') return undefined;
-
-	// Helper to traverse the join tree and track levels
-	const findNode = (node: AST.FromClause, level: number): { node: AST.JoinClause | null, nextLevel: number } => {
-		if (node.type === 'table') {
-			return { node: null, nextLevel: level + 1 };
-		} else if (node.type === 'join') {
-			// Recursively find the levels of left and right children
-			const leftResult = findNode(node.left, level);
-			// Check if the target node was found in the left subtree
-			if (leftResult.node) return leftResult;
-
-			const rightResult = findNode(node.right, leftResult.nextLevel);
-			// Check if the target node was found in the right subtree
-			if (rightResult.node) return rightResult;
-
-			// Check if the *current* join node connects the target levels
-			// The level indices correspond to the order they appear in the flattened `fromCursors` array
-			// leftResult.nextLevel - 1 is the index of the rightmost table in the left subtree
-			// rightResult.nextLevel - 1 is the index of the rightmost table in the right subtree
-			// We need to check if the leftLevelIndex is the max index of the left subtree,
-			// and rightLevelIndex is the max index of the right subtree.
-			if (leftResult.nextLevel - 1 === leftLevelIndex && rightResult.nextLevel - 1 === rightLevelIndex) {
-				return { node: node, nextLevel: rightResult.nextLevel };
-			}
-
-			// If not this node, return the level reached by the right subtree
-			return { node: null, nextLevel: rightResult.nextLevel };
-		} else {
-			throw new Error("Invalid node type in FROM clause during join node search");
-		}
-	}
-	return findNode(sources[0], 0).node ?? undefined;
-}
-
-function getJoinTypeForLevel(
-	sources: AST.FromClause[] | undefined,
-	level: number // 0-based index in the flattened cursor list
-): AST.JoinClause['joinType'] | 'cross' | undefined { // Include cross explicitly
-	if (level === 0 || !sources || sources.length === 0) return undefined; // Base table or no sources
-
-	// We need to map the level index back to the join node in the AST
-	// This requires traversing the AST similarly to findJoinNodeConnecting
-	const findJoinForLevel = (node: AST.FromClause, currentLevel: number): { joinNode: AST.JoinClause | null, nextLevel: number } => {
-		if (node.type === 'table') {
-			return { joinNode: null, nextLevel: currentLevel + 1 };
-		} else if (node.type === 'join') {
-			const leftResult = findJoinForLevel(node.left, currentLevel);
-			if (leftResult.joinNode) return leftResult; // Found in left subtree
-
-			const rightResult = findJoinForLevel(node.right, leftResult.nextLevel);
-			if (rightResult.joinNode) return rightResult; // Found in right subtree
-
-			// Check if the *right* side of *this* join corresponds to the target level
-			if (rightResult.nextLevel - 1 === level) {
-				return { joinNode: node, nextLevel: rightResult.nextLevel };
-			}
-
-			return { joinNode: null, nextLevel: rightResult.nextLevel };
-		} else {
-			throw new Error("Invalid node type in FROM clause during join type search");
-		}
-	}
-
-	// Flatten sources if multiple top-level elements (e.g., implicit cross join)
-	// For now, assume single root source or handle it earlier
-	if (sources.length > 1) {
-		// This implies an implicit cross join between top-level sources
-		// A level > 0 means it's part of the second or later source, thus effectively cross join
-		// Or it could be part of a sub-join within one of the sources.
-		// This logic needs refinement for complex implicit joins.
-		// Let's assume standard JOIN syntax for now.
-		return 'cross'; // Simplified assumption
-	}
-
-	const result = findJoinForLevel(sources[0], 0);
-	return result.joinNode?.joinType;
-}
-
-function compileJoinCondition(
-	compiler: Compiler,
-	level: JoinLevelInfo,     // Current level (right side of the join)
-	allJoinLevels: JoinLevelInfo[], // All levels for context
-	levelIndex: number,       // Index of the current level
-	addrJoinFail: number      // Address to jump to if condition fails
-): void {
-	if (!level.joinType || level.joinType === 'cross') return; // No condition for CROSS
-
-	const rightCursor = level.cursor;
-
-	// Get the left cursor - the previous level in the join sequence
-	if (levelIndex <= 0) {
-		throw new SqliteError(`Internal error: compileJoinCondition called with invalid level index ${levelIndex}`, StatusCode.INTERNAL);
-	}
-
-	const leftLevel = allJoinLevels[levelIndex - 1];
-	const leftCursor = leftLevel.cursor;
-	const leftSchema = leftLevel.schema;
-	const rightSchema = level.schema;
-
-	if (level.condition) {
-		// Compile the ON expression
-		const regJoinCondition = compiler.allocateMemoryCells(1);
-		compiler.compileExpression(level.condition, regJoinCondition);
-		compiler.emit(Opcode.IfFalse, regJoinCondition, addrJoinFail, 0, null, 0, `JOIN: Check ON Condition`);
-	} else if (level.usingColumns) {
-		// Compile the USING condition
-		const regLeftCol = compiler.allocateMemoryCells(1);
-		const regRightCol = compiler.allocateMemoryCells(1);
-
-		for (const colName of level.usingColumns) {
-			const leftColIdx = leftSchema.columnIndexMap.get(colName.toLowerCase());
-			const rightColIdx = rightSchema.columnIndexMap.get(colName.toLowerCase());
-			if (leftColIdx === undefined || rightColIdx === undefined) {
-				throw new SqliteError(`Column '${colName}' specified in USING clause not found in both tables.`, StatusCode.ERROR);
-			}
-
-			compiler.emit(Opcode.VColumn, leftCursor, leftColIdx, regLeftCol, 0, 0, `USING(${colName}) Left`);
-			compiler.emit(Opcode.VColumn, rightCursor, rightColIdx, regRightCol, 0, 0, `USING(${colName}) Right`);
-
-			// Handle NULLs: If either is NULL, comparison fails (result 0 for JOIN)
-			compiler.emit(Opcode.IfNull, regLeftCol, addrJoinFail, 0, null, 0, `USING: Skip if left NULL`);
-			compiler.emit(Opcode.IfNull, regRightCol, addrJoinFail, 0, null, 0, `USING: Skip if right NULL`);
-
-			// Compare non-null values - Jump to fail if not equal
-			compiler.emit(Opcode.Ne, regLeftCol, addrJoinFail, regRightCol, null, 0, `USING Compare ${colName}`);
-			// If Ne doesn't jump, they are equal, continue to next column
-		}
-	}
-	// Natural join would need to be implemented here
-}
-
-/**
- * Emits VDBE code to handle NULL padding for a LEFT JOIN when the EOF is reached
- * for the right-side cursor without finding any matches.
- */
-function emitLeftJoinNullPadding(
-	compiler: Compiler,
-	level: JoinLevelInfo,          // The current level (right side of the finished LEFT JOIN)
-	allJoinLevels: JoinLevelInfo[], // All levels for context
-	levelIndex: number,             // Index of the current level
-	coreColumnMap: ColumnResultInfo[], // Map of columns selected *before* agg/windowing
-	innermostProcessStartAddr: number // Address to jump back to process the padded row
-): void {
-	if (level.joinType !== 'left' || !level.matchReg) {
-		return; // Not a LEFT JOIN or matchReg not set
-	}
-
-	const addrSkipNullPadEof = compiler.allocateAddress();
-	compiler.emit(Opcode.IfTrue, level.matchReg, addrSkipNullPadEof, 0, null, 0, `LEFT JOIN EOF: Skip NULL pad if match found [${levelIndex}]`);
-	// ... existing code ...
-	compiler.emit(Opcode.Goto, 0, innermostProcessStartAddr, 0, null, 0, `LEFT JOIN EOF: Process NULL-padded row [${levelIndex}]`);
-
-	compiler.resolveAddress(addrSkipNullPadEof);
 }

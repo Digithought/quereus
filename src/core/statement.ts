@@ -149,31 +149,40 @@ export class Statement {
 		this.currentRowInternal = null; // Clear previous row before stepping
 
 		// Execute the VDBE until it yields a row, completes, or errors
-		// The Vdbe engine itself handles internal state like PC and applied bindings.
 		const status = await this.vdbe.run();
 
-		if (status === StatusCode.ROW) {
-			// Row data should have been set by the VDBE via setCurrentRow() callback
+		// After VDBE finishes a cycle (returns DONE or error):
+		// Check if a row was yielded during that cycle.
+		if (status === StatusCode.DONE && this.vdbe.hasYielded) {
+			// Execution finished, and a row is available
 			if (!this.currentRowInternal) {
-				// Should not happen if status is ROW and ResultRow opcode worked
-				this.busy = false; // No longer busy if internal error occurs here
-				throw new SqliteError("VDBE returned ROW but setCurrentRow was not called", StatusCode.INTERNAL);
+				// This should ideally not happen if hasYielded is true and ResultRow worked
+				this.busy = false;
+				throw new SqliteError("VDBE yielded row but setCurrentRow failed to set data", StatusCode.INTERNAL);
 			}
-		} else {
-			// If DONE or ERROR, the statement is no longer busy
+			// We have a row, return ROW status to the caller
+			console.log(`Step result: ${StatusCode[StatusCode.ROW]}`);
+			return StatusCode.ROW;
+		} else if (status === StatusCode.DONE /* && !this.vdbe.hasYielded */) {
+			// Execution finished, no row available
 			this.busy = false;
-			this.currentRowInternal = null; // Ensure no row is available
-		}
-
-		// If VDBE returned an error status code, throw an appropriate error
-		// (We don't need to check vdbe.error directly, the status code reflects it)
-		if (status !== StatusCode.ROW && status !== StatusCode.DONE && status !== StatusCode.OK) {
-			// VDBE encountered an error during execution
+			this.currentRowInternal = null;
+			console.log(`Step result: ${StatusCode[status]}`);
+			return status; // Return DONE
+		} else if (status !== StatusCode.OK) {
+			// Error occurred during execution
+			this.busy = false;
+			this.currentRowInternal = null;
+			console.error(`VDBE execution failed with status: ${StatusCode[status]}`);
 			throw new SqliteError(`VDBE execution failed with status: ${StatusCode[status]}`, status);
+		} else {
+			// Should not receive OK status directly from run() based on current VDBE logic
+			// But handle defensively
+			this.busy = false;
+			this.currentRowInternal = null;
+			console.warn(`Unexpected OK status from VDBE run: ${StatusCode[status]}`);
+			return status;
 		}
-
-		console.log(`Step result: ${StatusCode[status]}`);
-		return status;
 	}
 
 	/** @internal Called by VDBE ResultRow opcode */
