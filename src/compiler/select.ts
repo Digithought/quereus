@@ -356,12 +356,8 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	const hasGroupBy = !!stmt.groupBy && stmt.groupBy.length > 0;
 	const aggregateColumns = stmt.columns.filter(col => isAggregateResultColumn(compiler, col)) as ({ type: 'column', expr: AST.FunctionExpr, alias?: string })[];
 	const hasAggregates = aggregateColumns.length > 0;
-	const isSimpleAggregate = hasAggregates && !hasGroupBy;
 	const needsAggProcessing = hasAggregates || hasGroupBy;
 
-	// Store original result/alias state
-	const savedResultColumns = compiler.resultColumns;
-	const savedColumnAliases = compiler.columnAliases;
 	compiler.resultColumns = [];
 	compiler.columnAliases = [];
 
@@ -648,10 +644,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	joinLevels.forEach(level => {
 		compiler.emit(Opcode.Close, level.cursor, 0, 0, null, 0, `Close FROM Cursor ${level.cursor}`);
 	});
-
-	// Restore original result/alias state
-	compiler.resultColumns = savedResultColumns;
-	compiler.columnAliases = savedColumnAliases;
 }
 
 /** Handle SELECT without FROM - simpler case */
