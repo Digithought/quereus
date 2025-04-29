@@ -80,6 +80,7 @@ The project is organized into the following main directories:
 ## Documentation
 
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
+* [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide
 * [Functions](docs/functions.md): Details on the built-in functions
 * [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
 * [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
