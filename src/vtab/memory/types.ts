@@ -13,7 +13,7 @@ export type MemoryTableRow = Record<string, SqlValue> & {
 // These might be defined elsewhere but are central to the memory table structure
 
 /** Represents a unique symbol for marking deletions in layers */
-export declare const DELETED: unique symbol;
+export const DELETED = Symbol('_DELETED_');
 
 /** Key used in modification trees (Primary Key or [Secondary Index Key, rowid]) */
 export type ModificationKey = BTreeKey | [BTreeKey, bigint];

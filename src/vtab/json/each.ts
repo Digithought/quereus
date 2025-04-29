@@ -82,8 +82,8 @@ class JsonEachTable extends VirtualTable {
 		});
 	}
 
-	async xOpen(): Promise<VirtualTableCursor<this, any>> {
-		return new JsonEachCursor(this) as unknown as VirtualTableCursor<this, any>;
+	async xOpen(): Promise<JsonEachCursor<this>> {
+		return new JsonEachCursor(this);
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
@@ -132,12 +132,12 @@ interface IterationState {
 /**
  * Cursor implementation for json_each table
  */
-class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
+class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	private stack: IterationState[] = [];
 	private currentRow: Record<string, SqlValue> | null = null;
 	private elementIdCounter: number = 0;
 
-	constructor(table: JsonEachTable) {
+	constructor(table: T) {
 		super(table);
 		this._isEof = true;
 	}
@@ -318,7 +318,7 @@ class JsonEachCursor extends VirtualTableCursor<JsonEachTable, JsonEachCursor> {
 /**
  * Module implementation for json_each virtual table function
  */
-export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor, JsonConfig> {
+export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor<JsonEachTable>, JsonConfig> {
 	xConnect(
 		db: Database,
 		pAux: unknown,

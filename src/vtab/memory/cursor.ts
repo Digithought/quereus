@@ -4,13 +4,14 @@ import type { MemoryTableRow, BTreeKey } from "./types.js";
 import { StatusCode, type SqlValue } from "../../common/types.js";
 import type { SqliteContext } from "../../func/context.js";
 import { SqliteError } from "../../common/errors.js";
-import type { MemoryIndex } from './index.js'; // Keep for sorter index type hint
+import { MemoryIndex, type IndexSpec } from './index.js'; // Change to regular import for MemoryIndex
 import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexConstraint, IndexInfo } from '../indexInfo.js'; // Keep for filter signature
 import type { MemoryTableConnection } from './layer/connection.js';
 import type { LayerCursorInternal } from './layer/cursor.js';
 import type { ScanPlan, ScanPlanEqConstraint, ScanPlanRangeBound } from './layer/scan-plan.js'; // Import ScanPlan
 import { BTree } from 'digitree'; // Needed for sorter logic
+import type { P4SortKey } from '../../vdbe/instruction.js'; // Import SortKey info
 
 /**
  * Public-facing cursor for the MemoryTable using the layer-based MVCC model.
@@ -238,6 +239,60 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		};
 	}
 
+	// --- Method to handle Sort opcode --- //
+	async createAndPopulateSorterIndex(sortInfo: P4SortKey): Promise<MemoryIndex> {
+		console.debug("Creating and populating ephemeral sorter index...");
+		// 1. Define IndexSpec based on sortInfo
+		const schema = this.table.getSchema();
+		if (!schema) {
+			throw new SqliteError("Cannot create sorter index: Table schema not found.", StatusCode.INTERNAL);
+		}
+		const sortIndexSpec: IndexSpec = {
+			name: `_sorter_${Date.now()}`,
+			// Use sortInfo.keyIndices and provide type for keyInfo
+			columns: sortInfo.keyIndices.map((colIndex, i) => ({
+				index: colIndex, // Column index from schema
+				desc: sortInfo.directions[i] ?? false, // Get direction
+				collation: sortInfo.collations?.[i] ?? 'BINARY' // Get collation or default
+			})),
+		};
+
+		// 2. Create a new MemoryIndex instance (using value import)
+		const sorterIndex = new MemoryIndex(sortIndexSpec, schema.columns.map(c => ({ name: c.name })));
+
+		// 3. Create a simple scan plan to iterate all visible rows
+		// TODO: Should this respect any existing *filtering* constraints from the query?
+		// For now, assume Sort happens before complex filtering or VDBE handles post-sort filtering.
+		const fullScanPlan: ScanPlan = {
+			indexName: 'primary', // Iterate using primary key order initially
+			descending: false,
+		};
+
+		// 4. Create an internal cursor to read rows
+		let readerCursor: LayerCursorInternal | null = null;
+		try {
+			readerCursor = this.connection.createLayerCursor(fullScanPlan);
+
+			// 5. Iterate and populate the sorter index
+			while (!readerCursor.isEof()) {
+				const row = readerCursor.getCurrentRow();
+				if (row) {
+					sorterIndex.addEntry(row);
+				}
+				await readerCursor.next();
+			}
+		} catch(e) {
+			console.error("Error populating sorter index:", e);
+			throw e instanceof SqliteError ? e : new SqliteError(`Sorter population failed: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+		} finally {
+			// Close the temporary reader cursor
+			readerCursor?.close();
+		}
+
+		console.debug(`Sorter index ${sorterIndex.name} created.`);
+		return sorterIndex;
+	}
+	// ---------------------------------- //
 
 	async filter(
 		idxNum: number,
@@ -248,13 +303,13 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	): Promise<void> {
 		this.reset(); // Close existing internal cursor, clear state
 
-		// --- Check for Ephemeral Sorter Index FIRST --- //
+		// Check for sorter FIRST (set by Sort opcode calling createAndPopulateSorterIndex)
 		if (this.ephemeralSortingIndex) {
 			console.debug(`MemoryTableCursor Filter: Using ephemeral sorting index.`);
 			this.isUsingSorter = true;
 			const sorterIndex = this.ephemeralSortingIndex;
-			// Cast BTree type stored in MemoryIndex wrapper
-			const sorterTree = sorterIndex.data as unknown as BTree<BTreeKey, MemoryTableRow>;
+			// Iterate the sorter BTree
+			const sorterTree = sorterIndex.data as unknown as BTree<BTreeKey, MemoryTableRow>; // Get BTree from MemoryIndex
 			this.sorterResults = []; // Clear previous sorter results
 			this.sorterIndex = -1;
 			try {
@@ -395,7 +450,13 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	}
 
 	async close(): Promise<void> {
-		this.reset(); // Reset should handle closing internal cursor
+		// Ensure sorter index is cleared if it was temporary
+		if (this.ephemeralSortingIndex) {
+			// No need to explicitly drop from manager as it wasn't added there.
+			// GC should handle the MemoryIndex instance.
+			this.ephemeralSortingIndex = null;
+		}
+		this.reset(); // Reset handles internal cursor close
 	}
 
 	// --- Optional Seek Methods --- //
