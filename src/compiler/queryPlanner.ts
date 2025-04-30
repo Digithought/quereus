@@ -384,6 +384,10 @@ export function planTableAccessHelper(
 			constraints: [],
 			constraintExpressions: new Map(),
 			handledWhereNodes: new Set(),
+			nOrderBy: 0,
+			aOrderBy: [],
+			colUsed: BigInt(-1),
+			idxFlags: 0,
 		});
 		return;
 	}
@@ -472,12 +476,16 @@ export function planTableAccessHelper(
 		idxNum: indexInfo.idxNum,
 		idxStr: indexInfo.idxStr,
 		usage: indexInfo.aConstraintUsage,
-		cost: indexInfo.estimatedCost,
-		rows: indexInfo.estimatedRows,
-		orderByConsumed: indexInfo.orderByConsumed,
 		constraints: [...indexInfo.aConstraint],
 		constraintExpressions: constraintExpressions,
 		handledWhereNodes: handledNodes,
+		cost: indexInfo.estimatedCost,
+		rows: indexInfo.estimatedRows,
+		orderByConsumed: indexInfo.orderByConsumed,
+		nOrderBy: indexInfo.nOrderBy,
+		aOrderBy: indexInfo.aOrderBy,
+		colUsed: indexInfo.colUsed,
+		idxFlags: indexInfo.idxFlags,
 	};
 	compiler.cursorPlanningInfo.set(cursorIdx, planResult);
 

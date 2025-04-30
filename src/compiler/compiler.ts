@@ -67,6 +67,10 @@ export interface CursorPlanningResult {
 	constraints: IndexConstraint[];
 	constraintExpressions: ReadonlyMap<number, AST.Expression>;
 	handledWhereNodes: ReadonlySet<AST.Expression>;
+	nOrderBy: number;
+	aOrderBy: ReadonlyArray<{ iColumn: number; desc: boolean }>;
+	colUsed: bigint;
+	idxFlags: number;
 }
 
 /**

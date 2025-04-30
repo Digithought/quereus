@@ -1,33 +1,6 @@
 ---
 description:
 globs:
-alwaysApply: false
+alwaysApply: true
 ---
-# Project Structure
-
-SQLiter is organized into several key directories, each with a specific responsibility in the query processing pipeline:
-
-## Core Components
-- `amalgamation/sqlite3.c`: Original inspiration for this project
-- `src/common`: Foundation types, constants, and error classes
-- `src/core`: High-level API classes (Database, Statement)
-- `src/parser`: SQL lexing, parsing, and AST definitions
-- `src/compiler`: AST to VDBE bytecode translation
-- `src/vdbe`: Virtual Database Engine for bytecode execution
-- `src/schema`: Database schema management
-- `src/vtab`: Virtual table interfaces and implementations
-- `src/func`: User-defined function components
-- `src/util`: General utility functions
-
-## Key Files
-- `docs`: contains [todo.md](mdc:docs/todo.md), [memory-table.md](mdc:docs/memory-table.md) and other documentation
-- [README.md](mdc:README.md): Project overview and architecture documentation
-- [.editorconfig](mdc:.editorconfig): Code style and formatting rules
-
-## Architecture Flow
-1. SQL Input → Parser (Lexer + Parser) → AST
-2. AST → Compiler → VDBE Bytecode
-3. VDBE Execution → Virtual Tables → Results
-
-The project emphasizes virtual tables as the primary data interface, with a focus on in-memory operations and async processing capabilities.
-
+Read the [README.md](mdc:README.md), if you haven't, to get familar with the project.

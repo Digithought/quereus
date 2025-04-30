@@ -1,5 +1,5 @@
 ---
-description:
+description: Code conventions - read if you're creating a new file
 globs:
 alwaysApply: false
 ---
@@ -25,5 +25,5 @@ Generally favor expressive style over imperative.  E.g. map rather than loop, co
 - No trim trailing whitespace
 
 ## Configuration
-The complete configuration is defined in [.editorconfig](mdc:.editorconfig). Make sure your editor has EditorConfig support enabled to automatically follow these conventions.
+The complete configuration is defined in [.editorconfig](mdc:.editorconfig).
 

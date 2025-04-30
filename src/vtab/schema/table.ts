@@ -10,6 +10,8 @@ import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
+import { IndexConstraintOp } from '../../common/constants.js';
+import { compareSqlValues } from '../../util/comparison.js';
 
 /**
  * Structure of rows returned by sqlite_schema
@@ -27,7 +29,10 @@ interface SchemaRow {
  * Generates a function signature string for display
  */
 function stringifyCreateFunction(func: FunctionSchema): string {
-	return `FUNCTION ${func.name}(${Array(func.numArgs).fill('?').join(', ')})`;
+	const argsString = func.numArgs === -1
+		? '...' // Indicate variable arguments
+		: Array(func.numArgs).fill('?').join(', ');
+	return `FUNCTION ${func.name}(${argsString})`;
 }
 
 /**
@@ -117,7 +122,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		this.reset();
 		const db = this.table.db;
 		const schemaManager = db.schemaManager;
-		const generatedRows: SchemaRow[] = [];
+		let generatedRows: SchemaRow[] = [];
 		let rowidCounter = BigInt(0);
 
 		const processSchema = (schema: Schema) => {
@@ -162,6 +167,79 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		// Iterate through schemas
 		processSchema(schemaManager.getMainSchema());
 		processSchema(schemaManager.getTempSchema());
+
+		// --- Start: Apply filtering based on constraints ---
+		if (constraints.length > 0 && args.length > 0) {
+			generatedRows = generatedRows.filter(row => {
+				for (const { constraint, argvIndex } of constraints) {
+					if (constraint.usable === false || argvIndex <= 0) continue; // Skip unusable or unused constraints
+
+					const columnIndex = constraint.iColumn;
+					const op = constraint.op;
+					const valueToCompare = args[argvIndex - 1]; // argvIndex is 1-based
+
+					if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) {
+						// Should not happen with valid constraints
+						console.warn(`[sqlite_schema] Invalid column index ${columnIndex} in constraint.`);
+						return false; // Treat as non-match if constraint is invalid
+					}
+					const columnName = SchemaTableModule.COLUMNS[columnIndex].name as keyof SchemaRow;
+					const rowValue = row[columnName];
+
+					// Perform comparison based on operator
+					const comparisonResult = compareSqlValues(rowValue, valueToCompare);
+					let match = false;
+
+					switch (op) {
+						case IndexConstraintOp.EQ:
+							match = comparisonResult === 0;
+							break;
+						case IndexConstraintOp.GT:
+							match = comparisonResult > 0;
+							break;
+						case IndexConstraintOp.LE:
+							match = comparisonResult <= 0;
+							break;
+						case IndexConstraintOp.LT:
+							match = comparisonResult < 0;
+							break;
+						case IndexConstraintOp.GE:
+							match = comparisonResult >= 0;
+							break;
+						case IndexConstraintOp.NE:
+							match = comparisonResult !== 0;
+							break;
+						case IndexConstraintOp.ISNULL:
+							match = rowValue === null;
+							break;
+						case IndexConstraintOp.ISNOTNULL:
+							match = rowValue !== null;
+							break;
+						case IndexConstraintOp.IS:
+							// IS comparison is strict equality (null IS null)
+							match = (rowValue === null && valueToCompare === null) || comparisonResult === 0;
+							break;
+						case IndexConstraintOp.ISNOT:
+							match = !((rowValue === null && valueToCompare === null) || comparisonResult === 0);
+							break;
+						// TODO: Add cases for LIKE, GLOB, REGEXP if needed and supported
+						// case IndexConstraintOp.LIKE:
+						// case IndexConstraintOp.GLOB:
+						// case IndexConstraintOp.REGEXP:
+						// case IndexConstraintOp.MATCH:
+						default:
+							console.warn(`[sqlite_schema] Unsupported operator ${op} in constraint.`);
+							return false; // Not a match if operator is unsupported
+					}
+
+					if (!match) {
+						return false; // If any constraint fails, the row doesn't match
+					}
+				}
+				return true; // All constraints passed
+			});
+		}
+		// --- End: Apply filtering ---
 
 		this.setResults(generatedRows);
 	}
@@ -258,12 +336,13 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 	}
 
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
+		console.log(`[sqlite_schema] xBestIndex called. nConstraint: ${indexInfo.nConstraint}`);
 		indexInfo.idxNum = 0;
 		indexInfo.estimatedCost = 1000.0;
 		indexInfo.estimatedRows = BigInt(100);
 		indexInfo.orderByConsumed = false;
 		indexInfo.idxFlags = 0;
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, (_, i) => ({ argvIndex: i + 1, omit: false }));
 		indexInfo.idxStr = "fullscan";
 		return StatusCode.OK;
 	}
