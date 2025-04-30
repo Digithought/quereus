@@ -15,6 +15,22 @@ const log = createLogger('vtab:memory:layer:transaction-cursor'); // Create logg
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
 
+// Helper type for merge action determination
+type MergeAction = {
+	useMod: boolean;
+	useParent: boolean;
+	advanceMod: boolean;
+	advanceParent: boolean;
+};
+
+// Helper type for potential result extraction
+type PotentialResult = {
+	potentialKey: ModificationKey | null;
+	potentialRow: MemoryTableRow | null;
+	isDeletedHere: boolean;
+	potentialLayerValue: ModificationValue | null;
+};
+
 /**
  * Internal cursor for iterating a TransactionLayer.
  * It merges modifications from its layer with the results from its parent cursor.
@@ -149,6 +165,101 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 		}
 	}
 
+	/** Compares the BTreeKey parts of the current modification and parent keys */
+	private compareKeysForMerge(): number | null {
+		const modKey = this.currentModKey;
+		const parentKey = this.parentKey;
+
+		if (modKey === null || parentKey === null) {
+			return null; // Cannot compare if one is null
+		}
+
+		return this.modKeyComparator(this.extractIndexKey(modKey), this.extractIndexKey(parentKey));
+	}
+
+	/** Determines which source(s) to use and advance based on comparison and EOF */
+	private determineMergeAction(compareResult: number | null): MergeAction {
+		const action: MergeAction = { useMod: false, useParent: false, advanceMod: false, advanceParent: false };
+
+		if (this.modEof) { // Only parent has data
+			action.useParent = true;
+			action.advanceParent = true;
+		} else if (this.parentEof) { // Only mods have data
+			action.useMod = true;
+			action.advanceMod = true;
+		} else if (compareResult !== null) { // Both have data, compare keys
+			// Compare keys based on scan direction
+			const comparison = this.plan.descending ? -compareResult : compareResult;
+
+			if (comparison === 0) { // Keys match (BTreeKey part)
+				action.useMod = true; // Modification takes precedence
+				action.advanceMod = true;
+				action.advanceParent = true; // Advance parent past the matched key
+			} else if (comparison < 0) { // Mod key comes first
+				action.useMod = true;
+				action.advanceMod = true;
+				// Don't advance parent yet
+			} else { // Parent key comes first
+				action.useParent = true;
+				action.advanceParent = true;
+				// Don't advance mod yet
+			}
+		} else {
+			// Error state if both not EOF but comparison failed (shouldn't happen with valid keys)
+			errorLog("Invalid state during merge comparison (compareResult null despite non-EOF).");
+			// Indicate an error state by not setting use/advance flags, leading to EOF in mergeNext
+		}
+		return action;
+	}
+
+	/** Extracts potential key/row from the chosen source */
+	private getPotentialResult(action: MergeAction): PotentialResult {
+		const result: PotentialResult = {
+			potentialKey: null,
+			potentialRow: null,
+			isDeletedHere: false,
+			potentialLayerValue: null,
+		};
+
+		if (action.useMod && this.currentModValue !== null) { // Ensure mod value exists
+			result.potentialKey = this.currentModKey;
+			result.potentialLayerValue = this.currentModValue;
+			if (isDeletionMarker(this.currentModValue)) {
+				result.isDeletedHere = true;
+				result.potentialRow = null;
+			} else {
+				result.potentialRow = this.currentModValue as MemoryTableRow;
+			}
+		} else if (action.useParent) {
+			result.potentialKey = this.parentKey;
+			result.potentialRow = this.parentValue; // Can be null if parent had no row data?
+			result.potentialLayerValue = null; // No value from *this* layer
+		}
+		return result;
+	}
+
+	/** Checks if a potential row is deleted either by marker or explicit rowid */
+	private isEffectivelyDeleted(potentialResult: PotentialResult): boolean {
+		if (potentialResult.isDeletedHere) {
+			return true;
+		}
+		if (potentialResult.potentialRow && this.layer.getDeletedRowids().has(potentialResult.potentialRow._rowid_)) {
+			return true;
+		}
+		return false;
+	}
+
+	/** Advances the underlying mod/parent iterators based on the action flags */
+	private async advanceSources(action: MergeAction): Promise<void> {
+		const advancePromises: Promise<void>[] = [];
+		if (action.advanceMod) this.advanceModIterator(); // Mod is sync
+		if (action.advanceParent) advancePromises.push(this.advanceParentCursor()); // Parent is async
+
+		if (advancePromises.length > 0) {
+			await Promise.all(advancePromises);
+		}
+	}
+
 	/** Performs the core 2-way merge logic to find the next overall state */
 	private async mergeNext(): Promise<void> {
 		while (true) { // Loop until a valid, non-deleted item is found or EOF
@@ -156,269 +267,168 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			this._currentRow = null;
 			this._currentLayerValue = null;
 
-			const modKey = this.currentModKey;
-			const parentKey = this.parentKey;
-
-			let compare: number | null = null;
-			if (modKey && parentKey) {
-				// Compare the BTreeKey parts of the ModificationKeys
-				const modBTreeKey = this.plan.indexName === 'primary' ? (modKey as BTreeKey) : (modKey as [BTreeKey, bigint])[0];
-				const parentBTreeKey = this.plan.indexName === 'primary' ? (parentKey as BTreeKey) : (parentKey as [BTreeKey, bigint])[0];
-				compare = this.modKeyComparator(modBTreeKey, parentBTreeKey);
-			}
-
-			let useMod = false;
-			let useParent = false;
-			let advanceMod = false;
-			let advanceParent = false;
-
-			if (this.modEof && this.parentEof) { // Check EOF upfront
+			// --- 1. Check Overall EOF ---
+			if (this.modEof && this.parentEof) {
 				this._isEof = true;
 				return;
-			} else if (this.modEof) { // Only parent has data
-				useParent = true; // Only parent has data
-				advanceParent = true;
-			} else if (this.parentEof) {
-				useMod = true; // Only mods have data
-				advanceMod = true;
-			} else if (compare !== null) { // Both have data, compare keys
-				// Compare keys based on scan direction
-				const comparisonResult = this.plan.descending ? -compare : compare;
+			}
 
-				if (comparisonResult === 0) { // Keys match (based on BTreeKey part)
-					useMod = true; // Modification takes precedence
-					advanceMod = true;
-					advanceParent = true; // Advance parent past the matched key
-				} else if (comparisonResult < 0) { // Mod key comes first
-					useMod = true; // Use mod
-					advanceMod = true;
-					// Don't advance parent yet
-				} else { // Parent key comes first
-					useParent = true; // Use parent
-					advanceParent = true;
-					// Don't advance mod yet
-				}
-			} else { // Error state
-				// Should not happen if both are not EOF and keys are valid
+			// --- 2. Compare Keys & Determine Action ---
+			const compareResult = this.compareKeysForMerge();
+			const action = this.determineMergeAction(compareResult);
+
+			// --- 3. Get Potential Result from Chosen Source ---
+			const potential = this.getPotentialResult(action);
+
+			// --- 4. Handle Error/Empty State ---
+			// If no potential key was found (e.g., error in determineMergeAction or both sources empty unexpectedly)
+			if (potential.potentialKey === null && !(this.modEof && this.parentEof)) {
+				// Log error if this wasn't the expected EOF case handled above
+				errorLog("Merge loop encountered state with no potential key despite not being EOF.");
 				this._isEof = true;
-				// Use namespaced error logger
-				errorLog("Invalid state during merge comparison (modKey/parentKey null or comparator failed?).");
-				return;
+				// Advance sources based on determination, even in error, to hopefully resolve state
+				await this.advanceSources(action);
+				return; // Exit as EOF due to error
+			}
+			// If potentialKey is null AND it's the EOF case, the loop exit is handled at the top.
+
+
+			// --- 5. Check if Effectively Deleted ---
+			if (potential.potentialKey && this.isEffectivelyDeleted(potential)) {
+				// Advance sources and continue loop to find the next item
+				await this.advanceSources(action);
+				continue;
 			}
 
-			// --- Determine potential key/row BEFORE advancing ---
-			let potentialRow: MemoryTableRow | null = null;
-			let potentialKey: ModificationKey | null = null;
-			let isDeletedHere = false;
+			// --- 6. Check Plan Applicability ---
+			if (potential.potentialKey && this.planApplies(potential.potentialKey)) {
+				// Found the next valid item
+				this._currentKey = potential.potentialKey;
+				this._currentRow = potential.potentialRow;
+				this._currentLayerValue = potential.potentialLayerValue;
+				this._isEof = false;
 
-			if (useMod && this.currentModValue !== null) { // Ensure mod value exists
-				potentialKey = this.currentModKey; // This is ModificationKey
-				this._currentLayerValue = this.currentModValue; // Store raw mod value
-				if (isDeletionMarker(this.currentModValue)) {
-					isDeletedHere = true;
-					potentialRow = null; // Row data is null for delete
+				// Advance sources for the *next* iteration
+				await this.advanceSources(action);
+				return; // Yield the found item
+			}
+
+			// --- 7. Handle Plan Not Applying / Stopping Condition ---
+			if (potential.potentialKey) { // Only proceed if we had a key
+				// Item doesn't satisfy plan (e.g., out of bounds after merge)
+				if (this.shouldStopOverallIteration(potential.potentialKey)) {
+					// Stop iteration completely
+					this._isEof = true;
+					// Advance sources one last time
+					await this.advanceSources(action);
+					return;
 				} else {
-					potentialRow = this.currentModValue as MemoryTableRow;
-				}
-			} else if (useParent) {
-				potentialKey = this.parentKey; // This is ModificationKey
-				potentialRow = this.parentValue; // Use row data from parent (already MemoryTableRow | null)
-				this._currentLayerValue = null; // No value from *this* layer
-			}
-
-
-			// --- Process the potential result ---
-
-			// Skip if this item was marked as deleted in this layer
-			if (potentialKey && isDeletedHere) { // Check potentialKey exists
-				// Advance the iterators flagged earlier before continuing
-				const advancePromises: Promise<void>[] = [];
-				if (advanceMod) this.advanceModIterator();
-				if (advanceParent) advancePromises.push(this.advanceParentCursor());
-				if (advancePromises.length > 0) await Promise.all(advancePromises);
-				continue; // Loop again to find next merge result
-			}
-
-			// If we got a valid potential row (not deleted here), check if its *rowid*
-			// is in this layer's explicit deleted set.
-			if (potentialRow && this.layer.getDeletedRowids().has(potentialRow._rowid_)) {
-				// Advance the iterators flagged earlier before continuing
-				const advancePromises: Promise<void>[] = [];
-				if (advanceMod) this.advanceModIterator();
-				if (advanceParent) advancePromises.push(this.advanceParentCursor());
-				if (advancePromises.length > 0) await Promise.all(advancePromises);
-				continue; // Skip this row, it's explicitly deleted in this layer
-			}
-
-
-			// Found a potentially valid, non-deleted item
-			if (potentialKey) {
-				// Check plan satisfaction *after* merge and deletion checks.
-				if (this.planApplies(potentialKey)) {
-					this._currentKey = potentialKey;
-					this._currentRow = potentialRow; // Can be null if useParent && parentValue was null (shouldn't happen if parentKey is valid?)
-					this._isEof = false;
-
-					// NOW advance the iterators that were flagged earlier
-					const advancePromises: Promise<void>[] = [];
-					if (advanceMod) this.advanceModIterator(); // mod is sync
-					if (advanceParent) advancePromises.push(this.advanceParentCursor());
-					if (advancePromises.length > 0) await Promise.all(advancePromises);
-
-					return; // Found the next valid item
-				} else {
-					// Item doesn't satisfy plan (e.g., out of bounds after merge)
-					// If plan doesn't apply, we MUST advance the source that provided this item
-					// to avoid getting stuck on it.
-
-					// Stop if we know no further items can match based on the current key.
-					if (this.shouldStopOverallIteration(potentialKey)) {
-						this._isEof = true;
-						// Even if stopping, advance the relevant iterators one last time
-						const advancePromises: Promise<void>[] = [];
-						if (advanceMod) this.advanceModIterator();
-						if (advanceParent) advancePromises.push(this.advanceParentCursor());
-						if (advancePromises.length > 0) await Promise.all(advancePromises);
-						return;
-					}
-					// Otherwise, advance the iterators and continue the merge loop
-					const advancePromises: Promise<void>[] = [];
-					if (advanceMod) this.advanceModIterator();
-					if (advanceParent) advancePromises.push(this.advanceParentCursor());
-					if (advancePromises.length > 0) await Promise.all(advancePromises);
+					// Plan doesn't apply, but haven't hit stopping condition yet.
+					// Advance sources and continue the merge loop.
+					await this.advanceSources(action);
 					continue;
 				}
-
-			} else if (this.modEof && this.parentEof) {
-				// This handles the case where the loop ends because both sources became EOF
-				// after the last advance.
-				this._isEof = true;
-				return;
 			}
-			// If potentialKey was null, it means we had an issue determining useMod/useParent
-			// or the value from the source was null/undefined unexpectedly. The loop should continue.
-			// Advance the iterators flagged earlier before continuing.
-			const advancePromises: Promise<void>[] = [];
-			if (advanceMod) this.advanceModIterator();
-			if (advanceParent) advancePromises.push(this.advanceParentCursor());
-			if (advancePromises.length > 0) await Promise.all(advancePromises);
-			// continue loop handled implicitly
+
+			// --- 8. Fallback / Loop Continuation ---
+			// If we reached here without returning or continuing, it implies a state
+			// where potentialKey might have been null initially (handled in step 1/4)
+			// or some other edge case. Advancing sources is generally the correct action
+			// to progress the state.
+			await this.advanceSources(action);
+			// Loop continues implicitly
 		}
 	}
 
 	/** Check if the key satisfies the overall plan (mainly bounds and EQ check) */
 	private planApplies(key: ModificationKey): boolean {
-		// Re-use checkPlan logic similar to BaseLayerCursor, adapted for ModificationKey
-
-		// Ensure plan's equality key exists before proceeding with EQ check
-		if (this.plan.equalityKey === undefined) {
-			// Range/Full Scan: Check bounds.
-			let firstColKey: SqlValue | null = null;
-			if (this.plan.indexName === 'primary') {
-				if (Array.isArray(key)) {
-					firstColKey = key.length > 0 && !Array.isArray(key[0]) ? key[0] : null;
-				} else {
-					firstColKey = key as SqlValue;
-				}
-			} else {
-				// Secondary: key is [IndexKey, rowid]
-				const indexKeyPart = (key as [BTreeKey, bigint])[0];
-				if (Array.isArray(indexKeyPart)) {
-					firstColKey = indexKeyPart.length > 0 && !Array.isArray(indexKeyPart[0]) ? indexKeyPart[0] : null;
-				} else {
-					firstColKey = indexKeyPart as SqlValue;
-				}
-			}
-
-			if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
-				// Use namespaced warn logger
-				warnLog("Could not extract first column key for range check.");
-				return false; // Cannot satisfy bounds if key cannot be compared
-			}
-
-			if (this.plan.lowerBound && firstColKey !== null) {
-				const cmp = compareSqlValues(firstColKey, this.plan.lowerBound.value);
-				if (cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT)) {
-					return false;
-				}
-			}
-			if (this.plan.upperBound && firstColKey !== null) {
-				const cmp = compareSqlValues(firstColKey, this.plan.upperBound.value);
-				if (cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT)) {
-					return false;
-				}
-			}
-			return true; // Passed bounds checks or no bounds
-		} else {
-			// EQ Scan: Check if the key's BTreeKey part matches the equality key.
-			const keyToCompare = this.plan.indexName === 'primary' ? (key as BTreeKey) : (key as [BTreeKey, bigint])[0];
-
-			// Use the specific BTreeKey comparator
-			const isEqual = this.modKeyComparator(keyToCompare, this.plan.equalityKey) === 0;
-
+		// 1. Equality scan – fast path
+		if (this.plan.equalityKey !== undefined) {
+			const isEqual = this.modKeyComparator(this.extractIndexKey(key), this.plan.equalityKey) === 0;
 			if (!isEqual) {
-				// This could happen during the merge if the modIterator or parentCursor
-				// moves past the equality key due to how find() + iteration works.
-				// It's not necessarily an error, just means this specific merged key doesn't match.
-				warnLog(`Merged key ${JSON.stringify(key)}'s comparable part does not match equality key ${JSON.stringify(this.plan.equalityKey)} in EQ scan.`);
+				warnLog(
+					`Merged key ${JSON.stringify(key)}'s comparable part does not match equality key ${JSON.stringify(
+						this.plan.equalityKey,
+					)} in EQ scan.`,
+				);
 			}
-			return isEqual; // Return true only if keys actually match
+			return isEqual;
 		}
+
+		// 2. Range / full scan
+		const firstColKey = this.extractFirstColumnKey(key);
+
+		if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
+			warnLog('Could not extract first column key for range check.');
+			return false;
+		}
+
+		if (this.plan.lowerBound && firstColKey !== null) {
+			const cmp = compareSqlValues(firstColKey, this.plan.lowerBound.value);
+			if (cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT)) {
+				return false;
+			}
+		}
+
+		if (this.plan.upperBound && firstColKey !== null) {
+			const cmp = compareSqlValues(firstColKey, this.plan.upperBound.value);
+			if (cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT)) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/** Check if iteration can stop based on the current merged key */
 	private shouldStopOverallIteration(key: ModificationKey): boolean {
-		// Re-use shouldStopIteration logic similar to BaseLayerCursor
-
-		// EQ scan stopping logic: If the current key is past the equality key, stop.
+		// 1. Equality scans: stop when we pass the equality key.
 		if (this.plan.equalityKey !== undefined) {
-			const keyToCompare = this.plan.indexName === 'primary' ? (key as BTreeKey) : (key as [BTreeKey, bigint])[0];
-			const cmp = this.modKeyComparator(keyToCompare, this.plan.equalityKey);
-			if (this.plan.descending && cmp < 0) return true; // EQ DESC: current key is less than target
-			if (!this.plan.descending && cmp > 0) return true; // EQ ASC: current key is greater than target
-			// If cmp === 0, we *don't* stop yet in an EQ scan, as there might be more matching keys
-			// (especially relevant for non-unique indexes or secondary indexes where multiple rowids share the same index key).
+			const cmp = this.modKeyComparator(this.extractIndexKey(key), this.plan.equalityKey);
+			if (this.plan.descending) return cmp < 0; // DESC: key < target means we passed it
+			return cmp > 0; // ASC: key > target means we passed it
 		}
 
-		// Range scan stopping logic:
-		let firstColKey: SqlValue | null = null;
-		if (this.plan.indexName === 'primary') {
-			if (Array.isArray(key)) {
-				firstColKey = key.length > 0 && !Array.isArray(key[0]) ? key[0] : null;
-			} else {
-				firstColKey = key as SqlValue;
-			}
-		} else {
-			const indexKeyPart = (key as [BTreeKey, bigint])[0];
-			if (Array.isArray(indexKeyPart)) {
-				firstColKey = indexKeyPart.length > 0 && !Array.isArray(indexKeyPart[0]) ? indexKeyPart[0] : null;
-			} else {
-				firstColKey = indexKeyPart as SqlValue;
-			}
-		}
-
+		// 2. Range scans – check bounds relative to scan direction
+		const firstColKey = this.extractFirstColumnKey(key);
 		if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
-			return false; // Cannot optimize stop if key cannot be compared
+			// Can't decide – continue scanning.
+			return false;
 		}
 
-		if (!this.plan.descending) { // Ascending scan
+		if (!this.plan.descending) {
+			// Ascending: stop if we exceed upper bound
 			if (this.plan.upperBound && firstColKey !== null) {
 				const cmp = compareSqlValues(firstColKey, this.plan.upperBound.value);
-				if (cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT)) {
-					return true; // Gone past upper bound
-				}
+				return cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT);
 			}
-		} else { // Descending scan
+		} else {
+			// Descending: stop if we go below lower bound
 			if (this.plan.lowerBound && firstColKey !== null) {
 				const cmp = compareSqlValues(firstColKey, this.plan.lowerBound.value);
-				if (cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT)) {
-					return true; // Gone past lower bound
-				}
+				return cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT);
 			}
 		}
+
 		return false;
 	}
 
+	// Helper functions for key extraction to avoid duplication
+	private extractIndexKey(key: ModificationKey): BTreeKey {
+		// Returns the BTreeKey portion that should participate in comparisons.
+		// For the primary index this is the key itself, for secondary indexes it's the first tuple element.
+		return this.plan.indexName === 'primary' ? (key as BTreeKey) : (key as [BTreeKey, bigint])[0];
+	}
+
+	private extractFirstColumnKey(key: ModificationKey): SqlValue | null {
+		// Extracts the *first* column value of the index key (needed for range checks).
+		const indexKey = this.extractIndexKey(key);
+		if (Array.isArray(indexKey)) {
+			const first = indexKey[0];
+			return Array.isArray(first) ? null : (first as SqlValue);
+		}
+		return indexKey as SqlValue;
+	}
 
 	async next(): Promise<void> {
 		if (!this._isEof) {
