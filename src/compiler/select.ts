@@ -18,6 +18,11 @@ import { processRowDirect, compileSortOutput } from './select-output.js';
 import { processRowWindow, compileWindowOutput } from './select-window.js';
 import { compileJoinCondition, emitLeftJoinNullPadding } from './join.js'; // Added emitLeftJoinNullPadding
 import { getExpressionCollation } from './utils.js'; // Import needed utility
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:select');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * Interface to hold consolidated state for each level in the join structure.
@@ -78,7 +83,7 @@ function preprocessJoinLevels(compiler: Compiler, sources: AST.FromClause[] | un
 				// Note: The 'natural' keyword might be handled by the parser setting joinType='inner' and omitting condition/columns.
 				// Proper natural join column matching isn't implemented here.
 				if (node.joinType === 'inner' || node.joinType === 'left') {
-					console.warn(`Join between ${leftAlias} and ${rightAlias} of type ${node.joinType} has no ON/USING clause.`);
+					warnLog(`Join between %s and %s of type %s has no ON/USING clause.`, leftAlias, rightAlias, node.joinType);
 					rightLevelInfo.joinType = 'cross';
 				}
 			}
@@ -152,7 +157,7 @@ function compileSubquerySource(compiler: Compiler, node: AST.SubquerySource): vo
 		}
 
 		if (tempColumnIndexMap.has(name.toLowerCase())) {
-			console.warn(`Duplicate column name "${name}" in subquery ${alias}. Renaming to ${name}_${index}.`);
+			warnLog(`Duplicate column name "%s" in subquery %s. Renaming to %s_%d.`, name, alias, name, index);
 			name = `${name}_${index}`;
 		}
 		// Determine affinity - default to BLOB if unknown
@@ -204,7 +209,7 @@ function compileSubquerySource(compiler: Compiler, node: AST.SubquerySource): vo
 	compiler.tableAliases.set(alias, cursor);
 	compiler.tableSchemas.set(cursor, subquerySchema);
 
-	console.log(`Compiled subquery source '${alias}' with cursor ${cursor} and ${subquerySchema.columns.length} columns.`);
+	log(`Compiled subquery source '%s' with cursor %d and %d columns.`, alias, cursor, subquerySchema.columns.length);
 }
 
 /**
@@ -223,7 +228,7 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 
 	// --- Get Schema for the Table-Valued Function ---
 	// TODO: Implement actual schema lookup for table-valued functions.
-	console.warn(`Schema lookup for table function '${functionName}' not implemented. Using placeholder schema.`);
+	warnLog(`Schema lookup for table function '%s' not implemented. Using placeholder schema.`, functionName);
 
 	// Find the actual module to assign to vtabModule
 	const moduleInfo = compiler.db._getVtabModule(functionName);
@@ -264,7 +269,7 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 	compiler.tableAliases.set(alias, cursor);
 	compiler.tableSchemas.set(cursor, functionSchema); // Use the looked-up or placeholder schema
 
-	console.log(`Compiled function source '${functionName}' aliased as '${alias}' with cursor ${cursor}.`);
+	log(`Compiled function source '%s' aliased as '%s' with cursor %d.`, functionName, alias, cursor);
 }
 
 // --- SELECT Statement Compilation --- //
@@ -333,7 +338,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	if (fromCursors.length === 0 && stmt.from && stmt.from.length > 0) {
 		// This might happen if FROM contains only CTEs that aren't materialized yet
 		// Revisit if this scenario causes issues.
-		console.warn("compileFromCore returned no cursors for a non-empty FROM clause. Check CTE handling.");
+		warnLog("compileFromCore returned no cursors for a non-empty FROM clause. Check CTE handling.");
 	}
 	// ------------------------------------------------------------------ //
 
@@ -341,7 +346,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	const joinLevels = preprocessJoinLevels(compiler, stmt.from);
 	// Ensure fromCursors count matches joinLevels count (sanity check)
 	if (fromCursors.length !== joinLevels.length) {
-		console.error(`Mismatch between fromCursors (${fromCursors.length}) and joinLevels (${joinLevels.length})`);
+		errorLog(`Mismatch between fromCursors (%d) and joinLevels (%d)`, fromCursors.length, joinLevels.length);
 		// Potentially throw an error here or try to reconcile
 	}
 
@@ -579,14 +584,14 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		regAggArgs = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
 		regAggSerializedKey = compiler.allocateMemoryCells(1);
 		// ---------------------------------
-		console.log(`DEBUG: Allocated agg regs: Key=${regAggKey}, Args=${regAggArgs}, SerKey=${regAggSerializedKey}`); // <-- Log allocated values
+		log(`DEBUG: Allocated agg regs: Key=%d, Args=%d, SerKey=%d`, regAggKey, regAggArgs, regAggSerializedKey); // <-- Log allocated values
 
 		// Store allocated regs in separate consts for clarity in closure
 		const allocatedAggKeyReg = regAggKey;
 		const allocatedAggArgsReg = regAggArgs;
 		const allocatedAggSerKeyReg = regAggSerializedKey;
 
-		console.log(`DEBUG: Values passed to callback: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`); // <-- Log values going into closure
+		log(`DEBUG: Values passed to callback: Key=%d, Args=%d, SerKey=%d`, allocatedAggKeyReg, allocatedAggArgsReg, allocatedAggSerKeyReg); // <-- Log values going into closure
 
 		processRowCallback = (
 			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget

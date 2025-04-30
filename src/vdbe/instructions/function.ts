@@ -4,6 +4,10 @@ import { FunctionContext } from '../../func/context.js';
 import type { Handler } from '../handler-types.js';
 import type { P4FuncDef } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:function');
+const errorLog = log.extend('error');
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.Function] = (ctx, inst) => {
@@ -35,7 +39,7 @@ export function registerHandlers(handlers: Handler[]) {
       ctx.setMem(resultReg, ctx.udfContext._getResult());
     } catch (e) {
       const funcName = p4Func.funcDef.name;
-      console.error(`VDBE Function Error in function ${funcName}:`, e);
+      errorLog(`Error in function ${funcName}: %O`, e);
       if (e instanceof SqliteError) { throw e; }
       if (e instanceof Error) { throw new SqliteError(`Runtime error in func ${funcName}: ${e.message}`, StatusCode.ERROR); }
       throw new SqliteError(`Unknown runtime error in func ${funcName}`, StatusCode.INTERNAL);

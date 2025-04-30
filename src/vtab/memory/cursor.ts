@@ -12,6 +12,12 @@ import type { LayerCursorInternal } from './layer/cursor.js';
 import type { ScanPlan, ScanPlanEqConstraint, ScanPlanRangeBound } from './layer/scan-plan.js'; // Import ScanPlan
 import { BTree } from 'digitree'; // Needed for sorter logic
 import type { P4SortKey } from '../../vdbe/instruction.js'; // Import SortKey info
+import { createLogger } from '../../common/logger.js'; // Import logger
+
+const log = createLogger('vtab:memory:cursor'); // Create logger
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
+const debugLog = log; // Use base log for debug level
 
 /**
  * Public-facing cursor for the MemoryTable using the layer-based MVCC model.
@@ -44,7 +50,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			try {
 				this.internalCursor.close();
 			} catch (e) {
-				console.error("Error closing internal cursor during reset:", e);
+				// Use namespaced error logger
+				errorLog("Error closing internal cursor during reset: %O", e);
 			}
 			this.internalCursor = null;
 		}
@@ -102,7 +109,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		} else {
 			// Default to primary if idxStr doesn't specify or is malformed
 			indexName = 'primary';
-			console.warn(`Could not parse index name from idxStr: "${idxStr}". Defaulting to primary.`);
+			// Use namespaced warn logger
+			warnLog(`Could not parse index name from idxStr: "%s". Defaulting to primary.`, idxStr);
 		}
 
 		const planTypeStr = params.get('plan');
@@ -172,7 +180,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 
 					if (!foundArg) {
 						keyComplete = false;
-						console.warn(`EQ plan used, but constraint/arg for index column ${k} (schema idx ${idxCol}) not found via argvMap or direct constraints.`);
+						// Use namespaced warn logger
+						warnLog(`EQ plan used, but constraint/arg for index column %d (schema idx %d) not found via argvMap or direct constraints.`, k, idxCol);
 						break;
 					}
 				}
@@ -180,7 +189,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 					equalityKey = keyParts.length === 1 && indexSchema.columns.length === 1 ? keyParts[0] : keyParts;
 				}
 			} else {
-				console.error(`Could not find schema for index '${indexName}' to build EQ key.`);
+				// Use namespaced error logger
+				errorLog(`Could not find schema for index '%s' to build EQ key.`, indexName);
 			}
 
 		} else if (planType === 3 /* RANGE_ASC */ || planType === 4 /* RANGE_DESC */) {
@@ -241,7 +251,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 
 	// --- Method to handle Sort opcode --- //
 	async createAndPopulateSorterIndex(sortInfo: P4SortKey): Promise<MemoryIndex> {
-		console.debug("Creating and populating ephemeral sorter index...");
+		// Use namespaced debug logger
+		debugLog("Creating and populating ephemeral sorter index...");
 		// 1. Define IndexSpec based on sortInfo
 		const schema = this.table.getSchema();
 		if (!schema) {
@@ -282,14 +293,16 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 				await readerCursor.next();
 			}
 		} catch(e) {
-			console.error("Error populating sorter index:", e);
+			// Use namespaced error logger
+			errorLog("Error populating sorter index: %O", e);
 			throw e instanceof SqliteError ? e : new SqliteError(`Sorter population failed: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 		} finally {
 			// Close the temporary reader cursor
 			readerCursor?.close();
 		}
 
-		console.debug(`Sorter index ${sorterIndex.name} created.`);
+		// Use namespaced debug logger
+		debugLog(`Sorter index %s created.`, sorterIndex.name);
 		return sorterIndex;
 	}
 	// ---------------------------------- //
@@ -305,7 +318,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 
 		// Check for sorter FIRST (set by Sort opcode calling createAndPopulateSorterIndex)
 		if (this.ephemeralSortingIndex) {
-			console.debug(`MemoryTableCursor Filter: Using ephemeral sorting index.`);
+			// Use namespaced debug logger
+			debugLog(`MemoryTableCursor Filter: Using ephemeral sorting index.`);
 			this.isUsingSorter = true;
 			const sorterIndex = this.ephemeralSortingIndex;
 			// Iterate the sorter BTree
@@ -328,7 +342,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 					}
 				}
 			} catch (e) {
-				console.error("Error iterating ephemeral sorter index:", e);
+				// Use namespaced error logger
+				errorLog("Error iterating ephemeral sorter index: %O", e);
 				this.reset(); // Clear state on error
 				throw e instanceof SqliteError ? e : new SqliteError(`Sorter iteration error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 			}
@@ -357,7 +372,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			this._isEof = this.internalCursor.isEof();
 
 		} catch (e) {
-			console.error(`Error during MemoryTableCursor filter (idxNum=${idxNum}, idxStr=${idxStr}):`, e);
+			// Use namespaced error logger
+			errorLog(`Error during MemoryTableCursor filter (idxNum=%d, idxStr=%s): %O`, idxNum, idxStr, e);
 			this.reset(); // Ensure cursor is reset on error
 			throw e instanceof SqliteError ? e : new SqliteError(`Filter error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 		}
@@ -385,7 +401,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 				await this.internalCursor.next();
 				this._isEof = this.internalCursor.isEof();
 			} catch (e) {
-				console.error("Error during internal cursor next():", e);
+				// Use namespaced error logger
+				errorLog("Error during internal cursor next(): %O", e);
 				this.reset(); // Reset cursor state on error
 				throw e instanceof SqliteError ? e : new SqliteError(`Cursor next error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
 			}
@@ -411,7 +428,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		if (!row) {
 			// Per SQLite docs, behavior is undefined if called when EOF.
 			// Returning NULL seems safest.
-			// console.warn("MemoryTableCursor.column() called while EOF.");
+			// warnLog("MemoryTableCursor.column() called while EOF.");
 			context.resultNull();
 			return StatusCode.OK; // Or MISUSE? OK seems standard.
 		}
@@ -466,12 +483,14 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	// For now, leave them as not implemented.
 
 	async seekRelative(offset: number): Promise<boolean> {
-		console.warn("MemoryTableCursor.seekRelative() not implemented for layered model.");
+		// Use namespaced warn logger
+		warnLog("seekRelative() not implemented for layered model.");
 		throw new SqliteError(`seekRelative not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 
 	async seekToRowid(rowid: bigint): Promise<boolean> {
-		console.warn("MemoryTableCursor.seekToRowid() not implemented for layered model.");
+		// Use namespaced warn logger
+		warnLog("seekToRowid() not implemented for layered model.");
 		throw new SqliteError(`seekToRowid not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 }

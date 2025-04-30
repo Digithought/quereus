@@ -2,6 +2,10 @@ import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Handler, VmCtx } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:seek');
+const errorLog = log.extend('error');
 
 // Re-use VTab error helper if applicable, or define a local one
 function handleSeekError(ctx: VmCtx, e: any, cursorIdx: number, method: string) {
@@ -9,7 +13,7 @@ function handleSeekError(ctx: VmCtx, e: any, cursorIdx: number, method: string) 
     const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
     ctx.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
     ctx.done = true;
-    console.error(ctx.error);
+    errorLog(ctx.error);
 }
 
 export function registerHandlers(handlers: Handler[]) {

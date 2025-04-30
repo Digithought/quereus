@@ -16,8 +16,13 @@ import type { ColumnDef } from '../../../parser/ast.js'; // Needed for schema op
 import type { SchemaChangeInfo } from '../../module.js'; // Needed for schema ops
 import { buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js'; // Needed for schema ops
 import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison functions
+import { createLogger } from '../../../common/logger.js'; // Import logger
 
 let tableManagerCounter = 0;
+const log = createLogger('vtab:memory:layer:manager'); // Create logger
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
+const debugLog = log; // Use base log for debug level
 
 /**
  * Manages the state and operations for a MemoryTable using the layer-based MVCC model.
@@ -107,7 +112,8 @@ export class MemoryTableManager {
 					throw new Error(`BaseLayer failed to initialize index '${indexSchema.name}'`);
 				}
 			} catch (e) {
-				console.error(`MemoryTableManager: Failed to initialize secondary index '${indexSchema.name}' in BaseLayer`, e);
+				// Use namespaced error logger
+				errorLog(`Failed to initialize secondary index '%s' in BaseLayer: %O`, indexSchema.name, e);
 				throw e; // Fail fast if index setup fails
 			}
 		});
@@ -130,24 +136,28 @@ export class MemoryTableManager {
 			if (connection.pendingTransactionLayer) {
 				// Check autocommit status of the parent DB
 				if (this.db.getAutocommit()) {
-					console.warn(`Connection ${connectionId} disconnecting with pending transaction in autocommit mode; committing.`);
+					// Use namespaced warn logger
+					warnLog(`Connection %d disconnecting with pending transaction in autocommit mode; committing.`, connectionId);
 					// Commit the transaction instead of rolling back in autocommit mode
 					// Need to await commit, making disconnect async
 					// Use a separate async function to handle this to keep disconnect sync if possible?
 					// Let's make disconnect async for simplicity for now.
 					this.commitTransaction(connection).catch(err => {
-						console.error(`Error during implicit commit on disconnect for connection ${connectionId}:`, err);
+						// Use namespaced error logger
+						errorLog(`Error during implicit commit on disconnect for connection %d: %O`, connectionId, err);
 						// Even if commit fails, proceed with disconnect cleanup
 					});
 				} else {
-					console.warn(`Connection ${connectionId} disconnected with pending transaction (explicit transaction active); rolling back.`);
+					// Use namespaced warn logger
+					warnLog(`Connection %d disconnected with pending transaction (explicit transaction active); rolling back.`, connectionId);
 					connection.rollback(); // Standard rollback if not in autocommit
 				}
 			}
 			this.connections.delete(connectionId);
 			// After disconnecting, try to collapse layers as this connection might have been holding one up
 			this.tryCollapseLayers().catch(err => {
-				console.error(`Error during layer collapse after disconnect: ${err}`);
+				// Use namespaced error logger
+				errorLog(`Error during layer collapse after disconnect: %O`, err);
 			});
 		}
 	}
@@ -169,7 +179,8 @@ export class MemoryTableManager {
 
 		const lockKey = `MemoryTable.Commit:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey); // Use the static method
-		console.debug(`[Commit ${connection.connectionId}] Acquired lock for ${this.tableName}`);
+		// Use namespaced debug logger
+		debugLog(`[Commit %d] Acquired lock for %s`, connection.connectionId, this.tableName);
 		try {
 			// --- Staleness Check (Optimistic Concurrency Control) ---
 			// If the parent of the layer we are trying to commit is NOT the *current*
@@ -178,7 +189,8 @@ export class MemoryTableManager {
 			if (pendingLayer.getParent() !== this.currentCommittedLayer) {
 				// Rollback the pending changes automatically
 				connection.pendingTransactionLayer = null;
-				console.warn(`[Commit ${connection.connectionId}] Stale commit detected for ${this.tableName}. Rolling back.`);
+				// Use namespaced warn logger
+				warnLog(`[Commit %d] Stale commit detected for %s. Rolling back.`, connection.connectionId, this.tableName);
 				// TODO: Should this throw SQLITE_BUSY or similar? Standard behavior might depend on isolation level.
 				// For now, treat as a failed commit leading to automatic rollback.
 				throw new SqliteError(`Commit failed due to concurrent update (staleness check failed) on table ${this.tableName}`, StatusCode.BUSY); // Or StatusCode.ABORT?
@@ -189,7 +201,8 @@ export class MemoryTableManager {
 
 			// Update the global pointer to the newest committed layer
 			this.currentCommittedLayer = pendingLayer;
-			console.debug(`[Commit ${connection.connectionId}] Updated currentCommittedLayer to ${pendingLayer.getLayerId()} for ${this.tableName}`);
+			// Use namespaced debug logger
+			debugLog(`[Commit %d] Updated currentCommittedLayer to %d for %s`, connection.connectionId, pendingLayer.getLayerId(), this.tableName);
 
 			// Update this connection's state
 			connection.readLayer = pendingLayer; // Subsequent reads by this connection see its own commit
@@ -197,12 +210,14 @@ export class MemoryTableManager {
 
 			// Attempt to collapse layers asynchronously (don't block commit)
 			this.tryCollapseLayers().catch(err => {
-				console.error(`[Commit ${connection.connectionId}] Error during background layer collapse: ${err}`);
+				// Use namespaced error logger
+				errorLog(`[Commit %d] Error during background layer collapse: %O`, connection.connectionId, err);
 			});
 
 		} finally {
 			release();
-			console.debug(`[Commit ${connection.connectionId}] Released lock for ${this.tableName}`);
+			// Use namespaced debug logger
+			debugLog(`[Commit %d] Released lock for %s`, connection.connectionId, this.tableName);
 		}
 	}
 
@@ -228,11 +243,13 @@ export class MemoryTableManager {
 			release = result.release;
 
 			if (!release) {
-				console.debug(`[Collapse] Lock busy for ${this.tableName}, skipping collapse attempt.`);
+				// Use namespaced debug logger
+				debugLog(`[Collapse] Lock busy for %s, skipping collapse attempt.`, this.tableName);
 				return; // Another collapse is likely in progress or we timed out
 			}
 
-			console.debug(`[Collapse] Acquired lock for ${this.tableName}`);
+			// Use namespaced debug logger
+			debugLog(`[Collapse] Acquired lock for %s`, this.tableName);
 
 			let collapsedCount = 0;
 			// Loop as long as the current committed layer is mergeable
@@ -246,13 +263,13 @@ export class MemoryTableManager {
 				// 4. No active connection should be reading directly from its *parent* layer.
 				//    (It's okay if connections read from layerToMerge itself, they will be updated).
 				if (!(layerToMerge instanceof TransactionLayer) || !layerToMerge.isCommitted()) {
-					// console.debug(`[Collapse] Layer ${layerToMerge.getLayerId()} is base or not committed. Stopping.`);
+					debugLog(`[Collapse] Layer ${layerToMerge.getLayerId()} is base or not committed. Stopping.`);
 					break; // Cannot merge base layer or uncommitted layer
 				}
 
 				const parentLayer = layerToMerge.getParent();
 				if (!parentLayer) {
-					console.error(`[Collapse] Committed TransactionLayer ${layerToMerge.getLayerId()} has no parent!`);
+					errorLog(`[Collapse] Committed TransactionLayer ${layerToMerge.getLayerId()} has no parent!`);
 					break; // Should not happen
 				}
 
@@ -262,7 +279,8 @@ export class MemoryTableManager {
 					// Check both the official readLayer and any pending layer's parent
 					if (conn.readLayer === parentLayer || conn.pendingTransactionLayer?.getParent() === parentLayer) {
 						parentInUse = true;
-						console.debug(`[Collapse] Parent layer ${parentLayer.getLayerId()} still in use by connection ${conn.connectionId}. Cannot merge layer ${layerToMerge.getLayerId()}.`);
+						// Use namespaced debug logger
+						debugLog(`[Collapse] Parent layer %d still in use by connection %d. Cannot merge layer %d.`, parentLayer.getLayerId(), conn.connectionId, layerToMerge.getLayerId());
 						break;
 					}
 				}
@@ -272,18 +290,21 @@ export class MemoryTableManager {
 				}
 
 				// --- Perform the Merge ---
-				console.debug(`[Collapse] Merging layer ${layerToMerge.getLayerId()} into parent ${parentLayer.getLayerId()} (eventually base) for ${this.tableName}`);
+				// Use namespaced debug logger
+				debugLog(`[Collapse] Merging layer %d into parent %d (eventually base) for %s`, layerToMerge.getLayerId(), parentLayer.getLayerId(), this.tableName);
 				this.applyLayerToBase(layerToMerge);
 
 				// Update the global committed layer pointer to the parent
 				this.currentCommittedLayer = parentLayer;
-				console.debug(`[Collapse] Updated currentCommittedLayer to ${parentLayer.getLayerId()} for ${this.tableName}`);
+				// Use namespaced debug logger
+				debugLog(`[Collapse] Updated currentCommittedLayer to %d for %s`, parentLayer.getLayerId(), this.tableName);
 
 				// Update any connections that were reading from the merged layer to now read from the parent
 				for (const conn of this.connections.values()) {
 					if (conn.readLayer === layerToMerge) {
 						conn.readLayer = parentLayer;
-						console.debug(`[Collapse] Updated connection ${conn.connectionId} readLayer to ${parentLayer.getLayerId()}`);
+						// Use namespaced debug logger
+						debugLog(`[Collapse] Updated connection %d readLayer to %d`, conn.connectionId, parentLayer.getLayerId());
 					}
 				}
 
@@ -291,18 +312,21 @@ export class MemoryTableManager {
 				collapsedCount++;
 			}
 			if (collapsedCount > 0) {
-				console.debug(`[Collapse] Merged ${collapsedCount} layer(s) for ${this.tableName}. Current committed layer: ${this.currentCommittedLayer.getLayerId()}`);
+				// Use namespaced debug logger
+				debugLog(`[Collapse] Merged %d layer(s) for %s. Current committed layer: %d`, collapsedCount, this.tableName, this.currentCommittedLayer.getLayerId());
 			} else {
-				// console.debug(`[Collapse] No layers eligible for merging for ${this.tableName}.`);
+				debugLog(`[Collapse] No layers eligible for merging for ${this.tableName}.`);
 			}
 
 		} catch (e) {
-			console.error(`[Collapse] Error during layer collapse for ${this.tableName}:`, e);
+			// Use namespaced error logger
+			errorLog(`[Collapse] Error during layer collapse for %s: %O`, this.tableName, e);
 			// Consider marking the table as potentially corrupt or needing recovery?
 		} finally {
 			if (release) {
 				release();
-				console.debug(`[Collapse] Released lock for ${this.tableName}`);
+				// Use namespaced debug logger
+				debugLog(`[Collapse] Released lock for %s`, this.tableName);
 			}
 		}
 	}
@@ -367,7 +391,8 @@ export class MemoryTableManager {
 					);
 				} catch (applyError) {
 					// This is critical. Log details and potentially halt collapse.
-					console.error(`[Collapse Apply] Failed to apply change for key ${JSON.stringify(primaryKey)} from layer ${layer.getLayerId()} to base layer. Table ${this.tableName} may be inconsistent. Error:`, applyError);
+					// Use namespaced error logger
+					errorLog(`[Collapse Apply] Failed to apply change for key %s from layer %d to base layer. Table %s may be inconsistent. Error: %O`, JSON.stringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
 					// Re-throw to stop the collapse process?
 					throw applyError;
 				}
@@ -385,7 +410,8 @@ export class MemoryTableManager {
 				// Check if baseLayer already reflects deletion for this PK
 				const currentBaseValue = this.baseLayer.primaryTree.get(pk);
 				if (currentBaseValue !== undefined) { // If base still has the row
-					console.debug(`[Collapse Apply] Applying explicit delete for rowid ${rowid} (PK: ${JSON.stringify(pk)}) from layer ${layer.getLayerId()} to base.`);
+					// Use namespaced debug logger
+					debugLog(`[Collapse Apply] Applying explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, JSON.stringify(pk), layer.getLayerId());
 					try {
 						// Create a properly typed DeletionMarker
 						const deletionMarker: DeletionMarker = {
@@ -406,12 +432,13 @@ export class MemoryTableManager {
 							oldRowValue
 						);
 					} catch (applyError) {
-						console.error(`[Collapse Apply] Failed to apply explicit delete for rowid ${rowid} (PK: ${JSON.stringify(pk)}) from layer ${layer.getLayerId()} to base. Error:`, applyError);
+						// Use namespaced error logger
+						errorLog(`[Collapse Apply] Failed to apply explicit delete for rowid %s (PK: %s) from layer %d to base. Error: %O`, rowid, JSON.stringify(pk), layer.getLayerId(), applyError);
 						throw applyError;
 					}
 				}
 			} else {
-				// console.debug(`[Collapse Apply] Explicitly deleted rowid ${rowid} from layer ${layer.getLayerId()} had no primary key found in parent layers.`);
+				debugLog(`[Collapse Apply] Explicitly deleted rowid ${rowid} from layer ${layer.getLayerId()} had no primary key found in parent layers.`);
 			}
 		}
 	}
@@ -731,7 +758,8 @@ export class MemoryTableManager {
 			// TODO: How to handle layers created with the old schema during collapse?
 			// BaseLayer.applyChange might need schema context passed in.
 
-			console.log(`MemoryTable ${this.tableName}: Added column ${newColumnSchema.name}`);
+			// Use namespaced log
+			log(`MemoryTable %s: Added column %s`, this.tableName, newColumnSchema.name);
 		} finally {
 			release();
 		}
@@ -756,7 +784,7 @@ export class MemoryTableManager {
 
 			const oldTableSchema = this.tableSchema;
 
-			// Update canonical schema
+            // Update canonical schema
             const updatedColumnsSchema = oldTableSchema.columns.filter((_, idx) => idx !== colIndex);
             const updatedPkDefinition = oldTableSchema.primaryKeyDefinition
                 .map(def => ({ ...def, index: def.index > colIndex ? def.index - 1 : def.index }))
@@ -774,7 +802,8 @@ export class MemoryTableManager {
             // Apply change to BaseLayer data
             this.baseLayer.dropColumnFromBase(columnName);
 
-            console.log(`MemoryTable ${this.tableName}: Dropped column ${columnName}`);
+            // Use namespaced log
+            log(`MemoryTable %s: Dropped column %s`, this.tableName, columnName);
         } finally {
             release();
         }
@@ -815,7 +844,8 @@ export class MemoryTableManager {
              // Apply change to BaseLayer data
             this.baseLayer.renameColumnInBase(oldName, newName);
 
-            console.log(`MemoryTable ${this.tableName}: Renamed column ${oldName} to ${newName}`);
+            // Use namespaced log
+            log(`MemoryTable %s: Renamed column %s to %s`, this.tableName, oldName, newName);
         } finally {
             release();
         }
@@ -849,7 +879,8 @@ export class MemoryTableManager {
             // Update canonical schema
             this.tableSchema = Object.freeze({ ...this.tableSchema, name: newName });
 
-             console.log(`Memory table renamed from '${oldTableKey}' to '${newName}'`);
+             // Use namespaced log
+             log(`Memory table renamed from '%s' to '%s'`, oldTableKey, newName);
         } finally {
             release();
         }
@@ -875,10 +906,12 @@ export class MemoryTableManager {
 			// Add index to BaseLayer (populates it)
 			this.baseLayer.addIndexToBase(indexSchema);
 
-			console.log(`MemoryTable ${this.tableName}: Created index ${indexName}`);
+			// Use namespaced log
+			log(`MemoryTable %s: Created index %s`, this.tableName, indexName);
 		} catch (e) {
 			// Rollback schema change?
-			if(e instanceof Error) console.error("Error creating index:", e.message);
+			// Use namespaced error logger
+			if(e instanceof Error) errorLog("Error creating index: %s", e.message);
 			throw e; // Re-throw
 		}
 		finally {
@@ -905,10 +938,12 @@ export class MemoryTableManager {
 			const dropped = this.baseLayer.dropIndexFromBase(indexName);
 			if (!dropped) {
 				// This shouldn't happen if schema check passed, but handle defensively
-				console.warn(`BaseLayer failed to drop index ${indexName}, schema/base mismatch?`);
+				// Use namespaced warn logger
+				warnLog(`BaseLayer failed to drop index %s, schema/base mismatch?`, indexName);
 			}
 
-			console.log(`MemoryTable ${this.tableName}: Dropped index ${indexName}`);
+			// Use namespaced log
+			log(`MemoryTable %s: Dropped index %s`, this.tableName, indexName);
 		} finally {
 			release();
 		}
@@ -918,7 +953,8 @@ export class MemoryTableManager {
 	private async ensureSchemaChangeSafety(): Promise<void> {
 		if (this.currentCommittedLayer !== this.baseLayer) {
 			// TODO: Implement waiting strategy or throw immediately
-			console.warn(`Schema change attempted on ${this.tableName} while transaction layers exist. Forcing collapse...`);
+			// Use namespaced warn logger
+			warnLog(`Schema change attempted on %s while transaction layers exist. Forcing collapse...`, this.tableName);
 			// Potentially wait for collapse or force it if possible, or just throw.
 			// Forcing collapse might be complex if layers are in use.
 			// Throwing is safer for now.
@@ -972,7 +1008,8 @@ export class MemoryTableManager {
                 !this.pkIsRowid
             );
 
-            console.log(`MemoryTable ${this.tableName} manager destroyed.`);
+            // Use namespaced log
+            log(`MemoryTable %s manager destroyed.`, this.tableName);
         } finally {
             release();
         }

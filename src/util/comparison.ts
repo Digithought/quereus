@@ -1,4 +1,8 @@
 import type { SqlValue } from '../common/types.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('util:comparison');
+const warnLog = log.extend('warn');
 
 /**
  * Function type for SQLite collation functions.
@@ -56,7 +60,7 @@ export const RTRIM_COLLATION: CollationFunction = (a, b) => {
 export function registerCollation(name: string, func: CollationFunction): void {
     const upperName = name.toUpperCase();
     if (collations.has(upperName)) {
-        console.warn(`Overwriting existing collation: ${upperName}`);
+        warnLog(`Overwriting existing collation: %s`, upperName);
     }
     collations.set(upperName, func);
 }
@@ -175,7 +179,7 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
 		case StorageClass.TEXT:
             const collationFunc = collations.get(collationName.toUpperCase());
             if (!collationFunc) {
-                console.warn(`Unknown collation requested: ${collationName}. Falling back to BINARY.`);
+                warnLog(`Unknown collation requested: %s. Falling back to BINARY.`, collationName);
                 return BINARY_COLLATION(valA as string, valB as string);
             }
             return collationFunc(valA as string, valB as string);

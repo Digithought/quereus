@@ -1,3 +1,4 @@
+import { createLogger } from '../common/logger.js'; // Import logger
 import { StatusCode } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
 import type { Compiler, SubroutineInfo } from './compiler.js';
@@ -9,12 +10,14 @@ import { SqlDataType } from '../common/constants.js';
 import type { TableSchema } from '../schema/table.js';
 import { MemoryTable } from '../vtab/memory/table.js';
 
+const log = createLogger('compiler:subquery'); // Create logger instance
+
 // --- Subquery Compilation Functions --- //
 
 export function compileSubquery(compiler: Compiler, expr: AST.SubqueryExpr, targetReg: number): void {
 	// This function is usually called for subqueries used as expressions (scalar, comparison).
 	// EXISTS and IN are typically handled by parent Unary/Binary expression compilers.
-	console.warn("compileSubquery assuming scalar context. EXISTS/IN should be handled by parent expression compiler.");
+	log.extend('warn')("compileSubquery assuming scalar context. EXISTS/IN should be handled by parent expression compiler.");
 	compiler.compileScalarSubquery(expr.query, targetReg);
 }
 

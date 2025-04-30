@@ -2,10 +2,14 @@ import fastJsonPatch from 'fast-json-patch';
 import type { Operation } from 'fast-json-patch';
 const { applyPatch } = fastJsonPatch;
 
+import { createLogger } from '../../common/logger.js';
 import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createScalarFunction, createAggregateFunction } from '../registration.js';
 import { safeJsonParse, resolveJsonPathForModify, prepareJsonValue, deepCopyJson, getJsonType } from './json-helpers.js';
+
+const log = createLogger('func:builtins:json');
+const errorLog = log.extend('error');
 
 // --- JSON Functions --- //
 
@@ -211,7 +215,7 @@ const jsonPatchFuncImpl = (json: SqlValue, patchVal: SqlValue): SqlValue => {
 		const result = applyPatch(data, patch, true /* validate operations */).newDocument;
 		return JSON.stringify(result);
 	} catch (e: any) {
-		console.error(`json_patch failed: ${e?.message}`, e);
+		errorLog('json_patch failed: %s, %O', e?.message, e);
 		return null; // Return NULL on patch failure
 	}
 };
@@ -488,7 +492,7 @@ const jsJsonPatch = (jsonDoc: SqlValue, patchVal: SqlValue): string | null => {
 		const result = applyPatch(data, patch, true).newDocument;
 		return JSON.stringify(result);
 	} catch (e: any) {
-		console.error(`json_patch failed: ${e?.message}`, e);
+		errorLog('json_patch failed: %s, %O', e?.message, e);
 		return null; // Return NULL on patch failure
 	}
 };

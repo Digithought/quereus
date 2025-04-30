@@ -1,6 +1,10 @@
+import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
+
+const log = createLogger('parser:parser'); // Create logger instance
+const errorLog = log.extend('error');
 
 export class ParseError extends Error {
 	token: Token;
@@ -100,7 +104,7 @@ export class Parser {
 					}
 					throw e;
 				}
-				console.error("Unhandled parser error:", e);
+				errorLog("Unhandled parser error: %O", e);
 				throw new Error(`Parser error: ${e instanceof Error ? e.message : e}`);
 			}
 		}

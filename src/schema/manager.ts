@@ -14,6 +14,12 @@ import type * as AST from '../parser/ast.js';
 import type { ViewSchema } from './view.js';
 import { SchemaTableModule } from '../vtab/schema/table.js';
 import { SqlDataType } from '../common/types.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('schema:manager');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
+const debugLog = log;
 
 /**
  * Manages all schemas associated with a database connection (main, temp, attached).
@@ -47,7 +53,7 @@ export class SchemaManager {
 		if (this.schemas.has(name.toLowerCase())) {
 			this.currentSchemaName = name.toLowerCase();
 		} else {
-			console.warn(`Attempted to set current schema to non-existent schema: ${name}`);
+			warnLog(`Attempted to set current schema to non-existent schema: %s`, name);
 		}
 	}
 
@@ -69,10 +75,10 @@ export class SchemaManager {
 	registerModule(name: string, module: VirtualTableModule<any, any>): void {
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
-			console.warn(`Replacing existing virtual table module: ${lowerName}`);
+			warnLog(`Replacing existing virtual table module: %s`, lowerName);
 		}
 		this.modules.set(lowerName, module);
-		console.log(`Registered VTab module: ${lowerName}`);
+		log(`Registered VTab module: %s`, lowerName);
 	}
 
 	/**
@@ -94,13 +100,13 @@ export class SchemaManager {
 	setDefaultVTabModule(name: string | null): void {
 		if (name === null) {
 			this.defaultVTabModule = null;
-			console.log("Default VTab module cleared.");
+			log("Default VTab module cleared.");
 			return;
 		}
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
 			this.defaultVTabModule = lowerName;
-			console.log(`Default VTab module set to: ${lowerName}`);
+			log(`Default VTab module set to: %s`, lowerName);
 		} else {
 			throw new SqliteError(`Cannot set default VTab module: module '${lowerName}' not registered.`);
 		}
@@ -164,7 +170,7 @@ export class SchemaManager {
 		}
 		const schema = new Schema(name);
 		this.schemas.set(lowerName, schema);
-		console.log(`SchemaManager: Added schema '${name}'`);
+		log(`Added schema '%s'`, name);
 		return schema;
 	}
 
@@ -186,7 +192,7 @@ export class SchemaManager {
 			schema.clearTables();
 			schema.clearViews();
 			this.schemas.delete(lowerName);
-			console.log(`SchemaManager: Removed schema '${name}'`);
+			log(`Removed schema '%s'`, name);
 			return true;
 		}
 		return false;
@@ -202,7 +208,7 @@ export class SchemaManager {
 		if (lowerTableName === 'sqlite_schema') {
 			const moduleInfo = this.db._getVtabModule('sqlite_schema');
 			if (!moduleInfo) {
-				console.error("sqlite_schema module not registered!");
+				errorLog("sqlite_schema module not registered!");
 				return undefined;
 			}
 
@@ -297,7 +303,7 @@ export class SchemaManager {
 			throw new SqliteError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
 		}
 
-		console.log(`SchemaManager: Declaring VTab in '${schemaName}' using SQL: ${createTableSql}`);
+		log(`Declaring VTab in '%s' using SQL: %s`, schemaName, createTableSql);
 
 		// Parse the CREATE TABLE statement
 		let createVtabAst: AST.CreateTableStmt;
@@ -318,14 +324,14 @@ export class SchemaManager {
 		if (schema.getTable(tableName)) {
 			// Handle IF NOT EXISTS
 			if (createVtabAst.ifNotExists) {
-				console.log(`SchemaManager: VTab ${tableName} already exists in schema ${schemaName}, skipping creation (IF NOT EXISTS).`);
+				log(`VTab %s already exists in schema %s, skipping creation (IF NOT EXISTS).`, tableName, schemaName);
 				return schema.getTable(tableName)!;
 			}
 			throw new SqliteError(`Table ${tableName} already exists in schema ${schemaName}`, StatusCode.ERROR);
 		}
 
 		// Create placeholder schema - modules should override with actual columns
-		console.warn(`SchemaManager.declareVtab: Using placeholder column definition for ${tableName}. VTab module should define actual columns.`);
+		warnLog(`declareVtab: Using placeholder column definition for %s. VTab module should define actual columns.`, tableName);
 		const placeholderColumns: ColumnSchema[] = [
 			createDefaultColumnSchema('column1'),
 			createDefaultColumnSchema('column2')
@@ -399,7 +405,7 @@ export class SchemaManager {
 
 		// Call xDestroy on the module, providing table details
 		if (tableSchema?.vtabModuleName) {
-			console.log(`Calling xDestroy for VTab ${schemaName}.${tableName} via module ${tableSchema.vtabModuleName}`);
+			log(`Calling xDestroy for VTab %s.%s via module %s`, schemaName, tableName, tableSchema.vtabModuleName);
 			destroyPromise = tableSchema.vtabModule.xDestroy(
 				this.db,
 				tableSchema.vtabAuxData,
@@ -407,7 +413,7 @@ export class SchemaManager {
 				schemaName,
 				tableName
 			).catch(err => {
-				console.error(`Error during VTab module xDestroy for ${schemaName}.${tableName}:`, err);
+				errorLog(`Error during VTab module xDestroy for %s.%s: %O`, schemaName, tableName, err);
 			});
 		}
 
@@ -416,7 +422,7 @@ export class SchemaManager {
 
 		// Process destruction asynchronously
 		if (destroyPromise) {
-			destroyPromise.then(() => console.log(`xDestroy completed for VTab ${schemaName}.${tableName}`));
+			destroyPromise.then(() => log(`xDestroy completed for VTab %s.%s`, schemaName, tableName));
 		}
 
 		return removed;
@@ -444,7 +450,7 @@ export class SchemaManager {
 			schema.clearFunctions();
 			schema.clearViews();
 		});
-		console.log("SchemaManager: Cleared all schemas.");
+		log("Cleared all schemas.");
 	}
 
 	/**

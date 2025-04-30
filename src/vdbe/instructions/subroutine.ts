@@ -2,6 +2,11 @@ import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Handler } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:subroutine');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.FrameEnter] = (ctx, inst) => {
@@ -24,11 +29,12 @@ export function registerHandlers(handlers: Handler[]) {
 	};
 	handlers[Opcode.FrameLeave] = (ctx, inst) => {
 		if (ctx.framePointer === 0 && ctx.getStackValue(1) === null) {
-			console.warn("FrameLeave called on base frame? Potentially harmless if program ends.");
+			warnLog("FrameLeave called on base frame? Potentially harmless if program ends.");
 		} else {
 			const oldFPVal = ctx.getStackValue(ctx.framePointer + 1);
 			const oldFP = typeof oldFPVal === 'number' ? oldFPVal : -1;
 			if (isNaN(oldFP) || oldFP < 0) {
+				errorLog(`Invalid old frame pointer %s at FP %d + 1`, oldFPVal, ctx.framePointer);
 				throw new SqliteError(`Invalid old frame pointer ${oldFPVal} at FP ${ctx.framePointer + 1}`, StatusCode.INTERNAL);
 			}
 
@@ -52,6 +58,7 @@ export function registerHandlers(handlers: Handler[]) {
 		const jumpTarget = typeof jumpTargetVal === 'number' ? jumpTargetVal : -1;
 
 		if (!Number.isInteger(jumpTarget) || jumpTarget < 0) {
+			errorLog(`Invalid return address %s at SP %d (expected after FrameLeave)`, jumpTargetVal, ctx.stackPointer);
 			throw new SqliteError(`Invalid return address ${jumpTargetVal} at SP ${ctx.stackPointer} (expected after FrameLeave)`, StatusCode.INTERNAL);
 		}
 
@@ -71,6 +78,7 @@ export function registerHandlers(handlers: Handler[]) {
 		}
 
 		if (ctx.stackPointer < count) {
+			errorLog(`Stack underflow during StackPop: SP=%d, Count=%d`, ctx.stackPointer, count);
 			throw new SqliteError(`Stack underflow during StackPop: SP=${ctx.stackPointer}, Count=${count}`, StatusCode.INTERNAL);
 		}
 

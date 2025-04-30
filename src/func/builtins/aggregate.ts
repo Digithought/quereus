@@ -1,8 +1,12 @@
+import { createLogger } from '../../common/logger.js';
 import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createAggregateFunction } from '../registration.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { FunctionContext } from '../context.js';
+
+const log = createLogger('func:builtins:aggregate');
+const warnLog = log.extend('warn');
 
 // --- count(*) ---
 const countStarStep = (acc: number | undefined): number => {
@@ -43,7 +47,7 @@ const sumStep = (acc: { sum: number | bigint } | null, value: any): { sum: numbe
 			return { sum: potentialSum };
 		}
 	} catch (e) {
-		console.warn("Error during SUM step coercion:", e);
+		warnLog("Error during SUM step coercion: %O", e);
 		return acc; // Ignore value if coercion fails
 	}
 };
@@ -74,7 +78,7 @@ const avgStep = (acc: AvgAccumulator | undefined, value: any): AvgAccumulator | 
 		const newSum = Number(currentSum) + Number(numValue);
 		return { sum: newSum, count: currentCount + 1 };
 	} catch (e) {
-		console.warn("Error during AVG step coercion:", e);
+		warnLog("Error during AVG step coercion: %O", e);
 		return acc;
 	}
 };
@@ -254,7 +258,7 @@ const statStep = (acc: StatAccumulator | undefined, value: any): StatAccumulator
 			sumSq: currentAcc.sumSq + (numValue * numValue),
 		};
 	} catch (e) {
-		console.warn("Error during statistical aggregate step coercion:", e);
+		warnLog("Error during statistical aggregate step coercion: %O", e);
 		return currentAcc;
 	}
 };

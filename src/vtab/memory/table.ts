@@ -12,6 +12,10 @@ import { MemoryTableCursor } from './cursor.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/constants.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vtab:memory:table');
+const errorLog = log.extend('error');
 
 /**
  * Represents a connection-specific instance of an in-memory table using the layer-based MVCC model.
@@ -155,7 +159,7 @@ export class MemoryTable extends VirtualTable {
 			// Update this instance's schema reference after alteration succeeds
 			this.tableSchema = this.manager.tableSchema;
 		} catch (e) {
-			console.error(`Failed to apply schema change (${(changeInfo as any).type}) to ${this.tableName}:`, e);
+			errorLog(`Failed to apply schema change (%s) to %s: %O`, (changeInfo as any).type, this.tableName, e);
 			// Refresh schema reference in case of partial failure?
 			this.tableSchema = this.manager.tableSchema;
 			throw e; // Re-throw the error

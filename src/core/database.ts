@@ -1,3 +1,4 @@
+import { createLogger } from '../common/logger.js';
 import { MisuseError, SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/constants.js';
 import type { VirtualTableModule } from '../vtab/module.js';
@@ -19,6 +20,10 @@ import { Parser } from '../parser/parser.js';
 import { Compiler } from '../compiler/compiler.js';
 import * as AST from '../parser/ast.js';
 
+const log = createLogger('core:database');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
+
 /**
  * Represents a connection to an SQLite database (in-memory in this port).
  * Manages schema, prepared statements, virtual tables, and functions.
@@ -35,7 +40,7 @@ export class Database {
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
-		console.log("Database instance created.");
+		log("Database instance created.");
 
 		// Register built-in functions
 		this.registerBuiltinFunctions();
@@ -55,10 +60,10 @@ export class Database {
 			try {
 				mainSchema.addFunction(funcDef);
 			} catch (e) {
-				console.error(`Failed to register built-in function ${funcDef.name}/${funcDef.numArgs}:`, e);
+				errorLog(`Failed to register built-in function ${funcDef.name}/${funcDef.numArgs}: %O`, e);
 			}
 		});
-		console.log(`Registered ${BUILTIN_FUNCTIONS.length} built-in functions.`);
+		log(`Registered ${BUILTIN_FUNCTIONS.length} built-in functions.`);
 	}
 
 	/** @internal Registers default collation sequences */
@@ -67,7 +72,7 @@ export class Database {
 		registerCollation('BINARY', BINARY_COLLATION);
 		registerCollation('NOCASE', NOCASE_COLLATION);
 		registerCollation('RTRIM', RTRIM_COLLATION);
-		console.log("Default collations registered (BINARY, NOCASE, RTRIM)");
+		log("Default collations registered (BINARY, NOCASE, RTRIM)");
 	}
 
 	/**
@@ -80,7 +85,7 @@ export class Database {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
 		}
-		console.log(`Preparing SQL: ${sql}`);
+		log('Preparing SQL: %s', sql);
 
 		// Create the statement using the standard constructor (compilation deferred)
 		const stmt = new Statement(this, sql);
@@ -122,7 +127,7 @@ export class Database {
 			params = undefined;
 		}
 
-		console.log(`Executing SQL block: ${sql}`);
+		log('Executing SQL block: %s', sql);
 
 		// 1. Parse all statements
 		const parser = new Parser();
@@ -182,7 +187,7 @@ export class Database {
 						callback(rowData, colNames);
 					} catch (cbError: any) {
 						// Handle errors from the callback itself if necessary
-						console.error("Error in exec() callback:", cbError);
+						errorLog("Error in exec() callback: %O", cbError);
 						throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
 					}
 				}
@@ -212,7 +217,7 @@ export class Database {
 			throw new SqliteError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
 		}
 
-		console.log(`Registering VTab module: ${name}`);
+		log('Registering VTab module: %s', name);
 		this.registeredVTabs.set(lowerName, { module, auxData });
 	}
 
@@ -277,7 +282,7 @@ export class Database {
 			return;
 		}
 
-		console.log("Closing database...");
+		log("Closing database...");
 		this.isOpen = false;
 
 		// Finalize all prepared statements
@@ -289,7 +294,7 @@ export class Database {
 		this.schemaManager.clearAll();
 
 		this.registeredVTabs.clear();
-		console.log("Database closed.");
+		log("Database closed.");
 	}
 
 	/** @internal Called by Statement when it's finalized */
@@ -365,7 +370,7 @@ export class Database {
 		try {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
-			console.error(`Failed to register scalar function ${name}/${options.numArgs}:`, e);
+			errorLog(`Failed to register scalar function ${name}/${options.numArgs}: %O`, e);
 			if (e instanceof Error) throw e; else throw new Error(String(e));
 		}
 	}
@@ -401,7 +406,7 @@ export class Database {
 		try {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
-			console.error(`Failed to register aggregate function ${name}/${options.numArgs}:`, e);
+			errorLog(`Failed to register aggregate function ${name}/${options.numArgs}: %O`, e);
 			if (e instanceof Error) throw e; else throw new Error(String(e));
 		}
 	}
@@ -417,7 +422,7 @@ export class Database {
 		try {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
-			console.error(`Failed to register function ${schema.name}/${schema.numArgs}:`, e);
+			errorLog(`Failed to register function ${schema.name}/${schema.numArgs}: %O`, e);
 			if (e instanceof Error) throw e; else throw new Error(String(e));
 		}
 	}
@@ -449,7 +454,7 @@ export class Database {
 	 * without a USING clause.
 	 */
 	setDefaultVtabModule(name: string, args: string[] = []): void {
-		console.warn("Deprecated: Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` instead.");
+		warnLog("Deprecated: Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` instead.");
 		this.setDefaultVtabName(name);
 		this.setDefaultVtabArgs(args);
 	}
@@ -457,7 +462,7 @@ export class Database {
 	/** @internal Sets only the name of the default module */
 	setDefaultVtabName(name: string): void {
 		if (!this.registeredVTabs.has(name.toLowerCase())) {
-			console.warn(`Setting default VTab module to '${name}', which is not currently registered.`);
+			warnLog(`Setting default VTab module to '${name}', which is not currently registered.`);
 		}
 		this.defaultVtabModuleName = name;
 	}
@@ -514,7 +519,7 @@ export class Database {
 			throw new SqliteError("Database is closed", StatusCode.ERROR);
 		}
 		registerCollation(name, func);
-		console.log(`Registered collation: ${name}`);
+		log('Registered collation: %s', name);
 	}
 
 	/** @internal Gets a registered collation function */

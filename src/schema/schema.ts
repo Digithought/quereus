@@ -4,6 +4,10 @@ import { getFunctionKey } from './function.js';
 import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
 import { SqliteError } from '../common/errors.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('schema:schema');
+const errorLog = log.extend('error');
 
 /**
  * Determines the affinity of a column based on its declared type name.
@@ -66,7 +70,7 @@ export class Schema {
 			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
 		}
 		this.tables.set(table.name.toLowerCase(), table);
-		console.log(`Schema '${this.name}': Added/Updated table '${table.name}'`);
+		log(`Added/Updated table '%s' in schema '%s'`, table.name, this.name);
 	}
 
 	/**
@@ -98,7 +102,7 @@ export class Schema {
 		const key = tableName.toLowerCase();
 		const exists = this.tables.has(key);
 		if (exists) {
-			console.log(`Schema '${this.name}': Removed table '${tableName}'`);
+			log(`Removed table '%s' from schema '%s'`, tableName, this.name);
 			this.tables.delete(key);
 		}
 		return exists;
@@ -125,7 +129,7 @@ export class Schema {
 			throw new SqliteError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
 		}
 		this.views.set(view.name.toLowerCase(), view);
-		console.log(`Schema '${this.name}': Added/Updated view '${view.name}'`);
+		log(`Added/Updated view '%s' in schema '%s'`, view.name, this.name);
 	}
 
 	/**
@@ -157,7 +161,7 @@ export class Schema {
 		const key = viewName.toLowerCase();
 		const exists = this.views.has(key);
 		if (exists) {
-			console.log(`Schema '${this.name}': Removed view '${viewName}'`);
+			log(`Removed view '%s' from schema '%s'`, viewName, this.name);
 			this.views.delete(key);
 		}
 		return exists;
@@ -180,10 +184,12 @@ export class Schema {
 		const key = getFunctionKey(func.name, func.numArgs);
 		const existing = this.functions.get(key);
 		if (existing?.xDestroy && existing.userData !== func.userData) {
-			try { existing.xDestroy(existing.userData); } catch (e) { console.error(`Destructor failed for function ${key}`, e); }
+			try { existing.xDestroy(existing.userData); } catch (e) {
+				errorLog(`Destructor failed for function %s in schema '%s': %O`, key, this.name, e);
+			}
 		}
 		this.functions.set(key, func);
-		console.log(`Schema '${this.name}': Added/Updated function '${func.name}/${func.numArgs}'`);
+		log(`Added/Updated function '%s' in schema '%s'`, `${func.name}/${func.numArgs}`, this.name);
 	}
 
 	/**
@@ -219,9 +225,11 @@ export class Schema {
 		const func = this.functions.get(key);
 		if (func) {
 			if (func.xDestroy && func.userData) {
-				try { func.xDestroy(func.userData); } catch (e) { console.error(`Destructor failed for function ${key}`, e); }
+				try { func.xDestroy(func.userData); } catch (e) {
+					errorLog(`Destructor failed for function %s in schema '%s': %O`, key, this.name, e);
+				}
 			}
-			console.log(`Schema '${this.name}': Removed function '${name}/${numArgs}'`);
+			log(`Removed function '%s' from schema '%s'`, `${name}/${numArgs}`, this.name);
 			return this.functions.delete(key);
 		}
 		return false;
@@ -233,7 +241,9 @@ export class Schema {
 	clearFunctions(): void {
 		this.functions.forEach(func => {
 			if (func.xDestroy && func.userData) {
-				try { func.xDestroy(func.userData); } catch (e) { console.error(`Destructor failed for function ${func.name}/${func.numArgs}`, e); }
+				try { func.xDestroy(func.userData); } catch (e) {
+					errorLog(`Destructor failed for function %s in schema '%s': %O`, `${func.name}/${func.numArgs}`, this.name, e);
+				}
 			}
 		});
 		this.functions.clear();

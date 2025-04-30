@@ -1,3 +1,4 @@
+import { createLogger } from '../common/logger.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
 import { MisuseError, SqliteError } from '../common/errors.js';
 import type { Database } from './database.js';
@@ -7,6 +8,9 @@ import { Compiler } from '../compiler/compiler.js';
 import { type VdbeProgram } from '../vdbe/program.js';
 import { VdbeRuntime } from '../vdbe/runtime.js';
 import type { MemoryCell } from '../vdbe/handler-types.js';
+
+const log = createLogger('core:statement');
+const errorLog = log.extend('error');
 
 /**
  * Represents a prepared SQL statement.
@@ -40,7 +44,7 @@ export class Statement {
 	public async compile(): Promise<VdbeProgram> {
 		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
 		if (this.finalized) { throw new MisuseError("Statement finalized"); }
-		console.log("Compiling statement...");
+		log("Compiling statement...");
 		this.vdbeProgram = null;
 
 		try {
@@ -51,9 +55,9 @@ export class Statement {
 			this.vdbeProgram = compiler.compile(ast, this.sql);
 
 			this.needsCompile = false;
-			console.log("Compilation complete.");
+			log("Compilation complete.");
 		} catch (e) {
-			console.error("Compilation failed:", e);
+			errorLog("Compilation failed: %O", e);
 			// Convert errors to SqliteError if they aren't already
 			if (e instanceof SqliteError) {
 				throw e;
@@ -158,20 +162,20 @@ export class Statement {
 				this.busy = false;
 				throw new SqliteError("VDBE returned ROW but setCurrentRow failed to store data", StatusCode.INTERNAL);
 			}
-			console.log(`Step result: ${StatusCode[status]}`);
+			log('Step result: %s', StatusCode[status]);
 			return StatusCode.ROW;
 		} else if (status === StatusCode.DONE || status === StatusCode.OK) {
 			// Execution finished successfully (DONE for SELECT/yielding, OK for non-yielding like INSERT/PRAGMA)
 			this.busy = false;
 			this.currentRowInternal = null;
-			console.log(`Step result: ${StatusCode[status]}`);
+			log('Step result: %s', StatusCode[status]);
 			return status;
 		} else {
 			// Any other status indicates an error reported by vdbe.run()
 			this.busy = false;
 			this.currentRowInternal = null;
 			const errorDetail = this.vdbe?.error?.message || `Status code ${status}`;
-			console.error(`VDBE execution failed: ${errorDetail}`);
+			errorLog('VDBE execution failed: %s', errorDetail);
 			// Re-throw the error, preserving the original code if available
 			throw this.vdbe?.error || new SqliteError(`VDBE execution failed with status: ${StatusCode[status] || status}`, status);
 		}
@@ -354,7 +358,7 @@ export class Statement {
 					remainingStatus !== StatusCode.DONE &&
 					remainingStatus !== StatusCode.OK) {
 					// Error consuming remaining rows
-					console.warn(`Error consuming remaining rows after get(): ${StatusCode[remainingStatus]}`);
+					log.extend('warn')(`Error consuming remaining rows after get(): ${StatusCode[remainingStatus]}`);
 					// Throw or just proceed to reset? Let's proceed for now.
 					break;
 				}

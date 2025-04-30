@@ -11,6 +11,11 @@ import type { JsonDatabaseSchema, JsonSchema, JsonTableSchema, JsonColumnSchema,
 	JsonFunctionSchema, JsonIndexSchema, JsonIndexColumnSchema, JsonTableConstraint} from '../core/json-schema.js';
 import * as AST from '../parser/ast.js';
 import type { VirtualTableModule } from '../vtab/module.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('schema:serialization');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * Converts a RowOpMask bitmask to an array of operation strings
@@ -150,7 +155,7 @@ export function importSchemaJson(db: Database, jsonString: string): void {
     let schema = schemaManager.getSchema(schemaName);
     if (!schema) {
       if (schemaName === 'main' || schemaName === 'temp') {
-        console.error(`Core schema ${schemaName} missing during import!`);
+        errorLog(`Core schema %s missing during import!`, schemaName);
         throw new SqliteError(`Internal error: Core schema ${schemaName} is missing.`, StatusCode.INTERNAL);
       } else {
         schema = schemaManager.addSchema(schemaName);
@@ -263,5 +268,5 @@ export function importSchemaJson(db: Database, jsonString: string): void {
     }
   }
 
-  console.warn("Schema imported from JSON. Function implementations and VTab connections must be re-established manually.");
+  warnLog("Schema imported from JSON. Function implementations and VTab connections must be re-established manually.");
 }

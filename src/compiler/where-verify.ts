@@ -1,7 +1,12 @@
+import { createLogger } from '../common/logger.js';
 import { IndexConstraintOp } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
+
+const log = createLogger('compiler:where-verify');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 // --- WHERE Clause Verification and Unhandled Compilation --- //
 
@@ -37,13 +42,13 @@ export function verifyWhereConstraintsHelper(
 			let verificationExprLoc: AST.AstNode['loc'] | undefined = originalValueExpr?.loc;
 
 			if (constraint.iColumn === -1) {
-				console.warn(`Verification of rowid constraint (constraint ${i}) not implemented.`);
+				warnLog(`Verification of rowid constraint (constraint ${i}) not implemented.`);
 				continue;
 			}
 
 			const colName = tableSchema.columns[constraint.iColumn]?.name;
 			if (!colName) {
-				console.error(`Cannot find column name for index ${constraint.iColumn} in table ${tableSchema.name} during verification.`);
+				errorLog(`Cannot find column name for index ${constraint.iColumn} in table ${tableSchema.name} during verification.`);
 				continue;
 			}
 			const colExpr: AST.ColumnExpr = { type: 'column', name: colName };
@@ -53,13 +58,13 @@ export function verifyWhereConstraintsHelper(
 					verificationExpr = { ...originalValueExpr, expr: colExpr };
 					verificationExprLoc = originalValueExpr.loc;
 				} else {
-					console.warn(`Cannot reconstruct IS NULL/IS NOT NULL verification expression for constraint ${i}.`);
+					warnLog(`Cannot reconstruct IS NULL/IS NOT NULL verification expression for constraint ${i}.`);
 					continue;
 				}
 			}
 			else {
 				if (!originalValueExpr) {
-					console.warn(`Could not find original value expression for constraint verification (cursor ${cursorIdx}, constraint ${i}, op ${constraint.op})`);
+					warnLog(`Could not find original value expression for constraint verification (cursor ${cursorIdx}, constraint ${i}, op ${constraint.op})`);
 					continue;
 				}
 				const invOpMap: { [key in IndexConstraintOp]?: { op: string, swap?: boolean } } = {
@@ -78,7 +83,7 @@ export function verifyWhereConstraintsHelper(
 				};
 				const opInfo = invOpMap[constraint.op];
 				if (!opInfo) {
-					console.warn(`Cannot map constraint op ${constraint.op} back to AST operator for verification.`);
+					warnLog(`Cannot map constraint op ${constraint.op} back to AST operator for verification.`);
 					continue;
 				}
 

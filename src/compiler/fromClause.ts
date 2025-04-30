@@ -10,6 +10,10 @@ import type { BaseModuleConfig } from '../vtab/module.js';
 import type { SqlValue } from '../common/types.js';
 import type { P4OpenTvf } from '../vdbe/instruction.js';
 import { compileCommonTableExpression } from './cte.js'; // Import for on-demand compilation
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:from');
+const warnLog = log.extend('warn');
 
 // Local configuration interfaces for virtual tables
 interface MemoryTableConfig extends BaseModuleConfig {
@@ -56,16 +60,16 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				if (cteInfo.strategy === 'materialized') {
 					resolvedCursor = cteInfo.cursorIdx;
 					resolvedSchema = cteInfo.schema;
-					console.log(`FROM: Using PRE-materialized CTE '${cteNameLower}' (cursor ${resolvedCursor}) for alias '${lookupName}'`);
+					log(`Using PRE-materialized CTE '%s' (cursor %d) for alias '%s'`, cteNameLower, resolvedCursor, lookupName);
 				} else if (cteInfo.strategy === 'view') {
 					if (!cteInfo.isCompiled) {
-						console.log(`FROM: Materializing VIEW CTE '${cteNameLower}' on first reference...`);
+						log(`Materializing VIEW CTE '%s' on first reference...`, cteNameLower);
 						const isRecursiveContext = false;
 						compileCommonTableExpression(compiler, cteInfo, isRecursiveContext);
 						cteInfo.isCompiled = true;
-						console.log(`FROM: Finished materializing VIEW CTE '${cteNameLower}' (cursor ${cteInfo.cursorIdx})`);
+						log(`Finished materializing VIEW CTE '%s' (cursor %d)`, cteNameLower, cteInfo.cursorIdx);
 					} else {
-						console.log(`FROM: Using ALREADY-materialized VIEW CTE '${cteNameLower}' (cursor ${cteInfo.cursorIdx}) for alias '${lookupName}'`);
+						log(`Using ALREADY-materialized VIEW CTE '%s' (cursor %d) for alias '%s'`, cteNameLower, cteInfo.cursorIdx, lookupName);
 					}
 					resolvedCursor = cteInfo.cursorIdx;
 					resolvedSchema = cteInfo.schema;
@@ -168,7 +172,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			compiler.emit(Opcode.OpenWrite, cursor, 0, 0, p4EphemWrite, 0, `Open Ephemeral for Subquery ${alias}`);
 
 			// TODO: This is incomplete - needs implementation to populate the ephemeral table
-			console.warn(`FROM clause subquery compilation for '${alias}' is incomplete.`);
+			warnLog(`FROM clause subquery compilation for '%s' is incomplete.`, alias);
 			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `Placeholder for subquery ${alias} execution`);
 		} else {
 			throw new SqliteError(`Unsupported FROM clause type during cursor opening: ${(source as any).type}`, StatusCode.INTERNAL);

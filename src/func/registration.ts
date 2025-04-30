@@ -1,7 +1,11 @@
+import { createLogger } from '../common/logger.js';
 import type { FunctionSchema } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
 import type { SqliteContext } from './context.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
+
+const log = createLogger('func:registration');
+const warnLog = log.extend('warn');
 
 /**
  * Supported argument type specifications for function argument coercion
@@ -75,7 +79,7 @@ function coerceArg(value: SqlValue, expectedType: ExpectedArgType | undefined): 
 				return value instanceof Uint8Array ? value : null;
 		}
 	} catch (e) {
-		console.warn(`Coercion failed for value ${value} to type ${expectedType}:`, e);
+		warnLog('Coercion failed for value %s to type %s: %O', value, expectedType, e);
 		return null;
 	}
 	return value;
@@ -119,7 +123,7 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...arg
 				} else if (typeof result === 'boolean') {
 					context.resultInt(result ? 1 : 0);
 				} else {
-					console.warn(`Function ${options.name} returned unknown type: ${typeof result}. Coercing to NULL.`);
+					warnLog('Function %s returned unknown type: %s. Coercing to NULL.', options.name, typeof result);
 					context.resultNull();
 				}
 			} catch (e) {
@@ -189,7 +193,7 @@ export function createAggregateFunction(
 				} else if (typeof result === 'boolean') {
 					context.resultInt(result ? 1 : 0);
 				} else {
-					console.warn(`Aggregate ${options.name} xFinal returned unknown type: ${typeof result}. Coercing to NULL.`);
+					warnLog('Aggregate %s xFinal returned unknown type: %s. Coercing to NULL.', options.name, typeof result);
 					context.resultNull();
 				}
 			} catch (e) {

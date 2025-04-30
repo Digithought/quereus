@@ -4,10 +4,14 @@ import { FunctionContext } from '../../func/context.js';
 import type { Handler, VmCtx } from '../handler-types.js';
 import type { P4FuncDef } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:aggregate');
+const errorLog = log.extend('error');
 
 // Helper for error handling in aggregate functions
 function handleAggError(ctx: VmCtx, e: any, funcName: string, step: string) {
-  console.error(`VDBE Agg Error in function ${funcName} (${step}):`, e);
+  errorLog(`Error in function ${funcName} (${step}): %O`, e);
   let error: SqliteError;
   if (e instanceof SqliteError) { error = e; }
   else if (e instanceof Error) { error = new SqliteError(`Runtime error in aggregate ${funcName} ${step}: ${e.message}`, StatusCode.ERROR); }

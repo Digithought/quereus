@@ -9,6 +9,10 @@ import type { BaseModuleConfig } from '../vtab/module.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
 import { MisuseError, SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/constants.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:ephemeral');
+const errorLog = log.extend('error');
 
 /**
  * Creates an internal MemoryTable instance for ephemeral use (CTEs, sorters, subqueries)
@@ -73,7 +77,7 @@ export function createEphemeralTableHelper(
 			config
 		);
 	} catch (e) {
-		console.error("Failed to create internal MemoryTable instance:", e);
+		errorLog("Failed to create internal MemoryTable instance: %O", e);
 		const msg = e instanceof Error ? e.message : String(e);
 		throw new SqliteError(`Internal error creating ephemeral table: ${msg}`, StatusCode.INTERNAL);
 	}
@@ -89,7 +93,7 @@ export function createEphemeralTableHelper(
 	compiler.tableSchemas.set(cursorIdx, tableSchema);
 	compiler.ephemeralTableInstances.set(cursorIdx, tableInstance);
 
-	console.log(`Created ephemeral table instance '${ephemeralTableName}' for cursor ${cursorIdx}`);
+	log(`Created ephemeral table instance '%s' for cursor %d`, ephemeralTableName, cursorIdx);
 
 	return tableSchema;
 }
@@ -117,7 +121,7 @@ export function closeCursorsUsedBySelectHelper(compiler: Compiler, cursors: numb
 		const instance = compiler.ephemeralTableInstances?.get(cursorIdx);
 		if (instance) {
 			compiler.ephemeralTableInstances.delete(cursorIdx);
-			console.log(`Cleaned up ephemeral table instance for cursor ${cursorIdx}`);
+			log(`Cleaned up ephemeral table instance for cursor %d`, cursorIdx);
 		}
 	});
 }

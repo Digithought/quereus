@@ -1,4 +1,9 @@
+import { createLogger } from '../common/logger.js';
 import type * as AST from './ast.js';
+
+const log = createLogger('parser:visitor'); // Create logger instance
+const warnLog = log.extend('warn');
+
 
 /**
  * Defines the callbacks for the AST visitor.
@@ -167,8 +172,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 			break;
 		// Default case for unhandled node types
 		default:
-			// Optionally log or throw for unhandled node types during development
-			// console.warn(`AST Visitor: Unhandled node type: ${node.type}`);
+			warnLog(`AST Visitor: Unhandled node type: ${node.type}`);
 			break;
 	}
 

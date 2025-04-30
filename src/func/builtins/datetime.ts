@@ -1,7 +1,12 @@
+import { createLogger } from '../../common/logger.js'; // Import logger
 import { Temporal } from 'temporal-polyfill';
 import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
+
+const log = createLogger('func:builtins:datetime'); // Create logger instance
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 // --- Constants ---
 const MILLIS_PER_DAY = 86400000;
@@ -141,11 +146,11 @@ function parseToTemporal(timeVal: SqlValue, isUnixEpoch = false): Temporal.Zoned
 			return Temporal.PlainDateTime.from({ ...SQLITE_DEFAULT_DATE, ...ptArgs }).toZonedDateTime('UTC');
 		}
 
-		console.warn(`Failed to parse date/time string with Temporal: ${timeVal}`);
+		warnLog('Failed to parse date/time string with Temporal: %s', timeVal);
 		return null;
 
 	} catch (e) {
-		console.warn(`Error parsing date/time value "${timeVal}":`, e);
+		warnLog('Error parsing date/time value "%s": %O', timeVal, e);
 		return null;
 	}
 }
@@ -219,7 +224,7 @@ function applyTemporalModifier(dt: Temporal.ZonedDateTime, modifier: string): Te
 	}
 
 	// Group 4: Timezone (Handled before modifier application)
-	console.warn(`Modifier not implemented or unrecognized: ${modifier}`);
+	warnLog('Modifier not implemented or unrecognized: %s', modifier);
 	return dt;
 }
 
@@ -281,7 +286,7 @@ function processDateTimeArgs(args: ReadonlyArray<SqlValue>): Temporal.ZonedDateT
 		try {
 			currentDt = currentDt.toInstant().toZonedDateTimeISO(targetTimeZoneId);
 		} catch (e) {
-			console.warn(`Failed to convert to timezone "${targetTimeZoneId}":`, e);
+			warnLog('Failed to convert to timezone "%s": %O', targetTimeZoneId, e);
 			return null;
 		}
 	}
@@ -292,7 +297,7 @@ function processDateTimeArgs(args: ReadonlyArray<SqlValue>): Temporal.ZonedDateT
 		try {
 			currentDt = applyTemporalModifier(currentDt, modifier);
 		} catch (e) {
-			console.warn(`Error applying modifier "${modifier}":`, e);
+			warnLog('Error applying modifier "%s": %O', modifier, e);
 			return null;
 		}
 	}
@@ -403,7 +408,7 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 				case '%u': return finalDt.dayOfWeek.toString(); // 1=Monday..7=Sunday (ISO)
 				// Handle potentially undefined weekOfYear (though Temporal usually provides it)
 				case '%W': // Week number (Sunday start, 00-53) - SQLite specific implementation
-					console.warn('strftime %W not fully implemented');
+					warnLog('strftime %W not fully implemented');
 					return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0'); // Fallback to ISO week
 				case '%V': return (finalDt.weekOfYear ?? 0).toString().padStart(2, '0'); // ISO 8601 week number
 				case '%g': // ISO 8601 week-based year, last two digits
@@ -434,13 +439,13 @@ const strftimeFuncImpl = (format: SqlValue, ...timeArgs: SqlValue[]): SqlValue =
 				// Using ISO week numbers as fallback where appropriate
 
 				default:
-					console.warn(`Unsupported strftime specifier: ${match}`);
+					warnLog(`Unsupported strftime specifier: ${match}`);
 					return match; // Return the specifier itself if unsupported
 			}
 		});
 		return result;
 	} catch (e) {
-		console.error("Error during strftime formatting:", e);
+		errorLog("Error during strftime formatting: %O", e);
 		return null;
 	}
 };

@@ -5,8 +5,12 @@ import type { LayerCursorInternal } from './cursor.js';
 import type { ScanPlan } from './scan-plan.js';
 import { BaseLayerCursorInternal } from './base-cursor.js';
 import { TransactionLayerCursorInternal } from './transaction-cursor.js';
+import { createLogger } from '../../../common/logger.js'; // Import logger
 
 let connectionCounter = 0;
+const log = createLogger('vtab:memory:layer:connection'); // Create logger
+const warnLog = log.extend('warn');
+const debugLog = log; // Use base log for debug level
 
 /**
  * Represents the state of a single connection to a MemoryTable
@@ -66,7 +70,8 @@ export class MemoryTableConnection {
 			// Nested transactions might require savepoint logic later,
 			// but for now, starting a new transaction when one is pending is an error or no-op.
 			// Let's treat it as a no-op for basic BEGIN.
-			console.warn(`Connection ${this.connectionId}: BEGIN called while already in a transaction.`);
+			// Use namespaced warn logger
+			warnLog(`Connection %d: BEGIN called while already in a transaction.`, this.connectionId);
 			return;
 		}
 		// Create a new transaction layer on top of the current read layer
@@ -108,7 +113,8 @@ export class MemoryTableConnection {
 
 		// Store the current state of the pending transaction layer
 		this.savepoints.set(savepointIndex, this.pendingTransactionLayer);
-		console.log(`Connection ${this.connectionId}: Created savepoint at index ${savepointIndex}`);
+		// Use namespaced debug logger
+		debugLog(`Connection %d: Created savepoint at index %d`, this.connectionId, savepointIndex);
 	}
 
 	/** Releases a savepoint and any higher-numbered savepoints */
@@ -121,7 +127,8 @@ export class MemoryTableConnection {
 				this.savepoints.delete(idx);
 			}
 		}
-		console.log(`Connection ${this.connectionId}: Released savepoint ${savepointIndex}`);
+		// Use namespaced debug logger
+		debugLog(`Connection %d: Released savepoint %d`, this.connectionId, savepointIndex);
 	}
 
 	/** Rolls back to a savepoint while preserving the transaction */
@@ -130,7 +137,8 @@ export class MemoryTableConnection {
 
 		const savepoint = this.savepoints.get(savepointIndex);
 		if (!savepoint) {
-			console.warn(`Connection ${this.connectionId}: Savepoint ${savepointIndex} not found for rollback.`);
+			// Use namespaced warn logger
+			warnLog(`Connection %d: Savepoint %d not found for rollback.`, this.connectionId, savepointIndex);
 			return;
 		}
 
@@ -146,6 +154,7 @@ export class MemoryTableConnection {
 			}
 		}
 
-		console.log(`Connection ${this.connectionId}: Rolled back to savepoint ${savepointIndex}`);
+		// Use namespaced debug logger
+		debugLog(`Connection %d: Rolled back to savepoint %d`, this.connectionId, savepointIndex);
 	}
 }

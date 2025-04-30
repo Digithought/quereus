@@ -8,9 +8,13 @@ import type { Handler } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
+import { createLogger } from '../../common/logger.js';
 
 // Create one instance of the module to be shared
 const ephemeralMemoryModule = new MemoryTableModule();
+
+const log = createLogger('vdbe:ephemeral');
+const errorLog = log.extend('error');
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.OpenEphemeral] = async (ctx, inst) => {
@@ -91,7 +95,7 @@ export function registerHandlers(handlers: Handler[]) {
       cursor.sortedResults = null;
 
     } catch (e) {
-      console.error("Error opening ephemeral table:", e);
+      errorLog("Error opening ephemeral table: %O", e);
       if (e instanceof SqliteError) throw e;
       throw new SqliteError(`Failed to open ephemeral table ${ephCursorIdx}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
     }

@@ -1,3 +1,4 @@
+import { createLogger } from '../common/logger.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
 import type { Database } from '../core/database.js';
@@ -117,6 +118,9 @@ export interface SqliteContext {
 	setAggregateContext<T = any>(context: T): void;
 }
 
+const log = createLogger('func:context');
+const errorLog = log.extend('error');
+
 /**
  * Concrete implementation of SqliteContext used by the engine.
  * @internal
@@ -209,7 +213,9 @@ export class FunctionContext implements SqliteContext {
 		if (this._error) return;
 		const existing = this.auxData.get(N);
 		if (existing?.destructor && existing.data !== data) {
-			try { existing.destructor(existing.data); } catch (e) { console.error("Internal: AuxData destructor failed", e); }
+			try { existing.destructor(existing.data); } catch (e) {
+				errorLog("Internal: AuxData destructor failed: %O", e);
+			}
 		}
 		if (data === undefined && destructor === undefined) {
 			this.auxData.delete(N);
@@ -235,7 +241,9 @@ export class FunctionContext implements SqliteContext {
 	_cleanupAuxData(): void {
 		this.auxData.forEach(entry => {
 			if (entry.destructor) {
-				try { entry.destructor(entry.data); } catch (e) { console.error("Internal: AuxData destructor failed", e); }
+				try { entry.destructor(entry.data); } catch (e) {
+					errorLog("Internal: AuxData destructor failed: %O", e);
+				}
 			}
 		});
 		this.auxData.clear();

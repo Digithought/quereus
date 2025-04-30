@@ -77,6 +77,63 @@ The project is organized into the following main directories:
 *   `src/util`: General utility functions (e.g., value comparison, latches, DDL stringifier).
 *   `docs`: Project documentation.
 
+## Logging
+
+SQLiter uses the [`debug`](https://github.com/debug-js/debug) library for internal logging. This allows for fine-grained control over log output based on namespaces, which correspond to the different modules of the system (e.g., `compiler`, `vdbe`, `vtab:memory`).
+
+To enable logging during development or troubleshooting, set the `DEBUG` environment variable. Examples:
+
+```bash
+# Enable all SQLiter logs
+DEBUG=sqliter:*
+
+# Enable only compiler and VDBE runtime logs
+DEBUG=sqliter:compiler,sqliter:vdbe:runtime
+
+# Enable all virtual table logs
+DEBUG=sqliter:vtab:*
+
+# Enable VDBE runtime logs and any warnings/errors from other modules
+DEBUG=sqliter:vdbe:runtime,sqliter:*:warn,sqliter:*:error
+
+# Enable everything EXCEPT verbose VDBE runtime logs
+DEBUG=*,-sqliter:vdbe:runtime
+```
+
+### Developer Usage
+
+To add logging within a module:
+
+1.  **Import the logger factory:**
+    ```typescript
+    import { createLogger } from '../common/logger.js'; // Adjust path as needed
+    ```
+
+2.  **Create a namespaced logger:** Choose a relevant namespace for your module or submodule (e.g., `vtab:my-custom-vtab`, `compiler:optimizer`).
+    ```typescript
+    const log = createLogger('my-module:sub-feature');
+    ```
+
+3.  **Log messages:** Use the logger instance like `console.log`, utilizing format specifiers (`%s`, `%d`, `%j`, `%O`) for better performance and readability.
+    ```typescript
+    log('Processing item ID %d', itemId);
+    log('Current state: %O', complexObject);
+    ```
+
+4.  **(Optional) Create specialized loggers for levels:** You can use `.extend()` for specific levels like warnings or errors, which allows finer control via the `DEBUG` variable.
+    ```typescript
+    const warnLog = log.extend('warn');
+    const errorLog = log.extend('error');
+
+    warnLog('Potential issue detected: %s', issueDescription);
+    if (errorCondition) {
+      errorLog('Operation failed: %O', errorObject);
+      // It's often still good practice to throw an actual Error here
+    }
+    ```
+
+Using specific namespaces helps users of SQLiter enable precisely the logs they need when debugging.
+
 ## Documentation
 
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
