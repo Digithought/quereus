@@ -3,6 +3,11 @@ import { StatusCode } from '../../common/types.js';
 import type { Handler } from '../handler-types.js';
 import type { P4SchemaChange } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:schema');
+const errorLog = log.extend('error');
+const warnLog = log.extend('warn');
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.SchemaChange] = async (ctx, inst) => {
@@ -31,10 +36,10 @@ export function registerHandlers(handlers: Handler[]) {
 
       // Call the instance's implementation
       await vtab.xAlterSchema(changeInfo);
-      console.log(`VDBE SchemaChange: Successfully executed on table ${vtab.tableName}`);
+      log(`Successfully executed SchemaChange on table %s`, vtab.tableName);
 
     } catch (e: any) {
-      console.error("SchemaChange failed:", e);
+      errorLog("SchemaChange failed: %O", e);
       const msg = `SchemaChange failed: ${e instanceof Error ? e.message : String(e)}`;
       const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
       ctx.error = new SqliteError(msg, code, e instanceof Error ? e : undefined);
@@ -49,7 +54,7 @@ export function registerHandlers(handlers: Handler[]) {
     // Placeholder: This opcode might trigger schema invalidation or other
     // pre/post actions related to ALTER TABLE, but the core logic is likely
     // handled by SchemaChange calling xAlterSchema.
-    console.warn("Opcode.AlterTable is currently a No-Op.");
+    warnLog("Opcode.AlterTable is currently a No-Op.");
     return undefined;
   };
 

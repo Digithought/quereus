@@ -6,6 +6,11 @@ import { Opcode } from '../opcodes.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { VirtualTable } from '../../vtab/table.js';
 import type { BaseModuleConfig } from '../../vtab/module.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:cursor');
+const errorLog = log.extend('error');
+const warnLog = log.extend('warn');
 
 export function registerHandlers(handlers: Handler[]) {
 	// --- Result Row ---
@@ -115,7 +120,7 @@ export function registerHandlers(handlers: Handler[]) {
 				try {
 					await vdbeCursor.instance.close();
 				} catch (e) {
-					console.error(`Error closing VTab cursor instance (idx ${cIdx}):`, e);
+					errorLog(`Error closing VTab cursor instance (idx ${cIdx}): %O`, e);
 				} finally {
 					vdbeCursor.instance = null;
 				}
@@ -126,10 +131,10 @@ export function registerHandlers(handlers: Handler[]) {
 					try {
 						await vdbeCursor.vtab.xDisconnect();
 					} catch (e) {
-						console.error(`Error disconnecting VTab table instance (idx ${cIdx}, name: ${vdbeCursor.vtab.tableName}):`, e);
+						errorLog(`Error disconnecting VTab table instance (idx ${cIdx}, name: ${vdbeCursor.vtab.tableName}): %O`, e);
 					}
 				} else {
-					console.warn(`VTab instance for cursor ${cIdx} (table: ${vdbeCursor.vtab.tableName}) does not implement xDisconnect.`);
+					warnLog(`VTab instance for cursor ${cIdx} (table: ${vdbeCursor.vtab.tableName}) does not implement xDisconnect.`);
 				}
 				vdbeCursor.vtab = null;
 			}

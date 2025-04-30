@@ -6,8 +6,13 @@ import { DELETED } from './constants.js';
 import { MemoryIndex } from '../index.js'; // Assuming MemoryIndex structure remains similar
 import { isDeletionMarker } from './interface.js'; // Import type guard
 import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison
+import { createLogger } from '../../../common/logger.js'; // Import logger
 
 let baseLayerCounter = 0;
+const log = createLogger('vtab:memory:layer:base'); // Create logger
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
+const debugLog = log; // Use base log for debug level
 
 /**
  * Represents the foundational, fully collapsed data layer for a MemoryTable.
@@ -52,7 +57,8 @@ export class BaseLayer implements Layer {
 					const memoryIndex = new MemoryIndex(indexSpec, columns);
 					this.secondaryIndexes.set(indexSchema.name, memoryIndex);
 				} catch (e) {
-					console.error(`BaseLayer: Failed to initialize secondary index '${indexSchema.name}'`, e);
+					// Use namespaced error logger
+					errorLog(`Failed to initialize secondary index '${indexSchema.name}': %O`, e);
 					// Depending on requirements, might want to throw or just log
 				}
 			}
@@ -122,7 +128,8 @@ export class BaseLayer implements Layer {
 			} catch (e) {
 				// This is critical during collapse. Needs robust handling.
 				// Possibility: Mark table as corrupt? Halt collapse? Log detailed error.
-				console.error(`BaseLayer applyChange: Failed to update secondary index '${indexName}' for key ${JSON.stringify(key)}. Data might be inconsistent.`, e);
+				// Use namespaced error logger
+				errorLog(`applyChange: Failed to update secondary index '${indexName}' for key ${JSON.stringify(key)}. Data might be inconsistent. Error: %O`, e);
 				// Re-throwing might be necessary to signal failure of collapse
 				throw new Error(`Secondary index update failed during layer collapse: ${e instanceof Error ? e.message : String(e)}`);
 			}
@@ -143,7 +150,8 @@ export class BaseLayer implements Layer {
 					// Trying to delete a key that doesn't exist in the base. This might
 					// happen if the change originated from an insert+delete in the merged layer.
 					// Usually a no-op for the primary tree, but log a warning.
-					console.warn(`BaseLayer applyChange: Attempted to delete non-existent primary key ${JSON.stringify(key)} during collapse.`);
+					// Use namespaced warn logger
+					warnLog(`applyChange: Attempted to delete non-existent primary key %s during collapse.`, JSON.stringify(key));
 				}
 			} else if (newValue) { // newValue is guaranteed to be MemoryTableRow here
 				if (path.on) {
@@ -161,7 +169,8 @@ export class BaseLayer implements Layer {
 			}
 		} catch (e) {
 			// Failure here is also critical.
-			console.error(`BaseLayer applyChange: Failed to update primary tree for key ${JSON.stringify(key)}. Data might be inconsistent.`, e);
+			// Use namespaced error logger
+			errorLog(`applyChange: Failed to update primary tree for key ${JSON.stringify(key)}. Data might be inconsistent. Error: %O`, e);
 			throw new Error(`Primary index update failed during layer collapse: ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
@@ -202,7 +211,8 @@ export class BaseLayer implements Layer {
 		// No need to update secondary indexes as they're based on existing columns
 		// The column didn't exist before so no index would reference it
 
-		console.debug(`BaseLayer: Added column '${columnName}' to ${rowsToUpdate.length} rows with default value ${defaultValue}`);
+		// Use namespaced debug logger
+		debugLog(`Added column '%s' to %d rows with default value %s`, columnName, rowsToUpdate.length, defaultValue);
 	}
 
 	/**
@@ -243,7 +253,8 @@ export class BaseLayer implements Layer {
 		// If any secondary indexes were based on this column, they should have been
 		// dropped already by the manager before calling this method
 
-		console.debug(`BaseLayer: Removed column '${columnName}' from ${rowsToUpdate.length} rows`);
+		// Use namespaced debug logger
+		debugLog(`Removed column '%s' from %d rows`, columnName, rowsToUpdate.length);
 		return true;
 	}
 
@@ -293,7 +304,8 @@ export class BaseLayer implements Layer {
 		// If any secondary indexes were based on this column, they should have been
 		// updated already by the manager before calling this method
 
-		console.debug(`BaseLayer: Renamed column '${oldName}' to '${newName}' in rows`);
+		// Use namespaced debug logger
+		debugLog(`Renamed column '%s' to '%s' in rows`, oldName, newName);
 		return true;
 	}
 
@@ -327,7 +339,8 @@ export class BaseLayer implements Layer {
 				try {
 					memoryIndex.addEntry(row);
 				} catch (e) {
-					console.error(`Failed to add row to new index '${indexSchema.name}':`, e);
+					// Use namespaced error logger
+					errorLog(`Failed to add row to new index '%s': %O`, indexSchema.name, e);
 					// Consider whether to roll back or continue
 				}
 			}
@@ -335,7 +348,8 @@ export class BaseLayer implements Layer {
 
 		// Store the new index
 		this.secondaryIndexes.set(indexSchema.name, memoryIndex);
-		console.debug(`BaseLayer: Added and populated index '${indexSchema.name}'`);
+		// Use namespaced debug logger
+		debugLog(`Added and populated index '%s'`, indexSchema.name);
 	}
 
 	/**
@@ -348,14 +362,16 @@ export class BaseLayer implements Layer {
 	dropIndexFromBase(indexName: string): boolean {
 		const index = this.secondaryIndexes.get(indexName);
 		if (!index) {
-			console.warn(`BaseLayer: Attempted to drop non-existent index '${indexName}'`);
+			// Use namespaced warn logger
+			warnLog(`Attempted to drop non-existent index '%s'`, indexName);
 			return false;
 		}
 
 		// Simply remove the index from the map
 		// The BTree inside will be garbage collected
 		this.secondaryIndexes.delete(indexName);
-		console.debug(`BaseLayer: Dropped index '${indexName}'`);
+		// Use namespaced debug logger
+		debugLog(`Dropped index '%s'`, indexName);
 		return true;
 	}
 

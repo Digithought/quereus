@@ -2,6 +2,10 @@ import { Opcode } from '../vdbe/opcodes.js';
 import type { SqlValue } from '../common/types.js';
 import { createInstruction } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:state');
+const debugLog = log.extend('debug');
 
 /**
  * Allocates memory cells within the current frame
@@ -109,7 +113,7 @@ export function allocateAddressHelper(compiler: Compiler, purpose: string = 'unk
 	// Store the mapping from the unique ID to its intended instruction index, array, and purpose
 	compiler.pendingPlaceholders.set(placeholder, { instructionIndex, targetArray, purpose });
 
-	console.log(`DEBUG: Allocating placeholder ID ${placeholder} (purpose: ${purpose}) for future instruction at index ${instructionIndex} (subroutineDepth=${compiler.subroutineDepth})`);
+	debugLog(`Allocate placeholder ID %d (purpose: %s) for future instr at index %d (subDepth=%d)`, placeholder, purpose, instructionIndex, compiler.subroutineDepth);
 	return placeholder;
 }
 
@@ -122,7 +126,7 @@ export function allocateAddressHelper(compiler: Compiler, purpose: string = 'unk
  */
 export function resolveAddressHelper(compiler: Compiler, placeholderId: number): number {
 	if (placeholderId >= 0) {
-		//console.warn(`DEBUG: Attempting to resolve a non-placeholder ID: ${placeholderId}`);
+		debugLog(`Attempting to resolve a non-placeholder ID: %d`, placeholderId);
 		return -1; // Indicate invalid placeholder
 	}
 
@@ -130,7 +134,7 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 	const placeholderInfo = compiler.pendingPlaceholders.get(placeholderId);
 
 	if (!placeholderInfo) {
-		//console.warn(`DEBUG: Attempting to resolve unknown or already resolved placeholder ID: ${placeholderId}`);
+		debugLog(`Attempting to resolve unknown or already resolved placeholder ID: %d`, placeholderId);
 		return -1; // Indicate invalid placeholder
 	}
 
@@ -140,7 +144,7 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 	// Remove the placeholder from the map now that we are resolving it
 	compiler.pendingPlaceholders.delete(placeholderId);
 
-	//console.log(`DEBUG: Resolving placeholder ID ${placeholderId} (purpose: ${purpose}, predicted instr index ${predictedIndex}) to target address ${targetAddress} (current length ${targetArray.length}, subroutineDepth=${compiler.subroutineDepth})`);
+	debugLog(`Resolve placeholder ID %d (purpose: %s, predicted: %d) to target addr %d (len: %d, subDepth=%d)`, placeholderId, purpose, predictedIndex, targetAddress, targetArray.length, compiler.subroutineDepth);
 
 	// Opcodes whose P2 parameter holds a jump target address
 	const jumpOpcodes = new Set<Opcode>([
@@ -157,7 +161,7 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 		const instr = targetArray[i];
 		// Check if this opcode uses P2 for jumps and if P2 matches the placeholder ID
 		if (jumpOpcodes.has(instr.opcode) && instr.p2 === placeholderId) {
-			//console.log(`DEBUG: Patching instruction at index ${i} (${Opcode[instr.opcode]}): Setting P2 from ${instr.p2} to ${targetAddress}`);
+			debugLog(`Patching instr %d (%s): P2 %d -> %d`, i, Opcode[instr.opcode], instr.p2, targetAddress);
 			instr.p2 = targetAddress;
 			patchedCount++;
 		}
@@ -167,11 +171,11 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
 	if (patchedCount === 0) {
 		// This is unexpected if the placeholder was allocated and resolved.
 		// It might mean the instruction using the placeholder was never emitted, or used a different parameter.
-		//console.warn(`DEBUG: Placeholder ID ${placeholderId} (purpose: ${purpose}) resolved, but no instructions were found using it in P2.`);
+		debugLog(`Placeholder ID %d (purpose: %s) resolved, but no instructions found using it in P2.`, placeholderId, purpose);
 		// Log the instruction at the predicted index for extra info, if it exists
 		if (predictedIndex >= 0 && predictedIndex < targetAddress) {
 			const predictedInstr = targetArray[predictedIndex];
-			//console.log(`DEBUG: Instruction at predicted index ${predictedIndex}: ${Opcode[predictedInstr.opcode]} P1=${predictedInstr.p1} P2=${predictedInstr.p2} P3=${predictedInstr.p3}`);
+			debugLog(`Instruction at predicted index %d: %s P1=%d P2=%d P3=%d`, predictedIndex, Opcode[predictedInstr.opcode], predictedInstr.p1, predictedInstr.p2, predictedInstr.p3);
 		}
 	}
 

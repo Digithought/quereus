@@ -6,6 +6,9 @@ import { analyzeSubqueryCorrelation } from './correlation.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 import { compileUnhandledWhereConditions } from './where-verify.js'; // Keep dependency
 import { compileJoinCondition, emitLeftJoinNullPadding } from './join.js'; // Import necessary functions
+import { createLogger } from '../common/logger.js'; // Import logger
+
+const log = createLogger('compiler:select-loop'); // Create logger instance
 
 // Define callback type for processing a row within the innermost loop
 export type ProcessRowCallback = (
@@ -49,7 +52,7 @@ export function compileSelectLoop(
 		// --- Integrate Subquery Execution/Materialization ---
 		if (schema.subqueryAST) {
 			// Placeholder logic remains for now
-			console.warn(`Execution logic for subquery source '${schema.name}' (cursor ${cursor}) is not yet implemented.`);
+			log.extend('warn')(`Execution logic for subquery source '${schema.name}' (cursor ${cursor}) is not yet implemented.`);
 			const vFilterEofAddr = compiler.allocateAddress(`vFilterEof[${index}]`);
 			level.vFilterEofPlaceholder = vFilterEofAddr;
 			compiler.emit(Opcode.VFilter, cursor, vFilterEofAddr, 0, { idxNum: 0, idxStr: null, nArgs: 0 }, 0, `Filter/Scan Subquery Cursor ${index} (IMPLEMENTATION NEEDED)`);
@@ -100,7 +103,6 @@ export function compileSelectLoop(
 			if (level.joinType !== 'cross') {
 				// Call the moved helper function
 				compileJoinCondition(compiler, level, joinLevels, index, level.joinFailAddr!);
-				// console.warn("compileJoinCondition call needs implementation in selectLoop.ts");
 			}
 		}
 
@@ -172,7 +174,6 @@ export function compileSelectLoop(
 			// TODO: Pass coreColumnMap down to compileSelectLoop or retrieve it differently.
 			// For now, passing an empty array as a placeholder for coreColumnMap.
 			emitLeftJoinNullPadding(compiler, level, joinLevels, i, [], callbackStartAddr);
-			// console.warn("emitLeftJoinNullPadding call needs implementation in selectLoop.ts");
 		}
 
 		// Reset match flag for the next outer iteration

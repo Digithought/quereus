@@ -9,12 +9,15 @@ import { createDefaultColumnSchema } from '../schema/column.js';
 import { buildColumnIndexMap } from '../schema/table.js';
 import { compileUnhandledWhereConditions } from './where-verify.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:cte');
 
 // --- Updated signature to accept CteInfo --- //
 export function compileCommonTableExpression(compiler: Compiler, cteInfo: CteInfo, isRecursive: boolean): void {
 	const cte = cteInfo.node; // Get the AST node from CteInfo
 	const cteName = cte.name.toLowerCase();
-	console.log(`Compiling MATERIALIZED CTE: ${cteName}, Recursive: ${isRecursive}`);
+	log(`Compiling MATERIALIZED CTE: %s, Recursive: %s`, cteName, isRecursive);
 
 	// The decision to materialize (and check for recursive misuse) is now done in compileWithClause.
 	// We only compile if the strategy is 'materialized'.
@@ -24,14 +27,14 @@ export function compileCommonTableExpression(compiler: Compiler, cteInfo: CteInf
 
 	// --- Recursive CTE Handling --- //
 	if (isRecursive) {
-		console.log(`Compiling RECURSIVE CTE: ${cteName}`);
+		log(`Compiling RECURSIVE CTE: %s`, cteName);
 		// Pass the CteInfo object down
 		_compileRecursiveCte(compiler, cteInfo);
 		return;
 	}
 
 	// --- Non-Recursive CTE Handling --- //
-	console.log(`Compiling Non-Recursive Materialized CTE: ${cteName}`);
+	log(`Compiling Non-Recursive Materialized CTE: %s`, cteName);
 	// Pass the CteInfo object down
 	_compileMaterializedCte(compiler, cteInfo);
 }
@@ -77,7 +80,7 @@ function _compileMaterializedCte(compiler: Compiler, cteInfo: CteInfo): void {
 			// We're using a more sophisticated instance creation approach now, schema modification should be handled
 			// by the ephemeral table helper.
 
-			console.log(`CTE '${cteName}': Created ephemeral table instance ${cteCursorIdx} with ${resultInfo.numCols} columns.`);
+			log(`CTE '%s': Created ephemeral table instance %d with %d columns.`, cteName, cteCursorIdx, resultInfo.numCols);
 		} else {
 			throw new SqliteError(`CTE query type '${cte.query.type}' not yet supported for materialization`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 		}
@@ -108,7 +111,7 @@ function _compileMaterializedCte(compiler: Compiler, cteInfo: CteInfo): void {
 	// --- Compile the CTE query again to generate population loop --- //
 	_compileSelectAndPopulateEphemeral(compiler, cte.query as AST.SelectStmt, cteCursorIdx, cteSchema);
 	// Note: We don't close the cteCursorIdx here, the main query needs it.
-	console.log(`Finished compiling materialized CTE: ${cteName}`);
+	log(`Finished compiling materialized CTE: %s`, cteName);
 }
 
 // Updated signature
@@ -145,7 +148,7 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 		if (!isUnionAll) {
 			const pkDef = Array.from({ length: numCols }, (_, i) => ({ index: i, desc: false }));
 			resultSortKey = { type: 'sortkey', keyIndices: pkDef.map(p => p.index), directions: pkDef.map(p => p.desc) };
-			console.log(`Recursive CTE '${cteName}': Using UNION (distinct), creating PK on all columns for Result table`);
+			log(`Recursive CTE '%s': Using UNION (distinct), creating PK on all cols for Result table`, cteName);
 		}
 
 		// Create ephemeral tables using the helper
@@ -168,7 +171,7 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 		(queueSchema as any).columns = Object.freeze(inferredColumns); // Queue needs same structure
 		(queueSchema as any).columnIndexMap = Object.freeze(buildColumnIndexMap(inferredColumns));
 
-		console.log(`REC CTE '${cteName}': Created Result instance ${resCursor}, Queue instance ${queueCursor}`);
+		log(`REC CTE '%s': Created Result instance %d, Queue instance %d`, cteName, resCursor, queueCursor);
 
 	} finally {
 		_restoreCompilerState(compiler, savedStateSchema);
@@ -192,12 +195,12 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 	compiler.emit(Opcode.OpenWrite, queueCursor, 0, 0, queueSchema, 0, `OpenWrite REC CTE Queue '${cteName}'`);
 
 	// 3. Compile Initial Term & Populate BOTH tables
-	console.log(`REC CTE '${cteName}': Compiling initial term...`);
+	log(`REC CTE '%s': Compiling initial term...`, cteName);
 	// _compileSelectAndPopulateEphemeral needs to correctly use VUpdate with the cursor index
 	_compileSelectAndPopulateEphemeral(compiler, initialSelect, resCursor, cteSchema, true, queueCursor, queueSchema, true /* Always UNION ALL into queue */);
 
 	// 4. Recursive Loop
-	console.log(`REC CTE '${cteName}': Compiling recursive loop...`);
+	log(`REC CTE '%s': Compiling recursive loop...`, cteName);
 	const addrRewindQueue = compiler.getCurrentAddress();
 	const addrLoopStart = compiler.allocateAddress(); // Address after VNext Queue
 	const addrLoopEnd = compiler.allocateAddress();   // Target when queue is empty
@@ -222,14 +225,14 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 		// compiler.cteMap.set(cteName, { type: 'materialized', cursorIdx: queueCursor, schema: queueSchema }); // OLD
 		compiler.tableAliases.set(cteName, queueCursor); // Allow direct reference
 		// compiler.tableSchemas already set for queueCursor by helper
-		console.log(`REC CTE '${cteName}': Mapping self-reference to QUEUE cursor ${queueCursor}`);
+		log(`REC CTE '%s': Mapping self-reference to QUEUE cursor %d`, cteName, queueCursor);
 
 		// Compile the recursive SELECT and generate loop to populate targets
 		// Pass isUnionAll flag to handle conflict resolution during population
 		_compileSelectAndPopulateEphemeral(compiler, recursiveSelect, resCursor, cteSchema, true, queueCursor, queueSchema, isUnionAll);
 
 	} finally {
-		console.log(`REC CTE '${cteName}': Restoring state after recursive step compilation.`);
+		log(`REC CTE '%s': Restoring state after recursive step compilation.`, cteName);
 		_restoreCompilerState(compiler, loopSavedState);
 	}
 	// --- End Compile Recursive Term --- //
@@ -246,7 +249,7 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 
 	// The Result Table (resCursor) remains open and is registered in cteMap
 	// (The restoreCompilerState in the finally block above put the *original* CteInfo back in the map)
-	console.log(`Finished compiling recursive CTE: ${cteName}`);
+	log(`Finished compiling recursive CTE: %s`, cteName);
 }
 
 function _compileSelectAndPopulateEphemeral(

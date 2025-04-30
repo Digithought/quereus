@@ -25,6 +25,11 @@ import { compileCommonTableExpression } from './cte.js';
 import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
 import { traverseAst, type AstVisitorCallbacks } from '../parser/visitor.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 // --- Result/CTE Info types --- //
 export interface ColumnResultInfo {
@@ -294,7 +299,7 @@ export class Compiler {
 				const frameSize = this.maxLocalOffsetInCurrentFrame + 1;
 				this.currentFrameEnterInsn.p1 = frameSize;
 			} else {
-				console.error("Compiler Error: Missing FrameEnter tracking for the current frame being ended.");
+				errorLog("Missing FrameEnter tracking for the current frame being ended.");
 			}
 
 			this.subroutineDepth--;
@@ -307,11 +312,11 @@ export class Compiler {
 				this.currentFrameEnterInsn = null;
 				this.maxLocalOffsetInCurrentFrame = 0;
 				if (this.subroutineDepth !== 0) {
-					console.error("Compiler Error: Subroutine stack underflow or depth mismatch.");
+					errorLog("Subroutine stack underflow or depth mismatch.");
 				}
 			}
 		} else {
-			console.warn("Attempted to end subroutine compilation at depth 0");
+			warnLog("Attempted to end subroutine compilation at depth 0");
 		}
 	}
 
@@ -389,7 +394,7 @@ export class Compiler {
 			return;
 		}
 
-		console.log(`Compiling WITH${withClause.recursive ? ' RECURSIVE' : ''} clause...`);
+		log(`Compiling WITH%s clause...`, withClause.recursive ? ' RECURSIVE' : '');
 
 		for (const cte of withClause.ctes) {
 			const cteNameLower = cte.name.toLowerCase();
@@ -403,22 +408,22 @@ export class Compiler {
 
 			if (isRecursive) {
 				strategy = 'materialized'; // Recursive MUST be materialized
-				console.log(`CTE '${cteNameLower}': Determined Strategy=materialized (recursive)`);
+				log(`CTE '%s': Determined Strategy=materialized (recursive)`, cteNameLower);
 			} else if (cte.materializationHint === 'materialized') {
 				strategy = 'materialized';
-				console.log(`CTE '${cteNameLower}': Determined Strategy=materialized (hint)`);
+				log(`CTE '%s': Determined Strategy=materialized (hint)`, cteNameLower);
 			} else if (cte.materializationHint === 'not_materialized') {
 				strategy = 'view'; // User explicitly requested view
-				console.log(`CTE '${cteNameLower}': Determined Strategy=view (hint)`);
+				log(`CTE '%s': Determined Strategy=view (hint)`, cteNameLower);
 			} else {
 				// Default logic: materialize if referenced more than once
 				const refCount = this.cteReferenceCounts.get(cteNameLower) ?? 0;
 				if (refCount > 1) {
 					strategy = 'materialized';
-					console.log(`CTE '${cteNameLower}': Determined Strategy=materialized (refCount=${refCount})`);
+					log(`CTE '%s': Determined Strategy=materialized (refCount=%d)`, cteNameLower, refCount);
 				} else {
 					strategy = 'view';
-					console.log(`CTE '${cteNameLower}': Determined Strategy=view (refCount=${refCount})`);
+					log(`CTE '%s': Determined Strategy=view (refCount=%d)`, cteNameLower, refCount);
 				}
 			}
 
@@ -432,10 +437,10 @@ export class Compiler {
 				compileCommonTableExpression(this, cteInfo, isRecursive);
 			} else {
 				// View strategy: Do nothing here, compilation happens on reference in FROM clause
-				console.log(`CTE '${cteNameLower}': Deferred compilation (view strategy)`);
+				log(`CTE '%s': Deferred compilation (view strategy)`, cteNameLower);
 			}
 		}
-		console.log("Finished preliminary compilation of WITH clause.");
+		log("Finished preliminary compilation of WITH clause.");
 	}
 
 	// Pragma handling

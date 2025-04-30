@@ -1,4 +1,7 @@
+import { createLogger } from '../../common/logger.js';
 import type { SqlValue } from '../../common/types.js';
+
+const log = createLogger('func:builtins:json-helpers');
 
 /**
  * Safely parses a JSON string into a JavaScript value
@@ -68,7 +71,7 @@ export function resolveJsonPathForModify(
 				if (!createParents || typeof parent !== 'object' || parent === null || Array.isArray(parent) || typeof finalKey !== 'string') {
 					return { parent, key: keyStr, value: undefined, exists: false };
 				}
-				console.debug(`JSON Path: Creating intermediate object for key "${finalKey}"`);
+				log(`JSON Path: Creating intermediate object for key "%s"`, finalKey);
 				parent[finalKey] = {};
 				current = parent[finalKey];
 				parent = current;
@@ -94,10 +97,10 @@ export function resolveJsonPathForModify(
 				}
 				let newParentArray: any[] = [];
 				if (Array.isArray(parent) && typeof finalKey === 'number') {
-					console.debug(`JSON Path: Creating intermediate array for index ${finalKey}`);
+					log(`JSON Path: Creating intermediate array for index %d`, finalKey);
 					parent[finalKey] = newParentArray;
 				} else if (typeof parent === 'object' && !Array.isArray(parent) && typeof finalKey === 'string') {
-					console.debug(`JSON Path: Creating intermediate array for key "${finalKey}"`);
+					log(`JSON Path: Creating intermediate array for key "%s"`, finalKey);
 					parent[finalKey] = newParentArray;
 				} else {
 					return { parent, key: index, value: undefined, exists: false };

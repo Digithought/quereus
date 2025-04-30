@@ -1,5 +1,11 @@
 import type { MemoryTable } from './table.js';
 import type { MemoryTableConnection } from './layer/connection.js';
+import { createLogger } from '../../common/logger.js'; // Import logger
+
+const log = createLogger('vtab:memory:table-trx'); // Create logger
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
+const debugLog = log; // Use base log for debug level
 
 // Helper to ensure connection exists, throws if not for operations requiring it
 function ensureConnectionOrThrow(self: MemoryTable, operation: string): MemoryTableConnection {
@@ -16,7 +22,8 @@ export function xBeginLogic(self: MemoryTable): Promise<void> {
 		const conn = ensureConnectionOrThrow(self, 'BEGIN');
 		conn.begin(); // Delegate to connection's begin method
 	} catch (e: any) {
-		console.error(`MemoryTable ${self.tableName}: Error during xBeginLogic: ${e.message}`);
+		// Use namespaced error logger
+		errorLog(`Error during xBeginLogic for table %s: %s`, self.tableName, e.message);
 		throw e; // Re-throw
 	}
 	return Promise.resolve();
@@ -32,7 +39,8 @@ export async function xCommitLogic(self: MemoryTable): Promise<void> {
 			// Commit without begin/connection is a no-op
 		}
 	} catch (e: any) {
-		console.error(`MemoryTable ${self.tableName}: Error during xCommitLogic: ${e.message}`);
+		// Use namespaced error logger
+		errorLog(`Error during xCommitLogic for table %s: %s`, self.tableName, e.message);
 		throw e; // Re-throw
 	}
 }
@@ -47,7 +55,8 @@ export async function xRollbackLogic(self: MemoryTable): Promise<void> {
 			// Rollback without begin/connection is a no-op
 		}
 	} catch (e: any) {
-		console.error(`MemoryTable ${self.tableName}: Error during xRollbackLogic: ${e.message}`);
+		// Use namespaced error logger
+		errorLog(`Error during xRollbackLogic for table %s: %s`, self.tableName, e.message);
 		throw e; // Re-throw
 	}
 	// Rollback itself is typically synchronous in its effect on the connection state
@@ -58,14 +67,17 @@ export function createSavepointLogic(self: MemoryTable, savepointIndex: number):
 	try {
 		const conn = ensureConnectionOrThrow(self, `SAVEPOINT ${savepointIndex}`);
 		if (conn.pendingTransactionLayer === null) { // Check pending layer
-			console.warn(`MemoryTable ${self.tableName}: SAVEPOINT called outside of a transaction.`);
+			// Use namespaced warn logger
+			warnLog(`SAVEPOINT called outside of a transaction for table %s.`, self.tableName);
 			// Or potentially throw new Error("SAVEPOINT outside transaction"); depending on desired strictness
 			return;
 		}
 		conn.createSavepoint(savepointIndex); // Delegate to connection
-		console.log(`MemoryTable ${self.tableName}: Created savepoint at index ${savepointIndex}`);
+		// Use namespaced debug logger
+		debugLog(`Created savepoint at index %d for table %s`, savepointIndex, self.tableName);
 	} catch (e: any) {
-		console.error(`MemoryTable ${self.tableName}: Error during createSavepointLogic for index ${savepointIndex}: ${e.message}`);
+		// Use namespaced error logger
+		errorLog(`Error during createSavepointLogic for table %s, index %d: %s`, self.tableName, savepointIndex, e.message);
 		throw e; // Re-throw
 	}
 }
@@ -75,10 +87,12 @@ export function releaseSavepointLogic(self: MemoryTable, savepointIndex: number)
 		const conn = (self as any).connection as MemoryTableConnection | null;
 		if (conn && conn.pendingTransactionLayer !== null) { // Only release if in a transaction
 			conn.releaseSavepoint(savepointIndex); // Delegate to connection
-			console.log(`MemoryTable ${self.tableName}: Released savepoints from index ${savepointIndex}`);
+			// Use namespaced debug logger
+			debugLog(`Released savepoints from index %d for table %s`, savepointIndex, self.tableName);
 		}
 	} catch (e: any) {
-		console.error(`MemoryTable ${self.tableName}: Error during releaseSavepointLogic for index ${savepointIndex}: ${e.message}`);
+		// Use namespaced error logger
+		errorLog(`Error during releaseSavepointLogic for table %s, index %d: %s`, self.tableName, savepointIndex, e.message);
 		throw e; // Re-throw
 	}
 }
@@ -88,10 +102,12 @@ export function rollbackToSavepointLogic(self: MemoryTable, savepointIndex: numb
 		const conn = (self as any).connection as MemoryTableConnection | null;
 		if (conn && conn.pendingTransactionLayer !== null) { // Only rollback if in a transaction
 			conn.rollbackToSavepoint(savepointIndex); // Delegate to connection
-			console.log(`MemoryTable ${self.tableName}: Rolled back to savepoint index ${savepointIndex}`);
+			// Use namespaced debug logger
+			debugLog(`Rolled back to savepoint index %d for table %s`, savepointIndex, self.tableName);
 		}
 	} catch (e: any) {
-		console.error(`MemoryTable ${self.tableName}: Error during rollbackToSavepointLogic for index ${savepointIndex}: ${e.message}`);
+		// Use namespaced error logger
+		errorLog(`Error during rollbackToSavepointLogic for table %s, index %d: %s`, self.tableName, savepointIndex, e.message);
 		throw e; // Re-throw
 	}
 }

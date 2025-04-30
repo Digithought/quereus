@@ -7,6 +7,11 @@ import { FunctionContext } from '../func/context.js';
 import type { VmCtx, VdbeCursor, MemoryCell } from './handler-types.js';
 import { handlers } from './handlers.js';
 import { Opcode } from './opcodes.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('vdbe:runtime');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * Represents an execution instance of a VDBE program.
@@ -74,7 +79,7 @@ export class VdbeRuntime implements VmCtx {
       if (stackIndex !== undefined && stackIndex >= 0) {
         this.setStackValue(stackIndex, value);
       } else {
-        console.warn(`Could not map parameter ${key} to stack cell`);
+        warnLog(`Could not map parameter %s to stack cell`, key);
       }
     });
     this.appliedBindings = true;
@@ -145,9 +150,16 @@ export class VdbeRuntime implements VmCtx {
         // Enhanced VDBE Logging
         const p4Str = inst.p4 ? JSON.stringify(inst.p4).substring(0, 50) : ''; // Truncate long P4
         const comment = inst.comment ? `// ${inst.comment}` : '';
-        console.debug(
-          `VDBE Exec: [${currentPc.toString().padStart(3)}] ${Opcode[inst.opcode]?.padEnd(15) ?? 'UNKNOWN'} ` +
-          `P1=${inst.p1}\tP2=${inst.p2}\tP3=${inst.p3}\tP4=${p4Str}\tP5=${inst.p5}\t${comment}`
+        log(
+          '[%s] %s P1=%d P2=%d P3=%d P4=%s P5=%d %s',
+          currentPc.toString().padStart(3),
+          Opcode[inst.opcode]?.padEnd(15) ?? 'UNKNOWN',
+          inst.p1,
+          inst.p2,
+          inst.p3,
+          p4Str,
+          inst.p5,
+          comment
         );
 
         // Get the handler for this opcode
@@ -196,7 +208,7 @@ export class VdbeRuntime implements VmCtx {
         }
       }
     } catch (e) {
-      console.error("VDBE Execution Error:", e);
+      errorLog('VDBE Execution Error: %O', e);
       if (e instanceof SqliteError) {
         this.error = e;
       } else if (e instanceof Error) {

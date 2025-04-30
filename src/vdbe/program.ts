@@ -1,5 +1,9 @@
 import type { VdbeInstruction } from './instruction.js';
 import type { SqlValue } from '../common/types.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('vdbe:program');
+const warnLog = log.extend('warn');
 
 /**
  * Represents a compiled VDBE program.
@@ -84,7 +88,7 @@ export class VdbeProgramBuilder {
 		if (instruction) {
 			instruction.p2 = p2;
 		} else {
-			console.warn(`Attempted to update non-existent instruction at address ${address}`);
+			warnLog(`Attempted to update non-existent instruction at address %d`, address);
 		}
 	}
 

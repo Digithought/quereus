@@ -4,6 +4,11 @@ import type { Compiler, CursorPlanningResult } from './compiler.js';
 import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
 import type { IndexInfo, IndexConstraint, IndexOrderBy } from '../vtab/indexInfo.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:plan');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 // --- Query Planning Helpers --- //
 
@@ -65,7 +70,7 @@ function findReferencedColumns(compiler: Compiler, expr: AST.Expression | undefi
 		} else if (node.type === 'cast') {
 			traverse(node.expr);
 		} else if (node.type === 'subquery') {
-			console.warn("Subquery column usage analysis not implemented for colUsed mask.");
+			warnLog("Subquery column usage analysis not implemented for colUsed mask.");
 		} else if (node.type === 'collate') {
 			traverse(node.expr);
 		} else if (node.type === 'identifier') {
@@ -235,7 +240,7 @@ function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: 
 				return;
 			}
 			if (binExpr.operator.toUpperCase() === 'OR') {
-				console.debug("Skipping OR constraint for xBestIndex planning.");
+				log("Skipping OR constraint for xBestIndex planning.");
 				return;
 			}
 
@@ -249,7 +254,7 @@ function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: 
 					traverse(geExpr);
 					traverse(leExpr);
 				} else {
-					console.warn("Unsupported BETWEEN structure for planning.");
+					warnLog("Unsupported BETWEEN structure for planning.");
 				}
 				return;
 			}
@@ -280,7 +285,7 @@ function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: 
 						}
 					}
 				} else if (binExpr.right.type === 'subquery') {
-					console.warn("IN (subquery) constraint skipped for xBestIndex planning.");
+					warnLog("IN (subquery) constraint skipped for xBestIndex planning.");
 				}
 				return;
 			}
@@ -316,7 +321,7 @@ function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: 
 						handledNodes.add(binExpr);
 					}
 				} else {
-					console.debug(`Skipping constraint for xBestIndex (value references target table): ${colExpr.name} ${binExpr.operator} ...`);
+					log(`Skipping constraint for xBestIndex (value references target table): %s %s ...`, colExpr.name, binExpr.operator);
 				}
 			}
 			else if (binExpr.left.type === 'column' && binExpr.right.type === 'column') {
@@ -428,7 +433,7 @@ export function planTableAccessHelper(
 					}
 				}
 			} else {
-				console.warn("Skipping non-column ORDER BY term for xBestIndex planning");
+				warnLog("Skipping non-column ORDER BY term for xBestIndex planning");
 			}
 		});
 	}
@@ -455,7 +460,7 @@ export function planTableAccessHelper(
 		// Call xBestIndex on the *module*, passing db and table schema
 		status = module.xBestIndex(compiler.db, tableSchema, indexInfo);
 	} catch (e) {
-		console.error(`Error calling module xBestIndex for ${tableSchema.name}:`, e);
+		errorLog(`Error calling module xBestIndex for %s: %O`, tableSchema.name, e);
 		status = StatusCode.ERROR;
 	}
 
@@ -476,7 +481,7 @@ export function planTableAccessHelper(
 	};
 	compiler.cursorPlanningInfo.set(cursorIdx, planResult);
 
-	console.log(`Planning for ${tableSchema.name} (cursor ${cursorIdx}, outer: ${[...activeOuterCursors]}): idxNum=${planResult.idxNum}, cost=${planResult.cost}, rows=${planResult.rows}, usage=`, planResult.usage, `handledNodes=${planResult.handledWhereNodes.size}`, `colUsed=${colUsed.toString(2)}`);
+	log(`Plan: %s (cursor %d, outer: %s) -> idxNum=%d cost=%.2f rows=%d usage=%j handled=%d colUsed=%s`, tableSchema.name, cursorIdx, [...activeOuterCursors].join(','), planResult.idxNum, planResult.cost, planResult.rows, planResult.usage, planResult.handledWhereNodes.size, colUsed.toString(2));
 }
 
 function mapAstOperatorToConstraintOp(op: string, swapped: boolean = false): IndexConstraintOp | undefined {

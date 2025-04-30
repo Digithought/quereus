@@ -1,7 +1,12 @@
+import { createLogger } from '../../common/logger.js';
 import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
 import { compareSqlValues, getSqlDataTypeName } from '../../util/comparison.js';
+
+const log = createLogger('func:builtins:scalar');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 // --- lower(X) ---
 const jsLower = (arg: any): SqlValue => {
@@ -159,7 +164,7 @@ function simpleLike(pattern: string, text: string): boolean {
 		const regex = new RegExp(`^${regexPattern}$`);
 		return regex.test(text);
 	} catch (e) {
-		console.error(`Invalid LIKE pattern converted to regex: ^${regexPattern}$`, e);
+		errorLog('Invalid LIKE pattern converted to regex: ^%s$, %O', regexPattern, e);
 		return false; // Treat invalid pattern as no match
 	}
 }
@@ -190,7 +195,7 @@ function simpleGlob(pattern: string, text: string): boolean {
 		const regex = new RegExp(`^${regexPattern}$`);
 		return regex.test(text);
 	} catch (e) {
-		console.error(`Invalid GLOB pattern converted to regex: ^${regexPattern}$`, e);
+		errorLog('Invalid GLOB pattern converted to regex: ^%s$, %O', regexPattern, e);
 		return false;
 	}
 }
@@ -224,9 +229,7 @@ const jsTrim = (strVal: any, charsVal?: any): SqlValue => {
 		const regex = new RegExp(`^[${escapedChars}]+|[${escapedChars}]+$`, 'g');
 		return str.replace(regex, '');
 	} catch (e) {
-		// Invalid regex pattern possible if chars contains tricky sequences like ranges improperly.
-		// Fallback to default trim or error? SQLite seems robust here.
-		console.warn(`Error creating trim regex for chars: ${chars}`, e);
+		warnLog('Error creating trim regex for chars: %s, %O', chars, e);
 		return str.trim(); // Fallback? Or maybe return original string?
 	}
 };
@@ -250,7 +253,7 @@ const jsLtrim = (strVal: any, charsVal?: any): SqlValue => {
 		const regex = new RegExp(`^[${escapedChars}]+`, 'g');
 		return str.replace(regex, '');
 	} catch (e) {
-		console.warn(`Error creating ltrim regex for chars: ${chars}`, e);
+		warnLog('Error creating ltrim regex for chars: %s, %O', chars, e);
 		return str.trimStart();
 	}
 };
@@ -274,7 +277,7 @@ const jsRtrim = (strVal: any, charsVal?: any): SqlValue => {
 		const regex = new RegExp(`[${escapedChars}]+$`, 'g');
 		return str.replace(regex, '');
 	} catch (e) {
-		console.warn(`Error creating rtrim regex for chars: ${chars}`, e);
+		warnLog('Error creating rtrim regex for chars: %s, %O', chars, e);
 		return str.trimEnd();
 	}
 };

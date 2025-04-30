@@ -8,6 +8,11 @@ import { compareSqlValues } from '../../../util/comparison.js';
 import type { ModificationKey, ModificationValue } from './interface.js';
 import { MemoryIndex } from '../index.js'; // Needed for secondary key comparison
 import type { SqlValue } from '../../../common/types.js'; // Import SqlValue
+import { createLogger } from '../../../common/logger.js'; // Import logger
+
+const log = createLogger('vtab:memory:layer:base-cursor');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * Internal cursor implementation for iterating directly over a BaseLayer's B-trees.
@@ -93,7 +98,8 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 				this.iterator = null;
 			}
 		} catch (e) {
-			console.error("Error initializing BTree iterator:", e);
+			// Use namespaced error logger
+			errorLog("Error initializing BTree iterator: %O", e);
 			this._isEof = true;
 			this.iterator = null;
 			throw e; // Re-throw initialization errors
@@ -158,14 +164,16 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 				} else {
 					// This case is problematic: have map but didn't find rowid.
 					// Should not happen if secondary index is consistent with primary.
-					console.warn(`BaseLayerCursor: Could not find primary key for rowid ${rowid} from secondary index ${this.plan.indexName} using rowidToKeyMap.`);
+					// Use namespaced warn logger
+					warnLog(`Could not find primary key for rowid %s from secondary index %s using rowidToKeyMap.`, rowid, this.plan.indexName);
 					itemValue = null;
 				}
 
 				if (!itemValue) {
 					// Could happen if secondary index refers to deleted primary row, or BTree issue
 					// itemKey should be valid here if we didn't continue earlier
-					console.warn(`BaseLayerCursor: Found index key ${JSON.stringify(itemKey)} but failed to fetch row data.`);
+					// Use namespaced warn logger
+					warnLog(`Found index key %s but failed to fetch row data.`, JSON.stringify(itemKey));
 					continue; // Skip this entry and try next
 				}
 			}
@@ -223,7 +231,8 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 			if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
 				// If we couldn't extract a comparable first column key, but have bounds, assume it fails the check?
 				// Or log a warning? Let's assume failure for safety.
-				console.warn("BaseLayerCursor: Could not extract first column key for range check.");
+				// Use namespaced warn logger
+				warnLog("Could not extract first column key for range check.");
 				return false;
 			}
 

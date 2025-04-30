@@ -2,6 +2,9 @@ import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
 import { SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/constants.js';
+import { createLogger } from '../common/logger.js';
+
+const warnLog = createLogger('compiler:correlation').extend('warn');
 
 // --- Exports for Correlation Analysis ---
 /** Type definition for correlated column info */
@@ -56,7 +59,7 @@ export function analyzeSubqueryCorrelation(
 							currentLevelAliases.set(alias, cursorId);
 							currentLevelCursors.add(cursorId);
 						} else {
-							console.warn(`Alias/Table ${alias} not found in global map during correlation analysis. Scope issue?`);
+							warnLog(`Alias/Table %s not found in global map during correlation analysis. Scope issue?`, alias);
 						}
 					} else if (fc.type === 'join') {
 						findCursors(fc.left);
@@ -68,7 +71,7 @@ export function analyzeSubqueryCorrelation(
 							currentLevelAliases.set(alias, cursorId);
 							currentLevelCursors.add(cursorId);
 						} else {
-							console.warn(`Alias/TVF ${alias} not found in global map during correlation analysis. Scope issue?`);
+							warnLog(`Alias/TVF %s not found in global map during correlation analysis. Scope issue?`, alias);
 						}
 					}
 				};
@@ -142,7 +145,7 @@ export function analyzeSubqueryCorrelation(
 						processedColumns.add(key);
 					}
 				} else {
-					console.warn(`Outer column ${colName} resolved to cursor ${outerCursor} but index not found in schema.`);
+					warnLog(`Outer column %s resolved to cursor %d but index not found in schema.`, colName, outerCursor);
 				}
 			}
 		}

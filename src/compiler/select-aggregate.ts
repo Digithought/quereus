@@ -1,3 +1,4 @@
+import { createLogger } from '../common/logger.js'; // Import logger
 import type { Compiler, HavingContext } from './compiler.js';
 import type * as AST from '../parser/ast.js';
 import { Opcode } from '../vdbe/opcodes.js';
@@ -5,6 +6,8 @@ import type { P4FuncDef } from '../vdbe/instruction.js';
 import { getGroupKeyExpressions } from './select.js'; // Assuming this helper is moved/exported
 import type { TableSchema } from '../schema/table.js';
 import { expressionToString } from '../util/ddl-stringify.js';
+
+const log = createLogger('compiler:select-aggregate'); // Create logger instance
 
 export function processRowAggregate(
 	compiler: Compiler,
@@ -185,7 +188,7 @@ export function compileAggregateOutput(
 
 		// --- Iterate original aggregateColumns, get context, finalize --- //
 		if (finalNumCols !== aggregateColumns.length) {
-			console.warn(`Mismatch between finalNumCols (${finalNumCols}) and aggregateColumns count (${aggregateColumns.length}) in simple aggregate.`);
+			log.extend('warn')(`Mismatch between finalNumCols (${finalNumCols}) and aggregateColumns count (${aggregateColumns.length}) in simple aggregate.`);
 		}
 		if (finalResultBaseReg === 0 && finalNumCols > 0) {
 			 finalResultBaseReg = compiler.allocateMemoryCells(finalNumCols);

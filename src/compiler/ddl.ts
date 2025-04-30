@@ -13,6 +13,10 @@ import type { Expression } from '../parser/ast.js';
 import type { P4SchemaChange } from "../vdbe/instruction.js";
 import { opsToMask, type IndexSchema, type RowOpMask, type TableSchema } from "../schema/table.js";
 import type { ColumnSchema } from "../schema/column.js";
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('compiler:ddl');
+const warnLog = log.extend('warn');
 
 // Define local interfaces if not exported/importable easily
 interface MemoryTableConfig extends BaseModuleConfig {
@@ -134,7 +138,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		} else {
 			// Generic module - pass empty config for now
 			// The module's xCreate needs to handle this or expect specific arg parsing
-			console.warn(`Compiler creating generic BaseModuleConfig for module '${moduleName}'. Module may need specific argument parsing.`);
+			warnLog(`Compiler creating generic BaseModuleConfig for module '%s'. Module may need specific arg parsing.`, moduleName);
 			options = {}; // Empty BaseModuleConfig
 		}
 	} catch (e: any) {
@@ -166,7 +170,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 
 	if (schema.getTable(tableName)) {
 		if (stmt.ifNotExists) {
-			console.log(`Skipping CREATE TABLE: Table ${schemaName}.${tableName} already exists (IF NOT EXISTS).`);
+			log(`Skipping CREATE TABLE: Table %s.%s already exists (IF NOT EXISTS).`, schemaName, tableName);
 			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `CREATE TABLE ${tableName} (skipped IF NOT EXISTS)`);
 			return;
 		} else {
@@ -178,7 +182,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		throw new SqliteError(`Module '${moduleName}' xCreate did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
 	}
 	if (tableInstance.tableSchema.schemaName.toLowerCase() !== schemaName.toLowerCase()) {
-		console.warn(`VTab module ${moduleName} created table ${tableName} in schema ${tableInstance.tableSchema.schemaName}, but expected ${schemaName}.`);
+		warnLog(`VTab module %s created table %s in schema %s, but expected %s.`, moduleName, tableName, tableInstance.tableSchema.schemaName, schemaName);
 		(tableInstance.tableSchema as any).schemaName = schemaName;
 	}
 	if (!tableInstance.tableSchema.vtabModuleName) {
@@ -190,7 +194,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 
 	schema.addTable(tableInstance.tableSchema);
 
-	console.log(`Successfully created table ${schemaName}.${tableName} using module ${moduleName}`);
+	log(`Successfully created table %s.%s using module %s`, schemaName, tableName, moduleName);
 	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `CREATE TABLE ${tableName}`);
 }
 
@@ -454,7 +458,7 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 						throw new SqliteError(`duplicate column name: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					if (stmt.action.column.constraints?.some(c => c.type === 'primaryKey' || c.type === 'unique' || c.type === 'foreignKey')) {
-						console.warn(`ALTER TABLE ADD COLUMN with complex constraints (PK, UNIQUE, FK) might not be fully enforced by all VTabs.`);
+						warnLog(`ALTER TABLE ADD COLUMN with complex constraints (PK, UNIQUE, FK) might not be fully enforced by all VTabs.`);
 					}
 					changeInfo = { type: 'addColumn', columnDef: stmt.action.column };
 					break;
@@ -550,7 +554,7 @@ export function compilePragmaStatement(compiler: Compiler, stmt: AST.PragmaStmt)
 			}
 			// We modify the setter slightly to only take the name here
 			// The args are set by a separate pragma
-			console.log(`Setting default VTab module to: ${moduleName}`);
+			log(`Setting default VTab module to: %s`, moduleName);
 			db.setDefaultVtabName(moduleName); // New dedicated method
 			break;
 		}
@@ -558,10 +562,10 @@ export function compilePragmaStatement(compiler: Compiler, stmt: AST.PragmaStmt)
 			const argsJsonString = getStringValue(valueNode);
 			if (argsJsonString === null) {
 				// PRAGMA default_vtab_args = NULL; clears the args
-				console.log("Clearing default VTab args.");
+				log("Clearing default VTab args.");
 				db.setDefaultVtabArgsFromJson("[]"); // Pass empty JSON array string
 			} else {
-				console.log(`Setting default VTab args from JSON: ${argsJsonString}`);
+				log(`Setting default VTab args from JSON: %s`, argsJsonString);
 				db.setDefaultVtabArgsFromJson(argsJsonString); // New dedicated method
 			}
 			break;
@@ -569,7 +573,7 @@ export function compilePragmaStatement(compiler: Compiler, stmt: AST.PragmaStmt)
 		// TODO: Add other PRAGMAs here later (e.g., schema_version, user_version, foreign_keys)
 		default:
 			// Treat unknown pragmas as no-ops for now, like SQLite often does
-			console.warn(`Ignoring unrecognized PRAGMA: ${pragmaName}`);
+			warnLog(`Ignoring unrecognized PRAGMA: %s`, pragmaName);
 			break;
 	}
 

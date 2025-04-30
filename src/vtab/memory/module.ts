@@ -9,6 +9,11 @@ import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vtab:memory:module');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * A module that provides in-memory table functionality using digitree.

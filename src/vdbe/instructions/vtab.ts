@@ -6,6 +6,11 @@ import { Opcode } from '../opcodes.js';
 import { ConflictResolution } from '../../common/constants.js';
 import type { IndexConstraint, IndexConstraintUsage, IndexInfo } from '../../vtab/indexInfo.js';
 import type { IndexSchema } from '../../schema/table.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:vtab');
+const errorLog = log.extend('error');
+const warnLog = log.extend('warn');
 
 // Helper for handling errors from VTab methods
 function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {
@@ -13,7 +18,7 @@ function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {
   const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
   ctx.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
   ctx.done = true;
-  console.error(ctx.error);
+  errorLog(ctx.error);
 }
 
 export function registerHandlers(handlers: Handler[]) {
@@ -425,7 +430,7 @@ export function registerHandlers(handlers: Handler[]) {
         // For now, we don't have other TVFs, so we'll error or pass empty.
         // Consider options = { runtimeArgs: args }; ?
         if (nArg > 0) {
-             console.warn(`No standard argument mapping convention for TVF module '${moduleName}'. Passing empty options.`);
+             warnLog(`No standard argument mapping convention for TVF module '%s'. Passing empty options.`, moduleName);
         }
         options = {}; // Default empty config
       }

@@ -9,6 +9,11 @@ import { DELETED } from './constants.js';
 import type { SqlValue } from '../../../common/types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { isDeletionMarker } from './interface.js'; // Import type guard
+import { createLogger } from '../../../common/logger.js'; // Import logger
+
+const log = createLogger('vtab:memory:layer:transaction-cursor'); // Create logger
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * Internal cursor for iterating a TransactionLayer.
@@ -113,7 +118,7 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			const value = this.modificationTree.at(this.currentModPath);
 			if (value === undefined) {
 				// Should not happen if path is valid from iterator
-				console.error("TransactionLayerCursor: BTree iterator returned path with undefined value.");
+				errorLog("TransactionLayerCursor: BTree iterator returned path with undefined value.");
 				this.modEof = true;
 				this.currentModKey = null;
 				this.currentModValue = null;
@@ -123,7 +128,8 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 				this.currentModKey = this.modKeyExtractor(this.currentModValue);
 				if (this.currentModKey === null) {
 					// This indicates an issue with the extractor logic
-					console.error("TransactionLayerCursor: Key extraction returned null.");
+					// Use namespaced error logger
+					errorLog("Key extraction returned null.");
 					this.modEof = true; // Treat as EOF if key extraction fails
 				}
 			}
@@ -195,7 +201,8 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			} else {
 				// Should not happen if both are not EOF and keys are valid
 				this._isEof = true;
-				console.error("TransactionLayerCursor: Invalid state during merge comparison (modKey/parentKey null or comparator failed?).");
+				// Use namespaced error logger
+				errorLog("Invalid state during merge comparison (modKey/parentKey null or comparator failed?).");
 				return;
 			}
 
@@ -298,7 +305,8 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			}
 
 			if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
-				console.warn("TransactionLayerCursor: Could not extract first column key for range check.");
+				// Use namespaced warn logger
+				warnLog("Could not extract first column key for range check.");
 				return false; // Cannot satisfy bounds if key cannot be compared
 			}
 
@@ -326,7 +334,7 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 				// This could happen during the merge if the modIterator or parentCursor
 				// moves past the equality key due to how find() + iteration works.
 				// It's not necessarily an error, just means this specific merged key doesn't match.
-				// console.warn(`TransactionLayerCursor: Merged key ${JSON.stringify(key)}'s comparable part does not match equality key ${JSON.stringify(this.plan.equalityKey)} in EQ scan.`);
+				warnLog(`Merged key ${JSON.stringify(key)}'s comparable part does not match equality key ${JSON.stringify(this.plan.equalityKey)} in EQ scan.`);
 			}
 			return isEqual; // Return true only if keys actually match
 		}

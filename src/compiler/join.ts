@@ -4,6 +4,9 @@ import type { ColumnResultInfo } from './compiler.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
+import { createLogger } from '../common/logger.js';
+
+const warnLog = createLogger('compiler:join').extend('warn');
 
 export function compileJoinCondition(
 	compiler: Compiler,
@@ -78,7 +81,7 @@ export function emitLeftJoinNullPadding(
 
 	// If no match found, need to pad columns from this level and inner levels with NULL
 	// TODO: Determine correct padding based on coreColumnMap and levels >= levelIndex
-	console.warn(`LEFT JOIN NULL padding for level ${levelIndex} is not fully implemented.`);
+	warnLog(`LEFT JOIN NULL padding for level %d is not fully implemented.`, levelIndex);
 	// Placeholder: Emit NULLs for columns directly from this level for now
 	coreColumnMap.forEach(colInfo => {
 		if (colInfo.sourceCursor === level.cursor) {

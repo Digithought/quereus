@@ -1,3 +1,5 @@
+import { createLogger } from '../common/logger.js'; // Import logger
+
 export enum TokenType {
 	// Literals
 	INTEGER = 'INTEGER',
@@ -130,6 +132,9 @@ export enum TokenType {
 	EOF = 'EOF',
 	ERROR = 'ERROR'
 }
+
+const log = createLogger('parser:lexer'); // Create logger instance
+const errorLog = log.extend('error');
 
 // Token represents a lexical token from the SQL input
 export interface Token {

@@ -5,6 +5,10 @@ import type { Handler } from '../handler-types.js';
 import type { P4SortKey } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
 import { MemoryTableCursor } from '../../vtab/memory/cursor.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vdbe:sort');
+const errorLog = log.extend('error');
 
 export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.Sort] = async (ctx, inst) => {
@@ -34,7 +38,7 @@ export function registerHandlers(handlers: Handler[]) {
       // Clear any previous sorted results array if present
       cursor.sortedResults = null;
     } catch (e) {
-      console.error(`Error creating/populating ephemeral sorter index for cursor ${cIdx}:`, e);
+      errorLog(`Error creating/populating ephemeral sorter index for cursor ${cIdx}: %O`, e);
       if (e instanceof SqliteError) throw e;
       throw new SqliteError(`Failed to create/populate sorter index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
     }

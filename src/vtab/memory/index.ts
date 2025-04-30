@@ -2,6 +2,10 @@ import { BTree } from 'digitree';
 import type { SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import type { MemoryTableRow, BTreeKey } from './types.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('vtab:memory:index');
+const errorLog = log.extend('error');
 
 /** Definition for creating a memory index */
 export interface IndexSpec {
@@ -88,7 +92,7 @@ export class MemoryIndex {
 			this.data.insert([key, rowid]);
 		} catch (e) {
 			// BTree might throw if key comparison function is inconsistent, etc.
-			console.error(`Error adding entry to index '${this.name ?? '(unnamed)'}' for rowid ${rowid}:`, e);
+			errorLog(`Error adding entry to index '%s' for rowid %s: %O`, this.name ?? '(unnamed)', rowid, e);
 			throw new Error(`Failed to add entry to index '${this.name ?? '(unnamed)'}'.`);
 		}
 	}
@@ -122,7 +126,8 @@ export class MemoryIndex {
 					this.data.deleteAt(currentPath);
 					return true; // Successfully deleted
 				} catch (e) {
-					console.error(`Error removing entry from index '${this.name ?? '(unnamed)'}' for rowid ${rowid}:`, e);
+					// Use namespaced error logger
+					errorLog(`Error removing entry from index '%s' for rowid %s: %O`, this.name ?? '(unnamed)', rowid, e);
 					return false; // Deletion failed
 				}
 			}
