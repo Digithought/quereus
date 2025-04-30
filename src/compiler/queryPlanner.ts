@@ -489,7 +489,17 @@ export function planTableAccessHelper(
 	};
 	compiler.cursorPlanningInfo.set(cursorIdx, planResult);
 
-	log(`Plan: %s (cursor %d, outer: %s) -> idxNum=%d cost=%.2f rows=%d usage=%j handled=%d colUsed=%s`, tableSchema.name, cursorIdx, [...activeOuterCursors].join(','), planResult.idxNum, planResult.cost, planResult.rows, planResult.usage, planResult.handledWhereNodes.size, colUsed.toString(2));
+	log(`Plan: %s (cursor %d, outer: %s) -> idxNum=%d cost=%.2f rows=%s usage=%j handled=%d colUsed=%s`,
+		tableSchema.name,
+		cursorIdx,
+		[...activeOuterCursors].join(','),
+		planResult.idxNum,
+		planResult.cost,
+		planResult.rows.toString(),
+		planResult.usage,
+		planResult.handledWhereNodes.size,
+		colUsed.toString(2)
+	);
 }
 
 function mapAstOperatorToConstraintOp(op: string, swapped: boolean = false): IndexConstraintOp | undefined {
