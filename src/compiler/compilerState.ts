@@ -1,11 +1,15 @@
 import { Opcode } from '../vdbe/opcodes.js';
 import type { SqlValue } from '../common/types.js';
-import { createInstruction } from '../vdbe/instruction.js';
+import { createInstruction, type VdbeInstruction } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js';
 import { createLogger } from '../common/logger.js';
+import { StatusCode } from '../common/types.js';
+import { SqliteError } from '../common/errors.js';
 
 const log = createLogger('compiler:state');
 const debugLog = log.extend('debug');
+const errorLog = createLogger('compiler').extend('error');
+debugLog.enabled = false;
 
 /**
  * Allocates memory cells within the current frame
@@ -15,26 +19,32 @@ const debugLog = log.extend('debug');
  * @returns Starting offset relative to the frame pointer
  */
 export function allocateMemoryCellsHelper(compiler: Compiler, count: number): number {
-	// Frame slots 0 and 1 are reserved for RetAddr and OldFP
-	// Locals start at offset 2
-	const localsStartOffset = 2;
-	// Calculate base offset relative to current frame's local usage
-	const baseOffset = (compiler as any).currentFrameLocals < localsStartOffset
-		? localsStartOffset
-		: (compiler as any).currentFrameLocals + 1;
+	if (count <= 0) return -1;
 
-	// Update max offset used in this frame
-	const newMaxOffset = baseOffset + count - 1;
-	(compiler as any).currentFrameLocals = Math.max((compiler as any).currentFrameLocals, newMaxOffset);
-	// Track overall max offset used *within this specific frame* for FrameEnter P1
-	(compiler as any).maxLocalOffsetInCurrentFrame = Math.max((compiler as any).maxLocalOffsetInCurrentFrame, newMaxOffset);
+	let baseReg: number;
+	if (compiler.subroutineDepth > 0) {
+		baseReg = compiler.framePointer + compiler.maxLocalOffsetInCurrentFrame + 1; // Relative to current frame
+	} else {
+		// Ensure base register for main program is >= 2 (0=PC?, 1=OldFP?)
+		// Let's reserve 0 and 1 explicitly.
+		const firstAvailableReg = 2;
+		baseReg = Math.max(firstAvailableReg, compiler.stackPointer + 1);
+	}
 
-	// Update overall stack size estimate (absolute index across all frames - useful for debugging/estimation)
-	const absoluteIndex = (compiler as any).framePointer + newMaxOffset;
-	compiler.numMemCells = Math.max(compiler.numMemCells, absoluteIndex);
+	const newMaxOffset = compiler.subroutineDepth > 0
+		? compiler.maxLocalOffsetInCurrentFrame + count
+		: baseReg + count - 1; // Absolute index
 
-	// Return starting offset relative to FP
-	return baseOffset;
+	if (compiler.subroutineDepth > 0) {
+		compiler.maxLocalOffsetInCurrentFrame = newMaxOffset;
+	} else {
+		compiler.stackPointer = newMaxOffset;
+	}
+
+	// Update overall max memory cells needed for the program
+	compiler.numMemCells = Math.max(compiler.numMemCells, newMaxOffset);
+
+	return baseReg;
 }
 
 /**
@@ -44,10 +54,8 @@ export function allocateMemoryCellsHelper(compiler: Compiler, count: number): nu
  * @returns The allocated cursor index
  */
 export function allocateCursorHelper(compiler: Compiler): number {
-	// Cursors are still global within a compilation context
-	const cursorIdx = compiler.numCursors;
-	compiler.numCursors++;
-	return cursorIdx;
+	const cursorIndex = compiler.numCursors++;
+	return cursorIndex;
 }
 
 /**
@@ -58,10 +66,12 @@ export function allocateCursorHelper(compiler: Compiler): number {
  * @returns The index of the constant in the pool
  */
 export function addConstantHelper(compiler: Compiler, value: SqlValue): number {
-	// Constants are global
-	const idx = compiler.constants.length;
+	const index = compiler.constants.findIndex(c => c === value); // Simple check for now
+	if (index !== -1) {
+		return index;
+	}
 	compiler.constants.push(value);
-	return idx;
+	return compiler.constants.length - 1;
 }
 
 /**
@@ -77,22 +87,18 @@ export function addConstantHelper(compiler: Compiler, value: SqlValue): number {
  * @param comment Optional comment for debugging
  * @returns The address of the emitted instruction
  */
-export function emitInstruction(
-	compiler: Compiler,
-	opcode: Opcode,
-	p1: number = 0,
-	p2: number = 0,
-	p3: number = 0,
-	p4: any = null,
-	p5: number = 0,
-	comment?: string
-): number {
-	// Emit to main instructions or subroutine code based on depth
-	const targetArray = compiler.subroutineDepth > 0 ? (compiler as any).subroutineCode : compiler.instructions;
+export function emitInstruction(compiler: Compiler, opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number {
 	const instruction = createInstruction(opcode, p1, p2, p3, p4, p5, comment);
+	const targetArray = compiler.subroutineDepth > 0 ? compiler.subroutineCode : compiler.instructions;
 	targetArray.push(instruction);
-	// Return address relative to the start of the *specific code block* (main or subroutine)
-	return targetArray.length - 1;
+
+	// Track max memory cell used (based on register operands p1, p2, p3 if they represent registers)
+	// This requires knowledge of which opcodes use which parameters as registers.
+	// Example: For Move R1, R2, N -> check max(R1, R2 + N -1)
+	// For simplicity, memory tracking is primarily done in allocateMemoryCellsHelper for now.
+	// A more robust solution would inspect operands here based on opcode definitions.
+
+	return targetArray.length - 1; // Return address (index) of the emitted instruction
 }
 
 /**
@@ -102,19 +108,13 @@ export function emitInstruction(
  * @param purpose A debug label for the placeholder's purpose
  * @returns A negative placeholder value to be resolved later
  */
-export function allocateAddressHelper(compiler: Compiler, purpose: string = 'unknown'): number {
-	// Determine the current instruction array (main or subroutine)
-	const targetArray = compiler.subroutineDepth > 0 ? (compiler as any).subroutineCode : compiler.instructions;
-	const instructionIndex = targetArray.length; // The index where the *next* instruction will be placed
-
-	// Generate a unique negative placeholder ID
-	const placeholder = (compiler as any).nextPlaceholderId--;
-
-	// Store the mapping from the unique ID to its intended instruction index, array, and purpose
-	compiler.pendingPlaceholders.set(placeholder, { instructionIndex, targetArray, purpose });
-
-	debugLog(`Allocate placeholder ID %d (purpose: %s) for future instr at index %d (subDepth=%d)`, placeholder, purpose, instructionIndex, compiler.subroutineDepth);
-	return placeholder;
+export function allocateAddressHelper(compiler: Compiler, purpose: string): number {
+	const placeholderId = compiler.nextPlaceholderId--; // Get a unique negative ID
+	const targetArray = compiler.subroutineDepth > 0 ? compiler.subroutineCode : compiler.instructions;
+	const instructionIndex = targetArray.length; // Index where the resolved instruction WILL be
+	compiler.pendingPlaceholders.set(placeholderId, { instructionIndex, targetArray, purpose });
+	debugLog(`Allocated placeholder ${placeholderId} for ${purpose} (target index ${instructionIndex})`);
+	return placeholderId; // Return the negative placeholder ID
 }
 
 /**
@@ -124,63 +124,22 @@ export function allocateAddressHelper(compiler: Compiler, purpose: string = 'unk
  * @param placeholder The negative placeholder value to resolve
  * @returns The resolved target address, or -1 if placeholder was invalid
  */
-export function resolveAddressHelper(compiler: Compiler, placeholderId: number): number {
-	if (placeholderId >= 0) {
-		debugLog(`Attempting to resolve a non-placeholder ID: %d`, placeholderId);
-		return -1; // Indicate invalid placeholder
-	}
-
-	// Retrieve the intended instruction index and target array from the map
-	const placeholderInfo = compiler.pendingPlaceholders.get(placeholderId);
-
+export function resolveAddressHelper(compiler: Compiler, placeholder: number): number {
+	const placeholderInfo = compiler.pendingPlaceholders.get(placeholder);
 	if (!placeholderInfo) {
-		debugLog(`Attempting to resolve unknown or already resolved placeholder ID: %d`, placeholderId);
-		return -1; // Indicate invalid placeholder
+		errorLog(`Attempted to resolve unknown or already resolved placeholder: ${placeholder}`);
+		throw new SqliteError(`Internal error: Invalid address placeholder ${placeholder}`, StatusCode.INTERNAL);
 	}
 
-	const { instructionIndex: predictedIndex, targetArray, purpose } = placeholderInfo;
-	const targetAddress = targetArray.length; // Resolve to the *current* end of the instruction array
+	const currentAddress = placeholderInfo.targetArray.length; // Current address in the correct array
 
-	// Remove the placeholder from the map now that we are resolving it
-	compiler.pendingPlaceholders.delete(placeholderId);
+	compiler.resolvedAddresses.set(placeholder, currentAddress);
 
-	debugLog(`Resolve placeholder ID %d (purpose: %s, predicted: %d) to target addr %d (len: %d, subDepth=%d)`, placeholderId, purpose, predictedIndex, targetAddress, targetArray.length, compiler.subroutineDepth);
+	// Optionally, track resolved addresses for debugging/verification if needed
+	compiler.pendingPlaceholders.delete(placeholder); // Mark as resolved (pending deleted, actual address stored)
 
-	// Opcodes whose P2 parameter holds a jump target address
-	const jumpOpcodes = new Set<Opcode>([
-		Opcode.Goto, Opcode.IfTrue, Opcode.IfFalse, Opcode.IfZero,
-		Opcode.IfNull, Opcode.IfNotNull, Opcode.Eq, Opcode.Ne,
-		Opcode.Lt, Opcode.Le, Opcode.Gt, Opcode.Ge, Opcode.Once,
-		Opcode.VFilter, Opcode.VNext, Opcode.Rewind, Opcode.Subroutine
-	]);
-
-	let patchedCount = 0;
-	// Iterate through the relevant instruction array to find actual usage(s)
-	// We only need to search up to the current length, as jumps should point forward
-	for (let i = 0; i < targetAddress; i++) {
-		const instr = targetArray[i];
-		// Check if this opcode uses P2 for jumps and if P2 matches the placeholder ID
-		if (jumpOpcodes.has(instr.opcode) && instr.p2 === placeholderId) {
-			debugLog(`Patching instr %d (%s): P2 %d -> %d`, i, Opcode[instr.opcode], instr.p2, targetAddress);
-			instr.p2 = targetAddress;
-			patchedCount++;
-		}
-		// TODO: Add checks for other parameters (p1, p3) if any opcodes use them for jumps
-	}
-
-	if (patchedCount === 0) {
-		// This is unexpected if the placeholder was allocated and resolved.
-		// It might mean the instruction using the placeholder was never emitted, or used a different parameter.
-		debugLog(`Placeholder ID %d (purpose: %s) resolved, but no instructions found using it in P2.`, placeholderId, purpose);
-		// Log the instruction at the predicted index for extra info, if it exists
-		if (predictedIndex >= 0 && predictedIndex < targetAddress) {
-			const predictedInstr = targetArray[predictedIndex];
-			debugLog(`Instruction at predicted index %d: %s P1=%d P2=%d P3=%d`, predictedIndex, Opcode[predictedInstr.opcode], predictedInstr.p1, predictedInstr.p2, predictedInstr.p3);
-		}
-	}
-
-	// Return the resolved address
-	return targetAddress;
+	// console.log(`Resolved placeholder ${placeholder} (${placeholderInfo.purpose}) to address ${currentAddress}`);
+	return currentAddress; // Return the resolved address
 }
 
 /**
@@ -190,7 +149,49 @@ export function resolveAddressHelper(compiler: Compiler, placeholderId: number):
  * @returns The current instruction address
  */
 export function getCurrentAddressHelper(compiler: Compiler): number {
-	// Address relative to the current code block (main or subroutine)
-	const targetArray = compiler.subroutineDepth > 0 ? (compiler as any).subroutineCode : compiler.instructions;
+	const targetArray = compiler.subroutineDepth > 0 ? compiler.subroutineCode : compiler.instructions;
 	return targetArray.length;
+}
+
+/**
+ * Patches jump addresses at the end of compilation
+ *
+ * @param compiler The compiler instance
+ */
+export function patchJumpAddresses(compiler: Compiler): void {
+	// Patch main instructions
+	for (const instruction of compiler.instructions) {
+		patchInstructionOperands(compiler, instruction);
+	}
+	// Patch subroutine instructions (if any)
+	for (const instruction of compiler.subroutineCode) {
+		patchInstructionOperands(compiler, instruction);
+	}
+
+	// Verify all placeholders were resolved
+	if (compiler.pendingPlaceholders.size > 0) {
+		const unresolved = Array.from(compiler.pendingPlaceholders.entries())
+			.map(([id, info]) => `${id} (${info.purpose})`).join(', ');
+		errorLog(`Internal error: Unresolved address placeholders remain after compilation: ${unresolved}`);
+		throw new SqliteError(`Internal error: Unresolved address placeholders: ${unresolved}`, StatusCode.INTERNAL);
+	}
+}
+
+function patchInstructionOperands(compiler: Compiler, instruction: VdbeInstruction): void {
+	// Check operands that typically hold jump addresses (P2 for most jumps/branches)
+	// Add checks for P1, P3 if other opcodes use them for addresses
+	if (typeof instruction.p2 === 'number' && instruction.p2 < 0) {
+		const resolvedAddress = compiler.resolvedAddresses.get(instruction.p2);
+		if (resolvedAddress === undefined) {
+			// This case should ideally not happen if patchJumpAddresses is called correctly
+			// and all placeholders were resolved.
+			// Use Opcode enum to get the name for the error message
+			errorLog(`Internal error: Found unresolved placeholder ${instruction.p2} in instruction [${compiler.instructions.indexOf(instruction)}] ${Opcode[instruction.opcode]} during final patching.`);
+			// Decide whether to throw or log based on strictness
+			throw new SqliteError(`Internal error: Unresolved placeholder ${instruction.p2} during patching`, StatusCode.INTERNAL);
+		}
+		// console.log(`Patching P2 of [${compiler.instructions.indexOf(instruction)}] ${Opcode[instruction.opcode]}: ${instruction.p2} -> ${resolvedAddress}`);
+		instruction.p2 = resolvedAddress;
+	}
+	// Add similar checks for instruction.p1, instruction.p3 if necessary
 }

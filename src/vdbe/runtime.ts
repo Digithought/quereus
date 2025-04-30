@@ -147,8 +147,9 @@ export class VdbeRuntime implements VmCtx {
           break;
         }
 
-        // Enhanced VDBE Logging
-        const p4Str = inst.p4 ? JSON.stringify(inst.p4).substring(0, 50) : ''; // Truncate long P4
+        const p4Str = inst.p4 ? JSON.stringify(inst.p4, (key, value) =>
+          typeof value === 'bigint' ? value.toString() + 'n' : value // Append 'n' for clarity
+        ).substring(0, 150) : '';
         const comment = inst.comment ? `// ${inst.comment}` : '';
         log(
           '[%s] %s P1=%d P2=%d P3=%d P4=%s P5=%d %s',
@@ -165,7 +166,7 @@ export class VdbeRuntime implements VmCtx {
         // Get the handler for this opcode
         const handler = handlers[inst.opcode];
         if (!handler) {
-            this.error = new SqliteError(`No handler found for opcode ${inst.opcode}`, StatusCode.INTERNAL);
+            this.error = new SqliteError(`No handler found for opcode ${inst.opcode} (${Opcode[inst.opcode]})`, StatusCode.INTERNAL);
             break;
         }
 

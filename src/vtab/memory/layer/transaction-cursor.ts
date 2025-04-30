@@ -172,16 +172,16 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			let advanceMod = false;
 			let advanceParent = false;
 
-			if (this.modEof && this.parentEof) {
+			if (this.modEof && this.parentEof) { // Check EOF upfront
 				this._isEof = true;
-				return; // Both sources exhausted
-			} else if (this.modEof) {
+				return;
+			} else if (this.modEof) { // Only parent has data
 				useParent = true; // Only parent has data
 				advanceParent = true;
 			} else if (this.parentEof) {
 				useMod = true; // Only mods have data
 				advanceMod = true;
-			} else if (compare !== null) {
+			} else if (compare !== null) { // Both have data, compare keys
 				// Compare keys based on scan direction
 				const comparisonResult = this.plan.descending ? -compare : compare;
 
@@ -190,15 +190,15 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 					advanceMod = true;
 					advanceParent = true; // Advance parent past the matched key
 				} else if (comparisonResult < 0) { // Mod key comes first
-					useMod = true;
+					useMod = true; // Use mod
 					advanceMod = true;
 					// Don't advance parent yet
 				} else { // Parent key comes first
-					useParent = true;
+					useParent = true; // Use parent
 					advanceParent = true;
 					// Don't advance mod yet
 				}
-			} else {
+			} else { // Error state
 				// Should not happen if both are not EOF and keys are valid
 				this._isEof = true;
 				// Use namespaced error logger
@@ -206,6 +206,7 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 				return;
 			}
 
+			// --- Determine potential key/row BEFORE advancing ---
 			let potentialRow: MemoryTableRow | null = null;
 			let potentialKey: ModificationKey | null = null;
 			let isDeletedHere = false;
@@ -225,26 +226,27 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 				this._currentLayerValue = null; // No value from *this* layer
 			}
 
-			// Advance the chosen source(s) *before* processing the potential result
-			// Store promises to await them together if needed
-			const advancePromises: Promise<void>[] = [];
-			if (advanceMod) this.advanceModIterator(); // mod is sync
-			if (advanceParent) advancePromises.push(this.advanceParentCursor());
-			if (advancePromises.length > 0) await Promise.all(advancePromises);
-
 
 			// --- Process the potential result ---
 
 			// Skip if this item was marked as deleted in this layer
-			if (isDeletedHere) {
+			if (potentialKey && isDeletedHere) { // Check potentialKey exists
+				// Advance the iterators flagged earlier before continuing
+				const advancePromises: Promise<void>[] = [];
+				if (advanceMod) this.advanceModIterator();
+				if (advanceParent) advancePromises.push(this.advanceParentCursor());
+				if (advancePromises.length > 0) await Promise.all(advancePromises);
 				continue; // Loop again to find next merge result
 			}
 
 			// If we got a valid potential row (not deleted here), check if its *rowid*
 			// is in this layer's explicit deleted set.
 			if (potentialRow && this.layer.getDeletedRowids().has(potentialRow._rowid_)) {
-				// Even if the key matched a non-delete modification, the rowid might have been
-				// deleted separately in this layer.
+				// Advance the iterators flagged earlier before continuing
+				const advancePromises: Promise<void>[] = [];
+				if (advanceMod) this.advanceModIterator();
+				if (advanceParent) advancePromises.push(this.advanceParentCursor());
+				if (advancePromises.length > 0) await Promise.all(advancePromises);
 				continue; // Skip this row, it's explicitly deleted in this layer
 			}
 
@@ -252,21 +254,39 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			// Found a potentially valid, non-deleted item
 			if (potentialKey) {
 				// Check plan satisfaction *after* merge and deletion checks.
-				// This is crucial because mods might bring an item into range,
-				// or parent might provide one, or a mod might delete an item.
 				if (this.planApplies(potentialKey)) {
 					this._currentKey = potentialKey;
 					this._currentRow = potentialRow; // Can be null if useParent && parentValue was null (shouldn't happen if parentKey is valid?)
 					this._isEof = false;
+
+					// NOW advance the iterators that were flagged earlier
+					const advancePromises: Promise<void>[] = [];
+					if (advanceMod) this.advanceModIterator(); // mod is sync
+					if (advanceParent) advancePromises.push(this.advanceParentCursor());
+					if (advancePromises.length > 0) await Promise.all(advancePromises);
+
 					return; // Found the next valid item
 				} else {
 					// Item doesn't satisfy plan (e.g., out of bounds after merge)
+					// If plan doesn't apply, we MUST advance the source that provided this item
+					// to avoid getting stuck on it.
+
 					// Stop if we know no further items can match based on the current key.
 					if (this.shouldStopOverallIteration(potentialKey)) {
 						this._isEof = true;
+						// Even if stopping, advance the relevant iterators one last time
+						const advancePromises: Promise<void>[] = [];
+						if (advanceMod) this.advanceModIterator();
+						if (advanceParent) advancePromises.push(this.advanceParentCursor());
+						if (advancePromises.length > 0) await Promise.all(advancePromises);
 						return;
 					}
-					// Otherwise, continue the merge loop
+					// Otherwise, advance the iterators and continue the merge loop
+					const advancePromises: Promise<void>[] = [];
+					if (advanceMod) this.advanceModIterator();
+					if (advanceParent) advancePromises.push(this.advanceParentCursor());
+					if (advancePromises.length > 0) await Promise.all(advancePromises);
+					continue;
 				}
 
 			} else if (this.modEof && this.parentEof) {
@@ -275,8 +295,14 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 				this._isEof = true;
 				return;
 			}
-			// If potentialKey was null, or potentialRow was null (e.g., from a deletion marker
-			// processed above), or plan didn't apply and we didn't stop, continue the loop.
+			// If potentialKey was null, it means we had an issue determining useMod/useParent
+			// or the value from the source was null/undefined unexpectedly. The loop should continue.
+			// Advance the iterators flagged earlier before continuing.
+			const advancePromises: Promise<void>[] = [];
+			if (advanceMod) this.advanceModIterator();
+			if (advanceParent) advancePromises.push(this.advanceParentCursor());
+			if (advancePromises.length > 0) await Promise.all(advancePromises);
+			// continue loop handled implicitly
 		}
 	}
 

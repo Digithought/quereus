@@ -80,7 +80,14 @@ export function compileSelectLoop(
 						compiler.compileExpression(argInfo.expr, regArgsStart + i, correlation);
 					});
 				}
-				filterP4 = { idxNum: planningInfo.idxNum, idxStr: planningInfo.idxStr, nArgs: finalArgsToCompile.length };
+				// Minimal P4 object for VFilter
+				filterP4 = {
+					idxNum: planningInfo.idxNum,
+					idxStr: planningInfo.idxStr,
+					nArgs: finalArgsToCompile.length,
+					aConstraint: planningInfo.constraints,
+					aConstraintUsage: planningInfo.usage,
+				};
 			}
 			const vFilterEofAddr = compiler.allocateAddress(`vFilterEof[${index}]`);
 			level.vFilterEofPlaceholder = vFilterEofAddr;
