@@ -73,6 +73,9 @@ export function expressionToString(expr: AST.Expression): string {
 		case 'unary':
 			return `${expr.operator} (${expressionToString(expr.expr)})`;
 		case 'function':
+			if (expr.name.toLowerCase() === 'count' && expr.args.length === 0) {
+				return 'count(*)';
+			}
 			const argsStr = expr.args.map(arg => expressionToString(arg)).join(', ');
 			return `${expr.name}(${argsStr})`;
 		case 'cast':

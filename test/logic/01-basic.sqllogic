@@ -1,0 +1,7 @@
+-- Test the basics of create and select
+
+CREATE TABLE t (a TEXT, b INTEGER);
+INSERT INTO t VALUES ('a', 10);
+
+select a, b from t;
+→ [{"a": "a", "b": 10}]

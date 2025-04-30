@@ -137,61 +137,129 @@ export class Database {
 			throw new MisuseError("Binding parameters is only supported for single-statement execution in exec().");
 		}
 
-		// 3. Execute statements sequentially
+		// 3. Determine if implicit transaction is needed
+		let needsImplicitTransaction = false;
+		const hasExplicitTransaction = statementsAst.some(
+			ast => ast.type === 'begin' || ast.type === 'commit' || ast.type === 'rollback' || ast.type === 'savepoint' || ast.type === 'release'
+		);
+		if (statementsAst.length > 1 && !hasExplicitTransaction && this.isAutocommit) {
+			needsImplicitTransaction = true;
+		}
+
+		// 4. Execute statements sequentially
 		const compiler = new Compiler(this);
-		for (let i = 0; i < statementsAst.length; i++) {
-			const ast = statementsAst[i];
-			const isLastStatement = (i === statementsAst.length - 1);
-			let stmt: Statement | null = null;
+		let executionError: Error | null = null;
 
-			try {
-				// Create a temporary statement object for compilation and execution
-				// We don't need the full `prepare` logic that adds to the DB's statement set
-				const program = compiler.compile(ast, sql);
-				stmt = new Statement(this, sql, program); // Pass program directly
+		try {
+			// 4a. Begin implicit transaction if needed
+			if (needsImplicitTransaction) {
+				console.log("Exec: Starting implicit transaction for multi-statement block.");
+				// Use internal helper or simplified exec for BEGIN
+				await this._executeSimpleCommand("BEGIN DEFERRED TRANSACTION");
+				this.inTransaction = true; // Manually update state for internal logic
+				this.isAutocommit = false;
+			}
 
-				// Bind parameters ONLY if it's the single statement being executed
-				if (isLastStatement && params && typeof params !== 'function') {
-					stmt.bindAll(params);
-				}
+			// 4b. Execute each statement
+			for (let i = 0; i < statementsAst.length; i++) {
+				const ast = statementsAst[i];
+				const isLastStatement = (i === statementsAst.length - 1);
+				let stmt: Statement | null = null;
 
-				// Execute the statement steps
-				let resultStatus: StatusCode;
-				do {
-					resultStatus = await stmt.step();
-					// Check only for actual errors, allow ROW and DONE/OK
-					if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK && resultStatus !== StatusCode.ROW) {
-						// step() should throw an error in this case, but re-throw defensively
-						throw new SqliteError(`VDBE execution failed unexpectedly with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
+				try {
+					// Compile the individual statement
+					const program = compiler.compile(ast, sql); // Pass original SQL for potential error reporting
+					stmt = new Statement(this, sql, program); // Pass program directly
+
+					// Bind parameters ONLY if it's the *single* statement being executed
+					if (statementsAst.length === 1 && params && typeof params !== 'function') {
+						stmt.bindAll(params);
 					}
-				} while (resultStatus === StatusCode.ROW); // Continue stepping ONLY if a row was returned
 
-				// After the loop, status should be DONE or OK.
-				// If it's ROW, it implies an issue as exec should run to completion.
-				// If it's another error status, step() should have already thrown.
-				if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK) {
-					// This path indicates something went wrong, likely step() returning ROW unexpectedly at the end
-					throw new SqliteError(`VDBE execution finished unexpectedly with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
-				}
+					// Execute the statement steps until done/error
+					let resultStatus: StatusCode;
+					let firstRowData: Record<string, SqlValue> | null = null;
+					let firstRowCols: string[] | null = null;
 
-				// Process row ONLY if it's the last statement and a callback exists
-				if (isLastStatement && callback) {
-					try {
-						const rowData = stmt.getAsObject();
-						const colNames = stmt.getColumnNames();
-						callback(rowData, colNames);
-					} catch (cbError: any) {
-						// Handle errors from the callback itself if necessary
-						console.error("Error in exec() callback:", cbError);
-						throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
+					do {
+						resultStatus = await stmt.step();
+						if (resultStatus === StatusCode.ROW) {
+							// If it's the last statement and a callback exists, process row
+							if (isLastStatement && callback) {
+								try {
+									// Optimization: store first row data/cols to avoid recalling getAsObject/getColumnNames
+									if (!firstRowData) {
+										firstRowData = stmt.getAsObject();
+										firstRowCols = stmt.getColumnNames();
+										callback(firstRowData, firstRowCols);
+									} else {
+										// Reuse column names, get new row data
+										callback(stmt.getAsObject(), firstRowCols!);
+									}
+								} catch (cbError: any) {
+									console.error("Error in exec() callback:", cbError);
+									// Stop further execution if callback fails?
+									throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
+								}
+							}
+						} else if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK) {
+							// Error occurred during step() - step() should throw the error
+							// If it somehow returns an error code without throwing, create a generic one
+							throw new SqliteError(`VDBE execution failed with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
+						}
+					} while (resultStatus === StatusCode.ROW); // Continue stepping ONLY if a row was returned
+
+				} catch (err: any) {
+					executionError = err; // Store the first error encountered (already an Error/SqliteError)
+					break; // Stop processing further statements on error
+				} finally {
+					if (stmt) {
+						await stmt.finalize(); // Finalize the transient statement
 					}
 				}
+			}
 
-			} finally {
-				// Finalize the temporary statement for this iteration
-				if (stmt) {
-					await stmt.finalize();
+		} finally {
+			// 5. Commit or Rollback implicit transaction
+			if (needsImplicitTransaction) {
+				try {
+					if (executionError) {
+						console.log("Exec: Rolling back implicit transaction due to error.", executionError);
+						await this._executeSimpleCommand("ROLLBACK");
+					} else {
+						console.log("Exec: Committing implicit transaction.");
+						await this._executeSimpleCommand("COMMIT");
+					}
+				} catch (txError) {
+					// Log error during commit/rollback but don't overwrite original execution error
+					console.error(`Error during implicit transaction ${executionError ? 'rollback' : 'commit'}:`, txError);
+				} finally {
+					// Reset DB state regardless of commit/rollback success/failure
+					this.inTransaction = false;
+					this.isAutocommit = true;
 				}
+			}
+		}
+
+		// 6. Re-throw the execution error if one occurred
+		if (executionError) {
+			throw executionError;
+		}
+	}
+
+	/** @internal Helper to execute simple commands without parameter binding or row results */
+	private async _executeSimpleCommand(sqlCommand: string): Promise<void> {
+		let stmt: Statement | null = null;
+		try {
+			stmt = await this.prepare(sqlCommand);
+			const status = await stmt.step();
+			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
+				// step() should have thrown, but if not, throw a generic error
+				throw new SqliteError(`Implicit command '${sqlCommand}' failed with status ${status}`, status);
+			}
+		} finally {
+			if (stmt) {
+				await stmt.finalize();
 			}
 		}
 	}

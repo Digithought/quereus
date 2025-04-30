@@ -556,7 +556,7 @@ export class Lexer {
 
 	private number(): void {
 		let isFloat = false;
-		let value = '';
+		let value = this.source.substring(this.start, this.current);
 
 		// Consume digits before decimal point
 		while (this.isDigit(this.peek())) {

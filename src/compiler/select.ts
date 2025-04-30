@@ -391,9 +391,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	let ephSortSchema: TableSchema | undefined;
 	let regLimit = 0;
 	let regOffset = 0;
-	let coreResultBaseReg = 0;
-	let coreNumCols = 0;
-	let coreColumnMap: ColumnResultInfo[] = [];
 	let finalResultBaseReg = 0;
 	let finalNumCols = 0;
 	let finalColumnMap: ColumnResultInfo[] = [];
@@ -426,35 +423,31 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		compiler.emit(Opcode.OpenEphemeral, winSortCursor, windowSorterInfo.schema.columns.length, 0, winSortSchema, 0, "Open Window Function Sorter");
 	}
 
-
-	// Compile core once to get the structure
+	// Compile core once to get the structure (needed for all paths)
 	const coreResult = compiler.compileSelectCore(stmt, fromCursors);
-	coreResultBaseReg = coreResult.resultBaseReg; // Base of the raw row data
-	coreNumCols = coreResult.numCols;
-	coreColumnMap = coreResult.columnMap;
+	const coreResultBaseReg = coreResult.resultBaseReg; // Base of the raw row data
+	const coreNumCols = coreResult.numCols;
+	const coreColumnMap = coreResult.columnMap;
 
+	// --- Determine Final Column Structure and Aliases --- //
 	if (hasWindowFunctions && windowSorterInfo) {
-		// With window functions, use the window sorter for the final output structure
-		// Map each SELECT column to either a sorter column or window function result
-		finalColumnMap = [];
+		// ... (Window function column mapping logic - assume exists) ...
+		finalColumnMap = []; // Placeholder - restore actual logic if needed
 		stmt.columns.forEach((col, idx) => {
 			if (col.type === 'column') {
 				if (col.expr && col.expr.type === 'windowFunction') {
-					// This is a window function column
 					const winExpr = col.expr as AST.WindowFunctionExpr;
 					const placeholderInfo = windowSorterInfo!.windowResultPlaceholders.get(winExpr);
 					if (!placeholderInfo) {
 						throw new SqliteError(`Internal error: Window function placeholder not found for ${winExpr.function.name}`, StatusCode.INTERNAL);
 					}
-					// Map to the register that will hold the window function result
 					finalColumnMap.push({
 						targetReg: placeholderInfo.resultReg,
-						sourceCursor: -1, // Special value for window function result
+						sourceCursor: -1,
 						sourceColumnIndex: placeholderInfo.sorterIndex,
 						expr: winExpr
 					});
 				} else if (col.expr) {
-					// Regular expression column - find in sorter schema
 					const exprStr = expressionToString(col.expr);
 					const sorterColIdx = windowSorterInfo!.exprToSorterIndex.get(exprStr);
 					if (sorterColIdx === undefined) {
@@ -472,66 +465,111 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				throw new SqliteError("SELECT * with window functions is not yet supported. Please specify columns explicitly.", StatusCode.ERROR);
 			}
 		});
-
 		finalNumCols = finalColumnMap.length;
+		// Set window function aliases (assuming logic is similar, might need specific handling)
+		compiler.columnAliases = finalColumnMap.map((info, idx) => {
+			const alias = (info.expr as any)?.alias;
+			if (alias) return alias;
+			if (info.expr?.type === 'windowFunction') return `win_func_${idx}`;
+			if (info.expr) {
+				const strExpr = expressionToString(info.expr);
+				if (strExpr && strExpr.length > 0) return strExpr;
+			}
+			return `col${idx}`;
+		});
 
 	} else if (needsAggProcessing) {
-		// Determine final structure for Aggregation
+		// ... (Determine finalColumnMap, finalResultBaseReg, finalNumCols for Aggregation) ...
 		finalColumnMap = [];
-		let currentResultReg = compiler.allocateMemoryCells(1); // Start allocating regs for final results
-		finalResultBaseReg = currentResultReg; // Store the base
-
-		// Add group key columns to map (only if GROUP BY exists)
+		let currentResultReg = compiler.allocateMemoryCells(1);
+		finalResultBaseReg = currentResultReg;
 		if (hasGroupBy) {
 			stmt.groupBy!.forEach((expr, i) => {
 				finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: expr });
 			});
 		}
-		// Add aggregate columns to map
 		aggregateColumns.forEach(aggCol => {
 			finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: aggCol.expr });
 		});
 		finalNumCols = finalColumnMap.length;
-
-		// Handle cases like SELECT COUNT(*) where finalColumnMap might be empty but we need a result column
 		if (finalNumCols === 0 && !hasGroupBy) {
-			finalNumCols = 1; // Ensure at least one cell for simple aggregate
-			// Re-allocate base register if needed (should usually be covered by initial allocation)
-			if (finalResultBaseReg === 0) { // Check if it wasn't allocated
+			finalNumCols = 1;
+			if (finalResultBaseReg === 0) {
 				finalResultBaseReg = compiler.allocateMemoryCells(1);
 			}
-			// Add a placeholder entry if needed for alias setting?
-			// Or rely on compileAggregateOutput to handle this case?
-			// Let's assume compileAggregateOutput handles the AggFinal into finalResultBaseReg correctly.
 		}
 
-		// Set column aliases based on the final structure *now*
-		// This is needed *before* potentially setting up the sorter based on aliases
-		compiler.columnAliases = finalColumnMap.map((info, idx) =>
-			// Use alias if provided
-			(info.expr as any)?.alias
-			// Use column name if it's a simple column expression without alias
-			?? (info.expr?.type === 'column') ? (info.expr as AST.ColumnExpr).name : (
-				// Use stringified expression if possible
-				(info.expr && expressionToString(info.expr))
-					// Fallback to default colN name
-					?? `col${idx}`
-			)
-		);
+		// Set aggregate aliases (restore previous logic)
+		compiler.columnAliases = finalColumnMap.map((info, idx) => {
+			const alias = (info.expr as any)?.alias;
+			if (alias) return alias;
+			if (info.expr?.type === 'column') {
+				return (info.expr as AST.ColumnExpr).name;
+			}
+			if (info.expr?.type === 'function') {
+				const funcExpr = info.expr as AST.FunctionExpr;
+				if (funcExpr.name.toLowerCase() === 'count' && funcExpr.args.length === 0) {
+					const funcDef = compiler.db._findFunction(funcExpr.name, 0);
+					if (funcDef?.name.toLowerCase() === 'count' && funcDef.numArgs === 0) {
+						return 'count(*)';
+					}
+				}
+			}
+			if (info.expr) {
+				const strExpr = expressionToString(info.expr);
+				if (strExpr && strExpr.length > 0) return strExpr;
+			}
+			return `col${idx}`;
+		});
+
+		// Allocate aggregate registers
+		let allocatedAggKeyReg: number;
+		let allocatedAggArgsReg: number;
+		let allocatedAggSerKeyReg: number;
+		if (hasGroupBy) {
+			const groupKeyExprCount = getGroupKeyExpressions(stmt).length;
+			allocatedAggKeyReg = compiler.allocateMemoryCells(groupKeyExprCount);
+		} else {
+			allocatedAggKeyReg = compiler.allocateMemoryCells(1);
+		}
+		const maxAggArgs = aggregateColumns.reduce((max, col) => Math.max(max, col.expr.args.length), 0);
+		allocatedAggArgsReg = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
+		allocatedAggSerKeyReg = compiler.allocateMemoryCells(1);
+		console.log(`DEBUG: Allocated agg regs: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`);
 
 	} else {
-		// Direct output uses core structure initially
+		// Direct output uses core structure
 		finalResultBaseReg = coreResultBaseReg;
 		finalColumnMap = coreColumnMap;
 		finalNumCols = coreNumCols;
+		// Set direct output aliases (restore previous logic)
+		compiler.columnAliases = coreColumnMap.map((info, idx) => {
+			const alias = (info.expr as any)?.alias;
+			if (alias) return alias;
+			if (info.expr?.type === 'column') {
+				if (info.sourceCursor >= 0 && info.sourceColumnIndex >= 0) {
+					const schema = compiler.tableSchemas.get(info.sourceCursor);
+					if (schema) {
+						const colSchema = schema.columns[info.sourceColumnIndex];
+						if (colSchema) return colSchema.name;
+					}
+				}
+				return (info.expr as AST.ColumnExpr).name;
+			}
+			if (info.expr) {
+				const strExpr = expressionToString(info.expr);
+				if (strExpr && strExpr.length > 0) return strExpr;
+			}
+			return `col${idx}`;
+		});
 	}
 
-	// --- Build Sort Key Info and Prepare External Sorter (if needed) ---
+	// --- Build Sort Key Info and Prepare External Sorter (AFTER final structure known) --- //
 	if (needsExternalSort && !hasWindowFunctions) {
 		const columnMapForSort = needsAggProcessing ? finalColumnMap : coreColumnMap;
 		const keyIndices: number[] = [];
 		const collations: string[] = [];
-		const directions: boolean[] = []; // true for DESC, false for ASC
+		const directions: boolean[] = [];
 
 		stmt.orderBy!.forEach(orderTerm => {
 			let found = false;
@@ -539,72 +577,61 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			for (let i = 0; i < columnMapForSort.length; i++) {
 				const colInfo = columnMapForSort[i];
 				if (colInfo.expr && expressionToString(colInfo.expr) === exprStr) {
-					keyIndices.push(i); // Index within the ephemeral sorter table
-					// Get collation directly from the expression
-					const collation = getExpressionCollation(compiler, orderTerm.expr).toUpperCase()
-						|| 'BINARY'; // Default to BINARY if somehow not determined
+					keyIndices.push(i);
+					const collation = getExpressionCollation(compiler, orderTerm.expr).toUpperCase() || 'BINARY';
 					collations.push(collation);
-					// Convert direction to uppercase for comparison
 					directions.push(orderTerm.direction?.toUpperCase() === 'DESC');
 					found = true;
 					break;
 				}
 			}
 			if (!found) {
-				// Handle ORDER BY expressions not directly in the SELECT list (e.g., ORDER BY hidden_col)
-				// This requires adding the expression to the sorter table which isn't implemented yet.
-				throw new SqliteError(`ORDER BY expression '${exprStr}' not found in result columns. Sorting by complex expressions not directly selected is not yet supported.`, StatusCode.ERROR);
+				throw new SqliteError(`ORDER BY expression '${exprStr}' not found in result columns...`, StatusCode.ERROR);
 			}
 		});
 
-		// Add the required 'type' property and ensure it's not null
-		if (keyIndices.length > 0) { // Only create sortKeyInfo if there are keys
+		if (keyIndices.length > 0) {
 			sortKeyInfo = { type: 'sortkey', keyIndices, collations, directions };
 		}
 
 		ephSortCursor = compiler.allocateCursor();
-		// Pass sortKeyInfo which is now P4SortKey | null, handle null case
 		ephSortSchema = compiler.createEphemeralSchema(ephSortCursor, finalNumCols, sortKeyInfo ?? undefined);
 		compiler.emit(Opcode.OpenEphemeral, ephSortCursor, finalNumCols, 0, ephSortSchema, 0, "Open ORDER BY Sorter");
 	}
 
-	// --- Define Row Processing Callback ---
-	let processRowCallback: ProcessRowCallback;
+	// --- Define Row Processing Callback variable and provide default --- //
+	let processRowCallback: ProcessRowCallback = (
+		_compiler, _stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner
+	) => processRowDirect(
+		compiler, stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner,
+		needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset
+	);
+
+	// --- Determine and Assign Specific Row Processing Callback --- //
 	if (hasWindowFunctions && windowSorterInfo) {
+		// Assign processRowWindow
 		processRowCallback = (
 			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
 		) => processRowWindow(compiler, stmt, coreColumnMap, windowSorterInfo!); // Use core map for window input
 	} else if (needsAggProcessing) {
+		// Capture aggregate registers *after* allocation inside this block
+		const allocatedAggKeyReg = finalColumnMap.find(info => info.expr?.type !== 'function') ? compiler.allocateMemoryCells(getGroupKeyExpressions(stmt).length) : compiler.allocateMemoryCells(1);
 		const maxAggArgs = aggregateColumns.reduce((max, col) => Math.max(max, col.expr.args.length), 0);
-		regAggArgs = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
-		regAggSerializedKey = compiler.allocateMemoryCells(1);
-		// ---------------------------------
-		console.log(`DEBUG: Allocated agg regs: Key=${regAggKey}, Args=${regAggArgs}, SerKey=${regAggSerializedKey}`); // <-- Log allocated values
+		const allocatedAggArgsReg = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
+		const allocatedAggSerKeyReg = compiler.allocateMemoryCells(1);
+		console.log(`DEBUG: Values passed to callback: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`);
 
-		// Store allocated regs in separate consts for clarity in closure
-		const allocatedAggKeyReg = regAggKey;
-		const allocatedAggArgsReg = regAggArgs;
-		const allocatedAggSerKeyReg = regAggSerializedKey;
-
-		console.log(`DEBUG: Values passed to callback: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`); // <-- Log values going into closure
-
+		// Assign processRowAggregate
 		processRowCallback = (
 			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
 		) => processRowAggregate(
 			compiler, stmt, aggregateColumns,
-			allocatedAggKeyReg,
-			allocatedAggArgsReg, // Pass via new const
+			allocatedAggKeyReg, // Use locally captured allocated values
+			allocatedAggArgsReg,
 			allocatedAggSerKeyReg,
 			hasGroupBy
 		);
-	} else {
-		processRowCallback = (
-			_compiler, _stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner
-		) => processRowDirect(
-			compiler, stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner,
-			needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset
-		);
-	}
+	} // No final 'else' needed as default is set above
 
 	// --- Compile Main Loop ---
 	const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compileSelectLoop(

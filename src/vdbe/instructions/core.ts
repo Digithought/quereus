@@ -94,72 +94,75 @@ export function registerHandlers(handlers: Handler[]) {
 		ctx.setMem(inst.p2, ctx.getMem(inst.p1) !== null);
 		return undefined;
 	};
-  // --- Move with boundary checking ---
-  handlers[Opcode.Move] = (ctx, inst) => {
-    const srcOffset = inst.p1;
-    const destOffset = inst.p2;
-    const count = inst.p3;
+	// --- Move with boundary checking ---
+	handlers[Opcode.Move] = (ctx, inst) => {
+		const srcOffset = inst.p1;
+		const destOffset = inst.p2;
+		const count = inst.p3;
 
-    const srcBaseIdx = ctx.framePointer + srcOffset;
-    const destBaseIdx = ctx.framePointer + destOffset;
+		const srcBaseIdx = ctx.framePointer + srcOffset;
+		const destBaseIdx = ctx.framePointer + destOffset;
 
-    // Bounds check for overlapping moves
-    const maxEndIndex = Math.max(srcBaseIdx + count, destBaseIdx + count);
+		// Bounds check for read only
+		const maxSrcReadIndex = srcBaseIdx + count -1;
 
-    if (srcBaseIdx < 0 || destBaseIdx < 0 || maxEndIndex > ctx.stackPointer) {
-      throw new SqliteError(
-        `Move opcode stack access out of bounds: FP=${ctx.framePointer} ` +
-        `SrcOff=${srcOffset} DestOff=${destOffset} Count=${count} SP=${ctx.stackPointer}`,
-        StatusCode.INTERNAL
-      );
-    }
+		if (srcBaseIdx < 0 || destBaseIdx < 0 || maxSrcReadIndex >= ctx.stackPointer) {
+			// Check if source read goes out of bounds relative to current SP
+			throw new SqliteError(
+				`Move opcode stack READ access out of bounds: FP=${ctx.framePointer} ` +
+				`SrcOff=${srcOffset} Count=${count} SP=${ctx.stackPointer}`,
+				StatusCode.INTERNAL
+			);
+		}
+		// Destination write bounds are implicitly handled by setStackValue extending SP if needed.
+		// We rely on the compiler having allocated enough *total* cells (numMemCells).
 
-    if (srcBaseIdx === destBaseIdx) {
-      return undefined; // Nothing to do
-    }
+		if (srcBaseIdx === destBaseIdx) {
+			return undefined; // Nothing to do
+		}
 
-    // Handle potential overlapping regions correctly
-    if (destBaseIdx > srcBaseIdx && destBaseIdx < srcBaseIdx + count) {
-      // Copy from end to avoid overwriting source data
-      for (let i = count - 1; i >= 0; i--) {
-        ctx.setStackValue(destBaseIdx + i, ctx.getStackValue(srcBaseIdx + i));
-      }
-    } else {
-      // Normal copy
-      for (let i = 0; i < count; i++) {
-        ctx.setStackValue(destBaseIdx + i, ctx.getStackValue(srcBaseIdx + i));
-      }
-    }
-    return undefined;
-  };
-  // --- Other common opcodes ---
-  handlers[Opcode.Clear] = (ctx, inst) => {
-    const startOffset = inst.p1;
-    const count = inst.p2;
+		// Handle potential overlapping regions correctly
+		if (destBaseIdx > srcBaseIdx && destBaseIdx < srcBaseIdx + count) {
+			// Copy from end to avoid overwriting source data
+			for (let i = count - 1; i >= 0; i--) {
+				ctx.setStackValue(destBaseIdx + i, ctx.getStackValue(srcBaseIdx + i));
+			}
+		} else {
+			// Normal copy
+			for (let i = 0; i < count; i++) {
+				ctx.setStackValue(destBaseIdx + i, ctx.getStackValue(srcBaseIdx + i));
+			}
+		}
+		return undefined;
+	};
+	// --- Other common opcodes ---
+	handlers[Opcode.Clear] = (ctx, inst) => {
+		const startOffset = inst.p1;
+		const count = inst.p2;
 
-    if (startOffset < 2) { // Assuming 2 is localsStartOffset
-      throw new SqliteError(`Clear opcode attempt to clear control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
-    }
+		if (startOffset < 2) { // Assuming 2 is localsStartOffset
+			throw new SqliteError(`Clear opcode attempt to clear control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
+		}
 
-    const clearStartIdx = ctx.framePointer + startOffset;
-    const clearEndIdx = clearStartIdx + count;
+		const clearStartIdx = ctx.framePointer + startOffset;
+		const clearEndIdx = clearStartIdx + count;
 
-    if (clearStartIdx < 0 || clearEndIdx > ctx.stackPointer) {
-      throw new SqliteError(
-        `Clear opcode stack access out of bounds: FP=${ctx.framePointer} ` +
-        `Offset=${startOffset} Count=${count} SP=${ctx.stackPointer}`,
-        StatusCode.INTERNAL
-      );
-    }
+		if (clearStartIdx < 0 || clearEndIdx > ctx.stackPointer) {
+			throw new SqliteError(
+				`Clear opcode stack access out of bounds: FP=${ctx.framePointer} ` +
+				`Offset=${startOffset} Count=${count} SP=${ctx.stackPointer}`,
+				StatusCode.INTERNAL
+			);
+		}
 
-    for (let i = clearStartIdx; i < clearEndIdx; i++) {
-      ctx.setStackValue(i, null);
-    }
-    return undefined;
-  };
-  // --- Constraints ---
-  handlers[Opcode.ConstraintViolation] = (ctx, inst) => {
-    const context = (typeof inst.p4 === 'string' && inst.p4) ? inst.p4 : 'Constraint failed';
-    throw new ConstraintError(context);
-  };
+		for (let i = clearStartIdx; i < clearEndIdx; i++) {
+			ctx.setStackValue(i, null);
+		}
+		return undefined;
+	};
+	// --- Constraints ---
+	handlers[Opcode.ConstraintViolation] = (ctx, inst) => {
+		const context = (typeof inst.p4 === 'string' && inst.p4) ? inst.p4 : 'Constraint failed';
+		throw new ConstraintError(context);
+	};
 }

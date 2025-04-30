@@ -4,6 +4,7 @@ import { Opcode } from '../vdbe/opcodes.js';
 import type { P4FuncDef } from '../vdbe/instruction.js';
 import { getGroupKeyExpressions } from './select.js'; // Assuming this helper is moved/exported
 import type { TableSchema } from '../schema/table.js';
+import { expressionToString } from '../util/ddl-stringify.js';
 
 export function processRowAggregate(
 	compiler: Compiler,
@@ -19,12 +20,19 @@ export function processRowAggregate(
 	const compoundKeyReg = compiler.allocateMemoryCells(1);
 
 	// Compile group key expressions (only used if hasGroupBy)
-	getGroupKeyExpressions(stmt).forEach((expr, i) => {
-		compiler.compileExpression(expr, regAggKey + i);
+	const groupKeyExprs = getGroupKeyExpressions(stmt);
+	const firstGroupKeyReg = regAggKey; // Keep track of the base for MakeRecord
+	groupKeyExprs.forEach((expr, i) => {
+		// Compile each expression into its designated key register slot
+		// Ensure regAggKey itself is allocated safely (>= localsStartOffset)
+		// The allocateMemoryCells should handle this, but be mindful.
+		const targetReg = firstGroupKeyReg + i;
+		compiler.compileExpression(expr, targetReg);
 	});
 
 	if (hasGroupBy) {
-		compiler.emit(Opcode.MakeRecord, regAggKey, getGroupKeyExpressions(stmt).length, baseKeyReg, null, 0, "Make base group key");
+		// Use the range starting at firstGroupKeyReg as source for MakeRecord
+		compiler.emit(Opcode.MakeRecord, firstGroupKeyReg, groupKeyExprs.length, baseKeyReg, null, 0, "Make base group key");
 	} else {
 		const keyConstantIndex = compiler.addConstant('0');
 		compiler.emit(Opcode.String8, 0, baseKeyReg, 0, keyConstantIndex, 0, "Load simple agg base key '0'");
@@ -53,7 +61,7 @@ export function processRowAggregate(
 
 		const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
 		// P3 is now compoundKeyReg. P1/P5 are less relevant for simple agg but needed by handler logic.
-		compiler.emit(Opcode.AggStep, regAggKey, regAggArgs, compoundKeyReg, p4, getGroupKeyExpressions(stmt).length, `AggStep for ${funcExpr.name} (idx ${index})`);
+		compiler.emit(Opcode.AggStep, firstGroupKeyReg, regAggArgs, compoundKeyReg, p4, groupKeyExprs.length, `AggStep for ${funcExpr.name} (idx ${index})`);
 	});
 
 	return callbackStartAddr;
@@ -91,16 +99,37 @@ export function compileAggregateOutput(
 		compiler.emit(Opcode.AggKey, regMapIterator, regGroupKey, 0, null, 0, "Get Group Key");
 		compiler.emit(Opcode.AggContext, regMapIterator, regAggContext, 0, null, 0, "Get Aggregate Context");
 
-		let groupKeyIndex = 0;
+		// Keep track of which group key index we are currently processing
+		let groupKeyOutputIndex = 0;
+		// Get the original GROUP BY expressions for comparison
+		const groupByKeyExprStrings = new Set(getGroupKeyExpressions(stmt).map(expressionToString));
+
 		finalColumnMap.forEach(info => {
-			if (info.expr?.type === 'function' && info.expr.isAggregate) {
+			const exprString = info.expr ? expressionToString(info.expr) : null;
+			// Check if the current output column corresponds to a GROUP BY key
+			const isGroupKeyColumn = exprString && groupByKeyExprStrings.has(exprString);
+
+			if (isGroupKeyColumn) {
+				// Emit instruction to output the corresponding group key component
+				compiler.emit(Opcode.AggGroupValue, regMapIterator, groupKeyOutputIndex, info.targetReg, null, 0, `Output Group Key ${groupKeyOutputIndex}`);
+				groupKeyOutputIndex++; // Increment only when outputting a group key
+			} else if (info.expr?.type === 'function' /* && isAggregate - check needed? */ ) {
+				// Assume remaining columns are aggregate results (needs refinement?)
 				const funcExpr = info.expr as AST.FunctionExpr;
-				const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length)!;
-				const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
-				compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
+				const funcDef = compiler.db._findFunction(funcExpr.name, funcExpr.args.length);
+				if (!funcDef || !funcDef.xFinal) {
+					// Should have been caught earlier, but defensive check
+					console.warn(`Cannot find aggregate function or xFinal for ${funcExpr.name} during output`);
+					compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, `NULL for missing AggFinal ${funcExpr.name}`);
+				} else {
+					const p4: P4FuncDef = { type: 'funcdef', funcDef, nArgs: funcExpr.args.length };
+					// Emit AggFinal using the retrieved aggregate context
+					compiler.emit(Opcode.AggFinal, regAggContext, 0, info.targetReg, p4, 0, `AggFinal for ${funcExpr.name}`);
+				}
 			} else {
-				compiler.emit(Opcode.AggGroupValue, regMapIterator, groupKeyIndex, info.targetReg, null, 0, `Output Group Key ${groupKeyIndex}`);
-				groupKeyIndex++;
+				// Should not happen if finalColumnMap is built correctly
+				console.warn(`Unexpected column type in compileAggregateOutput loop: ${info.expr?.type}`);
+				compiler.emit(Opcode.Null, 0, info.targetReg, 0, null, 0, `NULL for unexpected column`);
 			}
 		});
 

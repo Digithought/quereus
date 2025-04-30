@@ -109,40 +109,6 @@ function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, correlati
 
 // --- End Affinity --- //
 
-// First, add function to get expression collation
-function getExpressionCollation(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): string {
-	switch (expr.type) {
-		case 'literal': return 'BINARY'; // Literals use BINARY unless overridden
-		case 'column':
-			const colInfo = resolveColumnSchema(compiler, expr, correlation);
-			return colInfo?.column.collation || 'BINARY';
-		case 'collate': // Explicit COLLATE operator
-			return expr.collation.toUpperCase(); // Normalize collation name
-		case 'cast':
-			// CAST generally doesn't change collation
-			return 'BINARY';
-		case 'function':
-			// Functions usually have BINARY result collation
-			return 'BINARY';
-		case 'parameter':
-			return 'BINARY'; // Parameters are assigned BINARY collation
-		case 'unary':
-			// Unary operators generally don't affect collation
-			return 'BINARY';
-		case 'binary':
-			// Binary operations generally result in BINARY collation
-			return 'BINARY';
-		case 'subquery':
-			// Subquery results use BINARY collation
-			return 'BINARY';
-		case 'identifier':
-			// Treat as column
-			return 'BINARY';
-		default:
-			return 'BINARY';
-	}
-}
-
 /**
  * Main dispatcher for compiling any expression AST node.
  * Delegates to specific handlers in ./expression/handlers.ts
