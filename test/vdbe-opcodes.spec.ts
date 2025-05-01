@@ -966,4 +966,18 @@ describe('VDBE Opcode Tests', () => {
 			expect(runtime.getMem(rDest)).to.be.null;
         });
     });
+
+    // --- Noop ---
+    it('Opcode.Noop should do nothing and advance PC', async () => {
+		const rTest = 2;
+        const program = createTestProgram(db, [
+            createInstruction(Opcode.Integer, 1, rTest), // Set R[2]=1
+            createInstruction(Opcode.Noop, 0, 0, 0),    // No-op
+            createInstruction(Opcode.Integer, 2, rTest), // Set R[2]=2
+        ]);
+        // Expected steps: Init, Int(1), Noop, Int(2), Halt = 4
+        const { runtime, finalStatus } = await runTestProgram(db, program, 4);
+        expect(finalStatus).to.equal(StatusCode.OK);
+        expect(runtime.getMem(rTest)).to.equal(2); // Verify final instruction ran
+    });
 });

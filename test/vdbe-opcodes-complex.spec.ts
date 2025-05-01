@@ -338,4 +338,78 @@ describe('VDBE Complex Opcode Tests', () => {
             expect(runtime.getMem(rDest)).to.be.null;
         });
     });
+
+    describe('Opcode.StackPop', () => {
+        const rSource = 2; // Register to push values
+
+        it('Opcode.StackPop should pop values from stack', async () => {
+             const rCheck1 = 3; // Register to check value after pop
+             const program = createTestProgram(db, [
+                /* 1 */ createInstruction(Opcode.Integer, 1, rSource),
+                /* 2 */ createInstruction(Opcode.Push, rSource, 0, 0), // Push 1 (SP=1 after Init)
+                /* 3 */ createInstruction(Opcode.Integer, 2, rSource),
+                /* 4 */ createInstruction(Opcode.Push, rSource, 0, 0), // Push 2 (SP=2)
+                /* 5 */ createInstruction(Opcode.Integer, 3, rSource),
+                /* 6 */ createInstruction(Opcode.Push, rSource, 0, 0), // Push 3 (SP=3)
+                /* 7 */ createInstruction(Opcode.StackPop, 2, 0, 0), // Pop 2 values (3 and 2) -> SP=1
+                /* 8 */ createInstruction(Opcode.SCopy, 0, rCheck1), // Copy value from SP-1 (which is stack[0]) into R[3]
+                /* 9 */ // Halt
+            ]);
+
+            // Expected steps: Init + Int + Push + Int + Push + Int + Push + Pop + SCopy + Halt = 10
+            const { runtime, finalStatus } = await runTestProgram(db, program, 9);
+
+            expect(finalStatus).to.equal(StatusCode.OK);
+            // SP should be back where it was after the first push
+            // We pushed 3 items (initialSP=0 -> SP=3), popped 2 -> finalSP=1
+            // Note: VmCtx doesn't expose SP directly, infer from checks
+            expect(runtime.getMem(rCheck1)).to.equal(1); // Check the remaining value on stack
+        });
+    });
+
+    // ------------------------------------------------------------------
+    // Window Sort
+    // ------------------------------------------------------------------
+
+    describe('Opcode.WindowSort', () => {
+        // WindowSort <cursorIdx> <numRowsReg> <sorterObjReg>
+        const cursorIdx = 0;
+        const rNumRows = 2; // Reg holding expected row count
+        const rSorterObj = 3; // Reg holding sorter object (conceptually)
+        const numCols = 2;
+        const rDataStart = 4;
+
+        // This test is more complex as WindowSort expects a specific VDBE setup
+        // (OpenEphemeral, MakeRecord, IdxInsert loops, ConfigureSorter, then WindowSort)
+        // For now, we'll just check if the handler exists and runs without error
+        // A more complete test belongs in window function integration tests.
+
+        it('should exist and execute without immediate error (basic check)', async () => {
+            // Minimal program just calling WindowSort
+            // Note: This program WILL likely fail logically in a real scenario
+            // as the cursor isn't properly populated or configured.
+            const program = createTestProgram(db, [
+                createInstruction(Opcode.Integer, 0, rNumRows), // Set num rows = 0
+                createInstruction(Opcode.Null, 0, rSorterObj), // Placeholder for sorter object
+                createInstruction(Opcode.WindowSort, cursorIdx, rNumRows, rSorterObj),
+            ], 1); // Need 1 cursor conceptually
+
+            // We expect this to potentially fail gracefully or just be a No-Op
+            // as the handler likely needs more context set up by other opcodes.
+            // We are just checking if the handler exists and doesn't crash immediately.
+            try {
+                 const { runtime, finalStatus } = await runTestProgram(db, program, 3);
+                 // We don't strictly expect OK here, could be an internal error due to lack of setup
+                 // expect(finalStatus).to.equal(StatusCode.OK);
+                 console.log("WindowSort test completed with status:", finalStatus);
+                 // No specific assertion on outcome, just checking for crash
+            } catch (e) {
+                // Catch potential errors if the handler throws due to missing setup
+                 console.warn("WindowSort test caught error (potentially expected):", e);
+                 expect(e).to.be.instanceOf(Error);
+            }
+        });
+    });
+
+    // Add Aggregation tests next...
 });

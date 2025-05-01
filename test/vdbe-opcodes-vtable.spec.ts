@@ -107,8 +107,9 @@ describe('VDBE VTable Opcode Tests', () => {
         const setupConstants = ['alpha', 'beta'];
         const setupSteps = 9;
 
-        // SKIP: Failing with status code 2 (BUSY?) instead of 0 (OK)
-        it.skip('VFilter, VNext, VColumn, VRowid, Close should work on ephemeral VTable', async () => {
+        // SKIP: Still failing with status code 2 (BUSY?) instead of 0 (OK)
+        // it.skip('VFilter, VNext, VColumn, VRowid, Close should work on ephemeral VTable', async () => { // Re-skip
+        it('VFilter, VNext, VColumn, VRowid, Close should work on ephemeral VTable', async () => { // Unskip
             const eofAddr = setupSteps + 1 + 6; // Jump target after VNext loop
             const filterAddr = setupSteps + 1; // Address of VFilter
             const loopStartAddr = filterAddr + 1; // Address of VRowid
@@ -147,8 +148,9 @@ describe('VDBE VTable Opcode Tests', () => {
             expect(cursor.instance).to.be.null;
         });
 
-        // SKIP: Failing with status code 2 (BUSY?) instead of 0 (OK)
-         it.skip('VFilter with simple equality constraint', async () => {
+        // SKIP: Still failing with status code 2 (BUSY?) instead of 0 (OK)
+        // it.skip('VFilter with simple equality constraint', async () => { // Re-skip
+         it('VFilter with simple equality constraint', async () => { // Unskip
             const eofAddr = setupSteps + 1 + 6;
             const filterAddr = setupSteps + 1;
             const loopStartAddr = filterAddr + 1;

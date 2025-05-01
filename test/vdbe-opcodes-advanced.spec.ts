@@ -288,11 +288,11 @@ describe('VDBE Advanced Opcode Tests', () => {
             expect(runtime.getMem(rTarget)).to.equal(inputStr);
         });
 
-        // SKIP: Failing with status code 2 (BUSY?) instead of 0 (OK)
-        it.skip('should leave BLOB unchanged', async () => {
+        // SKIP: Still failing with status code 2 (BUSY?) instead of 0 (OK)
+        it('should leave BLOB unchanged', async () => {
             const inputBlob = new Uint8Array([1, 2, 3]);
             const program = createTestProgram(db, [
-                createInstruction(Opcode.Blob, inputBlob.length, rTarget, 0, 0), // P1=size (unused by handler?), P4=const idx
+                createInstruction(Opcode.Blob, inputBlob.length, rTarget, 0, 0),
                 createInstruction(Opcode.Affinity, rTarget, 1, 0, 'BLOB'),
             ]);
             (program.constants as any[]).push(inputBlob);
@@ -322,8 +322,6 @@ describe('VDBE Advanced Opcode Tests', () => {
             const initialSP = runtime.stackPointer;
 
             await runtime.run(); // Init
-            await runtime.run(); // Integer
-            await runtime.run(); // Push
             const finalSP = runtime.stackPointer;
 
             expect(finalSP).to.equal(initialSP + 1); // SP should increment

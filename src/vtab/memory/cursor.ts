@@ -139,38 +139,51 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			if (!schema) {
 				throw new SqliteError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
 			}
+
+			// Get index schema, handling both primary and secondary
 			const indexSchema = indexName === 'primary'
 				? { name: '_primary_', columns: schema.primaryKeyDefinition ?? [{ index: -1, desc: false }] }
 				: schema.indexes?.find(idx => idx.name === indexName);
 
-			if (indexSchema) {
+			// Special case for simple Primary Key EQ lookup (like WHERE a = 2)
+			// If plan is EQ, index is primary, and there's exactly one arg mapped
+			if (indexName === 'primary' && args.length === 1 && argvMap.size === 1) {
+				// Assume the single arg is the primary key value
+				equalityKey = args[0];
+				debugLog(`Using direct Primary Key EQ lookup value: %O`, equalityKey);
+			} else if (indexSchema) {
+				// General case for EQ plans (composite keys or secondary indexes)
 				if (!indexSchema || !indexSchema.columns) {
 					throw new SqliteError(`Internal error: Index schema or columns not found for index '${indexName}'`, StatusCode.INTERNAL);
 				}
+
 				const keyParts: SqlValue[] = [];
 				let keyComplete = true;
 				for (let k = 0; k < indexSchema.columns.length; k++) {
 					const idxCol = indexSchema.columns[k].index;
 					let foundArg = false;
-					// Find the constraint corresponding to this column index and EQ op
-					for (const cUsage of indexInfo.aConstraintUsage) {
-						const constraintIdx = argvMap.get(cUsage.argvIndex);
-						if (constraintIdx !== undefined) {
-							const constraint = indexInfo.aConstraint[constraintIdx];
-							if (constraint.iColumn === idxCol && constraint.op === IndexConstraintOp.EQ) {
-								if (cUsage.argvIndex > 0 && args.length >= cUsage.argvIndex) {
-									keyParts.push(args[cUsage.argvIndex - 1]);
+
+					// Use argvMap first if available
+					if (argvMap.size > 0) {
+						for (let argIdx = 1; argIdx <= args.length; argIdx++) { // Iterate 1-based argvIndex
+							const constraintIdx = argvMap.get(argIdx);
+							if (constraintIdx !== undefined && constraintIdx < indexInfo.aConstraint.length) {
+								const constraint = indexInfo.aConstraint[constraintIdx];
+								if (constraint && constraint.iColumn === idxCol && constraint.op === IndexConstraintOp.EQ) {
+									keyParts.push(args[argIdx - 1]); // Use 0-based index for args array
 									foundArg = true;
 									break;
 								}
 							}
 						}
 					}
+
+					// Fallback: check constraints passed directly (might be redundant if argvMap is correct)
 					if (!foundArg) {
-						// Check constraints not in argvMap as well (sometimes planner might not map all EQ args)
 						for (const cInfo of constraints) {
 							const c = cInfo.constraint;
-							if (c.iColumn === idxCol && c.op === IndexConstraintOp.EQ && cInfo.argvIndex > 0 && args.length >= cInfo.argvIndex) {
+							if (c.iColumn === idxCol && c.op === IndexConstraintOp.EQ &&
+								cInfo.argvIndex > 0 && args.length >= cInfo.argvIndex) {
 								keyParts.push(args[cInfo.argvIndex - 1]);
 								foundArg = true;
 								break;
@@ -178,15 +191,20 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 						}
 					}
 
+					// If still not found after checking both, key is incomplete
 					if (!foundArg) {
 						keyComplete = false;
-						// Use namespaced warn logger
-						warnLog(`EQ plan used, but constraint/arg for index column %d (schema idx %d) not found via argvMap or direct constraints.`, k, idxCol);
+						warnLog(`EQ plan for index '%s', but constraint/arg for column %d (schema idx %d) not found.`, indexName, k, idxCol);
 						break;
 					}
-				}
+				} // end for each column in index
+
 				if (keyComplete) {
 					equalityKey = keyParts.length === 1 && indexSchema.columns.length === 1 ? keyParts[0] : keyParts;
+					debugLog(`EQ plan for index '%s', derived key: %O`, indexName, equalityKey);
+				} else {
+					warnLog(`EQ plan for index '%s' could not derive complete key.`, indexName);
+					// No equalityKey set, will likely result in full scan if filter doesn't catch it
 				}
 			} else {
 				// Use namespaced error logger
@@ -207,17 +225,19 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			if (firstColIdx !== undefined) {
 				// Find bounds from used constraints (via argvMap)
 				for (const [argIdx, constraintIdx] of argvMap.entries()) {
-					const constraint = indexInfo.aConstraint[constraintIdx];
-					if (constraint.iColumn === firstColIdx) {
-						const val = args[argIdx - 1];
-						const op = constraint.op;
-						if (op === IndexConstraintOp.GT || op === IndexConstraintOp.GE) {
-							if (!lowerBound || op > lowerBound.op) { // Prefer stricter bound (GT over GE)
-								lowerBound = { value: val, op: op };
-							}
-						} else if (op === IndexConstraintOp.LT || op === IndexConstraintOp.LE) {
-							if (!upperBound || op < upperBound.op) { // Prefer stricter bound (LT over LE)
-								upperBound = { value: val, op: op };
+					if (constraintIdx < indexInfo.aConstraint.length) {
+						const constraint = indexInfo.aConstraint[constraintIdx];
+						if (constraint.iColumn === firstColIdx) {
+							const val = args[argIdx - 1]; // 0-based index for args array
+							const op = constraint.op;
+							if (op === IndexConstraintOp.GT || op === IndexConstraintOp.GE) {
+								if (!lowerBound || op > lowerBound.op) { // Prefer stricter bound (GT over GE)
+									lowerBound = { value: val, op: op };
+								}
+							} else if (op === IndexConstraintOp.LT || op === IndexConstraintOp.LE) {
+								if (!upperBound || op < upperBound.op) { // Prefer stricter bound (LT over LE)
+									upperBound = { value: val, op: op };
+								}
 							}
 						}
 					}
@@ -312,9 +332,12 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		idxStr: string | null,
 		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
 		args: ReadonlyArray<SqlValue>,
-		indexInfo: IndexInfo // Pass full IndexInfo to filter
+		indexInfo: IndexInfo // Pass the full IndexInfo from xBestIndex
 	): Promise<void> {
 		this.reset(); // Close existing internal cursor, clear state
+
+		// Add detailed logging to understand the filter operation
+		debugLog(`MemoryTableCursor.filter: idxNum=${idxNum}, idxStr=${idxStr || "null"}, args=${JSON.stringify(args)}, constraints=${JSON.stringify(constraints)}, indexInfo=${JSON.stringify(indexInfo)}`);
 
 		// Check for sorter FIRST (set by Sort opcode calling createAndPopulateSorterIndex)
 		if (this.ephemeralSortingIndex) {
@@ -362,7 +385,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		// --- Normal Layer-Based Scan --- //
 		this.isUsingSorter = false;
 		try {
-			// 1. Build the ScanPlan
+			// 1. Build the ScanPlan (now uses simplified EQ logic)
 			const plan = this.buildScanPlan(idxNum, idxStr, constraints, args, indexInfo);
 
 			// 2. Create the internal layer cursor chain using the connection

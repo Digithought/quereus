@@ -208,9 +208,10 @@ describe('VDBE Aggregation Opcode Tests', () => {
             const rKey1 = 8; const rResult1 = 9;
             const rKey2 = 10; const rResult2 = 11;
             const rLoopCount = 12; // To verify loop runs twice
+            const rCurrentAccumulator = 13; // For AggGetAccumulatorByKey
 
             const program = createTestProgram(db, [
-                 // --- Setup Phase ---
+                 // --- Setup Phase (Populate aggregate contexts) ---
                 /* 1*/ createInstruction(Opcode.String8, 0, rAggKeyReg, 0, 0), // key1
                 /* 2*/ createInstruction(Opcode.Integer, 10, rArg),
                 /* 3*/ createInstruction(Opcode.AggStep, rContextReg, rArg, rAggKeyReg, p4),
@@ -224,29 +225,30 @@ describe('VDBE Aggregation Opcode Tests', () => {
                 /*10 loopStart*/ createInstruction(Opcode.AggNext, 0, eofAddr),
                 /*11*/ createInstruction(Opcode.AggKey, 0, rKeyOut),     // Get current key
                 /*12*/ createInstruction(Opcode.AggContext, 0, rContextOut), // Get current accumulator
-                /*13*/ createInstruction(Opcode.AggFinal, rContextOut, 0, rResult, p4), // Compute final value
+                /*13*/ createInstruction(Opcode.AggGetAccumulatorByKey, rKeyOut, rCurrentAccumulator, 0), // Get Acc by key
+                /*14*/ createInstruction(Opcode.AggFinal, rContextOut, 0, rResult, p4), // Compute final value
                 // --- Store results based on loop count ---
-                /*14*/ createInstruction(Opcode.IfZero, rLoopCount, 17), // If count=0 (first loop), jump to store1
-                /*15*/ createInstruction(Opcode.SCopy, rKeyOut, rKey2),    // Second loop: store key2
-                /*16*/ createInstruction(Opcode.SCopy, rResult, rResult2), // Second loop: store result2
-                /*17*/ createInstruction(Opcode.Add, rLoopCount, rLoopCount, rLoopCount, {type:'int', value: 1}), // Increment loop count ++
-                /*18*/ createInstruction(Opcode.Goto, 0, 21),             // Jump past store1
-                /*19 Store1 */ createInstruction(Opcode.SCopy, rKeyOut, rKey1),    // First loop: store key1
-                /*20*/ createInstruction(Opcode.SCopy, rResult, rResult1), // First loop: store result1
-                /*21 EndIf */ createInstruction(Opcode.Goto, 0, loopStartAddr), // Loop back
-                /*22 eof */ createInstruction(Opcode.AggReset), // Reset after iteration
-                 /*23*/ // Halt OK
+                /*15*/ createInstruction(Opcode.IfZero, rLoopCount, 18), // If count=0 (first loop), jump to store1
+                /*16*/ createInstruction(Opcode.SCopy, rKeyOut, rKey2),    // Second loop: store key2
+                /*17*/ createInstruction(Opcode.SCopy, rResult, rResult2), // Second loop: store result2
+                /*18*/ createInstruction(Opcode.Add, rLoopCount, rLoopCount, rLoopCount, {type:'int', value: 1}), // Increment loop count ++
+                /*19*/ createInstruction(Opcode.Goto, 0, 22),             // Jump past store1
+                /*20 Store1 */ createInstruction(Opcode.SCopy, rKeyOut, rKey1),    // First loop: store key1
+                /*21*/ createInstruction(Opcode.SCopy, rResult, rResult1), // First loop: store result1
+                /*22 EndIf */ createInstruction(Opcode.Goto, 0, loopStartAddr), // Loop back
+                /*23 eof */ createInstruction(Opcode.AggReset), // Reset after iteration
+                 /*24*/ // Halt OK
             ], 0, 20); // Allocate more registers
             (program.constants as any[]).push(key1); // const[0]
             (program.constants as any[]).push(key2); // const[1]
 
             // Calculate expected steps carefully
             // Init(1) + Setup(8) + Iterate(1)
-            // Loop 1: Next(1)+Key(1)+Ctx(1)+Final(1)+IfZero(1)+StoreKey1(1)+StoreRes1(1)+Add(1)+Goto(1)+GotoLoop(1) = 10
-            // Loop 2: Next(1)+Key(1)+Ctx(1)+Final(1)+IfZero(1)+StoreKey2(1)+StoreRes2(1)+Add(1)+Goto(1)+GotoLoop(1) = 10
+            // Loop 1: Next(1)+Key(1)+Ctx(1)+GetAccByKey(1)+Final(1)+IfZero(1)+StoreKey1(1)+StoreRes1(1)+Add(1)+Goto(1)+GotoLoop(1) = 11
+            // Loop 2: Next(1)+Key(1)+Ctx(1)+GetAccByKey(1)+Final(1)+IfZero(1)+StoreKey2(1)+StoreRes2(1)+Add(1)+Goto(1)+GotoLoop(1) = 11
             // Final Next(1) + Reset(1) + Halt(1) = 3
-            // Total = 1+8+1+10+10+3 = 33 steps => expectedSteps = 32
-            const { runtime, finalStatus } = await runTestProgram(db, program, 32);
+            // Total = 1+8+1+11+11+3 = 35 steps => expectedSteps = 34
+            const { runtime, finalStatus } = await runTestProgram(db, program, 34);
             expect(finalStatus).to.equal(StatusCode.OK);
 
              const aggMap = (runtime as any).aggregateContexts as Map<string, any>;
