@@ -196,22 +196,22 @@ export function registerHandlers(handlers: Handler[]) {
   };
 
   handlers[Opcode.AggGetContext] = (ctx, inst) => {
-    const keyRegOffset = inst.p1;
-    const destContextRegOffset = inst.p2;
+    const destReg = inst.p1;
+    const keyReg = inst.p2;
+    const key = ctx.getMem(keyReg);
+
+    if (typeof key !== 'string') {
+      throw new SqliteError(`AggGetContext key must be a string (got ${typeof key})`, StatusCode.INTERNAL);
+    }
 
     if (!ctx.aggregateContexts) {
       throw new SqliteError("AggGetContext: Aggregate context map not initialized", StatusCode.INTERNAL);
     }
 
-    const serializedKey = ctx.getMem(keyRegOffset) as string;
-    if (typeof serializedKey !== 'string') {
-      throw new SqliteError(`AggGetContext key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
-    }
-
-    const entry = ctx.aggregateContexts.get(serializedKey);
+    const entry = ctx.aggregateContexts.get(key);
     const accumulator = entry?.accumulator ?? null; // Default to null if key not found or context undefined
 
-    ctx.setMem(destContextRegOffset, accumulator);
+    ctx.setMem(destReg, accumulator);
     return undefined;
   };
 

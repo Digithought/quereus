@@ -3,6 +3,7 @@ import { StatusCode } from '../../common/types.js';
 import { evaluateIsTrue } from '../../util/comparison.js';
 import type { Handler } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
+import { getCollation } from '../../util/comparison.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	// --- Control Flow ---
@@ -164,5 +165,31 @@ export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.ConstraintViolation] = (ctx, inst) => {
 		const context = (typeof inst.p4 === 'string' && inst.p4) ? inst.p4 : 'Constraint failed';
 		throw new ConstraintError(context);
+	};
+
+	// --- Once ---
+	handlers[Opcode.Once] = (ctx, inst) => {
+		const programCounter = ctx.pc; // PC of the Once instruction itself
+		if (ctx.stmt.didOnceExecute(programCounter)) {
+			// Already executed, jump
+			ctx.pc = inst.p2;
+		} else {
+			// First time, mark as executed and continue to next instruction
+			ctx.stmt.markOnceAsExecuted(programCounter);
+			ctx.pc++;
+		}
+		return undefined;
+	};
+
+	// --- Collation Sequence ---
+	handlers[Opcode.CollSeq] = (ctx, inst) => {
+		const destReg = inst.p2; // P2 is technically the target register
+		const collName = inst.p4 as string;
+		const collFunc = getCollation(collName);
+		// The main purpose is to ensure the collation is loaded.
+		// Standard SQLite doesn't store anything useful in P2 for CollSeq.
+		// We'll store the resolved name if found, otherwise NULL.
+		ctx.setMem(destReg, collFunc ? collName : null);
+		return undefined;
 	};
 }

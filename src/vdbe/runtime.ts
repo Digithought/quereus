@@ -124,7 +124,9 @@ export class VdbeRuntime implements VmCtx {
    * @returns Status code indicating execution result
    */
   async run(): Promise<StatusCode> {
+    const initialPc = this.pc;
     if (this.done || this.error) {
+      // console.log(`>>> run: Early exit. Done=${this.done}, Error=${this.error?.code}`);
       return this.error?.code ?? StatusCode.MISUSE;
     }
     this.hasYielded = false;
@@ -180,29 +182,37 @@ export class VdbeRuntime implements VmCtx {
           status = result;
         }
 
-        // Check if handler returned a status code
+        // *** CHECK HANDLER STATUS *** (e.g., Halt returns 0, ResultRow returns undefined)
         if (status !== undefined) {
-          return status;
-        }
-
-        // Check if the instruction yielded a row
-        if (this.hasYielded) {
-          this.hasYielded = false; // Reset for next step
-          if (this.pc === currentPc) { // Ensure handler didn't already jump
-            this.pc++;
+          if (this.done && status === StatusCode.OK) {
+              // console.log(`>>> run [PC=${currentPc}, Op=${Opcode[inst.opcode]}] RETURNING: OK from Halt handler`);
+              return StatusCode.OK; // Handle Halt OK
           }
-          return StatusCode.ROW;
+          // console.log(`>>> run [PC=${currentPc}, Op=${Opcode[inst.opcode]}] RETURNING: Status from handler: ${status} (${StatusCode[status] ?? 'Unknown'})`);
+          return status; // Returns status from handler (ERROR, etc.)
         }
 
-        // Post-execution checks
-        if (this.done) {
+        // *** CHECK YIELD *** (ResultRow sets this.hasYielded = true)
+        if (this.hasYielded) {
+          this.hasYielded = false;
+          if (this.pc === currentPc) { this.pc++; } // Advance PC *after* yield
+          // console.log(`>>> run [PC=${currentPc}, Op=${Opcode[inst.opcode]}] RETURNING: ROW from yield`);
+          return StatusCode.ROW; // Return ROW
+        }
+
+        // *** POST-HANDLER CHECKS *** (Should only be reached if handler returned undefined)
+        if (this.done) { // If Halt was executed (done=true) but didn't return status? Should not happen.
+          errorLog('Runtime loop ended with done=true but Halt status was not returned?');
+          // console.log(`>>> run [PC=${currentPc}, Op=${Opcode[inst.opcode]}] RETURNING: DONE from post-handler check (done=true)`);
           return StatusCode.DONE;
         }
-        if (this.error) {
-          return (this.error as SqliteError).code ?? StatusCode.MISUSE;
+        if (this.error) { // If handler set an error without returning code?
+           const errCode = (this.error as SqliteError).code ?? StatusCode.MISUSE;
+           // console.log(`>>> run [PC=${currentPc}, Op=${Opcode[inst.opcode]}] RETURNING: Error from post-handler check: ${errCode} (${StatusCode[errCode] ?? 'Unknown'})`);
+          return errCode;
         }
 
-        // Update program counter if the handler didn't change it
+        // *** ADVANCE PC *** (If handler didn't jump)
         if (this.pc === currentPc) {
           this.pc++;
         }
@@ -219,14 +229,16 @@ export class VdbeRuntime implements VmCtx {
       this.done = true;
     }
 
-    // Determine final status
+    // *** DETERMINE FINAL STATUS *** (If loop finished or error occurred)
     if (this.error) {
-      return this.error.code as StatusCode;
+        const errCode = this.error.code as StatusCode;
+        // console.log(`>>> run [InitialPC=${initialPc}] RETURNING: Final status from error: ${errCode} (${StatusCode[errCode] ?? 'Unknown'})`);
+        return errCode;
     }
-    if (this.pc >= this.program.instructions.length && !this.done) {
-        this.done = true;
-    }
-    return this.done ? StatusCode.DONE : StatusCode.INTERNAL;
+    if (this.pc >= this.program.instructions.length && !this.done) { this.done = true; }
+    const finalReturn = this.done ? StatusCode.DONE : StatusCode.INTERNAL;
+    // console.log(`>>> run [InitialPC=${initialPc}] RETURNING: Final status from loop end/done: ${finalReturn} (${StatusCode[finalReturn] ?? 'Unknown'}) (pc=${this.pc}, done=${this.done})`);
+    return finalReturn;
   }
 
   // --- VmCtx Implementation ---
