@@ -46,7 +46,7 @@ SQLiter follows a classic query processing pipeline, adapted for its specific go
     *   The core data interface. Modules implement the `VirtualTableModule` interface (`module.ts`), defining how to create, connect, query, and update table instances.
     *   `table.ts` and `cursor.ts` provide base classes for table and cursor instances.
     *   `indexInfo.ts` defines the structure used for query planning (`xBestIndex`).
-    *   Includes `MemoryTable` (`memory-table.ts`) backed by `digitree`, `JsonEach` (`json-each.ts`), and `JsonTree` (`json-tree.ts`) implementations.
+    *   Includes `MemoryTable` (`vtab/memory/table.ts`) backed by `digitree`, `JsonEach` (`json-each.ts`), and `JsonTree` (`json-tree.ts`) implementations.
     *   The `MemoryTable` supports transactions and savepoints via internal buffering. See [Memory Tables](docs/memory-table.md) for details.
 6.  **Schema Management (`src/schema`)**:
     *   The `SchemaManager` (`manager.ts`) orchestrates access to different database schemas ('main', 'temp').

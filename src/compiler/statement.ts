@@ -31,8 +31,9 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
 	compiler.emit(Opcode.OpenWrite, cursor, numCols, 0, p4Vtab, 0, `OpenWrite ${tableSchema.name}`);
 
-	const regNewRowid = compiler.allocateMemoryCells(1);
+	// Allocate data block first, then the output register for the new rowid
 	const regDataStart = compiler.allocateMemoryCells(tableSchema.columns.length + 1);
+	const regNewRowid = compiler.allocateMemoryCells(1);
 
 	if (stmt.values) {
 		for (const valueRow of stmt.values) {

@@ -3,4 +3,4 @@ description:
 globs:
 alwaysApply: true
 ---
-Read the [README.md](mdc:README.md), if you haven't, to get familar with the project.
+Read the [README.md](mdc:README.md), if you haven't, to get familar with the project.  If you need to see any logging, be sure to turn it on through the DEBUG env variable.

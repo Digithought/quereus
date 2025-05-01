@@ -30,6 +30,9 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 	private currentValue: MemoryTableRow | null = null; // Holds the actual row data
 	private currentModKey: ModificationKey | null = null; // Holds the index key ([IndexKey, rowid] or PrimaryKey)
 
+	// Is this is the first advance after an EQ initialization
+	private isInitialAdvanceAfterEqInit: boolean = false;
+
 	constructor(layer: BaseLayer, plan: ScanPlan) {
 		this.layer = layer;
 		this.plan = plan;
@@ -58,9 +61,46 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 		this.initializeIterator();
 	}
 
+	// Helper to extract key and value at a specific path
+	private extractKeyValueAt(path: Path<any, any>): { itemKey: ModificationKey | null, itemValue: MemoryTableRow | null } {
+		let itemValue: MemoryTableRow | null = null;
+		let itemKey: ModificationKey | null = null;
+
+		if (this.plan.indexName === 'primary') {
+			const rowValue = this.targetTree.at(path) as MemoryTableRow | null;
+			if (rowValue) {
+				itemValue = rowValue;
+				try {
+					itemKey = this.layer.keyFromEntry(itemValue);
+				} catch (e) {
+					warnLog("Failed to extract primary key from value at path: %O", e);
+					// itemKey remains null
+				}
+			}
+		} else {
+			const secondaryEntry = this.targetTree.at(path) as [BTreeKey, bigint] | null;
+			if (secondaryEntry) {
+				itemKey = secondaryEntry; // Key is the [IndexKey, rowid] pair
+				const rowid = secondaryEntry[1];
+				const primaryKey = this.layer.rowidToKeyMap?.get(rowid);
+				if (primaryKey !== undefined) {
+					itemValue = this.layer.primaryTree.get(primaryKey) ?? null;
+				} else if (!this.layer.rowidToKeyMap) {
+					itemValue = this.layer.primaryTree.get(rowid) ?? null;
+				} else {
+					warnLog(`Could not find primary key for rowid %s from secondary index %s using rowidToKeyMap.`, rowid, this.plan.indexName);
+					itemValue = null;
+				}
+			}
+		}
+		return { itemKey, itemValue };
+	}
+
 	private initializeIterator(): void {
 		let startPath: Path<any, any> | null = null;
 		const tree = this.targetTree;
+		// Reset the flag
+		this.isInitialAdvanceAfterEqInit = false;
 
 		try {
 			if (this.plan.equalityKey !== undefined) {
@@ -78,24 +118,45 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 				}
 				// BTree's find uses its *own* key extractor and comparator internally, which operate on the stored value ([IndexKey, rowid] for secondary)
 				startPath = tree.find(findKey);
-				if (!startPath?.on && !this.plan.descending) {
-					// If exact key not found, find might return path *after* where it should be.
-					// For ascending EQ scan, we might need to check the predecessor if tree.find optimizes.
-					// However, standard iteration from find() result usually handles this.
-					// If path is off, it means key doesn't exist.
+
+				if (startPath) {
+					// Check if the found path actually matches the equality key using checkPlan
+					const { itemKey, itemValue } = this.extractKeyValueAt(startPath);
+
+					if (itemKey !== null && this.checkPlan(itemKey)) {
+						// Exact match found! Position cursor directly on it.
+						this.currentPath = startPath;
+						this.currentValue = itemValue;
+						this.currentModKey = itemKey;
+						this._isEof = false;
+						// Initialize iterator for subsequent next() calls, starting *at* the current path
+						this.iterator = this.plan.descending ? tree.descending(startPath) : tree.ascending(startPath);
+						// Set the flag for the next advanceIterator call
+						this.isInitialAdvanceAfterEqInit = true;
+						// DO NOT advance iterator here, already positioned.
+					} else {
+						// find() landed somewhere else, or checkPlan failed. Key doesn't exist or value is null.
+						this._isEof = true;
+						this.iterator = null;
+					}
+				} else {
+					// tree.find() returned null, key not found.
+					this._isEof = true;
+					this.iterator = null;
 				}
 			} else {
 				// Full or Range Scan: Start from beginning or end.
 				startPath = this.plan.descending ? tree.last() : tree.first();
-			}
 
-			if (startPath) {
-				this.iterator = this.plan.descending ? tree.descending(startPath) : tree.ascending(startPath);
-				// Perform initial next() to position on the first valid element
-				this.advanceIterator();
-			} else {
-				this._isEof = true;
-				this.iterator = null;
+				if (startPath) {
+					this.iterator = this.plan.descending ? tree.descending(startPath) : tree.ascending(startPath);
+					// Perform initial next() to position on the first valid element that matches bounds
+					this.advanceIterator();
+				} else {
+					// Tree is empty
+					this._isEof = true;
+					this.iterator = null;
+				}
 			}
 		} catch (e) {
 			// Use namespaced error logger
@@ -115,9 +176,27 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 			return;
 		}
 
+		// If this is the first advance after an EQ init, we need to call next() once
+		// to move *past* the initial element the iterator might be sitting on.
+		// Then proceed with the normal loop to find the *actual* next valid item.
+		if (this.isInitialAdvanceAfterEqInit) {
+			const initialResult = this.iterator.next(); // Consume the initial element
+			this.isInitialAdvanceAfterEqInit = false; // Clear the flag
+			if (initialResult.done) {
+				this._isEof = true;
+				this.currentPath = null;
+				this.currentValue = null;
+				this.currentModKey = null;
+				return; // Nothing more to iterate
+			}
+		}
+
+		let loopCount = 0;
 		let foundNext = false;
 		while (!foundNext) {
+			loopCount++;
 			const nextResult = this.iterator.next();
+
 			if (nextResult.done) {
 				this._isEof = true;
 				this.currentPath = null;
@@ -134,74 +213,39 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 				break;
 			}
 
-			// Extract the key and value based on index type
-			let itemValue: MemoryTableRow | null = null; // Actual row data
-			let itemKey: ModificationKey | null = null; // Index-specific key (BTreeKey or [BTreeKey, bigint])
+			const { itemKey, itemValue } = this.extractKeyValueAt(this.currentPath);
+			// Use replacer to handle BigInt in JSON.stringify
+			const itemKeyStr = JSON.stringify(itemKey, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value);
 
-			if (this.plan.indexName === 'primary') {
-				// Primary index BTree stores MemoryTableRow as value
-				const rowValue = this.targetTree.at(this.currentPath) as MemoryTableRow | null;
-				// Ensure itemValue exists before extracting key
-				if (!rowValue) continue; // Skip if value is null/undefined
-				itemValue = rowValue;
-				itemKey = this.layer.keyFromEntry(itemValue); // Extract BTreeKey (primary key)
-			} else {
-				// Secondary index BTree stores [IndexKey, rowid] as the value AND the key
-				const secondaryEntry = this.targetTree.at(this.currentPath) as [BTreeKey, bigint] | null;
-				if (!secondaryEntry) continue; // Skip if value is null/undefined
-
-				itemKey = secondaryEntry; // The key *is* the value [IndexKey, rowid] for secondary index BTree
-				// We need the full row data, fetch from primary tree using rowid
-				const rowid = secondaryEntry[1];
-				// TODO: This fetch might need to respect layers in a full MVCC context,
-				// but for BaseLayerCursor, we assume we fetch directly from BaseLayer primary.
-				// Use the layer's schema and rowid->key map for lookup
-				const primaryKey = this.layer.rowidToKeyMap?.get(rowid);
-				if (primaryKey !== undefined) {
-					itemValue = this.layer.primaryTree.get(primaryKey) ?? null;
-				} else if (!this.layer.rowidToKeyMap) { // Key IS rowid (WITHOUT ROWID table or implicit rowid PK)
-					itemValue = this.layer.primaryTree.get(rowid) ?? null;
-				} else {
-					// This case is problematic: have map but didn't find rowid.
-					// Should not happen if secondary index is consistent with primary.
-					// Use namespaced warn logger
-					warnLog(`Could not find primary key for rowid %s from secondary index %s using rowidToKeyMap.`, rowid, this.plan.indexName);
-					itemValue = null;
-				}
-
-				if (!itemValue) {
-					// Could happen if secondary index refers to deleted primary row, or BTree issue
-					// itemKey should be valid here if we didn't continue earlier
-					// Use namespaced warn logger
-					warnLog(`Found index key %s but failed to fetch row data.`, JSON.stringify(itemKey));
-					continue; // Skip this entry and try next
-				}
+			if (itemKey === null) {
+				continue; // Skip this entry
 			}
 
-			// Check if the current item satisfies the plan conditions
-			// Pass the correct key type (BTreeKey for primary, [BTreeKey, bigint] for secondary)
-			if (itemKey !== null && this.checkPlan(itemKey)) {
-				this.currentValue = itemValue; // itemValue guaranteed non-null if we got here
+			const planCheckResult = this.checkPlan(itemKey);
+			// Use itemKeyStr for logging
+
+			if (planCheckResult) {
+				this.currentValue = itemValue; // itemValue guaranteed non-null if key wasn't null and checkPlan needs value potentially
 				this.currentModKey = itemKey;
 				this._isEof = false;
 				foundNext = true; // Found a valid item, exit loop
-			} else if (itemKey !== null) {
-				// If the plan condition fails, and it implies no further items will match, stop early.
-				if (this.shouldStopIteration(itemKey)) {
+			} else {
+				// Plan check failed
+				const stopCheckResult = this.shouldStopIteration(itemKey);
+				// Use itemKeyStr for logging
+
+				if (stopCheckResult) {
 					this._isEof = true;
 					this.currentPath = null;
 					this.currentValue = null;
 					this.currentModKey = null;
 					break; // Exit loop, optimization
+				} else {
+					// Otherwise, continue to the next item in the iterator
 				}
-				// Otherwise, continue to the next item in the iterator
-			} else {
-				// itemKey was null, skip and continue
-				continue;
 			}
 		}
 	}
-
 
 	/** Checks if the extracted key satisfies the scan plan constraints */
 	private checkPlan(key: ModificationKey): boolean {
@@ -281,7 +325,6 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 			// (though BTree iteration from find() often handles this correctly).
 			// If it's a range scan, cmp===0 doesn't imply stopping.
 		}
-
 
 		// Check range bounds for early exit
 		let firstColKey: SqlValue | null = null;

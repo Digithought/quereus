@@ -26,6 +26,7 @@ import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js
 import type { MemoryTable } from '../vtab/memory/table.js';
 import { traverseAst, type AstVisitorCallbacks } from '../parser/visitor.js';
 import { createLogger } from '../common/logger.js';
+import { patchJumpAddresses } from './compilerState.js';
 
 const log = createLogger('compiler');
 const warnLog = log.extend('warn');
@@ -84,12 +85,12 @@ export class Compiler {
 	public instructions: VdbeInstruction[] = [];
 	// --- Register/Cursor Allocation ---
 	public numMemCells = 0; // Max stack slot index used across all frames
-	private currentFrameLocals = 0; // Tracks highest local offset used in the *current* frame
 	public numCursors = 0;
 	// ---------------------------------
 	// --- Placeholder Management (NEW) ---
 	public pendingPlaceholders: Map<number, { instructionIndex: number, targetArray: VdbeInstruction[], purpose: string }> = new Map();
-	private nextPlaceholderId: number = -1; // Use unique negative IDs
+	public nextPlaceholderId: number = -1; // Use unique negative IDs
+	public resolvedAddresses: Map<number, number> = new Map(); // ADDED: Store resolved addresses
 	// ------------------------------------
 	public parameters: Map<number | string, { memIdx: number }> = new Map();
 	public columnAliases: string[] = [];
@@ -101,11 +102,11 @@ export class Compiler {
 	public cursorPlanningInfo: Map<number, CursorPlanningResult> = new Map();
 	public cteReferenceCounts: Map<string, number> = new Map(); // Map lower-case CTE name -> reference count
 	// --- Subroutine State ---
-	private subroutineCode: VdbeInstruction[] = [];
+	public subroutineCode: VdbeInstruction[] = [];
 	public subroutineDefs: Map<AST.SelectStmt, SubroutineInfo> = new Map();
 	public subroutineDepth = 0;
 	private currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
-	private maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
+	public maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
 	private subroutineFrameStack: { frameEnterInsn: VdbeInstruction | null; maxOffset: number }[] = [];
 	// --- Stack Pointers ---
 	public stackPointer: number = 0; // Current stack top (absolute index)
@@ -144,10 +145,10 @@ export class Compiler {
 			this.pendingPlaceholders = new Map();
 			this.nextPlaceholderId = -1;
 			// -------------------------------------
+			this.resolvedAddresses = new Map();
 			this.subroutineCode = [];
 			this.subroutineDefs = new Map();
 			this.subroutineDepth = 0;
-			this.currentFrameLocals = 0;
 			this.currentFrameEnterInsn = null;
 			this.maxLocalOffsetInCurrentFrame = 0;
 			this.stackPointer = 0;
@@ -238,6 +239,8 @@ export class Compiler {
 
 			// End program with Halt
 			this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
+
+			patchJumpAddresses(this);
 
 			// Create program
 			return {
