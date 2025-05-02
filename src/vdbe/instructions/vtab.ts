@@ -7,6 +7,7 @@ import { ConflictResolution } from '../../common/constants.js';
 import type { IndexConstraint, IndexConstraintUsage, IndexInfo } from '../../vtab/indexInfo.js';
 import type { IndexSchema } from '../../schema/table.js';
 import { createLogger } from '../../common/logger.js';
+import { safeJsonStringify } from '../../util/serialization.js';
 
 const log = createLogger('vdbe:vtab');
 const errorLog = log.extend('error');
@@ -73,7 +74,7 @@ export function registerHandlers(handlers: Handler[]) {
     }
 
     // For debugging - log constraints and args detail
-    log(`VFilter on cursor ${cIdx}, idxNum=${p4Info.idxNum}, idxStr=${p4Info.idxStr || "null"}, args=${JSON.stringify(args)}, constraints=${JSON.stringify(constraintsToPass)}`);
+    log(`VFilter on cursor ${cIdx}, idxNum=${p4Info.idxNum}, idxStr=${p4Info.idxStr || "null"}, args=${safeJsonStringify(args)}, constraints=${safeJsonStringify(constraintsToPass)}`);
 
     try {
       // Convert p4Info to IndexInfo properly

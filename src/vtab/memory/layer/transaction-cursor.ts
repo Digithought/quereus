@@ -10,6 +10,7 @@ import type { SqlValue } from '../../../common/types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { isDeletionMarker } from './interface.js'; // Import type guard
 import { createLogger } from '../../../common/logger.js'; // Import logger
+import { safeJsonStringify } from '../../../util/serialization.js';
 
 const log = createLogger('vtab:memory:layer:transaction-cursor'); // Create logger
 const warnLog = log.extend('warn');
@@ -347,7 +348,7 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 			const isEqual = this.modKeyComparator(this.extractIndexKey(key), this.plan.equalityKey) === 0;
 			if (!isEqual) {
 				warnLog(
-					`Merged key ${JSON.stringify(key)}'s comparable part does not match equality key ${JSON.stringify(
+					`Merged key ${safeJsonStringify(key)}'s comparable part does not match equality key ${safeJsonStringify(
 						this.plan.equalityKey,
 					)} in EQ scan.`,
 				);

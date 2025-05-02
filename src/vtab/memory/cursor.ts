@@ -13,6 +13,7 @@ import type { ScanPlan, ScanPlanEqConstraint, ScanPlanRangeBound } from './layer
 import { BTree } from 'digitree'; // Needed for sorter logic
 import type { P4SortKey } from '../../vdbe/instruction.js'; // Import SortKey info
 import { createLogger } from '../../common/logger.js'; // Import logger
+import { safeJsonStringify } from '../../util/serialization.js'; // Import helper
 
 const log = createLogger('vtab:memory:cursor'); // Create logger
 const warnLog = log.extend('warn');
@@ -337,7 +338,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		this.reset(); // Close existing internal cursor, clear state
 
 		// Add detailed logging to understand the filter operation
-		debugLog(`MemoryTableCursor.filter: idxNum=${idxNum}, idxStr=${idxStr || "null"}, args=${JSON.stringify(args)}, constraints=${JSON.stringify(constraints)}, indexInfo=${JSON.stringify(indexInfo)}`);
+		debugLog(`MemoryTableCursor.filter: idxNum=${idxNum}, idxStr=${idxStr || "null"}, args=${safeJsonStringify(args)}, constraints=${safeJsonStringify(constraints)}, indexInfo=${safeJsonStringify(indexInfo)}`);
 
 		// Check for sorter FIRST (set by Sort opcode calling createAndPopulateSorterIndex)
 		if (this.ephemeralSortingIndex) {

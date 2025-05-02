@@ -8,6 +8,7 @@ import { Parser } from '../src/parser/parser.js';
 import type * as AST from '../src/parser/ast.js';
 import type { VdbeInstruction } from '../src/vdbe/instruction.js';
 import { Opcode } from '../src/vdbe/opcodes.js';
+import { jsonStringify, safeJsonStringify } from '../src/util/serialization.js';
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -51,7 +52,7 @@ function formatVdbe(instructions: ReadonlyArray<VdbeInstruction>): string {
 					if (inst.p4 && typeof inst.p4 === 'object' && 'type' in inst.p4) {
 						p4Str = `P4(${inst.p4.type})`; // Show type for complex P4
 					} else {
-						p4Str = JSON.stringify(inst.p4);
+						p4Str = jsonStringify(inst.p4);
 					}
 				} catch { p4Str = '[Unserializable P4]'; }
 			}

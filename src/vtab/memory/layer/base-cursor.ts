@@ -13,6 +13,7 @@ import { createLogger } from '../../../common/logger.js'; // Import logger
 const log = createLogger('vtab:memory:layer:base-cursor');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
+const debugLog = log.extend('debug');
 
 /**
  * Internal cursor implementation for iterating directly over a BaseLayer's B-trees.
@@ -100,7 +101,8 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 		if (this.plan.equalityKey !== undefined) {
 			// --- EQ Plan Initialization ---
 			try {
-				const path = this.targetTree.find(this.plan.equalityKey);
+				const keyToFind = this.plan.equalityKey;
+				const path = this.targetTree.find(keyToFind);
 				if (path.on) {
 					// Key found - check if it truly matches (for secondary index)
 					const { itemKey, itemValue } = this.extractKeyValueAt(path);

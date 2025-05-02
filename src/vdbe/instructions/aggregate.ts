@@ -5,6 +5,7 @@ import type { Handler, VmCtx } from '../handler-types.js';
 import type { P4FuncDef } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
 import { createLogger } from '../../common/logger.js';
+import { jsonStringify } from '../../util/serialization.js';
 
 const log = createLogger('vdbe:aggregate');
 const errorLog = log.extend('error');
@@ -32,15 +33,9 @@ export function registerHandlers(handlers: Handler[]) {
     }
 
     // Serialize the key. JSON is simple but has limitations (e.g., distinguishes -0 and 0).
-    // A more robust serialization might be needed for full SQL compatibility.
+    // TODO: A more robust serialization might be needed for full SQL compatibility.
     // Handling BigInt and Blobs requires custom replacer.
-    const serializedKey = JSON.stringify(values, (_, val) =>
-      typeof val === 'bigint'
-        ? `bigint:${val.toString()}`
-        : val instanceof Uint8Array
-        ? `blob:${Buffer.from(val).toString('hex')}`
-        : val
-    );
+    const serializedKey = jsonStringify(values);
 
     ctx.setMem(destOffset, serializedKey);
     return undefined;

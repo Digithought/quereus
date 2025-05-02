@@ -8,6 +8,7 @@ import type { VmCtx, VdbeCursor, MemoryCell } from './handler-types.js';
 import { handlers } from './handlers.js';
 import { Opcode } from './opcodes.js';
 import { createLogger } from '../common/logger.js';
+import { safeJsonStringify } from '../util/serialization.js';
 
 const log = createLogger('vdbe:runtime');
 const warnLog = log.extend('warn');
@@ -149,9 +150,8 @@ export class VdbeRuntime implements VmCtx {
           break;
         }
 
-        const p4Str = inst.p4 ? JSON.stringify(inst.p4, (key, value) =>
-          typeof value === 'bigint' ? value.toString() + 'n' : value // Append 'n' for clarity
-        ).substring(0, 150) : '';
+        // Modify the replacer to handle nested BigInts for logging
+        const p4Str = inst.p4 ? safeJsonStringify(inst.p4).substring(0, 150) : '';
         const comment = inst.comment ? `// ${inst.comment}` : '';
         log(
           '[%s] %s P1=%d P2=%d P3=%d P4=%s P5=%d %s',

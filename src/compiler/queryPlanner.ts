@@ -5,6 +5,7 @@ import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
 import type { IndexInfo, IndexConstraint, IndexOrderBy } from '../vtab/indexInfo.js';
 import { createLogger } from '../common/logger.js';
+import { safeJsonStringify } from '../util/serialization.js';
 
 const log = createLogger('compiler:plan');
 const warnLog = log.extend('warn');
@@ -458,6 +459,8 @@ export function planTableAccessHelper(
 		estimatedRows: BigInt(1000000),
 		idxFlags: 0,
 	};
+
+	log(`Calling xBestIndex for ${tableSchema.name} (cursor ${cursorIdx}) with IndexInfo: ${safeJsonStringify(indexInfo, 2)}`);
 
 	let status: number;
 	try {

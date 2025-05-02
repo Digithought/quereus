@@ -6,6 +6,7 @@ import type * as AST from '../parser/ast.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 import type { P4FuncDef } from '../vdbe/instruction.js';
 import { StatusCode } from '../common/types.js';
+import { safeJsonStringify } from '../util/serialization.js';
 
 /**
  * Helper function to compute a frame boundary (start or end).
@@ -295,7 +296,7 @@ export function compileFrameBoundary(
 				// This case should be unreachable due to exhaustive bound type checking
 				// If it occurs, it indicates an issue with the AST or frame definition logic.
 				const exhaustiveCheck: never = bound;
-				throw new SqliteError(`Unhandled RANGE bound: ${JSON.stringify(exhaustiveCheck)}`, StatusCode.INTERNAL);
+				throw new SqliteError(`Unhandled RANGE bound: ${safeJsonStringify(exhaustiveCheck)}`, StatusCode.INTERNAL);
 		}
 
 		// compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `RANGE boundary calculation NYI in refactor`);

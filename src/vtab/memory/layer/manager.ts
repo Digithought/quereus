@@ -17,6 +17,7 @@ import type { SchemaChangeInfo } from '../../module.js'; // Needed for schema op
 import { buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js'; // Needed for schema ops
 import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison functions
 import { createLogger } from '../../../common/logger.js'; // Import logger
+import { safeJsonStringify } from '../../../util/serialization.js';
 
 let tableManagerCounter = 0;
 const log = createLogger('vtab:memory:layer:manager'); // Create logger
@@ -392,7 +393,7 @@ export class MemoryTableManager {
 				} catch (applyError) {
 					// This is critical. Log details and potentially halt collapse.
 					// Use namespaced error logger
-					errorLog(`[Collapse Apply] Failed to apply change for key %s from layer %d to base layer. Table %s may be inconsistent. Error: %O`, JSON.stringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
+					errorLog(`[Collapse Apply] Failed to apply change for key %s from layer %d to base layer. Table %s may be inconsistent. Error: %O`, safeJsonStringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
 					// Re-throw to stop the collapse process?
 					throw applyError;
 				}
@@ -411,7 +412,7 @@ export class MemoryTableManager {
 				const currentBaseValue = this.baseLayer.primaryTree.get(pk);
 				if (currentBaseValue !== undefined) { // If base still has the row
 					// Use namespaced debug logger
-					debugLog(`[Collapse Apply] Applying explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, JSON.stringify(pk), layer.getLayerId());
+					debugLog(`[Collapse Apply] Applying explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, safeJsonStringify(pk), layer.getLayerId());
 					try {
 						// Create a properly typed DeletionMarker
 						const deletionMarker: DeletionMarker = {
@@ -433,7 +434,7 @@ export class MemoryTableManager {
 						);
 					} catch (applyError) {
 						// Use namespaced error logger
-						errorLog(`[Collapse Apply] Failed to apply explicit delete for rowid %s (PK: %s) from layer %d to base. Error: %O`, rowid, JSON.stringify(pk), layer.getLayerId(), applyError);
+						errorLog(`[Collapse Apply] Failed to apply explicit delete for rowid %s (PK: %s) from layer %d to base. Error: %O`, rowid, safeJsonStringify(pk), layer.getLayerId(), applyError);
 						throw applyError;
 					}
 				}
