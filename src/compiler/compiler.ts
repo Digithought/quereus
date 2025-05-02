@@ -10,7 +10,8 @@ import type * as AST from '../parser/ast.js';
 import * as CompilerState from './compilerState.js';
 import * as EphemeralCore from './ephemeral.js';
 import * as FromClauseCore from './fromClause.js';
-import * as QueryPlanner from './queryPlanner.js';
+import * as QueryPlanner from './planner/query-planner.js';
+import * as helpersJs from './planner/helpers.js';
 import * as WhereVerify from './where-verify.js';
 import * as ExprHandlers from './handlers.js';
 import { compileExpression } from './expression.js';
@@ -351,7 +352,7 @@ export class Compiler {
 	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
 
 	// Query Planning Helpers
-	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { QueryPlanner.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
+	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { helpersJs.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
 	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
 
 	// Expressions

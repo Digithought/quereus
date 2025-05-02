@@ -5,26 +5,56 @@ import type * as AST from '../parser/ast.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 import type { ColumnResultInfo } from './compiler.js'; // Or wherever defined
+import { createLogger } from '../common/logger.js'; // Import logger
+import type { RowProcessingContext } from './select-loop.js'; // Import the context type
+
+const log = createLogger('compiler:select-window');
+const warnLog = log.extend('warn');
 
 export function processRowWindow(
 	compiler: Compiler,
 	stmt: AST.SelectStmt,
 	currentRowColumnMap: ReadonlyArray<ColumnResultInfo>,
-	windowSorterInfo: WindowSorterInfo
+	windowSorterInfo: WindowSorterInfo,
+	context: RowProcessingContext // Added context parameter
 ): number {
 	const callbackStartAddr = compiler.getCurrentAddress();
+
+	// Handle LEFT JOIN NULL padding
+	if (context.isLeftJoinPadding) {
+		log("Processing LEFT JOIN NULL padding in window function mode");
+		// For window functions with LEFT JOIN padding, we need to make sure any window
+		// partition by/order by expressions that use columns from the inner relation
+		// correctly evaluate to NULL.
+		// Generally this will happen naturally through the normal expression evaluation,
+		// but we can add this note to be explicit about the expected behavior.
+	}
 
 	// Populate window sorter registers with the current row data
 	const sorterDataReg = windowSorterInfo.dataBaseReg;
 	windowSorterInfo.schema.columns.forEach((col, i) => {
 		const sourceExpr = windowSorterInfo.indexToExpression.get(i);
+
+		// If this column is from a cursor in context.isLeftJoinPadding?.innerContributingCursors,
+		// we should set it to NULL. However, expression-based sorter columns don't store
+		// their cursor information directly, so we'd need a more complex mapping.
+		// In practice, the compileExpression will naturally handle NULL propagation.
+
 		if (sourceExpr) {
 			// Data column needed for partition/order/args
 			const coreColInfo = currentRowColumnMap.find(info =>
 				info.expr && expressionToString(info.expr) === expressionToString(sourceExpr));
 			if (coreColInfo) {
-				compiler.emit(Opcode.Move, coreColInfo.targetReg, sorterDataReg + i, 1, null, 0,
-					`Move ${i}: ${expressionToString(sourceExpr).substring(0, 20)}`);
+				// If we're in LEFT JOIN padding mode AND this column is from an inner cursor, make it NULL
+				if (context.isLeftJoinPadding &&
+				    coreColInfo.sourceCursor !== -1 &&
+				    context.isLeftJoinPadding.innerContributingCursors.has(coreColInfo.sourceCursor)) {
+					compiler.emit(Opcode.Null, 0, sorterDataReg + i, 0, null, 0,
+						`NULL Pad for LEFT JOIN: ${expressionToString(sourceExpr).substring(0, 20)}`);
+				} else {
+					compiler.emit(Opcode.Move, coreColInfo.targetReg, sorterDataReg + i, 1, null, 0,
+						`Move ${i}: ${expressionToString(sourceExpr).substring(0, 20)}`);
+				}
 			} else {
 				compiler.emit(Opcode.Null, 0, sorterDataReg + i, 1, null, 0,
 					`NULL for sorter col ${i} (expr not found in current row)`);

@@ -13,6 +13,10 @@ This list outlines the remaining major features and refinements needed to make S
     *   [ ] Define VDBE/VTab mechanism for passing arguments via VFilter.
     *   [ ] Implement VDBE execution logic for calling functions.
 
+*   [ ] **Query Planning:**
+    *   [ ] Add syntax to table schema to specify estimated rows
+    *   [ ] Estimate rows for subqueries
+
 Review items:
 
 *   [ ] In SchemaManager.declareVtab(), there's a placeholder schema pattern where virtual table modules should override the placeholder columns. This could be clearer with a base interface or method.

@@ -192,6 +192,12 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		(tableInstance.tableSchema as any).vtabArgs = Object.freeze(moduleArgs);
 	}
 
+	// Assign default estimated rows if not provided by the module
+	if (tableInstance.tableSchema.estimatedRows === undefined) {
+		// Use a large default value to indicate unknown/large size
+		(tableInstance.tableSchema as any).estimatedRows = BigInt(10_000);
+	}
+
 	schema.addTable(tableInstance.tableSchema);
 
 	log(`Successfully created table %s.%s using module %s`, schemaName, tableName, moduleName);

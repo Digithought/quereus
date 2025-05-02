@@ -12,120 +12,24 @@ import { setupWindowSorter, type WindowSorterInfo } from './window.js'; // Impor
 import { expressionToString } from '../util/ddl-stringify.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 // --- NEW IMPORTS for Refactoring ---
-import { compileSelectLoop, type ProcessRowCallback } from './select-loop.js';
+import { type ProcessRowCallback } from './select-loop.js';
 import { processRowAggregate, compileAggregateOutput } from './select-aggregate.js';
 import { processRowDirect, compileSortOutput } from './select-output.js';
 import { processRowWindow, compileWindowOutput } from './select-window.js';
 import { compileJoinCondition, emitLeftJoinNullPadding } from './join.js'; // Added emitLeftJoinNullPadding
 import { getExpressionCollation } from './utils.js'; // Import needed utility
+import { planQueryExecution } from './planner/query-planner.js';
+import type { PlannedStep } from './planner/types.js';
+import { compilePlannedStepsLoop } from './select-loop.js';
 import { createLogger } from '../common/logger.js';
+import type { RowProcessingContext } from './select-loop.js'; // Add import for RowProcessingContext
 
 const log = createLogger('compiler:select');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
 const debugLog = log.extend('debug');
 
-/**
- * Interface to hold consolidated state for each level in the join structure.
- * This replaces multiple parallel arrays indexed by loop level.
- */
-export interface JoinLevelInfo {
-	cursor: number;                // The VDBE cursor ID for this level
-	schema: TableSchema;           // Schema for the table at this level
-	alias: string;                 // Alias used for this level (for lookups)
-	joinType?: AST.JoinClause['joinType'] | 'cross'; // Type of join connecting this level to the previous one
-	condition?: AST.Expression;    // ON condition expression for this join
-	usingColumns?: string[];       // USING columns for this join
-	// VDBE State (populated during compilation)
-	loopStartAddr?: number;        // Address of loop start
-	eofAddr?: number;              // Address to jump to when EOF reached (for VNext)
-	joinFailAddr?: number;         // Address to jump to when join condition fails
-	matchReg?: number;             // For LEFT JOINs: register containing match flag
-	vFilterEofPlaceholder?: number; // Dedicated placeholder for VFilter jump
-}
 
-/**
- * Preprocesses the FROM clause AST to gather information about each join level.
- * Returns an ordered array representing the flattened join structure.
- */
-function preprocessJoinLevels(compiler: Compiler, sources: AST.FromClause[] | undefined): JoinLevelInfo[] {
-	if (!sources || sources.length === 0) {
-		return [];
-	}
-
-	const levels: JoinLevelInfo[] = [];
-
-	function processNode(node: AST.FromClause, previousLevelAlias?: string): string /* returns alias of this node */ {
-		if (node.type === 'table') {
-			const cursor = compiler.tableAliases.get((node.alias || node.table.name).toLowerCase());
-			if (cursor === undefined) {
-				throw new SqliteError(`Table alias ${node.alias || node.table.name} not found in compiler's alias map`, StatusCode.INTERNAL);
-			}
-			const alias = (node.alias || node.table.name).toLowerCase();
-			const schema = compiler.tableSchemas.get(cursor);
-			if (!schema) {
-				throw new SqliteError(`Schema not found for table ${alias}`, StatusCode.INTERNAL);
-			}
-			levels.push({ cursor, schema, alias });
-			return alias;
-		} else if (node.type === 'join') {
-			const leftAlias = processNode(node.left, previousLevelAlias);
-			const rightAlias = processNode(node.right, leftAlias);
-
-			// The last level added corresponds to the right side of this join
-			const rightLevelInfo = levels[levels.length - 1];
-			rightLevelInfo.joinType = node.joinType;
-			if (node.condition) {
-				rightLevelInfo.condition = node.condition;
-			} else if (node.columns) {
-				rightLevelInfo.usingColumns = node.columns;
-			} else if (node.joinType !== 'cross') {
-				// Natural join or non-cross join without ON/USING - treat as CROSS for now
-				// Note: The 'natural' keyword might be handled by the parser setting joinType='inner' and omitting condition/columns.
-				// Proper natural join column matching isn't implemented here.
-				if (node.joinType === 'inner' || node.joinType === 'left') {
-					warnLog(`Join between %s and %s of type %s has no ON/USING clause.`, leftAlias, rightAlias, node.joinType);
-					rightLevelInfo.joinType = 'cross';
-				}
-			}
-			return rightAlias;
-		} else if (node.type === 'subquerySource') { // Adjusted type check based on likely AST structure
-			// Handle subquery sources
-			const alias = node.alias.toLowerCase();
-			const cursor = compiler.tableAliases.get(alias);
-			if (cursor === undefined) {
-				throw new SqliteError(`Subquery alias ${alias} not found in compiler's alias map`, StatusCode.INTERNAL);
-			}
-			const schema = compiler.tableSchemas.get(cursor);
-			if (!schema) {
-				throw new SqliteError(`Schema not found for subquery ${alias}`, StatusCode.INTERNAL);
-			}
-			levels.push({ cursor, schema, alias });
-			return alias;
-		} else {
-			// Add checks for other valid FromClause types if necessary (e.g., FunctionSource)
-			throw new SqliteError(`Unsupported FROM clause node type: ${(node as any).type}`, StatusCode.ERROR);
-		}
-	}
-
-	if (sources.length > 1) {
-		// Implicit cross joins between top-level sources
-		let lastAlias: string | undefined = undefined;
-		for (let i = 0; i < sources.length; i++) {
-			const currentAlias = processNode(sources[i], lastAlias);
-			if (i > 0) {
-				// Mark this level as a cross join relative to the previous one
-				const currentLevelInfo = levels[levels.length - 1];
-				currentLevelInfo.joinType = 'cross';
-			}
-			lastAlias = currentAlias;
-		}
-	} else if (sources.length === 1) {
-		processNode(sources[0]);
-	}
-
-	return levels;
-}
 
 /**
  * Compiles a subquery used as a source in the FROM clause.
@@ -303,7 +207,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		return;
 	}
 
-	// --- BEGIN PRE-PASS ---
+	// --- BEGIN PRE-PASS for Subqueries/Functions in FROM --- //
 	// Pre-compile FROM clause subquery/function sources to register their schemas/cursors
 	const pendingSubqueries: AST.SubquerySource[] = [];
 	const pendingFunctionSources: AST.FunctionSource[] = []; // Added for FunctionSource
@@ -341,24 +245,42 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		// Revisit if this scenario causes issues.
 		warnLog("compileFromCore returned no cursors for a non-empty FROM clause. Check CTE handling.");
 	}
-	// ------------------------------------------------------------------ //
+	// --- === NEW: Call Query Planner === --- //
+	log("--- Starting Query Planning --- ");
+	const plannedSteps = planQueryExecution(compiler, stmt);
+	log("--- Finished Query Planning --- ");
+	// --- ============================== --- //
 
-	// Pre-process join levels to gather information about the structure
-	const joinLevels = preprocessJoinLevels(compiler, stmt.from);
-	// Ensure fromCursors count matches joinLevels count (sanity check)
-	if (fromCursors.length !== joinLevels.length) {
-		errorLog(`Mismatch between fromCursors (%d) and joinLevels (%d)`, fromCursors.length, joinLevels.length);
-		// Potentially throw an error here or try to reconcile
+	// Check if the plan satisfies the ORDER BY clause
+	let isOrderConsumedByPlan = false;
+	if (stmt.orderBy && stmt.orderBy.length > 0 && plannedSteps.length > 0) {
+		let currentStep: PlannedStep | undefined = plannedSteps[plannedSteps.length - 1];
+		while (currentStep) {
+			if (currentStep.type === 'Scan') {
+				isOrderConsumedByPlan = currentStep.orderByConsumed;
+				break; // Found the originating scan
+			} else if (currentStep.type === 'Join') {
+				if (!currentStep.preservesOuterOrder) {
+					isOrderConsumedByPlan = false; // Order broken by this join
+					break;
+				}
+				// Move to the outer step that provided the order
+				currentStep = currentStep.outerStep;
+			} else {
+				// Unknown step type, assume order is not consumed
+				isOrderConsumedByPlan = false;
+				break;
+			}
+		}
 	}
 
-	// Check for window functions
+	// Check for window functions, aggregates etc. (as before, but may need adjustment based on plannedSteps)
 	const windowColumns = stmt.columns.filter(isWindowFunctionColumn) as {
 		type: 'column';
 		expr: AST.WindowFunctionExpr;
 		alias?: string;
 	}[];
 	const hasWindowFunctions = windowColumns.length > 0;
-
 	const hasGroupBy = !!stmt.groupBy && stmt.groupBy.length > 0;
 	const aggregateColumns = stmt.columns.filter(col => isAggregateResultColumn(compiler, col)) as ({ type: 'column', expr: AST.FunctionExpr, alias?: string })[];
 	const hasAggregates = aggregateColumns.length > 0;
@@ -367,30 +289,30 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	compiler.resultColumns = [];
 	compiler.columnAliases = [];
 
-	// Plan table access early to determine if ORDER BY is consumed
-	// Use the `fromCursors` obtained earlier
-	const allCursors = fromCursors;
-	allCursors.forEach(cursor => {
-		const schema = compiler.tableSchemas.get(cursor);
-		if (schema) {
-			compiler.planTableAccess(cursor, schema, stmt, new Set()); // Initial plan with no outer cursors active
-		}
-	});
-
-	// Determine if ORDER BY is needed AFTER planning
+	// Determine if ORDER BY is needed (logic might need adjustment)
+	// The original check relied on cursorPlanningInfo, which is populated *by* the new planner.
+	// We need to check the *final* plan's capability to produce the order.
 	let needsExternalSort = false;
 	let sortKeyInfo: P4SortKey | null = null;
 	if (stmt.orderBy && stmt.orderBy.length > 0) {
-		const orderByConsumed = allCursors.every(cursor => {
-			const plan = compiler.cursorPlanningInfo.get(cursor);
-			return plan?.orderByConsumed ?? false;
-		});
-		if (!orderByConsumed) {
+		// TODO: Determine orderByConsumed based on the final step in plannedSteps
+		// This requires the planner to potentially propagate orderByConsumed property.
+		// For now, assume external sort is needed if ORDER BY exists.
+		// warnLog("OrderByConsumed check based on new planner output not implemented. Assuming external sort.");
+		// needsExternalSort = true;
+		// --- NEW Logic --- >
+		if (!isOrderConsumedByPlan) {
+			log("Plan does not consume ORDER BY, external sort needed.");
 			needsExternalSort = true;
-			// Sort key info will be constructed later, after finalColumnMap is known
+		} else {
+			log("Plan consumes ORDER BY, skipping external sort.");
+			needsExternalSort = false;
 		}
+		// < --- END NEW Logic ---
 	}
 
+	// ... (Window sorter setup, core compilation, final column mapping etc. as before) ...
+	// NOTE: compileSelectCore might need adjustment if it relies heavily on the old join structure/planning
 	let windowSorterInfo: WindowSorterInfo | undefined;
 	let sharedFrameDefinition: AST.WindowFrame | undefined;
 	let ephSortCursor = -1;
@@ -409,33 +331,27 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	// Prepare for window functions if needed
 	if (hasWindowFunctions) {
-		// When window functions exist, we need a sorter cursor for the window function calculation
-		// Create the window sorter setup with partition/order columns
 		windowSorterInfo = setupWindowSorter(compiler, stmt);
-
-		// Store the frame definition (assuming it's the same for all WFs in the query)
 		if (windowColumns.length > 0 && windowColumns[0].expr.window?.frame) {
 			sharedFrameDefinition = windowColumns[0].expr.window.frame;
 		}
-
-		// Open ephemeral table for window sorter
 		const winSortCursor = windowSorterInfo.cursor;
 		const winSortSchema = compiler.createEphemeralSchema(
 			winSortCursor,
 			windowSorterInfo.schema.columns.length,
 			windowSorterInfo.sortKeyP4
 		);
-
 		compiler.emit(Opcode.OpenEphemeral, winSortCursor, windowSorterInfo.schema.columns.length, 0, winSortSchema, 0, "Open Window Function Sorter");
 	}
 
 	// Compile core once to get the structure (needed for all paths)
+	// This still uses the original `fromCursors` - might need review
 	const coreResult = compiler.compileSelectCore(stmt, fromCursors);
-	const coreResultBaseReg = coreResult.resultBaseReg; // Base of the raw row data
+	const coreResultBaseReg = coreResult.resultBaseReg;
 	const coreNumCols = coreResult.numCols;
 	const coreColumnMap = coreResult.columnMap;
 
-	// --- Determine Final Column Structure and Aliases --- //
+	// --- Determine Final Column Structure and Aliases (logic as before) --- //
 	if (hasWindowFunctions && windowSorterInfo) {
 		// ... (Window function column mapping logic - assume exists) ...
 		finalColumnMap = []; // Placeholder - restore actual logic if needed
@@ -572,6 +488,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	// --- Build Sort Key Info and Prepare External Sorter (AFTER final structure known) --- //
 	if (needsExternalSort && !hasWindowFunctions) {
+		// ... (build sortKeyInfo as before, using finalColumnMap or coreColumnMap)
 		const columnMapForSort = needsAggProcessing ? finalColumnMap : coreColumnMap;
 		const keyIndices: number[] = [];
 		const collations: string[] = [];
@@ -605,57 +522,79 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		compiler.emit(Opcode.OpenEphemeral, ephSortCursor, finalNumCols, 0, ephSortSchema, 0, "Open ORDER BY Sorter");
 	}
 
-	// --- Define Row Processing Callback variable and provide default --- //
+	// --- Define Row Processing Callback variable (as before) --- //
 	let processRowCallback: ProcessRowCallback = (
-		_compiler, _stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner
+		_compiler: Compiler,
+		_stmt: AST.SelectStmt | null,
+		_plannedSteps: PlannedStep[],
+		_activeOuterCursors: ReadonlySet<number>,
+		_context: RowProcessingContext // Changed to context object
 	) => processRowDirect(
-		compiler, stmt, joinLevelsInner, activeOuterCursorsInner, innermostWhereFailTargetInner,
+		compiler, stmt, _plannedSteps, _activeOuterCursors, _context,
 		needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset
 	);
-
-	// --- Determine and Assign Specific Row Processing Callback --- //
+	// --- Determine and Assign Specific Row Processing Callback (as before) --- //
 	if (hasWindowFunctions && windowSorterInfo) {
-		// Assign processRowWindow
 		processRowCallback = (
-			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
-		) => processRowWindow(compiler, stmt, coreColumnMap, windowSorterInfo!); // Use core map for window input
+			_compiler: Compiler,
+			_stmt: AST.SelectStmt | null,
+			_plannedSteps: PlannedStep[],
+			_activeOuterCursors: ReadonlySet<number>,
+			_context: RowProcessingContext // Changed to context object
+		) => processRowWindow(compiler, stmt, coreColumnMap, windowSorterInfo!, _context); // Add context
 	} else if (needsAggProcessing) {
-		// Capture aggregate registers *after* allocation inside this block
+		// ... (allocate agg regs) ...
 		const allocatedAggKeyReg = finalColumnMap.find(info => info.expr?.type !== 'function') ? compiler.allocateMemoryCells(getGroupKeyExpressions(stmt).length) : compiler.allocateMemoryCells(1);
 		const maxAggArgs = aggregateColumns.reduce((max, col) => Math.max(max, col.expr.args.length), 0);
 		const allocatedAggArgsReg = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
 		const allocatedAggSerKeyReg = compiler.allocateMemoryCells(1);
 		log(`DEBUG: Values passed to callback: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`);
-
-		// Assign processRowAggregate
 		processRowCallback = (
-			_compiler, _stmt, _joinLevels, _activeOuterCursors, _innermostWhereFailTarget
+			_compiler: Compiler,
+			_stmt: AST.SelectStmt | null,
+			_plannedSteps: PlannedStep[],
+			_activeOuterCursors: ReadonlySet<number>,
+			_context: RowProcessingContext // Changed to context object
 		) => processRowAggregate(
 			compiler, stmt, aggregateColumns,
-			allocatedAggKeyReg, // Use locally captured allocated values
-			allocatedAggArgsReg,
-			allocatedAggSerKeyReg,
-			hasGroupBy
+			allocatedAggKeyReg, allocatedAggArgsReg, allocatedAggSerKeyReg,
+			hasGroupBy,
+			_context // Add context parameter
 		);
-	} // No final 'else' needed as default is set above
+	}
 
-	// --- Compile Main Loop ---
-	const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compileSelectLoop(
+	// --- Compile Main Loop using the NEW planner output --- //
+	// TODO: Replace compileSelectLoop with compilePlannedStepsLoop
+	// warnLog("Loop generation using compileSelectLoop is DEPRECATED and needs replacement with compilePlannedStepsLoop.");
+	// Placeholder call - This WILL likely fail or produce incorrect code!
+	// const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compileSelectLoop(
+	// 	compiler,
+	// 	stmt,
+	// 	[], // Pass empty array - compileSelectLoop needs replacement
+	// 	fromCursors,
+	// 	processRowCallback
+	// );
+	// === Replace Placeholder with Actual Call ===
+	// Ensure that finalColumnMap is properly initialized before passing to compilePlannedStepsLoop.
+	// The finalColumnMap is used by processRowCallback functions to handle LEFT JOIN padding
+	// by determining which columns come from which relations.
+	const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compilePlannedStepsLoop(
 		compiler,
 		stmt,
-		joinLevels,
-		fromCursors,
-		processRowCallback
+		plannedSteps, // Pass the actual plan
+		fromCursors, // Still needed for compileUnhandledWhereConditions
+		processRowCallback,
+		finalColumnMap // Pass finalColumnMap for LEFT JOIN padding context
 	);
+	// =========================================
 
 	// --- DEFINE finalExitAddr Placeholder --- //
-	// This is the target address for jumps when LIMIT is reached or processing finishes.
 	const finalExitAddr = compiler.allocateAddress("finalSelectExit");
 
 	// Resolve the placeholder for the end of all loops (jumps here before post-processing)
 	compiler.resolveAddress(innermostLoopEndAddrPlaceholder);
 
-	// --- Compile Post-Loop Output Processing ---
+	// --- Compile Post-Loop Output Processing (as before) --- //
 	if (hasWindowFunctions && windowSorterInfo) {
 		compileWindowOutput(compiler, windowSorterInfo, finalColumnMap, sharedFrameDefinition, regLimit, regOffset, finalExitAddr);
 	} else if (needsAggProcessing) {
@@ -667,15 +606,26 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	// Resolve the final exit point AFTER all post-processing
 	compiler.resolveAddress(finalExitAddr); // The above Goto jumps here
 
-	// --- Close Cursors ---
+	// --- Close Cursors --- //
 	if (ephSortCursor !== -1) {
 		compiler.emit(Opcode.Close, ephSortCursor, 0, 0, null, 0, "Close ORDER BY Sorter");
 	}
 	if (windowSorterInfo) {
 		compiler.emit(Opcode.Close, windowSorterInfo.cursor, 0, 0, null, 0, "Close Window Sorter");
 	}
-	joinLevels.forEach(level => {
-		compiler.emit(Opcode.Close, level.cursor, 0, 0, null, 0, `Close FROM Cursor ${level.cursor}`);
+	// Close cursors based on the actual plan executed
+	const cursorsToClose = new Set<number>();
+	plannedSteps.forEach(step => {
+		if (step.type === 'Scan') {
+			step.relation.contributingCursors.forEach(c => cursorsToClose.add(c));
+		} else if (step.type === 'Join') {
+			step.outputRelation.contributingCursors.forEach(c => cursorsToClose.add(c));
+		}
+		// TODO: Add logic for other step types if they introduce cursors
+	});
+	cursorsToClose.forEach(cursorId => {
+		const alias = [...compiler.tableAliases.entries()].find(([, cIdx]) => cIdx === cursorId)?.[0] || `cursor ${cursorId}`;
+		compiler.emit(Opcode.Close, cursorId, 0, 0, null, 0, `Close FROM Cursor ${alias}`);
 	});
 }
 

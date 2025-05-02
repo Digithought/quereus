@@ -6,8 +6,10 @@ import type { P4FuncDef } from '../vdbe/instruction.js';
 import { getGroupKeyExpressions } from './select.js'; // Assuming this helper is moved/exported
 import type { TableSchema } from '../schema/table.js';
 import { expressionToString } from '../util/ddl-stringify.js';
+import type { RowProcessingContext } from './select-loop.js'; // Import the context type
 
 const log = createLogger('compiler:select-aggregate'); // Create logger instance
+const warnLog = log.extend('warn');
 
 export function processRowAggregate(
 	compiler: Compiler,
@@ -16,11 +18,21 @@ export function processRowAggregate(
 	regAggKey: number,
 	regAggArgs: number,
 	regAggSerializedKey: number,
-	hasGroupBy: boolean
+	hasGroupBy: boolean,
+	context: RowProcessingContext // Added context parameter
 ): number {
 	const callbackStartAddr = compiler.getCurrentAddress();
 	const baseKeyReg = compiler.allocateMemoryCells(1);
 	const compoundKeyReg = compiler.allocateMemoryCells(1);
+
+	// Handler for LEFT JOIN padding in aggregates
+	if (context.isLeftJoinPadding) {
+		log("Processing LEFT JOIN NULL padding in aggregate mode - NULLs will propagate naturally");
+		// When padding, columns from the inner relation evaluate to NULL.
+		// This NULL will propagate into GROUP BY keys (grouping all padded rows together if the key is solely from the inner side)
+		// and aggregate function arguments (which typically ignore NULLs, except COUNT(*)).
+		// No special VDBE is needed here beyond standard expression evaluation.
+	}
 
 	// Compile group key expressions (only used if hasGroupBy)
 	const groupKeyExprs = getGroupKeyExpressions(stmt);

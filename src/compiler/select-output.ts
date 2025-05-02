@@ -2,24 +2,72 @@ import type { Compiler } from './compiler.js';
 import type { ColumnResultInfo } from './compiler.js'; // Or wherever it's defined
 import type { TableSchema } from '../schema/table.js';
 import { Opcode } from '../vdbe/opcodes.js';
+import { createLogger } from '../common/logger.js';
+import type { RowProcessingContext } from './select-loop.js'; // Import the context type
+import { expressionToString } from '../util/ddl-stringify.js';
+
+const log = createLogger('compiler:select-output');
+const warnLog = log.extend('warn');
 
 export function processRowDirect(
 	compiler: Compiler,
 	stmt: any, // Replace with actual AST.SelectStmt type
-	joinLevels: ReadonlyArray<any>, // Replace with actual JoinLevelInfo type
+	plannedSteps: ReadonlyArray<any>, // Changed from joinLevels
 	activeOuterCursors: ReadonlySet<number>,
-	innermostWhereFailTarget: number | undefined, // Not used directly here, but part of signature
-	needsExternalSort: boolean,
-	ephSortCursor: number,
-	ephSortSchema: TableSchema | undefined,
-	regLimit: number,
-	regOffset: number
+	context: RowProcessingContext, // Changed to use context object
+	needsExternalSort: boolean = false,
+	ephSortCursor: number = -1,
+	ephSortSchema: TableSchema | undefined = undefined,
+	regLimit: number = 0,
+	regOffset: number = 0
 ): number {
 	const callbackStartAddr = compiler.getCurrentAddress();
 
 	// Re-calculate core results inside the loop to have current row values
 	const { resultBaseReg: currentRowResultBase, numCols: currentRowNumCols, columnMap: currentRowColumnMap } =
 		compiler.compileSelectCore(stmt, [...activeOuterCursors]); // Re-compile expressions for current row
+
+	// LEFT JOIN NULL padding handling
+	if (context.isLeftJoinPadding) {
+		log("Processing LEFT JOIN NULL padding in direct output");
+
+		// If this is LEFT JOIN padding, we need to NULL out registers from the inner relation
+		// Find columns in finalColumnMap that correspond to the inner relation's cursors
+		const innerCursors = context.isLeftJoinPadding.innerContributingCursors;
+
+		// Iterate the FINAL column map provided in the context
+		context.finalColumnMap.forEach((colInfo, idx) => {
+			// Check if the source cursor for this *final output column* is one of the inner cursors
+			const isFromInnerRelation = colInfo.sourceCursor !== -1 && innerCursors.has(colInfo.sourceCursor);
+			if (isFromInnerRelation) {
+				// This column comes from the inner relation of our LEFT JOIN - make it NULL
+				// The targetReg here refers to the register in the *final* output structure
+				const finalTargetReg = colInfo.targetReg;
+				// We need to find the corresponding register in the *current* row's output
+				// This requires mapping based on expression or index if structure is consistent.
+				// Assuming the structure IS consistent between coreResult and finalColumnMap for non-agg/window cases.
+				// Find the equivalent column in the *currently computed* row map
+				const currentRowColInfo = currentRowColumnMap.find(currentRowCol =>
+					// Attempt matching by expression string if available, otherwise index might be ambiguous
+					(colInfo.expr && currentRowCol.expr && expressionToString(colInfo.expr) === expressionToString(currentRowCol.expr))
+					// Fallback to index - this assumes the core compilation result columns are in the same order
+					// as the final output columns, which might not hold if transformations happen.
+					?? currentRowColumnMap[idx]
+				);
+
+				if (currentRowColInfo) {
+					const targetReg = currentRowColInfo.targetReg;
+					compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, `NULL Pad LEFT JOIN col from cursor ${colInfo.sourceCursor} into reg ${targetReg}`);
+				} else {
+					warnLog(`Could not find matching current row register for final column index ${idx} during LEFT JOIN padding.`);
+					// Attempting to NULL the final target register directly might be incorrect
+					// if it hasn't been populated yet or is reused.
+					// compiler.emit(Opcode.Null, 0, finalTargetReg, 0, null, 0, `NULL Pad Attempt on Final Reg ${finalTargetReg}`);
+				}
+			}
+			// Otherwise, the column is computed normally (already handled by compileSelectCore earlier in this function)
+		});
+	}
 
 	if (needsExternalSort) {
 		// --- Store in Sorter ---
