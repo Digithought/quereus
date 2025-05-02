@@ -16,7 +16,6 @@ import { type ProcessRowCallback } from './select-loop.js';
 import { processRowAggregate, compileAggregateOutput } from './select-aggregate.js';
 import { processRowDirect, compileSortOutput } from './select-output.js';
 import { processRowWindow, compileWindowOutput } from './select-window.js';
-import { compileJoinCondition, emitLeftJoinNullPadding } from './join.js'; // Added emitLeftJoinNullPadding
 import { getExpressionCollation } from './utils.js'; // Import needed utility
 import { planQueryExecution } from './planner/query-planner.js';
 import type { PlannedStep } from './planner/types.js';
@@ -29,7 +28,24 @@ const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
 const debugLog = log.extend('debug');
 
-
+/**
+ * Interface to hold consolidated state for each level in the join structure.
+ * This replaces multiple parallel arrays indexed by loop level.
+ */
+export interface JoinLevelInfo {
+	cursor: number;                // The VDBE cursor ID for this level
+	schema: TableSchema;           // Schema for the table at this level
+	alias: string;                 // Alias used for this level (for lookups)
+	joinType?: AST.JoinClause['joinType'] | 'cross'; // Type of join connecting this level to the previous one
+	condition?: AST.Expression;    // ON condition expression for this join
+	usingColumns?: string[];       // USING columns for this join
+	// VDBE State (populated during compilation)
+	loopStartAddr?: number;        // Address of loop start
+	eofAddr?: number;              // Address to jump to when EOF reached (for VNext)
+	joinFailAddr?: number;         // Address to jump to when join condition fails
+	matchReg?: number;             // For LEFT JOINs: register containing match flag
+	vFilterEofPlaceholder?: number; // Dedicated placeholder for VFilter jump
+}
 
 /**
  * Compiles a subquery used as a source in the FROM clause.
