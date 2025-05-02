@@ -1,9 +1,8 @@
-import type * as AST from '../../parser/ast';
-import type { Compiler, CursorPlanningResult } from '../compiler';
-import { log, warnLog, errorLog } from './helpers';
-import type { QueryRelation, JoinCandidateInfo, PlannedStep, PlannedScanStep, PlannedJoinStep } from './types';
-import { planTableAccessHelper } from './helpers.js';
-import { generateRelationId } from './utils';
+import type * as AST from '../../parser/ast.js';
+import type { Compiler, CursorPlanningResult } from '../compiler.js';
+import { log, warnLog, errorLog } from './helpers.js';
+import type { QueryRelation, JoinCandidateInfo, PlannedStep, PlannedScanStep, PlannedJoinStep } from './types.js';
+import { generateRelationId } from './utils.js';
 import { expressionToString } from '../../util/ddl-stringify.js';
 
 /** Helper to check if a plan's consumed order matches the statement's ORDER BY */

@@ -1,5 +1,3 @@
-import { StatusCode } from '../../common/constants.js';
-import { SqliteError } from '../../common/errors.js';
 import type { Compiler } from '../compiler.js';
 import type * as AST from '../../parser/ast.js';
 import type { PlannedStep } from './types.js';

@@ -1,12 +1,12 @@
-import { IndexConstraintOp } from '../../common/constants';
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type * as AST from '../../parser/ast';
-import type { TableSchema } from '../../schema/table';
-import type { IndexConstraint } from '../../vtab/indexInfo';
-import type { Compiler } from '../compiler';
-import { log, warnLog } from './helpers';
-import type { ConstraintExtractionResult } from './types';
+import { IndexConstraintOp } from '../../common/constants.js';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type * as AST from '../../parser/ast.js';
+import type { TableSchema } from '../../schema/table.js';
+import type { IndexConstraint } from '../../vtab/indexInfo.js';
+import type { Compiler } from '../compiler.js';
+import { log, warnLog } from './helpers.js';
+import type { ConstraintExtractionResult } from './types.js';
 
 /** Extracts constraints and identifies handled nodes */
 export function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: TableSchema, whereExpr: AST.Expression | undefined, activeOuterCursors: ReadonlySet<number>): ConstraintExtractionResult {

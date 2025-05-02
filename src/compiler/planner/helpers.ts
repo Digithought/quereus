@@ -1,13 +1,13 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type * as AST from '../../parser/ast';
-import type { TableSchema } from '../../schema/table';
-import type { IndexOrderBy, IndexInfo } from '../../vtab/indexInfo';
-import type { Compiler, CursorPlanningResult } from '../compiler';
-import { extractConstraints } from './constraints';
-import { calculateColumnUsage } from './columns';
-import type { PlannedStep } from './types';
-import { createLogger } from '../../common/logger';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type * as AST from '../../parser/ast.js';
+import type { TableSchema } from '../../schema/table.js';
+import type { IndexOrderBy, IndexInfo } from '../../vtab/indexInfo.js';
+import type { Compiler, CursorPlanningResult } from '../compiler.js';
+import { extractConstraints } from './constraints.js';
+import { calculateColumnUsage } from './columns.js';
+import type { PlannedStep } from './types.js';
+import { createLogger } from '../../common/logger.js';
 
 // Define and export loggers at the top level
 export const log = createLogger('compiler:plan');

@@ -1,8 +1,8 @@
-import { SqliteError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import type * as AST from '../../parser/ast';
-import type { Compiler } from '../compiler';
-import { warnLog } from './helpers';
+import { SqliteError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type * as AST from '../../parser/ast.js';
+import type { Compiler } from '../compiler.js';
+import { warnLog } from './helpers.js';
 
 /**
  * Traverses an expression AST to find all referenced columns.

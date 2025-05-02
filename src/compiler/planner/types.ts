@@ -1,7 +1,7 @@
-import type * as AST from '../../parser/ast';
-import type { TableSchema } from '../../schema/table';
-import type { IndexConstraint } from '../../vtab/indexInfo';
-import type { CursorPlanningResult } from '../compiler';
+import type * as AST from '../../parser/ast.js';
+import type { TableSchema } from '../../schema/table.js';
+import type { IndexConstraint } from '../../vtab/indexInfo.js';
+import type { CursorPlanningResult } from '../compiler.js';
 
 /** Result type for constraint extraction */
 export interface ConstraintExtractionResult {
