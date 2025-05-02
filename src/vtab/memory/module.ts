@@ -188,9 +188,24 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 					break; // Need equality on all index columns for this plan
 				}
 			}
+			// Update bestPlan directly if EQ is better than the initial full scan
 			if (canUseEqPlan && indexCols.length > 0) {
 				const planEqCost = Math.log2(tableSize + 1) + 1.0; // Lower cost for direct lookup
 				const planEqRows = BigInt(1);
+				// Compare against bestPlan found so far for *any* index
+				if (planEqCost < bestPlan.cost) {
+					bestPlan = { // Update overall best plan directly
+						indexId: indexId, // Use the current indexId
+						planType: PLAN_TYPE_EQ,
+						cost: planEqCost,
+						rows: planEqRows,
+						usedConstraintIndices: eqPlanUsedIndices,
+						orderByConsumed: true, // Equality scan implies order
+						isDesc: false // EQ plan is not inherently desc
+					};
+				}
+				// Also update currentPlan in case range/order checks improve it further
+				// Though unlikely for EQ plan
 				if (planEqCost < currentPlan.cost) {
 					currentPlan = {
 						...currentPlan,
@@ -198,7 +213,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 						cost: planEqCost,
 						rows: planEqRows,
 						usedConstraintIndices: eqPlanUsedIndices,
-						orderByConsumed: true // Equality scan implies order
+						orderByConsumed: true
 					};
 				}
 			}
@@ -272,7 +287,9 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				}
 			}
 
-			// 4. Update Best Plan if Current is Better
+			// 4. Update Best Plan if Current is Better (final check for this index)
+			// This check is now potentially redundant if EQ already updated bestPlan,
+			// but keep it for range/order plans that might beat the initial bestPlan.
 			if (currentPlan.cost < bestPlan.cost) {
 				bestPlan = { ...currentPlan };
 			}

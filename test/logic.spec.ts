@@ -184,6 +184,32 @@ describe('SQL Logic Tests', () => {
 								// Unexpected runtime error, dump diagnostics
 								let diagnosticInfo = '';
 								try {
+									// Add Query Plan diagnostics
+									if (db && sqlBlock) {
+										diagnosticInfo += `\n\n--- QUERY PLAN ---`;
+										try {
+											// Parse the block to get the AST of the failing statement
+											const parserForPlan = new Parser();
+											const allStmtsAst = parserForPlan.parseAll(sqlBlock);
+											if (allStmtsAst.length > 0) {
+												const failingStmtAst = allStmtsAst[allStmtsAst.length - 1];
+												const planSteps = await db._getPlanInfo(failingStmtAst); // Pass AST
+												if (planSteps.length > 0) {
+													planSteps.forEach(step => {
+														diagnosticInfo += `\n${step.selectId}|${step.order}|${step.from}| ${step.detail}`;
+													});
+												} else {
+													diagnosticInfo += `\n(No plan info returned)`;
+												}
+											} else {
+												diagnosticInfo += `\n(No plan info returned)`;
+											}
+										} catch (planError: any) {
+											diagnosticInfo += `\n(Error getting plan: ${planError.message})`;
+										}
+									}
+
+									// Existing AST diagnostics
 									const parser = new Parser();
 									// Try parsing the block that caused the error
 									const statementsAst = parser.parseAll(sqlBlock);
