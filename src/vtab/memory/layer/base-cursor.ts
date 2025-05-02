@@ -13,6 +13,7 @@ import { createLogger } from '../../../common/logger.js'; // Import logger
 const log = createLogger('vtab:memory:layer:base-cursor');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
+const debugLog = log.extend('debug');
 
 /**
  * Internal cursor implementation for iterating directly over a BaseLayer's B-trees.
@@ -30,16 +31,16 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 	private currentValue: MemoryTableRow | null = null; // Holds the actual row data
 	private currentModKey: ModificationKey | null = null; // Holds the index key ([IndexKey, rowid] or PrimaryKey)
 
-	// Is this is the first advance after an EQ initialization
-	private isInitialAdvanceAfterEqInit: boolean = false;
+	// Flag specifically for EQ plan handling
+	private isEqPlanCursor: boolean = false;
 
 	constructor(layer: BaseLayer, plan: ScanPlan) {
 		this.layer = layer;
 		this.plan = plan;
+		this.isEqPlanCursor = plan.equalityKey !== undefined;
 
 		if (plan.indexName === 'primary') {
 			this.targetTree = layer.primaryTree;
-			// Get comparator from the BaseLayer instance
 			this.keyComparator = layer.compareKeys;
 			this.keyExtractor = layer.keyFromEntry;
 		} else {
@@ -48,14 +49,8 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 				throw new Error(`BaseLayerCursor: Secondary index '${plan.indexName}' not found.`);
 			}
 			this.targetTree = secondaryIndex.data;
-			// Key for secondary index is [IndexKey, rowid]
-			// Get comparator and extractor from the MemoryIndex instance
-			// The comparator from MemoryIndex already compares the key part (BTreeKey)
 			this.keyComparator = secondaryIndex.compareKeys;
-			// The secondary BTree stores [key, rowid] as value, and its key is the pair itself.
-			// We need the *index key* extractor from MemoryIndex for comparisons within checkPlan etc.
-			this.keyExtractor = secondaryIndex.keyFromRow; // This extracts the IndexKey from a full MemoryTableRow
-			// However, the BTree key itself is [IndexKey, rowid]. Let's keep the comparator as is for BTree ops.
+			this.keyExtractor = secondaryIndex.keyFromRow;
 		}
 
 		this.initializeIterator();
@@ -97,281 +92,183 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 	}
 
 	private initializeIterator(): void {
-		let startPath: Path<any, any> | null = null;
-		const tree = this.targetTree;
-		// Reset the flag
-		this.isInitialAdvanceAfterEqInit = false;
+		this.iterator = null;
+		this.currentPath = null;
+		this._isEof = true;
+		this.currentValue = null;
+		this.currentModKey = null;
 
-		try {
-			if (this.plan.equalityKey !== undefined) {
-				// EQ Scan: Find the specific key.
-				// For secondary index, the value stored (and thus the key extracted by BTree) is [IndexKey, rowid].
-				// The plan.equalityKey needs to be formed correctly for the find operation.
-				let findKey: ModificationKey;
-				if (this.plan.indexName === 'primary') {
-					findKey = this.plan.equalityKey;
-				} else {
-					// For secondary index, find needs the [IndexKey, rowid] pair.
-					// We search for the *start* of potential matches for the IndexKey part.
-					// Use a dummy minimal rowid (like 0) for the find.
-					findKey = [this.plan.equalityKey, BigInt(0)];
-				}
-				// BTree's find uses its *own* key extractor and comparator internally, which operate on the stored value ([IndexKey, rowid] for secondary)
-				startPath = tree.find(findKey);
-
-				if (startPath) {
-					// Check if the found path actually matches the equality key using checkPlan
-					const { itemKey, itemValue } = this.extractKeyValueAt(startPath);
-
+		if (this.plan.equalityKey !== undefined) {
+			// --- EQ Plan Initialization ---
+			try {
+				const keyToFind = this.plan.equalityKey;
+				const path = this.targetTree.find(keyToFind);
+				if (path.on) {
+					// Key found - check if it truly matches (for secondary index)
+					const { itemKey, itemValue } = this.extractKeyValueAt(path);
 					if (itemKey !== null && this.checkPlan(itemKey)) {
-						// Exact match found! Position cursor directly on it.
-						this.currentPath = startPath;
-						this.currentValue = itemValue;
+						// Position directly on it
+						this.currentPath = path;
 						this.currentModKey = itemKey;
-						this._isEof = false;
-						// Initialize iterator for subsequent next() calls, starting *at* the current path
-						this.iterator = this.plan.descending ? tree.descending(startPath) : tree.ascending(startPath);
-						// Set the flag for the next advanceIterator call
-						this.isInitialAdvanceAfterEqInit = true;
-						// DO NOT advance iterator here, already positioned.
+						this.currentValue = itemValue;
+						this._isEof = !itemValue; // EOF if row data is null
 					} else {
-						// find() landed somewhere else, or checkPlan failed. Key doesn't exist or value is null.
+						// Key not found or check failed
 						this._isEof = true;
-						this.iterator = null;
 					}
 				} else {
-					// tree.find() returned null, key not found.
+					// Key not found
 					this._isEof = true;
-					this.iterator = null;
 				}
-			} else {
-				// Full or Range Scan: Start from beginning or end.
-				startPath = this.plan.descending ? tree.last() : tree.first();
+			} catch (e) {
+				errorLog("Error during EQ find in BTree iterator initialization: %O", e);
+				this._isEof = true;
+				throw e;
+			}
+			// No iterator needed or used for EQ plan
+		} else {
+			// --- Range or Full Scan Initialization ---
+			try {
+				const startKey = this.plan.lowerBound?.value;
+				let startPath: Path<any, any> | null = null;
+
+				if (startKey !== undefined) {
+					startPath = this.targetTree.find(startKey);
+					// Adjust start path based on GT vs GE if needed (digitree finds GE)
+					if (this.plan.lowerBound?.op === IndexConstraintOp.GT && startPath.on) {
+						// Need to start *after* this key
+						const tempIterator = this.targetTree.ascending(startPath);
+						const nextResult = tempIterator.next(); // Move one step
+						startPath = nextResult.done ? null : nextResult.value;
+					}
+				} else {
+					startPath = this.plan.descending ? this.targetTree.last() : this.targetTree.first();
+				}
 
 				if (startPath) {
-					this.iterator = this.plan.descending ? tree.descending(startPath) : tree.ascending(startPath);
-					// Perform initial next() to position on the first valid element that matches bounds
-					this.advanceIterator();
+					this.iterator = this.plan.descending
+						? this.targetTree.descending(startPath)
+						: this.targetTree.ascending(startPath);
+					this.advanceIterator(); // Position on the first valid element
 				} else {
-					// Tree is empty
-					this._isEof = true;
-					this.iterator = null;
+					this._isEof = true; // No elements in range or tree empty
 				}
+			} catch (e) {
+				errorLog("Error initializing Range/Full BTree iterator: %O", e);
+				this._isEof = true;
+				throw e;
 			}
-		} catch (e) {
-			// Use namespaced error logger
-			errorLog("Error initializing BTree iterator: %O", e);
-			this._isEof = true;
-			this.iterator = null;
-			throw e; // Re-throw initialization errors
 		}
 	}
 
+	// Advance is only used for Range/Full scans
 	private advanceIterator(): void {
 		if (!this.iterator) {
 			this._isEof = true;
-			this.currentPath = null;
-			this.currentValue = null;
-			this.currentModKey = null;
 			return;
 		}
 
-		// If this is the first advance after an EQ init, we need to call next() once
-		// to move *past* the initial element the iterator might be sitting on.
-		// Then proceed with the normal loop to find the *actual* next valid item.
-		if (this.isInitialAdvanceAfterEqInit) {
-			const initialResult = this.iterator.next(); // Consume the initial element
-			this.isInitialAdvanceAfterEqInit = false; // Clear the flag
-			if (initialResult.done) {
-				this._isEof = true;
+		while (true) {
+			const result = this.iterator.next();
+			if (result.done) {
 				this.currentPath = null;
 				this.currentValue = null;
 				this.currentModKey = null;
-				return; // Nothing more to iterate
-			}
-		}
-
-		let loopCount = 0;
-		let foundNext = false;
-		while (!foundNext) {
-			loopCount++;
-			const nextResult = this.iterator.next();
-
-			if (nextResult.done) {
 				this._isEof = true;
-				this.currentPath = null;
-				this.currentValue = null;
-				this.currentModKey = null;
-				break; // Exit loop, EOF reached
+				return;
 			}
 
-			this.currentPath = nextResult.value;
-			if (!this.currentPath) { // Should not happen if !done
-				this._isEof = true;
-				this.currentValue = null;
-				this.currentModKey = null;
-				break;
-			}
-
+			this.currentPath = result.value;
 			const { itemKey, itemValue } = this.extractKeyValueAt(this.currentPath);
-			// Use replacer to handle BigInt in JSON.stringify
-			const itemKeyStr = JSON.stringify(itemKey, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value);
 
-			if (itemKey === null) {
-				continue; // Skip this entry
+			if (itemKey === null) continue; // Skip if key extraction failed
+
+			// Check bounds
+			if (!this.checkPlanBounds(itemKey)) {
+				// Exceeded bounds, stop iteration
+				this.currentPath = null;
+				this.currentValue = null;
+				this.currentModKey = null;
+				this._isEof = true;
+				return;
 			}
 
-			const planCheckResult = this.checkPlan(itemKey);
-			// Use itemKeyStr for logging
+			// Found a valid item within bounds
+			this.currentModKey = itemKey;
+			this.currentValue = itemValue;
+			this._isEof = !itemValue; // EOF if no row data associated (e.g., secondary index points to deleted row)
 
-			if (planCheckResult) {
-				this.currentValue = itemValue; // itemValue guaranteed non-null if key wasn't null and checkPlan needs value potentially
-				this.currentModKey = itemKey;
-				this._isEof = false;
-				foundNext = true; // Found a valid item, exit loop
-			} else {
-				// Plan check failed
-				const stopCheckResult = this.shouldStopIteration(itemKey);
-				// Use itemKeyStr for logging
-
-				if (stopCheckResult) {
-					this._isEof = true;
-					this.currentPath = null;
-					this.currentValue = null;
-					this.currentModKey = null;
-					break; // Exit loop, optimization
-				} else {
-					// Otherwise, continue to the next item in the iterator
-				}
+			// Stop if we found a valid row, otherwise continue loop to find next non-null row value
+			if (this.currentValue) {
+				return;
 			}
 		}
 	}
 
-	/** Checks if the extracted key satisfies the scan plan constraints */
-	private checkPlan(key: ModificationKey): boolean {
-		// Ensure plan's equality key exists before proceeding with EQ check
-		if (this.plan.equalityKey === undefined) {
-			// For Range/Full scan, check bounds if they exist.
-			// Bounds usually apply to the first column of the index key.
-			let firstColKey: SqlValue | null = null;
-			if (this.plan.indexName === 'primary') {
-				// Primary key (key is BTreeKey = SqlValue | SqlValue[])
-				if (Array.isArray(key)) {
-					// Ensure the first element is SqlValue, not another array (though unlikely for primary key)
-					firstColKey = key.length > 0 && !Array.isArray(key[0]) ? key[0] : null;
-				} else {
-					firstColKey = key as SqlValue; // key is SqlValue here
-				}
-			} else {
-				// Secondary key is [IndexKey, rowid]. IndexKey could be composite (BTreeKey = SqlValue | SqlValue[]).
-				const indexKeyPart = (key as [BTreeKey, bigint])[0];
-				if (Array.isArray(indexKeyPart)) {
-					firstColKey = indexKeyPart.length > 0 && !Array.isArray(indexKeyPart[0]) ? indexKeyPart[0] : null;
-				} else {
-					firstColKey = indexKeyPart as SqlValue; // indexKeyPart is SqlValue here
-				}
-			}
-
-			if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
-				// If we couldn't extract a comparable first column key, but have bounds, assume it fails the check?
-				// Or log a warning? Let's assume failure for safety.
-				// Use namespaced warn logger
-				warnLog("Could not extract first column key for range check.");
-				return false;
-			}
-
-			if (this.plan.lowerBound && firstColKey !== null) {
-				const cmp = compareSqlValues(firstColKey, this.plan.lowerBound.value);
-				if (cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT)) {
-					return false; // Below lower bound
-				}
-			}
-			if (this.plan.upperBound && firstColKey !== null) {
-				const cmp = compareSqlValues(firstColKey, this.plan.upperBound.value);
-				if (cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT)) {
-					return false; // Above upper bound
-				}
-			}
-
-			return true; // Passed checks or no bounds
-		} else {
-			// EQ scan: key must match exactly.
-			// For secondary index, compare only the IndexKey part.
-			// Extract the BTreeKey part for comparison
-			const keyToCompare = this.plan.indexName === 'primary' ? (key as BTreeKey) : (key as [BTreeKey, bigint])[0];
-
-			// Use the correct comparator based on index type
-			// The `keyComparator` property is already set correctly in the constructor
-			// to handle either primary or secondary key comparison.
-			return this.keyComparator(keyToCompare, this.plan.equalityKey) === 0;
-		}
-	}
-
-	/** Determines if iteration can stop early based on plan and current key */
-	private shouldStopIteration(key: ModificationKey): boolean {
-		// EQ scan should stop immediately if the key doesn't match (handled in checkPlan implicitly by BTree.find + iteration start)
-		// More accurately, if the iterated key is *past* the equality key in the scan direction.
-		if (this.plan.equalityKey !== undefined) {
-			// Extract the BTreeKey part for comparison
-			const keyToCompare = this.plan.indexName === 'primary' ? (key as BTreeKey) : (key as [BTreeKey, bigint])[0];
-
-			// Use the correct comparator based on index type
-			// The `keyComparator` property is already set correctly in the constructor.
-			const cmp = this.keyComparator(keyToCompare, this.plan.equalityKey);
-
-			if (this.plan.descending && cmp < 0) return true; // EQ DESC: gone past target
-			if (!this.plan.descending && cmp > 0) return true; // EQ ASC: gone past target
-			// If cmp === 0, we should continue if it's an EQ scan to check subsequent items
-			// (though BTree iteration from find() often handles this correctly).
-			// If it's a range scan, cmp===0 doesn't imply stopping.
-		}
-
-		// Check range bounds for early exit
+	/** Checks if the key is within the plan's range bounds */
+	private checkPlanBounds(key: ModificationKey): boolean {
 		let firstColKey: SqlValue | null = null;
 		if (this.plan.indexName === 'primary') {
-			if (Array.isArray(key)) {
-				firstColKey = key.length > 0 && !Array.isArray(key[0]) ? key[0] : null;
-			} else {
-				firstColKey = key as SqlValue;
-			}
+			const btreeKey = key as BTreeKey;
+			firstColKey = Array.isArray(btreeKey) ? (btreeKey[0] as SqlValue) : btreeKey;
 		} else {
 			const indexKeyPart = (key as [BTreeKey, bigint])[0];
-			if (Array.isArray(indexKeyPart)) {
-				firstColKey = indexKeyPart.length > 0 && !Array.isArray(indexKeyPart[0]) ? indexKeyPart[0] : null;
-			} else {
-				firstColKey = indexKeyPart as SqlValue;
-			}
+			firstColKey = Array.isArray(indexKeyPart) ? (indexKeyPart[0] as SqlValue) : indexKeyPart;
 		}
 
 		if (firstColKey === null && (this.plan.lowerBound || this.plan.upperBound)) {
-			// If bounds exist but we can't compare, we can't optimize, so don't stop early.
+			warnLog("Could not extract first column key for range check.");
 			return false;
 		}
 
-		if (!this.plan.descending) { // Ascending scan
-			if (this.plan.upperBound && firstColKey !== null) {
-				const cmp = compareSqlValues(firstColKey, this.plan.upperBound.value);
-				// If current key is strictly greater than upper bound, stop.
-				// If equal, only stop if bound op is LT.
-				if (cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT)) {
-					return true;
-				}
-			}
-		} else { // Descending scan
-			if (this.plan.lowerBound && firstColKey !== null) {
-				const cmp = compareSqlValues(firstColKey, this.plan.lowerBound.value);
-				// If current key is strictly less than lower bound, stop.
-				// If equal, only stop if bound op is GT.
-				if (cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT)) {
-					return true;
-				}
+		if (this.plan.lowerBound && firstColKey !== null) {
+			const cmp = compareSqlValues(firstColKey, this.plan.lowerBound.value);
+			if (cmp < 0 || (cmp === 0 && this.plan.lowerBound.op === IndexConstraintOp.GT)) {
+				return false; // Below lower bound
 			}
 		}
-		return false;
+		if (this.plan.upperBound && firstColKey !== null) {
+			const cmp = compareSqlValues(firstColKey, this.plan.upperBound.value);
+			if (cmp > 0 || (cmp === 0 && this.plan.upperBound.op === IndexConstraintOp.LT)) {
+				return false; // Above upper bound
+			}
+		}
+		return true;
 	}
 
+	/** Checks if the extracted key satisfies the plan's equality constraint */
+	private checkPlan(key: ModificationKey): boolean {
+		if (this.plan.equalityKey === undefined) {
+			// Should not be called for non-EQ plans, but return true if it is
+			return true;
+		}
+
+		// EQ scan: key must match exactly.
+		// For secondary index, compare only the IndexKey part.
+		const keyToCompare = this.plan.indexName === 'primary' ? (key as BTreeKey) : (key as [BTreeKey, bigint])[0];
+		return this.keyComparator(keyToCompare, this.plan.equalityKey) === 0;
+	}
+
+	// No longer needed - bounds check handles this
+	// /** Determines if iteration can stop early based on plan and current key */
+	// private shouldStopIteration(key: ModificationKey): boolean { ... }
+
 	async next(): Promise<void> {
-		if (!this._isEof) {
+		if (this._isEof) return;
+
+		if (this.isEqPlanCursor) {
+			// --- EQ Plan Next ---
+			// After the first result (positioned in constructor), next always leads to EOF
+			this.currentPath = null;
+			this.currentValue = null;
+			this.currentModKey = null;
+			this._isEof = true;
+		} else {
+			// --- Range or Full Scan Next ---
+			if (!this.iterator) {
+				this._isEof = true; // Should not happen if not EOF initially
+				return;
+			}
 			this.advanceIterator();
 		}
 	}

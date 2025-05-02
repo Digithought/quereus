@@ -7,6 +7,7 @@ import { ConflictResolution } from '../../common/constants.js';
 import type { IndexConstraint, IndexConstraintUsage, IndexInfo } from '../../vtab/indexInfo.js';
 import type { IndexSchema } from '../../schema/table.js';
 import { createLogger } from '../../common/logger.js';
+import { safeJsonStringify } from '../../util/serialization.js';
 
 const log = createLogger('vdbe:vtab');
 const errorLog = log.extend('error');
@@ -56,42 +57,60 @@ export function registerHandlers(handlers: Handler[]) {
       args.push(ctx.getMem(argsReg + i));
     }
 
+    // Determine constraints to pass to the VTab filter method.
+    // The VTab filter expects constraints relevant to the *chosen plan* (idxNum/idxStr).
+    // aConstraintUsage maps *all* potential constraints to their argvIndex if used.
+    // We pass the full IndexInfo and let the VTab filter/cursor decide which ones to use.
     const constraintsToPass: { constraint: IndexConstraint, argvIndex: number }[] = [];
     if (p4Info.aConstraint && p4Info.aConstraintUsage) {
-      p4Info.aConstraintUsage.forEach((usage, constraintIdx) => {
-        if (usage.argvIndex > 0 && constraintIdx < p4Info.aConstraint.length) {
-          constraintsToPass.push({
-            constraint: p4Info.aConstraint[constraintIdx],
-            argvIndex: usage.argvIndex
-          });
-        }
-      });
+        p4Info.aConstraintUsage.forEach((usage, constraintIdx) => {
+            if (usage.argvIndex > 0 && constraintIdx < p4Info.aConstraint.length) {
+                constraintsToPass.push({
+                    constraint: p4Info.aConstraint[constraintIdx],
+                    argvIndex: usage.argvIndex
+                });
+            }
+        });
     }
 
-    const indexInfo: IndexInfo = {
-      nConstraint: p4Info.aConstraint?.length ?? 0,
-      aConstraint: p4Info.aConstraint ?? [],
-      nOrderBy: p4Info.nOrderBy ?? 0,
-      aOrderBy: p4Info.aOrderBy ?? [],
-      colUsed: p4Info.colUsed ?? BigInt(-1),
-      aConstraintUsage: p4Info.aConstraintUsage ?? [],
-      idxNum: p4Info.idxNum,
-      idxStr: p4Info.idxStr,
-      orderByConsumed: p4Info.orderByConsumed ?? false,
-      estimatedCost: p4Info.estimatedCost ?? 0,
-      estimatedRows: p4Info.estimatedRows ?? BigInt(0),
-      idxFlags: p4Info.idxFlags ?? 0,
-    };
+    // For debugging - log constraints and args detail
+    log(`VFilter on cursor ${cIdx}, idxNum=${p4Info.idxNum}, idxStr=${p4Info.idxStr || "null"}, args=${safeJsonStringify(args)}, constraints=${safeJsonStringify(constraintsToPass)}`);
 
     try {
-      await cursor.instance.filter(p4Info.idxNum, p4Info.idxStr, constraintsToPass, args, indexInfo);
-      const eof = cursor.instance.eof();
-      ctx.pc = eof ? addrIfEmpty : ctx.pc + 1;
+      // Convert p4Info to IndexInfo properly
+      const indexInfo: IndexInfo = {
+        nConstraint: p4Info.aConstraint?.length ?? 0,
+        aConstraint: p4Info.aConstraint ?? [],
+        nOrderBy: p4Info.nOrderBy ?? 0,
+        aOrderBy: p4Info.aOrderBy ?? [],
+        colUsed: p4Info.colUsed ?? BigInt(-1),
+        aConstraintUsage: p4Info.aConstraintUsage ?? [],
+        idxNum: p4Info.idxNum,
+        idxStr: p4Info.idxStr,
+        orderByConsumed: p4Info.orderByConsumed ?? false,
+        estimatedCost: p4Info.estimatedCost ?? 0,
+        estimatedRows: p4Info.estimatedRows ?? BigInt(0),
+        idxFlags: p4Info.idxFlags ?? 0,
+      };
+
+      await cursor.instance.filter(
+        p4Info.idxNum,
+        p4Info.idxStr,
+        constraintsToPass, // Pass only the constraints with argvIndex > 0
+        args,
+        indexInfo          // Pass the full IndexInfo
+      );
+
+      // After filter, if EOF, jump to addrIfEmpty
+      if (cursor.instance.eof()) {
+        ctx.pc = addrIfEmpty;
+      }
+
     } catch (e) {
       handleVTabError(ctx, e, cursor.vtab?.tableName ?? `cursor ${cIdx}`, 'filter');
       return ctx.error?.code;
     }
-    return undefined; // PC handled
+    return undefined;
   };
 
   handlers[Opcode.VNext] = async (ctx, inst) => {

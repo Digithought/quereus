@@ -69,8 +69,18 @@ export function expressionToString(expr: AST.Expression): string {
 			}
 			return colStr;
 		case 'binary':
-			return `(${expressionToString(expr.left)} ${expr.operator} ${expressionToString(expr.right)})`;
+			// Conditionally add parentheses for nested binary expressions
+			let leftStr = expressionToString(expr.left);
+			if (expr.left.type === 'binary') {
+				leftStr = `(${leftStr})`;
+			}
+			let rightStr = expressionToString(expr.right);
+			if (expr.right.type === 'binary') {
+				rightStr = `(${rightStr})`;
+			}
+			return `${leftStr} ${expr.operator} ${rightStr}`;
 		case 'unary':
+			// Keep parentheses for unary operators
 			return `${expr.operator} (${expressionToString(expr.expr)})`;
 		case 'function':
 			if (expr.name.toLowerCase() === 'count' && expr.args.length === 0) {

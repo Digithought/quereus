@@ -26,6 +26,7 @@ export class Statement {
 	private vdbeProgram: VdbeProgram | null = null;
 	private vdbe: VdbeRuntime | null = null;
 	private needsCompile = true;
+	private onceExecutedPCs: Set<number> = new Set(); // Track executed Once opcodes
 
 	/**
 	 * @internal - Use db.prepare()
@@ -253,6 +254,7 @@ export class Statement {
 		this.currentRowInternal = null;
 		this.busy = false;
 		this.needsCompile = false; // Program is still valid
+		this.onceExecutedPCs.clear(); // Clear the Once tracker on reset
 	}
 
 	/**
@@ -512,5 +514,15 @@ export class Statement {
 
 		// For other types, convert to string first
 		return new TextEncoder().encode(String(value)).length;
+	}
+
+	/** @internal Used by Opcode.Once handler */
+	didOnceExecute(pc: number): boolean {
+		return this.onceExecutedPCs.has(pc);
+	}
+
+	/** @internal Used by Opcode.Once handler */
+	markOnceAsExecuted(pc: number): void {
+		this.onceExecutedPCs.add(pc);
 	}
 }

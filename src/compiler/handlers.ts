@@ -9,6 +9,7 @@ import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './cor
 import type { TableSchema } from '../schema/table.js';
 import { getAffinityForType } from '../schema/schema.js';
 import { getExpressionAffinity, getExpressionCollation, compileLiteralValue } from './utils.js';
+import { safeJsonStringify } from '../util/serialization.js';
 
 /** Map column name/alias to register holding its value */
 export type ArgumentMap = ReadonlyMap<string, number>;
@@ -431,7 +432,7 @@ export function compileFunction(compiler: Compiler, expr: AST.FunctionExpr, targ
 		const matchedAgg = havingContext.finalColumnMap.find(info =>
 			info.expr?.type === 'function' &&
 			(info.expr as AST.FunctionExpr).name.toLowerCase() === expr.name.toLowerCase() &&
-			JSON.stringify((info.expr as AST.FunctionExpr).args) === JSON.stringify(expr.args)
+			safeJsonStringify((info.expr as AST.FunctionExpr).args) === safeJsonStringify(expr.args)
 		);
 		if (matchedAgg) {
 			compiler.emit(Opcode.SCopy, matchedAgg.targetReg, targetReg, 0, null, 0, `HAVING: Use aggregated func '${expr.name}' from reg ${matchedAgg.targetReg}`);

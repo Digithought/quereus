@@ -17,6 +17,7 @@ import type { SchemaChangeInfo } from '../../module.js'; // Needed for schema op
 import { buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js'; // Needed for schema ops
 import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison functions
 import { createLogger } from '../../../common/logger.js'; // Import logger
+import { safeJsonStringify } from '../../../util/serialization.js';
 
 let tableManagerCounter = 0;
 const log = createLogger('vtab:memory:layer:manager'); // Create logger
@@ -392,7 +393,7 @@ export class MemoryTableManager {
 				} catch (applyError) {
 					// This is critical. Log details and potentially halt collapse.
 					// Use namespaced error logger
-					errorLog(`[Collapse Apply] Failed to apply change for key %s from layer %d to base layer. Table %s may be inconsistent. Error: %O`, JSON.stringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
+					errorLog(`[Collapse Apply] Failed to apply change for key %s from layer %d to base layer. Table %s may be inconsistent. Error: %O`, safeJsonStringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
 					// Re-throw to stop the collapse process?
 					throw applyError;
 				}
@@ -411,7 +412,7 @@ export class MemoryTableManager {
 				const currentBaseValue = this.baseLayer.primaryTree.get(pk);
 				if (currentBaseValue !== undefined) { // If base still has the row
 					// Use namespaced debug logger
-					debugLog(`[Collapse Apply] Applying explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, JSON.stringify(pk), layer.getLayerId());
+					debugLog(`[Collapse Apply] Applying explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, safeJsonStringify(pk), layer.getLayerId());
 					try {
 						// Create a properly typed DeletionMarker
 						const deletionMarker: DeletionMarker = {
@@ -433,7 +434,7 @@ export class MemoryTableManager {
 						);
 					} catch (applyError) {
 						// Use namespaced error logger
-						errorLog(`[Collapse Apply] Failed to apply explicit delete for rowid %s (PK: %s) from layer %d to base. Error: %O`, rowid, JSON.stringify(pk), layer.getLayerId(), applyError);
+						errorLog(`[Collapse Apply] Failed to apply explicit delete for rowid %s (PK: %s) from layer %d to base. Error: %O`, rowid, safeJsonStringify(pk), layer.getLayerId(), applyError);
 						throw applyError;
 					}
 				}
@@ -1058,69 +1059,72 @@ export class MemoryTableManager {
 				targetLayer.recordDelete(targetRowid, primaryKey, indexKeys);
 				return {}; // Success
 
-			} else if (values.length > 1 && values[0] === null) {
-				// --- INSERT ---
-				const data = Object.fromEntries(this.tableSchema.columns.map((col, idx) => [col.name, values[idx + 1]]));
-				const newRowid = await this.getNextRowid();
-				const newRow: MemoryTableRow = { ...data, _rowid_: newRowid };
+			} else if (values.length > 1) {
+				if (rowid === null) {
+					// --- INSERT ---
+					const data = Object.fromEntries(this.tableSchema.columns.map((col, idx) => [col.name, values[idx + 1]]));
+					const newRowid = await this.getNextRowid();
+					const newRow: MemoryTableRow = { ...data, _rowid_: newRowid };
 
-				// Check constraints (PK, NOT NULL, CHECK) against newRow
-				// Calculate primary key
-				const primaryKey = this.primaryKeyFromRow(newRow);
+					// Check constraints (PK, NOT NULL, CHECK) against newRow
+					// Calculate primary key
+					const primaryKey = this.primaryKeyFromRow(newRow);
 
-				// Check for PK conflict by looking up key starting from parent layer
-				const existingValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer); // Check current layer too!
-				if (existingValue !== undefined && !isDeletionMarker(existingValue)) {
-					// Conflict
-					if (onConflict === ConflictResolution.IGNORE) return {};
-					const pkColName = this.pkIndices.map(idx => this.tableSchema.columns[idx].name).join(', ') || 'rowid';
-					throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
-				}
-
-				// Record insert in the transaction layer
-				const affectedIndexes: (string | 'primary')[] = ['primary'];
-				this.tableSchema.indexes?.forEach(idx => affectedIndexes.push(idx.name));
-				targetLayer.recordUpsert(newRow, affectedIndexes);
-
-				return { rowid: newRowid }; // Success
-
-			} else if (values.length > 1 && typeof values[0] === 'bigint') {
-				// --- UPDATE ---
-				const targetRowid = values[0];
-				const updateData = Object.fromEntries(this.tableSchema.columns.map((col, idx) => [col.name, values[idx + 1]]));
-
-				// Find primary key and old row state *before* this update
-				const oldPrimaryKey = this.findPrimaryKeyForRowid(targetRowid, targetLayer.getParent());
-				if (oldPrimaryKey === null) return {}; // Row doesn't exist effectively
-
-				const oldEffectiveRow = this.lookupEffectiveValueInternal(oldPrimaryKey, 'primary', targetLayer.getParent());
-				if (!oldEffectiveRow || isDeletionMarker(oldEffectiveRow)) return {}; // Row already deleted or never existed
-
-				// Create potential new row state
-				const newRow: MemoryTableRow = { ...oldEffectiveRow, ...updateData, _rowid_: targetRowid };
-
-				// Check constraints against newRow
-				// Calculate new primary key
-				const newPrimaryKey = this.primaryKeyFromRow(newRow);
-				const pkChanged = this.comparePrimaryKeys(oldPrimaryKey, newPrimaryKey) !== 0;
-
-				// Check for PK conflict if key changed
-				if (pkChanged) {
-					const existingValue = this.lookupEffectiveValueInternal(newPrimaryKey, 'primary', targetLayer); // Check current layer too!
-					if (existingValue !== undefined && !isDeletionMarker(existingValue) && existingValue._rowid_ !== targetRowid) {
-						// Conflict with a *different* row
+					// Check for PK conflict by looking up key starting from parent layer
+					const existingValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer); // Check current layer too!
+					if (existingValue !== undefined && !isDeletionMarker(existingValue)) {
+						// Conflict
 						if (onConflict === ConflictResolution.IGNORE) return {};
 						const pkColName = this.pkIndices.map(idx => this.tableSchema.columns[idx].name).join(', ') || 'rowid';
 						throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
 					}
+
+					// Record insert in the transaction layer
+					const affectedIndexes: (string | 'primary')[] = ['primary'];
+					this.tableSchema.indexes?.forEach(idx => affectedIndexes.push(idx.name));
+					targetLayer.recordUpsert(newRow, affectedIndexes);
+
+					return { rowid: newRowid }; // Success
+				} else {
+					// --- UPDATE ---
+					const targetRowid = rowid;
+					const updateData = Object.fromEntries(this.tableSchema.columns.map((col, idx) => [col.name, values[idx + 1]]));
+
+					// For UPDATE operation where we're given the rowid directly,
+					// we should update ONLY the row with exactly that rowid.
+
+					// Get the row directly by rowid
+					let oldRow: MemoryTableRow | null = null;
+
+					// If rowid is the primary key, do direct lookup
+					if (this.pkIsRowid) {
+						// Direct lookup of primary tree - baseLayer contains the canonical data
+						oldRow = this.baseLayer.primaryTree.get(targetRowid) ?? null;
+					} else {
+						// For complex PKs, we need to find the PK mapped to this rowid
+						const pk = this.findPrimaryKeyForRowid(targetRowid, targetLayer);
+						if (pk) {
+							oldRow = this.baseLayer.primaryTree.get(pk) ?? null;
+						}
+					}
+
+					// If we can't find the row, nothing to update
+					if (!oldRow) {
+						log(`No row found with rowid ${targetRowid.toString()} to update`);
+						return {}; // Nothing updated
+					}
+
+					// Create the updated row - preserve primary key fields and rowid
+					const newRow: MemoryTableRow = { ...oldRow, ...updateData, _rowid_: targetRowid };
+
+					// Record update in the transaction layer
+					log(`Updating row with rowid ${targetRowid.toString()}`);
+					const affectedIndexes: (string | 'primary')[] = ['primary'];
+					this.tableSchema.indexes?.forEach(idx => affectedIndexes.push(idx.name));
+					targetLayer.recordUpsert(newRow, affectedIndexes);
+
+					return {}; // Success
 				}
-
-				// Record update in the transaction layer
-				const affectedIndexes: (string | 'primary')[] = ['primary'];
-				this.tableSchema.indexes?.forEach(idx => affectedIndexes.push(idx.name));
-				targetLayer.recordUpsert(newRow, affectedIndexes);
-
-				return {}; // Success
 			} else {
 				throw new SqliteError("Unsupported arguments for mutation operation", StatusCode.ERROR);
 			}

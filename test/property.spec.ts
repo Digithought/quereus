@@ -2,6 +2,7 @@ import { expect } from 'aegir/chai';
 import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js'; // Adjust path as needed
 import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
+import { safeJsonStringify } from '../src/util/serialization.js';
 
 describe('Property-Based Tests', () => {
 	let db: Database;
@@ -51,7 +52,7 @@ describe('Property-Based Tests', () => {
 					const jsSortedStrings = [...uniqueStrings].sort((a, b) => compareSqlValues(a, b, collationName));
 
 					// Compare the two sorted lists
-					expect(dbSortedStrings).to.deep.equal(jsSortedStrings, `Mismatch for collation ${collationName} with input: ${JSON.stringify(uniqueStrings)}`);
+					expect(dbSortedStrings).to.deep.equal(jsSortedStrings, `Mismatch for collation ${collationName} with input: ${safeJsonStringify(uniqueStrings)}`);
 				}), { numRuns: 50 }); // Keep numRuns reasonable for CI
 			});
 		}
@@ -104,7 +105,7 @@ describe('Property-Based Tests', () => {
 				}
 
 				expect(dbComparison).to.equal(expectedComparison,
-					`Mismatch for compare(${JSON.stringify(valA)}, ${JSON.stringify(valB)}). JS=${expectedComparison}, DB=${dbComparison}`
+					`Mismatch for compare(${safeJsonStringify(valA)}, ${safeJsonStringify(valB)}). JS=${expectedComparison}, DB=${dbComparison}`
 				);
 			}), { numRuns: 200 }); // Increase runs for more diverse value pairs
 		});
@@ -138,12 +139,12 @@ describe('Property-Based Tests', () => {
 				} catch (e: any) {
 					// If the query itself fails, discard the run
 					fc.pre(false);
-					throw new Error(`JSON roundtrip query failed for value ${JSON.stringify(originalValue)}: ${e.message}`);
+					throw new Error(`JSON roundtrip query failed for value ${safeJsonStringify(originalValue)}: ${e.message}`);
 				}
 
 				// Need deep comparison for objects and arrays
 				expect(retrievedValueParsed).to.deep.equal(originalValue,
-					`JSON roundtrip mismatch.\nOriginal: ${JSON.stringify(originalValue)}\nRetrieved: ${JSON.stringify(retrievedValueParsed)}`
+					`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved: ${safeJsonStringify(retrievedValueParsed)}`
 				);
 			}), { numRuns: 200 });
 		});

@@ -20,6 +20,14 @@ import { Parser } from '../parser/parser.js';
 import { Compiler } from '../compiler/compiler.js';
 import * as AST from '../parser/ast.js';
 
+/** Type definition for a single step in the query plan output */
+export interface QueryPlanStep {
+	selectId: number; // Corresponds to subquery nesting level
+	order: number;    // Order of execution within the level
+	from: number;     // Index indicating join nesting
+	detail: string;   // Description of the operation (e.g., "SCAN TABLE t1", "USING INDEX ix1")
+}
+
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
@@ -648,5 +656,102 @@ export class Database {
 				await stmt.finalize();
 			}
 		}
+	}
+
+	/**
+	 * @internal - Generates query plan information for a given SQL statement.
+	 * This is intended for internal use and testing, accessed via TypeScript.
+	 * It does not execute the query.
+	 *
+	 * @param sqlOrAst The SQL query string or a pre-parsed AST node.
+	 * @returns A Promise resolving to an array of QueryPlanStep objects.
+	 */
+	async _getPlanInfo(sqlOrAst: string | AST.AstNode): Promise<QueryPlanStep[]> {
+		if (!this.isOpen) {
+			throw new MisuseError("Database is closed");
+		}
+
+		const planSteps: QueryPlanStep[] = [];
+		let ast: AST.AstNode;
+
+		try {
+			// 1. Parse the SQL if a string is provided
+			if (typeof sqlOrAst === 'string') {
+				const parser = new Parser();
+				ast = parser.parse(sqlOrAst);
+			} else {
+				ast = sqlOrAst;
+			}
+
+			// 2. Prepare compiler (but don't generate full VDBE)
+			const compiler = new Compiler(this);
+
+			// --- Run Planning Phases --- //
+			// Compile WITH clause if present
+			let withClause: AST.WithClause | undefined;
+			if ('withClause' in ast && (ast as any).withClause !== undefined) {
+				withClause = (ast as any).withClause;
+				if (withClause) {
+					// TODO: Add CTE reference counting analysis if needed for plan details
+					compiler.compileWithClause(withClause);
+				}
+			}
+
+			// Only handle SELECT for detailed planning currently
+			if (ast.type === 'select') {
+				const stmt = ast as AST.SelectStmt;
+
+				// Compile FROM clause to set up cursors and aliases
+				const fromCursors = compiler.compileFromCore(stmt.from);
+
+				// Run query planning for each cursor
+				fromCursors.forEach(cursorIdx => {
+					const schema = compiler.tableSchemas.get(cursorIdx);
+					if (schema) {
+						// Corrected method call
+						compiler.planTableAccess(cursorIdx, schema, stmt, new Set());
+					}
+				});
+
+				// --- Format Plan Output --- //
+				// Iterate through planned cursors and create detail strings
+				// This mimics a simplified EXPLAIN QUERY PLAN output
+				// TODO: Improve formatting, add join details, selectId, order, from etc.
+				let order = 0;
+				compiler.cursorPlanningInfo.forEach((planInfo, cursorIdx) => {
+					const schema = compiler.tableSchemas.get(cursorIdx);
+					const tableName = schema?.name ?? `CURSOR ${cursorIdx}`;
+					let detail = `SCAN TABLE ${tableName}`;
+					if (planInfo.idxNum !== 0 && planInfo.idxStr) {
+						// Attempt to parse index name from idxStr for better detail
+						const idxMatch = planInfo.idxStr.match(/idx=([^\(]+)/);
+						const idxName = idxMatch ? idxMatch[1] : `INDEX ${planInfo.idxNum}`;
+						if (idxName !== '_primary_' && idxName !== '_rowid_') {
+							detail += ` USING INDEX ${idxName}`;
+						} else if (idxName === '_primary_') {
+							 detail += ` USING PRIMARY KEY`;
+						}
+						// Could add details about EQ/RANGE plan here based on planInfo.idxStr parsing
+					}
+					planSteps.push({
+						selectId: 0, // Placeholder
+						order: order++, // Simple order for now
+						from: 0, // Placeholder
+						detail: detail
+					});
+				});
+
+			} else {
+				// Provide a generic message for non-SELECT statements
+				planSteps.push({ selectId: 0, order: 0, from: 0, detail: `Query Plan generation only implemented for SELECT (Statement type: ${ast.type.toUpperCase()})` });
+			}
+
+		} catch (e: any) {
+			errorLog("Failed to get query plan: %O", e);
+			// Add a plan step indicating the error
+			planSteps.push({ selectId: 0, order: 0, from: 0, detail: `ERROR: ${e.message}` });
+		}
+
+		return planSteps;
 	}
 }

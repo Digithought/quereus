@@ -11,6 +11,7 @@ import type { TableSchema } from '../../schema/table.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
+import { jsonStringify } from '../../util/serialization.js';
 
 /**
  * Configuration interface for JSON virtual tables
@@ -195,7 +196,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 
 				this.currentRow = {
 					key: key,
-					value: isContainer ? JSON.stringify(value) : value,
+					value: isContainer ? jsonStringify(value) : value,
 					type: type,
 					atom: atom,
 					id: id,
@@ -303,7 +304,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 		if (colName === 'value') {
 			const type = this.currentRow['type'];
 			if (type === 'object' || type === 'array') {
-				context.resultValue(this.originalValue !== undefined ? JSON.stringify(this.originalValue) : null);
+				context.resultValue(this.originalValue !== undefined ? jsonStringify(this.originalValue) : null);
 			} else {
 				context.resultValue(this.currentRow[colName] ?? null);
 			}

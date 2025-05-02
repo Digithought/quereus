@@ -7,6 +7,7 @@ import { MemoryIndex } from '../index.js'; // Assuming MemoryIndex structure rem
 import { isDeletionMarker } from './interface.js'; // Import type guard
 import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison
 import { createLogger } from '../../../common/logger.js'; // Import logger
+import { safeJsonStringify } from '../../../util/serialization.js';
 
 let baseLayerCounter = 0;
 const log = createLogger('vtab:memory:layer:base'); // Create logger
@@ -129,7 +130,7 @@ export class BaseLayer implements Layer {
 				// This is critical during collapse. Needs robust handling.
 				// Possibility: Mark table as corrupt? Halt collapse? Log detailed error.
 				// Use namespaced error logger
-				errorLog(`applyChange: Failed to update secondary index '${indexName}' for key ${JSON.stringify(key)}. Data might be inconsistent. Error: %O`, e);
+				errorLog(`applyChange: Failed to update secondary index '${indexName}' for key ${safeJsonStringify(key)}. Data might be inconsistent. Error: %O`, e);
 				// Re-throwing might be necessary to signal failure of collapse
 				throw new Error(`Secondary index update failed during layer collapse: ${e instanceof Error ? e.message : String(e)}`);
 			}
@@ -151,7 +152,7 @@ export class BaseLayer implements Layer {
 					// happen if the change originated from an insert+delete in the merged layer.
 					// Usually a no-op for the primary tree, but log a warning.
 					// Use namespaced warn logger
-					warnLog(`applyChange: Attempted to delete non-existent primary key %s during collapse.`, JSON.stringify(key));
+					warnLog(`applyChange: Attempted to delete non-existent primary key %s during collapse.`, safeJsonStringify(key));
 				}
 			} else if (newValue) { // newValue is guaranteed to be MemoryTableRow here
 				if (path.on) {
@@ -170,7 +171,7 @@ export class BaseLayer implements Layer {
 		} catch (e) {
 			// Failure here is also critical.
 			// Use namespaced error logger
-			errorLog(`applyChange: Failed to update primary tree for key ${JSON.stringify(key)}. Data might be inconsistent. Error: %O`, e);
+			errorLog(`applyChange: Failed to update primary tree for key ${safeJsonStringify(key)}. Data might be inconsistent. Error: %O`, e);
 			throw new Error(`Primary index update failed during layer collapse: ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}

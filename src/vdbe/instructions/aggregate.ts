@@ -5,6 +5,7 @@ import type { Handler, VmCtx } from '../handler-types.js';
 import type { P4FuncDef } from '../instruction.js';
 import { Opcode } from '../opcodes.js';
 import { createLogger } from '../../common/logger.js';
+import { jsonStringify } from '../../util/serialization.js';
 
 const log = createLogger('vdbe:aggregate');
 const errorLog = log.extend('error');
@@ -32,15 +33,9 @@ export function registerHandlers(handlers: Handler[]) {
     }
 
     // Serialize the key. JSON is simple but has limitations (e.g., distinguishes -0 and 0).
-    // A more robust serialization might be needed for full SQL compatibility.
+    // TODO: A more robust serialization might be needed for full SQL compatibility.
     // Handling BigInt and Blobs requires custom replacer.
-    const serializedKey = JSON.stringify(values, (_, val) =>
-      typeof val === 'bigint'
-        ? `bigint:${val.toString()}`
-        : val instanceof Uint8Array
-        ? `blob:${Buffer.from(val).toString('hex')}`
-        : val
-    );
+    const serializedKey = jsonStringify(values);
 
     ctx.setMem(destOffset, serializedKey);
     return undefined;
@@ -196,22 +191,22 @@ export function registerHandlers(handlers: Handler[]) {
   };
 
   handlers[Opcode.AggGetContext] = (ctx, inst) => {
-    const keyRegOffset = inst.p1;
-    const destContextRegOffset = inst.p2;
+    const destReg = inst.p1;
+    const keyReg = inst.p2;
+    const key = ctx.getMem(keyReg);
+
+    if (typeof key !== 'string') {
+      throw new SqliteError(`AggGetContext key must be a string (got ${typeof key})`, StatusCode.INTERNAL);
+    }
 
     if (!ctx.aggregateContexts) {
       throw new SqliteError("AggGetContext: Aggregate context map not initialized", StatusCode.INTERNAL);
     }
 
-    const serializedKey = ctx.getMem(keyRegOffset) as string;
-    if (typeof serializedKey !== 'string') {
-      throw new SqliteError(`AggGetContext key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
-    }
-
-    const entry = ctx.aggregateContexts.get(serializedKey);
+    const entry = ctx.aggregateContexts.get(key);
     const accumulator = entry?.accumulator ?? null; // Default to null if key not found or context undefined
 
-    ctx.setMem(destContextRegOffset, accumulator);
+    ctx.setMem(destReg, accumulator);
     return undefined;
   };
 

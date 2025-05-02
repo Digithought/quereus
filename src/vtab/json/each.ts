@@ -11,6 +11,7 @@ import type { TableSchema } from '../../schema/table.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
+import { jsonStringify } from '../../util/serialization.js';
 
 /**
  * Configuration interface for JSON virtual tables
@@ -198,7 +199,7 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 
 		this.currentRow = {
 			key: key,
-			value: (type === 'object' || type === 'array') ? JSON.stringify(currentValue) : currentValue,
+			value: (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue,
 			type: type,
 			atom: atom,
 			id: id,
@@ -283,7 +284,7 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 			if (type === 'object' || type === 'array') {
 				// Use the stored original value for stringification
 				const originalValue = (this.currentRow as any)._originalValue;
-				context.resultValue(originalValue !== undefined ? JSON.stringify(originalValue) : null);
+				context.resultValue(originalValue !== undefined ? jsonStringify(originalValue) : null);
 			} else {
 				context.resultValue(this.currentRow[colName] ?? null);
 			}
