@@ -27,7 +27,8 @@ export interface QueryRelation {
 	/** Schema describing the columns available from this relation. */
 	readonly schema: Readonly<TableSchema>; // Could be base schema or derived for joins
 
-
+	/** Optional reference back to the AST node that defined this relation (table, subquery, function). */
+	readonly sourceAstNode?: Readonly<AST.FromClause>;
 }
 
 /** Represents a potential join operation identified from the AST. */
@@ -91,4 +92,6 @@ export interface PlannedJoinStep {
 	/** Register holding match flag for LEFT JOINs */
 	matchReg?: number;
 	preservesOuterOrder: boolean;
+	/** Predicates from the join condition handled by pushed-down estimates */
+	handledPredicates?: ReadonlyArray<AST.Expression>;
 }

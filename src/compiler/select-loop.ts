@@ -156,7 +156,7 @@ function generateVdbeForStep(
             if (loopContext.whereExpr && whereFailTarget) {
                 log(`  Emitting WHERE check at innermost SCAN step ${stepIndex}. Active: {${[...currentActiveCursors].join(',')}}`);
                 // Jump target for WHERE failure will be resolved AFTER the VNext of this loop
-                compileUnhandledWhereConditions(compiler, loopContext.whereExpr, [...currentActiveCursors], whereFailTarget);
+                compileUnhandledWhereConditions(compiler, loopContext.whereExpr, [...currentActiveCursors], whereFailTarget, scanStep);
             }
 
             // Invoke Row Processing Callback with proper context
@@ -317,27 +317,24 @@ function generateVdbeForStep(
 
             // If this is the innermost step overall, we need to emit padding & invoke the callback with the context
             if (isInnermostStep) {
-                // Create a special processing context to indicate padding
-                const paddingContext: RowProcessingContext = {
-                    whereFailTarget: loopContext.whereFailTargetPlaceholder,
-                    isLeftJoinPadding: {
-                        innerRelation: innerRelation,
-                        innerContributingCursors: new Set(innerRelation.contributingCursors)
-                    },
+                log(`    JOIN step ${stepIndex} is innermost overall.`);
+                const allActiveCursors = new Set([...innerLoopActiveOuterCursors, ...innerRelation.contributingCursors]);
+                const whereFailTarget = loopContext.whereFailTargetPlaceholder; // Capture for clarity
+                let callbackAddr = -1; // <-- Declare callbackAddr here
+
+                if (loopContext.whereExpr && whereFailTarget) {
+                    log(`    Emitting WHERE check at innermost JOIN step ${stepIndex}. Active: {${[...allActiveCursors].join(',')}}`);
+                    // Pass the current join step here
+                    compileUnhandledWhereConditions(compiler, loopContext.whereExpr, [...allActiveCursors], whereFailTarget, joinStep);
+                }
+
+                // Invoke Row Processing Callback with proper context
+                const processingContext: RowProcessingContext = {
+                    whereFailTarget: whereFailTarget,
+                    isLeftJoinPadding: undefined, // Not padding for standard join processing
                     finalColumnMap: loopContext.finalColumnMap
                 };
-
-                // Call processRowCallback with the padding context.
-                // The callback will handle emitting the NULL values for inner relation columns.
-                const paddingCallbackAddr = processRowCallback(
-                    compiler,
-                    null,
-                    plannedSteps,
-                    innerLoopActiveOuterCursors, // Cursors active from outer steps
-                    paddingContext
-                );
-
-                log(`    LEFT JOIN Padding: Generated row processing at ${paddingCallbackAddr}`);
+                callbackAddr = processRowCallback(compiler, null, plannedSteps, allActiveCursors, processingContext);
             } else {
                 // If not innermost, we need to emit the NULLs directly here,
                 // then continue with nested execution

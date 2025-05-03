@@ -8,6 +8,7 @@ import { SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
 import { expressionToString } from '../util/ddl-stringify.js';
+import type { PlannedStep } from './planner/types.js';
 
 const log = createLogger('compiler:where-verify');
 const warnLog = log.extend('warn');
@@ -173,26 +174,45 @@ export function verifyWhereConstraintsHelper(
  * @param expr The WHERE expression to compile
  * @param activeCursors Cursors active in the current loop level
  * @param jumpTargetIfFalse Address to jump to if the condition is false
+ * @param currentStep The planned step that produced the current row being evaluated (optional)
  */
 export function compileUnhandledWhereConditions(
 	compiler: Compiler,
 	expr: AST.Expression | undefined,
 	activeCursors: number[],
-	jumpTargetIfFalse: number
+	jumpTargetIfFalse: number,
+	currentStep: PlannedStep | null = null
 ): void {
 	if (!expr) {
 		return;
 	}
 
-	const allHandledNodes = new Set<AST.Expression>();
+	// Collect nodes handled by index scans
+	const handledByScan = new Set<AST.Expression>();
 	activeCursors.forEach(cursorIdx => {
 		compiler.cursorPlanningInfo.get(cursorIdx)?.handledWhereNodes.forEach(node => {
-			allHandledNodes.add(node);
+			handledByScan.add(node);
 		});
 	});
 
+	// Collect string representations of predicates handled by join pushdown
+	const handledByJoinPushdown = new Set<string>();
+	if (currentStep?.type === 'Join' && currentStep.handledPredicates) {
+		currentStep.handledPredicates.forEach(pred => {
+			handledByJoinPushdown.add(expressionToString(pred));
+		});
+	}
+
 	const compileRecursive = (node: AST.Expression) => {
-		if (allHandledNodes.has(node)) {
+		// Check if handled by index scan
+		if (handledByScan.has(node)) {
+			log(`Skipping WHERE node handled by index scan: ${expressionToString(node)}`);
+			return;
+		}
+
+		// Check if handled by join pushdown (using string comparison)
+		if (handledByJoinPushdown.has(expressionToString(node))) {
+			log(`Skipping WHERE node handled by join pushdown: ${expressionToString(node)}`);
 			return;
 		}
 
@@ -230,3 +250,4 @@ export function compileUnhandledWhereConditions(
 
 	compileRecursive(expr);
 }
+

@@ -167,3 +167,153 @@ export function planTableAccessHelper(
 	);
 }
 
+/**
+ * Checks if an expression only references columns available from a specific set of cursors.
+ * This is useful for determining if a WHERE clause predicate can be pushed down into a subquery.
+ *
+ * @param compiler The compiler instance.
+ * @param expr The expression to check.
+ * @param allowedCursors The set of cursor indices whose columns are allowed.
+ * @returns True if the expression only references allowed columns, false otherwise.
+ */
+export function expressionReferencesOnlyAllowedCursors(
+	compiler: Compiler,
+	expr: AST.Expression | undefined,
+	allowedCursors: ReadonlySet<number>
+): boolean {
+	if (!expr) return true; // An empty expression is trivially allowed
+
+	let isAllowed = true;
+
+	const traverse = (node: AST.Expression) => {
+		if (!isAllowed) return; // Early exit if disallowed reference found
+
+		if (node.type === 'column') {
+			const colExpr = node as AST.ColumnExpr;
+			let foundCursor = -1;
+			if (colExpr.table) {
+				// If table alias is specified, find its cursor
+				foundCursor = compiler.tableAliases.get(colExpr.table.toLowerCase()) ?? -1;
+			} else {
+				// Unqualified column: check which allowed cursor provides it
+				let ambiguous = false;
+				for (const cursorId of allowedCursors) {
+					const schema = compiler.tableSchemas.get(cursorId);
+					if (schema?.columnIndexMap.has(colExpr.name.toLowerCase())) {
+						if (foundCursor !== -1) ambiguous = true;
+						foundCursor = cursorId;
+					}
+				}
+				// We don't need to check outer cursors here, only allowed ones.
+				// Ambiguity within allowed cursors is okay for this check.
+			}
+
+			// If the found cursor isn't one of the allowed ones, the expression is not allowed.
+			if (!allowedCursors.has(foundCursor)) {
+				// Also check rowid specifically
+				if (colExpr.name.toLowerCase() !== 'rowid') {
+					isAllowed = false;
+				} else {
+					// Allow rowid only if *some* allowed cursor might provide it (hard to be certain)
+					// This might need refinement - does the unqualified 'rowid' refer to only one table?
+					// For now, assume if only one allowed cursor, rowid refers to it.
+					if (allowedCursors.size !== 1) {
+						// If rowid is qualified, check that specific cursor
+						if (colExpr.table) {
+							if (!allowedCursors.has(foundCursor)) isAllowed = false;
+						} else {
+							isAllowed = false; // Ambiguous unqualified rowid with multiple allowed cursors
+						}
+					}
+				}
+			}
+		} else if (node.type === 'binary') {
+			traverse(node.left);
+			traverse(node.right);
+		} else if (node.type === 'unary') {
+			traverse(node.expr);
+		} else if (node.type === 'function') {
+			// Functions themselves are okay, check their arguments
+			node.args.forEach(traverse);
+		} else if (node.type === 'cast') {
+			traverse(node.expr);
+		} else if (node.type === 'subquery') {
+			// Subqueries within the predicate are tricky.
+			// If the subquery is correlated with cursors *outside* the allowed set,
+			// then the predicate cannot be pushed down.
+			// For simplicity now, disallow predicates containing subqueries.
+			warnLog("Predicate pushdown check: Predicates containing subqueries are currently not pushed down.");
+			isAllowed = false;
+		} else if (node.type === 'collate') {
+			traverse(node.expr);
+		} else if (node.type === 'identifier') {
+			// Treat identifier as an unqualified column for dependency checking
+			traverse({ type: 'column', name: node.name, loc: node.loc });
+		} else if (node.type === 'literal' || node.type === 'parameter') {
+			// Literals and parameters are always allowed
+		} else {
+			// Any other expression type is currently disallowed for simplicity
+			warnLog(`Predicate pushdown check: Unhandled expression type '${(node as any).type}' disallowed.`);
+			isAllowed = false;
+		}
+	};
+
+	traverse(expr);
+	return isAllowed;
+}
+
+/**
+ * Estimates the cost of executing a subquery SELECT statement.
+ * This is a placeholder and currently uses heuristics.
+ *
+ * @param compiler The compiler instance.
+ * @param subquerySelect The SELECT AST node of the subquery.
+ * @param outerCursors Cursors available from the outer context.
+ * @param predicate Optional predicate pushed down into the subquery.
+ * @returns Estimated cost and rows.
+ */
+export function estimateSubqueryCost(
+	compiler: Compiler,
+	subquerySelect: AST.SelectStmt,
+	outerCursors: ReadonlySet<number>,
+	predicate?: AST.Expression // The predicate already pushed into subquerySelect.where
+): { cost: number, rows: bigint } {
+
+	// TODO: Implement more realistic subquery costing.
+	// This could involve:
+	// 1. Identifying the FROM sources within the subquerySelect.
+	// 2. Planning access for each source using planTableAccessHelper (or similar),
+	//    considering the subquerySelect.where clause and outerCursors.
+	// 3. Estimating join costs if the subquery has joins (simplified NLJ?)
+	// 4. Summing costs and estimating final row count.
+
+	warnLog("Using placeholder heuristic for subquery cost estimation.");
+
+	// Simple Heuristic based on presence of WHERE clause:
+	let estimatedCost = 1e9; // High default cost
+	let estimatedRows = BigInt(100000); // Moderate default rows
+
+	if (subquerySelect.where) {
+		// Assume WHERE clause reduces cost and rows significantly
+		estimatedCost *= 0.1;
+		estimatedRows = BigInt(Math.max(1, Math.round(Number(estimatedRows) * 0.1)));
+	}
+	// Use subquerySelect.limit directly as it's the Expression
+	if (subquerySelect.limit) {
+		// Limit clause drastically reduces rows (and potentially cost)
+		// This is a very rough guess
+		if (subquerySelect.limit.type === 'literal' && typeof subquerySelect.limit.value === 'bigint') {
+			const limitVal = subquerySelect.limit.value;
+			if (limitVal < estimatedRows) {
+				estimatedRows = limitVal;
+				// Assume cost is somewhat proportional to rows fetched before limit
+			}
+		}
+		estimatedCost *= 0.5; // Guess limit reduces cost
+	}
+	// Add a base cost for processing
+	estimatedCost += 1000;
+
+	return { cost: estimatedCost, rows: estimatedRows };
+}
+

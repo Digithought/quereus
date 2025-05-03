@@ -1,9 +1,10 @@
 import type * as AST from '../../parser/ast.js';
 import type { Compiler, CursorPlanningResult } from '../compiler.js';
-import { log, warnLog, errorLog } from './helpers.js';
+import { log, warnLog, errorLog, expressionReferencesOnlyAllowedCursors, estimateSubqueryCost } from './helpers.js';
 import type { QueryRelation, JoinCandidateInfo, PlannedStep, PlannedScanStep, PlannedJoinStep } from './types.js';
 import { generateRelationId } from './utils.js';
 import { expressionToString } from '../../util/ddl-stringify.js';
+import type { TableSchema } from '../../schema/table.js';
 
 /** Helper to check if a plan's consumed order matches the statement's ORDER BY */
 function checkOrderConsumed(stmtOrderBy: ReadonlyArray<AST.OrderByClause> | undefined, planOrderByConsumed: CursorPlanningResult['orderByConsumed'] | undefined): boolean {
@@ -61,67 +62,135 @@ export class QueryPlannerContext {
 			fromSources = this.stmt.from;
 		} else if (this.stmt.type === 'update' || this.stmt.type === 'delete') {
 			// UPDATE/DELETE FROM is an extension, assume single table for now if no FROM
-			// Or handle the specific AST structure for UPDATE FROM / DELETE FROM if supported
-			// For simplicity, let's assume the target table IS the source if no explicit FROM
-			// This needs alignment with how UPDATE/DELETE FROM are parsed/handled.
-			// const targetTableName = this.stmt.table.name;
-			// const targetAlias = targetTableName.toLowerCase();
-			// fromSources = [ { type: 'table', table: { type: 'identifier', name: targetTableName }, alias: targetAlias } ];
+			// This part remains simplified as per previous logic
 			warnLog(`Query planning for UPDATE/DELETE FROM clauses is not fully implemented.`);
-			// If UPDATE/DELETE have a similar .from property in your AST, use that:
-			// fromSources = (this.stmt as any).from; // Example if structure exists
 		}
 
-		if (!fromSources) {
+		if (!fromSources || fromSources.length === 0) {
 			log("No FROM sources found for planning.");
-			return; // Exit initialization if no sources
+			// If it's an UPDATE/DELETE without FROM, we might need to add the target table implicitly
+			// This needs careful handling based on how UPDATE/DELETE are parsed.
+			// For now, return if no explicit sources.
+			return;
 		}
 
-		// 1. Pre-process FROM for subqueries/functions (TODO: Integrate properly)
-		//    This should ensure their cursors/schemas exist in compiler state.
-		//    Existing logic in compileSelectStatement handles this currently.
-		warnLog("QueryPlannerContext relying on pre-processing in compileSelectStatement for subqueries/functions.");
+		// 1. Populate Relations from AST Sources
+		// This replaces the loop over compiler.tableAliases
+		const processedAliases = new Set<string>(); // Track aliases processed to avoid duplicates
 
-		// 2. Populate Base Relations
-		for (const [alias, cursorIdx] of this.compiler.tableAliases.entries()) {
-			const tableSchema = this.compiler.tableSchemas.get(cursorIdx);
+		const processSourceRecursive = (source: AST.FromClause): void => {
+			if (source.type === 'join') {
+				// Process children first to ensure their relations exist before processing the join itself later
+				processSourceRecursive(source.left);
+				processSourceRecursive(source.right);
+				return; // Join conditions handled later in _extractJoinConditions
+			}
+
+			let alias: string | undefined;
+			let cursorIdx: number | undefined;
+			let tableSchema: Readonly<TableSchema> | undefined;
+			let baseAccessPlan: Readonly<CursorPlanningResult> | null = null;
+			let relationId: string;
+			const sourceAstNode = Object.freeze(source); // Freeze the AST node reference
+
+			if (source.type === 'table') {
+				alias = (source.alias || source.table.name).toLowerCase();
+				// Find cursor index associated with this alias/table (pre-populated by compileFromCoreHelper)
+				cursorIdx = this.compiler.tableAliases.get(alias);
+			} else if (source.type === 'subquerySource' || source.type === 'functionSource') {
+				alias = source.alias?.toLowerCase();
+				if (!alias) {
+					errorLog(`Subquery or function source requires an alias near line ${source.loc?.start.line}.`);
+					return; // Cannot proceed without an alias
+				}
+				cursorIdx = this.compiler.tableAliases.get(alias);
+			} else {
+				// Provide the actual type for logging
+				const sourceType = (source as any).type;
+				warnLog(`Unhandled FROM source type during relation creation: ${sourceType}`);
+				return;
+			}
+
+			if (!alias || cursorIdx === undefined) {
+				// This might happen if compileFromCoreHelper failed or AST is malformed
+				errorLog(`Could not find pre-compiled cursor for source near line ${source.loc?.start.line}. Alias: ${alias}`);
+				return;
+			}
+
+			if (processedAliases.has(alias)) {
+				log(`Alias '${alias}' already processed, skipping duplicate relation creation.`);
+				return; // Avoid creating duplicate relations for the same source/alias
+			}
+
+			tableSchema = this.compiler.tableSchemas.get(cursorIdx);
 			if (!tableSchema) {
 				errorLog(`Internal error: Schema not found for cursor ${cursorIdx} (alias: ${alias}) during planning.`);
-				continue;
+				return;
 			}
 
-			// Plan initial access for this base table
-			// Use existing planning info if available (might have been done earlier)
-			let baseAccessPlan = this.compiler.cursorPlanningInfo.get(cursorIdx);
-			if (!baseAccessPlan) {
-				warnLog(`Planning base access for ${alias} (cursor ${cursorIdx}) within QueryPlannerContext.`);
-				this.compiler.planTableAccess(cursorIdx, tableSchema, this.stmt, new Set());
-				baseAccessPlan = this.compiler.cursorPlanningInfo.get(cursorIdx);
+			relationId = generateRelationId(new Set([cursorIdx])); // Base relation ID uses cursor
+
+			// Define estimates here, potentially updated by initial plan
+			let estimatedRows: bigint = BigInt(1000000); // Default large estimate
+			let estimatedCost: number = 1e10; // Default high cost
+
+			if (source.type === 'table') {
+				// Plan initial access for base tables only
+				const existingPlan = this.compiler.cursorPlanningInfo.get(cursorIdx);
+				if (existingPlan) {
+					baseAccessPlan = Object.freeze(existingPlan);
+				} else {
+					warnLog(`Planning base access for ${alias} (cursor ${cursorIdx}) within QueryPlannerContext.`);
+					this.compiler.planTableAccess(cursorIdx, tableSchema, this.stmt, new Set());
+					const plan = this.compiler.cursorPlanningInfo.get(cursorIdx);
+					if (plan) {
+						baseAccessPlan = Object.freeze(plan);
+					} else {
+						errorLog(`Failed to get base access plan for cursor ${cursorIdx} (alias: ${alias}).`);
+						// Keep defaults, but log error
+					}
+				}
+				// Only update estimates if baseAccessPlan was successfully obtained
+				if (baseAccessPlan) {
+					estimatedRows = baseAccessPlan.rows;
+					estimatedCost = baseAccessPlan.cost;
+				}
+			} else {
+				// For Subqueries/Functions, try to get initial plan info if available
+				const initialPlan = this.compiler.cursorPlanningInfo.get(cursorIdx);
+				if (initialPlan) {
+					log(`Found initial plan for non-table source ${alias} (cursor ${cursorIdx})`);
+					// Store it in baseAccessPlan for use in costing later
+					baseAccessPlan = Object.freeze(initialPlan);
+					estimatedRows = initialPlan.rows;
+					estimatedCost = initialPlan.cost;
+				} else {
+					log(`Using default cost/row estimates for non-table source: ${alias}`);
+					// baseAccessPlan remains null, use high defaults assigned earlier
+				}
 			}
 
-			if (!baseAccessPlan) {
-				errorLog(`Failed to get base access plan for cursor ${cursorIdx} (alias: ${alias}).`);
-				continue; // Skip if planning failed
-			}
-
-			// Create unique ID (using cursor index for base tables)
-			const relationId = generateRelationId(new Set([cursorIdx]));
 			const relation: QueryRelation = {
 				id: relationId,
-				alias: alias, // Already lowercase from tableAliases map
-				contributingCursors: new Set([cursorIdx]),
-				estimatedRows: baseAccessPlan.rows,
-				estimatedCost: baseAccessPlan.cost,
-				baseAccessPlan: Object.freeze(baseAccessPlan), // Freeze for safety
-				schema: Object.freeze(tableSchema), // Freeze for safety
+				alias: alias,
+				contributingCursors: new Set([cursorIdx]), // Initially just the source's cursor
+				estimatedRows: estimatedRows, // Use the final determined value
+				estimatedCost: estimatedCost, // Use the final determined value
+				baseAccessPlan: baseAccessPlan,
+				schema: Object.freeze(tableSchema),
+				sourceAstNode: sourceAstNode, // Link back to the AST node
 			};
 
 			this.relations.set(relationId, relation);
 			this.sourceAliasToRelationId.set(alias, relationId);
-			log(`Created base relation: ${relationId} (Alias: ${alias}, EstRows: ${relation.estimatedRows}, EstCost: ${relation.estimatedCost.toFixed(2)})`);
-		}
+			processedAliases.add(alias); // Mark alias as processed
+			log(`Created relation: ${relationId} (Type: ${source.type}, Alias: ${alias}, EstRows: ${relation.estimatedRows}, EstCost: ${relation.estimatedCost.toFixed(2)}, BasePlan: ${!!baseAccessPlan})`);
+		};
 
-		// 3. Extract Join Conditions from AST
+		// Process all top-level sources recursively to populate the relations map
+		fromSources.forEach(processSourceRecursive);
+
+		// 2. Extract Join Conditions from AST
 		this._extractJoinConditions(fromSources);
 		log(`Extracted ${this.availableJoins.length} potential join conditions.`);
 	}
@@ -334,6 +403,80 @@ export class QueryPlannerContext {
 		return plannedSteps;
 	}
 
+	/**
+	 * Estimates the cost and row count for accessing a single relation, potentially recursively.
+	 * @param relation The relation to estimate.
+	 * @param outerCursors Cursors available from the outer context (used for correlated subqueries).
+	 * @param predicate Optional predicate pushed down from the outer query.
+	 * @returns Estimated cost and rows.
+	 */
+	private _estimateRelationCost(
+		relation: QueryRelation,
+		outerCursors: ReadonlySet<number>,
+		predicate?: AST.Expression
+	): { cost: number, rows: bigint, handledPredicate: AST.Expression | null } {
+		// TODO: Add caching
+
+		let currentCost: number = relation.estimatedCost;
+		let currentRows: bigint = relation.estimatedRows;
+		let handledPredicate: AST.Expression | null = null;
+
+		const initialPlan = relation.baseAccessPlan; // Use the potentially stored initial plan
+		if (initialPlan) {
+			currentCost = initialPlan.cost;
+			currentRows = initialPlan.rows;
+		}
+
+		if (relation.sourceAstNode?.type === 'table') {
+			// TODO: Handle predicate pushdown for base tables (needs replanning?)
+			if (predicate && expressionReferencesOnlyAllowedCursors(this.compiler, predicate, relation.contributingCursors)) {
+				warnLog(`Predicate pushdown for base table ${relation.alias} requested but not fully implemented for costing.`);
+				// Heuristic: Apply cost/row reduction if predicate likely selective
+				// This is a guess!
+				if (predicate.type === 'binary' && ['=', '==', '<', '<=', '>', '>='].includes(predicate.operator.toUpperCase())){
+					currentCost *= 0.2;
+					currentRows = BigInt(Math.max(1, Math.round(Number(currentRows) * 0.1)));
+					handledPredicate = predicate; // Tentatively mark as handled
+					log(`Applied heuristic cost reduction for pushed predicate on table ${relation.alias}`);
+				}
+			}
+		} else if (relation.sourceAstNode?.type === 'subquerySource') {
+			const subqueryNode = relation.sourceAstNode as AST.SubquerySource;
+			let subquerySelect = subqueryNode.subquery;
+			let subqueryRequiresRecursiveCost = false;
+
+			if (predicate) {
+				if (expressionReferencesOnlyAllowedCursors(this.compiler, predicate, relation.contributingCursors)) {
+					log(`Predicate pushdown eligible for subquery ${relation.alias}.`);
+					const newWhere: AST.Expression = subquerySelect.where
+						? { type: 'binary', operator: 'AND', left: predicate, right: subquerySelect.where }
+						: predicate;
+					subquerySelect = { ...subquerySelect, where: newWhere };
+					handledPredicate = predicate; // Mark as handled
+					subqueryRequiresRecursiveCost = true;
+				} else {
+					log(`Predicate cannot be fully pushed down into subquery ${relation.alias}`);
+				}
+			}
+
+			// --- Call Subquery Cost Estimator --- //
+			// Pass the potentially modified subquerySelect
+			// The helper currently uses heuristics, but this is where recursive planning would go.
+			const estimatedSubquery = estimateSubqueryCost(this.compiler, subquerySelect, outerCursors);
+			currentCost = estimatedSubquery.cost;
+			currentRows = estimatedSubquery.rows;
+			log(`Subquery ${relation.alias} estimated cost: ${currentCost.toFixed(2)}, rows: ${currentRows}`);
+			// ------------------------------------ //
+
+		} else if (relation.sourceAstNode?.type === 'functionSource') {
+			log(`Estimating cost for TVF relation: ${relation.alias}`);
+			// Return initial estimates, pushdown not handled for TVFs yet.
+		}
+
+		// Return final calculated/estimated cost, rows, and potentially handled predicate
+		return { cost: currentCost, rows: currentRows, handledPredicate: handledPredicate };
+	}
+
 	/** Estimates the cost of a potential join and returns details if feasible */
 	private _costJoinCandidate(
 		joinInfo: JoinCandidateInfo,
@@ -343,26 +486,35 @@ export class QueryPlannerContext {
 
 		log(`Costing join: ${leftRel.id} ${joinInfo.joinType} ${rightRel.id}`);
 
+		// --- Get potentially recursive cost estimates for operands --- //
+		// Pass the join condition as a potential predicate to push down
+		// Collect handled predicates
+		const handledPredicates: AST.Expression[] = [];
+		const leftCostResult = this._estimateRelationCost(leftRel, new Set(), joinInfo.condition ?? undefined);
+		if (leftCostResult.handledPredicate) handledPredicates.push(leftCostResult.handledPredicate);
+		const rightCostResult = this._estimateRelationCost(rightRel, new Set(), joinInfo.condition ?? undefined);
+		if (rightCostResult.handledPredicate) handledPredicates.push(rightCostResult.handledPredicate);
+
 		// --- 1. Estimate Result Cardinality --- //
-		// Clamp selectivity to avoid negative or >1 values
 		const selectivity = Math.max(0, Math.min(1, joinInfo.estimatedSelectivity));
-		let estimatedResultRows = BigInt(Math.round(Number(leftRel.estimatedRows) * Number(rightRel.estimatedRows) * selectivity));
-		if (estimatedResultRows < 1n) estimatedResultRows = 1n; // Avoid 0 rows estimate if selectivity is very low
+		let estimatedResultRows = BigInt(Math.round(Number(leftCostResult.rows) * Number(rightCostResult.rows) * selectivity));
+		if (estimatedResultRows < 1n) estimatedResultRows = 1n;
 
 		// --- 2. Cost Nested Loop: Left Outer, Right Inner --- //
 		let costLeftOuter = Infinity;
 		let innerPlanRight: CursorPlanningResult | null = null;
-		// Simplification: Plan access only for the *first* cursor of the inner relation.
-		// This needs improvement for joins involving already-joined relations.
 		const innerCursorRight = [...rightRel.contributingCursors][0];
 		if (innerCursorRight !== undefined) {
 			const innerSchemaRight = this.compiler.tableSchemas.get(innerCursorRight);
 			if (innerSchemaRight) {
-				// Plan access for the inner side, considering outer cursors and the join condition
 				this.compiler.planTableAccess(innerCursorRight, innerSchemaRight, this.stmt, leftRel.contributingCursors);
 				innerPlanRight = this.compiler.cursorPlanningInfo.get(innerCursorRight)!;
-				costLeftOuter = leftRel.estimatedCost + Number(leftRel.estimatedRows) * innerPlanRight.cost;
-				log(` -> Cost LeftOuter: ${leftRel.estimatedCost.toFixed(2)} + ${leftRel.estimatedRows} * ${innerPlanRight.cost.toFixed(2)} = ${costLeftOuter.toFixed(2)}`);
+				if (innerPlanRight) {
+					costLeftOuter = leftCostResult.cost + Number(leftCostResult.rows) * innerPlanRight.cost;
+					log(` -> Cost LeftOuter: ${leftCostResult.cost.toFixed(2)} + ${leftCostResult.rows} * ${innerPlanRight.cost.toFixed(2)} = ${costLeftOuter.toFixed(2)}`);
+				} else {
+					errorLog(`Failed to get inner plan for right side (cursor ${innerCursorRight}) in LeftOuter scenario.`);
+				}
 			}
 		}
 
@@ -375,8 +527,12 @@ export class QueryPlannerContext {
 			if (innerSchemaLeft) {
 				this.compiler.planTableAccess(innerCursorLeft, innerSchemaLeft, this.stmt, rightRel.contributingCursors);
 				innerPlanLeft = this.compiler.cursorPlanningInfo.get(innerCursorLeft)!;
-				costRightOuter = rightRel.estimatedCost + Number(rightRel.estimatedRows) * innerPlanLeft.cost;
-				log(` -> Cost RightOuter: ${rightRel.estimatedCost.toFixed(2)} + ${rightRel.estimatedRows} * ${innerPlanLeft.cost.toFixed(2)} = ${costRightOuter.toFixed(2)}`);
+				if (innerPlanLeft) {
+					costRightOuter = rightCostResult.cost + Number(rightCostResult.rows) * innerPlanLeft.cost;
+					log(` -> Cost RightOuter: ${rightCostResult.cost.toFixed(2)} + ${rightCostResult.rows} * ${innerPlanLeft.cost.toFixed(2)} = ${costRightOuter.toFixed(2)}`);
+				} else {
+					errorLog(`Failed to get inner plan for left side (cursor ${innerCursorLeft}) in RightOuter scenario.`);
+				}
 			}
 		}
 
@@ -394,7 +550,7 @@ export class QueryPlannerContext {
 			chosenInnerPlan = innerPlanRight;
 			log(` -> Chosen: Left Outer (Cost: ${bestCost.toFixed(2)})`);
 		} else {
-			if (!innerPlanLeft) return null; // Cannot proceed if inner plan failed
+			if (!innerPlanLeft) return null;
 			bestCost = costRightOuter;
 			chosenOuterRel = rightRel;
 			chosenInnerRel = leftRel;
@@ -405,21 +561,18 @@ export class QueryPlannerContext {
 		// --- 5. Construct Result Relation and Step Details --- //
 		const combinedCursors = new Set([...chosenOuterRel.contributingCursors, ...chosenInnerRel.contributingCursors]);
 		const resultRelationId = generateRelationId(combinedCursors);
-
-		// TODO: Define the schema for the result relation.
-		// For now, reuse the outer relation's schema as a placeholder.
-		// A proper implementation needs to combine columns from both inputs.
-		const resultSchema = chosenOuterRel.schema;
+		const resultSchema = chosenOuterRel.schema; // Placeholder schema
 		warnLog(`Result schema for join ${resultRelationId} is using outer schema as placeholder.`);
 
 		const resultRelation: QueryRelation = {
 			id: resultRelationId,
-			alias: `join_${chosenOuterRel.alias}_${chosenInnerRel.alias}`, // Generate an internal alias
+			alias: `join_${chosenOuterRel.alias}_${chosenInnerRel.alias}`,
 			contributingCursors: combinedCursors,
 			estimatedRows: estimatedResultRows,
 			estimatedCost: bestCost,
-			baseAccessPlan: null, // Not a base scan
+			baseAccessPlan: null,
 			schema: resultSchema,
+			// sourceAstNode is null for derived join relations
 		};
 
 		const stepDetails: Omit<PlannedJoinStep, 'type'> = {
@@ -427,11 +580,12 @@ export class QueryPlannerContext {
 			joinType: joinInfo.joinType,
 			leftInputStep: this.findStepProducingRelation(leftRel.id),
 			rightInputStep: this.findStepProducingRelation(rightRel.id),
-			condition: joinInfo.condition, // TODO: Handle USING columns by converting to condition
+			condition: joinInfo.condition,
 			outerStep: this.findStepProducingRelation(chosenOuterRel.id),
 			innerStep: this.findStepProducingRelation(chosenInnerRel.id),
 			innerLoopPlan: Object.freeze(chosenInnerPlan),
-			preservesOuterOrder: true, // Explicitly add here as well for clarity in costing result
+			preservesOuterOrder: true,
+			handledPredicates: Object.freeze(handledPredicates) // <-- Store handled predicates
 		};
 
 		return { cost: bestCost, resultRelation, stepDetails };
