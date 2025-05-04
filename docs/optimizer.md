@@ -48,7 +48,7 @@ The planner integrates with the `ORDER BY` clause:
 *   **Cost Model:** The current cost model is simple and only considers NLJ. It doesn't account for other potential join algorithms (Hash Join, Merge Join) which might be more efficient in certain scenarios. CPU costs vs. I/O costs are not explicitly modeled.
 *   **Selectivity Estimation:** Join selectivity estimation is currently very basic (defaults or simple heuristics) and doesn't deeply analyze predicate specifics.
 *   **Statistics:** The planner relies heavily on `estimatedRows` and `estimatedCost` returned by `xBestIndex`. The accuracy of these statistics is crucial. Currently, there's no built-in mechanism like `ANALYZE` to gather accurate statistics for base tables; modules might provide estimates, or defaults are used.
-*   **Complex Predicates:** Handling of complex `WHERE` or `JOIN ON` conditions involving functions or OR clauses during costing and `xBestIndex` interaction could be improved.
+*   **Complex Predicates:** Handling of complex `WHERE` or `JOIN ON` conditions involving functions or OR clauses during costing and `xBestIndex` interaction could be improved. Predicate pushdown analysis currently checks dependencies within `AND` clauses but doesn't handle partial pushdown or `OR` clauses.
 *   **Subquery/CTE Planning:** Planning for queries involving complex subqueries or CTEs within the main query block is not deeply integrated into the cost-based join ordering yet.
 
 ## Future Work & Potential Enhancements
@@ -58,7 +58,7 @@ The planner integrates with the `ORDER BY` clause:
 *   **Improve Selectivity Estimation:** Use histograms or more sophisticated analysis of predicates to get better estimates for join selectivity.
 *   **Implement `ANALYZE`:** Add an `ANALYZE` command to gather statistics (row counts, value distributions) for tables (especially the built-in `MemoryTable`) and store them for the planner's use. Allow VTabs to optionally provide richer statistics.
 *   **Enhanced Subquery/CTE Integration:** Integrate the planning of materialized CTEs and subqueries more tightly into the main query's cost-based planning.
-*   **Pushdown Optimizations:** Explore more aggressive pushdown opportunities beyond simple predicates, potentially pushing down projections or partial aggregations into VTabs if their `xBestIndex` indicates support.
+*   **Pushdown Optimizations:** Explore more aggressive pushdown opportunities, potentially pushing down projections, partial aggregations, or handling partial `AND` / `OR` conditions where applicable.
 *   **Explore Alternative Planners:** Investigate more advanced planning algorithms beyond the simple greedy approach if needed for very complex queries.
 
 ## Current Status

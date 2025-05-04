@@ -228,8 +228,16 @@ export function expressionReferencesOnlyAllowedCursors(
 				}
 			}
 		} else if (node.type === 'binary') {
+			// For AND, both sides must be allowed.
+			// For other binary ops, if either side references a disallowed cursor,
+			// the whole expression cannot be pushed down based on allowed cursors alone.
 			traverse(node.left);
 			traverse(node.right);
+			// For OR, pushdown is more complex and not handled by this check.
+			if (node.operator.toUpperCase() === 'OR') {
+				warnLog("Predicate pushdown check: OR expressions are currently not pushed down.");
+				isAllowed = false;
+			}
 		} else if (node.type === 'unary') {
 			traverse(node.expr);
 		} else if (node.type === 'function') {
