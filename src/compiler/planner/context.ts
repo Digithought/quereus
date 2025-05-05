@@ -38,6 +38,7 @@ function checkOrderConsumed(stmtOrderBy: ReadonlyArray<AST.OrderByClause> | unde
 export class QueryPlannerContext {
 	readonly compiler: Compiler;
 	readonly stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt;
+	readonly outerCursors: ReadonlySet<number>;
 
 	/** Map Relation ID -> Relation */
 	readonly relations = new Map<QueryRelation['id'], QueryRelation>();
@@ -48,9 +49,10 @@ export class QueryPlannerContext {
 	/** Map Relation ID -> Step that produces it */
 	private readonly relationToProducerStep = new Map<QueryRelation['id'], PlannedStep>();
 
-	constructor(compiler: Compiler, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt) {
+	constructor(compiler: Compiler, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, outerCursors: ReadonlySet<number> = new Set()) {
 		this.compiler = compiler;
 		this.stmt = stmt;
+		this.outerCursors = outerCursors;
 		this._initialize();
 	}
 
@@ -141,7 +143,7 @@ export class QueryPlannerContext {
 					baseAccessPlan = Object.freeze(existingPlan);
 				} else {
 					warnLog(`Planning base access for ${alias} (cursor ${cursorIdx}) within QueryPlannerContext.`);
-					this.compiler.planTableAccess(cursorIdx, tableSchema, this.stmt, new Set());
+					this.compiler.planTableAccess(cursorIdx, tableSchema, this.stmt, this.outerCursors);
 					const plan = this.compiler.cursorPlanningInfo.get(cursorIdx);
 					if (plan) {
 						baseAccessPlan = Object.freeze(plan);
@@ -490,9 +492,9 @@ export class QueryPlannerContext {
 		// Pass the join condition as a potential predicate to push down
 		// Collect handled predicates
 		const handledPredicates: AST.Expression[] = [];
-		const leftCostResult = this._estimateRelationCost(leftRel, new Set(), joinInfo.condition ?? undefined);
+		const leftCostResult = this._estimateRelationCost(leftRel, this.outerCursors, joinInfo.condition ?? undefined);
 		if (leftCostResult.handledPredicate) handledPredicates.push(leftCostResult.handledPredicate);
-		const rightCostResult = this._estimateRelationCost(rightRel, new Set(), joinInfo.condition ?? undefined);
+		const rightCostResult = this._estimateRelationCost(rightRel, this.outerCursors, joinInfo.condition ?? undefined);
 		if (rightCostResult.handledPredicate) handledPredicates.push(rightCostResult.handledPredicate);
 
 		// --- 1. Estimate Result Cardinality --- //
@@ -507,7 +509,7 @@ export class QueryPlannerContext {
 		if (innerCursorRight !== undefined) {
 			const innerSchemaRight = this.compiler.tableSchemas.get(innerCursorRight);
 			if (innerSchemaRight) {
-				this.compiler.planTableAccess(innerCursorRight, innerSchemaRight, this.stmt, leftRel.contributingCursors);
+				this.compiler.planTableAccess(innerCursorRight, innerSchemaRight, this.stmt, new Set([...this.outerCursors, ...leftRel.contributingCursors]));
 				innerPlanRight = this.compiler.cursorPlanningInfo.get(innerCursorRight)!;
 				if (innerPlanRight) {
 					costLeftOuter = leftCostResult.cost + Number(leftCostResult.rows) * innerPlanRight.cost;
@@ -525,7 +527,7 @@ export class QueryPlannerContext {
 		if (innerCursorLeft !== undefined) {
 			const innerSchemaLeft = this.compiler.tableSchemas.get(innerCursorLeft);
 			if (innerSchemaLeft) {
-				this.compiler.planTableAccess(innerCursorLeft, innerSchemaLeft, this.stmt, rightRel.contributingCursors);
+				this.compiler.planTableAccess(innerCursorLeft, innerSchemaLeft, this.stmt, new Set([...this.outerCursors, ...rightRel.contributingCursors]));
 				innerPlanLeft = this.compiler.cursorPlanningInfo.get(innerCursorLeft)!;
 				if (innerPlanLeft) {
 					costRightOuter = rightCostResult.cost + Number(rightCostResult.rows) * innerPlanLeft.cost;

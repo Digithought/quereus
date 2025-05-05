@@ -53,12 +53,20 @@ The planner integrates with the `ORDER BY` clause:
 
 ## Future Work & Potential Enhancements
 
-*   **Implement Hash Join/Merge Join:** Add costing logic and VDBE code generation for Hash Joins (useful for equi-joins on large datasets) and potentially Merge Joins (if inputs are sorted).
-*   **Improve Cost Model:** Refine cost estimations to better reflect potential CPU vs. I/O costs, especially relevant for complex expressions or functions.
-*   **Improve Selectivity Estimation:** Use histograms or more sophisticated analysis of predicates to get better estimates for join selectivity.
+Given the focus on virtual tables, especially potentially distributed ones, optimizations that reduce data transfer and computation at the source are likely to yield the most significant benefits. Key priorities include:
+
+*   **Constant Folding:** Implement thorough constant folding during compilation to simplify expressions evaluated repeatedly.
+*   **Advanced Predicate Pushdown:** Enhance the interaction between the planner (`extractConstraints`) and `xBestIndex` to:
+    *   Push down more complex predicates involving functions or `OR` clauses where supported by the VTable.
+    *   Handle partial predicate pushdown (pushing parts of an `AND` clause even if other parts cannot be handled by the VTable).
+    *   Improve analysis of predicates involving multiple tables within join conditions for more effective filtering.
+*   **Subquery Optimizations:** Implement techniques like subquery flattening (converting subqueries into joins) and decorrelation (rewriting correlated subqueries to be independent) to avoid redundant computations, particularly important for distributed systems.
+*   **Implement Hash Join/Merge Join:** Add costing logic and VDBE code generation for Hash Joins (useful for equi-joins on large datasets) and potentially Merge Joins (if inputs are sorted). While potentially less critical than logical optimizations given effective VTable caching, these offer alternative join strategies.
+*   **Improve Cost Model:** Refine cost estimations to better reflect potential CPU vs. I/O costs, especially relevant for complex expressions or functions. Incorporate network latency considerations for distributed VTabs.
+*   **Improve Selectivity Estimation:** Use histograms or more sophisticated analysis of predicates to get better estimates for join selectivity and filter effectiveness.
 *   **Implement `ANALYZE`:** Add an `ANALYZE` command to gather statistics (row counts, value distributions) for tables (especially the built-in `MemoryTable`) and store them for the planner's use. Allow VTabs to optionally provide richer statistics.
-*   **Enhanced Subquery/CTE Integration:** Integrate the planning of materialized CTEs and subqueries more tightly into the main query's cost-based planning.
-*   **Pushdown Optimizations:** Explore more aggressive pushdown opportunities, potentially pushing down projections, partial aggregations, or handling partial `AND` / `OR` conditions where applicable.
+*   **Enhanced Subquery/CTE Integration (Costing):** Integrate the planning of materialized CTEs and subqueries more tightly into the main query's cost-based planning *after* initial optimization techniques are applied.
+*   **Pushdown Optimizations (Other):** Explore opportunities to push down projections or partial aggregations where VTabs support them.
 *   **Explore Alternative Planners:** Investigate more advanced planning algorithms beyond the simple greedy approach if needed for very complex queries.
 
 ## Current Status

@@ -8,6 +8,7 @@ import { extractConstraints } from './constraints.js';
 import { calculateColumnUsage } from './columns.js';
 import type { PlannedStep } from './types.js';
 import { createLogger } from '../../common/logger.js';
+import { QueryPlannerContext } from './context.js';
 
 // Define and export loggers at the top level
 export const log = createLogger('compiler:plan');
@@ -286,42 +287,86 @@ export function estimateSubqueryCost(
 	outerCursors: ReadonlySet<number>,
 	predicate?: AST.Expression // The predicate already pushed into subquerySelect.where
 ): { cost: number, rows: bigint } {
+	log(`Recursively estimating cost for subquery starting line ${subquerySelect.loc?.start.line ?? '?'}`);
 
-	// TODO: Implement more realistic subquery costing.
-	// This could involve:
-	// 1. Identifying the FROM sources within the subquerySelect.
-	// 2. Planning access for each source using planTableAccessHelper (or similar),
-	//    considering the subquerySelect.where clause and outerCursors.
-	// 3. Estimating join costs if the subquery has joins (simplified NLJ?)
-	// 4. Summing costs and estimating final row count.
+	// 1. Create a new planner context for the subquery, passing outer cursors
+	const subContext = new QueryPlannerContext(compiler, subquerySelect, outerCursors);
 
-	warnLog("Using placeholder heuristic for subquery cost estimation.");
+	// 2. Execute the planner for the subquery
+	const plannedSteps = subContext.planExecution();
 
-	// Simple Heuristic based on presence of WHERE clause:
-	let estimatedCost = 1e9; // High default cost
-	let estimatedRows = BigInt(100000); // Moderate default rows
+	// 3. Extract cost and rows from the final step
+	let estimatedCost = 1e9; // Default high cost
+	let estimatedRows = BigInt(1000000); // Default high rows
 
-	if (subquerySelect.where) {
-		// Assume WHERE clause reduces cost and rows significantly
-		estimatedCost *= 0.1;
-		estimatedRows = BigInt(Math.max(1, Math.round(Number(estimatedRows) * 0.1)));
+	if (plannedSteps.length > 0) {
+		const finalStep = plannedSteps[plannedSteps.length - 1];
+		if (finalStep.type === 'Scan') {
+			estimatedCost = finalStep.plan.cost;
+			estimatedRows = finalStep.plan.rows;
+		} else if (finalStep.type === 'Join') {
+			estimatedCost = finalStep.outputRelation.estimatedCost;
+			estimatedRows = finalStep.outputRelation.estimatedRows;
+		}
+		log(` -> Subquery plan final step (${finalStep.type}): Cost=%.2f, Rows=%d`, estimatedCost, estimatedRows);
+	} else {
+		// Handle cases with no FROM clause or empty plans (e.g., SELECT 1)
+		// This might need refinement based on how QueryPlannerContext handles no-FROM
+		if (!subquerySelect.from || subquerySelect.from.length === 0) {
+			log(` -> Subquery has no FROM clause. Estimating minimal cost.`);
+			// TODO: Estimate cost of evaluating SELECT expressions if needed
+			estimatedCost = 10; // Small cost for simple expressions
+			estimatedRows = 1n; // Typically produces one row
+		} else {
+			warnLog(` -> Subquery planning yielded no steps. Using default high cost/rows.`);
+		}
 	}
-	// Use subquerySelect.limit directly as it's the Expression
+
+	// --- Adjust row estimate for GROUP BY / DISTINCT --- //
+	if (subquerySelect.groupBy && subquerySelect.groupBy.length > 0) {
+		const reductionFactor = 0.3; // Heuristic: Grouping significantly reduces rows
+		const reducedRows = BigInt(Math.max(1, Math.round(Number(estimatedRows) * reductionFactor)));
+		log(` -> Applying GROUP BY, reducing estimated rows from ${estimatedRows} to ${reducedRows} (factor: ${reductionFactor})`);
+		estimatedRows = reducedRows;
+	} else if (subquerySelect.distinct) {
+		const reductionFactor = 0.5; // Heuristic: DISTINCT reduces rows
+		const reducedRows = BigInt(Math.max(1, Math.round(Number(estimatedRows) * reductionFactor)));
+		log(` -> Applying DISTINCT, reducing estimated rows from ${estimatedRows} to ${reducedRows} (factor: ${reductionFactor})`);
+		estimatedRows = reducedRows;
+	}
+
+	// 4. Apply LIMIT clause adjustments (after core planning)
 	if (subquerySelect.limit) {
 		// Limit clause drastically reduces rows (and potentially cost)
 		// This is a very rough guess
-		if (subquerySelect.limit.type === 'literal' && typeof subquerySelect.limit.value === 'bigint') {
-			const limitVal = subquerySelect.limit.value;
-			if (limitVal < estimatedRows) {
-				estimatedRows = limitVal;
-				// Assume cost is somewhat proportional to rows fetched before limit
+		const limitExpr = subquerySelect.limit; // Access the limit expression directly
+
+		let limitVal: bigint | undefined;
+		if (limitExpr.type === 'literal') {
+			if (typeof limitExpr.value === 'bigint' && limitExpr.value >= 0n) {
+				limitVal = limitExpr.value;
+			} else if (typeof limitExpr.value === 'number' && Number.isInteger(limitExpr.value) && limitExpr.value >= 0) {
+				limitVal = BigInt(limitExpr.value); // Convert number to bigint
 			}
 		}
-		estimatedCost *= 0.5; // Guess limit reduces cost
-	}
-	// Add a base cost for processing
-	estimatedCost += 1000;
 
+		if (limitVal !== undefined) {
+			if (limitVal < estimatedRows) {
+				estimatedRows = limitVal;
+				// Assume cost reduction proportional to row reduction? Very rough.
+				// Let's keep the planned cost but cap the rows.
+				log(` -> Applying literal LIMIT ${limitVal}, capping rows.`);
+			}
+		} else {
+			// Cannot apply optimization if limit is not a simple literal non-negative integer
+			log(` -> LIMIT clause is present but not a simple literal non-negative integer. Applying generic cost reduction.`);
+		}
+		// Simple heuristic: LIMIT reduces cost somewhat regardless of value complexity for now.
+		estimatedCost *= 0.9; // Reduce cost slightly for having a limit
+	}
+
+	// 5. Return the final estimate
+	log(` -> Final estimated subquery cost: %.2f, rows: %d`, estimatedCost, estimatedRows);
 	return { cost: estimatedCost, rows: estimatedRows };
 }
 
