@@ -313,8 +313,8 @@ export class QueryPlannerContext {
 					type: 'Scan',
 					relation: Object.freeze(relation),
 					plan: Object.freeze(relation.baseAccessPlan),
-					// Pass the potentially undefined orderByClause
-					orderByConsumed: checkOrderConsumed(orderByClause, relation.baseAccessPlan.orderByConsumed)
+					// Directly use the value from the plan returned by xBestIndex
+					orderByConsumed: relation.baseAccessPlan.orderByConsumed
 				};
 				plannedSteps.push(scanStep);
 				this.relationToProducerStep.set(relationId, scanStep);
@@ -509,7 +509,13 @@ export class QueryPlannerContext {
 		if (innerCursorRight !== undefined) {
 			const innerSchemaRight = this.compiler.tableSchemas.get(innerCursorRight);
 			if (innerSchemaRight) {
-				this.compiler.planTableAccess(innerCursorRight, innerSchemaRight, this.stmt, new Set([...this.outerCursors, ...leftRel.contributingCursors]));
+				this.compiler.planTableAccess(
+					innerCursorRight,
+					innerSchemaRight,
+					this.stmt,
+					new Set([...this.outerCursors, ...leftRel.contributingCursors]),
+					joinInfo.condition ?? undefined
+				);
 				innerPlanRight = this.compiler.cursorPlanningInfo.get(innerCursorRight)!;
 				if (innerPlanRight) {
 					costLeftOuter = leftCostResult.cost + Number(leftCostResult.rows) * innerPlanRight.cost;
@@ -527,7 +533,13 @@ export class QueryPlannerContext {
 		if (innerCursorLeft !== undefined) {
 			const innerSchemaLeft = this.compiler.tableSchemas.get(innerCursorLeft);
 			if (innerSchemaLeft) {
-				this.compiler.planTableAccess(innerCursorLeft, innerSchemaLeft, this.stmt, new Set([...this.outerCursors, ...rightRel.contributingCursors]));
+				this.compiler.planTableAccess(
+					innerCursorLeft,
+					innerSchemaLeft,
+					this.stmt,
+					new Set([...this.outerCursors, ...rightRel.contributingCursors]),
+					joinInfo.condition ?? undefined
+				);
 				innerPlanLeft = this.compiler.cursorPlanningInfo.get(innerCursorLeft)!;
 				if (innerPlanLeft) {
 					costRightOuter = rightCostResult.cost + Number(rightCostResult.rows) * innerPlanLeft.cost;

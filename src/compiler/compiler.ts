@@ -352,7 +352,7 @@ export class Compiler {
 	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
 
 	// Query Planning Helpers
-	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { helpersJs.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
+	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>, relevantConstraints?: AST.Expression): void { helpersJs.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors, relevantConstraints); }
 	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
 
 	// Expressions

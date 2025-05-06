@@ -33,7 +33,8 @@ export function planTableAccessHelper(
 	cursorIdx: number,
 	tableSchema: TableSchema,
 	stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt,
-	activeOuterCursors: ReadonlySet<number>
+	activeOuterCursors: ReadonlySet<number>,
+	relevantConstraints?: AST.Expression
 ): void {
 	// Get the module associated with the table schema
 	const module = tableSchema.vtabModule;
@@ -58,13 +59,35 @@ export function planTableAccessHelper(
 		return;
 	}
 
-	const whereExpr = stmt.type === 'select' || stmt.type === 'update' || stmt.type === 'delete' ? stmt.where : undefined;
+	const baseWhereExpr = stmt.type === 'select' || stmt.type === 'update' || stmt.type === 'delete' ? stmt.where : undefined;
 	const orderByExprs = stmt.type === 'select' ? stmt.orderBy : undefined;
 	const selectColumns = stmt.type === 'select' ? stmt.columns : [];
 
+	// --- Combine base WHERE and relevant constraints --- >
+	let combinedWhereExpr: AST.Expression | undefined = baseWhereExpr;
+	if (relevantConstraints) {
+		if (combinedWhereExpr) {
+			// AND the two sets of constraints together
+			combinedWhereExpr = {
+				type: 'binary',
+				operator: 'AND',
+				left: combinedWhereExpr,
+				right: relevantConstraints,
+				// loc: baseWhereExpr.loc // Optionally try to retain location info
+			};
+			log(`Combining stmt.where and relevantConstraints for cursor ${cursorIdx}`);
+		} else {
+			combinedWhereExpr = relevantConstraints;
+			log(`Using relevantConstraints as effective WHERE for cursor ${cursorIdx}`);
+		}
+	}
+	// < --- End combination ---
+
+	// --- Use combined expression for constraint extraction --- >
 	const { constraints, constraintExpressions, handledNodes } = extractConstraints(
-		compiler, cursorIdx, tableSchema, whereExpr, activeOuterCursors
+		compiler, cursorIdx, tableSchema, combinedWhereExpr, activeOuterCursors
 	);
+	// < --- End constraint extraction change ---
 
 	const orderBy: IndexOrderBy[] = [];
 	if (orderByExprs) {
@@ -108,7 +131,9 @@ export function planTableAccessHelper(
 		});
 	}
 
-	const colUsed = calculateColumnUsage(compiler, cursorIdx, selectColumns, whereExpr, orderByExprs);
+	// --- Use combined expression for column usage calculation --- >
+	const colUsed = calculateColumnUsage(compiler, cursorIdx, selectColumns, combinedWhereExpr, orderByExprs);
+	// < --- End column usage change ---
 
 	const indexInfo: IndexInfo = {
 		nConstraint: constraints.length,
@@ -155,10 +180,11 @@ export function planTableAccessHelper(
 	};
 	compiler.cursorPlanningInfo.set(cursorIdx, planResult);
 
-	log(`Plan: %s (cursor %d, outer: %s) -> idxNum=%d cost=%.2f rows=%s usage=%j handled=%d colUsed=%s`,
+	log(`Plan: %s (cursor %d, outer: %s, relevantCons: %s) -> idxNum=%d cost=%.2f rows=%s usage=%j handled=%d colUsed=%s`,
 		tableSchema.name,
 		cursorIdx,
 		[...activeOuterCursors].join(','),
+		!!relevantConstraints,
 		planResult.idxNum,
 		planResult.cost,
 		planResult.rows.toString(),
