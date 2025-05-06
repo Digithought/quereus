@@ -50,6 +50,8 @@ The planner integrates with the `ORDER BY` clause:
 *   **Statistics:** The planner relies heavily on `estimatedRows` and `estimatedCost` returned by `xBestIndex`. The accuracy of these statistics is crucial. Currently, there's no built-in mechanism like `ANALYZE` to gather accurate statistics for base tables; modules might provide estimates, or defaults are used.
 *   **Complex Predicates:** Handling of complex `WHERE` or `JOIN ON` conditions involving functions or OR clauses during costing and `xBestIndex` interaction could be improved. Predicate pushdown analysis currently checks dependencies within `AND` clauses but doesn't handle partial pushdown or `OR` clauses.
 *   **Subquery/CTE Planning:** Planning for queries involving complex subqueries or CTEs within the main query block is not deeply integrated into the cost-based join ordering yet.
+*   **Join Result Schema:** The schema generated for the result of a join operation is currently a placeholder (using the outer relation's schema). This needs proper implementation to accurately reflect the combined columns for subsequent planning steps or expression compilation.
+*   **Intermediate LEFT JOIN Padding:** While padding for the final output of a LEFT JOIN is handled, the propagation of NULLs for intermediate LEFT JOINs (whose results feed into further joins) might be incomplete in the current VDBE generation.
 
 ## Future Work & Potential Enhancements
 

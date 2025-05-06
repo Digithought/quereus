@@ -137,6 +137,87 @@ describe('Query Planner - Join Order', () => {
         // if we make the mock more sophisticated later.
     });
 
+    it('should choose the other table as outer when costs are swapped', () => {
+        // 1. Setup Schemas (same as previous test)
+        const t1Cols: ColumnSchema[] = [
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'data1', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+        ];
+        const t1ColMap = new Map(t1Cols.map((c, i) => [c.name.toLowerCase(), i]));
+
+        const t2Cols: ColumnSchema[] = [
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 't1_id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'data2', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+        ];
+        const t2ColMap = new Map(t2Cols.map((c, i) => [c.name.toLowerCase(), i]));
+
+        // 2. Mock Tables with swapped costs
+        // t1 is now more expensive base scan, but cheap inner scan
+        const module1 = mockTable(db, {
+            schema: {
+                name: 't1',
+                schemaName: 'main',
+                columns: t1Cols,
+                columnIndexMap: t1ColMap,
+                primaryKeyDefinition: [{ index: 0, desc: false }],
+                checkConstraints: [], isWithoutRowid: false, isStrict: false, isTemporary: false, isView: false
+            },
+            bestIndexResult: { estimatedCost: 5000, estimatedRows: BigInt(500) }, // Expensive base
+            constrainedBestIndexResult: { estimatedCost: 10, estimatedRows: BigInt(1) } // Cheap constrained
+        });
+
+        // t2 is now cheaper base scan, but expensive inner scan
+        const module2 = mockTable(db, {
+            schema: {
+                name: 't2',
+                schemaName: 'main',
+                columns: t2Cols,
+                columnIndexMap: t2ColMap,
+                primaryKeyDefinition: [{ index: 0, desc: false }],
+                checkConstraints: [], isWithoutRowid: false, isStrict: false, isTemporary: false, isView: false
+            },
+            bestIndexResult: { estimatedCost: 100, estimatedRows: BigInt(10) }, // Cheap base
+            constrainedBestIndexResult: { estimatedCost: 100, estimatedRows: BigInt(1) } // Expensive constrained
+        });
+
+        // 3. Define SQL Query
+        const sql = `SELECT t1.data1, t2.data2 FROM t1 JOIN t2 ON t1.id = t2.t1_id`;
+
+        // 4. Compile and get the plan
+        const plan = compile(db, sql);
+        const planStr = planToString(plan);
+
+        // 5. Assertions
+        // Expect t2 (now cheaper base) as outer loop
+        // Cost (T2 outer, T1 inner) = 100 + (10 * 10) = 200
+        // Cost (T1 outer, T2 inner) = 5000 + (500 * 100) = 55000
+        // Result Rows: 10 (t2.rows) * 500 (t1.rows) * 0.1 (default selectivity) = 500
+        const expectedPlanStr = [
+            '[0] SCAN t1 (Cursor 0) Cost=5000.0 Rows=500 Idx=0', // t1 expensive base scan
+            '[1] SCAN t2 (Cursor 1) Cost=100.0 Rows=10 Idx=0',   // t2 cheap base scan
+            '[2] JOIN (inner) t2(C1) <-> t1(C0) Outer=t2 Cost=200.0 Rows=500' // t2 outer, overall cost 200
+        ].join('\n');
+        expect(planStr).to.equal(expectedPlanStr);
+
+        // --- Inspect xBestIndex calls (similar checks, roles might be swapped) --- >
+        expect(module1.xBestIndexCalls.length).to.be.greaterThanOrEqual(1, "t1 xBestIndex not called at least once");
+        expect(module2.xBestIndexCalls.length).to.be.greaterThanOrEqual(1, "t2 xBestIndex not called at least once");
+
+        // Find the call where t1 was evaluated as inner (should have 1 constraint, cheap cost)
+        const t1InnerCall = module1.xBestIndexCalls.find(call => call.nConstraint === 1);
+        expect(t1InnerCall).to.exist("Planner did not call xBestIndex for t1 as inner loop with constraint");
+        expect(t1InnerCall?.aConstraint[0]?.iColumn).to.equal(0, "t1 inner call constraint column index (id)");
+        expect(t1InnerCall?.aConstraint[0]?.op).to.equal(IndexConstraintOp.EQ, "t1 inner call constraint op (EQ)");
+        // We expect the mock to have returned the constrainedBestIndexResult for this call.
+
+        // Find the call where t2 was evaluated as inner (should have 1 constraint, expensive cost)
+        const t2InnerCall = module2.xBestIndexCalls.find(call => call.nConstraint === 1);
+        expect(t2InnerCall).to.exist("Planner did not call xBestIndex for t2 as inner loop with constraint");
+        expect(t2InnerCall?.aConstraint[0]?.iColumn).to.equal(1, "t2 inner call constraint column index (t1_id)");
+        expect(t2InnerCall?.aConstraint[0]?.op).to.equal(IndexConstraintOp.EQ, "t2 inner call constraint op (EQ)");
+    });
+
     // Add more tests here...
 
 });
