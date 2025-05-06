@@ -4,6 +4,7 @@ PRAGMA default_vtab_module='memory';
 
 CREATE TABLE expr_t (i INTEGER, n NUMERIC, t TEXT, b BLOB);
 INSERT INTO expr_t VALUES (1, 10.5, 'hello', x'01ff'), (2, -5, 'world', x'02'), (3, 0, null, null);
+-- No expected output for setup
 
 -- Arithmetic
 SELECT i + 1, n * 2, i / 2.0, i % 2 FROM expr_t WHERE i = 1;
@@ -13,7 +14,7 @@ SELECT i + 1, n * 2, i / 2.0, i % 2 FROM expr_t WHERE i = 2;
 
 -- String Concatenation
 SELECT t || ' ' || t FROM expr_t WHERE i = 1;
-→ ["hello hello"]
+→ [{"t || ' ' || t":"hello hello"}]
 
 -- Comparisons
 SELECT i > 1, n <= 10.5, t = 'hello', b != x'01ff' FROM expr_t WHERE i = 1;
@@ -23,34 +24,45 @@ SELECT i > 1, n <= 10.5, t == 'world' FROM expr_t WHERE i = 2;
 
 -- Logical Operators
 SELECT i > 1 AND n < 0 FROM expr_t WHERE i = 2;
-→ [1]
+→ [{"i > 1 AND n < 0":1}]
 SELECT i = 1 OR t = 'world' FROM expr_t ORDER BY i;
-→ [1,1,0]
+→ [{"i = 1 OR t = 'world'":1},{"i = 1 OR t = 'world'":1},{"i = 1 OR t = 'world'":null}]
 SELECT NOT (n = 0) FROM expr_t WHERE i = 3;
-→ [0]
+→ [{"NOT (n = 0)":0}]
 
 -- NULL Handling
 SELECT t IS NULL, t IS NOT NULL, n + NULL FROM expr_t WHERE i = 3;
 → [{"t IS NULL":1,"t IS NOT NULL":0,"n + NULL":null}]
 SELECT coalesce(t, 'default') FROM expr_t ORDER BY i;
-→ ["hello","world","default"]
+→ [{"coalesce(t, 'default')":"hello"},{"coalesce(t, 'default')":"world"},{"coalesce(t, 'default')":"default"}]
 SELECT nullif(i, 2) FROM expr_t ORDER BY i;
-→ [1,null,3]
+→ [{"nullif(i, 2)":1},{"nullif(i, 2)":null},{"nullif(i, 2)":3}]
 
 -- CASE expressions
 SELECT CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM expr_t ORDER BY i;
-→ ["one","two","other"]
+→ [{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"one"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"two"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"other"}]
 SELECT CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END FROM expr_t ORDER BY i;
-→ ["pos","neg","zero"]
+→ [{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"pos"},{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"neg"},{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"zero"}]
 
 -- CAST expressions
 SELECT cast(i as TEXT), cast(n as INTEGER), cast(t as REAL) FROM expr_t WHERE i = 1;
 → [{"cast(i as TEXT)":"1","cast(n as INTEGER)":10,"cast(t as REAL)":0}]
 SELECT cast('123' as INTEGER), cast('12.3' as REAL), cast(123 as TEXT);
-→ [{"cast('123' as INTEGER)":123,"cast('12.3' as REAL)":12.3,"cast(123 as TEXT)":"123"}]
+→ [{"cast('12.3' as REAL)":12.3,"cast('123' as INTEGER)":123,"cast(123 as TEXT)":"123"}]
 
 -- COLLATE (basic syntax check, assumes default collation)
 SELECT t FROM expr_t WHERE t = 'HELLO' COLLATE NOCASE ORDER BY i;
-→ ["hello"]
+→ [{"t":"hello"}]
 
 DROP TABLE expr_t;
+
+SELECT typeof(1 + 2), typeof(1.5 + 2), typeof('a' || 'b');
+→ [{"typeof(1 + 2)":"integer","typeof(1.5 + 2)":"real","typeof('a' || 'b')":"text"}]
+
+-- Check query plan using the new TVF
+SELECT detail FROM query_plan('SELECT i + 1, n * 2 FROM expr_t WHERE i = 1');
+→ [{"detail":"SCAN TABLE expr_t USING PRIMARY KEY"}]
+
+-- Check VDBE program dump TVF (basic execution check)
+SELECT opcode, p1, p2, p3 FROM vdbe_program('SELECT 1 + 1');
+-- No specific output check, just ensure it runs.

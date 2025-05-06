@@ -125,10 +125,10 @@ export class VdbeRuntime implements VmCtx {
    * @returns Status code indicating execution result
    */
   async run(): Promise<StatusCode> {
-    const initialPc = this.pc;
     if (this.done || this.error) {
-      // console.log(`>>> run: Early exit. Done=${this.done}, Error=${this.error?.code}`);
-      return this.error?.code ?? StatusCode.MISUSE;
+        // --- REVERTED Early Exit --- //
+        return this.error?.code ?? StatusCode.MISUSE;
+        // --- END REVERT --- //
     }
     this.hasYielded = false;
 
@@ -142,7 +142,7 @@ export class VdbeRuntime implements VmCtx {
 
       // Main execution loop
       while (this.pc < code.length) {
-        const currentPc = this.pc; // Store PC at start of iteration
+        const currentPc = this.pc;
         const inst = code[currentPc];
 
         if (!inst) {
@@ -233,12 +233,16 @@ export class VdbeRuntime implements VmCtx {
     // *** DETERMINE FINAL STATUS *** (If loop finished or error occurred)
     if (this.error) {
         const errCode = this.error.code as StatusCode;
-        // console.log(`>>> run [InitialPC=${initialPc}] RETURNING: Final status from error: ${errCode} (${StatusCode[errCode] ?? 'Unknown'})`);
+        // --- ADDED LOGGING ---
+        log(`>>> run [PC=${this.pc}] RETURNING: Final status from error: ${errCode} (${StatusCode[errCode] ?? 'Unknown'})`);
+        // --- END LOGGING ---
         return errCode;
     }
     if (this.pc >= this.program.instructions.length && !this.done) { this.done = true; }
     const finalReturn = this.done ? StatusCode.DONE : StatusCode.INTERNAL;
-    // console.log(`>>> run [InitialPC=${initialPc}] RETURNING: Final status from loop end/done: ${finalReturn} (${StatusCode[finalReturn] ?? 'Unknown'}) (pc=${this.pc}, done=${this.done})`);
+    // --- ADDED LOGGING ---
+    log(`>>> run [PC=${this.pc}, Done=${this.done}] RETURNING: Final status from loop end/done: ${finalReturn} (${StatusCode[finalReturn] ?? 'Unknown'})`);
+    // --- END LOGGING ---
     return finalReturn;
   }
 

@@ -24,7 +24,7 @@ export function verifyWhereConstraintsHelper(
 	jumpTargetIfFalse: number
 ): void {
 	const planningInfo = compiler.cursorPlanningInfo.get(cursorIdx);
-	if (!planningInfo || planningInfo.constraints.length === 0 || planningInfo.usage.every(u => u.argvIndex === 0)) {
+	if (!planningInfo || planningInfo.constraints.length === 0 || planningInfo.aConstraintUsage.every(u => u.argvIndex === 0)) {
 		return;
 	}
 
@@ -34,7 +34,7 @@ export function verifyWhereConstraintsHelper(
 
 	for (let i = 0; i < planningInfo.constraints.length; i++) {
 		const constraint = planningInfo.constraints[i];
-		const usage = planningInfo.usage[i];
+		const usage = planningInfo.aConstraintUsage[i];
 
 		if (usage.argvIndex > 0 && !usage.omit) {
 			const originalValueExpr = planningInfo.constraintExpressions.get(i);

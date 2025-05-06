@@ -1,5 +1,6 @@
 import { createLogger } from '../common/logger.js'; // Import logger
-import type { Compiler, HavingContext } from './compiler.js';
+import type { Compiler } from './compiler.js';
+import type { HavingContext } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import type { P4FuncDef } from '../vdbe/instruction.js';

@@ -15,11 +15,6 @@ import type { P4SortKey } from '../../vdbe/instruction.js'; // Import SortKey in
 import { createLogger } from '../../common/logger.js'; // Import logger
 import { safeJsonStringify } from '../../util/serialization.js'; // Import helper
 
-const log = createLogger('vtab:memory:cursor'); // Create logger
-const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
-const debugLog = log; // Use base log for debug level
-
 /**
  * Public-facing cursor for the MemoryTable using the layer-based MVCC model.
  * Delegates operations to an internal cursor chain created based on connection state.
@@ -51,8 +46,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			try {
 				this.internalCursor.close();
 			} catch (e) {
-				// Use namespaced error logger
-				errorLog("Error closing internal cursor during reset: %O", e);
+				// REMOVED errorLog
 			}
 			this.internalCursor = null;
 		}
@@ -110,8 +104,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		} else {
 			// Default to primary if idxStr doesn't specify or is malformed
 			indexName = 'primary';
-			// Use namespaced warn logger
-			warnLog(`Could not parse index name from idxStr: "%s". Defaulting to primary.`, idxStr);
+			// REMOVED warnLog
 		}
 
 		const planTypeStr = params.get('plan');
@@ -151,7 +144,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			if (indexName === 'primary' && args.length === 1 && argvMap.size === 1) {
 				// Assume the single arg is the primary key value
 				equalityKey = args[0];
-				debugLog(`Using direct Primary Key EQ lookup value: %O`, equalityKey);
+				// REMOVED debugLog
 			} else if (indexSchema) {
 				// General case for EQ plans (composite keys or secondary indexes)
 				if (!indexSchema || !indexSchema.columns) {
@@ -195,21 +188,20 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 					// If still not found after checking both, key is incomplete
 					if (!foundArg) {
 						keyComplete = false;
-						warnLog(`EQ plan for index '%s', but constraint/arg for column %d (schema idx %d) not found.`, indexName, k, idxCol);
+						// REMOVED warnLog
 						break;
 					}
 				} // end for each column in index
 
 				if (keyComplete) {
 					equalityKey = keyParts.length === 1 && indexSchema.columns.length === 1 ? keyParts[0] : keyParts;
-					debugLog(`EQ plan for index '%s', derived key: %O`, indexName, equalityKey);
+					// REMOVED debugLog
 				} else {
-					warnLog(`EQ plan for index '%s' could not derive complete key.`, indexName);
+					// REMOVED warnLog
 					// No equalityKey set, will likely result in full scan if filter doesn't catch it
 				}
 			} else {
-				// Use namespaced error logger
-				errorLog(`Could not find schema for index '%s' to build EQ key.`, indexName);
+				// REMOVED errorLog
 			}
 
 		} else if (planType === 3 /* RANGE_ASC */ || planType === 4 /* RANGE_DESC */) {
@@ -273,7 +265,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	// --- Method to handle Sort opcode --- //
 	async createAndPopulateSorterIndex(sortInfo: P4SortKey): Promise<MemoryIndex> {
 		// Use namespaced debug logger
-		debugLog("Creating and populating ephemeral sorter index...");
+		// REMOVED debugLog
 		// 1. Define IndexSpec based on sortInfo
 		const schema = this.table.getSchema();
 		if (!schema) {
@@ -315,15 +307,13 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			}
 		} catch(e) {
 			// Use namespaced error logger
-			errorLog("Error populating sorter index: %O", e);
-			throw e instanceof SqliteError ? e : new SqliteError(`Sorter population failed: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+			// REMOVED errorLog
+			throw e;
 		} finally {
 			// Close the temporary reader cursor
 			readerCursor?.close();
 		}
 
-		// Use namespaced debug logger
-		debugLog(`Sorter index %s created.`, sorterIndex.name);
 		return sorterIndex;
 	}
 	// ---------------------------------- //
@@ -338,12 +328,12 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		this.reset(); // Close existing internal cursor, clear state
 
 		// Add detailed logging to understand the filter operation
-		debugLog(`MemoryTableCursor.filter: idxNum=${idxNum}, idxStr=${idxStr || "null"}, args=${safeJsonStringify(args)}, constraints=${safeJsonStringify(constraints)}, indexInfo=${safeJsonStringify(indexInfo)}`);
+		// REMOVED debugLog
 
 		// Check for sorter FIRST (set by Sort opcode calling createAndPopulateSorterIndex)
 		if (this.ephemeralSortingIndex) {
 			// Use namespaced debug logger
-			debugLog(`MemoryTableCursor Filter: Using ephemeral sorting index.`);
+			// REMOVED debugLog
 			this.isUsingSorter = true;
 			const sorterIndex = this.ephemeralSortingIndex;
 			// Iterate the sorter BTree
@@ -367,9 +357,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 				}
 			} catch (e) {
 				// Use namespaced error logger
-				errorLog("Error iterating ephemeral sorter index: %O", e);
-				this.reset(); // Clear state on error
-				throw e instanceof SqliteError ? e : new SqliteError(`Sorter iteration error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+				// REMOVED errorLog
+				throw e;
 			}
 
 			// Set initial sorter position
@@ -397,9 +386,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 
 		} catch (e) {
 			// Use namespaced error logger
-			errorLog(`Error during MemoryTableCursor filter (idxNum=%d, idxStr=%s): %O`, idxNum, idxStr, e);
-			this.reset(); // Ensure cursor is reset on error
-			throw e instanceof SqliteError ? e : new SqliteError(`Filter error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+			// REMOVED errorLog
+			throw e;
 		}
 	}
 
@@ -425,10 +413,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 				await this.internalCursor.next();
 				this._isEof = this.internalCursor.isEof();
 			} catch (e) {
-				// Use namespaced error logger
-				errorLog("Error during internal cursor next(): %O", e);
-				this.reset(); // Reset cursor state on error
-				throw e instanceof SqliteError ? e : new SqliteError(`Cursor next error: ${e instanceof Error ? e.message : String(e)}`, StatusCode.INTERNAL);
+				// REMOVED errorLog
+				throw e;
 			}
 		}
 	}
@@ -508,13 +494,13 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 
 	async seekRelative(offset: number): Promise<boolean> {
 		// Use namespaced warn logger
-		warnLog("seekRelative() not implemented for layered model.");
+		// REMOVED warnLog
 		throw new SqliteError(`seekRelative not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 
 	async seekToRowid(rowid: bigint): Promise<boolean> {
 		// Use namespaced warn logger
-		warnLog("seekToRowid() not implemented for layered model.");
+		// REMOVED warnLog
 		throw new SqliteError(`seekToRowid not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 }

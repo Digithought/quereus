@@ -1,6 +1,7 @@
 import { StatusCode, SqlDataType } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
-import type { Compiler, HavingContext } from './compiler.js';
+import type { Compiler } from './compiler.js';
+import type { HavingContext } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import { type SubqueryCorrelationResult } from './correlation.js';
 import type { TableSchema } from '../schema/table.js';

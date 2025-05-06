@@ -112,16 +112,14 @@ export enum Opcode {
 
 	// --- Schema / DDL (160-179) ---
 	VerifyCookie = 160,// Verify schema cookie P1 is P2, jump to P3 on mismatch
-	SchemaInvalidate = 161, // Mark schema as invalid
-	SchemaLoad = 162, // Load schema
-	CreateIndex = 163,// Create index P2 named P1 on table P3 (P4=flags)
-	CreateTable = 164,// Create table P1 (P2=flags)
-	CreateView = 165, // Create view P1 (P2=flags)
-	DropTable = 166,  // Drop table P1 (P2=db index)
-	DropIndex = 167,  // Drop index P1 (P2=db index)
-	DropView = 168,   // Drop view P1 (P2=db index)
-	AlterTable = 169, // Alter table P1 (P2=db index, P3=flags)
-	SchemaChange = 170,// Notify schema change (P1=db index)
+	SchemaInvalidate = 161,
+	CreateTable = 162,  // Placeholder - actual creation might be compile-time or via VTab method
+	CreateIndex = 163,  // Placeholder - actual creation might be compile-time or via VTab method
+	// DropTable = 164,    // Drop table P4={schemaName, tableName, ifExists} // REMOVED
+	// DropIndex = 165,    // Drop index P4={schemaName, indexName, ifExists} // REMOVED
+	// DropView = 166,     // Drop view P4={schemaName, viewName, ifExists} // REMOVED
+	AlterTable = 167,   // Placeholder for ALTER TABLE operations
+	SchemaChange = 168, // Apply schema change P4 to VTab cursor P1
 
 	// --- Transaction Control (180-189) ---
 	Savepoint = 180,  // Savepoint operation P1 named P4 (0=BEGIN, 1=RELEASE, 2=ROLLBACK)

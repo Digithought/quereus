@@ -5,10 +5,12 @@ import type { Compiler } from './compiler.js';
 import { createLogger } from '../common/logger.js';
 import { StatusCode } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
+import type { ArgumentMap } from './handlers.js';
 
 const log = createLogger('compiler:state');
 const debugLog = log.extend('debug');
 const errorLog = createLogger('compiler').extend('error');
+const warnLog = createLogger('compiler').extend('warn');
 debugLog.enabled = false;
 
 /**
@@ -194,4 +196,57 @@ function patchInstructionOperands(compiler: Compiler, instruction: VdbeInstructi
 		instruction.p2 = resolvedAddress;
 	}
 	// Add similar checks for instruction.p1, instruction.p3 if necessary
+}
+
+
+/**
+ * Starts a subroutine compilation context by setting up a new frame
+ *
+ * @returns The address of the FrameEnter instruction
+ */
+export function beginSubroutineHelper(compiler: Compiler, numArgs: number, argMap?: ArgumentMap): number {
+	compiler.subroutineDepth++;
+	compiler.subroutineFrameStack.push({
+		frameEnterInsn: compiler.currentFrameEnterInsn,
+		maxOffset: compiler.maxLocalOffsetInCurrentFrame,
+	});
+
+	compiler.maxLocalOffsetInCurrentFrame = 0;
+	const instruction = createInstruction(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${compiler.subroutineDepth}`);
+	compiler.subroutineCode.push(instruction);
+	const frameEnterAddr = compiler.subroutineCode.length - 1;
+	compiler.currentFrameEnterInsn = instruction;
+
+	return frameEnterAddr;
+}
+
+/**
+ * Ends a subroutine compilation context by patching the frame size
+ * and restoring the previous frame context
+ */
+export function endSubroutineHelper(compiler: Compiler): void {
+	if (compiler.subroutineDepth > 0) {
+		if (compiler.currentFrameEnterInsn) {
+			const frameSize = compiler.maxLocalOffsetInCurrentFrame + 1;
+			compiler.currentFrameEnterInsn.p1 = frameSize;
+		} else {
+			errorLog("Missing FrameEnter tracking for the current frame being ended.");
+		}
+
+		compiler.subroutineDepth--;
+
+		const previousFrame = compiler.subroutineFrameStack.pop();
+		if (previousFrame) {
+			compiler.currentFrameEnterInsn = previousFrame.frameEnterInsn;
+			compiler.maxLocalOffsetInCurrentFrame = previousFrame.maxOffset;
+		} else {
+			compiler.currentFrameEnterInsn = null;
+			compiler.maxLocalOffsetInCurrentFrame = 0;
+			if (compiler.subroutineDepth !== 0) {
+				errorLog("Subroutine stack underflow or depth mismatch.");
+			}
+		}
+	} else {
+		warnLog("Attempted to end subroutine compilation at depth 0");
+	}
 }

@@ -28,6 +28,7 @@ export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr |
 export interface LiteralExpr extends AstNode {
 	type: 'literal';
 	value: SqlValue;
+	lexeme?: string; // Optional: Original text representation, e.g., for numbers like '2.0'
 	dataType?: string; // Optional type hint
 }
 

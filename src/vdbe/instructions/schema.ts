@@ -58,6 +58,12 @@ export function registerHandlers(handlers: Handler[]) {
     return undefined;
   };
 
+  handlers[Opcode.SchemaInvalidate] = (ctx, inst) => {
+      // TODO: Implement actual schema cache invalidation if needed
+      log("SchemaInvalidate triggered (currently no-op)");
+      return undefined;
+  };
+
   // Other schema-related opcodes like CreateTable, CreateIndex, DropTable etc.
   // would be added here.
 }

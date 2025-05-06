@@ -50,15 +50,15 @@ export function registerHandlers(handlers: Handler[]) {
   };
 
   handlers[Opcode.Divide] = (ctx, inst) => {
-    const divisor = ctx.getMem(inst.p1);
-    const numerator = ctx.getMem(inst.p2);
+    const leftVal = ctx.getMem(inst.p1);
+    const rightVal = ctx.getMem(inst.p2);
 
     // Check for division by zero or null values
-    if (divisor === 0 || divisor === 0n || divisor === null || numerator === null || Number(divisor) === 0) {
+    if (rightVal === 0 || rightVal === 0n || rightVal === null || leftVal === null || Number(rightVal) === 0) {
       ctx.setMem(inst.p3, null);
     } else {
       try {
-        const result = Number(numerator) / Number(divisor);
+        const result = Number(leftVal) / Number(rightVal);
         ctx.setMem(inst.p3, Number.isFinite(result) ? result : null);
       } catch {
         ctx.setMem(inst.p3, null);
@@ -68,35 +68,32 @@ export function registerHandlers(handlers: Handler[]) {
   };
 
   handlers[Opcode.Remainder] = (ctx, inst) => {
-    const divisor = ctx.getMem(inst.p1);
-    const numerator = ctx.getMem(inst.p2);
+    const val1 = ctx.getMem(inst.p1);
+    const val2 = ctx.getMem(inst.p2);
     let result = null;
 
-    if (divisor !== null && numerator !== null) {
+    if (val1 !== null && val2 !== null) {
       try {
-        if (typeof divisor === 'bigint' || typeof numerator === 'bigint') {
-          const b1 = BigInt(divisor as any);
-          const b2 = BigInt(numerator as any);
+        if (typeof val1 === 'bigint' || typeof val2 === 'bigint') {
+          const b1 = BigInt(val1 as any);
+          const b2 = BigInt(val2 as any);
 
-          // Explicit check for division by zero
-          if (b1 === 0n) {
-            throw new SqliteError("Division by zero", StatusCode.ERROR);
-          }
-
-          result = b2 % b1;
-        } else {
-          const n1 = Number(divisor);
-          const n2 = Number(numerator);
-
-          // Explicit checks for numeric validity
-          if (n1 === 0 || !Number.isFinite(n1) || !Number.isFinite(n2)) {
+          if (b2 === 0n) {
             result = null;
           } else {
-            result = n2 % n1;
+            result = b1 % b2;
+          }
+        } else {
+          const n1 = Number(val1);
+          const n2 = Number(val2);
+
+          if (n2 === 0 || !Number.isFinite(n1) || !Number.isFinite(n2)) {
+            result = null;
+          } else {
+            result = n1 % n2;
           }
         }
       } catch (e) {
-        if (e instanceof SqliteError) throw e;
         result = null;
       }
     }

@@ -363,13 +363,14 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 
 				if (!tableSchema) {
 					if (!stmt.ifExists) throw new SqliteError(`no such index: ${objectName}`, StatusCode.ERROR);
+					// Emit Noop if index doesn't exist but IF EXISTS was specified
 					compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `DROP INDEX ${schemaName}.${objectName} (Not found, IF EXISTS)`);
 					success = true; // Report success if IF EXISTS
 					break;
 				}
 
 				// Check if the virtual table prototype supports xDropIndex
-				if (typeof (tableSchema.vtabModule as any)?.prototype?.xDropIndex !== 'function') {
+				if (typeof (tableSchema.vtabModule as any)?.xDropIndex !== 'function') {
 					throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableSchema.name}' does not support DROP INDEX.`, StatusCode.ERROR);
 				}
 
@@ -394,7 +395,7 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 				// Close the cursor
 				compiler.emit(Opcode.Close, cursorIdx, 0, 0, null, 0, `Close VTab cursor after DROP INDEX`);
 				// Invalidate schema cache
-				compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after DROP INDEX`);
+				compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after DROP`);
 				success = true; // Indicate VDBE code was generated
 				break;
 			}
@@ -406,6 +407,7 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 				throw new SqliteError(`Unsupported object type for DROP: ${stmt.objectType}`);
 		}
 
+		// Check success only if not IF EXISTS
 		if (!success && !stmt.ifExists) {
 			throw new SqliteError(`no such ${itemType}: ${objectName}`, StatusCode.ERROR);
 		}
@@ -413,17 +415,25 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 	} catch (e: any) {
 		// Re-throw schema-level errors
 		if (e instanceof SqliteError) {
-			throw e;
+			// If error code indicates 'no such table/view/index' and IF EXISTS is true, ignore
+			if (stmt.ifExists && (e.code === StatusCode.ERROR /* Need specific code? */ || e.message.includes('no such'))) {
+				success = true;
+			} else {
+				throw e;
+			}
 		} else {
 			throw new SqliteError(`Error dropping ${itemType} ${objectName}: ${e.message}`, StatusCode.INTERNAL);
 		}
 	}
 
-	// DROP doesn't produce executable VDBE code itself, just modifies schema
+	// Emit Noop again, as schema modification happens at compile time now.
 	const comment = success
 		? `Schema definition drop for ${itemType.toUpperCase()} ${schemaName}.${objectName}`
 		: `${itemType.toUpperCase()} ${schemaName}.${objectName} did not exist (IF EXISTS)`;
 	compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, comment);
+
+	// Still invalidate schema
+	compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after DROP`);
 }
 
 export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTableStmt): void {

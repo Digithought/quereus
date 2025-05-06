@@ -1,11 +1,14 @@
 import type { Compiler } from './compiler.js';
-import type { ColumnResultInfo } from './compiler.js'; // Or wherever it's defined
+import type { ColumnResultInfo } from './structs.js';
 import type { TableSchema } from '../schema/table.js';
 import { Opcode } from '../vdbe/opcodes.js';
+import * as AST from '../parser/ast.js'; // Import AST
+import { compileExpression } from './expression.js'; // Import expression compiler
+import * as CompilerState from './compilerState.js'; // Import CompilerState
 
 export function processRowDirect(
 	compiler: Compiler,
-	stmt: any, // Replace with actual AST.SelectStmt type
+	stmt: AST.SelectStmt, // Use actual type
 	joinLevels: ReadonlyArray<any>, // Replace with actual JoinLevelInfo type
 	activeOuterCursors: ReadonlySet<number>,
 	innermostWhereFailTarget: number | undefined, // Not used directly here, but part of signature
@@ -15,18 +18,28 @@ export function processRowDirect(
 	regLimit: number,
 	regOffset: number
 ): number {
-	const callbackStartAddr = compiler.getCurrentAddress();
+	const callbackStartAddr = CompilerState.getCurrentAddressHelper(compiler);
 
-	// Re-calculate core results inside the loop to have current row values
-	const { resultBaseReg: currentRowResultBase, numCols: currentRowNumCols, columnMap: currentRowColumnMap } =
-		compiler.compileSelectCore(stmt, [...activeOuterCursors]); // Re-compile expressions for current row
+	// Get the structure (registers, mapping) but don't compile expressions here
+	const { resultBaseReg: coreResultBase, numCols: coreNumCols, columnMap: coreColumnMap } =
+		compiler.getSelectCoreStructure(stmt, [...activeOuterCursors]);
+
+	for (const colInfo of coreColumnMap) {
+		if (colInfo.expr) {
+			// Pass activeOuterCursors for potential correlation
+			// HavingContext is not applicable here
+			// ArgumentMap is not applicable here
+			compileExpression(compiler, colInfo.expr, colInfo.targetReg);
+		}
+		// If expr is null (e.g., from SELECT * expansion), VColumn already populated the register.
+	}
 
 	if (needsExternalSort) {
 		// --- Store in Sorter ---
-		const insertDataReg = compiler.allocateMemoryCells(currentRowNumCols + 1);
+		const insertDataReg = compiler.allocateMemoryCells(coreNumCols + 1);
 		compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Direct Sort: NULL Rowid");
-		compiler.emit(Opcode.Move, currentRowResultBase, insertDataReg + 1, currentRowNumCols, null, 0, "Direct Sort: Copy row result");
-		compiler.emit(Opcode.VUpdate, currentRowNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Direct Sort: Insert Row");
+		compiler.emit(Opcode.Move, coreResultBase, insertDataReg + 1, coreNumCols, null, 0, "Direct Sort: Copy row result");
+		compiler.emit(Opcode.VUpdate, coreNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Direct Sort: Insert Row");
 	} else {
 		// --- Direct Output ---
 		const addrSkipDirectRow = compiler.allocateAddress('skipDirectRow');
@@ -38,7 +51,7 @@ export function processRowDirect(
 			compiler.resolveAddress(addrPostDirectOffset);
 		}
 
-		compiler.emit(Opcode.ResultRow, currentRowResultBase, currentRowNumCols, 0, null, 0, "Output Direct Row");
+		compiler.emit(Opcode.ResultRow, coreResultBase, coreNumCols, 0, null, 0, "Output Direct Row");
 
 		if (regLimit > 0) {
 			const addrDirectLimitNotZero = compiler.allocateAddress('directLimitNotZero');

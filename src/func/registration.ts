@@ -123,7 +123,6 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...arg
 				} else if (typeof result === 'boolean') {
 					context.resultInt(result ? 1 : 0);
 				} else {
-					warnLog('Function %s returned unknown type: %s. Coercing to NULL.', options.name, typeof result);
 					context.resultNull();
 				}
 			} catch (e) {
@@ -193,7 +192,6 @@ export function createAggregateFunction(
 				} else if (typeof result === 'boolean') {
 					context.resultInt(result ? 1 : 0);
 				} else {
-					warnLog('Aggregate %s xFinal returned unknown type: %s. Coercing to NULL.', options.name, typeof result);
 					context.resultNull();
 				}
 			} catch (e) {

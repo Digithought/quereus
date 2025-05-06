@@ -1,6 +1,7 @@
 import { IndexConstraintOp, StatusCode } from '../common/constants.js';
 import { SqliteError } from '../common/errors.js';
-import type { Compiler, CursorPlanningResult } from './compiler.js';
+import type { Compiler } from './compiler.js';
+import type { CursorPlanningResult } from './structs.js';
 import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
 import type { IndexInfo, IndexConstraint, IndexOrderBy } from '../vtab/indexInfo.js';
@@ -378,10 +379,12 @@ export function planTableAccessHelper(
 		compiler.cursorPlanningInfo.set(cursorIdx, {
 			idxNum: 0,
 			idxStr: null,
-			usage: [],
-			cost: 1e10,
-			rows: BigInt(1000000),
+			aConstraintUsage: [],
+			estimatedCost: 1e10,
+			estimatedRows: BigInt(1000000),
 			orderByConsumed: false,
+			nArgs: 0,
+			aConstraint: [],
 			constraints: [],
 			constraintExpressions: new Map(),
 			handledWhereNodes: new Set(),
@@ -475,20 +478,25 @@ export function planTableAccessHelper(
 		throw new SqliteError(`xBestIndex failed for table ${tableSchema.name} with code ${status}`, status, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
+	// Calculate nArgs based on usage information
+	const nArgs = Math.max(0, ...indexInfo.aConstraintUsage.map(u => u.argvIndex ?? 0));
+
 	const planResult: CursorPlanningResult = {
 		idxNum: indexInfo.idxNum,
 		idxStr: indexInfo.idxStr,
-		usage: indexInfo.aConstraintUsage,
+		aConstraintUsage: indexInfo.aConstraintUsage,
 		constraints: [...indexInfo.aConstraint],
 		constraintExpressions: constraintExpressions,
 		handledWhereNodes: handledNodes,
-		cost: indexInfo.estimatedCost,
-		rows: indexInfo.estimatedRows,
+		estimatedCost: indexInfo.estimatedCost,
+		estimatedRows: indexInfo.estimatedRows,
 		orderByConsumed: indexInfo.orderByConsumed,
 		nOrderBy: indexInfo.nOrderBy,
 		aOrderBy: indexInfo.aOrderBy,
 		colUsed: indexInfo.colUsed,
 		idxFlags: indexInfo.idxFlags,
+		nArgs: nArgs,
+		aConstraint: Object.freeze([...indexInfo.aConstraint]),
 	};
 	compiler.cursorPlanningInfo.set(cursorIdx, planResult);
 
@@ -497,9 +505,9 @@ export function planTableAccessHelper(
 		cursorIdx,
 		[...activeOuterCursors].join(','),
 		planResult.idxNum,
-		planResult.cost,
-		planResult.rows.toString(),
-		planResult.usage,
+		planResult.estimatedCost,
+		planResult.estimatedRows.toString(),
+		planResult.aConstraintUsage,
 		planResult.handledWhereNodes.size,
 		colUsed.toString(2)
 	);

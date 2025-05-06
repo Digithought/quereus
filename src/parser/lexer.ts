@@ -561,32 +561,33 @@ export class Lexer {
 
 	private number(): void {
 		let isFloat = false;
-		let value = this.source.substring(this.start, this.current);
+		// Capture original lexeme starting from the first digit
+		const start = this.start; // Use the start offset saved before scanToken called number()
 
 		// Consume digits before decimal point
 		while (this.isDigit(this.peek())) {
-			value += this.advance();
+			this.advance();
 		}
 
 		// Check for decimal point
 		if (this.peek() === '.' && this.isDigit(this.peekNext())) {
 			isFloat = true;
-			value += this.advance(); // Consume the '.'
+			this.advance(); // Consume the '.'
 
 			// Consume digits after decimal point
 			while (this.isDigit(this.peek())) {
-				value += this.advance();
+				this.advance();
 			}
 		}
 
 		// Check for exponent part
 		if (this.peek().toLowerCase() === 'e') {
 			isFloat = true;
-			value += this.advance(); // Consume the 'e' or 'E'
+			this.advance(); // Consume the 'e' or 'E'
 
 			// Optional sign
 			if (this.peek() === '+' || this.peek() === '-') {
-				value += this.advance();
+				this.advance();
 			}
 
 			// Exponent digits
@@ -596,19 +597,34 @@ export class Lexer {
 			}
 
 			while (this.isDigit(this.peek())) {
-				value += this.advance();
+				this.advance();
 			}
 		}
 
+		const lexeme = this.source.substring(start, this.current);
+
 		if (isFloat) {
-			this.addToken(TokenType.FLOAT, parseFloat(value));
+			// Store original string as literal for FLOAT
+			this.addToken(TokenType.FLOAT, lexeme);
 		} else {
-			// For integers, check if it fits in a regular number or needs BigInt
-			const num = parseInt(value, 10);
-			if (num > Number.MAX_SAFE_INTEGER || num < Number.MIN_SAFE_INTEGER) {
-				this.addToken(TokenType.INTEGER, BigInt(value));
-			} else {
-				this.addToken(TokenType.INTEGER, num);
+			// For integers, parse now to handle potential BigInt
+			try {
+				const num = parseInt(lexeme, 10);
+				if (!Number.isSafeInteger(num)) {
+					try {
+						this.addToken(TokenType.INTEGER, BigInt(lexeme));
+					} catch {
+						this.addErrorToken("Integer literal too large.");
+					}
+				} else {
+					this.addToken(TokenType.INTEGER, num);
+				}
+			} catch {
+				try {
+					this.addToken(TokenType.INTEGER, BigInt(lexeme));
+				} catch {
+					this.addErrorToken("Invalid integer literal.");
+				}
 			}
 		}
 	}
@@ -678,10 +694,10 @@ export class Lexer {
 	}
 
 	private addToken(type: TokenType, literal?: any): void {
-		const text = this.source.substring(this.start, this.current);
+		const lexeme = this.source.substring(this.start, this.current);
 		this.tokens.push({
 			type,
-			lexeme: text,
+			lexeme, // Ensure lexeme is always the original string
 			literal,
 			startLine: this.startLine,
 			startColumn: this.startColumn,

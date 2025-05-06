@@ -214,7 +214,7 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 	let filterP4: any = { idxNum: 0, idxStr: null, nArgs: 0 };
 	if (planningInfo && planningInfo.idxNum !== 0) {
 		const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-		planningInfo.usage.forEach((usage, constraintIdx) => {
+		planningInfo.aConstraintUsage.forEach((usage: { argvIndex: number; omit?: boolean }, constraintIdx: number) => {
 			if (usage.argvIndex > 0) {
 				const expr = planningInfo.constraintExpressions?.get(constraintIdx);
 				if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx} used in UPDATE VFilter`, StatusCode.INTERNAL);
@@ -381,7 +381,7 @@ export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt)
 	let filterP4: any = { idxNum: 0, idxStr: null, nArgs: 0 };
 	if (planningInfo && planningInfo.idxNum !== 0) {
 		const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-		planningInfo.usage.forEach((usage, constraintIdx) => {
+		planningInfo.aConstraintUsage.forEach((usage: { argvIndex: number; omit?: boolean }, constraintIdx: number) => {
 			if (usage.argvIndex > 0) {
 				const expr = planningInfo.constraintExpressions?.get(constraintIdx);
 				if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx} used in DELETE VFilter`, StatusCode.INTERNAL);

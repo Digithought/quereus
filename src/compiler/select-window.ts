@@ -4,7 +4,7 @@ import { compileWindowFunctionsPass } from './window_pass.js'; // Assuming this 
 import type * as AST from '../parser/ast.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { expressionToString } from '../util/ddl-stringify.js';
-import type { ColumnResultInfo } from './compiler.js'; // Or wherever defined
+import type { ColumnResultInfo } from './structs.js';
 
 export function processRowWindow(
 	compiler: Compiler,

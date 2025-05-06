@@ -14,6 +14,8 @@ import { MemoryTableModule } from '../vtab/memory/module.js';
 import { JsonEachModule } from '../vtab/json/each.js';
 import { JsonTreeModule } from '../vtab/json/tree.js';
 import { SchemaTableModule } from '../vtab/schema/table.js';
+import { QueryPlanModule } from '../vtab/explain/module.js';
+import { VdbeProgramModule } from '../vtab/explain_vdbe/module.js';
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization.js';
 import { Parser } from '../parser/parser.js';
@@ -58,6 +60,8 @@ export class Database {
 		this.registerVtabModule('json_each', new JsonEachModule());
 		this.registerVtabModule('json_tree', new JsonTreeModule());
 		this.registerVtabModule('sqlite_schema', new SchemaTableModule());
+		this.registerVtabModule('query_plan', new QueryPlanModule());
+		this.registerVtabModule('vdbe_program', new VdbeProgramModule());
 		// Register built-in collations
 		this.registerDefaultCollations();
 	}
@@ -124,7 +128,7 @@ export class Database {
 	async exec(
 		sql: string,
 		params?: SqlValue[] | Record<string, SqlValue> | ((row: Record<string, SqlValue>, columns: string[]) => void),
-		callback?: (row: Record<string, SqlValue>, columns: string[]) => void
+		callback?: (row: Record<string, SqlValue>) => void
 	): Promise<void> {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
@@ -132,7 +136,7 @@ export class Database {
 
 		// Handle overloaded signature where params is the callback
 		if (typeof params === 'function' && callback === undefined) {
-			callback = params as (row: Record<string, SqlValue>, columns: string[]) => void;
+			callback = params as (row: Record<string, SqlValue>) => void;
 			params = undefined;
 		}
 
@@ -182,7 +186,7 @@ export class Database {
 
 				try {
 					// Compile the individual statement
-					const program = compiler.compile(ast, sql); // Pass original SQL for potential error reporting
+					const program = compiler.compile(ast, sql);
 					stmt = new Statement(this, sql, program); // Pass program directly
 
 					// Bind parameters ONLY if it's the *single* statement being executed
@@ -192,8 +196,6 @@ export class Database {
 
 					// Execute the statement steps until done/error
 					let resultStatus: StatusCode;
-					let firstRowData: Record<string, SqlValue> | null = null;
-					let firstRowCols: string[] | null = null;
 
 					do {
 						resultStatus = await stmt.step();
@@ -201,15 +203,7 @@ export class Database {
 							// If it's the last statement and a callback exists, process row
 							if (isLastStatement && callback) {
 								try {
-									// Optimization: store first row data/cols to avoid recalling getAsObject/getColumnNames
-									if (!firstRowData) {
-										firstRowData = stmt.getAsObject();
-										firstRowCols = stmt.getColumnNames();
-										callback(firstRowData, firstRowCols);
-									} else {
-										// Reuse column names, get new row data
-										callback(stmt.getAsObject(), firstRowCols!);
-									}
+									callback(stmt.getAsObject());
 								} catch (cbError: any) {
 									errorLog("Error in exec() callback: %O", cbError);
 									// Stop further execution if callback fails?
@@ -636,37 +630,25 @@ export class Database {
 		let stmt: Statement | null = null;
 		try {
 			stmt = await this.prepare(sql);
-
-			if (params) {
-				stmt.bindAll(params);
-			}
-
+			if (params) { stmt.bindAll(params); }
 			let status: StatusCode;
+			log(`eval loop: Starting loop for SQL: ${sql.substring(0, 50)}...`);
 			while ((status = await stmt.step()) === StatusCode.ROW) {
 				yield stmt.getAsObject();
 			}
-
-			// Check if step() finished with an error
-			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-				throw new SqliteError(`Iteration failed for query: ${sql}`, status);
-			}
 		} finally {
-			// Always finalize the internally prepared statement
-			if (stmt) {
-				await stmt.finalize();
-			}
+			if (stmt) { await stmt.finalize(); }
 		}
 	}
 
 	/**
-	 * @internal - Generates query plan information for a given SQL statement.
-	 * This is intended for internal use and testing, accessed via TypeScript.
+	 * Generates query plan information for a given SQL statement.
 	 * It does not execute the query.
 	 *
 	 * @param sqlOrAst The SQL query string or a pre-parsed AST node.
-	 * @returns A Promise resolving to an array of QueryPlanStep objects.
+	 * @returns An array of QueryPlanStep objects.
 	 */
-	async _getPlanInfo(sqlOrAst: string | AST.AstNode): Promise<QueryPlanStep[]> {
+	getPlanInfo(sqlOrAst: string | AST.AstNode): QueryPlanStep[] {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
 		}

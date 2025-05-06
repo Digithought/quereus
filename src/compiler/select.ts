@@ -2,7 +2,8 @@ import { Opcode } from '../vdbe/opcodes.js';
 import { StatusCode, SqlDataType } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
 import { type P4FuncDef, type P4SortKey } from '../vdbe/instruction.js';
-import type { Compiler, ColumnResultInfo, HavingContext } from './compiler.js'; // Ensure HavingContext is imported
+import type { Compiler } from './compiler.js'; // Ensure HavingContext is imported
+import type { ColumnResultInfo, HavingContext } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import type { ArgumentMap } from './handlers.js';
 import type { TableSchema } from '../schema/table.js'; // Import TableSchema only
@@ -143,7 +144,7 @@ function compileSubquerySource(compiler: Compiler, node: AST.SubquerySource): vo
 	compiler.columnAliases = [];
 
 	// TODO: Pass proper outer cursor context for correlation analysis here.
-	const subqueryResult = compiler.compileSelectCore(node.subquery, []);
+	const subqueryResult = compiler.getSelectCoreStructure(node.subquery, []);
 
 	const tempColumns: ColumnSchema[] = [];
 	const tempColumnIndexMap = new Map<string, number>();
@@ -430,7 +431,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	}
 
 	// Compile core once to get the structure (needed for all paths)
-	const coreResult = compiler.compileSelectCore(stmt, fromCursors);
+	const coreResult = compiler.getSelectCoreStructure(stmt, fromCursors);
 	const coreResultBaseReg = coreResult.resultBaseReg; // Base of the raw row data
 	const coreNumCols = coreResult.numCols;
 	const coreColumnMap = coreResult.columnMap;
@@ -473,13 +474,22 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		});
 		finalNumCols = finalColumnMap.length;
 		// Set window function aliases (assuming logic is similar, might need specific handling)
-		compiler.columnAliases = finalColumnMap.map((info, idx) => {
+		compiler.columnAliases = finalColumnMap.map((info: ColumnResultInfo, idx: number) => {
 			const alias = (info.expr as any)?.alias;
 			if (alias) return alias;
 			if (info.expr?.type === 'windowFunction') return `win_func_${idx}`;
-			if (info.expr) {
-				const strExpr = expressionToString(info.expr);
-				if (strExpr && strExpr.length > 0) return strExpr;
+			if (info.expr && info.expr.loc) { // Check if loc exists
+				// Use original SQL source substring for default name
+				const startOffset = info.expr.loc.start.offset;
+				const endOffset = info.expr.loc.end.offset;
+				// Use compiler.sql
+				if (compiler.sql && startOffset !== undefined && endOffset !== undefined && startOffset < endOffset) {
+					const originalExprText = compiler.sql.substring(startOffset, endOffset);
+					// Trim potentially leading/trailing whitespace from the raw substring
+					const trimmedExprText = originalExprText.trim();
+					if (trimmedExprText.length > 0) return trimmedExprText;
+				}
+				// Fallback if source/offsets are invalid or result is empty
 			}
 			return `col${idx}`;
 		});
@@ -506,7 +516,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		}
 
 		// Set aggregate aliases (restore previous logic)
-		compiler.columnAliases = finalColumnMap.map((info, idx) => {
+		compiler.columnAliases = finalColumnMap.map((info: ColumnResultInfo, idx: number) => {
 			const alias = (info.expr as any)?.alias;
 			if (alias) return alias;
 			if (info.expr?.type === 'column') {
@@ -521,9 +531,18 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 					}
 				}
 			}
-			if (info.expr) {
-				const strExpr = expressionToString(info.expr);
-				if (strExpr && strExpr.length > 0) return strExpr;
+			if (info.expr && info.expr.loc) { // Check if loc exists
+				// Use original SQL source substring for default name
+				const startOffset = info.expr.loc.start.offset;
+				const endOffset = info.expr.loc.end.offset;
+				// Use compiler.sql
+				if (compiler.sql && startOffset !== undefined && endOffset !== undefined && startOffset < endOffset) {
+					const originalExprText = compiler.sql.substring(startOffset, endOffset);
+					// Trim potentially leading/trailing whitespace from the raw substring
+					const trimmedExprText = originalExprText.trim();
+					if (trimmedExprText.length > 0) return trimmedExprText;
+				}
+				// Fallback if source/offsets are invalid or result is empty
 			}
 			return `col${idx}`;
 		});
@@ -549,7 +568,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		finalColumnMap = coreColumnMap;
 		finalNumCols = coreNumCols;
 		// Set direct output aliases (restore previous logic)
-		compiler.columnAliases = coreColumnMap.map((info, idx) => {
+		compiler.columnAliases = coreColumnMap.map((info: ColumnResultInfo, idx: number) => {
 			const alias = (info.expr as any)?.alias;
 			if (alias) return alias;
 			if (info.expr?.type === 'column') {
@@ -562,9 +581,18 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				}
 				return (info.expr as AST.ColumnExpr).name;
 			}
-			if (info.expr) {
-				const strExpr = expressionToString(info.expr);
-				if (strExpr && strExpr.length > 0) return strExpr;
+			if (info.expr && info.expr.loc) { // Check if loc exists
+				// Use original SQL source substring for default name
+				const startOffset = info.expr.loc.start.offset;
+				const endOffset = info.expr.loc.end.offset;
+				// Use compiler.sql
+				if (compiler.sql && startOffset !== undefined && endOffset !== undefined && startOffset < endOffset) {
+					const originalExprText = compiler.sql.substring(startOffset, endOffset);
+					// Trim potentially leading/trailing whitespace from the raw substring
+					const trimmedExprText = originalExprText.trim();
+					if (trimmedExprText.length > 0) return trimmedExprText;
+				}
+				// Fallback if source/offsets are invalid or result is empty
 			}
 			return `col${idx}`;
 		});
@@ -645,7 +673,8 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		stmt,
 		joinLevels,
 		fromCursors,
-		processRowCallback
+		processRowCallback,
+		coreColumnMap
 	);
 
 	// --- DEFINE finalExitAddr Placeholder --- //
@@ -682,7 +711,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 /** Handle SELECT without FROM - simpler case */
 function compileSelectNoFrom(compiler: Compiler, stmt: AST.SelectStmt): void {
 	// Compile expressions to get column names and result registers
-	const { resultBaseReg, numCols, columnMap } = compiler.compileSelectCore(stmt, []);
+	const { resultBaseReg, numCols, columnMap } = compiler.getSelectCoreStructure(stmt, []);
 
 	// Set final column aliases
 	compiler.columnAliases = columnMap.map((info, idx) => {
@@ -701,126 +730,4 @@ function compileSelectNoFrom(compiler: Compiler, stmt: AST.SelectStmt): void {
 	} else {
 		compiler.emit(Opcode.ResultRow, resultBaseReg, numCols, 0, null, 0, "Output constant result row");
 	}
-}
-
-export function compileSelectCoreStatement(
-	compiler: Compiler,
-	stmt: AST.SelectStmt,
-	outerCursors: number[],
-	correlation?: SubqueryCorrelationResult, // Optional correlation info
-	argumentMap?: ArgumentMap
-): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
-	const savedResultColumns = compiler.resultColumns;
-	const savedColumnAliases = compiler.columnAliases;
-	compiler.resultColumns = [];
-	compiler.columnAliases = [];
-
-	// Determine the set of cursors defined *within* this SELECT statement
-	const currentLevelCursors = new Set<number>();
-	stmt.from?.forEach(fromClause => {
-		const findCursors = (fc: AST.FromClause) => {
-			if (fc.type === 'table') {
-				const alias = (fc.alias || fc.table.name).toLowerCase();
-				const cursorId = compiler.tableAliases.get(alias);
-				if (cursorId !== undefined) currentLevelCursors.add(cursorId);
-			} else if (fc.type === 'join') {
-				findCursors(fc.left);
-				findCursors(fc.right);
-			}
-		};
-		findCursors(fromClause);
-	});
-
-	// Combine outer cursors passed in with cursors from this level
-	const combinedActiveCursors = new Set([...outerCursors, ...currentLevelCursors]);
-
-	let estimatedNumCols = 0;
-	const hasStar = stmt.columns.some(c => c.type === 'all');
-	if (hasStar) {
-		combinedActiveCursors.forEach(cursorIdx => {
-			const schema = compiler.tableSchemas.get(cursorIdx);
-			const alias = [...compiler.tableAliases.entries()].find(([, cIdx]) => cIdx === cursorIdx)?.[0];
-			const colSpec = stmt.columns.find(c => c.type === 'all' && c.table && (c.table.toLowerCase() === schema?.name.toLowerCase() || c.table.toLowerCase() === alias?.toLowerCase())) as AST.ResultColumn & { type: 'all' } | undefined;
-			if (schema && (!colSpec || colSpec.table)) { // Check if star matches this cursor
-				estimatedNumCols += (schema?.columns.filter(c => !c.hidden).length || 0);
-			}
-		});
-	}
-	estimatedNumCols += stmt.columns.filter(c => c.type === 'column').length;
-	if (estimatedNumCols === 0) { estimatedNumCols = 1; } // Ensure at least one cell
-
-	const resultBase = compiler.allocateMemoryCells(estimatedNumCols);
-	let actualNumCols = 0;
-	const columnMap: ColumnResultInfo[] = [];
-
-	let currentResultReg = resultBase;
-	for (const column of stmt.columns) {
-		if (column.type === 'all') {
-			combinedActiveCursors.forEach(cursorIdx => {
-				const tableSchema = compiler.tableSchemas.get(cursorIdx);
-				const alias = [...compiler.tableAliases.entries()].find(([, cIdx]) => cIdx === cursorIdx)?.[0];
-				// Check if this cursor matches the qualified star (e.g., t.*)
-				if (tableSchema && (!column.table || column.table.toLowerCase() === alias?.toLowerCase() || column.table.toLowerCase() === tableSchema.name.toLowerCase())) {
-					tableSchema.columns.forEach((colSchema) => {
-						if (!colSchema.hidden) {
-							const targetReg = currentResultReg++;
-							const colIdx = tableSchema.columnIndexMap.get(colSchema.name.toLowerCase());
-							if (colIdx === undefined && colSchema.name.toLowerCase() !== 'rowid') {
-								compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, `Expand *: Col ${colSchema.name} Idx Error`);
-								columnMap.push({ targetReg, sourceCursor: cursorIdx, sourceColumnIndex: -1 });
-							} else {
-								compiler.emit(Opcode.VColumn, cursorIdx, colIdx ?? -1, targetReg, 0, 0, `Expand *: ${alias || tableSchema.name}.${colSchema.name}`);
-								const colExpr: AST.ColumnExpr = { type: 'column', name: colSchema.name, table: alias || tableSchema.name };
-								columnMap.push({ targetReg, sourceCursor: cursorIdx, sourceColumnIndex: colIdx ?? -1, expr: colExpr });
-							}
-							const fullName = `${alias || tableSchema.name}.${colSchema.name}`;
-							compiler.resultColumns.push({ name: fullName });
-							compiler.columnAliases.push(fullName);
-							actualNumCols++;
-						}
-					});
-				}
-			});
-		} else if (column.expr) {
-			const targetReg = currentResultReg++;
-			// Pass correlation and argumentMap down to compileExpression
-			compiler.compileExpression(column.expr, targetReg, correlation, undefined, argumentMap);
-
-			let sourceCursor = -1;
-			let sourceColumnIndex = -1;
-			if (column.expr.type === 'column') {
-				const colExpr = column.expr as AST.ColumnExpr;
-				if (colExpr.table) {
-					sourceCursor = compiler.tableAliases.get(colExpr.table.toLowerCase()) ?? -1;
-				} else {
-					for (const cIdx of combinedActiveCursors) {
-						const schema = compiler.tableSchemas.get(cIdx);
-						if (schema?.columnIndexMap.has(colExpr.name.toLowerCase())) {
-							if (sourceCursor !== -1) {
-								// Ambiguous - reset source info
-								sourceCursor = -1;
-								sourceColumnIndex = -1;
-								break;
-							};
-							sourceCursor = cIdx;
-						}
-					}
-				}
-				if (sourceCursor !== -1) {
-					sourceColumnIndex = compiler.tableSchemas.get(sourceCursor)?.columnIndexMap.get(colExpr.name.toLowerCase()) ?? -1;
-				}
-			}
-			columnMap.push({ targetReg, sourceCursor, sourceColumnIndex, expr: column.expr });
-			let colName = column.alias || (column.expr.type === 'column' ? (column.expr as AST.ColumnExpr).name : `col${actualNumCols + 1}`);
-			compiler.columnAliases.push(colName);
-			compiler.resultColumns.push({ name: colName, expr: column.expr });
-			actualNumCols++;
-		}
-	}
-
-	// WHERE, GROUP BY, HAVING, ORDER BY are handled by the caller (compileSelectStatement)
-
-	compiler.resultColumns = savedResultColumns;
-	compiler.columnAliases = savedColumnAliases;
-	return { resultBaseReg: resultBase, numCols: actualNumCols, columnMap };
 }

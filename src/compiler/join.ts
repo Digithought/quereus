@@ -1,6 +1,6 @@
 import type { Compiler } from './compiler.js';
 import type { JoinLevelInfo } from './select.js';
-import type { ColumnResultInfo } from './compiler.js';
+import type { ColumnResultInfo } from './structs.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';

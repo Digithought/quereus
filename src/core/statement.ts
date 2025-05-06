@@ -149,7 +149,6 @@ export class Statement {
 			throw new SqliteError("VDBE not initialized after compile", StatusCode.INTERNAL);
 		}
 
-		// Reset internal statement state for step
 		this.busy = true;
 		this.currentRowInternal = null; // Clear previous row before stepping
 
@@ -158,7 +157,7 @@ export class Statement {
 
 		// After VDBE returns a status:
 		if (status === StatusCode.ROW) {
-			// Row is ready
+			// Row is ready - OpCode.ResultRow should have set currentRowInternal
 			if (!this.currentRowInternal) {
 				this.busy = false;
 				throw new SqliteError("VDBE returned ROW but setCurrentRow failed to store data", StatusCode.INTERNAL);
@@ -210,26 +209,12 @@ export class Statement {
 	 * @throws MisuseError if step() did not return ROW or if column names are not available.
 	 */
 	getAsObject(): Record<string, SqlValue> {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (!this.currentRowInternal) throw new MisuseError("No row available");
-		const names = this.vdbeProgram?.columnNames || []; // Get names from program
-		if (names.length === 0 && this.currentRowInternal.length > 0) {
-			// Fallback if compiler didn't set names (should not happen ideally)
-			return this.currentRowInternal.reduce((acc, cell, i) => {
-				acc[`col_${i}`] = cell.value;
-				return acc;
-			}, {} as Record<string, SqlValue>);
-		}
-		if (names.length !== this.currentRowInternal.length) {
-			throw new SqliteError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
-		}
-		const obj: Record<string, SqlValue> = {};
-		for (let i = 0; i < names.length; i++) {
-			const name = names[i];
-			const value = this.currentRowInternal[i].value;
-			if (!(name in obj)) { obj[name] = value; }
-		}
-		return obj;
+		const names = this.getColumnNames();	// (checks currentRowInternal and finalized)
+
+		return this.currentRowInternal!.reduce((acc, cell, i) => {
+			acc[names[i]] = cell.value;
+			return acc;
+		}, {} as Record<string, SqlValue>);
 	}
 
 	/**
@@ -239,7 +224,17 @@ export class Statement {
 	 */
 	getColumnNames(): string[] {
 		if (this.finalized) throw new MisuseError("Statement finalized");
-		return [...(this.vdbeProgram?.columnNames || [])];
+		if (!this.currentRowInternal) throw new MisuseError("No row available");
+		const names = this.vdbeProgram?.columnNames || []; // Get names from program
+		if (names.length === 0 && this.currentRowInternal.length > 0) {
+			// Fallback if compiler didn't set names (should not happen ideally)
+			return this.currentRowInternal.map((cell, i) => `col_${i}`);
+		}
+		if (names.length !== this.currentRowInternal.length) {
+			throw new SqliteError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
+		}
+		// Convert readonly array to regular array if needed
+		return [...names];
 	}
 
 	/**

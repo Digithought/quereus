@@ -12,6 +12,8 @@ import type { TableSchema } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 import { IndexConstraintOp } from '../../common/constants.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import { createLogger } from '../../common/logger.js';
+import { safeJsonStringify } from '../../util/serialization.js';
 
 /**
  * Structure of rows returned by sqlite_schema
@@ -172,16 +174,15 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		if (constraints.length > 0 && args.length > 0) {
 			generatedRows = generatedRows.filter(row => {
 				for (const { constraint, argvIndex } of constraints) {
-					if (constraint.usable === false || argvIndex <= 0) continue; // Skip unusable or unused constraints
+					if (constraint.usable === false || argvIndex <= 0) continue;
 
 					const columnIndex = constraint.iColumn;
 					const op = constraint.op;
-					const valueToCompare = args[argvIndex - 1]; // argvIndex is 1-based
+					const valueToCompare = args[argvIndex - 1];
 
 					if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) {
-						// Should not happen with valid constraints
 						console.warn(`[sqlite_schema] Invalid column index ${columnIndex} in constraint.`);
-						return false; // Treat as non-match if constraint is invalid
+						return false;
 					}
 					const columnName = SchemaTableModule.COLUMNS[columnIndex].name as keyof SchemaRow;
 					const rowValue = row[columnName];
@@ -302,7 +303,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		if (rowid === null) {
 			throw new SqliteError("Cursor is not pointing to a valid schema row", StatusCode.MISUSE);
 		}
-		return rowid;
+		return Promise.resolve(rowid);
 	}
 
 	async close(): Promise<void> {

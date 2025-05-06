@@ -3,6 +3,7 @@ import type { FunctionSchema } from '../schema/function.js';
 import type { TableSchema } from '../schema/table.js';
 import type { ConflictResolution } from '../common/constants.js';
 import type { SchemaChangeInfo } from '../vtab/module.js';
+import type * as AST from '../parser/ast.js';
 
 /**
  * Represents a single instruction in the VDBE program.
@@ -51,68 +52,43 @@ export function createInstruction(
 
 // --- P4 Operand Types ---
 
-/** P4 operand for Opcode.Function */
-export interface P4FuncDef {
-	/** The actual function definition/callbacks */
-	funcDef: FunctionSchema;
-	/** Number of arguments expected */
-	nArgs: number;
-	/** Discriminant type */
-	type: 'funcdef';
-}
+/** P4 operand type for Function/AggStep/AggFinal */
+export interface P4FuncDef { type: 'funcdef', funcDef: FunctionSchema, nArgs: number }
 
-/** P4 operand for virtual table opcodes */
-export interface P4Vtab {
-	/** Store the resolved schema */
-	tableSchema: TableSchema;
-	/** Discriminant type */
-	type: 'vtab';
-}
+/** P4 operand type for comparisons using specific collation */
+export interface P4Coll { type: 'coll', name: string }
 
-/** P4 operand for collation sequence */
-export interface P4Coll {
-	/** Collation sequence name (e.g., "BINARY", "NOCASE") */
-	name: string;
-	/** Discriminant type */
-	type: 'coll';
-}
-
-/** P4 operand for key information */
-export interface P4KeyInfo {
-	/** Discriminant type */
-	type: 'keyinfo';
-}
-
-/** P4 operand for sorting with MemoryTable */
+/** P4 operand type for sort key definitions */
 export interface P4SortKey {
-	/** Indices of columns in the input row used for sorting */
-	keyIndices: ReadonlyArray<number>;
-	/** Sort direction for each key column (true for DESC) */
-	directions: ReadonlyArray<boolean>;
-	/** Optional collation names for each key column */
-	collations?: ReadonlyArray<string | undefined>;
-	/** Discriminant type */
 	type: 'sortkey';
+	keyIndices: number[];
+	collations?: string[];
+	directions: boolean[]; // true for DESC
 }
 
-/** P4 operand for Opcode.VUpdate */
+/** P4 operand type for VUpdate */
 export interface P4Update {
-	/** Conflict resolution strategy */
-	onConflict: ConflictResolution;
-	/** The schema of the table being updated */
-	table: TableSchema;
-	/** Discriminant type */
 	type: 'update';
+	onConflict: ConflictResolution;
+	table: TableSchema;
 }
 
-/** P4 operand for Opcode.OpenTvf */
+/** P4 operand type for OpenTvf */
 export interface P4OpenTvf {
-	/** Name of table-valued function module */
-	moduleName: string;
-	/** Alias for the TVF in the current query */
 	alias: string;
-	/** Discriminant type */
+	moduleName: string;
 	type: 'opentvf';
+}
+
+/** P4 operand type for OpenRead/OpenWrite (VTab info) */
+export interface P4Vtab { type: 'vtab', tableSchema: TableSchema }
+
+/** P4 operand type for DropTable/DropIndex/DropView */
+export interface P4DropInfo {
+	type: 'dropInfo'; // Add type discriminator
+	schemaName: string;
+	name: string; // Table, index, or view name
+	ifExists: boolean;
 }
 
 // --- Placeholder P4 Types ---

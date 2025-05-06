@@ -24,6 +24,7 @@ Review items:
 *   [ ] The VdbeRuntime in runtime.ts has fairly complex stack management logic. It might be worth considering additional bounds checking to prevent potential issues.
 *   [ ] The error handling in several of the instruction handlers seems robust, but error propagation between async calls should be carefully tested, especially in the VTab-related code.
 *   [ ] The P4 operand types in instruction.ts have several placeholder types that might need to be fully implemented as the codebase evolves.
+*   [ ] Anywhere we catch our own exceptions, we should instead have a way to check without throw/catch (not an exceptional exception)
 
 **II. VDBE & Compiler Core:**
 

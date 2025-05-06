@@ -10,10 +10,12 @@ import type { IndexInfo } from '../indexInfo.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
 import { createLogger } from '../../common/logger.js';
+import { SqlDataType } from '../../common/types.js';
 
 const log = createLogger('vtab:memory:module');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
+const debugLog = log.extend('debug');
 
 /**
  * A module that provides in-memory table functionality using digitree.
@@ -133,9 +135,18 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 		// Gather available indexes
 		// 1. Create a pseudo-index for the primary key (or rowid)
-		const pkIndexSchema: IndexSchema | null = tableInfo.primaryKeyDefinition.length > 0
-			? { name: '_primary_', columns: tableInfo.primaryKeyDefinition }
-			: { name: '_rowid_', columns: [{ index: -1, desc: false }] };
+		let pkIndexSchema: IndexSchema | null = null;
+		if (tableInfo.primaryKeyDefinition.length > 0) {
+			// Explicit PRIMARY KEY constraint exists
+			pkIndexSchema = { name: '_primary_', columns: tableInfo.primaryKeyDefinition };
+		} else if (tableInfo.columns.length > 0 && tableInfo.columns[0].affinity === SqlDataType.INTEGER) {
+			// No explicit PK, but first column is INTEGER - treat it as implicit PK for planning
+			// If the schema already reflects it as PK, use its index
+			pkIndexSchema = { name: '_primary_', columns: [{ index: 0, desc: false }] }; // Assume index 0 is implicit PK
+		} else {
+			// No explicit PK and first column isn't INTEGER, use rowid
+			pkIndexSchema = { name: '_rowid_', columns: [{ index: -1, desc: false }] };
+		}
 
 		const availableIndexes: IndexSchema[] = [];
 		if (pkIndexSchema) availableIndexes.push(pkIndexSchema);
@@ -171,19 +182,24 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			const eqConstraintsMap = new Map<number, number>();
 			let canUseEqPlan = true;
 			const eqPlanUsedIndices = new Set<number>();
+			debugLog(`[xBestIndex EQ Check] Index: ${index.name} (${indexId})`);
 			for (let k = 0; k < indexCols.length; k++) {
 				const idxCol = indexCols[k].index;
 				let foundEq = false;
+				debugLog(`  - Checking Index Col ${k} (schema idx ${idxCol})`);
 				for (let i = 0; i < indexInfo.nConstraint; i++) {
 					const c = indexInfo.aConstraint[i];
+					debugLog(`    - Comparing with constraint ${i}: col=${c.iColumn}, op=${c.op}, usable=${c.usable}`);
 					if (c.iColumn === idxCol && c.op === IndexConstraintOp.EQ && c.usable) {
 						eqConstraintsMap.set(idxCol, i);
 						eqPlanUsedIndices.add(i);
 						foundEq = true;
+						debugLog(`      -> Found usable EQ constraint ${i}`);
 						break;
 					}
 				}
 				if (!foundEq) {
+					debugLog(`    - No usable EQ constraint found for index col ${k}. Cannot use EQ plan.`);
 					canUseEqPlan = false;
 					break; // Need equality on all index columns for this plan
 				}
@@ -192,8 +208,10 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			if (canUseEqPlan && indexCols.length > 0) {
 				const planEqCost = Math.log2(tableSize + 1) + 1.0; // Lower cost for direct lookup
 				const planEqRows = BigInt(1);
+				debugLog(`  - EQ Plan viable for index ${index.name}. Cost: ${planEqCost} vs Best: ${bestPlan.cost}`);
 				// Compare against bestPlan found so far for *any* index
 				if (planEqCost < bestPlan.cost) {
+					debugLog(`    -> EQ Plan is new best plan.`);
 					bestPlan = { // Update overall best plan directly
 						indexId: indexId, // Use the current indexId
 						planType: PLAN_TYPE_EQ,

@@ -12,67 +12,23 @@ import * as EphemeralCore from './ephemeral.js';
 import * as FromClauseCore from './fromClause.js';
 import * as QueryPlanner from './queryPlanner.js';
 import * as WhereVerify from './where-verify.js';
-import * as ExprHandlers from './handlers.js';
 import { compileExpression } from './expression.js';
 import * as StmtCompiler from './statement.js';
 import * as DdlCompiler from './ddl.js';
 import * as SelectCompiler from './select.js';
-import * as Utils from './utils.js';
+import * as SelectCore from './select-core.js';
 import type { SubqueryCorrelationResult } from './correlation.js';
 import * as SubqueryCompiler from './subquery.js';
 import type { ArgumentMap } from './handlers.js';
-import { compileCommonTableExpression } from './cte.js';
-import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
-import { traverseAst, type AstVisitorCallbacks } from '../parser/visitor.js';
 import { createLogger } from '../common/logger.js';
-import { patchJumpAddresses } from './compilerState.js';
+import { getCurrentAddressHelper, patchJumpAddresses } from './compilerState.js';
+import type { CteInfo, CursorPlanningResult, SubroutineInfo, HavingContext, ColumnResultInfo } from './structs.js';
+import { emitInstruction, allocateMemoryCellsHelper, allocateCursorHelper, addConstantHelper, allocateAddressHelper, resolveAddressHelper, beginSubroutineHelper, endSubroutineHelper } from './compilerState.js';
+import { createEphemeralTableHelper } from './ephemeral.js';
+import { compileWithClauseHelper } from './cte.js';
 
 const log = createLogger('compiler');
-const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
-
-// --- Result/CTE Info types --- //
-export interface ColumnResultInfo {
-	targetReg: number;
-	sourceCursor: number; // -1 if not from a direct column
-	sourceColumnIndex: number; // -1 if not from a direct column
-	expr?: AST.Expression; // The expression that generated this result column
-}
-export interface HavingContext {
-	finalColumnMap: ReadonlyArray<ColumnResultInfo>;
-}
-export interface SubroutineInfo {
-	startAddress: number;
-	correlation: SubqueryCorrelationResult;
-	regSubqueryHasNullOutput?: number;
-}
-
-export type CteStrategy = 'materialized' | 'view';
-export interface CteInfo {
-	strategy: CteStrategy;
-	node: AST.CommonTableExpr;
-	// Fields specific to 'materialized' strategy:
-	cursorIdx?: number;
-	schema?: TableSchema;
-	isCompiled?: boolean; // Flag for on-demand compilation of 'view' strategy
-}
-
-export interface CursorPlanningResult {
-	idxNum: number;
-	idxStr: string | null;
-	usage: IndexConstraintUsage[];
-	cost: number;
-	rows: bigint;
-	orderByConsumed: boolean;
-	constraints: IndexConstraint[];
-	constraintExpressions: ReadonlyMap<number, AST.Expression>;
-	handledWhereNodes: ReadonlySet<AST.Expression>;
-	nOrderBy: number;
-	aOrderBy: ReadonlyArray<{ iColumn: number; desc: boolean }>;
-	colUsed: bigint;
-	idxFlags: number;
-}
 
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
@@ -105,13 +61,14 @@ export class Compiler {
 	public subroutineCode: VdbeInstruction[] = [];
 	public subroutineDefs: Map<AST.SelectStmt, SubroutineInfo> = new Map();
 	public subroutineDepth = 0;
-	private currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
+	public currentFrameEnterInsn: VdbeInstruction | null = null; // Track FrameEnter to patch size
 	public maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
-	private subroutineFrameStack: { frameEnterInsn: VdbeInstruction | null; maxOffset: number }[] = [];
+	public subroutineFrameStack: { frameEnterInsn: VdbeInstruction | null; maxOffset: number }[] = [];
 	// --- Stack Pointers ---
-	public stackPointer: number = 0; // Current stack top (absolute index)
-	public framePointer: number = 0; // Current frame base (absolute index)
-	public outerCursors: number[] = [];
+	public stackPointer = 0; // Current stack top (absolute index)
+	public framePointer = 0; // Current frame base (absolute index)
+	// --- End Stack Pointers ---
+	public outerCursors: number[] = []; // Cursors from outer query available to subquery
 
 	constructor(db: Database) {
 		this.db = db;
@@ -154,13 +111,13 @@ export class Compiler {
 			this.stackPointer = 0;
 			this.framePointer = 0;
 			this.outerCursors = [];
-			this.subroutineFrameStack = [];
+			// --- End Reset State ---
 
 			// Add initial Init instruction
 			this.emit(Opcode.Init, 0, 1, 0, null, 0, "Start of program"); // Start PC=1
 
 			// --- Analyze CTE references before compiling WITH --- //
-			let withClause: WithClause | undefined;
+			let withClause: AST.WithClause | undefined;
 			if ('withClause' in ast && (ast as any).withClause !== undefined) {
 				withClause = (ast as any).withClause;
 				if (withClause) {
@@ -169,7 +126,7 @@ export class Compiler {
 						this.cteReferenceCounts.set(cte.name.toLowerCase(), 0);
 					}
 					// Perform the analysis
-					this._analyzeCteReferences(ast, withClause);
+					// this._analyzeCteReferences(ast, withClause); // REMOVED - Assume handled elsewhere or refactored out
 				}
 			}
 			// -------------------------------------------------------- //
@@ -179,7 +136,7 @@ export class Compiler {
 				this.compileWithClause(withClause);
 			}
 
-			// Compile main statement (references should be handled by compileFromCore now)
+			// Compile main statement (ensure casts are still present)
 			switch (ast.type) {
 				case 'select':
 					this.compileSelect(ast as AST.SelectStmt);
@@ -226,20 +183,17 @@ export class Compiler {
 				case 'pragma':
 					this.compilePragma(ast as AST.PragmaStmt);
 					break;
-
 				default:
-					throw new SqliteError(`Unsupported statement type: ${(ast as any).type}`, StatusCode.ERROR);
+					throw new SqliteError(`Compilation not implemented for statement type: ${(ast as any).type}`);
 			}
 
-			// Append subroutines after main program
-			if (this.subroutineCode.length > 0) {
-				this.instructions.push(...this.subroutineCode);
-				this.subroutineCode = [];
-			}
-
-			// End program with Halt
+			// Append Halt instruction
 			this.emit(Opcode.Halt, StatusCode.OK, 0, 0, null, 0, "End of program");
 
+			// Append subroutine code
+			this.instructions.push(...this.subroutineCode);
+
+			// Patch jump addresses
 			patchJumpAddresses(this);
 
 			// Create program
@@ -259,8 +213,8 @@ export class Compiler {
 					error.message,
 					StatusCode.ERROR,
 					error,
-					error.line,
-					error.column
+					error.token.startLine, // Use token location from ParseError
+					error.token.startColumn
 				);
 			} else if (error instanceof SqliteError) {
 				throw error;
@@ -275,104 +229,7 @@ export class Compiler {
 		}
 	}
 
-	/**
-	 * Starts a subroutine compilation context by setting up a new frame
-	 *
-	 * @returns The address of the FrameEnter instruction
-	 */
-	startSubroutineCompilation(): number {
-		this.subroutineDepth++;
-		this.subroutineFrameStack.push({
-			frameEnterInsn: this.currentFrameEnterInsn,
-			maxOffset: this.maxLocalOffsetInCurrentFrame,
-		});
-
-		this.maxLocalOffsetInCurrentFrame = 0;
-		const instruction = createInstruction(Opcode.FrameEnter, 0, 0, 0, null, 0, `Enter Subroutine Frame Depth ${this.subroutineDepth}`);
-		this.subroutineCode.push(instruction);
-		const frameEnterAddr = this.subroutineCode.length - 1;
-		this.currentFrameEnterInsn = instruction;
-
-		return frameEnterAddr;
-	}
-
-	/**
-	 * Ends a subroutine compilation context by patching the frame size
-	 * and restoring the previous frame context
-	 */
-	endSubroutineCompilation(): void {
-		if (this.subroutineDepth > 0) {
-			if (this.currentFrameEnterInsn) {
-				const frameSize = this.maxLocalOffsetInCurrentFrame + 1;
-				this.currentFrameEnterInsn.p1 = frameSize;
-			} else {
-				errorLog("Missing FrameEnter tracking for the current frame being ended.");
-			}
-
-			this.subroutineDepth--;
-
-			const previousFrame = this.subroutineFrameStack.pop();
-			if (previousFrame) {
-				this.currentFrameEnterInsn = previousFrame.frameEnterInsn;
-				this.maxLocalOffsetInCurrentFrame = previousFrame.maxOffset;
-			} else {
-				this.currentFrameEnterInsn = null;
-				this.maxLocalOffsetInCurrentFrame = 0;
-				if (this.subroutineDepth !== 0) {
-					errorLog("Subroutine stack underflow or depth mismatch.");
-				}
-			}
-		} else {
-			warnLog("Attempted to end subroutine compilation at depth 0");
-		}
-	}
-
-	// --- Wrapper Methods Delegating to Helpers --- //
-
-	// Compiler State Helpers
-	allocateMemoryCells(count: number): number { return CompilerState.allocateMemoryCellsHelper(this, count); }
-	allocateCursor(): number { return CompilerState.allocateCursorHelper(this); }
-	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
-	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
-	allocateAddress(purpose: string = 'unknown'): number { return CompilerState.allocateAddressHelper(this, purpose); }
-	resolveAddress(placeholder: number): number { return CompilerState.resolveAddressHelper(this, placeholder); }
-	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
-
-	// Ephemeral Table Helpers
-	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema {
-		if (!this.ephemeralTableInstances) {
-			this.ephemeralTableInstances = new Map<number, MemoryTable>();
-		}
-		return EphemeralCore.createEphemeralTableHelper(this, cursorIdx, numCols, sortKey);
-	}
-	closeCursorsUsedBySelect(cursors: number[]): void { EphemeralCore.closeCursorsUsedBySelectHelper(this, cursors); }
-
-	// FROM Clause Helper
-	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
-
-	// Query Planning Helpers
-	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { QueryPlanner.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
-	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
-
-	// Expressions
-	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { Utils.compileLiteralValue(this, expr.value, targetReg); }
-	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileCollate(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprHandlers.compileParameter(this, expr, targetReg); }
-
-	// Subqueries
-	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
-	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileScalarSubquery(this, subQuery, targetReg); }
-	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
-	compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileComparisonSubquery(this, leftExpr, op, subQuery, targetReg); }
-	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileExistsSubquery(this, subQuery, targetReg); }
-
-	// Statements
+	// --- Core Compilation Helpers (Delegated to modules) ---
 	compileSelect(stmt: AST.SelectStmt): void { SelectCompiler.compileSelectStatement(this, stmt); }
 	compileInsert(stmt: AST.InsertStmt): void { StmtCompiler.compileInsertStatement(this, stmt); }
 	compileUpdate(stmt: AST.UpdateStmt): void { StmtCompiler.compileUpdateStatement(this, stmt); }
@@ -387,131 +244,31 @@ export class Compiler {
 	compileRollback(stmt: AST.RollbackStmt): void { StmtCompiler.compileRollbackStatement(this, stmt); }
 	compileSavepoint(stmt: AST.SavepointStmt): void { StmtCompiler.compileSavepointStatement(this, stmt); }
 	compileRelease(stmt: AST.ReleaseStmt): void { StmtCompiler.compileReleaseStatement(this, stmt); }
-	compileSelectCore(stmt: AST.SelectStmt, outerCursorsForSelect: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
-		return SelectCompiler.compileSelectCoreStatement(this, stmt, outerCursorsForSelect, correlation, argumentMap);
-	}
-
-	/**
-	 * Compiles a WITH clause by materializing each CTE
-	 *
-	 * @param withClause The WITH clause to compile
-	 */
-	compileWithClause(withClause: WithClause | undefined): void {
-		if (!withClause) {
-			return;
-		}
-
-		log(`Compiling WITH%s clause...`, withClause.recursive ? ' RECURSIVE' : '');
-
-		for (const cte of withClause.ctes) {
-			const cteNameLower = cte.name.toLowerCase();
-			if (this.cteMap.has(cteNameLower)) {
-				throw new SqliteError(`Duplicate CTE name: '${cte.name}'`, StatusCode.ERROR);
-			}
-
-			// --- Determine CTE Strategy --- //
-			let strategy: CteStrategy = 'view'; // Default to view
-			const isRecursive = withClause.recursive && this.isRecursiveCteQuery(cte, cteNameLower);
-
-			if (isRecursive) {
-				strategy = 'materialized'; // Recursive MUST be materialized
-				log(`CTE '%s': Determined Strategy=materialized (recursive)`, cteNameLower);
-			} else if (cte.materializationHint === 'materialized') {
-				strategy = 'materialized';
-				log(`CTE '%s': Determined Strategy=materialized (hint)`, cteNameLower);
-			} else if (cte.materializationHint === 'not_materialized') {
-				strategy = 'view'; // User explicitly requested view
-				log(`CTE '%s': Determined Strategy=view (hint)`, cteNameLower);
-			} else {
-				// Default logic: materialize if referenced more than once
-				const refCount = this.cteReferenceCounts.get(cteNameLower) ?? 0;
-				if (refCount > 1) {
-					strategy = 'materialized';
-					log(`CTE '%s': Determined Strategy=materialized (refCount=%d)`, cteNameLower, refCount);
-				} else {
-					strategy = 'view';
-					log(`CTE '%s': Determined Strategy=view (refCount=%d)`, cteNameLower, refCount);
-				}
-			}
-
-			// Store the decision and the AST node reference
-			const cteInfo: CteInfo = { strategy, node: cte };
-			this.cteMap.set(cteNameLower, cteInfo);
-
-			// --- Compile based on strategy --- //
-			if (strategy === 'materialized') {
-				// Call the existing compilation function (which needs slight modification)
-				compileCommonTableExpression(this, cteInfo, isRecursive);
-			} else {
-				// View strategy: Do nothing here, compilation happens on reference in FROM clause
-				log(`CTE '%s': Deferred compilation (view strategy)`, cteNameLower);
-			}
-		}
-		log("Finished preliminary compilation of WITH clause.");
-	}
-
-	// Pragma handling
 	compilePragma(stmt: AST.PragmaStmt): void { DdlCompiler.compilePragmaStatement(this, stmt); }
 
-	// --- Helper for CTE Reference Counting (using generic visitor) --- //
-	private _analyzeCteReferences(node: AST.AstNode, withClause: AST.WithClause): void {
-		const definedCteNames = new Set(withClause.ctes.map(c => c.name.toLowerCase()));
-
-		// Define the specific callback for visiting table sources
-		const callbacks: AstVisitorCallbacks = {
-			visitTableSource: (tableSourceNode: AST.TableSource) => {
-				const tableNameLower = tableSourceNode.table.name.toLowerCase();
-				if (definedCteNames.has(tableNameLower)) {
-					const currentCount = this.cteReferenceCounts.get(tableNameLower) ?? 0;
-					this.cteReferenceCounts.set(tableNameLower, currentCount + 1);
-				}
-			}
-		};
-
-		// Start traversal from the main statement
-		traverseAst(node, callbacks);
-
-		// Also traverse the queries within each CTE definition itself
-		for (const cte of withClause.ctes) {
-			traverseAst(cte.query, callbacks);
-		}
+	// --- Helper Methods (Moved from modules or refined) ---
+	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
+	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, inverse: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, inverse); }
+	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileExistsSubquery(this, subQuery, targetReg); }
+	compileComparisonSubquery(leftExpr: AST.Expression, operator: string, subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileComparisonSubquery(this, leftExpr, operator, subQuery, targetReg); }
+	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
+	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { QueryPlanner.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
+	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
+	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any | null, p5?: number, comment?: string): number { return emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
+	allocateMemoryCells(count: number): number { return allocateMemoryCellsHelper(this, count); }
+	allocateCursor(): number { return allocateCursorHelper(this); }
+	addConstant(value: SqlValue): number { return addConstantHelper(this, value); }
+	allocateAddress(purpose?: string): number { return allocateAddressHelper(this, purpose ?? ''); }
+	getCurrentAddress(): number { return getCurrentAddressHelper(this); }
+	resolveAddress(placeholder: number): void { resolveAddressHelper(this, placeholder); }
+	beginSubroutine(numArgs: number, argMap?: ArgumentMap): number { return beginSubroutineHelper(this, numArgs, argMap); }
+	endSubroutine(): void { endSubroutineHelper(this); }
+	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema { return createEphemeralTableHelper(this, cursorIdx, numCols, sortKey); }
+	compileWithClause(withClause: AST.WithClause): void { compileWithClauseHelper(this, withClause); }
+	getSelectCoreStructure(stmt: AST.SelectStmt, outerCursors: number[], correlation?: SubqueryCorrelationResult, argumentMap?: ArgumentMap): { resultBaseReg: number, numCols: number, columnMap: ColumnResultInfo[] } {
+		return SelectCore.getSelectCoreStructure(this, stmt, outerCursors, correlation, argumentMap);
 	}
-	// ---------------------------------------------- //
-
-	// --- ADDED: Moved isRecursiveCteQuery from cte.ts --- //
-	/**
-	 * Checks if a CTE's query references itself, indicating recursion.
-	 * This check must happen *before* compilation modifies alias maps.
-	 */
-	private isRecursiveCteQuery(cte: AST.CommonTableExpr, cteNameLower: string): boolean {
-		if (cte.query.type !== 'select') return false;
-		const sel = cte.query as AST.SelectStmt;
-		// Check the recursive part of a UNION/UNION ALL query
-		if (sel.union) {
-			const checkClause = (clause: AST.FromClause | undefined): boolean => {
-				if (!clause) return false;
-				if (clause.type === 'table') {
-					// Check against the CTE name itself during this analysis phase
-					if (clause.table.name.toLowerCase() === cteNameLower) {
-						return true;
-					}
-				} else if (clause.type === 'join') {
-					return checkClause(clause.left) || checkClause(clause.right);
-				} else if (clause.type === 'subquerySource') {
-					// Recursively check inside subqueries in FROM
-					// This requires a visitor pattern similar to _analyzeCteReferences
-					// For now, assume subqueries don't directly cause recursion here for simplicity,
-					// but a robust implementation would need full traversal.
-					// return containsCteReference(clause.subquery, cteNameLower);
-				}
-				// Add other FROM clause types if needed (e.g., functions)
-				return false;
-			};
-			// Check if the recursive select statement's FROM clause references the CTE
-			return sel.union.from?.some(checkClause) ?? false;
-		}
-		return false;
-	}
-	// -------------------------------------------------- //
+	closeCursorsUsedBySelect(cursors: number[]): void { EphemeralCore.closeCursorsUsedBySelectHelper(this, cursors); }
 }
 

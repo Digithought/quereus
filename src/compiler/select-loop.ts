@@ -7,6 +7,7 @@ import { expressionToString } from '../util/ddl-stringify.js';
 import { compileUnhandledWhereConditions } from './where-verify.js'; // Keep dependency
 import { compileJoinCondition, emitLeftJoinNullPadding } from './join.js'; // Import necessary functions
 import { createLogger } from '../common/logger.js'; // Import logger
+import type { ColumnResultInfo } from './structs.js'; // Added for coreColumnMap
 
 const log = createLogger('compiler:select-loop'); // Create logger instance
 
@@ -25,16 +26,19 @@ export function compileSelectLoop(
 	joinLevels: ReadonlyArray<JoinLevelInfo>,
 	fromCursors: ReadonlyArray<number>, // Needed for compileUnhandledWhereConditions
 	processRowCallback: ProcessRowCallback,
+	coreColumnMap: ReadonlyArray<ColumnResultInfo> // Added parameter
 ): { innermostLoopStartAddr: number, innermostLoopEndAddrPlaceholder: number } {
 
 	const activeOuterCursors = new Set<number>();
+	const loopStartPlaceholders: number[] = []; // Array to store placeholders
 	let innermostProcessStartAddr = 0;
 	const innermostLoopEndAddrPlaceholder = compiler.allocateAddress('innermostLoopEnd'); // Placeholder for end of entire loop structure
 
 	// Setup each join level with loops, filters, and join conditions
 	joinLevels.forEach((level, index) => {
 		// Allocate addresses that MUST be known before emitting the main opcodes for this level
-		level.loopStartAddr = compiler.allocateAddress(`loopStart[${index}]`);
+		const placeholder = compiler.allocateAddress(`loopStart[${index}]`); // Placeholder for jumps TO the loop start
+		loopStartPlaceholders.push(placeholder); // Store placeholder
 		level.joinFailAddr = compiler.allocateAddress(`joinFail[${index}]`);
 
 		// For LEFT JOIN, allocate a match register
@@ -46,8 +50,8 @@ export function compileSelectLoop(
 		const cursor = level.cursor;
 		const schema = level.schema;
 
-		// Temporarily store placeholder ID
-		const loopStartPlaceholder = level.loopStartAddr!;
+		// Store the *actual* address where the loop's execution begins (VFilter or first check)
+		level.loopStartAddr = compiler.getCurrentAddress();
 
 		// --- Integrate Subquery Execution/Materialization ---
 		if (schema.subqueryAST) {
@@ -64,7 +68,7 @@ export function compileSelectLoop(
 			if (planningInfo && planningInfo.idxNum !== 0) {
 				// (Compile VFilter arguments as before)
 				const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-				planningInfo.usage.forEach((usage, constraintIdx) => {
+				planningInfo.aConstraintUsage.forEach((usage, constraintIdx) => {
 					if (usage.argvIndex > 0) {
 						const expr = planningInfo.constraintExpressions?.get(constraintIdx);
 						if (!expr) throw new Error(`Internal error: Missing expression for constraint ${constraintIdx}`);
@@ -85,8 +89,8 @@ export function compileSelectLoop(
 					idxNum: planningInfo.idxNum,
 					idxStr: planningInfo.idxStr,
 					nArgs: finalArgsToCompile.length,
-					aConstraint: planningInfo.constraints,
-					aConstraintUsage: planningInfo.usage,
+					aConstraint: planningInfo.aConstraint, // Use aConstraint from plan
+					aConstraintUsage: planningInfo.aConstraintUsage,
 				};
 			}
 			const vFilterEofAddr = compiler.allocateAddress(`vFilterEof[${index}]`);
@@ -94,22 +98,18 @@ export function compileSelectLoop(
 			compiler.emit(Opcode.VFilter, cursor, vFilterEofAddr, regArgsStart, filterP4, 0, `Filter/Scan Cursor ${index}`);
 		}
 
-		// Resolve loop start address here - points to VFilter or subsequent verification jumps
-		// Store the *resolved* address back into level.loopStartAddr
-		level.loopStartAddr = compiler.resolveAddress(loopStartPlaceholder);
-		if (level.loopStartAddr < 0) {
-			// This indicates resolveAddress failed, which shouldn't happen here
-			throw new Error(`Internal Compiler Error: Failed to resolve loopStart placeholder ${loopStartPlaceholder}`);
-		}
+		// Verify constraints *after* VFilter but *before* resolving the loop start placeholder
+		compiler.verifyWhereConstraints(cursor, level.joinFailAddr!); // This might emit jumps
 
-		// verifyWhereConstraints needs to be called *before* resolving loopStartAddr
-		compiler.verifyWhereConstraints(cursor, level.joinFailAddr!);
+		// Now resolve the placeholder. Any jumps (e.g., from VNext) targeting the start
+		// will now point to the VFilter instruction (or the first verify check).
+		compiler.resolveAddress(placeholder); // Resolve the placeholder for this level
 
-		// Compile JOIN condition
+		// Compile JOIN condition (checks happen after VFilter/Verify)
 		if (index > 0) {
 			if (level.joinType !== 'cross') {
 				// Call the moved helper function
-				compileJoinCondition(compiler, level, joinLevels, index, level.joinFailAddr!);
+				compileJoinCondition(compiler, level, joinLevels, index, level.joinFailAddr!); // This might emit jumps
 			}
 		}
 
@@ -124,7 +124,7 @@ export function compileSelectLoop(
 	}); // End of loop setup
 
 	// --- Innermost Processing Setup --- //
-	innermostProcessStartAddr = compiler.getCurrentAddress();
+	innermostProcessStartAddr = compiler.getCurrentAddress(); // Use method from compiler
 	let innermostWhereFailTarget: number | undefined = undefined;
 	if (stmt.where) {
 		innermostWhereFailTarget = compiler.allocateAddress('innermostWhereFail');
@@ -157,16 +157,17 @@ export function compileSelectLoop(
 
 	for (let i = joinLevels.length - 1; i >= 0; i--) {
 		const level = joinLevels[i];
+		const loopStartPlaceholder = loopStartPlaceholders[i]; // Retrieve placeholder for this level
 
 		// Resolve join/where failure address - jumps *past* this level's closing logic
-		compiler.resolveAddress(level.joinFailAddr!);
+		compiler.resolveAddress(level.joinFailAddr!); // This is where IfFalse jumps land
 
 		// Allocate eofAddr placeholder just before VNext uses it
 		const eofAddrPlaceholder = compiler.allocateAddress(`vNextEof[${i}]`);
 		level.eofAddr = eofAddrPlaceholder;
 		compiler.emit(Opcode.VNext, level.cursor, eofAddrPlaceholder, 0, null, 0, `VNext Cursor ${i}`);
-		// Use the resolved address stored in level.loopStartAddr
-		compiler.emit(Opcode.Goto, 0, level.loopStartAddr!, 0, null, 0, `Goto LoopStart ${i}`);
+		// Use the *placeholder* for the loop start address here, it will be patched
+		compiler.emit(Opcode.Goto, 0, loopStartPlaceholder, 0, null, 0, `Goto LoopStart Placeholder ${i}`); // Use placeholder
 		compiler.resolveAddress(eofAddrPlaceholder); // Resolves the VNext jump target
 
 		// Resolve the dedicated VFilter jump target to the same address as VNext's EOF target.
@@ -177,10 +178,7 @@ export function compileSelectLoop(
 		// LEFT JOIN EOF NULL Padding
 		if (level.joinType === 'left' && level.matchReg !== undefined) {
 			// Call the moved helper function
-			// Needs access to coreColumnMap, innermostProcessStartAddr (callbackStartAddr)
-			// TODO: Pass coreColumnMap down to compileSelectLoop or retrieve it differently.
-			// For now, passing an empty array as a placeholder for coreColumnMap.
-			emitLeftJoinNullPadding(compiler, level, joinLevels, i, [], callbackStartAddr);
+			emitLeftJoinNullPadding(compiler, level, joinLevels, i, coreColumnMap, callbackStartAddr); // Pass coreColumnMap
 		}
 
 		// Reset match flag for the next outer iteration
