@@ -47,6 +47,8 @@ export interface TableSchema {
 	tableConstraints?: readonly TableConstraint[];
 	/** Definitions of secondary indexes (relevant for planning) */
 	indexes?: ReadonlyArray<IndexSchema>;
+	/** Estimated number of rows in the table (for query planning) */
+	readonly estimatedRows?: bigint;
 }
 
 /**

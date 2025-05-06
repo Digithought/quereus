@@ -10,7 +10,8 @@ import type * as AST from '../parser/ast.js';
 import * as CompilerState from './compilerState.js';
 import * as EphemeralCore from './ephemeral.js';
 import * as FromClauseCore from './fromClause.js';
-import * as QueryPlanner from './queryPlanner.js';
+import * as QueryPlanner from './planner/query-planner.js';
+import * as PlannerHelper from './planner/helpers.js';
 import * as WhereVerify from './where-verify.js';
 import { compileExpression } from './expression.js';
 import * as StmtCompiler from './statement.js';
@@ -20,6 +21,9 @@ import * as SelectCore from './select-core.js';
 import type { SubqueryCorrelationResult } from './correlation.js';
 import * as SubqueryCompiler from './subquery.js';
 import type { ArgumentMap } from './handlers.js';
+import * as QueryPlannerModule from './planner/query-planner.js';
+import * as ExprHandlers from './handlers.js';
+import * as Utils from './utils.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
 import { createLogger } from '../common/logger.js';
 import { getCurrentAddressHelper, patchJumpAddresses } from './compilerState.js';
@@ -29,6 +33,8 @@ import { createEphemeralTableHelper } from './ephemeral.js';
 import { compileWithClauseHelper } from './cte.js';
 
 const log = createLogger('compiler');
+const warnLog = log.extend('warn');
+const errorLog = log.extend('error');
 
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
@@ -101,13 +107,14 @@ export class Compiler {
 			// --- Reset Placeholder State (NEW) ---
 			this.pendingPlaceholders = new Map();
 			this.nextPlaceholderId = -1;
-			// -------------------------------------
 			this.resolvedAddresses = new Map();
+			// -------------------------------------
 			this.subroutineCode = [];
 			this.subroutineDefs = new Map();
 			this.subroutineDepth = 0;
 			this.currentFrameEnterInsn = null;
 			this.maxLocalOffsetInCurrentFrame = 0;
+			this.subroutineFrameStack = [];
 			this.stackPointer = 0;
 			this.framePointer = 0;
 			this.outerCursors = [];
@@ -229,7 +236,45 @@ export class Compiler {
 		}
 	}
 
-	// --- Core Compilation Helpers (Delegated to modules) ---
+	// --- Wrapper Methods Delegating to Helpers (Primarily from incoming, with adjustments) --- //
+
+	// Compiler State Helpers
+	allocateMemoryCells(count: number): number { return CompilerState.allocateMemoryCellsHelper(this, count); }
+	allocateCursor(): number { return CompilerState.allocateCursorHelper(this); }
+	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
+	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
+	allocateAddress(purpose: string = 'unknown'): number { return CompilerState.allocateAddressHelper(this, purpose); }
+	resolveAddress(placeholder: number): number { return CompilerState.resolveAddressHelper(this, placeholder); }
+	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }
+
+	// FROM Clause Helper
+	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
+
+	// Query Planning Helpers
+	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void {
+		PlannerHelper.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors);
+	}
+	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
+
+	// Expressions
+	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { Utils.compileLiteralValue(this, expr.value, targetReg); }
+	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileUnary(expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileUnary(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileCast(expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileCast(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileCollate(expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileCollate(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileFunction(expr: AST.FunctionExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileFunction(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileParameter(expr: AST.ParameterExpr, targetReg: number): void { ExprHandlers.compileParameter(this, expr, targetReg); }
+
+	// Subqueries
+	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
+	compileScalarSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileScalarSubquery(this, subQuery, targetReg); }
+	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, invert: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, invert); }
+	compileComparisonSubquery(leftExpr: AST.Expression, op: string, subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileComparisonSubquery(this, leftExpr, op, subQuery, targetReg); }
+	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileExistsSubquery(this, subQuery, targetReg); }
+
+	// Statements
 	compileSelect(stmt: AST.SelectStmt): void { SelectCompiler.compileSelectStatement(this, stmt); }
 	compileInsert(stmt: AST.InsertStmt): void { StmtCompiler.compileInsertStatement(this, stmt); }
 	compileUpdate(stmt: AST.UpdateStmt): void { StmtCompiler.compileUpdateStatement(this, stmt); }
@@ -246,22 +291,6 @@ export class Compiler {
 	compileRelease(stmt: AST.ReleaseStmt): void { StmtCompiler.compileReleaseStatement(this, stmt); }
 	compilePragma(stmt: AST.PragmaStmt): void { DdlCompiler.compilePragmaStatement(this, stmt); }
 
-	// --- Helper Methods (Moved from modules or refined) ---
-	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
-	compileSubquery(expr: AST.SubqueryExpr, targetReg: number): void { SubqueryCompiler.compileSubquery(this, expr, targetReg); }
-	compileInSubquery(leftExpr: AST.Expression, subQuery: AST.SelectStmt, targetReg: number, inverse: boolean): void { SubqueryCompiler.compileInSubquery(this, leftExpr, subQuery, targetReg, inverse); }
-	compileExistsSubquery(subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileExistsSubquery(this, subQuery, targetReg); }
-	compileComparisonSubquery(leftExpr: AST.Expression, operator: string, subQuery: AST.SelectStmt, targetReg: number): void { SubqueryCompiler.compileComparisonSubquery(this, leftExpr, operator, subQuery, targetReg); }
-	compileFromCore(sources: AST.FromClause[] | undefined): number[] { return FromClauseCore.compileFromCoreHelper(this, sources); }
-	planTableAccess(cursorIdx: number, tableSchema: TableSchema, stmt: AST.SelectStmt | AST.UpdateStmt | AST.DeleteStmt, activeOuterCursors: ReadonlySet<number>): void { QueryPlanner.planTableAccessHelper(this, cursorIdx, tableSchema, stmt, activeOuterCursors); }
-	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
-	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any | null, p5?: number, comment?: string): number { return emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
-	allocateMemoryCells(count: number): number { return allocateMemoryCellsHelper(this, count); }
-	allocateCursor(): number { return allocateCursorHelper(this); }
-	addConstant(value: SqlValue): number { return addConstantHelper(this, value); }
-	allocateAddress(purpose?: string): number { return allocateAddressHelper(this, purpose ?? ''); }
-	getCurrentAddress(): number { return getCurrentAddressHelper(this); }
-	resolveAddress(placeholder: number): void { resolveAddressHelper(this, placeholder); }
 	beginSubroutine(numArgs: number, argMap?: ArgumentMap): number { return beginSubroutineHelper(this, numArgs, argMap); }
 	endSubroutine(): void { endSubroutineHelper(this); }
 	createEphemeralSchema(cursorIdx: number, numCols: number, sortKey?: P4SortKey): TableSchema { return createEphemeralTableHelper(this, cursorIdx, numCols, sortKey); }
