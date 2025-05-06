@@ -3,7 +3,8 @@ import { StatusCode } from '../../common/types.js';
 import type * as AST from '../../parser/ast.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { IndexOrderBy, IndexInfo } from '../../vtab/indexInfo.js';
-import type { Compiler, CursorPlanningResult } from '../compiler.js';
+import type { Compiler } from '../compiler.js';
+import type { CursorPlanningResult } from '../structs.js';
 import { extractConstraints } from './constraints.js';
 import { calculateColumnUsage } from './columns.js';
 import type { PlannedStep } from './types.js';
@@ -55,6 +56,7 @@ export function planTableAccessHelper(
 			aOrderBy: [],
 			colUsed: BigInt(-1),
 			idxFlags: 0,
+			nArgs: 0,
 		});
 		return;
 	}
@@ -163,6 +165,9 @@ export function planTableAccessHelper(
 		throw new SqliteError(`xBestIndex failed for table ${tableSchema.name} with code ${status}`, status, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
+	// Calculate nArgs based on usage information from xBestIndex
+	const nArgs = Math.max(0, ...(indexInfo.aConstraintUsage || []).map(u => u.argvIndex ?? 0));
+
 	const planResult: CursorPlanningResult = {
 		idxNum: indexInfo.idxNum,
 		idxStr: indexInfo.idxStr,
@@ -177,10 +182,11 @@ export function planTableAccessHelper(
 		aOrderBy: indexInfo.aOrderBy,
 		colUsed: indexInfo.colUsed,
 		idxFlags: indexInfo.idxFlags,
+		nArgs: nArgs,
 	};
 	compiler.cursorPlanningInfo.set(cursorIdx, planResult);
 
-	log(`Plan: %s (cursor %d, outer: %s, relevantCons: %s) -> idxNum=%d cost=%.2f rows=%s usage=%j handled=%d colUsed=%s`,
+	log(`Plan: %s (cursor %d, outer: %s, relevantCons: %s) -> idxNum=%d cost=%.2f rows=%s usage=%j handled=%d colUsed=%s nArgs=%d`,
 		tableSchema.name,
 		cursorIdx,
 		[...activeOuterCursors].join(','),
@@ -190,7 +196,8 @@ export function planTableAccessHelper(
 		planResult.rows.toString(),
 		planResult.usage,
 		planResult.handledWhereNodes.size,
-		colUsed.toString(2)
+		colUsed.toString(2),
+		planResult.nArgs
 	);
 }
 

@@ -61,7 +61,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 					resolvedCursor = cteInfo.cursorIdx;
 					resolvedSchema = cteInfo.schema;
 					log(`Using PRE-materialized CTE '%s' (cursor %d) for alias '%s'`, cteNameLower, resolvedCursor, lookupName);
-				} else if (cteInfo.strategy === 'inline') {
+				} else if (cteInfo.strategy === 'view') {
 					if (cteInfo.cursorIdx === undefined) {
 						log(`Materializing VIEW CTE '%s' on first reference...`, cteNameLower);
 						const isRecursiveContext = false;

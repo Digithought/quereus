@@ -1,5 +1,6 @@
 import type * as AST from '../../parser/ast.js';
-import type { Compiler, CursorPlanningResult } from '../compiler.js';
+import type { Compiler } from '../compiler.js';
+import type { CursorPlanningResult } from '../structs.js';
 import { log, warnLog, errorLog, expressionReferencesOnlyAllowedCursors, estimateSubqueryCost } from './helpers.js';
 import type { QueryRelation, JoinCandidateInfo, PlannedStep, PlannedScanStep, PlannedJoinStep } from './types.js';
 import { generateRelationId } from './utils.js';

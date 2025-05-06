@@ -26,13 +26,13 @@ export function compileWithClauseHelper(compiler: Compiler, withClause: AST.With
 		if (cte.materializationHint === 'materialized') {
 			strategy = 'materialized';
 		} else if (cte.materializationHint === 'not_materialized') {
-			strategy = 'inline';
+			strategy = 'view';
 		} else if (isRecursive) {
 			strategy = 'materialized'; // Recursive must be materialized
 		} else if (refCount > 1) {
 			strategy = 'materialized'; // Materialize if used more than once
 		} else {
-			strategy = 'inline'; // Default to inline (view-like)
+			strategy = 'view'; // Default to view (inline-like)
 		}
 
 		// Store basic info in the map first
@@ -341,7 +341,7 @@ function _compileSelectAndPopulateEphemeral(
 				let regArgsStart = 0;
 				if (planningInfo && planningInfo.idxNum !== 0) {
 					const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-					planningInfo.aConstraintUsage.forEach((usage: IndexConstraintUsage, constraintIdx: number) => {
+					planningInfo.usage.forEach((usage: IndexConstraintUsage, constraintIdx: number) => {
 						if (usage.argvIndex > 0) {
 							const expr = planningInfo.constraintExpressions?.get(constraintIdx);
 							if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx} used in CTE pop VFilter`, StatusCode.INTERNAL);
