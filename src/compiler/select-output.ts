@@ -1,9 +1,11 @@
 import type { Compiler } from './compiler.js';
-import type { ColumnResultInfo } from './compiler.js'; // Or wherever it's defined
+import type { ColumnResultInfo } from './structs.js';
 import type { TableSchema } from '../schema/table.js';
 import { Opcode } from '../vdbe/opcodes.js';
+import type * as AST from '../parser/ast.js'; // Import AST
+import { compileExpression } from './expression.js'; // Import expression compiler
 import { createLogger } from '../common/logger.js';
-import type { RowProcessingContext } from './select-loop.js'; // Import the context type
+import type { RowProcessingContext } from './select-loop.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 
 const log = createLogger('compiler:select-output');
@@ -11,10 +13,10 @@ const warnLog = log.extend('warn');
 
 export function processRowDirect(
 	compiler: Compiler,
-	stmt: any, // Replace with actual AST.SelectStmt type
-	plannedSteps: ReadonlyArray<any>, // Changed from joinLevels
+	stmt: AST.SelectStmt, // Use actual type
+	plannedSteps: ReadonlyArray<any>, // Changed from joinLevels, kept ReadonlyArray<any> for now
 	activeOuterCursors: ReadonlySet<number>,
-	context: RowProcessingContext, // Changed to use context object
+	context: RowProcessingContext,
 	needsExternalSort: boolean = false,
 	ephSortCursor: number = -1,
 	ephSortSchema: TableSchema | undefined = undefined,
@@ -23,60 +25,60 @@ export function processRowDirect(
 ): number {
 	const callbackStartAddr = compiler.getCurrentAddress();
 
-	// Re-calculate core results inside the loop to have current row values
-	const { resultBaseReg: currentRowResultBase, numCols: currentRowNumCols, columnMap: currentRowColumnMap } =
-		compiler.compileSelectCore(stmt, [...activeOuterCursors]); // Re-compile expressions for current row
+	const { resultBaseReg: coreResultBase, numCols: coreNumCols, columnMap: coreColumnMap } =
+		compiler.getSelectCoreStructure(stmt, [...activeOuterCursors]);
+
+	// Compile expressions into their target registers for the current row
+	for (const colInfo of coreColumnMap) {
+		if (colInfo.expr) {
+			// Pass activeOuterCursors for potential correlation
+			// HavingContext is not applicable here
+			// ArgumentMap is not applicable here
+			compiler.compileExpression(colInfo.expr, colInfo.targetReg, undefined, undefined, undefined);
+		}
+		// If expr is null (e.g., from SELECT * expansion), VColumn already populated the register if source is direct column.
+	}
 
 	// LEFT JOIN NULL padding handling
 	if (context.isLeftJoinPadding) {
 		log("Processing LEFT JOIN NULL padding in direct output");
 
-		// If this is LEFT JOIN padding, we need to NULL out registers from the inner relation
-		// Find columns in finalColumnMap that correspond to the inner relation's cursors
 		const innerCursors = context.isLeftJoinPadding.innerContributingCursors;
 
-		// Iterate the FINAL column map provided in the context
-		context.finalColumnMap.forEach((colInfo, idx) => {
-			// Check if the source cursor for this *final output column* is one of the inner cursors
-			const isFromInnerRelation = colInfo.sourceCursor !== -1 && innerCursors.has(colInfo.sourceCursor);
+		context.finalColumnMap.forEach((finalColInfo, idx) => {
+			const isFromInnerRelation = finalColInfo.sourceCursor !== -1 && innerCursors.has(finalColInfo.sourceCursor);
 			if (isFromInnerRelation) {
-				// This column comes from the inner relation of our LEFT JOIN - make it NULL
-				// The targetReg here refers to the register in the *final* output structure
-				const finalTargetReg = colInfo.targetReg;
-				// We need to find the corresponding register in the *current* row's output
-				// This requires mapping based on expression or index if structure is consistent.
-				// Assuming the structure IS consistent between coreResult and finalColumnMap for non-agg/window cases.
-				// Find the equivalent column in the *currently computed* row map
-				const currentRowColInfo = currentRowColumnMap.find(currentRowCol =>
-					// Attempt matching by expression string if available, otherwise index might be ambiguous
-					(colInfo.expr && currentRowCol.expr && expressionToString(colInfo.expr) === expressionToString(currentRowCol.expr))
-					// Fallback to index - this assumes the core compilation result columns are in the same order
-					// as the final output columns, which might not hold if transformations happen.
-					?? currentRowColumnMap[idx]
+				// Find the corresponding column in the *currently computed* row map (coreColumnMap)
+				// to identify the correct target register for NULLing for *this specific output context*.
+				// This assumes that `finalColumnMap` (defining overall output) and `coreColumnMap` (current row being processed)
+				// have a correspondence that allows us to find the right register in `coreColumnMap` to NULL out.
+				const correspondingCoreCol = coreColumnMap.find(coreCol =>
+					(finalColInfo.expr && coreCol.expr && expressionToString(finalColInfo.expr) === expressionToString(coreCol.expr)) ||
+					(!finalColInfo.expr && !coreCol.expr && finalColInfo.sourceColumnIndex === coreCol.sourceColumnIndex && finalColInfo.sourceCursor === coreCol.sourceCursor)
 				);
 
-				if (currentRowColInfo) {
-					const targetReg = currentRowColInfo.targetReg;
-					compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, `NULL Pad LEFT JOIN col from cursor ${colInfo.sourceCursor} into reg ${targetReg}`);
+				if (correspondingCoreCol) {
+					compiler.emit(Opcode.Null, 0, correspondingCoreCol.targetReg, 0, null, 0, `NULL Pad LEFT JOIN col from cursor ${finalColInfo.sourceCursor} into reg ${correspondingCoreCol.targetReg}`);
 				} else {
-					warnLog(`Could not find matching current row register for final column index ${idx} during LEFT JOIN padding.`);
-					// Attempting to NULL the final target register directly might be incorrect
-					// if it hasn't been populated yet or is reused.
-					// compiler.emit(Opcode.Null, 0, finalTargetReg, 0, null, 0, `NULL Pad Attempt on Final Reg ${finalTargetReg}`);
+					// This case is tricky. If finalColumnMap has columns not in coreColumnMap (e.g. aggregates combined with joins),
+					// direct output might not be the right place, or the mapping logic needs to be more robust.
+					// For simple direct output, finalColumnMap should align with coreColumnMap.
+					warnLog(`Could not find matching current row register (coreColumnMap) for final column index ${idx} ('${finalColInfo.expr ? expressionToString(finalColInfo.expr) : `cursor ${finalColInfo.sourceCursor} col ${finalColInfo.sourceColumnIndex}`}') during LEFT JOIN padding.`);
+					// As a fallback, if we know the final target register from finalColInfo, and it's supposed to be NULL,
+					// but it wasn't part of the core compilation (e.g. complex structure), this might be an issue.
+					// However, for processRowDirect, coreColumnMap *should* represent the row being outputted.
+					// So, if `correspondingCoreCol` is not found, it implies a potential mismatch or complex case not handled here.
 				}
 			}
-			// Otherwise, the column is computed normally (already handled by compileSelectCore earlier in this function)
 		});
 	}
 
 	if (needsExternalSort) {
-		// --- Store in Sorter ---
-		const insertDataReg = compiler.allocateMemoryCells(currentRowNumCols + 1);
+		const insertDataReg = compiler.allocateMemoryCells(coreNumCols + 1);
 		compiler.emit(Opcode.Null, 0, insertDataReg, 0, null, 0, "Direct Sort: NULL Rowid");
-		compiler.emit(Opcode.Move, currentRowResultBase, insertDataReg + 1, currentRowNumCols, null, 0, "Direct Sort: Copy row result");
-		compiler.emit(Opcode.VUpdate, currentRowNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Direct Sort: Insert Row");
+		compiler.emit(Opcode.Move, coreResultBase, insertDataReg + 1, coreNumCols, null, 0, "Direct Sort: Copy row result");
+		compiler.emit(Opcode.VUpdate, coreNumCols + 1, insertDataReg, ephSortCursor, { table: ephSortSchema }, 0, "Direct Sort: Insert Row");
 	} else {
-		// --- Direct Output ---
 		const addrSkipDirectRow = compiler.allocateAddress('skipDirectRow');
 		if (regLimit > 0) {
 			const addrPostDirectOffset = compiler.allocateAddress('postDirectOffset');
@@ -86,19 +88,19 @@ export function processRowDirect(
 			compiler.resolveAddress(addrPostDirectOffset);
 		}
 
-		compiler.emit(Opcode.ResultRow, currentRowResultBase, currentRowNumCols, 0, null, 0, "Output Direct Row");
+		compiler.emit(Opcode.ResultRow, coreResultBase, coreNumCols, 0, null, 0, "Output Direct Row");
 
 		if (regLimit > 0) {
 			const addrDirectLimitNotZero = compiler.allocateAddress('directLimitNotZero');
 			compiler.emit(Opcode.IfZero, regLimit, addrDirectLimitNotZero, 0, null, 0, "Direct: Skip Limit Check if 0");
 			compiler.emit(Opcode.Subtract, 1, regLimit, regLimit, null, 0, "Direct: Decrement Limit");
-			// If limit is reached, jump to the end of the *entire* loop structure
-			// This placeholder needs to be passed down or handled differently.
-			// Using a placeholder jumpTargetIfLimitReached for now.
-			const jumpTargetIfLimitReached = compiler.allocateAddress('limitReachedDirect'); // Needs proper target
+			// TODO: The jump target for limit reached needs to be the overall loop end placeholder.
+			// This requires passing it down or having a known address.
+			// For now, using a locally allocated placeholder that might need to be globally resolved.
+			const jumpTargetIfLimitReached = compiler.allocateAddress('limitReachedDirectOutput');
 			compiler.emit(Opcode.IfZero, regLimit, jumpTargetIfLimitReached, 0, null, 0, "Direct: Check Limit Reached");
 			compiler.resolveAddress(addrDirectLimitNotZero);
-			// TODO: Resolve jumpTargetIfLimitReached at the actual end point (e.g., passed from compileSelectLoop)
+			// warnLog(`Limit reached jump target ${jumpTargetIfLimitReached} in processRowDirect needs to point to the final loop exit.`);
 		}
 		compiler.resolveAddress(addrSkipDirectRow);
 	}
@@ -113,10 +115,9 @@ export function compileSortOutput(
 	finalNumCols: number,
 	regLimit: number,
 	regOffset: number,
-	finalLoopEndAddr: number // Address to jump to when done or limit reached
+	finalLoopEndAddr: number
 ): void {
 	const addrSortLoopStart = compiler.allocateAddress('sortLoopStart');
-	// const addrSortLoopEnd = compiler.allocateAddress('sortLoopEnd'); // Use finalLoopEndAddr instead
 	const sortedResultBaseReg = compiler.allocateMemoryCells(finalNumCols);
 
 	compiler.emit(Opcode.Rewind, ephSortCursor, finalLoopEndAddr, 0, null, 0, "Rewind Sorter");
@@ -145,8 +146,6 @@ export function compileSortOutput(
 	}
 
 	compiler.resolveAddress(addrSkipSortedRow);
-	compiler.emit(Opcode.VNext, ephSortCursor, finalLoopEndAddr, 0, null, 0, "VNext Sorter");
-	compiler.emit(Opcode.Goto, 0, addrSortLoopStart, 0, null, 0, "Loop Sorter Results");
-
-	// No need to resolve addrSortLoopEnd, finalLoopEndAddr is used
+	compiler.emit(Opcode.VNext, ephSortCursor, addrSortLoopStart, 0, null, 0, "VNext Sorter -> Loop Start"); // P2 = loop start
+	compiler.emit(Opcode.Goto, 0, finalLoopEndAddr, 0, null, 0, "Sort Loop Finished, Go to Final End"); // This GOTO is hit if VNext falls through (EOF)
 }

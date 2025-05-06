@@ -61,12 +61,11 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 					resolvedCursor = cteInfo.cursorIdx;
 					resolvedSchema = cteInfo.schema;
 					log(`Using PRE-materialized CTE '%s' (cursor %d) for alias '%s'`, cteNameLower, resolvedCursor, lookupName);
-				} else if (cteInfo.strategy === 'view') {
-					if (!cteInfo.isCompiled) {
+				} else if (cteInfo.strategy === 'inline') {
+					if (cteInfo.cursorIdx === undefined) {
 						log(`Materializing VIEW CTE '%s' on first reference...`, cteNameLower);
 						const isRecursiveContext = false;
 						compileCommonTableExpression(compiler, cteInfo, isRecursiveContext);
-						cteInfo.isCompiled = true;
 						log(`Finished materializing VIEW CTE '%s' (cursor %d)`, cteNameLower, cteInfo.cursorIdx);
 					} else {
 						log(`Using ALREADY-materialized VIEW CTE '%s' (cursor %d) for alias '%s'`, cteNameLower, cteInfo.cursorIdx, lookupName);
@@ -158,7 +157,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			}
 
 			// Compile subquery into an ephemeral table
-			const { resultBaseReg, numCols, columnMap } = compiler.compileSelectCore(subquery, compiler.outerCursors);
+			const { numCols } = compiler.getSelectCoreStructure(subquery, compiler.outerCursors);
 
 			// Create ephemeral table for results
 			const cursor = compiler.allocateCursor();

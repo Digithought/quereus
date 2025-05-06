@@ -88,11 +88,11 @@ export function registerHandlers(handlers: Handler[]) {
 		return undefined;
 	};
 	handlers[Opcode.IsNull] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getMem(inst.p1) === null);
+		ctx.setMem(inst.p2, ctx.getMem(inst.p1) === null ? 1 : 0);
 		return undefined;
 	};
 	handlers[Opcode.NotNull] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getMem(inst.p1) !== null);
+		ctx.setMem(inst.p2, ctx.getMem(inst.p1) !== null ? 1 : 0);
 		return undefined;
 	};
 	// --- Move with boundary checking ---

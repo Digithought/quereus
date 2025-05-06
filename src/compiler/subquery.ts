@@ -1,7 +1,8 @@
 import { createLogger } from '../common/logger.js'; // Import logger
 import { StatusCode } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
-import type { Compiler, SubroutineInfo } from './compiler.js';
+import type { Compiler } from './compiler.js';
+import type { SubroutineInfo } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import { analyzeSubqueryCorrelation, type SubqueryCorrelationResult } from './correlation.js';
 import { Opcode } from '../vdbe/opcodes.js';
@@ -9,6 +10,7 @@ import type { P4SortKey } from '../vdbe/instruction.js';
 import { SqlDataType } from '../common/constants.js';
 import type { TableSchema } from '../schema/table.js';
 import { MemoryTable } from '../vtab/memory/table.js';
+import type { ArgumentMap } from './handlers.js'; // Import ArgumentMap
 
 const log = createLogger('compiler:subquery'); // Create logger instance
 
@@ -17,8 +19,10 @@ const log = createLogger('compiler:subquery'); // Create logger instance
 export function compileSubquery(compiler: Compiler, expr: AST.SubqueryExpr, targetReg: number): void {
 	// This function is usually called for subqueries used as expressions (scalar, comparison).
 	// EXISTS and IN are typically handled by parent Unary/Binary expression compilers.
-	log.extend('warn')("compileSubquery assuming scalar context. EXISTS/IN should be handled by parent expression compiler.");
-	compiler.compileScalarSubquery(expr.query, targetReg);
+	// log.extend('warn')("compileSubquery assuming scalar context. EXISTS/IN should be handled by parent expression compiler.");
+	// The caller (e.g., compileExpression) should determine the context and call the appropriate specific function.
+	// For now, let's assume scalar context if called directly here, but this might need refinement.
+	compileScalarSubquery(compiler, expr.query, targetReg);
 }
 
 export function compileScalarSubquery(compiler: Compiler, subQuery: AST.SelectStmt, targetReg: number): void {
@@ -49,7 +53,7 @@ function compileUncorrelatedScalarSubquery(compiler: Compiler, subQuery: AST.Sel
 	compiler.emit(Opcode.Integer, 0, regHasRow, 0, null, 0, "Init Subquery: hasRow=0");
 	// --- Compile subquery core directly ---
 	const subQueryCursors: number[] = [];
-	const { resultBaseReg: subqueryResultBase, numCols } = compiler.compileSelectCore(subQuery, subQueryCursors);
+	const { resultBaseReg: subqueryResultBase, numCols } = compiler.getSelectCoreStructure(subQuery, subQueryCursors);
 	if (numCols !== 1) throw new Error("Scalar Subquery core compile error: Expected 1 column");
 	// --------------------------------------
 
@@ -97,24 +101,20 @@ function compileCorrelatedScalarSubquery(
 	let subInfo: SubroutineInfo | undefined = compiler.subroutineDefs?.get(subQuery);
 
 	if (!subInfo) {
-		compiler.startSubroutineCompilation();
-		const subStartAddress = compiler.getCurrentAddress();
+		// Argument Map: Outer args start at FP[-1], FP[-2], ...
+		const argumentMap = new Map<string, number>(correlation.correlatedColumns.map((cc, index) => [`${cc.outerCursor}.${cc.outerColumnIndex}`, -(index + 1)]));
+
+		const subStartAddress = compiler.beginSubroutine(correlation.correlatedColumns.length, argumentMap); // Pass the map
+
 		// Locals in the subroutine frame: R[2]=result, R[3]=hasRow, R[4]=error
 		const regSubResult = 2;
 		const regSubHasRow = 3;
 		const regSubError = 4;
 		const numLocals = 4; // Result, hasRow, error + control info slots
 
-		// Argument Map: Outer args start at FP[-1], FP[-2], ...
-		const argumentMap: Map<string, number> = new Map();
-		correlation.correlatedColumns.forEach((cc, index) => {
-			const argOffset = -(index + 1);
-			argumentMap.set(`${cc.outerCursor}.${cc.outerColumnIndex}`, argOffset);
-		});
-
 		// Compile subquery core inside the subroutine context
 		const subQueryCursors: number[] = [];
-		const { resultBaseReg, numCols } = compiler.compileSelectCore(subQuery, subQueryCursors, correlation, argumentMap);
+		const { resultBaseReg, numCols } = compiler.getSelectCoreStructure(subQuery, subQueryCursors, correlation, argumentMap); // Pass the map
 		if (numCols !== 1) throw new SqliteError("Correlated scalar subquery must return one column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 
 		const addrSubLoopStart = compiler.allocateAddress();
@@ -186,9 +186,12 @@ function compileCorrelatedScalarSubquery(
 		compiler.emit(Opcode.FrameLeave, 0, 0, 0, null, 0, "Leave Subroutine Frame");
 		compiler.emit(Opcode.Return, 0, 0, 0, null, 0, "Return from subquery");
 
-		subInfo = { startAddress: subStartAddress, correlation };
-		compiler.subroutineDefs?.set(subQuery, subInfo);
-		compiler.endSubroutineCompilation();
+		const frameSize = compiler.maxLocalOffsetInCurrentFrame + 1;
+		compiler.endSubroutine();
+		subInfo = { startAddr: subStartAddress, numArgs: correlation.correlatedColumns.length, argMap: argumentMap, frameSize };
+		if (compiler.subroutineDefs && subInfo) { // Check map and subInfo
+			compiler.subroutineDefs.set(subQuery, subInfo);
+		}
 	}
 
 	// --- Call Site Logic --- //
@@ -219,7 +222,10 @@ function compileCorrelatedScalarSubquery(
 	const totalArgsPushed = numArgsToPush + 2;
 
 	// 3. Call Subroutine
-	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddress, 0, null, 0, `Call correlated subquery`);
+	if (!subInfo) {
+		throw new SqliteError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+	}
+	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, `Call correlated subquery`);
 
 	// 4. Copy Results from Stack (negative FP offsets are relative to caller's FP AFTER call)
 	// These locations on the stack were where we pushed the placeholders.
@@ -299,7 +305,7 @@ function compileUncorrelatedInSubquery(
 	const ephSchema = compiler.createEphemeralSchema(ephCursor, 1);
 
 	const subQueryCursors: number[] = [];
-	const { resultBaseReg: subResultReg, numCols } = compiler.compileSelectCore(subQuery, subQueryCursors);
+	const { resultBaseReg: subResultReg, numCols } = compiler.getSelectCoreStructure(subQuery, subQueryCursors);
 	if (numCols !== 1) throw new Error("IN Subquery core compile error");
 
 	const firstSubCursor = subQueryCursors[0];
@@ -400,26 +406,19 @@ function compileCorrelatedInSubquery(
 
 	if (!subInfo) {
 		// --- Compile Subroutine ---
-		compiler.startSubroutineCompilation();
-		const subStartAddress = compiler.getCurrentAddress();
+		const subArgumentMap = new Map<string, number>(correlation.correlatedColumns.map((cc, index) => [`${cc.outerCursor}.${cc.outerColumnIndex}`, -(index + 1)]));
+		const numSubArgs = correlation.correlatedColumns.length + 1;
+
+		const subStartAddress = compiler.beginSubroutine(numSubArgs, subArgumentMap);
 
 		// Locals: R[2]=Match Flag, R[3]=Has Null Flag, R[4]=Subquery Value
 		const regSubMatch = 2;
 		const regSubNull = 3;
 		const regSubValue = 4;
 
-		// Argument Map for inner compilation
-		// Left expression value is at FP[-1] (pushed by caller)
-		// Outer args start at FP[-2]
-		const subArgumentMap: Map<string, number> = new Map();
-		subArgumentMap.set("_caller_left_expr_", -1); // Special key for left expr?
-		correlation.correlatedColumns.forEach((cc, index) => {
-			subArgumentMap.set(`${cc.outerCursor}.${cc.outerColumnIndex}`, -(index + 2));
-		});
-
 		// Compile subquery core
 		const subQueryCursors: number[] = [];
-		const { resultBaseReg, numCols } = compiler.compileSelectCore(subQuery, subQueryCursors, correlation, subArgumentMap);
+		const { resultBaseReg, numCols } = compiler.getSelectCoreStructure(subQuery, subQueryCursors, correlation, subArgumentMap);
 		if (numCols !== 1) throw new SqliteError("Correlated IN subquery requires 1 column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 
 		// --- Subroutine Logic ---
@@ -496,9 +495,12 @@ function compileCorrelatedInSubquery(
 		compiler.emit(Opcode.FrameLeave, 0, 0, 0, null, 0, "Leave SubIN Frame");
 		compiler.emit(Opcode.Return, 0, 0, 0, null, 0, "Return from SubIN");
 
-		subInfo = { startAddress: subStartAddress, correlation };
-		compiler.subroutineDefs?.set(subQuery, subInfo);
-		compiler.endSubroutineCompilation();
+		const frameSize = compiler.maxLocalOffsetInCurrentFrame + 1;
+		compiler.endSubroutine();
+		subInfo = { startAddr: subStartAddress, numArgs: numSubArgs, argMap: subArgumentMap, frameSize };
+		if (compiler.subroutineDefs && subInfo) {
+			compiler.subroutineDefs.set(subQuery, subInfo);
+		}
 	}
 
 	// --- Call Site for Correlated IN --- //
@@ -529,7 +531,10 @@ function compileCorrelatedInSubquery(
 	compiler.emit(Opcode.Push, regLeftValue, 0, 0, null, 0, "Push Left Value for SubIN"); totalArgsPushed++;
 
 	// Call Subroutine
-	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddress, 0, null, 0, "Call SubIN");
+	if (!subInfo) {
+		throw new SqliteError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+	}
+	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, "Call SubIN");
 
 	// Result is returned in the stack slot where the left value was pushed.
 	// Copy it to the target register.
@@ -579,7 +584,7 @@ function compileUncorrelatedComparisonSubquery(
 	compiler.compileExpression(leftExpr, regLeft);
 	compiler.emit(Opcode.IfNull, regLeft, addrSkipCompare, 0, null, 0, "Skip compare if left is NULL");
 	// Compile scalar subquery (handles 0 or >1 row errors internally now)
-	compiler.compileScalarSubquery(subQuery, regSubResult);
+	compileScalarSubquery(compiler, subQuery, regSubResult);
 	compiler.emit(Opcode.IfNull, regSubResult, addrSkipCompare, 0, null, 0, "Skip compare if subquery is NULL");
 
 	switch (op.toUpperCase()) {
@@ -650,7 +655,10 @@ function compileCorrelatedComparisonSubquery(
 	compiler.emit(Opcode.Push, 0, 0, 0, null, 0, "Push placeholder for Sub Result"); totalArgsPushed++;
 
 	// Call the scalar subroutine
-	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddress, 0, null, 0, "Call correlated subquery for comparison");
+	if (!subInfo) {
+		throw new SqliteError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+	}
+	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, "Call correlated subquery for comparison");
 
 	// Retrieve result/error from stack
 	const resultStackIdx = compiler.stackPointer - 1; // Absolute index of result
@@ -771,15 +779,11 @@ function compileCorrelatedExistsSubquery(
 
 	if (!subInfo) {
 		// --- Compile Subroutine --- //
-		compiler.startSubroutineCompilation();
-		const subStartAddress = compiler.getCurrentAddress();
-		const regSubResult = 2; // Local R[2] = result (0 or 1)
+		const subArgumentMap = new Map<string, number>(correlation.correlatedColumns.map((cc, index) => [`${cc.outerCursor}.${cc.outerColumnIndex}`, -(index + 1)]));
+		const numSubArgs = correlation.correlatedColumns.length + 1;
 
-		// Argument Map for inner compilation (Outer args start at FP[-1])
-		const subArgumentMap: Map<string, number> = new Map();
-		correlation.correlatedColumns.forEach((cc, index) => {
-			subArgumentMap.set(`${cc.outerCursor}.${cc.outerColumnIndex}`, -(index + 1));
-		});
+		const subStartAddress = compiler.beginSubroutine(numSubArgs, subArgumentMap);
+		const regSubResult = 2; // Local R[2] = result (0 or 1)
 
 		// Compile FROM and WHERE inside subroutine
 		const subQueryCursors: number[] = compiler.compileFromCore(subQuery.from);
@@ -822,9 +826,12 @@ function compileCorrelatedExistsSubquery(
 		compiler.emit(Opcode.Return, 0, 0, 0, null, 0, "Return from SubEXISTS");
 		// --- End Subroutine --- //
 
-		subInfo = { startAddress: subStartAddress, correlation };
-		compiler.subroutineDefs?.set(subQuery, subInfo);
-		compiler.endSubroutineCompilation();
+		const frameSize = compiler.maxLocalOffsetInCurrentFrame + 1;
+		compiler.endSubroutine();
+		subInfo = { startAddr: subStartAddress, numArgs: numSubArgs, argMap: subArgumentMap, frameSize };
+		if (compiler.subroutineDefs && subInfo) {
+			compiler.subroutineDefs.set(subQuery, subInfo);
+		}
 	}
 
 	// --- Call Site --- //
@@ -845,7 +852,10 @@ function compileCorrelatedExistsSubquery(
 	compiler.emit(Opcode.Push, 0, 0, 0, null, 0, "Push placeholder for Sub EXISTS Result (Arg 0)"); totalArgsPushed++;
 
 	// Call Subroutine
-	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddress, 0, null, 0, "Call SubEXISTS");
+	if (!subInfo) {
+		throw new SqliteError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+	}
+	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, "Call SubEXISTS");
 
 	// Copy result from stack
 	const resultStackIdx = compiler.stackPointer - 1;

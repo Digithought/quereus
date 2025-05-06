@@ -53,8 +53,18 @@ function quoteIdentifierIfNeeded(name: string): string {
 export function expressionToString(expr: AST.Expression): string {
 	switch (expr.type) {
 		case 'literal':
+			// Prefer original lexeme for numbers if available and different
+			if ((typeof expr.value === 'number' || typeof expr.value === 'bigint') && expr.lexeme && expr.lexeme !== String(expr.value)) {
+				return expr.lexeme;
+			}
+			// Otherwise, format based on type
 			if (expr.value === null) return 'null';
-			if (typeof expr.value === 'string') return `'${expr.value.replace(/'/g, "''")}'`; // Basic quoting for strings
+			if (typeof expr.value === 'string') return `'${expr.value}'`; // Restore single quotes, no escaping
+			if (typeof expr.value === 'number') return expr.value.toString();
+			if (expr.value instanceof Uint8Array) {
+				const hex = Buffer.from(expr.value).toString('hex');
+				return `x'${hex}'`;
+			}
 			return String(expr.value);
 		case 'identifier': // General identifiers (e.g., in expressions, could be functions etc.)
 			// Assuming these usually don't need quoting unless they are keywords/invalid

@@ -1,7 +1,8 @@
 import { createLogger } from '../common/logger.js';
 import { IndexConstraintOp } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import type { Compiler, CursorPlanningResult } from './compiler.js';
+import type { Compiler } from './compiler.js';
+import type { CursorPlanningResult } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import type { TableSchema } from '../schema/table.js';
 import { SqliteError } from '../common/errors.js';
@@ -9,6 +10,7 @@ import { StatusCode } from '../common/types.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 import type { PlannedStep } from './planner/types.js';
+import type { IndexConstraintUsage } from '../vtab/indexInfo.js';
 
 const log = createLogger('compiler:where-verify');
 const warnLog = log.extend('warn');
@@ -54,8 +56,11 @@ export function verifyPlannedConstraints(
 	jumpTargetIfFalse: number,
 	activeOuterCursors: ReadonlySet<number>
 ): void {
-	if (plan.constraints.length === 0 || plan.usage.every(u => u.argvIndex === 0 || u.omit)) {
-		// No verifiable constraints used by this plan
+	if (plan.constraints.length === 0 || (plan.usage && plan.usage.every((u: IndexConstraintUsage) => u.argvIndex === 0 || u.omit))) {
+		// No verifiable constraints used by this plan or usage is missing (should not happen for valid plans)
+		if (!plan.usage && plan.constraints.length > 0) {
+			warnLog(`verifyPlannedConstraints: plan for cursor ${cursorIdx} has constraints but no usage. Skipping verification.`);
+		}
 		return;
 	}
 	log(`Verifying constraints for cursor ${cursorIdx} (plan idxNum=${plan.idxNum}), jump target ${jumpTargetIfFalse}`);
@@ -64,10 +69,10 @@ export function verifyPlannedConstraints(
 
 	for (let i = 0; i < plan.constraints.length; i++) {
 		const constraint = plan.constraints[i];
-		const usage = plan.usage[i];
+		const usage = plan.usage[i]; // Assuming constraints and usage are parallel arrays
 
 		// Verify if the constraint was used (argvIndex > 0) AND not guaranteed by the VTab (omit = false)
-		if (usage.argvIndex > 0 && !usage.omit) {
+		if (usage && usage.argvIndex > 0 && !usage.omit) { // Add null check for usage
 			const originalValueExpr = plan.constraintExpressions.get(i);
 			let verificationExpr: AST.Expression | null = null;
 			let verificationExprLoc: AST.AstNode['loc'] | undefined = originalValueExpr?.loc;

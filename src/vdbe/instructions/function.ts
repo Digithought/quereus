@@ -26,17 +26,19 @@ export function registerHandlers(handlers: Handler[]) {
 
     // Reuse or recreate UDF context? For simplicity, let's assume VmCtx provides one
     // const udfContext = ctx.udfContext; // Assume VmCtx has this
-    const udfContext = new FunctionContext(ctx.db, p4Func.funcDef.userData); // Or create new? Let's stick with VmCtx provided one
-    ctx.udfContext._clear(); // Clear previous state
+    const localUdfContext = new FunctionContext(ctx.db, p4Func.funcDef.userData); // Create NEW local context
+    // ctx.udfContext._clear(); // Don't clear the shared one here
 
     try {
-      p4Func.funcDef.xFunc!(ctx.udfContext, Object.freeze(args));
-      const err = ctx.udfContext._getError();
+      // Pass the LOCAL context to the function
+      p4Func.funcDef.xFunc!(localUdfContext, Object.freeze(args));
+      const err = localUdfContext._getError(); // Get error from LOCAL context
       if (err) {
         throw err; // Propagate errors set via context
       }
       // Result is written relative to the frame pointer
-      ctx.setMem(resultReg, ctx.udfContext._getResult());
+      // Get result from LOCAL context
+      ctx.setMem(resultReg, localUdfContext._getResult());
     } catch (e) {
       const funcName = p4Func.funcDef.name;
       errorLog(`Error in function ${funcName}: %O`, e);

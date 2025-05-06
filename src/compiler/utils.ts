@@ -176,16 +176,14 @@ export function compileLiteralValue(compiler: Compiler, value: SqlValue, targetR
 	if (value === null) {
 		compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, "Load NULL literal");
 	} else if (typeof value === 'number') {
-		if (Number.isSafeInteger(value)) {
-			compiler.emit(Opcode.Integer, value, targetReg, 0, null, 0, `Load Integer literal: ${value}`);
-		} else if (Number.isInteger(value)) {
-			// Value is integer but outside safe range, store as Int64 constant
-			const constIdx = compiler.addConstant(BigInt(value));
-			compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `Load Large Integer literal: ${value}`);
-		} else {
-			// Non-integer number, store as Real constant
+		if (value !== Math.floor(value) || !Number.isInteger(value)) {
 			const constIdx = compiler.addConstant(value);
 			compiler.emit(Opcode.Real, 0, targetReg, 0, constIdx, 0, `Load Float literal: ${value}`);
+		} else if (Number.isSafeInteger(value)) {
+			compiler.emit(Opcode.Integer, value, targetReg, 0, null, 0, `Load Integer literal: ${value}`);
+		} else {
+			const constIdx = compiler.addConstant(BigInt(value));
+			compiler.emit(Opcode.Int64, 0, targetReg, 0, constIdx, 0, `Load Large Integer literal: ${value}`);
 		}
 	} else if (typeof value === 'string') {
 		const constIdx = compiler.addConstant(value);

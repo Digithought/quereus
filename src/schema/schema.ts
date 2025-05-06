@@ -4,6 +4,7 @@ import { getFunctionKey } from './function.js';
 import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
 import { SqliteError } from '../common/errors.js';
+import { StatusCode } from '../common/constants.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:schema');
@@ -57,30 +58,27 @@ export class Schema {
 	}
 
 	/**
-	 * Adds or replaces a table definition in the schema
+	 * Retrieves a table schema definition
 	 *
-	 * @param table The table schema to add
-	 * @throws Error if table's schema name doesn't match or a view with same name exists
-	 */
-	addTable(table: TableSchema): void {
-		if (table.schemaName !== this.name) {
-			throw new Error(`Table ${table.name} has wrong schema name ${table.schemaName}, expected ${this.name}`);
-		}
-		if (this.views.has(table.name.toLowerCase())) {
-			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
-		}
-		this.tables.set(table.name.toLowerCase(), table);
-		log(`Added/Updated table '%s' in schema '%s'`, table.name, this.name);
-	}
-
-	/**
-	 * Gets a table definition by name (case-insensitive)
-	 *
-	 * @param tableName The table name to look up
+	 * @param tableName The name of the table (case-insensitive)
 	 * @returns The table schema or undefined if not found
 	 */
 	getTable(tableName: string): TableSchema | undefined {
 		return this.tables.get(tableName.toLowerCase());
+	}
+
+	/**
+	 * Adds or replaces a table definition in the schema
+	 *
+	 * @param table The table schema object
+	 * @throws SqliteError if a view with the same name exists
+	 */
+	addTable(table: TableSchema): void {
+		// Ensure no view conflict
+		if (this.views.has(table.name.toLowerCase())) {
+			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
+		}
+		this.tables.set(table.name.toLowerCase(), table);
 	}
 
 	/**
@@ -102,7 +100,6 @@ export class Schema {
 		const key = tableName.toLowerCase();
 		const exists = this.tables.has(key);
 		if (exists) {
-			log(`Removed table '%s' from schema '%s'`, tableName, this.name);
 			this.tables.delete(key);
 		}
 		return exists;
@@ -248,6 +245,4 @@ export class Schema {
 		});
 		this.functions.clear();
 	}
-
-	// TODO: Add methods for triggers, views, indexes if they become necessary later.
 }

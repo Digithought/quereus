@@ -259,10 +259,12 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 		if (this.isEqPlanCursor) {
 			// --- EQ Plan Next ---
 			// After the first result (positioned in constructor), next always leads to EOF
+			debugLog(`BaseLayerCursorInternal.next (EQ): Setting EOF. Old _isEof=${this._isEof}`);
 			this.currentPath = null;
 			this.currentValue = null;
 			this.currentModKey = null;
 			this._isEof = true;
+			debugLog(`BaseLayerCursorInternal.next (EQ): Set EOF. New _isEof=${this._isEof}`);
 		} else {
 			// --- Range or Full Scan Next ---
 			if (!this.iterator) {

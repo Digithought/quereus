@@ -5,10 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/database.js';
 import { ParseError } from '../src/common/errors.js';
 import { Parser } from '../src/parser/parser.js';
-import type * as AST from '../src/parser/ast.js';
+import { Compiler } from '../src/compiler/compiler.js';
 import type { VdbeInstruction } from '../src/vdbe/instruction.js';
 import { Opcode } from '../src/vdbe/opcodes.js';
-import { jsonStringify, safeJsonStringify } from '../src/util/serialization.js';
+import { safeJsonStringify } from '../src/util/serialization.js';
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -18,52 +18,6 @@ const __dirname = path.dirname(__filename); // This will be C:\...\dist\test whe
 // Go up two levels from __dirname (dist/test -> project root) then down to test/logic
 const projectRoot = path.resolve(__dirname, '..', '..');
 const logicTestDir = path.join(projectRoot, 'test', 'logic');
-
-// --- Helper Function to Format AST ---
-function formatAst(ast: AST.AstNode): string {
-	try {
-		// Use JSON.stringify for a readable AST representation
-		// Replace circular references (like potential parent pointers if added later)
-		const cache = new Set();
-		return JSON.stringify(ast, (key, value) => {
-			if (typeof value === 'object' && value !== null) {
-				if (cache.has(value)) {
-					// Circular reference found, discard key
-					return '[Circular]';
-				}
-				// Store value in our collection
-				cache.add(value);
-			}
-			return value;
-		}, 2);
-	} catch (e: any) {
-		return `Error formatting AST: ${e.message}`;
-	}
-}
-
-// --- Helper Function to Format VDBE Instructions ---
-function formatVdbe(instructions: ReadonlyArray<VdbeInstruction>): string {
-	try {
-		return instructions.map((inst, i) => {
-			let p4Str = '';
-			if (inst.p4) {
-				try {
-					// Attempt simple stringification for P4, handle potential errors
-					if (inst.p4 && typeof inst.p4 === 'object' && 'type' in inst.p4) {
-						p4Str = `P4(${inst.p4.type})`; // Show type for complex P4
-					} else {
-						p4Str = jsonStringify(inst.p4);
-					}
-				} catch { p4Str = '[Unserializable P4]'; }
-			}
-			// Convert Opcode number to string name before padding
-			const opcodeName = Opcode[inst.opcode] || 'UNKNOWN_OPCODE';
-			return `[${i.toString().padStart(3)}] ${opcodeName.padEnd(15)} ${inst.p1}\t${inst.p2}\t${inst.p3}\t${p4Str} ${inst.p5 > 0 ? `#${inst.p5}` : ''} ${inst.comment ? `// ${inst.comment}` : ''}`;
-		}).join('\n');
-	} catch (e: any) {
-		return `Error formatting VDBE: ${e.message}`;
-	}
-}
 
 describe('SQL Logic Tests', () => {
 	const files = fs.readdirSync(logicTestDir)
@@ -122,8 +76,9 @@ describe('SQL Logic Tests', () => {
 
 						try {
 							if (expectedResultJson !== null) {
-								// --- Handle Expected Result (Potentially Multi-Statement) ---
-								console.log(`Executing block (expect results):\n${sqlBlock}`);
+								// --- REVERTED: Handle Expected Result (Split execution) --- //
+								console.log(`Executing block (expect results):
+${sqlBlock}`);
 								// Split statements
 								const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
 								const lastStatementIndex = statements.length - 1;
@@ -151,73 +106,113 @@ describe('SQL Logic Tests', () => {
 								} catch (jsonError: any) {
 									throw new Error(`[${file}:${lineNumber}] Invalid expected JSON: ${jsonError.message} - JSON: ${expectedResultJson}`);
 								}
-								expect(actualResult).to.deep.equal(expectedResult, `[${file}:${lineNumber}] Block: ${sqlBlock}`);
+
+								// Explicit row count check before detailed comparison
+								if (actualResult.length !== expectedResult.length) {
+									throw new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}. Block:\n${sqlBlock}`);
+								}
+								// Compare row by row using stringify
+								for (let i = 0; i < actualResult.length; i++) {
+									const actualStr = JSON.stringify(actualResult[i]);
+									const expectedStr = JSON.stringify(expectedResult[i]);
+									expect(actualStr).to.equal(expectedStr, `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${actualStr}\nExpected: ${expectedStr}\nBlock:\n${sqlBlock}`);
+								}
 								console.log("   -> Results match!");
 							} else if (expectedErrorSubstring !== null) {
-								// --- Handle Expected Error (Multi-statement ok via db.exec) ---
-								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
+								// --- Handle Expected Error (Unchanged) ---
+								console.log(`Executing block (expect error "${expectedErrorSubstring}"):
+${sqlBlock}`);
 								try {
 									await db.exec(sqlBlock); // Use db.exec directly
-									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
+									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.
+Block: ${sqlBlock}`);
 								} catch (actualError: any) {
 									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
-										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
+										`[${file}:${lineNumber}] Block: ${sqlBlock}
+Expected error containing: "${expectedErrorSubstring}"
+Actual error: "${actualError.message}"`
 									);
 									console.log(`   -> Caught expected error: ${actualError.message}`);
 								}
 							}
 						} catch (error: any) {
-							// Handle unexpected errors - Check if an error was expected FIRST
+							// --- Handle unexpected errors (mostly unchanged, but simplify VDBE dump) --- //
 							if (expectedErrorSubstring !== null) {
 								// Error occurred, and we expected one. Check if it matches.
 								expect(error.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
-									`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${error.message}"`
+									`[${file}:${lineNumber}] Block: ${sqlBlock}
+Expected error containing: "${expectedErrorSubstring}"
+Actual error: "${error.message}"`
 								);
 								console.log(`   -> Caught expected error: ${error.message}`);
-								// Error was expected and matched, proceed normally
 							} else {
-								// Error occurred, but we did NOT expect one (or expected a specific non-matching one).
-								// OR it's the specific assertion failure from the error handling block above.
-								if (error.message.includes('Expected error matching')) {
-									throw error; // Rethrow assertion failure
-								}
-								// Unexpected runtime error, dump diagnostics
+								// Unexpected runtime error
 								let diagnosticInfo = '';
 								try {
 									// Add Query Plan diagnostics
 									if (db && sqlBlock) {
 										diagnosticInfo += `\n\n--- QUERY PLAN ---`;
 										try {
-											// Parse the block to get the AST of the failing statement
-											const parserForPlan = new Parser();
-											const allStmtsAst = parserForPlan.parseAll(sqlBlock);
-											if (allStmtsAst.length > 0) {
-												const failingStmtAst = allStmtsAst[allStmtsAst.length - 1];
-												const planSteps = await db._getPlanInfo(failingStmtAst); // Pass AST
-												if (planSteps.length > 0) {
-													planSteps.forEach(step => {
-														diagnosticInfo += `\n${step.selectId}|${step.order}|${step.from}| ${step.detail}`;
-													});
-												} else {
-													diagnosticInfo += `\n(No plan info returned)`;
+											// Attempt to get plan for the *last* statement in the block
+											const stmtsForPlan = sqlBlock.split(';').map(s => s.trim()).filter(s => s);
+											if (stmtsForPlan.length > 0) {
+												const lastStmtSql = stmtsForPlan[stmtsForPlan.length - 1];
+												try {
+													const planSteps = db.getPlanInfo(lastStmtSql); // Get plan for last stmt
+													if (planSteps.length > 0) {
+														planSteps.forEach(step => {
+															diagnosticInfo += `\n${step.selectId}|${step.order}|${step.from}| ${step.detail}`;
+														});
+													} else {
+														diagnosticInfo += `\n(No plan info returned for last statement)`;
+													}
+												} catch (planError: any) {
+													diagnosticInfo += `\n(Error getting plan for last stmt: ${planError.message})`;
 												}
 											} else {
-												diagnosticInfo += `\n(No plan info returned)`;
+												diagnosticInfo += `\n(Could not isolate last statement for plan)`;
 											}
 										} catch (planError: any) {
-											diagnosticInfo += `\n(Error getting plan: ${planError.message})`;
+											diagnosticInfo += `\n(Error parsing/getting plan: ${planError.message})`;
 										}
 									}
 
-									// Existing AST diagnostics
-									const parser = new Parser();
-									// Try parsing the block that caused the error
-									const statementsAst = parser.parseAll(sqlBlock);
-//									diagnosticInfo += `\n\n--- AST (Full Block, ${statementsAst.length} stmts) ---`;
-//									statementsAst.forEach((ast, idx) => {
-//										diagnosticInfo += `\n--- Stmt ${idx + 1} ---\n${formatAst(ast)}`;
-//									});
-									// Maybe try compiling the first failing statement? Too complex here.
+									// Add VDBE Program diagnostics (Simplified: Try compiling last statement only)
+									if (db && sqlBlock) {
+										diagnosticInfo += `\n\n--- VDBE PROGRAM (Last Statement) ---`;
+										try {
+											const stmtsForVdbe = sqlBlock.split(';').map(s => s.trim()).filter(s => s);
+											if (stmtsForVdbe.length > 0) {
+												const lastStmtSqlVdbe = stmtsForVdbe[stmtsForVdbe.length - 1];
+												try {
+													const parserForVdbe = new Parser();
+													const astForVdbe = parserForVdbe.parse(lastStmtSqlVdbe);
+													const compilerForVdbe = new Compiler(db);
+													const compiledProgram = compilerForVdbe.compile(astForVdbe, lastStmtSqlVdbe);
+													// Use manual formatting again
+													diagnosticInfo += compiledProgram.instructions.map((instr: VdbeInstruction, idx: number) => {
+														const opcodeName = Opcode[instr.opcode] ?? 'UNKNOWN';
+														let p4String = '';
+														if (instr.p4 !== null && instr.p4 !== undefined) {
+															if (typeof instr.p4 === 'object') {
+																try { p4String = safeJsonStringify(instr.p4); } catch { p4String = '[unstringifiable]'; }
+															} else {
+																p4String = String(instr.p4);
+															}
+														}
+														const comment = instr.comment ? ` # ${instr.comment}` : '';
+														return `\n${idx}: ${opcodeName} ${instr.p1} ${instr.p2} ${instr.p3} ${p4String} ${instr.p5}${comment}`;
+													}).join('');
+												} catch (compileError: any) {
+													diagnosticInfo += `\n(Error compiling last statement for VDBE dump: ${compileError.message})`;
+												}
+											} else {
+												diagnosticInfo += `\n(Could not isolate last statement for VDBE dump)`;
+											}
+										} catch (compileError: any) {
+											diagnosticInfo += `\n(Error parsing/compiling VDBE dump: ${compileError.message})`;
+										}
+									}
 								} catch (parseError: any) {
 									if (parseError instanceof ParseError) { diagnosticInfo += `\n\n--- AST (Parse Error) ---\n${parseError.message}`; }
 									else { diagnosticInfo += `\n\n--- AST (Unknown Parsing Error) ---\n${parseError.message}`; }

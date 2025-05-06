@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import { VdbeRuntime } from '../src/vdbe/runtime.js';
-import { type VdbeInstruction, createInstruction, type P4KeyInfo } from '../src/vdbe/instruction.js';
+import { type VdbeInstruction, createInstruction } from '../src/vdbe/instruction.js';
 import { Opcode } from '../src/vdbe/opcodes.js';
 import { Database } from '../src/core/database.js';
 import { Statement } from '../src/core/statement.js';

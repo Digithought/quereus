@@ -1,7 +1,8 @@
 import { SqliteError } from '../common/errors.js';
 import { StatusCode, SqlDataType, ConflictResolution } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import type { Compiler, ColumnResultInfo, CteInfo } from './compiler.js';
+import type { Compiler } from './compiler.js';
+import type { ColumnResultInfo, CteInfo } from './structs.js';
 import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
 import type { P4SortKey } from '../vdbe/instruction.js';
@@ -10,9 +11,44 @@ import { buildColumnIndexMap } from '../schema/table.js';
 import { compileUnhandledWhereConditions } from './where-verify.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
 import { createLogger } from '../common/logger.js';
+import type { IndexConstraintUsage } from '../vtab/indexInfo.js';
 
 const log = createLogger('compiler:cte');
 
+export function compileWithClauseHelper(compiler: Compiler, withClause: AST.WithClause): void {
+	for (const cte of withClause.ctes) {
+		const cteName = cte.name.toLowerCase();
+		const refCount = compiler.cteReferenceCounts.get(cteName) ?? 0;
+		const isRecursive = withClause.recursive;
+
+		// Determine materialization strategy based on reference count
+		let strategy: CteInfo['strategy'];
+		if (cte.materializationHint === 'materialized') {
+			strategy = 'materialized';
+		} else if (cte.materializationHint === 'not_materialized') {
+			strategy = 'inline';
+		} else if (isRecursive) {
+			strategy = 'materialized'; // Recursive must be materialized
+		} else if (refCount > 1) {
+			strategy = 'materialized'; // Materialize if used more than once
+		} else {
+			strategy = 'inline'; // Default to inline (view-like)
+		}
+
+		// Store basic info in the map first
+		const cteInfo: CteInfo = {
+			node: cte,
+			strategy: strategy,
+			// Other fields (cursorIdx, schema) will be added if materialized
+		};
+		compiler.cteMap.set(cteName, cteInfo);
+
+		// Only compile materialized CTEs now
+		if (strategy === 'materialized') {
+			compileCommonTableExpression(compiler, cteInfo, isRecursive);
+		}
+	}
+}
 // --- Updated signature to accept CteInfo --- //
 export function compileCommonTableExpression(compiler: Compiler, cteInfo: CteInfo, isRecursive: boolean): void {
 	const cte = cteInfo.node; // Get the AST node from CteInfo
@@ -57,7 +93,7 @@ function _compileMaterializedCte(compiler: Compiler, cteInfo: CteInfo): void {
 		if (cte.query.type === 'select') {
 			const outerCursors = Array.from(savedState.tableAliases?.values() ?? []);
 			// Compile just to get column structure info
-			resultInfo = compiler.compileSelectCore(cte.query, outerCursors);
+			resultInfo = compiler.getSelectCoreStructure(cte.query, outerCursors);
 
 			// Create the ephemeral table *instance* and get its schema
 			cteCursorIdx = compiler.allocateCursor();
@@ -140,7 +176,7 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 	let queueSchema: TableSchema; // Queue schema
 	let resultInfo: { resultBaseReg: number; numCols: number; columnMap: ColumnResultInfo[] };
 	try {
-		resultInfo = compiler.compileSelectCore(initialSelect, Array.from(savedStateSchema.tableAliases?.values() ?? []));
+		resultInfo = compiler.getSelectCoreStructure(initialSelect, Array.from(savedStateSchema.tableAliases?.values() ?? []));
 		const numCols = resultInfo.numCols;
 
 		// Determine sort key for result table if UNION (distinct)
@@ -201,16 +237,17 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 
 	// 4. Recursive Loop
 	log(`REC CTE '%s': Compiling recursive loop...`, cteName);
-	const addrRewindQueue = compiler.getCurrentAddress();
-	const addrLoopStart = compiler.allocateAddress(); // Address after VNext Queue
-	const addrLoopEnd = compiler.allocateAddress();   // Target when queue is empty
+	const addrLoopStart = compiler.allocateAddress();
+	const addrLoopEnd = compiler.allocateAddress();
+	const addrLoopBodyStart = compiler.allocateAddress();
 
 	// Use Rewind/VNext on the queueCursor index
 	compiler.emit(Opcode.Rewind, queueCursor, addrLoopEnd, 0, null, 0, `REC CTE: Rewind Queue`);
-	compiler.resolveAddress(addrLoopStart); // Loop target
-	compiler.emit(Opcode.VNext, queueCursor, addrLoopEnd, 0, null, 0, `REC CTE: VNext Queue`);
+	compiler.resolveAddress(addrLoopStart);
+	compiler.emit(Opcode.VNext, queueCursor, addrLoopBodyStart, addrLoopEnd, null, 0, `REC CTE: VNext Queue`);
+	compiler.resolveAddress(addrLoopBodyStart);
 
-	// --- Compile Recursive Term --- //
+	// --- Compile Recursive Term ---
 	const loopSavedState = _saveCompilerState(compiler, ['tableAliases', 'tableSchemas', 'cteMap', 'ephemeralTableInstances', 'cursorPlanningInfo']);
 	try {
 		// Temporarily map the CTE name to the QUEUE table for the recursive step
@@ -304,7 +341,7 @@ function _compileSelectAndPopulateEphemeral(
 				let regArgsStart = 0;
 				if (planningInfo && planningInfo.idxNum !== 0) {
 					const argsToCompile: { constraintIdx: number, expr: AST.Expression }[] = [];
-					planningInfo.usage.forEach((usage, constraintIdx) => {
+					planningInfo.aConstraintUsage.forEach((usage: IndexConstraintUsage, constraintIdx: number) => {
 						if (usage.argvIndex > 0) {
 							const expr = planningInfo.constraintExpressions?.get(constraintIdx);
 							if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx} used in CTE pop VFilter`, StatusCode.INTERNAL);
@@ -339,7 +376,7 @@ function _compileSelectAndPopulateEphemeral(
 		compileUnhandledWhereConditions(compiler, selectStmt.where, queryCursors, innermostWhereFailTarget);
 
 		// Compile the SELECT expressions for the current row
-		const innerResult = compiler.compileSelectCore(selectStmt, Array.from(activeOuterCursors));
+		const innerResult = compiler.getSelectCoreStructure(selectStmt, Array.from(activeOuterCursors));
 		queryResultBase = innerResult.resultBaseReg;
 		queryNumCols = innerResult.numCols;
 		if (queryNumCols !== targetSchema.columns.length) {

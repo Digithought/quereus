@@ -8,10 +8,7 @@ import type { IndexConstraint, IndexConstraintUsage, IndexInfo } from '../../vta
 import type { IndexSchema } from '../../schema/table.js';
 import { createLogger } from '../../common/logger.js';
 import { safeJsonStringify } from '../../util/serialization.js';
-
-const log = createLogger('vdbe:vtab');
-const errorLog = log.extend('error');
-const warnLog = log.extend('warn');
+import type { VirtualTable } from '../../vtab/table.js';
 
 // Helper for handling errors from VTab methods
 function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {
@@ -19,7 +16,6 @@ function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {
   const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
   ctx.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
   ctx.done = true;
-  errorLog(ctx.error);
 }
 
 export function registerHandlers(handlers: Handler[]) {
@@ -73,9 +69,6 @@ export function registerHandlers(handlers: Handler[]) {
         });
     }
 
-    // For debugging - log constraints and args detail
-    log(`VFilter on cursor ${cIdx}, idxNum=${p4Info.idxNum}, idxStr=${p4Info.idxStr || "null"}, args=${safeJsonStringify(args)}, constraints=${safeJsonStringify(constraintsToPass)}`);
-
     try {
       // Convert p4Info to IndexInfo properly
       const indexInfo: IndexInfo = {
@@ -101,8 +94,8 @@ export function registerHandlers(handlers: Handler[]) {
         indexInfo          // Pass the full IndexInfo
       );
 
-      // After filter, if EOF, jump to addrIfEmpty
-      if (cursor.instance.eof()) {
+      const eofStatus = cursor.instance.eof();
+      if (eofStatus) {
         ctx.pc = addrIfEmpty;
       }
 
@@ -436,7 +429,8 @@ export function registerHandlers(handlers: Handler[]) {
     //    arg[1] = rootPath (optional)
     let options: any = {}; // Use 'any' for flexibility, module should validate
     try {
-      if (moduleName.toLowerCase() === 'json_each' || moduleName.toLowerCase() === 'json_tree') {
+      const moduleNameLower = moduleName.toLowerCase();
+      if (moduleNameLower === 'json_each' || moduleNameLower === 'json_tree') {
         if (nArg < 1 || nArg > 2) {
           throw new Error(`${moduleName} requires 1 or 2 arguments (jsonSource, [rootPath])`);
         }
@@ -444,12 +438,18 @@ export function registerHandlers(handlers: Handler[]) {
         if (nArg > 1) {
           options.rootPath = args[1];
         }
+      } else if (moduleNameLower === 'query_plan') {
+        if (nArg !== 1) {
+          throw new Error(`'${moduleName}' requires exactly one argument (the SQL string to explain).`);
+        }
+        if (typeof args[0] !== 'string') {
+          throw new Error(`Argument to '${moduleName}' must be a string.`);
+        }
+        options.sql = args[0]; // Pass the SQL string in the expected format
       } else {
         // Generic module: Pass args as a property? Needs a defined convention.
         // For now, we don't have other TVFs, so we'll error or pass empty.
-        // Consider options = { runtimeArgs: args }; ?
         if (nArg > 0) {
-             warnLog(`No standard argument mapping convention for TVF module '%s'. Passing empty options.`, moduleName);
         }
         options = {}; // Default empty config
       }
@@ -461,10 +461,10 @@ export function registerHandlers(handlers: Handler[]) {
     }
 
     // 4. Call xConnect to get the VTab instance
-    let vtabInstance;
+    let vtabInstance: VirtualTable;
     try {
         // Using alias as tableName for xConnect, consistent with compiler stub
-        vtabInstance = moduleInfo.module.xConnect(
+        vtabInstance = await moduleInfo.module.xConnect(
             ctx.db,
             moduleInfo.auxData,
             moduleName,
