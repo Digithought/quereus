@@ -2,6 +2,7 @@ import type * as AST from '../parser/ast';
 import type { TableSchema } from '../schema/table';
 import type { IndexConstraint, IndexConstraintUsage } from '../vtab/indexInfo';
 import type { ArgumentMap } from './handlers';
+import type { SubqueryCorrelationResult } from './correlation.js';
 
 // Define interfaces directly in Compiler for simplicity if not widely shared
 
@@ -16,33 +17,37 @@ export interface HavingContext {
 	finalColumnMap: ReadonlyArray<ColumnResultInfo>;
 }
 
+export type CteStrategy = 'materialized' | 'view';
+
 export interface CteInfo {
 	node: AST.CommonTableExpr;
-	strategy: 'inline' | 'materialized';
+	strategy: CteStrategy;
 	subroutineStartAddr?: number;
 	materializedCursor?: number;
 	cursorIdx?: number;
 	schema?: TableSchema;
 	resultBaseReg?: number;
 	numCols?: number;
+	isCompiled?: boolean;
 }
 
 export interface SubroutineInfo {
 	startAddr: number;
-	frameSize: number; // Number of locals needed
-	numArgs: number; // Number of arguments expected
-	argMap: ArgumentMap;
+	frameSize?: number;
+	numArgs?: number;
+	argMap?: ArgumentMap;
+	correlation?: SubqueryCorrelationResult;
+	regSubqueryHasNullOutput?: number;
 }
 
 export interface CursorPlanningResult {
 	idxNum: number;
 	idxStr: string | null;
 	nArgs: number;
-	aConstraint: ReadonlyArray<IndexConstraint>;
-	aConstraintUsage: IndexConstraintUsage[];
+	usage: IndexConstraintUsage[];
 	constraints: ReadonlyArray<IndexConstraint>;
-	constraintExpressions: Map<number, AST.Expression>;
-	handledWhereNodes: Set<AST.Expression>;
+	constraintExpressions: ReadonlyMap<number, AST.Expression>;
+	handledWhereNodes: ReadonlySet<AST.Expression>;
 	nOrderBy: number;
 	aOrderBy: ReadonlyArray<{
 		iColumn: number;
@@ -50,7 +55,7 @@ export interface CursorPlanningResult {
 	}>;
 	colUsed: bigint;
 	idxFlags: number;
-	estimatedCost: number;
-	estimatedRows: bigint;
+	cost: number;
+	rows: bigint;
 	orderByConsumed: boolean;
 }
