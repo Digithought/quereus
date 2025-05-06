@@ -161,7 +161,8 @@ Actual error: "${error.message}"`
 													const planSteps = db.getPlanInfo(lastStmtSql); // Get plan for last stmt
 													if (planSteps.length > 0) {
 														planSteps.forEach(step => {
-															diagnosticInfo += `\n${step.selectId}|${step.order}|${step.from}| ${step.detail}`;
+															// Use new fields: id, parentId (or op), op, and detail
+															diagnosticInfo += `\n${step.id}|${step.parentId ?? '-'}|${step.op}| ${step.detail}`;
 														});
 													} else {
 														diagnosticInfo += `\n(No plan info returned for last statement)`;

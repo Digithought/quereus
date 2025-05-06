@@ -10,7 +10,7 @@ import type { ConflictResolution } from '../common/constants.js';
 export interface AstNode {
 	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select'
 		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit'
-		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'withClause' | 'commonTableExpr' | 'pragma'
+		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource';
@@ -380,7 +380,7 @@ export interface PragmaStmt extends AstNode {
 }
 
 export interface WithClause extends AstNode {
-	type: 'withClause';
+	type: 'with';
 	recursive: boolean;
 	ctes: CommonTableExpr[];
 }

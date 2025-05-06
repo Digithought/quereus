@@ -167,7 +167,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 		case 'savepoint':
 		case 'release':
 		case 'pragma':
-		case 'withClause': // Usually handled separately before main traversal
+		case 'with': // Usually handled separately before main traversal
 		case 'commonTableExpr': // Usually handled separately
 			break;
 		// Default case for unhandled node types

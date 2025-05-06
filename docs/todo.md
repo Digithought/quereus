@@ -29,6 +29,7 @@ Review items:
 *   [ ] The error handling in several of the instruction handlers seems robust, but error propagation between async calls should be carefully tested, especially in the VTab-related code.
 *   [ ] The P4 operand types in instruction.ts have several placeholder types that might need to be fully implemented as the codebase evolves.
 *   [ ] Anywhere we catch our own exceptions, we should instead have a way to check without throw/catch (not an exceptional exception)
+*   [ ] Review for redundant and DEBUG only checks through inner loop runtime and memory cursor code paths
 
 **II. VDBE & Compiler Core:**
 

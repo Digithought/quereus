@@ -1,6 +1,7 @@
 import type { VdbeInstruction } from './instruction.js';
 import type { SqlValue } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
+import type { PlannedStep } from '../compiler/planner/types.js';
 
 const log = createLogger('vdbe:program');
 const warnLog = log.extend('warn');
@@ -30,6 +31,9 @@ export interface VdbeProgram {
 
 	/** Names of the result columns */
 	readonly columnNames: ReadonlyArray<string>;
+
+	/** Detailed plan steps (for EXPLAIN) */
+	readonly plannedSteps?: ReadonlyArray<PlannedStep>;
 
 	// TODO: Add other necessary metadata:
 	// - Sub-programs (for triggers, etc.)

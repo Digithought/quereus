@@ -82,7 +82,7 @@ export class Parser {
 				const mainStatement = this.statement(startOfMainStmtToken);
 
 				// Attach WITH clause if present
-				if (withClause && 'withClause' in mainStatement) {
+				if (withClause && 'with' in mainStatement) {
 					(mainStatement as any).withClause = withClause;
 					if (withClause.loc && mainStatement.loc) {
 						mainStatement.loc.start = withClause.loc.start;
@@ -155,7 +155,7 @@ export class Parser {
 
 		const endToken = this.previous(); // Last token of the last CTE
 
-		return { type: 'withClause', recursive, ctes, loc: _createLoc(startToken, endToken) };
+		return { type: 'with', recursive, ctes, loc: _createLoc(startToken, endToken) };
 	}
 
 	/**

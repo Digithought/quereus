@@ -31,6 +31,7 @@ import type { CteInfo, CursorPlanningResult, SubroutineInfo, HavingContext, Colu
 import { emitInstruction, allocateMemoryCellsHelper, allocateCursorHelper, addConstantHelper, allocateAddressHelper, resolveAddressHelper, beginSubroutineHelper, endSubroutineHelper } from './compilerState.js';
 import { createEphemeralTableHelper } from './ephemeral.js';
 import { compileWithClauseHelper } from './cte.js';
+import type { PlannedStep } from './planner/types.js';
 
 const log = createLogger('compiler');
 const warnLog = log.extend('warn');
@@ -63,6 +64,7 @@ export class Compiler {
 	public resultColumns: { name: string, table?: string, expr?: AST.Expression }[] = [];
 	public cursorPlanningInfo: Map<number, CursorPlanningResult> = new Map();
 	public cteReferenceCounts: Map<string, number> = new Map(); // Map lower-case CTE name -> reference count
+	public _currentPlannedSteps: ReadonlyArray<PlannedStep> | null = null; // For EXPLAIN
 	// --- Subroutine State ---
 	public subroutineCode: VdbeInstruction[] = [];
 	public subroutineDefs: Map<AST.SelectStmt, SubroutineInfo> = new Map();
@@ -118,6 +120,7 @@ export class Compiler {
 			this.stackPointer = 0;
 			this.framePointer = 0;
 			this.outerCursors = [];
+			this._currentPlannedSteps = null; // Reset for EXPLAIN
 			// --- End Reset State ---
 
 			// Add initial Init instruction
@@ -125,7 +128,7 @@ export class Compiler {
 
 			// --- Analyze CTE references before compiling WITH --- //
 			let withClause: AST.WithClause | undefined;
-			if ('withClause' in ast && (ast as any).withClause !== undefined) {
+			if ('with' in ast && (ast as any).withClause !== undefined) {
 				withClause = (ast as any).withClause;
 				if (withClause) {
 					// Initialize counts for all defined CTEs
@@ -211,7 +214,8 @@ export class Compiler {
 				numCursors: this.numCursors,
 				parameters: this.parameters,
 				columnNames: this.columnAliases,
-				sql: this.sql
+				sql: this.sql,
+				plannedSteps: this._currentPlannedSteps ?? undefined
 			};
 		} catch (error) {
 			if (error instanceof ParseError) {

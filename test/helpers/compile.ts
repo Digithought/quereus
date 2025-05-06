@@ -26,7 +26,7 @@ export function compile(db: Database, sql: string): PlannedStep[] {
 
     // --- Pre-populate necessary compiler state before planning --- >
     // 1. CTEs (if any)
-    if ('withClause' in ast && ast.withClause) {
+    if ('with' in ast && ast.withClause) {
         // @ts-ignore - Accessing private method for testing setup
         compiler._analyzeCteReferences(ast, ast.withClause);
         compiler.compileWithClause(ast.withClause);

@@ -1,6 +1,7 @@
 import { VirtualTable } from '../table.js';
 import type { QueryPlanModule } from './module.js';
-import type { Database, QueryPlanStep } from '../../core/database.js';
+import type { Database } from '../../core/database.js';
+import type { QueryPlanStep } from '../../core/explain.js';
 import type { TableSchema } from '../../schema/table.js';
 import { QueryPlanCursor } from './cursor.js';
 import { SqliteError } from '../../common/errors.js';

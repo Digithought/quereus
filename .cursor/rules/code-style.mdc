@@ -9,6 +9,8 @@ This project uses [.editorconfig](mdc:.editorconfig) to enforce consistent codin
 
 Generally favor expressive style over imperative.  E.g. map rather than loop, conditional expressions rather than if...
 
+Don't add superfluous comments, and be sure that comments are timeless (relative to all time, not just to changes being made).
+
 ## General Conventions
 - UTF-8 encoding for all files
 - Insert final newline at end of files

@@ -1,24 +1,32 @@
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { SqliteError } from '../../common/errors.js';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { StatusCode } from '../../common/constants.js';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import type { Database, QueryPlanStep } from '../../core/database.js';
+import type { Database } from '../../core/database.js';
+import type { QueryPlanStep } from '../../core/explain.js';
 import { buildColumnIndexMap, type TableSchema } from '../../schema/table.js';
 import type { ColumnSchema } from '../../schema/column.js';
 import type { VirtualTableModule } from '../module.js';
 import { QueryPlanTable } from './table.js';
 import { QueryPlanCursor } from './cursor.js';
 import { SqlDataType } from '../../common/types.js';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { Parser } from '../../parser/parser.js';
 
 // Define the fixed schema for the query_plan function
 const QUERY_PLAN_COLUMNS: ReadonlyArray<ColumnSchema> = Object.freeze([
-    { name: 'selectid', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'order', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'from', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'detail', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'parent_id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'subquery_level', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'op', affinity: SqlDataType.TEXT, notNull: true, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'detail', affinity: SqlDataType.TEXT, notNull: true, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'object_name', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'alias', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'est_cost', affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'est_rows', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'idx_num', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'idx_str', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'ord_consumed', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null }, // 0 for false, 1 for true
+    { name: 'constraints_desc', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'orderby_desc', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'join_type', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'is_correlated', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null }, // 0 for false, 1 for true
 ]);
 
 const QUERY_PLAN_SCHEMA: TableSchema = Object.freeze({

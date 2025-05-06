@@ -265,6 +265,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	// --- === NEW: Call Query Planner === --- //
 	log("--- Starting Query Planning --- ");
 	const plannedSteps = planQueryExecution(compiler, stmt);
+	compiler._currentPlannedSteps = plannedSteps; // Store for EXPLAIN
 	log("--- Finished Query Planning --- ");
 	// --- ============================== --- //
 
