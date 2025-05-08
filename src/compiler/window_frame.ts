@@ -82,7 +82,7 @@ export function compileFrameBoundary(
 				}
 				break;
 
-			case 'currentRow':
+			case 'currentRow': {
 				// Find the first (for start bound) or last (for end bound) peer row
 				const regCurrentOrderByKeys = compiler.allocateMemoryCells(orderByInfo.keyIndices.length);
 				const regPeerOrderByKeys = compiler.allocateMemoryCells(orderByInfo.keyIndices.length);
@@ -135,9 +135,10 @@ export function compileFrameBoundary(
 				compiler.emit(Opcode.VRowid, cursorIdx, regBoundaryRowid, 0, null, 0, "RANGE CUR ROW: Save boundary rowid");
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
+			}
 
 			case 'preceding':
-			case 'following':
+			case 'following': {
 				// --- RANGE N PRECEDING / N FOLLOWING ---
 				if (orderByInfo.keyIndices.length !== 1) {
 					throw new SqliteError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
@@ -248,7 +249,7 @@ export function compileFrameBoundary(
 					"RANGE N: Get peer ORDER BY key");
 				// If keys differ, the previous position was the edge peer
 				compiler.emit(Opcode.Ne, regBoundaryPeerKey, addrPeerCheckLoopEnd, regPeerCheckKey, p4Coll, 0x01,
-					"RANGE N: Check if peer keys differ");
+					"RANGE N: `Check Peer ${i} (Boundary)`");
 
 				// Peer found, continue loop
 				compiler.emit(Opcode.Goto, 0, addrPeerCheckLoopStart, 0, null, 0, "RANGE N: Peer found, continue seek");
@@ -276,8 +277,9 @@ export function compileFrameBoundary(
 				}
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
+			}
 
-			case 'unboundedFollowing':
+			case 'unboundedFollowing': {
 				// Same as ROWS UNBOUNDED FOLLOWING: Loop forward to the end
 				const addrEofLoop = compiler.allocateAddress();
 				const addrEofLoopCheck = compiler.allocateAddress();
@@ -291,12 +293,14 @@ export function compileFrameBoundary(
 				compileRestoreCursorPosition(compiler, cursorIdx, regBoundaryRowid, partitionStartRowidReg);
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
+			}
 
-			default:
+			default: {
 				// This case should be unreachable due to exhaustive bound type checking
 				// If it occurs, it indicates an issue with the AST or frame definition logic.
 				const exhaustiveCheck: never = bound;
 				throw new SqliteError(`Unhandled RANGE bound: ${safeJsonStringify(exhaustiveCheck)}`, StatusCode.INTERNAL);
+			}
 		}
 
 		// compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `RANGE boundary calculation NYI in refactor`);
@@ -323,7 +327,7 @@ export function compileFrameBoundary(
 					compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				}
 				break;
-			case 'preceding':
+			case 'preceding': {
 				if (!boundValueReg) throw new SqliteError("Missing bound value register for PRECEDING", StatusCode.INTERNAL);
 				const negatedOffsetReg = compiler.allocateMemoryCells(1);
 				compiler.emit(Opcode.Negative, boundValueReg, negatedOffsetReg, 0, null, 0, "Negate PRECEDING offset");
@@ -334,12 +338,14 @@ export function compileFrameBoundary(
 				compiler.emit(Opcode.VRowid, cursorIdx, regBoundaryRowid, 0, null, 0, `Save boundary rowid`);
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
-			case 'currentRow':
+			}
+			case 'currentRow': {
 				// Boundary is the original row itself. Cursor is already restored there.
 				compiler.emit(Opcode.SCopy, regOriginalRowid, regBoundaryRowid, 0, null, 0, "ROWS CURRENT ROW: Boundary is original row");
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
-			case 'following':
+			}
+			case 'following': {
 				if (!boundValueReg) throw new SqliteError("Missing bound value register for FOLLOWING", StatusCode.INTERNAL);
 				// Seek forward. P5=1 jumps to addrSeekFailed if seek goes out of bounds/partition.
 				compiler.emit(Opcode.SeekRelative, cursorIdx, addrSeekFailed, boundValueReg, null, 1,
@@ -348,7 +354,8 @@ export function compileFrameBoundary(
 				compiler.emit(Opcode.VRowid, cursorIdx, regBoundaryRowid, 0, null, 0, `Save boundary rowid`);
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
-			case 'unboundedFollowing':
+			}
+			case 'unboundedFollowing': {
 				// Loop forward to the end of the partition/cursor
 				const addrEofLoop = compiler.allocateAddress();
 				const addrEofLoopCheck = compiler.allocateAddress();
@@ -372,6 +379,7 @@ export function compileFrameBoundary(
 				compileRestoreCursorPosition(compiler, cursorIdx, regBoundaryRowid, partitionStartRowidReg);
 				compiler.emit(Opcode.Goto, 0, addrContinue, 0, null, 0);
 				break;
+			}
 			default:
 				throw new SqliteError(`Unsupported frame bound type: ${(bound as any).type}`, StatusCode.INTERNAL);
 		}
@@ -609,7 +617,7 @@ export function compileBoundToRelativeOffset(
 	bound: AST.WindowFrameBound,
 	boundValueReg: number,
 	resultOffsetReg: number,
-	isStartBound: boolean
+	_isStartBound: boolean
 ): void {
 	switch (bound.type) {
 		case 'unboundedPreceding':

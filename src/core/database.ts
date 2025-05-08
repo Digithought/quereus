@@ -1,6 +1,6 @@
 import { createLogger } from '../common/logger.js';
 import { MisuseError, SqliteError } from '../common/errors.js';
-import { StatusCode, IndexConstraintOp } from '../common/constants.js';
+import { StatusCode } from '../common/constants.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import type { SqlValue } from '../common/types.js';
@@ -22,9 +22,6 @@ import { Parser } from '../parser/parser.js';
 import { Compiler } from '../compiler/compiler.js';
 import * as AST from '../parser/ast.js';
 import type { VdbeProgram } from '../vdbe/program.js';
-import type { PlannedStep, PlannedScanStep, PlannedJoinStep } from '../compiler/planner/types.js';
-import type { IndexConstraint } from '../vtab/indexInfo.js';
-import type { CursorPlanningResult } from '../compiler/structs.js';
 import { transformPlannedStepsToQueryPlanSteps, type QueryPlanStep } from './explain.js';
 
 const log = createLogger('core:database');
@@ -91,7 +88,7 @@ export class Database {
 	 * @returns A Promise resolving to the prepared Statement object.
 	 * @throws SqliteError on failure (e.g., syntax error).
 	 */
-	async prepare(sql: string): Promise<Statement> {
+	prepare(sql: string): Statement {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
 		}
@@ -100,17 +97,12 @@ export class Database {
 		// Create the statement using the standard constructor (compilation deferred)
 		const stmt = new Statement(this, sql);
 
-		try {
-			// Attempt initial compilation within prepare to catch immediate parse errors
-			await stmt.compile();
+		// Attempt initial compilation within prepare to catch immediate parse errors
+		stmt.compile();
 
-			// Add to active statements list *after* successful initial compile check
-			this.statements.add(stmt);
-			return stmt;
-		} catch (error) {
-			// Clean up is not needed as it wasn't added to the set
-			throw error;
-		}
+		// Add to active statements list *after* successful initial compile check
+		this.statements.add(stmt);
+		return stmt;
 	}
 
 	/**
@@ -256,7 +248,7 @@ export class Database {
 	private async _executeSimpleCommand(sqlCommand: string): Promise<void> {
 		let stmt: Statement | null = null;
 		try {
-			stmt = await this.prepare(sqlCommand);
+			stmt = this.prepare(sqlCommand);
 			const status = await stmt.step();
 			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
 				// step() should have thrown, but if not, throw a generic error
@@ -626,11 +618,10 @@ export class Database {
 
 		let stmt: Statement | null = null;
 		try {
-			stmt = await this.prepare(sql);
+			stmt = this.prepare(sql);
 			if (params) { stmt.bindAll(params); }
-			let status: StatusCode;
 			log(`eval loop: Starting loop for SQL: ${sql.substring(0, 50)}...`);
-			while ((status = await stmt.step()) === StatusCode.ROW) {
+			while ((await stmt.step()) === StatusCode.ROW) {
 				yield stmt.getAsObject();
 			}
 		} finally {

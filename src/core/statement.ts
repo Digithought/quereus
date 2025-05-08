@@ -42,7 +42,7 @@ export class Statement {
 	}
 
 	/** @internal */
-	public async compile(): Promise<VdbeProgram> {
+	public compile(): VdbeProgram {
 		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
 		if (this.finalized) { throw new MisuseError("Statement finalized"); }
 		log("Compiling statement...");
@@ -135,7 +135,7 @@ export class Statement {
 	 */
 	async step(): Promise<StatusCode> {
 		if (this.finalized) throw new MisuseError("Statement finalized");
-		await this.compile(); // Ensures vdbeProgram is available
+		this.compile(); // Ensures vdbeProgram is available
 
 		// Initialize VDBE if this is the first step
 		if (!this.vdbe && this.vdbeProgram) {

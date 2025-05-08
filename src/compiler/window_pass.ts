@@ -53,7 +53,6 @@ export function compileWindowFunctionsPass(
 	let regFrameEndPtr = 0;   // Rowid/pointer of the last row in the current frame
 	let regCurrentRowPtr = 0; // Rowid/pointer of the current row being processed
 	let regPartitionStartPtr = 0; // Rowid/pointer of the first row in the current partition
-	let regPartitionEndPtr = 0;   // Rowid/pointer of the last row in the current partition (less common)
 	// Registers for bound values if they are expressions
 	let regStartBoundValue = 0;
 	let regEndBoundValue = 0;
@@ -283,11 +282,11 @@ export function compileWindowFunctionsPass(
 			// based on the cursor's merged results and the frame definition.
 
 			// Gather info needed for the P4 operand
-			const orderByIndices = orderKeyIndices;
-			const orderByDirs = windowSorterInfo.sortKeyP4.directions.slice(numPartitionKeys);
-			const orderByColls = windowSorterInfo.sortKeyP4.collations?.slice(numPartitionKeys) ?? orderByIndices.map(() => undefined);
+			// const orderByIndices = orderKeyIndices;
+			// const orderByDirs = windowSorterInfo.sortKeyP4.directions.slice(numPartitionKeys);
+			// const orderByColls = windowSorterInfo.sortKeyP4.collations?.slice(numPartitionKeys) ?? orderByIndices.map(() => undefined);
 
-			// RANGE frame boundary calculation is now handled by compileFrameBoundary helper
+			// TODO: RANGE frame boundary calculation is now handled by compileFrameBoundary helper
 			// We still need to call it here to set the frame start/end registers if needed elsewhere,
 			// or simply ensure the cursor is positioned correctly by aggregate functions.
 
@@ -318,13 +317,11 @@ export function compileWindowFunctionsPass(
 			case 'avg':
 			case 'count':
 			case 'min':
-			case 'max':
+			case 'max': {
 				if (!frameDefinition) {
 					compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `WARN: Default frame assumed for ${functionName}`);
 					// Assume default frame (range unbounded preceding to current row)
 					// Use our helper function for frame-based aggregates
-					const argColIndex = winExpr.function.args.length > 0 ?
-						windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0])) ?? -1 : -1;
 
 					// *** Create a default frame definition for the call ***
 					const defaultFrameDef: AST.WindowFrame = {
@@ -344,8 +341,6 @@ export function compileWindowFunctionsPass(
 						windowSorterInfo);
 				} else {
 					// Similar to above, but with explicit frame definition
-					const argColIndex = winExpr.function.args.length > 0 ?
-						windowSorterInfo.exprToSorterIndex.get(expressionToString(winExpr.function.args[0])) ?? -1 : -1;
 
 					// Use the helper function
 					compileFrameAggregate(compiler, winSortCursor, functionName, winExpr, resultReg, frameDefinition, regStartBoundValue, regEndBoundValue, regPartitionStartRowid, numPartitionKeys, partitionKeyIndices, regWinRowKeys, regCurrentRowPtr,
@@ -358,6 +353,7 @@ export function compileWindowFunctionsPass(
 						windowSorterInfo);
 				}
 				break;
+			}
 
 			case 'first_value':
 			case 'last_value': {

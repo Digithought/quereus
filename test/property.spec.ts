@@ -32,7 +32,7 @@ describe('Property-Based Tests', () => {
 
 					// Reset table for each property run
 					await db.exec('DELETE FROM coll_t');
-					const stmt = await db.prepare('INSERT INTO coll_t (txt) VALUES (?)');
+					const stmt = db.prepare('INSERT INTO coll_t (txt) VALUES (?)');
 					try {
 						for (const str of uniqueStrings) {
 							await stmt.run([str]);

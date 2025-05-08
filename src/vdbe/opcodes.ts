@@ -40,13 +40,22 @@ export enum Opcode {
 	IfPos = 43,       // Jump to P2 if register P1 > 0
 	IfNeg = 44,       // Jump to P2 if register P1 < 0
 
+	// --- ADDED: Store Result Comparisons (45-49) ---
+	SetEq = 45,       // P3 = (P1 == P2)
+	SetNe = 46,       // P3 = (P1 != P2)
+	SetLt = 47,       // P3 = (P1 < P2)
+	SetLe = 48,       // P3 = (P1 <= P2)
+	SetGt = 49,       // P3 = (P1 > P2)
+	SetGe = 50,       // P3 = (P1 >= P2)
+	// -------------------------------------------
+
 	// --- Arithmetic / Logic (50-59) ---
-	Add = 50,         // P3 = P1 + P2
-	Subtract = 51,    // P3 = P1 - P2
-	Multiply = 52,    // P3 = P1 * P2
-	Divide = 53,      // P3 = P1 / P2
-	Remainder = 54,   // P3 = P1 % P2
-	Concat = 55,      // P3 = P1 || P2
+	Add = 51,         // P3 = P1 + P2
+	Subtract = 52,    // P3 = P1 - P2
+	Multiply = 53,    // P3 = P1 * P2
+	Divide = 54,      // P3 = P1 / P2
+	Remainder = 55,   // P3 = P1 % P2
+	Concat = 56,      // P3 = P1 || P2
 
 	// --- Bitwise / Unary (60-69) ---
 	Negative = 60,    // P2 = -P1

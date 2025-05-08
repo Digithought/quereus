@@ -10,6 +10,7 @@ import { getStepPrimaryAlias } from './planner/helpers.js';
 import { SqliteError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import type { ColumnResultInfo } from './structs.js'; // Corrected import path
+import { expressionToString } from '../util/ddl-stringify.js';
 // import type { TableSchema } from '../schema/table.js'; // Not directly used in this merged file
 
 const log = createLogger('compiler:select-loop'); // Create logger instance
