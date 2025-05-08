@@ -65,6 +65,7 @@ interface LoopGenerationContext {
 	whereFailTargetPlaceholder: number | undefined; // Target if WHERE fails
 	allFromCursors: ReadonlySet<number>; // All cursors in the original FROM
 	finalColumnMap: ReadonlyArray<ColumnResultInfo>; // Map of final result columns to help with padding
+	coreColumnMap: ReadonlyArray<ColumnResultInfo>; // Map of raw FROM columns to registers
 }
 
 /**
@@ -338,15 +339,23 @@ function generateVdbeForStep(
 			} else {
 				// If not innermost, we need to emit the NULLs directly here,
 				// then continue with nested execution
-				log(`    LEFT JOIN Padding: For intermediate join (not innermost), emitting placeholder NULLs`);
-				innerRelation.schema.columns.forEach((colSchema) => {
-					if (!colSchema.hidden) {
-						warnLog(`LEFT JOIN NULL padding for intermediate join ${innerAlias}.${colSchema.name} relies on downstream handling. Specific registers are not NULLed here.`);
-						// The following Opcode.Null was ineffective as it didn't target specific registers.
-						// compiler.emit(Opcode.Null, 0, 0, 0, null, 0, `NULL Pad Intermediate ${innerAlias}.${colSchema.name}`);
-					}
-				});
-				// TODO: Handle nested join intermediary padding more accurately
+				log(`    LEFT JOIN Padding: For intermediate join (not innermost), emitting placeholder NULLs for ${innerAlias}`);
+				const innerOutputRelation = (joinStep.innerStep.type === 'Scan')
+					? joinStep.innerStep.relation
+					: joinStep.innerStep.outputRelation;
+
+				const innerContributingBaseCursors = innerOutputRelation.contributingCursors;
+
+				if (loopContext.coreColumnMap) {
+					loopContext.coreColumnMap.forEach((coreColInfo: ColumnResultInfo) => {
+						if (innerContributingBaseCursors.has(coreColInfo.sourceCursor)) {
+							compiler.emit(Opcode.Null, 0, coreColInfo.targetReg, 0, null, 0, `NULL Pad Intermediate ${innerAlias}.${coreColInfo.expr ? expressionToString(coreColInfo.expr) : 'col'} to reg ${coreColInfo.targetReg}`);
+							log(`      NULLing reg ${coreColInfo.targetReg} for intermediate pad of ${innerAlias} (source cursor ${coreColInfo.sourceCursor}, col expr: ${coreColInfo.expr ? expressionToString(coreColInfo.expr) : 'N/A'})`);
+						}
+					});
+				} else {
+					warnLog(`Cannot perform intermediate LEFT JOIN padding for ${innerAlias}: coreColumnMap is missing in loopContext.`);
+				}
 			}
 			compiler.resolveAddress(skipPaddingAddr);
 		}
@@ -380,6 +389,7 @@ function generateVdbeForStep(
  * @param fromCursors Original list of cursors from FROM (needed for unhandled WHERE)
  * @param processRowCallback Function to call inside the innermost loop
  * @param finalColumnMap Map of final result columns (needed for LEFT JOIN padding)
+ * @param coreColumnMap Map of raw FROM columns to registers
  * @returns Addresses for loop control
  */
 export function compilePlannedStepsLoop(
@@ -388,7 +398,8 @@ export function compilePlannedStepsLoop(
 	plannedSteps: PlannedStep[],
 	fromCursors: ReadonlyArray<number>, // Keep for WHERE check context
 	processRowCallback: ProcessRowCallback,
-	finalColumnMap: ReadonlyArray<ColumnResultInfo> = []
+	finalColumnMap: ReadonlyArray<ColumnResultInfo> = [],
+	coreColumnMap: ReadonlyArray<ColumnResultInfo> = []
 ): { innermostLoopStartAddr: number, innermostLoopEndAddrPlaceholder: number } {
 	log(`Generating VDBE for SELECT statement at line ${stmt.loc?.start.line ?? 'unknown'}`);
 
@@ -409,7 +420,8 @@ export function compilePlannedStepsLoop(
 		whereExpr: stmt.where,
 		whereFailTargetPlaceholder,
 		allFromCursors: new Set(fromCursors), // Pass all cursors for WHERE check context
-		finalColumnMap // Pass the column map in the context
+		finalColumnMap, // Pass the column map in the context
+		coreColumnMap   // Pass core column map
 	};
 
 	// The first step in the plan *should* be the outer loop driver based on planner logic.

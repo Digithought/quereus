@@ -628,7 +628,8 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		plannedSteps, // Pass the actual plan
 		fromCursors, // Still needed for compileUnhandledWhereConditions
 		processRowCallback,
-		finalColumnMap // Pass finalColumnMap for LEFT JOIN padding context
+		finalColumnMap, // Pass finalColumnMap for LEFT JOIN padding context
+		coreColumnMap   // <<<< ADDED
 	);
 	// =========================================
 

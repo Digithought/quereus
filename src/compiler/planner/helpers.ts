@@ -10,6 +10,9 @@ import { calculateColumnUsage } from './columns.js';
 import type { PlannedStep } from './types.js';
 import { createLogger } from '../../common/logger.js';
 import { QueryPlannerContext } from './context.js';
+import type { ColumnSchema } from '../../schema/column.js';
+import { SqlDataType } from '../../common/types.js'; // For new column creation
+import { MemoryTableModule } from '../../vtab/memory/module.js'; // Added import
 
 // Define and export loggers at the top level
 export const log = createLogger('compiler:plan');
@@ -21,10 +24,7 @@ export function getStepPrimaryAlias(step: PlannedStep): string {
 	if (step.type === 'Scan') {
 		return step.relation.alias;
 	} else if (step.type === 'Join') {
-		// The alias of a join step could be ambiguous, return a composite representation?
-		// Or perhaps the 'outputRelation' should store a primary alias?
-		// For now, use the outer step's alias as a placeholder.
-		return getStepPrimaryAlias(step.outerStep);
+		return step.outputRelation.alias;
 	}
 	return 'unknown_step';
 }
@@ -401,5 +401,80 @@ export function estimateSubqueryCost(
 	// 5. Return the final estimate
 	log(` -> Final estimated subquery cost: %.2f, rows: %d`, estimatedCost, estimatedRows);
 	return { cost: estimatedCost, rows: estimatedRows };
+}
+
+export function combineSchemas(
+	leftSchema: Readonly<TableSchema>,
+	rightSchema: Readonly<TableSchema>,
+	joinType: AST.JoinClause['joinType'] | 'cross',
+	leftSchemaWasOriginalLeft: boolean
+): TableSchema {
+	const newColumns: ColumnSchema[] = [];
+	const newColumnIndexMap = new Map<string, number>();
+	let colIdx = 0;
+
+	const processSchema = (schema: Readonly<TableSchema>, isPotentiallyNullable: boolean, originalAlias: string) => {
+		schema.columns.forEach(col => {
+			if (col.hidden) return;
+
+			// Crude name uniquification for this example. Real system might need more robust handling (e.g. SQL rules for USING/NATURAL)
+			let newColName = col.name;
+			if (newColumnIndexMap.has(newColName.toLowerCase())) {
+				newColName = `${originalAlias}_${col.name}`;
+			}
+			if (newColumnIndexMap.has(newColName.toLowerCase())) { // Still a clash after prefixing
+				 newColName = `${originalAlias}_${col.name}_${colIdx}`;
+			}
+
+			newColumns.push({
+				...col,
+				name: newColName,
+				notNull: isPotentiallyNullable ? false : col.notNull, // Key part for LEFT/RIGHT join nullability
+				// PK status is not typically inherited directly across joins in this manner
+				primaryKey: false,
+				pkOrder: 0
+			});
+			newColumnIndexMap.set(newColName.toLowerCase(), colIdx++);
+		});
+	};
+
+	let leftIsNullable = false;
+	let rightIsNullable = false;
+
+	if (joinType === 'left') {
+		// In A LEFT JOIN B, B (the right side) is nullable.
+		// If leftSchemaWasOriginalLeft is true, rightSchema is the one to mark nullable.
+		// If leftSchemaWasOriginalLeft is false, leftSchema is the one to mark nullable (original was B LEFT JOIN A, planner chose A as outer).
+		rightIsNullable = leftSchemaWasOriginalLeft;
+		leftIsNullable = !leftSchemaWasOriginalLeft;
+	} else if (joinType === 'right') {
+		// In A RIGHT JOIN B, A (the left side) is nullable.
+		leftIsNullable = leftSchemaWasOriginalLeft;
+		rightIsNullable = !leftSchemaWasOriginalLeft;
+	} else if (joinType === 'full') {
+		leftIsNullable = true;
+		rightIsNullable = true;
+	}
+	// For INNER and CROSS joins, nullability is inherited from original columns.
+
+	processSchema(leftSchema, leftIsNullable, leftSchema.name);
+	processSchema(rightSchema, rightIsNullable, rightSchema.name);
+
+	const combinedSchemaName = `join_${leftSchema.name}_${rightSchema.name}`;
+
+	return {
+		name: combinedSchemaName,
+		schemaName: leftSchema.schemaName,
+		columns: newColumns,
+		columnIndexMap: newColumnIndexMap,
+		primaryKeyDefinition: [],
+		checkConstraints: [],
+		vtabModule: new MemoryTableModule(),
+		vtabModuleName: 'internal_join',
+		isTemporary: true,
+		isView: false,
+		isStrict: false,
+		isWithoutRowid: true,
+	};
 }
 
