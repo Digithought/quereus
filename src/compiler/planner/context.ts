@@ -2,10 +2,14 @@ import type * as AST from '../../parser/ast.js';
 import type { Compiler } from '../compiler.js';
 import type { CursorPlanningResult } from '../structs.js';
 import { log, warnLog, errorLog, expressionReferencesOnlyAllowedCursors, estimateSubqueryCost } from './helpers.js';
-import type { QueryRelation, JoinCandidateInfo, PlannedStep, PlannedScanStep, PlannedJoinStep } from './types.js';
 import { generateRelationId } from './utils.js';
+import { getExpressionCollation } from '../utils.js';
+import { combineSchemas } from './helpers.js';
+import type { QueryRelation, JoinCandidateInfo, PlannedStep, PlannedScanStep, PlannedJoinStep } from './types.js';
 import { expressionToString } from '../../util/ddl-stringify.js';
 import type { TableSchema } from '../../schema/table.js';
+import type { ColumnSchema } from '../../schema/column.js';
+import { SqlDataType } from '../../common/types.js';
 
 /** Helper to check if a plan's consumed order matches the statement's ORDER BY */
 function checkOrderConsumed(stmtOrderBy: ReadonlyArray<AST.OrderByClause> | undefined, planOrderByConsumed: CursorPlanningResult['orderByConsumed'] | undefined): boolean {
@@ -548,6 +552,8 @@ export class QueryPlannerContext {
 				} else {
 					errorLog(`Failed to get inner plan for left side (cursor ${innerCursorLeft}) in RightOuter scenario.`);
 				}
+			} else {
+				errorLog(`Schema not found for left side cursor ${innerCursorLeft} in RightOuter scenario.`);
 			}
 		}
 
@@ -558,14 +564,20 @@ export class QueryPlannerContext {
 		let chosenInnerPlan: CursorPlanningResult;
 
 		if (costLeftOuter <= costRightOuter) {
-			if (!innerPlanRight) return null; // Cannot proceed if inner plan failed
+			if (!innerPlanRight) {
+				errorLog(`Cannot proceed with LeftOuter join for ${leftRel.alias} and ${rightRel.alias}: innerPlanRight is null.`);
+				return null; // Cannot proceed if inner plan failed
+			}
 			bestCost = costLeftOuter;
 			chosenOuterRel = leftRel;
 			chosenInnerRel = rightRel;
 			chosenInnerPlan = innerPlanRight;
 			log(` -> Chosen: Left Outer (Cost: ${bestCost.toFixed(2)})`);
 		} else {
-			if (!innerPlanLeft) return null;
+			if (!innerPlanLeft) {
+				errorLog(`Cannot proceed with RightOuter join for ${leftRel.alias} and ${rightRel.alias}: innerPlanLeft is null.`);
+				return null; // Cannot proceed if inner plan failed
+			}
 			bestCost = costRightOuter;
 			chosenOuterRel = rightRel;
 			chosenInnerRel = leftRel;
@@ -576,8 +588,49 @@ export class QueryPlannerContext {
 		// --- 5. Construct Result Relation and Step Details --- //
 		const combinedCursors = new Set([...chosenOuterRel.contributingCursors, ...chosenInnerRel.contributingCursors]);
 		const resultRelationId = generateRelationId(combinedCursors);
-		const resultSchema = chosenOuterRel.schema; // Placeholder schema
-		warnLog(`Result schema for join ${resultRelationId} is using outer schema as placeholder.`);
+
+		// const resultSchema = chosenOuterRel.schema; // Placeholder schema
+		// warnLog(`Result schema for join ${resultRelationId} is using outer schema as placeholder.`);
+
+		// +++ NEW SCHEMA COMBINATION LOGIC +++
+		let isLeftInputOfLeftJoin = false;
+		let isRightInputOfLeftJoin = false;
+		let isLeftInputOfRightJoin = false; // For completeness, though right join not fully handled
+		let isRightInputOfRightJoin = false;// For completeness
+
+		if (joinInfo.joinType === 'left') {
+			// If current join is A LEFT JOIN B
+			// chosenOuterRel is A, chosenInnerRel is B
+			if (chosenOuterRel === leftRel && chosenInnerRel === rightRel) { // Standard order
+				isLeftInputOfLeftJoin = true; // leftRel (A) is the preserved side
+				isRightInputOfLeftJoin = true; // rightRel (B) is the nullable side
+			} else { // chosenOuterRel is B, chosenInnerRel is A (planner swapped for cost)
+				// This case should be rare if join type is fixed, but to be safe:
+				// This means original join was B LEFT JOIN A, and planner chose A as outer.
+				// So, A is nullable, B is preserved.
+				isLeftInputOfLeftJoin = true; // rightRel (B) is the preserved side
+				isRightInputOfLeftJoin = true; // leftRel (A) is the nullable side
+			}
+		} else if (joinInfo.joinType === 'right') {
+			// If current join is A RIGHT JOIN B (B is preserved, A is nullable)
+			if (chosenOuterRel === rightRel && chosenInnerRel === leftRel) { // Standard order for costing (B outer, A inner)
+				isLeftInputOfRightJoin = true; // leftRel (A) is nullable
+				isRightInputOfRightJoin = true; // rightRel (B) is preserved
+			} else { // chosenOuterRel is A, chosenInnerRel is B
+				isLeftInputOfRightJoin = true; // chosenInnerRel (B) is preserved
+				isRightInputOfRightJoin = true; // chosenOuterRel (A) is nullable
+			}
+		}
+
+		const resultSchema = combineSchemas(
+			chosenOuterRel.schema,
+			chosenInnerRel.schema,
+			joinInfo.joinType,
+			chosenOuterRel === leftRel // True if chosenOuterRel was the original left from joinInfo
+		);
+		log(`Combined schema for join ${resultRelationId}. Original left: ${leftRel.alias}, Original right: ${rightRel.alias}. Chosen outer: ${chosenOuterRel.alias}, Chosen inner: ${chosenInnerRel.alias}. Join type: ${joinInfo.joinType}`);
+		// +++ END NEW SCHEMA COMBINATION LOGIC +++
+
 
 		const resultRelation: QueryRelation = {
 			id: resultRelationId,
@@ -586,7 +639,7 @@ export class QueryPlannerContext {
 			estimatedRows: estimatedResultRows,
 			estimatedCost: bestCost,
 			baseAccessPlan: null,
-			schema: resultSchema,
+			schema: Object.freeze(resultSchema), // Use the new combined schema
 			// sourceAstNode is null for derived join relations
 		};
 
