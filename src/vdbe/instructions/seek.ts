@@ -31,7 +31,7 @@ export function registerHandlers(handlers: Handler[]) {
         throw new SqliteError(`SeekRelative not supported by cursor ${cIdx}`, StatusCode.MISUSE);
     }
 
-    const offsetValue = ctx.getMem(offsetReg);
+    const offsetValue = ctx.getStack(offsetReg);
     let offset: number;
     if (typeof offsetValue === 'number') {
       offset = offsetValue;
@@ -72,7 +72,7 @@ export function registerHandlers(handlers: Handler[]) {
         throw new SqliteError(`SeekRowid not supported by cursor ${cIdx}`, StatusCode.MISUSE);
     }
 
-    const rowidValue = ctx.getMem(rowidReg);
+    const rowidValue = ctx.getStack(rowidReg);
     let targetRowid: bigint;
     if (typeof rowidValue === 'bigint') {
       targetRowid = rowidValue;

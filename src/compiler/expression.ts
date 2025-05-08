@@ -1,114 +1,16 @@
-import { StatusCode, SqlDataType } from '../common/types.js';
+import { StatusCode } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
 import type { Compiler } from './compiler.js';
 import type { HavingContext } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import { type SubqueryCorrelationResult } from './correlation.js';
-import type { TableSchema } from '../schema/table.js';
-import type { ColumnSchema } from '../schema/column.js';
-import { getAffinityForType } from '../schema/schema.js'; // Need a way to get affinity from type string
 import type { ArgumentMap } from './handlers.js';
+import { Opcode } from '../vdbe/opcodes.js';
 // Import specific handlers
 import { compileColumn, compileBinary, compileUnary, compileCast, compileFunction, compileParameter, compileCollate } from './handlers.js';
 import { compileLiteralValue } from './utils.js';
 // Subquery compilation is delegated differently in Compiler class, handled there.
 // No need to import subquery handlers here.
-
-// --- Expression Affinity Determination ---
-
-/** Determines the affinity of an expression. */
-function getExpressionAffinity(compiler: Compiler, expr: AST.Expression, correlation?: SubqueryCorrelationResult): SqlDataType {
-	switch (expr.type) {
-		case 'literal':
-			const v = expr.value;
-			if (v === null) return SqlDataType.NULL; // Or maybe NONE/BLOB?
-			if (typeof v === 'number') return SqlDataType.REAL;
-			if (typeof v === 'bigint') return SqlDataType.INTEGER;
-			if (typeof v === 'string') return SqlDataType.TEXT;
-			if (v instanceof Uint8Array) return SqlDataType.BLOB;
-			return SqlDataType.BLOB; // Default
-		case 'column': {
-			const schemaInfo = resolveColumnSchema(compiler, expr, correlation);
-			return schemaInfo?.column?.affinity ?? SqlDataType.BLOB; // Default to BLOB if unresolved
-		}
-		case 'cast':
-			// Determine affinity from the target type string
-			return getAffinityForType(expr.targetType); // Use helper from schema utils
-		case 'function':
-			const funcDef = compiler.db._findFunction(expr.name, expr.args.length);
-			// TODO: Add return type/affinity to FunctionSchema
-			return funcDef?.affinity ?? SqlDataType.BLOB; // Assume BLOB/NONE if func/affinity unknown
-		case 'parameter':
-			return SqlDataType.BLOB; // Parameter affinity is unknown until binding
-		case 'unary':
-			switch (expr.operator.toUpperCase()) {
-				case '-': case '+': return SqlDataType.NUMERIC;
-				case '~': return SqlDataType.INTEGER;
-				case 'NOT': return SqlDataType.INTEGER; // Boolean result
-				default: return SqlDataType.BLOB;
-			}
-		case 'binary':
-			switch (expr.operator.toUpperCase()) {
-				case '+': case '-': case '*': case '/': case '%':
-				case '&': case '|': case '<<': case '>>':
-					return SqlDataType.NUMERIC; // Or INTEGER for bitwise?
-				case '||': return SqlDataType.TEXT;
-				case '=': case '==': case '!=': case '<>': case '<': case '<=': case '>': case '>=':
-				case 'IS': case 'IS NOT': case 'IN': case 'LIKE': case 'GLOB': case 'BETWEEN':
-					return SqlDataType.INTEGER; // Boolean result
-				case 'AND': case 'OR':
-					// Affinity is determined by operands, default to NUMERIC?
-					const affLeft = getExpressionAffinity(compiler, expr.left, correlation);
-					const affRight = getExpressionAffinity(compiler, expr.right, correlation);
-					// Simple rule: if either is TEXT/BLOB, maybe TEXT? Else NUMERIC?
-					if (affLeft === SqlDataType.TEXT || affRight === SqlDataType.TEXT) return SqlDataType.TEXT;
-					if (affLeft === SqlDataType.BLOB || affRight === SqlDataType.BLOB) return SqlDataType.BLOB;
-					return SqlDataType.NUMERIC;
-				default: return SqlDataType.BLOB;
-			}
-		case 'subquery':
-			// Cannot easily determine affinity without executing/analyzing subquery result columns
-			return SqlDataType.BLOB;
-		case 'identifier':
-			// Treat as column
-			return getExpressionAffinity(compiler, { type: 'column', name: expr.name }, correlation);
-		default:
-			return SqlDataType.BLOB;
-	}
-}
-
-/** Helper to find the schema for a column expression */
-function resolveColumnSchema(compiler: Compiler, expr: AST.ColumnExpr, correlation?: SubqueryCorrelationResult): { table: TableSchema, column: ColumnSchema } | null {
-	// Simplified resolution - assumes column is valid and unambiguous (checked later in compileColumn)
-	let cursor = -1;
-	if (expr.table) {
-		cursor = compiler.tableAliases.get(expr.table.toLowerCase()) ?? -1;
-	} else {
-		for (const [_, cIdx] of compiler.tableAliases.entries()) {
-			const schema = compiler.tableSchemas.get(cIdx);
-			if (schema?.columnIndexMap.has(expr.name.toLowerCase())) {
-				// Avoid marking as ambiguous if the column only exists in one schema accessible here.
-				// If we find it again, it IS ambiguous.
-				if (cursor !== -1) {
-					// Ambiguous case - return null here, let compileColumn handle the error with location
-					return null;
-				}
-				cursor = cIdx;
-				// Don't break immediately, need to check for ambiguity
-			}
-		}
-	}
-	// If cursor is still -1 after checking all aliases, the column wasn't found.
-	if (cursor === -1) return null; // Not found
-	const tableSchema = compiler.tableSchemas.get(cursor);
-	if (!tableSchema) return null; // Should not happen if alias map is consistent
-	const colIdx = tableSchema.columnIndexMap.get(expr.name.toLowerCase());
-	if (colIdx === undefined) return null; // Column name not in the resolved schema
-	const columnSchema = tableSchema.columns[colIdx];
-	return { table: tableSchema, column: columnSchema };
-}
-
-// --- End Affinity --- //
 
 /**
  * Main dispatcher for compiling any expression AST node.
@@ -133,9 +35,66 @@ export function compileExpression(compiler: Compiler, expr: AST.Expression, targ
 		case 'parameter': compileParameter(compiler, expr, targetReg); break;
 		case 'subquery': compiler.compileSubquery(expr, targetReg); break; // Delegate subquery via compiler instance method
 		case 'collate': compileCollate(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
+		case 'case': compileCaseExpression(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
 		default:
 			throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
+}
+
+function compileCaseExpression(
+	compiler: Compiler,
+	expr: AST.CaseExpr,
+	targetReg: number,
+	correlation?: SubqueryCorrelationResult,
+	havingContext?: HavingContext,
+	argumentMap?: ArgumentMap
+): void {
+	const addrEndCase = compiler.allocateAddress('case_end');
+	let regBase = -1;
+
+	if (expr.baseExpr) {
+		regBase = compiler.allocateMemoryCells(1);
+		compiler.compileExpression(expr.baseExpr, regBase, correlation, havingContext, argumentMap);
+	}
+
+	for (let i = 0; i < expr.whenThenClauses.length; i++) {
+		const clause = expr.whenThenClauses[i];
+		const regWhen = compiler.allocateMemoryCells(1);
+		const addrNextWhen = compiler.allocateAddress(`case_when_${i}_next`);
+
+		compiler.compileExpression(clause.when, regWhen, correlation, havingContext, argumentMap);
+
+		if (regBase !== -1) { // Simple CASE: CASE base WHEN val THEN ...
+			const regCmpResult = compiler.allocateMemoryCells(1);
+			// Compare regBase with regWhen. Assuming Opcode.Eq sets regCmpResult to 1 if equal, 0 otherwise.
+			// Or use Compare and then If. For simplicity, let's assume an Eq-like opcode or a sequence.
+			compiler.emit(Opcode.Eq, regBase, regWhen, regCmpResult, null, 0, `Compare CASE base with WHEN`);
+			compiler.emit(Opcode.IfFalse, regCmpResult, addrNextWhen, 0, null, 0, 'If not equal, jump to next WHEN');
+			// compiler.freeTempRegister(regCmpResult); // If using true temp registers
+		} else { // Searched CASE: CASE WHEN cond THEN ...
+			compiler.emit(Opcode.IfFalse, regWhen, addrNextWhen, 0, null, 0, 'If WHEN condition is false, jump to next WHEN');
+		}
+
+		// Condition was true, compile THEN expression and jump to end
+		compiler.compileExpression(clause.then, targetReg, correlation, havingContext, argumentMap);
+		compiler.emit(Opcode.Goto, 0, addrEndCase, 0, null, 0, 'Jump to END CASE');
+
+		compiler.resolveAddress(addrNextWhen);
+		// compiler.freeTempRegister(regWhen); // If using true temp registers
+	}
+
+	if (regBase !== -1) {
+		// compiler.freeTempRegister(regBase); // If using true temp registers
+	}
+
+	// If all WHEN conditions were false
+	if (expr.elseExpr) {
+		compiler.compileExpression(expr.elseExpr, targetReg, correlation, havingContext, argumentMap);
+	} else {
+		compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, 'CASE result is NULL (no ELSE)');
+	}
+
+	compiler.resolveAddress(addrEndCase);
 }
 
 // No need to export handlers or utils directly from here, they are imported by this module or delegated by Compiler class.

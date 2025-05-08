@@ -33,7 +33,7 @@ export function registerHandlers(handlers: Handler[]) {
 			// Construct a MemoryCell object. Note: This assumes MemoryCell only needs 'value'.
 			// If MemoryCell has other properties (like type flags) managed by VDBE,
 			// we might need to expose the raw stack or a getMemoryCell function.
-			rowCells.push({ value: ctx.getStackValue(startIdx + i) });
+			rowCells.push({ value: ctx.getStack(startIdx + i) });
 		}
 
 		// Call the statement's method to store the current row data

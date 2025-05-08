@@ -1,12 +1,10 @@
-import { SqliteError } from "../../common/errors.js";
-import { StatusCode } from "../../common/types.js";
 import type { Handler } from "../handler-types.js";
 import type { Status, VmCtx } from "../handler-types.js";
 import { Opcode } from "../opcodes.js";
 
 function binaryArithOp(ctx: VmCtx, r1: number, r2: number, dest: number, op: (a: any, b: any) => any): Status {
-	const v1 = ctx.getMem(r1);
-	const v2 = ctx.getMem(r2);
+	const v1 = ctx.getStack(r1);
+	const v2 = ctx.getStack(r2);
 	let result = null;
 
 	if (v1 !== null && v2 !== null) {
@@ -32,7 +30,7 @@ function binaryArithOp(ctx: VmCtx, r1: number, r2: number, dest: number, op: (a:
 		}
 	}
 
-	ctx.setMem(dest, result);
+	ctx.setStack(dest, result);
 	return undefined;
 }
 
@@ -50,26 +48,26 @@ export function registerHandlers(handlers: Handler[]) {
   };
 
   handlers[Opcode.Divide] = (ctx, inst) => {
-    const leftVal = ctx.getMem(inst.p1);
-    const rightVal = ctx.getMem(inst.p2);
+    const leftVal = ctx.getStack(inst.p1);
+    const rightVal = ctx.getStack(inst.p2);
 
     // Check for division by zero or null values
     if (rightVal === 0 || rightVal === 0n || rightVal === null || leftVal === null || Number(rightVal) === 0) {
-      ctx.setMem(inst.p3, null);
+      ctx.setStack(inst.p3, null);
     } else {
       try {
         const result = Number(leftVal) / Number(rightVal);
-        ctx.setMem(inst.p3, Number.isFinite(result) ? result : null);
+        ctx.setStack(inst.p3, Number.isFinite(result) ? result : null);
       } catch {
-        ctx.setMem(inst.p3, null);
+        ctx.setStack(inst.p3, null);
       }
     }
     return undefined;
   };
 
   handlers[Opcode.Remainder] = (ctx, inst) => {
-    const val1 = ctx.getMem(inst.p1);
-    const val2 = ctx.getMem(inst.p2);
+    const val1 = ctx.getStack(inst.p1);
+    const val2 = ctx.getStack(inst.p2);
     let result = null;
 
     if (val1 !== null && val2 !== null) {
@@ -93,12 +91,12 @@ export function registerHandlers(handlers: Handler[]) {
             result = n1 % n2;
           }
         }
-      } catch (e) {
+      } catch {
         result = null;
       }
     }
 
-    ctx.setMem(inst.p3, result);
+    ctx.setStack(inst.p3, result);
     return undefined;
   };
 
@@ -107,8 +105,8 @@ export function registerHandlers(handlers: Handler[]) {
     const reg2Offset = inst.p2;
     const destOffset = inst.p3;
 
-    const val1 = ctx.getMem(reg1Offset);
-    const val2 = ctx.getMem(reg2Offset);
+    const val1 = ctx.getStack(reg1Offset);
+    const val2 = ctx.getStack(reg2Offset);
 
     let s1 = '';
     if (val1 !== null && !(val1 instanceof Uint8Array)) {
@@ -119,12 +117,12 @@ export function registerHandlers(handlers: Handler[]) {
         s2 = String(val2);
     }
 
-    ctx.setMem(destOffset, s1 + s2);
+    ctx.setStack(destOffset, s1 + s2);
     return undefined;
   };
 
   handlers[Opcode.Negative] = (ctx, inst) => {
-    const val = ctx.getMem(inst.p1);
+    const val = ctx.getStack(inst.p1);
     let result = null;
 
     if (val !== null) {
@@ -138,7 +136,7 @@ export function registerHandlers(handlers: Handler[]) {
       }
     }
 
-    ctx.setMem(inst.p2, result);
+    ctx.setStack(inst.p2, result);
     return undefined;
   };
 }

@@ -3,7 +3,6 @@ import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
-import { expressionToString } from '../util/ddl-stringify.js';
 import { compileUnhandledWhereConditions, verifyPlannedConstraints } from './where-verify.js'; // Import verifyPlannedConstraints
 import { createLogger } from '../common/logger.js'; // Import logger
 import type { PlannedStep, PlannedScanStep, PlannedJoinStep, QueryRelation } from './planner/types.js';
@@ -96,13 +95,12 @@ function generateVdbeForStep(
 	loopContext: LoopGenerationContext
 ): VdbeLoopInfo {
 	log(`Generating VDBE for step ${stepIndex}: ${step.type} (Alias: ${getStepPrimaryAlias(step)}, OuterCursors: {${[...activeOuterCursors].join(',')}})`);
-	const isOutermostStep = (stepIndex === 0);
 	const isInnermostStep = (stepIndex === plannedSteps.length - 1);
 
 	if (step.type === 'Scan') {
 		const scanStep = step as PlannedScanStep;
 		// --- Generate VDBE for SCAN --- //
-		const loopStartPlaceholder = compiler.allocateAddress(`scanLoopStart_${scanStep.relation.alias}`);
+		const addrAfterVFilterPlaceholder = compiler.allocateAddress(`scanAfterVFilter_${scanStep.relation.alias}`);
 		const eofPlaceholder = compiler.allocateAddress(`scanEof_${scanStep.relation.alias}`);
 		scanStep.eofAddr = eofPlaceholder;
 		const cursor = [...scanStep.relation.contributingCursors][0];
@@ -140,9 +138,12 @@ function generateVdbeForStep(
 		}
 
 		// Emit VFilter - Loop starts here
-		compiler.resolveAddress(loopStartPlaceholder);
-		scanStep.loopStartAddr = compiler.getCurrentAddress();
+		scanStep.loopStartAddr = compiler.getCurrentAddress(); // Actual address of VFilter
 		compiler.emit(Opcode.VFilter, cursor, scanStep.eofAddr, regArgsStart, filterP4, 0, `Filter/Scan Base ${scanStep.relation.alias} (Cursor ${cursor})`);
+
+		// Resolve the address for instructions immediately AFTER VFilter (and its potential checks)
+		// This is where VNext should jump to process the next row.
+		compiler.resolveAddress(addrAfterVFilterPlaceholder);
 
 		// Verify constraints if needed
 		// We call this *after* VFilter successfully positions the cursor on a row
@@ -172,7 +173,7 @@ function generateVdbeForStep(
 
 		// Loop Closing
 		const vNextAddr = compiler.getCurrentAddress();
-		compiler.emit(Opcode.VNext, cursor, scanStep.loopStartAddr, 0, null, 0, `VNext Cursor ${cursor} -> ${scanStep.loopStartAddr}`);
+		compiler.emit(Opcode.VNext, cursor, addrAfterVFilterPlaceholder, 0, null, 0, `VNext Cursor ${cursor} -> ${addrAfterVFilterPlaceholder}`);
 		// Resolve EOF Jump Target (Address *after* VNext)
 		compiler.resolveAddress(scanStep.eofAddr);
 
@@ -429,13 +430,23 @@ export function compilePlannedStepsLoop(
 	// --- Final Loop Closing (for the outermost loop) --- //
 	// The VNext for the outermost loop needs to be emitted *after* all nested
 	// loops and potential padding/checks are done.
-	log(`Emitting final VNext for outermost loop (Cursor ${topLoopInfo.vNextCursor}, Addr ${compiler.getCurrentAddress()}) jumping to LoopStart ${topLoopInfo.loopStartAddr}`);
-	compiler.emit(Opcode.VNext, topLoopInfo.vNextCursor, topLoopInfo.loopStartAddr, 0, null, 0, `VNext Outer Loop ${getStepPrimaryAlias(firstStep)} -> ${topLoopInfo.loopStartAddr}`);
-	log(`Resolving final EOF address ${topLoopInfo.eofAddr} for outermost loop ${getStepPrimaryAlias(firstStep)}`);
-	compiler.resolveAddress(topLoopInfo.eofAddr);
+	if (plannedSteps.length === 1 && plannedSteps[0].type === 'Scan') {
+		log("Single SCAN step. Loop is self-contained by VNext in generateVdbeForStep. Outermost EOF resolution handled below.");
+		// The eofAddr from topLoopInfo (which is scanStep.eofAddr) is already resolved
+		// by generateVdbeForStep for the Scan to point after its own VNext.
+		// No additional VNext is needed here.
+	} else {
+		log(`Emitting final VNext for outermost loop (Cursor ${topLoopInfo.vNextCursor}, Addr ${compiler.getCurrentAddress()}) jumping to LoopStart ${topLoopInfo.loopStartAddr}`);
+		compiler.emit(Opcode.VNext, topLoopInfo.vNextCursor, topLoopInfo.loopStartAddr, 0, null, 0, `VNext Outer Loop ${getStepPrimaryAlias(firstStep)} -> ${topLoopInfo.loopStartAddr}`);
+		// Resolve the EOF address for the *outermost loop's VFilter/VNext*.
+		// This should point after this VNext we just emitted.
+		log(`Resolving final EOF address ${topLoopInfo.eofAddr} for outermost loop ${getStepPrimaryAlias(firstStep)} to PC=${compiler.getCurrentAddress()}`);
+		compiler.resolveAddress(topLoopInfo.eofAddr);
+	}
 
 	// Resolve the final exit point placeholder. All paths should eventually lead here.
-	log(`Resolving innermostLoopEndAddrPlaceholder ${innermostLoopEndAddrPlaceholder}`);
+	// This is particularly for things like LIMIT/OFFSET or if errors occur before normal loop termination.
+	log(`Resolving innermostLoopEndAddrPlaceholder ${innermostLoopEndAddrPlaceholder} to PC=${compiler.getCurrentAddress()}`);
 	compiler.resolveAddress(innermostLoopEndAddrPlaceholder);
 
 	// The whereFailTargetPlaceholder is resolved inside generateVdbeForStep

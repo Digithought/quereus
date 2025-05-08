@@ -15,11 +15,11 @@ export function registerHandlers(handlers: Handler[]) {
 		const requiredStackTop = newFP + frameSize;
 
 		// Save old FP
-		ctx.setStackValue(newFP + 1, ctx.framePointer);
+		ctx.setStack(newFP + 1, ctx.framePointer);
 
 		// Initialize locals
 		for (let i = 2; i < frameSize; i++) {
-			ctx.setStackValue(newFP + i, null);
+			ctx.setStack(newFP + i, null);
 		}
 
 		// Update frame pointers
@@ -28,10 +28,10 @@ export function registerHandlers(handlers: Handler[]) {
 		return undefined;
 	};
 	handlers[Opcode.FrameLeave] = (ctx, inst) => {
-		if (ctx.framePointer === 0 && ctx.getStackValue(1) === null) {
+		if (ctx.framePointer === 0 && ctx.getStack(1) === null) {
 			warnLog("FrameLeave called on base frame? Potentially harmless if program ends.");
 		} else {
-			const oldFPVal = ctx.getStackValue(ctx.framePointer + 1);
+			const oldFPVal = ctx.getStack(ctx.framePointer + 1);
 			const oldFP = typeof oldFPVal === 'number' ? oldFPVal : -1;
 			if (isNaN(oldFP) || oldFP < 0) {
 				errorLog(`Invalid old frame pointer %s at FP %d + 1`, oldFPVal, ctx.framePointer);
@@ -48,13 +48,13 @@ export function registerHandlers(handlers: Handler[]) {
 		const targetAddr = inst.p2;
 		const returnAddr = ctx.pc + 1;
 
-		ctx.setStackValue(ctx.stackPointer, returnAddr);
+		ctx.setStack(ctx.stackPointer, returnAddr);
 		ctx.pc = targetAddr;
 		return undefined;
 	};
 	handlers[Opcode.Return] = (ctx, inst) => {
 		// The return address is at current SP-1 (not at SP as the comment incorrectly states)
-		const jumpTargetVal = ctx.getStackValue(ctx.stackPointer - 1);
+		const jumpTargetVal = ctx.getStack(ctx.stackPointer - 1);
 		const jumpTarget = typeof jumpTargetVal === 'number' ? jumpTargetVal : -1;
 
 		if (!Number.isInteger(jumpTarget) || jumpTarget < 0) {
@@ -67,7 +67,7 @@ export function registerHandlers(handlers: Handler[]) {
 		return undefined;
 	};
 	handlers[Opcode.Push] = (ctx, inst) => {
-		const valueToPush = ctx.getMem(inst.p1);
+		const valueToPush = ctx.getStack(inst.p1);
 		ctx.pushStack(valueToPush);
 		return undefined;
 	};

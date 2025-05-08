@@ -29,7 +29,7 @@ export function registerHandlers(handlers: Handler[]) {
 
     const values: SqlValue[] = [];
     for (let i = 0; i < count; i++) {
-      values.push(ctx.getMem(startOffset + i));
+      values.push(ctx.getStack(startOffset + i));
     }
 
     // Serialize the key. JSON is simple but has limitations (e.g., distinguishes -0 and 0).
@@ -37,7 +37,7 @@ export function registerHandlers(handlers: Handler[]) {
     // Handling BigInt and Blobs requires custom replacer.
     const serializedKey = jsonStringify(values);
 
-    ctx.setMem(destOffset, serializedKey);
+    ctx.setStack(destOffset, serializedKey);
     return undefined;
   };
 
@@ -52,17 +52,17 @@ export function registerHandlers(handlers: Handler[]) {
     const serializedKeyRegOffset = inst.p3; // Offset where MakeRecord stored the key
     const numGroupKeys = inst.p5;
 
-    const serializedKey = ctx.getMem(serializedKeyRegOffset) as string;
+    const serializedKey = ctx.getStack(serializedKeyRegOffset) as string;
     if (typeof serializedKey !== 'string') {
       throw new SqliteError(`AggStep key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
     }
 
     const args: SqlValue[] = [];
     for (let i = 0; i < p4Func.nArgs; i++) {
-      args.push(ctx.getMem(argsStartOffset + i));
+      args.push(ctx.getStack(argsStartOffset + i));
     }
 
-    let entry = ctx.aggregateContexts?.get(serializedKey);
+    const entry = ctx.aggregateContexts?.get(serializedKey);
     ctx.udfContext._clear();
     ctx.udfContext._setAggregateContextRef(entry?.accumulator);
 
@@ -77,7 +77,7 @@ export function registerHandlers(handlers: Handler[]) {
         // First time seeing this key, store accumulator and grouping key values
         const keyValues: SqlValue[] = [];
         for (let i = 0; i < numGroupKeys; i++) {
-          keyValues.push(ctx.getMem(groupKeyStartOffset + i));
+          keyValues.push(ctx.getStack(groupKeyStartOffset + i));
         }
         ctx.aggregateContexts?.set(serializedKey, {
           accumulator: newAcc,
@@ -105,7 +105,7 @@ export function registerHandlers(handlers: Handler[]) {
     const contextRegOffset = inst.p1;
     const destOffset = inst.p3;
 
-    const accumulatorValue = ctx.getMem(contextRegOffset); // Get accumulator (might be null)
+    const accumulatorValue = ctx.getStack(contextRegOffset); // Get accumulator (might be null)
 
     // Note: Use a fresh context for xFinal
     const finalUdfContext = new FunctionContext(ctx.db, p4Func.funcDef.userData);
@@ -115,7 +115,7 @@ export function registerHandlers(handlers: Handler[]) {
       p4Func.funcDef.xFinal!(finalUdfContext);
       const finalError = finalUdfContext._getError();
       if (finalError) throw finalError;
-      ctx.setMem(destOffset, finalUdfContext._getResult());
+      ctx.setStack(destOffset, finalUdfContext._getResult());
     } catch (e) {
       handleAggError(ctx, e, p4Func.funcDef.name, 'xFinal');
       return ctx.error?.code; // Stop execution
@@ -124,14 +124,14 @@ export function registerHandlers(handlers: Handler[]) {
     return undefined;
   };
 
-  handlers[Opcode.AggReset] = (ctx, inst) => {
+  handlers[Opcode.AggReset] = (ctx) => {
     ctx.aggregateContexts?.clear();
     ctx.aggregateIterator = null;
     ctx.currentAggregateEntry = null;
     return undefined; // PC handled
   };
 
-  handlers[Opcode.AggIterate] = (ctx, inst) => {
+  handlers[Opcode.AggIterate] = (ctx) => {
     if (!ctx.aggregateContexts) {
       throw new SqliteError("Aggregate context map not initialized", StatusCode.INTERNAL);
     }
@@ -162,7 +162,7 @@ export function registerHandlers(handlers: Handler[]) {
       throw new SqliteError("AggKey on invalid iterator", StatusCode.INTERNAL);
     }
     // Key is the first element of the entry [serializedKey, {accumulator, keyValues}]
-    ctx.setMem(destOffset, ctx.currentAggregateEntry[0]);
+    ctx.setStack(destOffset, ctx.currentAggregateEntry[0]);
     return undefined;
   };
 
@@ -172,7 +172,7 @@ export function registerHandlers(handlers: Handler[]) {
       throw new SqliteError("AggContext on invalid iterator", StatusCode.INTERNAL);
     }
     // Accumulator is in the second element of the entry
-    ctx.setMem(destOffset, ctx.currentAggregateEntry[1]?.accumulator);
+    ctx.setStack(destOffset, ctx.currentAggregateEntry[1]?.accumulator);
     return undefined;
   };
 
@@ -186,14 +186,14 @@ export function registerHandlers(handlers: Handler[]) {
     if (!keyValues || keyIndex < 0 || keyIndex >= keyValues.length) {
       throw new SqliteError(`Invalid key index ${keyIndex} for AggGroupValue`, StatusCode.INTERNAL);
     }
-    ctx.setMem(destOffset, keyValues[keyIndex] ?? null);
+    ctx.setStack(destOffset, keyValues[keyIndex] ?? null);
     return undefined;
   };
 
   handlers[Opcode.AggGetContext] = (ctx, inst) => {
     const destReg = inst.p1;
     const keyReg = inst.p2;
-    const key = ctx.getMem(keyReg);
+    const key = ctx.getStack(keyReg);
 
     if (typeof key !== 'string') {
       throw new SqliteError(`AggGetContext key must be a string (got ${typeof key})`, StatusCode.INTERNAL);
@@ -206,7 +206,7 @@ export function registerHandlers(handlers: Handler[]) {
     const entry = ctx.aggregateContexts.get(key);
     const accumulator = entry?.accumulator ?? null; // Default to null if key not found or context undefined
 
-    ctx.setMem(destReg, accumulator);
+    ctx.setStack(destReg, accumulator);
     return undefined;
   };
 
@@ -218,7 +218,7 @@ export function registerHandlers(handlers: Handler[]) {
       throw new SqliteError("AggGetAccumulatorByKey: Aggregate context map not initialized", StatusCode.INTERNAL);
     }
 
-    const serializedKey = ctx.getMem(keyRegOffset) as string;
+    const serializedKey = ctx.getStack(keyRegOffset) as string;
     if (typeof serializedKey !== 'string') {
       throw new SqliteError(`AggGetAccumulatorByKey key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
     }
@@ -226,7 +226,7 @@ export function registerHandlers(handlers: Handler[]) {
     const entry = ctx.aggregateContexts.get(serializedKey);
     const accumulator = entry?.accumulator ?? null; // Default to null if key not found
 
-    ctx.setMem(destAccumulatorRegOffset, accumulator);
+    ctx.setStack(destAccumulatorRegOffset, accumulator);
     return undefined;
   };
 }

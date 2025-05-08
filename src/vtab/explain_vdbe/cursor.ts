@@ -5,6 +5,7 @@ import { Opcode } from '../../vdbe/opcodes.js';
 import type { SqliteContext } from '../../func/context.js';
 import { StatusCode } from '../../common/types.js';
 import { SqliteError } from '../../common/errors.js';
+import { safeJsonStringify } from '../../util/serialization.js';
 
 /**
  * Represents a cursor for iterating over VDBE instructions.
@@ -80,7 +81,7 @@ export class VdbeProgramCursor extends VirtualTableCursor<VdbeProgramTable> {
 
         if (columnIndex === 5 && value !== null && typeof value === 'object') {
             try {
-                value = JSON.stringify(value);
+                value = safeJsonStringify(value);
             } catch {
                 value = '[unstringifiable P4]';
             }

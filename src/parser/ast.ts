@@ -13,7 +13,7 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource';
+		| 'subquerySource' | 'case';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -22,7 +22,7 @@ export interface AstNode {
 
 // Expression types
 export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr | FunctionExpr | CastExpr
-	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr;
+	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr | CaseExpr;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -401,6 +401,18 @@ export interface CollateExpr extends AstNode {
 	type: 'collate';
 	expr: Expression;
 	collation: string;
+}
+
+export interface CaseExprWhenThenClause {
+	when: Expression;
+	then: Expression;
+}
+
+export interface CaseExpr extends AstNode {
+	type: 'case'; // New type
+	baseExpr?: Expression; // Optional: for CASE expr WHEN ...
+	whenThenClauses: CaseExprWhenThenClause[];
+	elseExpr?: Expression; // Optional: for ELSE ...
 }
 
 // --- Utility Type for Top-Level Statements ---

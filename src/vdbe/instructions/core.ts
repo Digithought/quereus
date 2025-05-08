@@ -22,77 +22,77 @@ export function registerHandlers(handlers: Handler[]) {
 		}
 		return inst.p1;
 	};
-	handlers[Opcode.Noop] = (_ctx, _inst) => {
+	handlers[Opcode.Noop] = () => {
 		// Do nothing
 		return undefined;
 	};
 	// --- Register Operations ---
 	handlers[Opcode.Integer] = (ctx, inst) => {
-		ctx.setMem(inst.p2, inst.p1);
+		ctx.setStack(inst.p2, inst.p1);
 		return undefined;
 	};
 	handlers[Opcode.Int64] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getConstant(inst.p4));
+		ctx.setStack(inst.p2, ctx.getConstant(inst.p4));
 		return undefined;
 	};
 	handlers[Opcode.String8] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getConstant(inst.p4));
+		ctx.setStack(inst.p2, ctx.getConstant(inst.p4));
 		return undefined;
 	};
 	handlers[Opcode.Null] = (ctx, inst) => {
-		ctx.setMem(inst.p2, null);
+		ctx.setStack(inst.p2, null);
 		return undefined;
 	};
 	handlers[Opcode.Real] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getConstant(inst.p4));
+		ctx.setStack(inst.p2, ctx.getConstant(inst.p4));
 		return undefined;
 	};
 	handlers[Opcode.Blob] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getConstant(inst.p4));
+		ctx.setStack(inst.p2, ctx.getConstant(inst.p4));
 		return undefined;
 	};
 	handlers[Opcode.ZeroBlob] = (ctx, inst) => {
-		const size = Number(ctx.getMem(inst.p1));
-		ctx.setMem(inst.p2, new Uint8Array(size >= 0 ? Math.trunc(size) : 0));
+		const size = Number(ctx.getStack(inst.p1));
+		ctx.setStack(inst.p2, new Uint8Array(size >= 0 ? Math.trunc(size) : 0));
 		return undefined;
 	};
 	handlers[Opcode.SCopy] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getMem(inst.p1));
+		ctx.setStack(inst.p2, ctx.getStack(inst.p1));
 		return undefined;
 	};
 	// --- Conditional Jumps ---
 	handlers[Opcode.IfTrue] = (ctx, inst) => {
-		const condition = evaluateIsTrue(ctx.getMem(inst.p1));
+		const condition = evaluateIsTrue(ctx.getStack(inst.p1));
 		ctx.pc = condition ? inst.p2 : ctx.pc + 1;
 		return undefined;
 	};
 	handlers[Opcode.IfFalse] = (ctx, inst) => {
-		const condition = !evaluateIsTrue(ctx.getMem(inst.p1));
+		const condition = !evaluateIsTrue(ctx.getStack(inst.p1));
 		ctx.pc = condition ? inst.p2 : ctx.pc + 1;
 		return undefined;
 	};
 	handlers[Opcode.IfZero] = (ctx, inst) => {
-		const val = ctx.getMem(inst.p1);
+		const val = ctx.getStack(inst.p1);
 		const condition = val === 0 || val === 0n || val === null;
 		ctx.pc = condition ? inst.p2 : ctx.pc + 1;
 		return undefined;
 	};
 	handlers[Opcode.IfNull] = (ctx, inst) => {
-		const condition = ctx.getMem(inst.p1) === null;
+		const condition = ctx.getStack(inst.p1) === null;
 		ctx.pc = condition ? inst.p2 : ctx.pc + 1;
 		return undefined;
 	};
 	handlers[Opcode.IfNotNull] = (ctx, inst) => {
-		const condition = ctx.getMem(inst.p1) !== null;
+		const condition = ctx.getStack(inst.p1) !== null;
 		ctx.pc = condition ? inst.p2 : ctx.pc + 1;
 		return undefined;
 	};
 	handlers[Opcode.IsNull] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getMem(inst.p1) === null ? 1 : 0);
+		ctx.setStack(inst.p2, ctx.getStack(inst.p1) === null ? 1 : 0);
 		return undefined;
 	};
 	handlers[Opcode.NotNull] = (ctx, inst) => {
-		ctx.setMem(inst.p2, ctx.getMem(inst.p1) !== null ? 1 : 0);
+		ctx.setStack(inst.p2, ctx.getStack(inst.p1) !== null ? 1 : 0);
 		return undefined;
 	};
 	// --- Move with boundary checking ---
@@ -126,38 +126,36 @@ export function registerHandlers(handlers: Handler[]) {
 		if (destBaseIdx > srcBaseIdx && destBaseIdx < srcBaseIdx + count) {
 			// Copy from end to avoid overwriting source data
 			for (let i = count - 1; i >= 0; i--) {
-				ctx.setStackValue(destBaseIdx + i, ctx.getStackValue(srcBaseIdx + i));
+				ctx.setStack(destBaseIdx + i, ctx.getStack(srcBaseIdx + i));
 			}
 		} else {
 			// Normal copy
 			for (let i = 0; i < count; i++) {
-				ctx.setStackValue(destBaseIdx + i, ctx.getStackValue(srcBaseIdx + i));
+				ctx.setStack(destBaseIdx + i, ctx.getStack(srcBaseIdx + i));
 			}
 		}
 		return undefined;
 	};
 	// --- Other common opcodes ---
 	handlers[Opcode.Clear] = (ctx, inst) => {
-		const startOffset = inst.p1;
+		const startReg = inst.p1; // P1 is the starting absolute register index
 		const count = inst.p2;
 
-		if (startOffset < 2) { // Assuming 2 is localsStartOffset
-			throw new SqliteError(`Clear opcode attempt to clear control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
-		}
-
-		const clearStartIdx = ctx.framePointer + startOffset;
-		const clearEndIdx = clearStartIdx + count;
-
-		if (clearStartIdx < 0 || clearEndIdx > ctx.stackPointer) {
+		// Bounds check for the range of absolute registers to clear
+		if (startReg < 0 || count < 0 ) { // count cannot be negative
 			throw new SqliteError(
-				`Clear opcode stack access out of bounds: FP=${ctx.framePointer} ` +
-				`Offset=${startOffset} Count=${count} SP=${ctx.stackPointer}`,
+				`Clear opcode invalid arguments: StartReg=${startReg} Count=${count}`,
 				StatusCode.INTERNAL
 			);
 		}
 
-		for (let i = clearStartIdx; i < clearEndIdx; i++) {
-			ctx.setStackValue(i, null);
+		const endReg = startReg + count; // Exclusive end
+
+		// Ensure stack is large enough; setStackValue will extend if necessary
+		// but good to have a conceptual check against numMemCells if available, though tricky.
+
+		for (let i = startReg; i < endReg; i++) {
+			ctx.setStack(i, null);
 		}
 		return undefined;
 	};
@@ -189,7 +187,7 @@ export function registerHandlers(handlers: Handler[]) {
 		// The main purpose is to ensure the collation is loaded.
 		// Standard SQLite doesn't store anything useful in P2 for CollSeq.
 		// We'll store the resolved name if found, otherwise NULL.
-		ctx.setMem(destReg, collFunc ? collName : null);
+		ctx.setStack(destReg, collFunc ? collName : null);
 		return undefined;
 	};
 }

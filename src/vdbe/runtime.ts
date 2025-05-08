@@ -78,7 +78,7 @@ export class VdbeRuntime implements VmCtx {
       const paramInfo = this.program.parameters.get(key);
       const stackIndex = paramInfo?.memIdx; // Absolute index from compiler
       if (stackIndex !== undefined && stackIndex >= 0) {
-        this.setStackValue(stackIndex, value);
+        this.setStack(stackIndex, value);
       } else {
         warnLog(`Could not map parameter %s to stack cell`, key);
       }
@@ -251,7 +251,7 @@ export class VdbeRuntime implements VmCtx {
   /**
    * Sets a value at an absolute stack index.
    */
-  setStackValue(index: number, value: SqlValue): void {
+  setStack(index: number, value: SqlValue): void {
     if (index < 0) throw new SqliteError(`Invalid stack write index ${index}`, StatusCode.INTERNAL);
 
     // Ensure stack capacity
@@ -275,7 +275,7 @@ export class VdbeRuntime implements VmCtx {
   /**
    * Gets a value from an absolute stack index.
    */
-  getStackValue(index: number): SqlValue {
+  getStack(index: number): SqlValue {
     if (index < 0 || index >= this.stack.length) {
       return null;
     }
@@ -290,7 +290,7 @@ export class VdbeRuntime implements VmCtx {
    */
   getMem(offset: number): SqlValue {
     const stackIndex = this.framePointer + offset;
-    return this.getStackValue(stackIndex);
+    return this.getStack(stackIndex);
   }
 
   /**
@@ -302,14 +302,14 @@ export class VdbeRuntime implements VmCtx {
       throw new SqliteError(`Write attempt to control info/argument area: Offset=${offset}`, StatusCode.INTERNAL);
     }
     const stackIndex = this.framePointer + offset;
-    this.setStackValue(stackIndex, value);
+    this.setStack(stackIndex, value);
   }
 
   /**
    * Pushes a value onto the stack.
    */
   pushStack(value: SqlValue): void {
-    this.setStackValue(this.stackPointer, value);
+    this.setStack(this.stackPointer, value);
   }
 
   /**

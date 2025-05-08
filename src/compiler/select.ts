@@ -635,19 +635,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	// --- DEFINE finalExitAddr Placeholder --- //
 	const finalExitAddr = compiler.allocateAddress("finalSelectExit");
 
-	// Resolve the placeholder for the end of all loops (jumps here before post-processing)
-	compiler.resolveAddress(innermostLoopEndAddrPlaceholder);
-
-	// --- Compile Post-Loop Output Processing (as before) --- //
-	if (hasWindowFunctions && windowSorterInfo) {
-		compileWindowOutput(compiler, windowSorterInfo, finalColumnMap, sharedFrameDefinition, regLimit, regOffset, finalExitAddr);
-	} else if (needsAggProcessing) {
-		compileAggregateOutput(compiler, stmt, finalColumnMap, finalResultBaseReg, finalNumCols, needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset, hasGroupBy, aggregateColumns, finalExitAddr);
-	} else if (needsExternalSort) {
-		compileSortOutput(compiler, ephSortCursor, ephSortSchema!, finalNumCols, regLimit, regOffset, finalExitAddr);
-	}
-
-	// Resolve the final exit point AFTER all post-processing
+	// Resolve the finalExitAddr AFTER all post-processing
 	compiler.resolveAddress(finalExitAddr); // The above Goto jumps here
 
 	// --- Close Cursors --- //
@@ -671,6 +659,24 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		const alias = [...compiler.tableAliases.entries()].find(([, cIdx]) => cIdx === cursorId)?.[0] || `cursor ${cursorId}`;
 		compiler.emit(Opcode.Close, cursorId, 0, 0, null, 0, `Close FROM Cursor ${alias}`);
 	});
+
+	// Resolve the placeholder for the end of all loops (jumps here before post-processing)
+	// compiler.resolveAddress(innermostLoopEndAddrPlaceholder); // THIS WAS THE BUG: Double resolve, already resolved in generateVdbeForStep for innermost loop
+
+	// --- Compile Post-Loop Output Processing (as before) --- //
+	if (hasWindowFunctions && windowSorterInfo) {
+		compileWindowOutput(compiler, windowSorterInfo, finalColumnMap, sharedFrameDefinition, regLimit, regOffset, finalExitAddr);
+	} else if (needsAggProcessing) {
+		compileAggregateOutput(compiler, stmt, finalColumnMap, finalResultBaseReg, finalNumCols, needsExternalSort, ephSortCursor, ephSortSchema, regLimit, regOffset, hasGroupBy, aggregateColumns, finalExitAddr);
+	} else if (needsExternalSort) {
+		compileSortOutput(compiler, ephSortCursor, ephSortSchema!, finalNumCols, regLimit, regOffset, finalExitAddr);
+	}
+
+	// Resolve the final exit point AFTER all post-processing
+	compiler.resolveAddress(finalExitAddr); // The above Goto jumps here
+
+	// The innermostLoopEndAddrPlaceholder (which is the eofAddr of the innermost scan/join loop)
+	// is already resolved within generateVdbeForStep right after its VNext.
 }
 
 /** Handle SELECT without FROM - simpler case */

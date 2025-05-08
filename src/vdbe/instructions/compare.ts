@@ -5,8 +5,8 @@ import { Opcode } from '../opcodes.js';
 
 // --- Comparisons ---
 function handleComparison(ctx: VmCtx, inst: any, compareOp: (result: number) => boolean): Status {
-	const v1 = ctx.getMem(inst.p1);
-	const v2 = ctx.getMem(inst.p3);
+	const v1 = ctx.getStack(inst.p1);
+	const v2 = ctx.getStack(inst.p3);
 	const jumpTarget = inst.p2;
 	const p4Coll = inst.p4 as P4Coll | null;
 	const collationName = p4Coll?.type === 'coll' ? p4Coll.name : 'BINARY';
@@ -18,8 +18,8 @@ function handleComparison(ctx: VmCtx, inst: any, compareOp: (result: number) => 
 
 // Helper for standard SQL boolean comparison (NULLs are false)
 function handleSqlBooleanComparison(ctx: VmCtx, inst: any, compareOp: (result: number) => boolean): Status {
-	const v1 = ctx.getMem(inst.p1);
-	const v2 = ctx.getMem(inst.p3);
+	const v1 = ctx.getStack(inst.p1);
+	const v2 = ctx.getStack(inst.p3);
 	const jumpTarget = inst.p2;
 	const p4Coll = inst.p4 as P4Coll | null;
 	const collationName = p4Coll?.type === 'coll' ? p4Coll.name : 'BINARY';
@@ -41,8 +41,8 @@ export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.Ne] = (ctx, inst) => {
 		// Ne jumps if result != 0 OR if either operand is NULL.
 		// compareSqlValues handles non-null cases. We need the NULL check.
-		const v1 = ctx.getMem(inst.p1);
-		const v2 = ctx.getMem(inst.p3);
+		const v1 = ctx.getStack(inst.p1);
+		const v2 = ctx.getStack(inst.p3);
 		if (v1 === null || v2 === null) {
 			ctx.pc = inst.p2; // Jump if NULL
 			return undefined;

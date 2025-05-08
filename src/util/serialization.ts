@@ -5,12 +5,19 @@
 export function jsonStringify(obj: any, space?: string | number): string {
   return JSON.stringify(
 		obj,
-		(_, value) =>
-			typeof value === 'bigint'
-				? value.toString() + 'n' // Represent BigInts as strings suffixed with 'n'
-				: value instanceof Uint8Array
-				? `0x${Buffer.from(value).toString('hex')}`
-				: value,
+		(_, value) => {
+			if (typeof value === 'bigint') {
+				// Convert to number if it's within safe integer limits for JSON
+				if (value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+					return Number(value);
+				}
+				// Otherwise, convert to string (without 'n' suffix for standard JSON)
+				return value.toString();
+			} else if (value instanceof Uint8Array) {
+				return `0x${Buffer.from(value).toString('hex')}`; // Keep existing Uint8Array handling
+			}
+			return value;
+		},
 		space
 	);
 }

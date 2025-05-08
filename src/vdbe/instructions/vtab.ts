@@ -6,8 +6,6 @@ import { Opcode } from '../opcodes.js';
 import { ConflictResolution } from '../../common/constants.js';
 import type { IndexConstraint, IndexConstraintUsage, IndexInfo } from '../../vtab/indexInfo.js';
 import type { IndexSchema } from '../../schema/table.js';
-import { createLogger } from '../../common/logger.js';
-import { safeJsonStringify } from '../../util/serialization.js';
 import type { VirtualTable } from '../../vtab/table.js';
 
 // Helper for handling errors from VTab methods
@@ -44,13 +42,14 @@ export function registerHandlers(handlers: Handler[]) {
     if (!cursor?.instance) {
       throw new SqliteError(`VFilter on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
+    cursor.currentEofJumpTarget = addrIfEmpty; // Store VFilter's EOF jump target
     if (!p4Info) {
       throw new SqliteError(`VFilter missing P4 info for cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     const args: SqlValue[] = [];
     for (let i = 0; i < p4Info.nArgs; i++) {
-      args.push(ctx.getMem(argsReg + i));
+      args.push(ctx.getStack(argsReg + i));
     }
 
     // Determine constraints to pass to the VTab filter method.
@@ -108,26 +107,45 @@ export function registerHandlers(handlers: Handler[]) {
 
   handlers[Opcode.VNext] = async (ctx, inst) => {
     const cIdx = inst.p1;
-    const addrIfEOF = inst.p2;
+    const addrIf_NOT_EOF_LoopTarget = inst.p2;
 
     const cursor = ctx.getCursor(cIdx);
 
     // Handle pre-sorted results (e.g., from Sort or materialized views)
-    if (cursor?.sortedResults) {
-      const s = cursor.sortedResults;
-      s.index++;
-      ctx.pc = (s.index >= s.rows.length) ? addrIfEOF : ctx.pc + 1;
-      return undefined; // PC handled
+    if (cursor) { // Check cursor first
+      if (cursor.sortedResults) { // Then check sortedResults
+        const s = cursor.sortedResults;
+        s.index++;
+        if (s.index >= s.rows.length) { // EOF for sorted results
+          if (cursor.currentEofJumpTarget === undefined) { // cursor is definitely defined here
+            throw new SqliteError(`VNext (sorted) on cursor ${cIdx} found EOF, but no EOF jump target was set.`, StatusCode.INTERNAL);
+          }
+          ctx.pc = cursor.currentEofJumpTarget;
+        } else { // Not EOF for sorted results
+          ctx.pc = addrIf_NOT_EOF_LoopTarget;
+        }
+        return undefined; // PC handled
+      }
     }
 
-    if (!cursor?.instance) {
-      throw new SqliteError(`VNext on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
+    // If we reach here, it's not sorted results, or cursor was initially undefined.
+    // The next check handles !cursor or !cursor.instance
+    if (!cursor?.instance) { // This check is fine as is, or can be if (!cursor || !cursor.instance)
+      throw new SqliteError(`VNext on unopened or undefined cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     try {
       await cursor.instance.next();
       const eof = cursor.instance.eof();
-      ctx.pc = eof ? addrIfEOF : ctx.pc + 1;
+      if (eof) {
+        if (cursor.currentEofJumpTarget === undefined) {
+          throw new SqliteError(`VNext on cursor ${cIdx} found EOF, but no EOF jump target was set by VFilter/Rewind.`, StatusCode.INTERNAL);
+        }
+        ctx.pc = cursor.currentEofJumpTarget;
+        // log is not available here by default, VDBE runtime log will show PC change.
+      } else {
+        ctx.pc = addrIf_NOT_EOF_LoopTarget;
+      }
     } catch (e) {
       handleVTabError(ctx, e, cursor.vtab?.tableName ?? `cursor ${cIdx}`, 'next');
       return ctx.error?.code;
@@ -140,16 +158,18 @@ export function registerHandlers(handlers: Handler[]) {
     const addrIfEmpty = inst.p2;
     const cursor = ctx.getCursor(cIdx);
 
+    if (!cursor?.instance) {
+      throw new SqliteError(`Rewind on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
+    }
+
+    cursor.currentEofJumpTarget = addrIfEmpty; // Store Rewind's EOF jump target
+
     // Handle pre-sorted results
     if (cursor?.sortedResults) {
       const s = cursor.sortedResults;
       s.index = 0;
       ctx.pc = (s.rows.length === 0) ? addrIfEmpty : ctx.pc + 1;
       return undefined; // PC handled
-    }
-
-    if (!cursor?.instance) {
-      throw new SqliteError(`Rewind on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     const defaultIndexInfo: IndexInfo = {
@@ -195,7 +215,7 @@ export function registerHandlers(handlers: Handler[]) {
         // Potentially handle RowID request (colIdx == -1) if stored explicitly
         throw new SqliteError(`VColumn index ${colIdx} out of bounds for sorted row (cursor ${cIdx})`, StatusCode.INTERNAL);
       }
-      ctx.setMem(destOffset, row[colIdx].value);
+      ctx.setStack(destOffset, row[colIdx].value);
       return undefined;
     }
 
@@ -204,7 +224,7 @@ export function registerHandlers(handlers: Handler[]) {
     }
     if (cursor.instance.eof()) {
       // Reading from EOF cursor should yield NULL, consistent with SQLite
-      ctx.setMem(destOffset, null);
+      ctx.setStack(destOffset, null);
       // throw new SqliteError(`VColumn on EOF cursor ${cIdx}`, StatusCode.INTERNAL);
       return undefined;
     }
@@ -216,7 +236,7 @@ export function registerHandlers(handlers: Handler[]) {
       if (status !== StatusCode.OK) {
         throw new SqliteError(`VColumn failed (col ${colIdx}, cursor ${cIdx})`, status);
       }
-      ctx.setMem(destOffset, ctx.vtabContext._getResult());
+      ctx.setStack(destOffset, ctx.vtabContext._getResult());
     } catch (e) {
       handleVTabError(ctx, e, cursor.vtab?.tableName ?? `cursor ${cIdx}`, 'column');
       return ctx.error?.code;
@@ -238,7 +258,7 @@ export function registerHandlers(handlers: Handler[]) {
 
     try {
       const rowid = await cursor.instance.rowid();
-      ctx.setMem(destOffset, rowid);
+      ctx.setStack(destOffset, rowid);
     } catch (e) {
       handleVTabError(ctx, e, cursor.vtab?.tableName ?? `cursor ${cIdx}`, 'rowid');
       return ctx.error?.code;
@@ -275,7 +295,7 @@ export function registerHandlers(handlers: Handler[]) {
 
     const values: SqlValue[] = [];
     for (let i = 0; i < nData; i++) {
-      values.push(ctx.getMem(regDataStart + i) ?? null);
+      values.push(ctx.getStack(regDataStart + i) ?? null);
     }
 
     // Pass conflict resolution strategy via a conventional property
@@ -290,9 +310,9 @@ export function registerHandlers(handlers: Handler[]) {
       // Store output (e.g., new rowid for INSERT) if requested
       if (regOut > 0) {
         if (rowidFromData === null) { // INSERT operation
-          ctx.setMem(regOut, result?.rowid ?? null);
+          ctx.setStack(regOut, result?.rowid ?? null);
         } else { // UPDATE/DELETE operation
-          ctx.setMem(regOut, null); // Usually no output needed
+          ctx.setStack(regOut, null); // Usually no output needed
         }
       }
     } catch (e) {
@@ -420,7 +440,7 @@ export function registerHandlers(handlers: Handler[]) {
     // 2. Read evaluated arguments from registers
     const args: SqlValue[] = [];
     for (let i = 0; i < nArg; i++) {
-      args.push(ctx.getMem(regArgBase + i));
+      args.push(ctx.getStack(regArgBase + i));
     }
 
     // 3. Construct the configuration/options object for xConnect
@@ -447,10 +467,9 @@ export function registerHandlers(handlers: Handler[]) {
         }
         options.sql = args[0]; // Pass the SQL string in the expected format
       } else {
+				// TODO: Make this general - able to invoke any function with any arguments
         // Generic module: Pass args as a property? Needs a defined convention.
         // For now, we don't have other TVFs, so we'll error or pass empty.
-        if (nArg > 0) {
-        }
         options = {}; // Default empty config
       }
     } catch (e: any) {

@@ -1,16 +1,14 @@
 import { StatusCode, type SqlValue } from '../common/types.js';
 import { SqliteError, ParseError } from '../common/errors.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import { type P4SortKey, type VdbeInstruction, createInstruction, type P4FuncDef } from '../vdbe/instruction.js';
+import { type P4SortKey, type VdbeInstruction } from '../vdbe/instruction.js';
 import type { VdbeProgram } from '../vdbe/program.js';
-import type { WithClause } from '../parser/ast.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
 import * as CompilerState from './compilerState.js';
 import * as EphemeralCore from './ephemeral.js';
 import * as FromClauseCore from './fromClause.js';
-import * as QueryPlanner from './planner/query-planner.js';
 import * as PlannerHelper from './planner/helpers.js';
 import * as WhereVerify from './where-verify.js';
 import { compileExpression } from './expression.js';
@@ -21,21 +19,20 @@ import * as SelectCore from './select-core.js';
 import type { SubqueryCorrelationResult } from './correlation.js';
 import * as SubqueryCompiler from './subquery.js';
 import type { ArgumentMap } from './handlers.js';
-import * as QueryPlannerModule from './planner/query-planner.js';
 import * as ExprHandlers from './handlers.js';
 import * as Utils from './utils.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
 import { createLogger } from '../common/logger.js';
-import { getCurrentAddressHelper, patchJumpAddresses } from './compilerState.js';
+import { patchJumpAddresses } from './compilerState.js';
 import type { CteInfo, CursorPlanningResult, SubroutineInfo, HavingContext, ColumnResultInfo } from './structs.js';
-import { emitInstruction, allocateMemoryCellsHelper, allocateCursorHelper, addConstantHelper, allocateAddressHelper, resolveAddressHelper, beginSubroutineHelper, endSubroutineHelper } from './compilerState.js';
+import { beginSubroutineHelper, endSubroutineHelper } from './compilerState.js';
 import { createEphemeralTableHelper } from './ephemeral.js';
 import { compileWithClauseHelper } from './cte.js';
 import type { PlannedStep } from './planner/types.js';
+import { safeJsonStringify } from '../util/serialization.js';
 
 const log = createLogger('compiler');
 const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
 
 /**
  * Compiler class translating SQL AST nodes to VDBE programs
@@ -246,7 +243,19 @@ export class Compiler {
 	allocateMemoryCells(count: number): number { return CompilerState.allocateMemoryCellsHelper(this, count); }
 	allocateCursor(): number { return CompilerState.allocateCursorHelper(this); }
 	addConstant(value: SqlValue): number { return CompilerState.addConstantHelper(this, value); }
-	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number { return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment); }
+	emit(opcode: Opcode, p1?: number, p2?: number, p3?: number, p4?: any, p5?: number, comment?: string): number {
+		// --- BEGIN ADDED LOGGING ---
+		const p4String = typeof p4 === 'string' ? p4.substring(0, 70) : (p4 !== null && p4 !== undefined ? safeJsonStringify(p4).substring(0, 70) : String(p4));
+		log(
+			'Compiler.emit: Opcode=%s(%d), P1=%s, P2=%s, P3=%s, P4=%s..., P5=%s, Comment=%s',
+			Opcode[opcode], opcode, String(p1), String(p2), String(p3), p4String, String(p5), comment || ''
+		);
+		if (p1 === -3 || p2 === -3 || p3 === -3) {
+			warnLog(`Placeholder -3 DETECTED in Opcode ${Opcode[opcode]}(${opcode}): p1=${p1}, p2=${p2}, p3=${p3}. P4=${p4String}`);
+		}
+		// --- END ADDED LOGGING ---
+		return CompilerState.emitInstruction(this, opcode, p1, p2, p3, p4, p5, comment);
+	}
 	allocateAddress(purpose: string = 'unknown'): number { return CompilerState.allocateAddressHelper(this, purpose); }
 	resolveAddress(placeholder: number): number { return CompilerState.resolveAddressHelper(this, placeholder); }
 	getCurrentAddress(): number { return CompilerState.getCurrentAddressHelper(this); }

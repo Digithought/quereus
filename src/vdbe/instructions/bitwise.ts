@@ -3,8 +3,8 @@ import { Opcode } from '../opcodes.js';
 
 export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.BitAnd] = (ctx, inst) => {
-		const v1 = ctx.getMem(inst.p1);
-		const v2 = ctx.getMem(inst.p2);
+		const v1 = ctx.getStack(inst.p1);
+		const v2 = ctx.getStack(inst.p2);
 		let result = null;
 
 		try {
@@ -17,12 +17,12 @@ export function registerHandlers(handlers: Handler[]) {
 			result = 0n;
 		}
 
-		ctx.setMem(inst.p3, result);
+		ctx.setStack(inst.p3, result);
 		return undefined;
 	};
 	handlers[Opcode.BitOr] = (ctx, inst) => {
-		const v1 = ctx.getMem(inst.p1);
-		const v2 = ctx.getMem(inst.p2);
+		const v1 = ctx.getStack(inst.p1);
+		const v2 = ctx.getStack(inst.p2);
 		let result = null;
 
 		try {
@@ -35,12 +35,12 @@ export function registerHandlers(handlers: Handler[]) {
 			result = 0n;
 		}
 
-		ctx.setMem(inst.p3, result);
+		ctx.setStack(inst.p3, result);
 		return undefined;
 	};
 	handlers[Opcode.ShiftLeft] = (ctx, inst) => {
-		const amount = ctx.getMem(inst.p1);
-		const value = ctx.getMem(inst.p2);
+		const amount = ctx.getStack(inst.p1);
+		const value = ctx.getStack(inst.p2);
 		let result = null;
 
 		try {
@@ -53,12 +53,12 @@ export function registerHandlers(handlers: Handler[]) {
 			result = 0n;
 		}
 
-		ctx.setMem(inst.p3, result);
+		ctx.setStack(inst.p3, result);
 		return undefined;
 	};
 	handlers[Opcode.ShiftRight] = (ctx, inst) => {
-		const amount = ctx.getMem(inst.p1);
-		const value = ctx.getMem(inst.p2);
+		const amount = ctx.getStack(inst.p1);
+		const value = ctx.getStack(inst.p2);
 		let result = null;
 
 		try {
@@ -71,11 +71,11 @@ export function registerHandlers(handlers: Handler[]) {
 			result = 0n;
 		}
 
-		ctx.setMem(inst.p3, result);
+		ctx.setStack(inst.p3, result);
 		return undefined;
 	};
 	handlers[Opcode.BitNot] = (ctx, inst) => {
-		const val = ctx.getMem(inst.p1);
+		const val = ctx.getStack(inst.p1);
 		let result = null;
 
 		try {
@@ -86,7 +86,7 @@ export function registerHandlers(handlers: Handler[]) {
 			result = -1n;
 		}
 
-		ctx.setMem(inst.p2, result);
+		ctx.setStack(inst.p2, result);
 		return undefined;
 	};
 }

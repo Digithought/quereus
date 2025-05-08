@@ -8,7 +8,7 @@ import { Parser } from '../src/parser/parser.js';
 import { Compiler } from '../src/compiler/compiler.js';
 import type { VdbeInstruction } from '../src/vdbe/instruction.js';
 import { Opcode } from '../src/vdbe/opcodes.js';
-import { safeJsonStringify } from '../src/util/serialization.js';
+import { jsonStringify, safeJsonStringify } from '../src/util/serialization.js';
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -113,8 +113,8 @@ ${sqlBlock}`);
 								}
 								// Compare row by row using stringify
 								for (let i = 0; i < actualResult.length; i++) {
-									const actualStr = JSON.stringify(actualResult[i]);
-									const expectedStr = JSON.stringify(expectedResult[i]);
+									const actualStr = jsonStringify(actualResult[i]);
+									const expectedStr = jsonStringify(expectedResult[i]);
 									expect(actualStr).to.equal(expectedStr, `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${actualStr}\nExpected: ${expectedStr}\nBlock:\n${sqlBlock}`);
 								}
 								console.log("   -> Results match!");

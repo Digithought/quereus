@@ -20,8 +20,8 @@ export function registerHandlers(handlers: Handler[]) {
     const resultReg = inst.p3;
     const args: SqlValue[] = [];
     for (let i = 0; i < p4Func.nArgs; i++) {
-      // Arguments are read relative to the frame pointer
-      args.push(ctx.getMem(argsReg + i));
+      // Arguments are read from absolute register locations
+      args.push(ctx.getStack(argsReg + i));
     }
 
     // Reuse or recreate UDF context? For simplicity, let's assume VmCtx provides one
@@ -36,9 +36,9 @@ export function registerHandlers(handlers: Handler[]) {
       if (err) {
         throw err; // Propagate errors set via context
       }
-      // Result is written relative to the frame pointer
+      // Result is written to an absolute register location
       // Get result from LOCAL context
-      ctx.setMem(resultReg, localUdfContext._getResult());
+      ctx.setStack(resultReg, localUdfContext._getResult());
     } catch (e) {
       const funcName = p4Func.funcDef.name;
       errorLog(`Error in function ${funcName}: %O`, e);

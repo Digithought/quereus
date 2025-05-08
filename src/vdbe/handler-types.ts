@@ -30,6 +30,8 @@ export interface VdbeCursor {
   sortedResults?: { rows: MemoryCell[][], index: number } | null;
   /** Optional sorting index */
   sortingIndex?: MemoryIndex | null;
+  /** Target address for VFilter/Rewind to jump to on EOF, used by VNext */
+  currentEofJumpTarget?: number;
 }
 
 /**
@@ -84,11 +86,11 @@ export interface VmCtx {
   /** Current stack pointer */
   stackPointer: number;
 
-  // Special getters/setters for internal engine operations
+  // Special getters/setters for absolute stack access
   /** Gets a value at an absolute stack index */
-  getStackValue(index: number): SqlValue;
+  getStack(index: number): SqlValue;
   /** Sets a value at an absolute stack index */
-  setStackValue(index: number, value: SqlValue): void;
+  setStack(index: number, value: SqlValue): void;
 
   // Constants access
   /** Gets a constant from the program's constant pool */

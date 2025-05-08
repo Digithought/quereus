@@ -424,10 +424,8 @@ export class Parser {
 	 */
 	private columnList(): AST.ResultColumn[] {
 		const columns: AST.ResultColumn[] = [];
-		let startToken = this.peek(); // Start of the first column item
 
 		do {
-			startToken = this.peek(); // Update start for each item
 			// Handle wildcard: * or table.*
 			if (this.match(TokenType.ASTERISK)) {
 				columns.push({ type: 'all' });
@@ -444,7 +442,6 @@ export class Parser {
 			else {
 				const expr = this.expression();
 				let alias: string | undefined;
-				let endToken = this.previous(); // End token is initially end of expression
 
 				// Handle AS alias or just alias
 				if (this.match(TokenType.AS)) {
@@ -454,7 +451,6 @@ export class Parser {
 						if (aliasToken.type === TokenType.STRING) {
 							alias = aliasToken.literal;
 						}
-						endToken = aliasToken; // Update end token to alias
 					} else {
 						throw this.error(this.peek(), "Expected identifier or string after 'AS'.");
 					}
@@ -467,7 +463,6 @@ export class Parser {
 					!this.isEndOfClause()) {
 					const aliasToken = this.advance();
 					alias = aliasToken.lexeme;
-					endToken = aliasToken; // Update end token to alias
 				}
 
 				columns.push({ type: 'column', expr, alias });
@@ -786,7 +781,6 @@ export class Parser {
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		if (this.match(TokenType.IS)) {
-			const isToken = this.previous();
 			let isNot = false;
 			if (this.match(TokenType.NOT)) {
 				isNot = true;
@@ -911,7 +905,7 @@ export class Parser {
 	 * Parse COLLATE expression
 	 */
 	private collateExpression(): AST.Expression {
-		let expr = this.primary(); // Parse primary expression first
+		const expr = this.primary(); // Parse primary expression first
 
 		if (this.matchKeyword('COLLATE')) {
 			const collationToken = this.consume(TokenType.IDENTIFIER, "Expected collation name after COLLATE.");
@@ -929,6 +923,11 @@ export class Parser {
 	 */
 	private primary(): AST.Expression {
 		const startToken = this.peek();
+
+		// Case expression
+		if (this.matchKeyword('CASE')) {
+			return this.parseCaseExpression(startToken);
+		}
 
 		// Literals
 		if (this.match(TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING, TokenType.NULL, TokenType.BLOB)) {
@@ -1301,8 +1300,8 @@ export class Parser {
 
 		const table = this.tableIdentifier();
 
-		let columns: AST.ColumnDef[] = [];
-		let constraints: AST.TableConstraint[] = [];
+		const columns: AST.ColumnDef[] = [];
+		const constraints: AST.TableConstraint[] = [];
 		let withoutRowid = false;
 
 		if (this.check(TokenType.LPAREN)) {
@@ -1322,7 +1321,6 @@ export class Parser {
 				withoutRowid = true;
 			}
 		} else if (this.matchKeyword('AS')) {
-			const select = this.selectStatement();
 			throw new Error('CREATE TABLE AS SELECT is not fully implemented.');
 		} else {
 			throw this.error(this.peek(), "Expected '(' or 'AS' after table name.");
@@ -1972,7 +1970,7 @@ export class Parser {
 		throw this.error(this.peek(), message);
 	}
 
-	/** NEW: Parses the list of operations for CHECK ON */
+	/** Parses the list of operations for CHECK ON */
 	private parseRowOpList(): AST.RowOp[] {
 		const operations: AST.RowOp[] = [];
 		do {
@@ -1988,5 +1986,49 @@ export class Parser {
 		} while (this.match(TokenType.COMMA));
 		// Optional: Check for duplicates? The design allows them but ignores them.
 		return operations;
+	}
+
+	/**
+	 * Parses a CASE expression
+	 * CASE [base_expr] WHEN cond THEN result ... [ELSE else_result] END
+	 * CASE WHEN cond THEN result ... [ELSE else_result] END
+	 */
+	private parseCaseExpression(startToken: Token): AST.CaseExpr {
+		let baseExpr: AST.Expression | undefined;
+		const whenThenClauses: AST.CaseExprWhenThenClause[] = [];
+		let elseExpr: AST.Expression | undefined;
+		let endToken = startToken; // Initialize with CASE token
+
+		// Check if it's CASE expr WHEN ... or CASE WHEN ...
+		if (!this.peekKeyword('WHEN')) { // Changed from checkKeyword
+			baseExpr = this.expression();
+		}
+
+		while (this.matchKeyword('WHEN')) {
+			const whenCondition = this.expression();
+			this.consumeKeyword('THEN', "Expected 'THEN' after WHEN condition in CASE expression.");
+			const thenResult = this.expression();
+			whenThenClauses.push({ when: whenCondition, then: thenResult });
+			endToken = this.previous(); // Update endToken to the end of the THEN expression
+		}
+
+		if (whenThenClauses.length === 0) {
+			throw this.error(this.peek(), "CASE expression must have at least one WHEN clause.");
+		}
+
+		if (this.matchKeyword('ELSE')) {
+			elseExpr = this.expression();
+			endToken = this.previous(); // Update endToken to the end of the ELSE expression
+		}
+
+		endToken = this.consumeKeyword('END', "Expected 'END' to terminate CASE expression.");
+
+		return {
+			type: 'case',
+			baseExpr,
+			whenThenClauses,
+			elseExpr,
+			loc: _createLoc(startToken, endToken),
+		};
 	}
 }
