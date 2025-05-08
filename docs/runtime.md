@@ -26,15 +26,48 @@ The *Virtual DataBase Engine* (VDBE) runtime is the execution core that interpre
 1.  **Compilation** – The SQL compiler produces a `VdbeProgram` whose `instructions` array is a compact, register-based byte-code.
 2.  **Instantiation** – The `Statement` wrapper creates a `VdbeRuntime`, passing the program and owning `Database` reference.
 3.  **Binding** – Positional / named parameters are written directly into absolute stack indices via `applyBindings()`.
-4.  **Fetch-Execute Loop** –
+4.  **Fetch-Execute Loop** – The core loop fetches an instruction, finds its handler, executes it (potentially asynchronously), and updates the program counter (`pc`). Crucially, it checks for yield status (`hasYielded`), completion status (`done`), and errors after each step.
     ```ts
-    while (!done) {
-        const inst = code[pc];        // FETCH
-        const handler = handlers[inst.opcode];
-        const status = await handler(this, inst); // EXECUTE
-        // status ≠ undefined ⇒ exit / ROW / ERROR / DONE
-        pc = maybeUpdated ? pc : pc + 1; // ADVANCE
+    // Simplified representation of the loop in VdbeRuntime.run()
+    while (this.pc < code.length && !this.done && !this.error) {
+        const currentPc = this.pc;
+        const inst = code[currentPc];
+        const handler = handlers[inst.opcode]; // FETCH handler
+
+        const result = handler(this, inst); // EXECUTE handler
+        let status: StatusCode | undefined;
+
+        if (result instanceof Promise) {
+            status = await result; // Handle async handlers
+        } else {
+            status = result;
+        }
+
+        // Check status returned by handler (e.g., ERROR)
+        if (status !== undefined) {
+            // Handle error or potentially other specific status codes
+            // ...
+            break; // Exit loop on explicit status return
+        }
+
+        // Check if handler signaled a yield (e.g., ResultRow)
+        if (this.hasYielded) {
+            this.hasYielded = false;
+            if (this.pc === currentPc) this.pc++; // Advance PC *after* yield
+            return StatusCode.ROW; // Yield result
+        }
+
+        // Check if handler signaled completion (e.g., Halt)
+        if (this.done) {
+           break; // Exit loop
+        }
+
+        // Advance PC if the handler didn't modify it (e.g., via a jump)
+        if (this.pc === currentPc) {
+            this.pc++; // ADVANCE
+        }
     }
+    // Determine final status (DONE, ERROR, etc.)
     ```
 5.  **Yield / Halt** – Handlers mutate `ctx` (the runtime) to indicate `done`, `hasYielded`, jump addresses, or errors, which are translated to `StatusCode` results for the higher layers.
 
@@ -53,8 +86,8 @@ The *Virtual DataBase Engine* (VDBE) runtime is the execution core that interpre
 
 *   **`stackPointer (SP)`** – first free slot (`length` of the active stack segment).
 *   **`framePointer (FP)`** – base of the current activation frame. Registers are *relative* to `FP`; absolute index = `FP + offset`.
-*   **Local variable offset (`localsStartOffset`)** – hard-coded to **2**. Offsets `< 2` are reserved for internal control data and *must not* be written by instructions outside frame manipulation helpers.
-*   **MemoryCell** – thin wrapper `{ value: SqlValue }`, enabling future flag/extensions without breaking references.
+*   **Local variable offset (`localsStartOffset`)** – hard-coded to **2**. Offsets `< 2` are reserved for internal control data (like saved FP or return address) and *must not* be written by instructions outside frame manipulation helpers.
+*   **MemoryCell** – thin wrapper `{ value: SqlValue }`, enabling future flag/extensions without breaking references. The stack (`VdbeRuntime.stack`) is an array of these `MemoryCell` objects.
 
 ### Frame Handling
 *   `FrameEnter` pushes a new frame by storing the old `FP` at *FP + 1*, then moving `FP` and adjusting `SP` for declared local size.
@@ -125,9 +158,9 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 | **`String8`**         | _unused_   | `regDEST`   | _unused_    | `constIDX`          | _unused_    | `Mem[p2] = Const[p4]` (expects String constant)                                           |
 | **`Null`**            | _unused_   | `regDEST`   | _unused_    | _unused_            | _unused_    | `Mem[p2] = null`                                                                          |
 | **`Real`**            | _unused_   | `regDEST`   | _unused_    | `constIDX`          | _unused_    | `Mem[p2] = Const[p4]` (expects Number constant)                                           |
-| **`Blob`**            | _unused_   | `regDEST`   | _unused_    | `constIDX`          | _unused_    | `Mem[p2] = Const[p4]` (expects Uint8Array constant)                                      |
+| **`Blob`**            | _unused_   | `regDEST`   | _unused_    | `constIDX`          | _unused_    | `Mem[p2] = Const[p4]` (expects Uint8Array constant). P1 is unused (length is derived).      |
 | **`ZeroBlob`**        | `regSIZE`  | `regDEST`   | _unused_    | _unused_            | _unused_    | `Mem[p2] = new Uint8Array(Number(Mem[p1]))`                                              |
-| **`SCopy`**           | `regSRC`   | `regDEST`   | _unused_    | _unused_            | _unused_    | `Mem[p2] = Mem[p1]`                                                                       |
+| **`SCopy`**           | `regSRC`   | `regDEST`   | _unused_    | _unused_            | _unused_    | `Mem[p2] = Mem[p1]` (performs deep copy for blobs)                                        |
 | **`IfTrue`**          | `regCOND`  | `addrTARGET`| _unused_    | _unused_            | _unused_    | If `evaluateIsTrue(Mem[p1])`, jumps `pc` to `p2`.                                         |
 | **`IfFalse`**         | `regCOND`  | `addrTARGET`| _unused_    | _unused_            | _unused_    | If `!evaluateIsTrue(Mem[p1])`, jumps `pc` to `p2`.                                        |
 | **`IfZero`**          | `regVAL`   | `addrTARGET`| _unused_    | _unused_            | _unused_    | If `Mem[p1]` is 0, 0n, or null, jumps `pc` to `p2`.                                     |
@@ -145,12 +178,12 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 
 | Opcode    | p1        | p2          | p3        | p4              | p5        | Effect                                                                                 |
 | --------- | --------- | ----------- | --------- | --------------- | --------- | -------------------------------------------------------------------------------------- |
-| **`Eq`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | _unused_  | If `compare(Mem[p1], Mem[p3], p4) == 0`, jumps `pc` to `p2`.                           |
-| **`Ne`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | _unused_  | If `compare(Mem[p1], Mem[p3], p4) != 0`, jumps `pc` to `p2`.                           |
-| **`Lt`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | _unused_  | If `compare(Mem[p1], Mem[p3], p4) < 0`, jumps `pc` to `p2`.                            |
-| **`Le`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | _unused_  | If `compare(Mem[p1], Mem[p3], p4) <= 0`, jumps `pc` to `p2`.                           |
-| **`Gt`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | _unused_  | If `compare(Mem[p1], Mem[p3], p4) > 0`, jumps `pc` to `p2`.                            |
-| **`Ge`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | _unused_  | If `compare(Mem[p1], Mem[p3], p4) >= 0`, jumps `pc` to `p2`.                           |
+| **`Eq`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | `nullPROPAGATE?`| If `compare(Mem[p1], Mem[p3], p4) == 0`, jumps `pc` to `p2`. If `p5 & 0x01`, treats NULL == NULL as true. |
+| **`Ne`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | `nullPROPAGATE?`| If `compare(Mem[p1], Mem[p3], p4) != 0`, jumps `pc` to `p2`. If `p5 & 0x01`, treats NULL != NULL as true. |
+| **`Lt`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | `nullPROPAGATE?`| If `compare(Mem[p1], Mem[p3], p4) < 0`, jumps `pc` to `p2`. If `p5 & 0x01`, NULL is smallest.       |
+| **`Le`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | `nullPROPAGATE?`| If `compare(Mem[p1], Mem[p3], p4) <= 0`, jumps `pc` to `p2`. If `p5 & 0x01`, NULL is smallest.      |
+| **`Gt`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | `nullPROPAGATE?`| If `compare(Mem[p1], Mem[p3], p4) > 0`, jumps `pc` to `p2`. If `p5 & 0x01`, NULL is smallest.       |
+| **`Ge`**  | `regA`    | `addrTARGET`| `regB`    | `P4Coll`        | `nullPROPAGATE?`| If `compare(Mem[p1], Mem[p3], p4) >= 0`, jumps `pc` to `p2`. If `p5 & 0x01`, NULL is smallest.      |
 
 ---
 
@@ -159,7 +192,7 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 | Opcode        | p1             | p2                | p3         | p4        | p5        | Effect                                                                                 |
 | ------------- | -------------- | ----------------- | ---------- | --------- | --------- | -------------------------------------------------------------------------------------- |
 | **`Add`**     | `regA`         | `regB`            | `regDEST`  | _unused_  | _unused_  | `Mem[p3] = Mem[p1] + Mem[p2]`. Uses BigInt if either operand is BigInt. Result is `null` on type error or non-finite result. |
-| **`Subtract`**| `regA`         | `regB`            | `regDEST`  | _unused_  | _unused_  | `Mem[p3] = Mem[p2] - Mem[p1]`. (Note operand order). Uses BigInt rules. Result is `null` on error. |
+| **`Subtract`**| `regA`         | `regB`            | `regDEST`  | _unused_  | _unused_  | `Mem[p3] = Mem[p1] - Mem[p2]`. (Note operand order reversal vs SQLite). Uses BigInt rules. Result is `null` on error. |
 | **`Multiply`**| `regA`         | `regB`            | `regDEST`  | _unused_  | _unused_  | `Mem[p3] = Mem[p1] * Mem[p2]`. Uses BigInt rules. Result is `null` on error.          |
 | **`Divide`**  | `regDIVISOR`   | `regNUMERATOR`    | `regDEST`  | _unused_  | _unused_  | `Mem[p3] = Number(Mem[p2]) / Number(Mem[p1])`. Result is `null` if divisor is 0/null or result is non-finite. |
 | **`Remainder`**| `regDIVISOR` | `regNUMERATOR` | `regDEST` | _unused_ | _unused_ | `Mem[p3] = Mem[p2] % Mem[p1]`. Uses BigInt rules. Result is `null` if divisor is 0/null or non-finite. Throws error if `BigInt(0)` divisor. |
@@ -196,7 +229,7 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 | -------------- | ----------- | ------------ | --------- | --------- | --------- | ----------------------------------------------------------------------------------------- |
 | **`FrameEnter`** | `frameSize` | _unused_     | _unused_  | _unused_  | _unused_  | Creates new stack frame. Saves old `FP` at `newFP+1`. Initializes locals `newFP+2` to `newFP+p1-1` to `null`. Sets `FP=newFP`, `SP=newFP+p1`. |
 | **`FrameLeave`** | _unused_    | _unused_     | _unused_  | _unused_  | _unused_  | Restores `FP` from `currentFP+1`. Sets `SP = currentFP`.                                  |
-| **`Subroutine`** | _unused_    | `addrTARGET` | _unused_  | _unused_  | _unused_  | Pushes return address (`pc+1`) onto stack. Jumps `pc` to `p2`.                             |
+| **`Subroutine`** | `numARGS`   | `addrTARGET` | _unused_  | _unused_  | _unused_  | Pushes return address (`pc+1`) onto stack. Jumps `pc` to `p2`. `p1` indicates number of arguments *plus* return slots pushed before call. |
 | **`Return`**     | _unused_    | _unused_     | _unused_  | _unused_  | _unused_  | Pops return address from stack (`SP-1`). Jumps `pc` to it. Increments `SP`.                 |
 | **`Push`**       | `regSRC`    | _unused_     | _unused_  | _unused_  | _unused_  | Pushes `Mem[p1]` onto stack (increments `SP`).                                             |
 | **`StackPop`**   | `count`     | _unused_     | _unused_  | _unused_  | _unused_  | Decrements `SP` by `p1`.                                                                  |
@@ -207,9 +240,9 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 
 | Opcode       | p1           | p2        | p3        | p4         | p5        | Effect                                                                                           |
 | ------------ | ------------ | --------- | --------- | ---------- | --------- | ------------------------------------------------------------------------------------------------ |
-| **`ResultRow`**| `offSTART`   | `count`   | _unused_  | _unused_   | _unused_  | Copies `p2` values from `FP+p1` to result buffer. Sets `ctx.hasYielded = true`. Returns `StatusCode.ROW`. |
-| **`OpenRead`** | `cursorIDX`  | _unused_  | _unused_  | `P4Schema` | _unused_  | Opens cursor `p1` for reading via `p4.vtabInstance.module.xOpen`. (Async)                       |
-| **`OpenWrite`**| `cursorIDX`  | _unused_  | _unused_  | `P4Schema` | _unused_  | Same as `OpenRead`. (Async)                                                                       |
+| **`ResultRow`**| `offSTART`   | `count`   | _unused_  | _unused_   | _unused_  | Copies `p2` values from `FP+p1` to result buffer. Sets `ctx.hasYielded = true`. **Does not** return `StatusCode.ROW`; runtime loop handles yield. |
+| **`OpenRead`** | `cursorIDX`  | _unused_  | _unused_  | `P4Vtab`   | _unused_  | Opens cursor `p1` for reading via `p4.tableSchema.vtabModule.xOpen`. (Async)              |
+| **`OpenWrite`**| `cursorIDX`  | _unused_  | _unused_  | `P4Vtab`   | _unused_  | Same as `OpenRead`, but implies write access intent. (Async)                               |
 | **`Close`**    | `cursorIDX`  | _unused_  | _unused_  | _unused_   | _unused_  | Closes cursor `p1` via `instance.close()`. Clears state. (Async)                                |
 
 ---
@@ -218,7 +251,7 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 
 | Opcode       | p1        | p2            | p3         | p4          | p5        | Effect                                                                                      |
 | ------------ | --------- | ------------- | ---------- | ----------- | --------- | ------------------------------------------------------------------------------------------- |
-| **`Function`** | _unused_  | `regARGS_START` | `regRESULT`| `P4FuncDef` | _unused_  | Calls scalar function `p4.funcDef.xFunc` with `p4.nArgs` args from `Mem[p2]` onwards. Stores result in `Mem[p3]`. |
+| **`Function`** | `regARGS_START` | `regCONTEXT_OR_RESULT` | `nARGS` | `P4FuncDef` | `flags` | Calls function `p4.funcDef`. If aggregate (`xStep`), `p2` is context (in/out). If scalar (`xFunc`), `p2` is result reg. `p3` is number of args. `p5` indicates flags (e.g., aggregate context). |
 
 ---
 
@@ -228,13 +261,14 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 | ---------------- | -------------------- | -------------- | --------------------- | ----------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **`MakeRecord`** | `offSTART`           | `count`        | `regDEST_KEY`         | _unused_    | _unused_          | Creates serialized key from `p2` values at `Mem[p1]` onwards, stores string key in `Mem[p3]`.                                           |
 | **`AggStep`**    | `regGROUP_KEY_START` | `regARGS_START`| `regSERIALIZED_KEY`   | `P4FuncDef` | `numGROUP_KEYS`   | Retrieves/creates aggregate context for key `Mem[p3]`. Calls `p4.funcDef.xStep` with args from `Mem[p2]`. Stores `p5` group key values if new. |
-| **`AggFinal`**   | `regSERIALIZED_KEY`  | _unused_       | `regDEST_RESULT`      | `P4FuncDef` | _unused_          | Retrieves context for key `Mem[p1]`. Calls `p4.funcDef.xFinal`. Stores result in `Mem[p3]`.                                          |
+| **`AggFinal`**   | `regCONTEXT` | `regDUMMY_ARGS_START`       | `regDEST_RESULT`      | `P4FuncDef` | _unused_          | Retrieves context from `Mem[p1]`. Calls `p4.funcDef.xFinal`. Stores result in `Mem[p3]`. `p2` is unused but consistent with Function opcode. |
 | **`AggReset`**   | _unused_             | _unused_       | _unused_              | _unused_    | _unused_          | Clears the aggregate context map and iterator.                                                                                      |
-| **`AggIterate`** | _unused_             | _unused_       | _unused_              | _unused_    | _unused_          | Initializes the aggregate results iterator (`ctx.aggregateIterator`).                                                               |
-| **`AggNext`**    | _unused_             | `addrIF_DONE`  | _unused_              | _unused_    | _unused_          | Advances iterator. Jumps `pc` to `p2` if done. Stores current `[key, {acc, keyValues}]` in `ctx.currentAggregateEntry`.               |
-| **`AggKey`**     | _unused_             | `regDEST_KEY`  | _unused_              | _unused_    | _unused_          | Stores serialized key from `currentAggregateEntry` into `Mem[p2]`.                                                                    |
-| **`AggContext`** | _unused_             | `regDEST_ACC`  | _unused_              | _unused_    | _unused_          | Stores accumulator from `currentAggregateEntry` into `Mem[p2]`.                                                                       |
-| **`AggGroupValue`** | _unused_          | `keyINDEX`     | `regDEST_VAL`         | _unused_    | _unused_          | Stores the `p2`-th grouping key value from `currentAggregateEntry` into `Mem[p3]`.                                                     |
+| **`AggIterate`** | `regITERATOR` | _unused_       | _unused_              | _unused_    | _unused_          | Initializes the aggregate results iterator (`ctx.aggregateIterator`) and stores it in `Mem[p1]`.                                |
+| **`AggNext`**    | `regITERATOR` | `addrIF_DONE`  | _unused_              | _unused_    | _unused_          | Advances iterator in `Mem[p1]`. Jumps `pc` to `p2` if done. Stores current `[key, {acc, keyValues}]` in `ctx.currentAggregateEntry`.       |
+| **`AggKey`**     | `regITERATOR` | `regDEST_KEY`  | _unused_              | _unused_    | _unused_          | Stores serialized key from `currentAggregateEntry` (associated with iterator `Mem[p1]`) into `Mem[p2]`.                             |
+| **`AggContext`** | `regITERATOR` | `regDEST_ACC`  | _unused_              | _unused_    | _unused_          | Stores accumulator from `currentAggregateEntry` (associated with iterator `Mem[p1]`) into `Mem[p2]`.                                |
+| **`AggGroupValue`** | `regITERATOR` | `keyINDEX`     | `regDEST_VAL`         | _unused_    | _unused_          | Stores the `p2`-th grouping key value from `currentAggregateEntry` (associated with iterator `Mem[p1]`) into `Mem[p3]`.               |
+| **`AggGetAccumulatorByKey`** | `regKEY` | `regDEST_ACC` | _unused_ | _unused_ | _unused_ | Looks up aggregate context for key `Mem[p1]`. Stores accumulator in `Mem[p2]`. Result is `null` if key not found. |
 
 ---
 
@@ -242,7 +276,7 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 
 | Opcode            | p1           | p2          | p3        | p4              | p5        | Effect                                                                                              |
 | ----------------- | ------------ | ----------- | --------- | --------------- | --------- | --------------------------------------------------------------------------------------------------- |
-| **`OpenEphemeral`** | `cursorIDX`  | `numCOLS`   | _unused_  | `?TableSchema`  | _unused_  | Creates temporary `MemoryTable`. Opens cursor `p1` on it. Uses `p4` schema if provided, else defaults. (Async) |
+| **`OpenEphemeral`** | `cursorIDX`  | `numCOLS`   | _unused_  | `TableSchema`  | _unused_  | Creates temporary `MemoryTable`. Opens cursor `p1` on it. Uses `p4` schema. (Async) |
 
 ---
 
@@ -258,19 +292,20 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 
 | Opcode          | p1                | p2            | p3             | p4                    | p5        | Effect                                                                                                                |
 | --------------- | ----------------- | ------------- | -------------- | --------------------- | --------- | --------------------------------------------------------------------------------------------------------------------- |
-| **`VFilter`**   | `cursorIDX`       | `addrIF_EMPTY`| `regARGS_START`| `{idxNum,idxStr,nArgs}` | _unused_  | Calls `cursor[p1].instance.filter` with `p4` info and args from `Mem[p3]`. Jumps `pc` to `p2` if EOF after filter. (Async) |
-| **`VNext`**     | `cursorIDX`       | `addrIF_EOF`  | _unused_       | _unused_              | _unused_  | Advances `cursor[p1].instance.next()`. Jumps `pc` to `p2` if EOF. Handles `sortedResults`. (Async)                  |
+| **`VFilter`**   | `cursorIDX`       | `addrIF_EMPTY`| `regARGS_START`| `{idxNum,idxStr,nArgs,...}` | _unused_  | Calls `cursor[p1].instance.filter` with `p4` info and args from `Mem[p3]`. Jumps `pc` to `p2` if EOF after filter. (Async) |
+| **`VNext`**     | `cursorIDX`       | `addrIF_EOF`  | `addrLOOP_START?` | _unused_              | _unused_  | Advances `cursor[p1].instance.next()`. Jumps `pc` to `p2` if EOF. Handles `sortedResults`. `p3` is optional loop start for debugging. (Async) |
 | **`Rewind`**    | `cursorIDX`       | `addrIF_EMPTY`| _unused_       | _unused_              | _unused_  | Resets `cursor[p1]` (like `filter(0,null,[])`). Jumps `pc` to `p2` if EOF. Handles `sortedResults`. (Async)         |
 | **`VColumn`**   | `cursorIDX`       | `colIDX`      | `regDEST`      | _unused_              | _unused_  | Gets column `p2` from `cursor[p1].instance.column()` into `Mem[p3]`. Returns `null` if EOF. Handles `sortedResults`.     |
 | **`VRowid`**    | `cursorIDX`       | `regDEST`     | _unused_       | _unused_              | _unused_  | Gets `rowid` from `cursor[p1].instance.rowid()` into `Mem[p2]`. Throws if EOF. (Async)                               |
-| **`VUpdate`**   | `nDATA`           | `regDATA_START`| `regOUT`      | `P4Update`            | _unused_  | Calls `p4.table.vtabInstance.module.xUpdate` with `p1` values from `Mem[p2]`. Stores output (e.g., new rowid) in `Mem[p3]` if `p3 > 0`. (Async) |
-| **`VBegin`**    | `cursorSTART_IDX` | `cursorEND_IDX`| _unused_      | _unused_              | _unused_  | Calls `xBegin` on relevant modules for cursors `p1` to `p2-1`. (Async)                                               |
-| **`VCommit`**   | `cursorSTART_IDX` | `cursorEND_IDX`| _unused_      | _unused_              | _unused_  | Calls `xCommit` on relevant modules for cursors `p1` to `p2-1`. (Async)                                              |
-| **`VRollback`** | `cursorSTART_IDX` | `cursorEND_IDX`| _unused_      | _unused_              | _unused_  | Calls `xRollback` on relevant modules for cursors `p1` to `p2-1`. (Async)                                            |
-| **`VSync`**     | `cursorSTART_IDX` | `cursorEND_IDX`| _unused_      | _unused_              | _unused_  | Calls `xSync` on relevant modules for cursors `p1` to `p2-1`. (Async)                                                |
-| **`VSavepoint`**| `cursorSTART_IDX` | `cursorEND_IDX`| `savepointIDX`| _unused_              | _unused_  | Calls `xSavepoint(..., p3)` on relevant modules for cursors `p1` to `p2-1`. (Async)                                  |
-| **`VRelease`**  | `cursorSTART_IDX` | `cursorEND_IDX`| `savepointIDX`| _unused_              | _unused_  | Calls `xRelease(..., p3)` on relevant modules for cursors `p1` to `p2-1`. (Async)                                    |
-| **`VRollbackTo`**|`cursorSTART_IDX` | `cursorEND_IDX`| `savepointIDX`| _unused_              | _unused_  | Calls `xRollbackTo(..., p3)` on relevant modules for cursors `p1` to `p2-1`. (Async)                                |
+| **`VUpdate`**   | `nDATA`           | `regDATA_START`| `regOUT`      | `P4Update`            | `cursorIDX` | Calls `p4.table.vtabModule.xUpdate` on cursor `p5` with `p1` values from `Mem[p2]`. Stores output (e.g., new rowid) in `Mem[p3]` if `p3 > 0`. (Async) |
+| **`VBegin`**    | _unused_          | _unused_       | _unused_      | _unused_              | _unused_  | Calls `xBegin` on all relevant modules. (Async)                                                                        |
+| **`VCommit`**   | _unused_          | _unused_       | _unused_      | _unused_              | _unused_  | Calls `xCommit` on all relevant modules. (Async)                                                                       |
+| **`VRollback`** | _unused_          | _unused_       | _unused_      | _unused_              | _unused_  | Calls `xRollback` on all relevant modules. (Async)                                                                     |
+| **`VSync`**     | `cursorSTART_IDX` | `cursorEND_IDX`| _unused_      | _unused_              | _unused_  | **(Not Implemented)** Calls `xSync` on relevant modules for cursors `p1` to `p2-1`. (Async)                                 |
+| **`VSavepoint`**| _unused_          | _unused_       | `constSAVEPOINT_NAME` | _unused_              | _unused_  | Calls `xSavepoint(..., Const[p3])` on all relevant modules. (Async)                                                     |
+| **`VRelease`**  | _unused_          | _unused_       | `constSAVEPOINT_NAME` | _unused_              | _unused_  | Calls `xRelease(..., Const[p3])` on all relevant modules. (Async)                                                       |
+| **`VRollbackTo`**| _unused_          | _unused_       | `constSAVEPOINT_NAME` | _unused_              | _unused_  | Calls `xRollbackTo(..., Const[p3])` on all relevant modules. (Async)                                                    |
+| **`OpenTvf`**   | `cursorIDX`       | `regARGS_START`| `nARGS`        | `P4OpenTvf`           | _unused_  | Opens a Table-Valued Function cursor `p1`. Calls module's `xOpenTvf` with args from `Mem[p2]` (count `p3`). `P4` contains module name and alias. |
 
 ---
 
@@ -279,7 +314,11 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 | Opcode          | p1           | p2        | p3        | p4                | p5        | Effect                                                                            |
 | --------------- | ------------ | --------- | --------- | ----------------- | --------- | --------------------------------------------------------------------------------- |
 | **`SchemaChange`**| `cursorIDX`  | _unused_  | _unused_  | `P4SchemaChange`  | _unused_  | Calls `cursor[p1].vtab.module.xAlterSchema` with `p4` change info. (Async)         |
-| **`AlterTable`**  | *TBD*        | *TBD*     | *TBD*     | *TBD*             | *TBD*     | Currently a No-Op. May trigger schema invalidation actions later.                 |
+| **`AlterTable`**  | *TBD*        | *TBD*     | *TBD*     | *TBD*             | *TBD*     | **(Removed)** Use `SchemaChange` instead.                                         |
+| **`SchemaInvalidate`**| _unused_ | _unused_  | _unused_  | _unused_          | _unused_  | Clears schema caches (Not fully implemented in runtime, used by compiler).          |
+| **`VCreateIndex`**| `cursorIDX` | _unused_ | _unused_ | `IndexSchema` | _unused_ | Calls `cursor[p1].vtab.module.xCreateIndex` with index definition `p4`. (Async) |
+| **`VDropIndex`**  | `cursorIDX` | _unused_ | _unused_ | `string indexName` | _unused_ | Calls `cursor[p1].vtab.module.xDropIndex` with index name `p4`. (Async) |
+| **`Savepoint`** | `op`        | _unused_ | _unused_ | `constSAVEPOINT_NAME` | _unused_ | Manages non-VTab savepoints (BEGIN=0, RELEASE=1, ROLLBACK=2). Uses name from `Const[p4]`. |
 
 ---
 
@@ -287,8 +326,8 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 
 | Opcode          | p1           | p2           | p3          | p4        | p5            | Effect                                                                                                                            |
 | --------------- | ------------ | ------------ | ----------- | --------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| **`SeekRelative`**| `cursorIDX`  | `addrJUMP`   | `regOFFSET` | _unused_  | `invertJUMP?` | Calls `cursor[p1].instance.seekRelative(Mem[p3])`. Jumps `pc` to `p2` if (seek successful AND !p5) OR (seek failed AND p5). (Async) |
-| **`SeekRowid`**   | `cursorIDX`  | `addrJUMP`   | `regROWID`  | _unused_  | `invertJUMP?` | Calls `cursor[p1].instance.seekToRowid(Mem[p3])`. Jumps `pc` to `p2` if (seek successful AND !p5) OR (seek failed AND p5). (Async) |
+| **`SeekRelative`**| `cursorIDX`  | `addrJUMP`   | `regOFFSET` | _unused_  | `invertJUMP?` | Calls `cursor[p1].instance.seekRelative(Mem[p3])`. Jumps `pc` to `p2` if (seek successful **XNOR** `p5`). (Async) |
+| **`SeekRowid`**   | `cursorIDX`  | `addrJUMP`   | `regROWID`  | _unused_  | `invertJUMP?` | Calls `cursor[p1].instance.seekToRowid(Mem[p3])`. Jumps `pc` to `p2` if (seek successful **XNOR** `p5`). (Async) |
 
 **Note:** Many additional opcodes exist in `opcodes.ts` but are *not* yet implemented; the default handler will throw `Unsupported opcode` if they appear at runtime.
 
@@ -297,188 +336,3 @@ Below is a detailed reference for every opcode currently **implemented** (has a 
 ## 9. Future Work & Extensibility
 *   Swap the simple `MemoryCell` wrapper for richer flags (type, encoding, etc.) closer to SQLite's `Mem` struct.
 *   Add structured logging & tracing hooks for debugging.
-
-### Optimization plan
-
-Below is a “shopping list” of runtime-level optimisations that make a measurable difference on small JS/TS interpreters such as SQLiter’s VDBE.  None of them change external behaviour; they just make the same byte-code run faster or allocate less.  They are grouped roughly from “quick wins” to “larger projects” and each comes with a short implementation plan so you can decide which ones are worth the effort.
-
-────────────────────────────────────────────────────────────────────────
-1. Tighten the main dispatch loop
-────────────────────────────────────────────────────────────────────────
-Current hot-spot:  
-
-```ts
-while (this.pc < code.length) {
-  const inst = code[this.pc];
-  …                           // execute
-  if (this.pc === code.indexOf(inst)) {   // O(n) each step!
-    this.pc++;
-  }
-}
-```
-
-A. Eliminate the `code.indexOf(inst)` line.  
-   • Keep a local `pc` variable (`let pc = this.pc;`) and write `this.pc = pc` only if a handler changes it.  
-   • This removes an unintended O(n²) behaviour when programs are long.
-
-B. Inline the handler array lookup.  
-   ```ts
-   const handler = handlers[inst.opcode]!;
-   ```
-   Moving the lookup outside of the `if (result instanceof Promise)` block avoids doing it twice.
-
-Expected gain: 1.5-2× for CPU-bound queries with many instructions.
-
-────────────────────────────────────────────────────────────────────────
-2. Represent the stack in a cache-friendly way
-────────────────────────────────────────────────────────────────────────
-Each cell is currently `{ value: SqlValue }`.  That doubles the number of objects
-and puts extra indirection on every read/write.
-
-Plan
-• Keep `stack: SqlValue[]`, treat `null` as “empty”.  
-• If you need metadata later (e.g., flags, type tags) hold a *parallel*
-  typed array (`Uint8Array typeTag`) instead of enlarging each element.
-
-Side-effect: smaller GC churn and about ~10–15 % speed-up on tight loops.
-
-────────────────────────────────────────────────────────────────────────
-3. Promise/async fast-path split
-────────────────────────────────────────────────────────────────────────
-Only a handful of opcodes are async (`VFilter`, `VNext`, etc.).
-Yet every iteration checks `result instanceof Promise`.
-
-Plan
-• Split the interpreter into two loops: `runSync()` and `runAsync()`.  
-• `runSync()` executes until it *knows* it must await (first async opcode).  
-• `runAsync()` continues with `await` semantics.
-
-This mimics what browsers do in their own promise integration and removes 6-7 %
-overhead from the main loop for purely synchronous statements.
-
-────────────────────────────────────────────────────────────────────────
-4. Mini peephole optimiser (compile-time)
-────────────────────────────────────────────────────────────────────────
-Even 4–5 simple rules give a big win:
-
-Rule examples
-a) `SCopy A B` immediately followed by any write to `B` ⇒ drop the copy.  
-b) `Null A; IsNull A B`  ⇒ replace pair with `Goto B`.  
-c) `Move A B` where `A == B` ⇒ delete.  
-d) Back-to-back `Goto` chains ⇒ collapse to final target.  
-e) Constant folding of `Function` when `nArgs=0` and pure (e.g. `random()`).
-
-Plan
-1. Add `optimizeProgram(program: VdbeProgram)` right after compilation.  
-2. Run a sliding window of 2–3 instructions; rewrite `instructions` array.  
-3. Keep address-adjust fix-ups in a small map (`old addr ➔ new addr`).
-
-Even with <200 LOC this usually trims 5–20 % of dynamic instructions.
-
-────────────────────────────────────────────────────────────────────────
-5. Specialised “super-instructions”
-────────────────────────────────────────────────────────────────────────
-After the peephole pass you will notice hot patterns like
-
-```
-Column   → Affinity TEXT → IsNull → IfTrue <jump>
-```
-
-Emit a single opcode `ColumnIsNullJump` during compilation or the peephole rewrite.
-Add one handler that performs the 3 steps.  
-Two or three such “super-ops” often cover 60 %+ of executed code paths.
-
-────────────────────────────────────────────────────────────────────────
-6. Inline common UDFs and aggregates
-────────────────────────────────────────────────────────────────────────
-For built-ins such as `length(text)`, `upper()`, `count(*)`, run a static
-analysis during compilation:
-
-• If ALL arguments are literals, evaluate at compile time.  
-• If they are simple register reads, translate to a dedicated opcode (`StrLen`,
-  `ToUpper`, `CountStep`/`CountFinal`) instead of generic `Function`.
-
-This removes context allocation (`FunctionContext`) and reflection for each call.
-
-────────────────────────────────────────────────────────────────────────
-7. Cursor & virtual-table caching
-────────────────────────────────────────────────────────────────────────
-A lot of async I/O cost comes from `filter()` and `next()` repeatedly
-allocating row objects.
-
-Plan
-• Let `VdbeCursor` keep a small reusable row buffer (`SqlValue[] currentRow`).  
-• Module implementers can write into that array instead of allocating new
-  arrays per row.  
-• Provide helper in `VirtualTableModule` like `beginRow(writeFn)`.
-
-────────────────────────────────────────────────────────────────────────
-8. Adaptive stack growth strategy
-────────────────────────────────────────────────────────────────────────
-`setStackValue` doubles the stack when exhausted.  For very large `INSERT …
-SELECT …` statements that can be megabytes of data.  
-Switch to:
-
-```
-if (index >= stack.length) {
-    stack.length = Math.max(index + 1, stack.length + 1024);
-}
-```
-
-Fixed increments past a threshold stop pathological GC pauses.
-
-────────────────────────────────────────────────────────────────────────
-9. Optional JIT (long-term)
-────────────────────────────────────────────────────────────────────────
-Emit plain JavaScript for the VDBE block and `new Function()` it:
-
-```
-add R3,R4,R5   →  code += 'R5 = R3 + R4;'
-```
-
-Because SQLiter is already TypeScript/JS, V8 will happily optimise the
-generated function.  Reserve for analytic / heavy ETL workloads.
-
-────────────────────────────────────────────────────────────────────────
-10. Instrumentation & regression benchmarks
-────────────────────────────────────────────────────────────────────────
-Finally, *measure*.  Add a lightweight timer/ counter struct to `VmCtx`
-behind a build flag.  Report:
-
-• # executed opcodes  
-• # stack reallocations  
-• # Promise awaits  
-• time per opcode class
-
-Use a representative workload suite (TPC-H Q1-Q22 with small in-memory data)
-to catch performance regressions automatically.
-
-────────────────────────────────────────────────────────────────────────
-Summary roadmap
-────────────────────────────────────────────────────────────────────────
-Phase 1 (quick wins, 1–2 days)
-• Optimise dispatch loop (1)  
-• Stack object → array (2)
-
-Phase 2 (1 week)
-• Async fast-path split (3)  
-• Initial peephole rules (4)  
-• Adaptive stack growth (8)
-
-Phase 3 (2–3 weeks)
-• Super-instructions (5)  
-• Built-in UDF inlining (6)  
-• Cursor row buffering (7)
-
-Phase 4 (research)
-• JS-JIT backend (9)  
-• Continuous perf harness (10)
-
-Each phase is independent and delivers value on its own, so you can stop
-once the effort/benefit ratio no longer favours additional work.
-
-
-
----
-
-*Generated automatically – keep in sync with source files.*

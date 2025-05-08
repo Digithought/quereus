@@ -74,3 +74,145 @@ Given the focus on virtual tables, especially potentially distributed ones, opti
 ## Current Status
 
 A functional, cost-based query planner exists, focusing on Nested Loop Join (NLJ) order selection. It interacts with the virtual table interface (`xBestIndex`) to estimate costs for base table access and inner join loop access. It successfully generates `PlannedStep` arrays that dictate the execution flow, including optimizations for consumed `ORDER BY` clauses to avoid unnecessary sorting.
+
+
+## Runtime Optimization Plan
+
+Below is a "shopping list" of runtime-level optimisations that make a measurable difference on small JS/TS interpreters such as SQLiter's VDBE.  None of them change external behaviour; they just make the same byte-code run faster or allocate less.  They are grouped roughly from "quick wins" to "larger projects" and each comes with a short implementation plan so you can decide which ones are worth the effort.
+
+────────────────────────────────────────────────────────────────────────
+1. Tighten the main dispatch loop
+────────────────────────────────────────────────────────────────────────
+Potential improvements for the main `VdbeRuntime.run()` loop:
+
+- **PC Handling:** The current implementation correctly uses direct array access (`code[currentPc]`) and manages `this.pc` updates, avoiding O(n²) behavior.
+- **Handler Lookup:** The handler lookup (`handlers[inst.opcode]`) is performed efficiently before checking for promises.
+
+*Suggestion:* While the current loop is reasonably efficient, further micro-optimizations might be possible by minimizing work inside the loop, though the current structure with async handling is clear.
+
+────────────────────────────────────────────────────────────────────────
+2. Represent the stack in a cache-friendly way
+────────────────────────────────────────────────────────────────────────
+*Current:* Each stack cell is an object: `{ value: SqlValue }`. This adds indirection.
+
+*Suggestion:* Keep `stack: SqlValue[]`, treat `null` as "empty". If metadata (e.g., type tags) is needed later, use a *parallel* typed array (`Uint8Array`) instead of enlarging each element object. This reduces object allocation and improves cache locality.
+
+*Side-effect:* smaller GC churn and potentially ~10–15 % speed-up on tight loops.
+
+────────────────────────────────────────────────────────────────────────
+3. Promise/async fast-path split
+────────────────────────────────────────────────────────────────────────
+*Current:* Only a handful of opcodes are inherently async (VTab interactions), yet every iteration checks `result instanceof Promise`.
+
+*Suggestion:* Split the interpreter into two loops: `runSync()` and `runAsync()`. `runSync()` executes until it hits an async opcode, then transitions to `runAsync()` which uses `await`. This removes the promise check overhead for purely synchronous statements.
+
+*Expected gain:* ~6-7 % overhead reduction from the main loop for sync-only operations.
+
+────────────────────────────────────────────────────────────────────────
+4. Mini peephole optimiser (**Compile-Time**)
+────────────────────────────────────────────────────────────────────────
+*Suggestion:* Implement a simple peephole optimizer that runs *after* compilation but *before* runtime. Even 4–5 simple rules can yield significant wins:
+
+*Rule examples:*
+a) `SCopy A B` immediately followed by any write to `B` ⇒ drop the copy.  
+b) `Null A; IsNull A B`  ⇒ replace pair with `Goto B`.  
+c) `Move A B` where `A == B` ⇒ delete.  
+d) Back-to-back `Goto` chains ⇒ collapse to final target.  
+e) Constant folding of `Function` when `nArgs=0` and pure (e.g. `random()`).
+
+*Plan:*
+1. Add `optimizeProgram(program: VdbeProgram)` called by the `Compiler`.
+2. Run a sliding window (2–3 instructions) over `program.instructions`; rewrite the array.
+3. Keep address-adjust fix-ups in a map (`old addr ➔ new addr`) to patch jumps.
+
+*Expected gain:* Trims 5–20 % of dynamic instructions executed.
+
+────────────────────────────────────────────────────────────────────────
+5. Specialised "super-instructions" (**Compile-Time/ISA**)
+────────────────────────────────────────────────────────────────────────
+*Suggestion:* Identify common, hot patterns of multiple instructions (e.g., `Column → Affinity → IsNull → IfTrue <jump>`) and replace them with a single, specialized opcode during compilation or peephole optimization. Add a corresponding handler for the new opcode to the runtime.
+
+*Expected gain:* Two or three such "super-ops" can cover a large percentage of executed code paths, reducing dispatch overhead.
+
+────────────────────────────────────────────────────────────────────────
+6. Inline common UDFs and aggregates (**Compile-Time**)
+────────────────────────────────────────────────────────────────────────
+*Suggestion:* For common built-in functions (`length()`, `upper()`, `count(*)`, etc.), perform static analysis during compilation:
+
+• If arguments are literals, evaluate at compile time.
+• If arguments are simple register reads, translate to a dedicated opcode (e.g., `StrLen`, `ToUpper`, `CountStep`) instead of the generic `Function` opcode.
+
+*Benefit:* Removes `FunctionContext` allocation and dynamic dispatch overhead for these common cases.
+
+────────────────────────────────────────────────────────────────────────
+7. Cursor & virtual-table caching
+────────────────────────────────────────────────────────────────────────
+*Current:* Virtual table `filter()` and `next()` likely allocate new row data frequently.
+
+*Suggestion:* Enhance `VdbeCursor` and the VTab interface. Let `VdbeCursor` keep a small reusable row buffer (`SqlValue[] currentRow`). Module implementers could write into that shared buffer instead of allocating new arrays/objects per row. Provide helpers in `VirtualTableModule` (e.g., `beginRow(writeFn)`).
+
+*Benefit:* Reduces allocation and GC pressure during data iteration.
+
+────────────────────────────────────────────────────────────────────────
+8. Adaptive stack growth strategy
+────────────────────────────────────────────────────────────────────────
+*Current:* `setStack` doubles the stack size (`newLength = Math.max(this.stack.length * 2, index + 1)`) when the requested index is out of bounds.
+
+*Suggestion:* For very large stack requirements (e.g., `INSERT … SELECT` with many rows/columns), doubling can lead to large, infrequent allocations. Consider switching to fixed increments past a certain threshold:
+
+```ts
+if (index >= stack.length) {
+    const increment = stack.length > 1024 ? 1024 : stack.length; // Example threshold
+    stack.length = Math.max(index + 1, stack.length + increment);
+}
+```
+
+*Benefit:* Can reduce pathological GC pauses with extremely large stack usage.
+
+────────────────────────────────────────────────────────────────────────
+9. Optional JIT (**Future/Research**)
+────────────────────────────────────────────────────────────────────────
+*Suggestion:* Emit plain JavaScript code strings corresponding to the VDBE instruction block and execute it using `new Function()`.
+
+```js
+// VDBE: add R3,R4,R5
+// JIT output: code += 'R[5] = R[3] + R[4];';
+```
+
+*Benefit:* Allows the underlying JavaScript engine (V8, etc.) to apply advanced optimizations. Suitable for heavy analytic/ETL workloads where compilation overhead is acceptable.
+
+────────────────────────────────────────────────────────────────────────
+10. Instrumentation & regression benchmarks (**Future/Diagnostics**)
+────────────────────────────────────────────────────────────────────────
+*Suggestion:* Add a lightweight timer/counter struct to `VmCtx` guarded by a build or runtime flag. Report metrics like:
+
+• # executed opcodes
+• # stack reallocations
+• # Promise awaits
+• Time per opcode class
+
+Use a representative workload suite to catch performance regressions automatically.
+
+────────────────────────────────────────────────────────────────────────
+Summary roadmap
+────────────────────────────────────────────────────────────────────────
+*(Adjusted based on current implementation)*
+Phase 1 (quick wins, 1–2 days)
+• Stack object → array (2)
+
+Phase 2 (1 week)
+• Async fast-path split (3)
+• Initial peephole rules (compile-time) (4)
+• Adaptive stack growth (8)
+
+Phase 3 (2–3 weeks)
+• Super-instructions (compile-time/ISA) (5)
+• Built-in UDF inlining (compile-time) (6)
+• Cursor row buffering (7)
+
+Phase 4 (research)
+• JS-JIT backend (9)
+• Continuous perf harness (10)
+
+Each phase is independent and delivers value on its own, so you can stop
+once the effort/benefit ratio no longer favours additional work.
