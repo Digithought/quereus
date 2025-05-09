@@ -1,9 +1,9 @@
-import type * as AST from '../parser/ast';
-import { Opcode } from '../vdbe/opcodes';
-import type { Compiler } from './compiler';
-import type { SubqueryCorrelationResult } from './correlation';
-import type { ArgumentMap } from './handlers';
-import type { HavingContext } from './structs';
+import type * as AST from '../parser/ast.js';
+import { Opcode } from '../vdbe/opcodes.js';
+import type { Compiler } from './compiler.js';
+import type { SubqueryCorrelationResult } from './correlation.js';
+import type { ArgumentMap } from './handlers.js';
+import type { HavingContext } from './structs.js';
 
 export function compileCaseExpression(
 	compiler: Compiler,
