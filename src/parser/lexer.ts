@@ -1,5 +1,3 @@
-import { createLogger } from '../common/logger.js'; // Import logger
-
 export enum TokenType {
 	// Literals
 	INTEGER = 'INTEGER',
@@ -99,6 +97,7 @@ export enum TokenType {
 	SAVEPOINT = 'SAVEPOINT',
 	RELEASE = 'RELEASE',
 	PRAGMA = 'PRAGMA',
+	XOR = 'XOR',
 
 	// Operators and punctuation
 	PLUS = 'PLUS',               // +
@@ -132,9 +131,6 @@ export enum TokenType {
 	EOF = 'EOF',
 	ERROR = 'ERROR'
 }
-
-const log = createLogger('parser:lexer'); // Create logger instance
-const errorLog = log.extend('error');
 
 // Token represents a lexical token from the SQL input
 export interface Token {
@@ -237,6 +233,7 @@ const KEYWORDS: Record<string, TokenType> = {
 	'savepoint': TokenType.SAVEPOINT,
 	'release': TokenType.RELEASE,
 	'pragma': TokenType.PRAGMA,
+	'xor': TokenType.XOR,
 };
 
 /**
@@ -554,7 +551,7 @@ export class Lexer {
 				bytes[i / 2] = parseInt(value.substring(i, i + 2), 16);
 			}
 			this.addToken(TokenType.BLOB, bytes);
-		} catch (e) {
+		} catch {
 			this.addErrorToken("Invalid blob literal.");
 		}
 	}

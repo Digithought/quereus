@@ -34,26 +34,6 @@ function handleSqlBooleanComparison(ctx: VmCtx, inst: any, compareOp: (result: n
 	return undefined;
 }
 
-// --- ADDED: Helper for Compare-and-Store operations ---
-function handleSetComparison(ctx: VmCtx, inst: any, compareOp: (result: number) => boolean): Status {
-	const v1 = ctx.getStack(inst.p1);
-	const v2 = ctx.getStack(inst.p2); // Read from P1 and P2
-	const destReg = inst.p3;       // Write result to P3
-	const p4Coll = inst.p4 as P4Coll | null;
-	const collationName = p4Coll?.type === 'coll' ? p4Coll.name : 'BINARY';
-
-	let conditionMet = false;
-	// Standard SQL: comparisons involving NULL yield NULL (represented as 0 for boolean result)
-	if (v1 !== null && v2 !== null) {
-		const comparisonResult = compareSqlValues(v1, v2, collationName);
-		conditionMet = compareOp(comparisonResult);
-	}
-
-	ctx.setStack(destReg, conditionMet ? 1 : 0);
-	return undefined;
-}
-// --- END ADDED HELPER ---
-
 export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.Eq] = (ctx, inst) => {
 		return handleSqlBooleanComparison(ctx, inst, result => result === 0);
@@ -81,25 +61,4 @@ export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.Ge] = (ctx, inst) => {
 		return handleSqlBooleanComparison(ctx, inst, result => result >= 0);
 	};
-
-	// --- ADDED: Handlers for Set Operations ---
-	handlers[Opcode.SetEq] = (ctx, inst) => {
-		return handleSetComparison(ctx, inst, result => result === 0);
-	};
-	handlers[Opcode.SetNe] = (ctx, inst) => {
-		return handleSetComparison(ctx, inst, result => result !== 0);
-	};
-	handlers[Opcode.SetLt] = (ctx, inst) => {
-		return handleSetComparison(ctx, inst, result => result < 0);
-	};
-	handlers[Opcode.SetLe] = (ctx, inst) => {
-		return handleSetComparison(ctx, inst, result => result <= 0);
-	};
-	handlers[Opcode.SetGt] = (ctx, inst) => {
-		return handleSetComparison(ctx, inst, result => result > 0);
-	};
-	handlers[Opcode.SetGe] = (ctx, inst) => {
-		return handleSetComparison(ctx, inst, result => result >= 0);
-	};
-	// --- END ADDED HANDLERS ---
 }

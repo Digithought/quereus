@@ -11,8 +11,8 @@ import type { PlannedStep } from './types.js';
 import { createLogger } from '../../common/logger.js';
 import { QueryPlannerContext } from './context.js';
 import type { ColumnSchema } from '../../schema/column.js';
-import { SqlDataType } from '../../common/types.js'; // For new column creation
-import { MemoryTableModule } from '../../vtab/memory/module.js'; // Added import
+import { MemoryTableModule } from '../../vtab/memory/module.js';
+import { expressionToString } from '../../util/ddl-stringify.js';
 
 // Define and export loggers at the top level
 export const log = createLogger('compiler:plan');
@@ -168,13 +168,30 @@ export function planTableAccessHelper(
 	// Calculate nArgs based on usage information from xBestIndex
 	const nArgs = Math.max(0, ...(indexInfo.aConstraintUsage || []).map(u => u.argvIndex ?? 0));
 
+	// Refine handledNodes based on the omit flag from xBestIndex usage
+	const finalHandledNodes = new Set(handledNodes); // Start with nodes extracted
+	if (indexInfo.aConstraintUsage) {
+		indexInfo.aConstraintUsage.forEach((usage, i) => {
+			if (usage.omit === false && usage.argvIndex > 0) { // If used but not omitted (i.e., VDBE must verify)
+				const originalExpr = constraintExpressions.get(i);
+				if (originalExpr) {
+					log(`Constraint expression [${expressionToString(originalExpr)}] marked as NOT handled by VTab index (omit=false). Removing from handled set.`);
+					finalHandledNodes.delete(originalExpr);
+					// Also remove parent Collate node if this was the inner part
+					// This requires traversing up, or storing parent info in extractConstraints.
+					// For now, let's assume compileUnhandledWhereConditions handles Collate nodes correctly if the inner node is not marked handled.
+				}
+			}
+		});
+	}
+
 	const planResult: CursorPlanningResult = {
 		idxNum: indexInfo.idxNum,
 		idxStr: indexInfo.idxStr,
 		usage: indexInfo.aConstraintUsage,
 		constraints: [...indexInfo.aConstraint],
 		constraintExpressions: constraintExpressions,
-		handledWhereNodes: handledNodes,
+		handledWhereNodes: finalHandledNodes,
 		cost: indexInfo.estimatedCost,
 		rows: indexInfo.estimatedRows,
 		orderByConsumed: indexInfo.orderByConsumed,
@@ -230,11 +247,11 @@ export function expressionReferencesOnlyAllowedCursors(
 				foundCursor = compiler.tableAliases.get(colExpr.table.toLowerCase()) ?? -1;
 			} else {
 				// Unqualified column: check which allowed cursor provides it
-				let ambiguous = false;
+				//let ambiguous = false;
 				for (const cursorId of allowedCursors) {
 					const schema = compiler.tableSchemas.get(cursorId);
 					if (schema?.columnIndexMap.has(colExpr.name.toLowerCase())) {
-						if (foundCursor !== -1) ambiguous = true;
+						//if (foundCursor !== -1) ambiguous = true;
 						foundCursor = cursorId;
 					}
 				}
@@ -318,7 +335,7 @@ export function estimateSubqueryCost(
 	compiler: Compiler,
 	subquerySelect: AST.SelectStmt,
 	outerCursors: ReadonlySet<number>,
-	predicate?: AST.Expression // The predicate already pushed into subquerySelect.where
+	_predicate?: AST.Expression // The predicate already pushed into subquerySelect.where
 ): { cost: number, rows: bigint } {
 	log(`Recursively estimating cost for subquery starting line ${subquerySelect.loc?.start.line ?? '?'}`);
 

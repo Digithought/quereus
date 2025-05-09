@@ -9,7 +9,7 @@ import { log, warnLog } from './helpers.js';
 import type { ConstraintExtractionResult } from './types.js';
 
 /** Extracts constraints and identifies handled nodes */
-export function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: TableSchema, whereExpr: AST.Expression | undefined, activeOuterCursors: ReadonlySet<number>): ConstraintExtractionResult {
+export function extractConstraints(compiler: Compiler, cursorIdx: number, tableSchema: TableSchema, whereExpr: AST.Expression | undefined, _activeOuterCursors: ReadonlySet<number>): ConstraintExtractionResult {
 	const constraints: IndexConstraint[] = [];
 	const constraintExpressions: Map<number, AST.Expression> = new Map();
 	const handledNodes = new Set<AST.Expression>();
@@ -115,6 +115,9 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 					const leExpr: AST.BinaryExpr = { type: 'binary', operator: '<=', left: colExpr, right: upperBoundExpr, loc: binExpr.loc };
 					traverse(geExpr);
 					traverse(leExpr);
+					if (handledNodes.has(geExpr) && handledNodes.has(leExpr)) {
+						handledNodes.add(binExpr);
+					}
 				} else {
 					warnLog("Unsupported BETWEEN structure for planning.");
 				}
@@ -138,12 +141,7 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 					if (sourceCursor === cursorIdx && listValues.every(isOuterExpr)) {
 						const colIdx = tableSchema.columnIndexMap.get(colNameLower);
 						if (colIdx !== undefined) {
-							listValues.forEach(valueExpr => {
-								const constraintIdx = constraints.length;
-								constraints.push({ iColumn: colIdx, op: IndexConstraintOp.EQ, usable: true });
-								constraintExpressions.set(constraintIdx, valueExpr);
-							});
-							handledNodes.add(binExpr);
+							log("IN (list) constraint extraction skipped for xBestIndex planning, will be handled by VDBE.");
 						}
 					}
 				} else if (binExpr.right.type === 'subquery') {
@@ -155,8 +153,8 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 			let colExpr: AST.ColumnExpr | undefined;
 			let valueExpr: AST.Expression | undefined;
 			let op: IndexConstraintOp | undefined;
-			let swapped = false;
 			let colCursor = -1;
+			let effectiveBinExpr = binExpr;
 
 			if (binExpr.left.type === 'column') {
 				colExpr = binExpr.left;
@@ -167,8 +165,21 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 			} else if (binExpr.right.type === 'column') {
 				colExpr = binExpr.right;
 				valueExpr = binExpr.left;
-				swapped = true;
 				op = mapAstOperatorToConstraintOp(binExpr.operator, true);
+				if (colExpr.table) colCursor = compiler.tableAliases.get(colExpr.table.toLowerCase()) ?? -1;
+				else if (tableSchema.columnIndexMap.has(colExpr.name.toLowerCase())) colCursor = cursorIdx;
+			} else if (binExpr.left.type === 'collate' && binExpr.left.expr.type === 'column') {
+				colExpr = binExpr.left.expr;
+				valueExpr = binExpr.right;
+				op = mapAstOperatorToConstraintOp(binExpr.operator);
+				effectiveBinExpr = binExpr;
+				if (colExpr.table) colCursor = compiler.tableAliases.get(colExpr.table.toLowerCase()) ?? -1;
+				else if (tableSchema.columnIndexMap.has(colExpr.name.toLowerCase())) colCursor = cursorIdx;
+			} else if (binExpr.right.type === 'collate' && binExpr.right.expr.type === 'column') {
+				colExpr = binExpr.right.expr;
+				valueExpr = binExpr.left;
+				op = mapAstOperatorToConstraintOp(binExpr.operator, true);
+				effectiveBinExpr = binExpr;
 				if (colExpr.table) colCursor = compiler.tableAliases.get(colExpr.table.toLowerCase()) ?? -1;
 				else if (tableSchema.columnIndexMap.has(colExpr.name.toLowerCase())) colCursor = cursorIdx;
 			}
@@ -178,12 +189,13 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 					const colIdx = tableSchema.columnIndexMap.get(colExpr.name.toLowerCase());
 					if (colIdx !== undefined) {
 						const constraintIdx = constraints.length;
+						const nodeToHandle = effectiveBinExpr;
 						constraints.push({ iColumn: colIdx, op: op, usable: true });
-						constraintExpressions.set(constraintIdx, valueExpr);
-						handledNodes.add(binExpr);
+						constraintExpressions.set(constraintIdx, nodeToHandle);
+						handledNodes.add(nodeToHandle);
 					}
 				} else {
-					log(`Skipping constraint for xBestIndex (value references target table): %s %s ...`, colExpr.name, binExpr.operator);
+					log(`Skipping constraint for xBestIndex (value references target table or complex): %s %s ...`, colExpr.name, binExpr.operator);
 				}
 			}
 			else if (binExpr.left.type === 'column' && binExpr.right.type === 'column') {
@@ -211,7 +223,7 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 					if (colIdx !== undefined) {
 						const constraintIdx = constraints.length;
 						constraints.push({ iColumn: colIdx, op: effectiveOp, usable: true });
-						constraintExpressions.set(constraintIdx, outerCol);
+						constraintExpressions.set(constraintIdx, binExpr);
 						handledNodes.add(binExpr);
 					}
 				}

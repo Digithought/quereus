@@ -336,11 +336,7 @@ export const typeofFunc = createScalarFunction(
 );
 
 // --- random() ---
-// Returns a pseudo-random integer between -9223372036854775808 and +9223372036854775807.
-const MAX_SQLITE_INT = 9223372036854775807n;
-const MIN_SQLITE_INT = -9223372036854775808n;
-const SQLITE_INT_RANGE = MAX_SQLITE_INT - MIN_SQLITE_INT + 1n;
-
+// Returns a pseudo-random integer between MIN_SAFE_INTEGER and MAX_SAFE_INTEGER.
 const jsRandom = (): SqlValue => {
 	// Generate a random BigInt within the full 64-bit signed range.
 	// This is tricky with Math.random() which gives a float [0, 1).

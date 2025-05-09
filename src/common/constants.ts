@@ -39,6 +39,7 @@ export enum IndexConstraintOp {
 	IS = 72,
 	LIMIT = 73,
 	OFFSET = 74,
+	IN = 75,
 	FUNCTION = 150, // Base for function-based constraints
 }
 

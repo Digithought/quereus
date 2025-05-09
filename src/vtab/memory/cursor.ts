@@ -9,11 +9,9 @@ import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexConstraint, IndexInfo } from '../indexInfo.js'; // Keep for filter signature
 import type { MemoryTableConnection } from './layer/connection.js';
 import type { LayerCursorInternal } from './layer/cursor.js';
-import type { ScanPlan, ScanPlanEqConstraint, ScanPlanRangeBound } from './layer/scan-plan.js'; // Import ScanPlan
+import type { ScanPlan, ScanPlanRangeBound } from './layer/scan-plan.js'; // Import ScanPlan
 import { BTree } from 'digitree'; // Needed for sorter logic
 import type { P4SortKey } from '../../vdbe/instruction.js'; // Import SortKey info
-import { createLogger } from '../../common/logger.js'; // Import logger
-import { safeJsonStringify } from '../../util/serialization.js'; // Import helper
 
 /**
  * Public-facing cursor for the MemoryTable using the layer-based MVCC model.
@@ -43,11 +41,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	/** Resets the cursor state, closing any internal cursor. */
 	private reset(): void {
 		if (this.internalCursor) {
-			try {
-				this.internalCursor.close();
-			} catch (e) {
-				// REMOVED errorLog
-			}
+			this.internalCursor.close();
 			this.internalCursor = null;
 		}
 		this._isEof = true;
@@ -305,10 +299,6 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 				}
 				await readerCursor.next();
 			}
-		} catch(e) {
-			// Use namespaced error logger
-			// REMOVED errorLog
-			throw e;
 		} finally {
 			// Close the temporary reader cursor
 			readerCursor?.close();
@@ -340,25 +330,20 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			const sorterTree = sorterIndex.data as unknown as BTree<BTreeKey, MemoryTableRow>; // Get BTree from MemoryIndex
 			this.sorterResults = []; // Clear previous sorter results
 			this.sorterIndex = -1;
-			try {
-				// Iterate the sorter BTree (which is implicitly sorted)
-				// TODO: Respect ORDER BY direction if needed (sorter currently assumes ASC)
-				const iterator = sorterTree.ascending(sorterTree.first());
-				for (const path of iterator) {
-					const row = sorterTree.at(path);
-					if (row) {
-						// Apply remaining constraints NOT handled by the sort key itself
-						// This part is tricky - how do we know which constraints apply?
-						// Assume for now that sorter is only used when WHERE clause is simple or absent.
-						// If complex filters needed post-sort, VDBE might handle it.
-						// Let's assume constraints *are* handled by VDBE after sort for now.
-						this.sorterResults.push(row); // Store row copy
-					}
+
+			// Iterate the sorter BTree (which is implicitly sorted)
+			// TODO: Respect ORDER BY direction if needed (sorter currently assumes ASC)
+			const iterator = sorterTree.ascending(sorterTree.first());
+			for (const path of iterator) {
+				const row = sorterTree.at(path);
+				if (row) {
+					// Apply remaining constraints NOT handled by the sort key itself
+					// This part is tricky - how do we know which constraints apply?
+					// Assume for now that sorter is only used when WHERE clause is simple or absent.
+					// If complex filters needed post-sort, VDBE might handle it.
+					// Let's assume constraints *are* handled by VDBE after sort for now.
+					this.sorterResults.push(row); // Store row copy
 				}
-			} catch (e) {
-				// Use namespaced error logger
-				// REMOVED errorLog
-				throw e;
 			}
 
 			// Set initial sorter position
@@ -374,21 +359,15 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 
 		// --- Normal Layer-Based Scan --- //
 		this.isUsingSorter = false;
-		try {
-			// 1. Build the ScanPlan (now uses simplified EQ logic)
-			const plan = this.buildScanPlan(idxNum, idxStr, constraints, args, indexInfo);
 
-			// 2. Create the internal layer cursor chain using the connection
-			this.internalCursor = this.connection.createLayerCursor(plan);
+		// 1. Build the ScanPlan (now uses simplified EQ logic)
+		const plan = this.buildScanPlan(idxNum, idxStr, constraints, args, indexInfo);
 
-			// 3. Set initial EOF state from the internal cursor
-			this._isEof = this.internalCursor.isEof();
+		// 2. Create the internal layer cursor chain using the connection
+		this.internalCursor = this.connection.createLayerCursor(plan);
 
-		} catch (e) {
-			// Use namespaced error logger
-			// REMOVED errorLog
-			throw e;
-		}
+		// 3. Set initial EOF state from the internal cursor
+		this._isEof = this.internalCursor.isEof();
 	}
 
 	async next(): Promise<void> {
@@ -409,13 +388,8 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 				this._isEof = true; // Should not happen if filter succeeded
 				return;
 			}
-			try {
-				await this.internalCursor.next();
-				this._isEof = this.internalCursor.isEof();
-			} catch (e) {
-				// REMOVED errorLog
-				throw e;
-			}
+			await this.internalCursor.next();
+			this._isEof = this.internalCursor.isEof();
 		}
 	}
 
@@ -492,13 +466,13 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	// LayerCursorInternal interface and implementations.
 	// For now, leave them as not implemented.
 
-	async seekRelative(offset: number): Promise<boolean> {
+	async seekRelative(_offset: number): Promise<boolean> {
 		// Use namespaced warn logger
 		// REMOVED warnLog
 		throw new SqliteError(`seekRelative not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 
-	async seekToRowid(rowid: bigint): Promise<boolean> {
+	async seekToRowid(_rowid: bigint): Promise<boolean> {
 		// Use namespaced warn logger
 		// REMOVED warnLog
 		throw new SqliteError(`seekToRowid not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);

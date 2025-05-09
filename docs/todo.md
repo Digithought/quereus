@@ -46,7 +46,7 @@ Review items:
     *   [ ] Enhance `xBestIndex` to utilize more constraint types (`LIKE`, `GLOB`, `IN`, range scans on non-leading composite key parts). Basic range/EQ planning exists.
     *   [P] More efficient transactional merge/read: Layer cursors merge modifications, but performance under heavy load or deep layer chains could be optimized.
     *   [ ] Improve `xBestIndex` and layer cursor scan planning to better utilize B-Tree ranges.
-*   [ ] **Clean up vtab module interface** - more JS idiomatic.  e.g. move cursor functions into methods on cursor interface.
+    *   [ ] Honoring order of ephemeral sorting index
 *   [P] **VTab Transactionality:** Transaction hooks (`xBegin`, `xCommit`, etc.) and savepoint hooks exist in the interface and `MemoryTable`. Need more examples/guidance.
 *   [ ] **VTab Shadow Names:**
     *   [ ] Implement `xShadowName` VTab module method check. (Interface method exists, check not implemented).

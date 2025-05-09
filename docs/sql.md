@@ -388,8 +388,8 @@ select * from products where price < 50;
 
 -- Multiple conditions with AND/OR
 select * from employees 
-where (department = 'Sales' or department = 'Marketing')
-and hire_date >= date('2020-01-01');
+  where (department = 'Sales' or department = 'Marketing')
+  and hire_date >= date('2020-01-01');
 
 -- Pattern matching with LIKE
 select * from customers where email like '%@gmail.com';
@@ -402,14 +402,14 @@ select * from users where last_login is null;
 
 -- Subquery in WHERE
 select * from products
-where category_id in (select id from categories where parent_id = 5);
+  where category_id in (select id from categories where parent_id = 5);
 
 -- EXISTS subquery
 select * from customers as c
-where exists (
-  select 1 from orders as o
-  where o.customer_id = c.id and o.status = 'shipped'
-);
+  where exists (
+    select 1 from orders as o
+      where o.customer_id = c.id and o.status = 'shipped'
+  );
 ```
 
 ### 3.3 GROUP BY Clause
@@ -602,6 +602,7 @@ select null as no_value;
 **Logical Operators:**
 - AND: `and`
 - OR: `or`
+- XOR: `xor`
 - NOT: `not`
 
 **Bitwise Operators:**

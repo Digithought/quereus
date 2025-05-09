@@ -226,28 +226,46 @@ export function compileUnhandledWhereConditions(
 				compileRecursive(node.left);
 				compileRecursive(node.right);
 			} else if (node.operator.toUpperCase() === 'OR') {
-				const orReg = compiler.allocateMemoryCells(1);
-				const addrOrTrue = compiler.allocateAddress();
-				compiler.compileExpression(node.left, orReg);
-				compiler.emit(Opcode.IfTrue, orReg, addrOrTrue, 0, null, 0, "OR: check left");
-				compiler.compileExpression(node.right, orReg);
-				// Emit the jump
-				compiler.emit(Opcode.IfFalse, orReg, jumpTargetIfFalse, 0, null, 0, "OR: check right, jump if false");
-				compiler.resolveAddress(addrOrTrue);
-			} else {
+				// OR compilation needs careful state management if parts are handled/unhandled
+				// For now, assume if OR itself wasn't handled, compile the whole thing.
+				log(`Compiling unhandled OR expression: ${expressionToString(node)}`);
 				const tempReg = compiler.allocateMemoryCells(1);
-				compiler.compileExpression(node, tempReg);
-				// Emit the jump
+				// Pass activeCursors for potential correlation inside OR branches
+				compiler.compileExpression(node, tempReg, analyzeSubqueryCorrelation(compiler, node, new Set(activeCursors)));
+				compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, "Check unhandled: OR");
+			} else {
+				// Handle other binary operators (=, <, >, LIKE, etc.)
+				log(`Compiling unhandled binary expression: ${expressionToString(node)}`);
+				const tempReg = compiler.allocateMemoryCells(1);
+				// Call compileBinary directly to ensure collation is handled
+				compiler.compileBinary(node, tempReg, analyzeSubqueryCorrelation(compiler, node, new Set(activeCursors)));
 				compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: ${node.operator}`);
 			}
 		} else if (node.type === 'unary') {
+			// Handle unary operators (NOT, IS NULL, etc.)
+			log(`Compiling unhandled unary expression: ${expressionToString(node)}`);
 			const tempReg = compiler.allocateMemoryCells(1);
-			compiler.compileExpression(node, tempReg);
-			// Emit the jump
+			// Call compileUnary directly
+			compiler.compileUnary(node, tempReg, analyzeSubqueryCorrelation(compiler, node, new Set(activeCursors)));
 			compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: ${node.operator}`);
-		} else {
+		} else if (node.type === 'collate') {
+			// If we encounter a COLLATE node directly that wasn't handled,
+			// it implies its inner expression (likely a comparison) needs checking WITH the collation.
+			// The inner expression itself wouldn't have been marked handled.
+			// So, we simply compile the COLLATE node using compileExpression,
+			// which eventually calls compileBinary/Unary for the inner part,
+			// and *that* compileBinary/Unary call needs to correctly detect the COLLATE wrapper.
+			// This seems okay based on compileBinary's logic.
+			log(`Compiling unhandled COLLATE expression: ${expressionToString(node)}`);
 			const tempReg = compiler.allocateMemoryCells(1);
-			compiler.compileExpression(node, tempReg);
+			compiler.compileExpression(node, tempReg, analyzeSubqueryCorrelation(compiler, node, new Set(activeCursors)));
+			compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: COLLATE`);
+
+		} else {
+			// Handle other simple expressions (e.g., function call, column reference directly in WHERE)
+			log(`Compiling unhandled other expression: ${expressionToString(node)}`);
+			const tempReg = compiler.allocateMemoryCells(1);
+			compiler.compileExpression(node, tempReg, analyzeSubqueryCorrelation(compiler, node, new Set(activeCursors)));
 			// Emit the jump
 			compiler.emit(Opcode.IfFalse, tempReg, jumpTargetIfFalse, 0, null, 0, `Check unhandled: ${node.type}`);
 		}

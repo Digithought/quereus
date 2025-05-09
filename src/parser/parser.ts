@@ -426,6 +426,7 @@ export class Parser {
 		const columns: AST.ResultColumn[] = [];
 
 		do {
+			log(`columnList: Loop start. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 			// Handle wildcard: * or table.*
 			if (this.match(TokenType.ASTERISK)) {
 				columns.push({ type: 'all' });
@@ -440,7 +441,9 @@ export class Parser {
 			}
 			// Handle regular column expression
 			else {
+				log(`columnList: Parsing expression...`); // DEBUG
 				const expr = this.expression();
+				log(`columnList: Parsed expression. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 				let alias: string | undefined;
 
 				// Handle AS alias or just alias
@@ -467,8 +470,10 @@ export class Parser {
 
 				columns.push({ type: 'column', expr, alias });
 			}
+			log(`columnList: Checking for comma. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 		} while (this.match(TokenType.COMMA));
 
+		log(`columnList: Loop ended. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 		return columns;
 	}
 
@@ -701,18 +706,18 @@ export class Parser {
 	 * Parse an expression
 	 */
 	private expression(): AST.Expression {
-		return this.logicalOr();
+		return this.logicalXorOr();
 	}
 
 	/**
-	 * Parse logical OR expression
+	 * Parse logical OR and XOR expressions (lowest precedence)
 	 */
-	private logicalOr(): AST.Expression {
+	private logicalXorOr(): AST.Expression {
 		let expr = this.logicalAnd();
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
-		while (this.match(TokenType.OR)) {
-			const operator = 'OR';
+		while (this.match(TokenType.OR, TokenType.XOR)) { // Added XOR
+			const operator = this.previous().type === TokenType.XOR ? 'XOR' : 'OR'; // Determine operator
 			const right = this.logicalAnd();
 			const endToken = this.previous(); // End token is end of right expr
 			expr = {
@@ -859,18 +864,18 @@ export class Parser {
 			const operatorStartToken = operatorToken; // Start token is the operator itself
 			const operator = operatorToken.lexeme;
 			// Unary operator applies to the result of the *next* precedence level (concatenation)
-			const right = this.concatenation(); // Changed from collateExpression()
+			const right = this.concatenation(); // Should call concatenation (higher precedence than factor)
 			const endToken = this.previous(); // End token is end of the operand
 			return { type: 'unary', operator, expr: right, loc: _createLoc(operatorStartToken, endToken) };
 		}
 
-		let expr = this.concatenation(); // Changed from collateExpression()
+		let expr = this.concatenation(); // Factor operands have higher precedence (concatenation)
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		while (this.match(TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT)) {
 			const operatorToken = this.previous();
 			const operator = operatorToken.lexeme;
-			const right = this.concatenation(); // Changed from collateExpression()
+			const right = this.concatenation(); // Factor operands have higher precedence (concatenation)
 			const endToken = this.previous(); // End token is end of right expr
 			expr = { type: 'binary', operator, left: expr, right, loc: _createLoc(startToken, endToken) };
 		}
@@ -882,12 +887,12 @@ export class Parser {
 	 * Parse concatenation expression (||)
 	 */
 	private concatenation(): AST.Expression {
-		let expr = this.collateExpression(); // Parse higher precedence first
+		let expr = this.collateExpression(); // Concatenation operands have higher precedence (collate)
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		while (this.match(TokenType.PIPE_PIPE)) {
 			const operator = '||';
-			const right = this.collateExpression(); // Right operand has same or higher precedence
+			const right = this.collateExpression(); // Concatenation operands have higher precedence (collate)
 			const endToken = this.previous(); // End token is end of right expr
 			expr = {
 				type: 'binary',
@@ -927,6 +932,24 @@ export class Parser {
 		// Case expression
 		if (this.matchKeyword('CASE')) {
 			return this.parseCaseExpression(startToken);
+		}
+
+		// CAST expression: CAST(expr AS type)
+		if (this.peekKeyword('CAST') && this.checkNext(1, TokenType.LPAREN)) {
+			const castToken = this.advance(); // Consume CAST
+			this.consume(TokenType.LPAREN, "Expected '(' after CAST.");
+			const expr = this.expression();
+			this.consumeKeyword('AS', "Expected 'AS' in CAST expression.");
+			// Allow type names that might be keywords (e.g., TEXT, INTEGER, REAL, BLOB)
+			// or multi-word type names if supported (e.g., "VARCHAR(255)") - for now, simple identifier
+			if (!this.check(TokenType.IDENTIFIER) &&
+				!this.isTypeNameKeyword(this.peek().lexeme.toUpperCase())) {
+				throw this.error(this.peek(), "Expected type name after 'AS' in CAST expression.");
+			}
+			const typeToken = this.advance(); // Consume type name
+			const targetType = typeToken.lexeme;
+			const endToken = this.consume(TokenType.RPAREN, "Expected ')' after CAST expression type.");
+			return { type: 'cast', expr, targetType, loc: _createLoc(castToken, endToken) };
 		}
 
 		// Literals
@@ -1948,8 +1971,17 @@ export class Parser {
 	private peekKeyword(keyword: string): boolean {
 		if (this.isAtEnd()) return false;
 		const token = this.peek();
-		return (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keyword) ||
-			(token.type === TokenType[keyword.toUpperCase() as keyof typeof TokenType]);
+		// Check if the token is an IDENTIFIER and its lexeme matches the keyword (case-insensitive)
+		if (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keyword.toUpperCase()) {
+			return true;
+		}
+		// Check if the token type itself matches a keyword TokenType (e.g., TokenType.SELECT)
+		// This requires that your TokenType enum has entries like SELECT, TABLE, etc.
+		const keywordTokenType = TokenType[keyword.toUpperCase() as keyof typeof TokenType];
+		if (keywordTokenType !== undefined && token.type === keywordTokenType) {
+			return true;
+		}
+		return false;
 	}
 
 	// --- Helper method to match keywords case-insensitively ---
@@ -2030,5 +2062,11 @@ export class Parser {
 			elseExpr,
 			loc: _createLoc(startToken, endToken),
 		};
+	}
+
+	// Helper to check if a token lexeme is a common type name keyword for CAST
+	private isTypeNameKeyword(lexeme: string): boolean {
+		const typeKeywords = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC', 'VARCHAR', 'CHAR', 'DATE', 'DATETIME', 'BOOLEAN', 'INT'];
+		return typeKeywords.includes(lexeme.toUpperCase());
 	}
 }

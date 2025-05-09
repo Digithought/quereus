@@ -1,14 +1,12 @@
 import { Opcode } from '../vdbe/opcodes.js';
 import { StatusCode, SqlDataType } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
-import { type P4FuncDef, type P4SortKey } from '../vdbe/instruction.js';
+import { type P4SortKey } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js'; // Ensure HavingContext is imported
-import type { ColumnResultInfo, HavingContext } from './structs.js';
+import type { ColumnResultInfo } from './structs.js';
 import type * as AST from '../parser/ast.js';
-import type { ArgumentMap } from './handlers.js';
 import type { TableSchema } from '../schema/table.js'; // Import TableSchema only
 import type { ColumnSchema } from '../schema/column.js'; // Import ColumnSchema from correct location
-import type { SubqueryCorrelationResult } from './correlation.js';
 import { setupWindowSorter, type WindowSorterInfo } from './window.js'; // Import window setup function
 import { expressionToString } from '../util/ddl-stringify.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
@@ -26,7 +24,6 @@ import type { RowProcessingContext } from './select-loop.js'; // Add import for 
 
 const log = createLogger('compiler:select');
 const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
 const debugLog = log.extend('debug');
 
 /**
@@ -335,17 +332,11 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	let sharedFrameDefinition: AST.WindowFrame | undefined;
 	let ephSortCursor = -1;
 	let ephSortSchema: TableSchema | undefined;
-	let regLimit = 0;
-	let regOffset = 0;
+	const regLimit = 0;
+	const regOffset = 0;
 	let finalResultBaseReg = 0;
 	let finalNumCols = 0;
 	let finalColumnMap: ColumnResultInfo[] = [];
-	// Aggregate specific registers
-	let regAggKey: number = 0;
-	let regAggArgs: number = 0;
-	let regAggSerializedKey: number = 0;
-	// Placeholder for innermost loop jump target
-	let placeholderVNextAddr: number = 0;
 
 	// Prepare for window functions if needed
 	if (hasWindowFunctions) {
@@ -372,7 +363,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	if (hasWindowFunctions && windowSorterInfo) {
 		// ... (Window function column mapping logic - assume exists) ...
 		finalColumnMap = []; // Placeholder - restore actual logic if needed
-		stmt.columns.forEach((col, idx) => {
+		stmt.columns.forEach((col) => {
 			if (col.type === 'column') {
 				if (col.expr && col.expr.type === 'windowFunction') {
 					const winExpr = col.expr as AST.WindowFunctionExpr;
@@ -432,7 +423,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		let currentResultReg = compiler.allocateMemoryCells(1);
 		finalResultBaseReg = currentResultReg;
 		if (hasGroupBy) {
-			stmt.groupBy!.forEach((expr, i) => {
+			stmt.groupBy!.forEach(expr => {
 				finalColumnMap.push({ targetReg: currentResultReg++, sourceCursor: -1, sourceColumnIndex: -1, expr: expr });
 			});
 		}
@@ -481,8 +472,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 		// Allocate aggregate registers
 		let allocatedAggKeyReg: number;
-		let allocatedAggArgsReg: number;
-		let allocatedAggSerKeyReg: number;
 		if (hasGroupBy) {
 			const groupKeyExprCount = getGroupKeyExpressions(stmt).length;
 			allocatedAggKeyReg = compiler.allocateMemoryCells(groupKeyExprCount);
@@ -490,8 +479,8 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			allocatedAggKeyReg = compiler.allocateMemoryCells(1);
 		}
 		const maxAggArgs = aggregateColumns.reduce((max, col) => Math.max(max, col.expr.args.length), 0);
-		allocatedAggArgsReg = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
-		allocatedAggSerKeyReg = compiler.allocateMemoryCells(1);
+		const allocatedAggArgsReg = compiler.allocateMemoryCells(Math.max(1, maxAggArgs));
+		const allocatedAggSerKeyReg = compiler.allocateMemoryCells(1);
 		debugLog(`DEBUG: Allocated agg regs: Key=${allocatedAggKeyReg}, Args=${allocatedAggArgsReg}, SerKey=${allocatedAggSerKeyReg}`);
 
 	} else {
@@ -607,29 +596,14 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		);
 	}
 
-	// --- Compile Main Loop using the NEW planner output --- //
-	// TODO: Replace compileSelectLoop with compilePlannedStepsLoop
-	// warnLog("Loop generation using compileSelectLoop is DEPRECATED and needs replacement with compilePlannedStepsLoop.");
-	// Placeholder call - This WILL likely fail or produce incorrect code!
-	// const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compileSelectLoop(
-	// 	compiler,
-	// 	stmt,
-	// 	[], // Pass empty array - compileSelectLoop needs replacement
-	// 	fromCursors,
-	// 	processRowCallback
-	// );
-	// === Replace Placeholder with Actual Call ===
-	// Ensure that finalColumnMap is properly initialized before passing to compilePlannedStepsLoop.
-	// The finalColumnMap is used by processRowCallback functions to handle LEFT JOIN padding
-	// by determining which columns come from which relations.
-	const { innermostLoopStartAddr, innermostLoopEndAddrPlaceholder } = compilePlannedStepsLoop(
+	compilePlannedStepsLoop(
 		compiler,
 		stmt,
-		plannedSteps, // Pass the actual plan
-		fromCursors, // Still needed for compileUnhandledWhereConditions
+		plannedSteps, // Actual plan
+		fromCursors, // Needed for compileUnhandledWhereConditions
 		processRowCallback,
 		finalColumnMap, // Pass finalColumnMap for LEFT JOIN padding context
-		coreColumnMap   // <<<< ADDED
+		coreColumnMap
 	);
 	// =========================================
 
@@ -687,9 +661,39 @@ function compileSelectNoFrom(compiler: Compiler, stmt: AST.SelectStmt): void {
 
 	// Set final column aliases
 	compiler.columnAliases = columnMap.map((info, idx) => {
-		return (info.expr as any)?.alias
-			?? (info.expr?.type === 'column' ? (info.expr as AST.ColumnExpr).name : `col${idx}`);
+		// Attempt to use alias if present
+		const alias = (info.expr as any)?.alias;
+		if (alias) return alias;
+
+		// If it's a direct column reference, use its name
+		if (info.expr?.type === 'column') {
+			return (info.expr as AST.ColumnExpr).name;
+		}
+
+		// If the expression has source location, try to use the original SQL text
+		if (info.expr && info.expr.loc && compiler.sql) {
+			const startOffset = info.expr.loc.start.offset;
+			const endOffset = info.expr.loc.end.offset;
+			if (startOffset !== undefined && endOffset !== undefined && startOffset < endOffset) {
+				const originalExprText = compiler.sql.substring(startOffset, endOffset).trim();
+				if (originalExprText.length > 0) return originalExprText;
+			}
+		}
+		// Fallback to colX
+		return `col${idx}`;
 	});
+
+	// Actually compile the expressions into their target registers
+	for (const colInfo of columnMap) {
+		if (colInfo.expr) {
+			// For a SELECT without FROM, there are no outer cursors, no correlation, no having context, no argument map for this level.
+			compiler.compileExpression(colInfo.expr, colInfo.targetReg, undefined, undefined, undefined);
+		} else {
+			// Should not happen for SELECT without FROM if column is not 'all' (which is handled by getSelectCoreStructure)
+			// If it did, ensure the target register has a defined value (e.g. NULL)
+			compiler.emit(Opcode.Null, 0, colInfo.targetReg, 0, null, 0, "Placeholder for unexpected null expr in NoFrom SELECT");
+		}
+	}
 
 	// --- Compile WHERE clause if present (rare for no FROM, but possible) --- //
 	if (stmt.where) {

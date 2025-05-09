@@ -70,7 +70,10 @@ export class Compiler {
 	public maxLocalOffsetInCurrentFrame = 0; // Track max offset for FrameEnter P1
 	public subroutineFrameStack: { frameEnterInsn: VdbeInstruction | null; maxOffset: number }[] = [];
 	// --- Stack Pointers ---
-	public stackPointer = 0; // Current stack top (absolute index)
+	// VDBE reserves stack slots 0 and 1 in a frame for control info if FrameEnter/FrameLeave are used.
+	// Even for the main program (FP=0), some opcodes using setMem assume offset >= 2.
+	// Initialize stackPointer to 2 to avoid using slots 0, 1 for general allocation.
+	public stackPointer = 2; // Current stack top (absolute index)
 	public framePointer = 0; // Current frame base (absolute index)
 	// --- End Stack Pointers ---
 	public outerCursors: number[] = []; // Cursors from outer query available to subquery
@@ -114,7 +117,10 @@ export class Compiler {
 			this.currentFrameEnterInsn = null;
 			this.maxLocalOffsetInCurrentFrame = 0;
 			this.subroutineFrameStack = [];
-			this.stackPointer = 0;
+			// Initialize stack and frame pointers for the main program block.
+			// FP=0 for main. SP starts at 2 because VDBE opcodes using setMem (like Affinity)
+			// expect offsets >= 2 due to VDBE's localsStartOffset.
+			this.stackPointer = 2;
 			this.framePointer = 0;
 			this.outerCursors = [];
 			this._currentPlannedSteps = null; // Reset for EXPLAIN
@@ -270,7 +276,7 @@ export class Compiler {
 	verifyWhereConstraints(cursorIdx: number, jumpTargetIfFalse: number): void { WhereVerify.verifyWhereConstraintsHelper(this, cursorIdx, jumpTargetIfFalse); }
 
 	// Expressions
-	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap); }
+	compileExpression(expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap, overrideCollation?: string): void { compileExpression(this, expr, targetReg, correlation, havingContext, argumentMap, overrideCollation); }
 	compileLiteral(expr: AST.LiteralExpr, targetReg: number): void { Utils.compileLiteralValue(this, expr.value, targetReg); }
 	compileColumn(expr: AST.ColumnExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileColumn(this, expr, targetReg, correlation, havingContext, argumentMap); }
 	compileBinary(expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void { ExprHandlers.compileBinary(this, expr, targetReg, correlation, havingContext, argumentMap); }

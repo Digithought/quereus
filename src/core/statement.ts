@@ -44,7 +44,7 @@ export class Statement {
 	/** @internal */
 	public compile(): VdbeProgram {
 		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
-		if (this.finalized) { throw new MisuseError("Statement finalized"); }
+		if (this.finalized) throw new MisuseError("Statement finalized");
 		log("Compiling statement...");
 		this.vdbeProgram = null;
 
@@ -212,7 +212,15 @@ export class Statement {
 		const names = this.getColumnNames();	// (checks currentRowInternal and finalized)
 
 		return this.currentRowInternal!.reduce((acc, cell, i) => {
-			acc[names[i]] = cell.value;
+			let value = cell.value;
+			// Convert BigInt to Number if it's within the safe range
+			if (typeof value === 'bigint') {
+				if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
+					value = Number(value);
+				}
+				// Otherwise, leave it as BigInt (or could convert to string)
+			}
+			acc[names[i]] = value;
 			return acc;
 		}, {} as Record<string, SqlValue>);
 	}

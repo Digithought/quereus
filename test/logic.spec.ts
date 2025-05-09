@@ -8,7 +8,7 @@ import { Parser } from '../src/parser/parser.js';
 import { Compiler } from '../src/compiler/compiler.js';
 import type { VdbeInstruction } from '../src/vdbe/instruction.js';
 import { Opcode } from '../src/vdbe/opcodes.js';
-import { jsonStringify, safeJsonStringify } from '../src/util/serialization.js';
+import { safeJsonStringify } from '../src/util/serialization.js';
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -51,20 +51,34 @@ describe('SQL Logic Tests', () => {
 
 					if (trimmedLine === '') continue; // Skip empty lines
 
-					// Check for comments, including error expectation
+					// Check for full-line comments, including error expectation
 					if (trimmedLine.startsWith('--')) {
 						if (trimmedLine.toLowerCase().startsWith('-- error:')) {
 							expectedErrorSubstring = trimmedLine.substring(9).trim();
 						}
-						continue; // Skip comment lines
+						continue; // Skip full comment lines
 					}
 
-					// Process results marker (→) or accumulate SQL
+					// --- Refined Comment/SQL Handling ---
+					let sqlPart = line;
+
+					// Check for result marker first
 					if (trimmedLine.startsWith('→')) {
 						expectedResultJson = trimmedLine.substring(1).trim();
-					} else {
-						currentSql += line + '\n';
+						sqlPart = ''; // Line with marker doesn't contribute SQL
 					}
+
+					// Strip trailing comment from the potential SQL part
+					const commentIndex = sqlPart.indexOf('--');
+					if (commentIndex !== -1) {
+						sqlPart = sqlPart.substring(0, commentIndex);
+					}
+
+					// Accumulate the potentially stripped SQL part
+					if (sqlPart.trim() !== '') {
+						currentSql += sqlPart + '\n';
+					}
+					// --- End Refined Handling ---
 
 					// Execute when we have a full SQL block AND either an expected result or expected error
 					const sqlBlock = currentSql.trim(); // Keep sqlBlock variable
@@ -111,11 +125,9 @@ ${sqlBlock}`);
 								if (actualResult.length !== expectedResult.length) {
 									throw new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}. Block:\n${sqlBlock}`);
 								}
-								// Compare row by row using stringify
+								// Compare row by row using deep equality (order-insensitive for keys)
 								for (let i = 0; i < actualResult.length; i++) {
-									const actualStr = jsonStringify(actualResult[i]);
-									const expectedStr = jsonStringify(expectedResult[i]);
-									expect(actualStr).to.equal(expectedStr, `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${actualStr}\nExpected: ${expectedStr}\nBlock:\n${sqlBlock}`);
+									expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
 								}
 								console.log("   -> Results match!");
 							} else if (expectedErrorSubstring !== null) {

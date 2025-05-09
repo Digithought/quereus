@@ -1,6 +1,6 @@
 import { SqlDataType } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import { StatusCode, type SqlValue } from '../common/types.js';
+import { StatusCode } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
 import { type P4FuncDef } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js';
@@ -9,8 +9,9 @@ import type * as AST from '../parser/ast.js';
 import { type SubqueryCorrelationResult, type CorrelatedColumnInfo } from './correlation.js';
 import type { TableSchema } from '../schema/table.js';
 import { getAffinityForType } from '../schema/schema.js';
-import { getExpressionAffinity, getExpressionCollation, compileLiteralValue } from './utils.js';
+import { getExpressionAffinity, getExpressionCollation } from './utils.js';
 import { safeJsonStringify } from '../util/serialization.js';
+import { compileExpression } from './expression.js'; // Corrected import path
 
 /** Map column name/alias to register holding its value */
 export type ArgumentMap = ReadonlyMap<string, number>;
@@ -58,7 +59,7 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 			}
 		} else {
 			let foundCount = 0;
-			for (const [_, cursorId] of compiler.tableAliases.entries()) {
+			for (const [, cursorId] of compiler.tableAliases.entries()) {
 				const schema = compiler.tableSchemas.get(cursorId);
 				if (schema) {
 					const idx = schema.columnIndexMap.get(expr.name.toLowerCase());
@@ -161,12 +162,11 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 			colIdx = potentialColIdx;
 		}
 	} else {
-		let foundCount = 0;
 		let potentialCursor = -1;
 		let potentialColIdx = -1;
 		let potentialSchema: TableSchema | undefined;
 
-		for (const [alias, cursorId] of compiler.tableAliases.entries()) {
+		for (const [, cursorId] of compiler.tableAliases.entries()) {
 			const schema = compiler.tableSchemas.get(cursorId);
 			if (schema) {
 				const idx = schema.columnIndexMap.get(expr.name.toLowerCase());
@@ -177,7 +177,6 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 					potentialCursor = cursorId;
 					potentialColIdx = idx;
 					potentialSchema = schema;
-					foundCount++;
 				} else if (expr.name.toLowerCase() === 'rowid') {
 					if (potentialCursor !== -1) {
 						throw new SqliteError(`Ambiguous column name: ${expr.name} (rowid). Qualify with table name or alias.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
@@ -185,7 +184,6 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 					potentialCursor = cursorId;
 					potentialColIdx = -1;
 					potentialSchema = schema;
-					foundCount++;
 				}
 			}
 		}
@@ -203,7 +201,15 @@ export function compileColumn(compiler: Compiler, expr: AST.ColumnExpr, targetRe
 	compiler.emit(Opcode.VColumn, cursor, colIdx, targetReg, 0, 0, `Get column: ${tableSchema.name}.${expr.name} (idx ${colIdx})`);
 }
 
-export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
+export function compileBinary(
+	compiler: Compiler,
+	expr: AST.BinaryExpr,
+	targetReg: number,
+	correlation?: SubqueryCorrelationResult,
+	havingContext?: HavingContext,
+	argumentMap?: ArgumentMap,
+	overrideCollation?: string // Added overrideCollation
+): void {
 	if (expr.right.type === 'subquery' && [
 		'=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IN'
 	].includes(expr.operator.toUpperCase())) {
@@ -230,14 +236,16 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 
 	const leftReg = compiler.allocateMemoryCells(1);
 	const rightReg = compiler.allocateMemoryCells(1);
-	compiler.compileExpression(expr.left, leftReg, correlation, havingContext, argumentMap);
-	compiler.compileExpression(expr.right, rightReg, correlation, havingContext, argumentMap);
+	// When compileExpression is called recursively, it needs the overrideCollation if present
+	compileExpression(compiler, expr.left, leftReg, correlation, havingContext, argumentMap, overrideCollation);
+	compileExpression(compiler, expr.right, rightReg, correlation, havingContext, argumentMap, overrideCollation);
 
-	let collationName: string | undefined;
+	let collationName: string | undefined = overrideCollation;
 	const isComparison = ['=', '==', '!=', '<>', '<', '<=', '>', '>=', 'IS', 'IS NOT', 'LIKE', 'GLOB'].includes(expr.operator.toUpperCase());
 
-	if (isComparison) {
+	if (!collationName && isComparison) { // Only determine if not overridden
 		if (expr.left.type === 'collate') {
+			// This case might be redundant if compileCollate handles it by passing overrideCollation
 			collationName = expr.left.collation.toUpperCase();
 		} else if (expr.right.type === 'collate') {
 			collationName = expr.right.collation.toUpperCase();
@@ -246,8 +254,8 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 			const rightColl = getExpressionCollation(compiler, expr.right, correlation);
 			if (leftColl !== 'BINARY' && rightColl === 'BINARY') collationName = leftColl;
 			else if (rightColl !== 'BINARY' && leftColl === 'BINARY') collationName = rightColl;
-			else if (leftColl !== 'BINARY' && rightColl !== 'BINARY' && leftColl !== rightColl) collationName = 'BINARY';
-			else collationName = leftColl;
+			else if (leftColl !== 'BINARY' && rightColl !== 'BINARY' && leftColl !== rightColl) collationName = 'BINARY'; // Or throw error for incompatible collations
+			else collationName = leftColl; // Both BINARY or same non-BINARY
 		}
 	}
 
@@ -337,13 +345,62 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 			break;
 		}
 		case 'OR': {
-			const addrIsRight = compiler.allocateAddress();
 			const addrEnd = compiler.allocateAddress();
 			compiler.emit(Opcode.SCopy, leftReg, targetReg, 0, null, 0, "OR: Copy left initially");
 			compiler.emit(Opcode.IfTrue, leftReg, addrEnd, 0, null, 0, "OR: If left is true, finish");
-			compiler.resolveAddress(addrIsRight);
 			compiler.emit(Opcode.SCopy, rightReg, targetReg, 0, null, 0, "OR: Copy right as result");
 			compiler.resolveAddress(addrEnd);
+			break;
+		}
+		case 'XOR': {
+			// Enclose case logic in a block scope to satisfy linter
+			{
+				// 3VL XOR: NULL if either is NULL, otherwise (L && !R) || (!L && R)
+				const regL = compiler.allocateMemoryCells(1);
+				const regR = compiler.allocateMemoryCells(1);
+				compiler.compileExpression(expr.left, regL, correlation, havingContext, argumentMap, overrideCollation);
+				compiler.compileExpression(expr.right, regR, correlation, havingContext, argumentMap, overrideCollation);
+
+				const addrSetNull = compiler.allocateAddress('xorSetNull');
+				const addrNotNull = compiler.allocateAddress('xorNotNull');
+				const addrEnd = compiler.allocateAddress('xorEnd');
+
+				// Check for NULLs
+				compiler.emit(Opcode.IfNull, regL, addrSetNull, 0, null, 0, "XOR: If L is NULL, result is NULL");
+				compiler.emit(Opcode.IfNull, regR, addrSetNull, 0, null, 0, "XOR: If R is NULL, result is NULL");
+				compiler.emit(Opcode.Goto, 0, addrNotNull, 0, null, 0); // Both are not NULL
+
+				// Set NULL path
+				compiler.resolveAddress(addrSetNull);
+				compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, "XOR: Result is NULL");
+				compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0);
+
+				// Not NULL path: Evaluate boolean truthiness
+				compiler.resolveAddress(addrNotNull);
+				const regL_True = compiler.allocateMemoryCells(1);
+				const regR_True = compiler.allocateMemoryCells(1);
+
+				// Evaluate L (Result 1 if true, 0 if false)
+				compiler.emit(Opcode.Integer, 1, regL_True, 0, null, 0); // Assume true
+				compiler.emit(Opcode.IfFalse, regL, compiler.getCurrentAddress() + 2, 0, null, 0); // If L is false, jump past setting 0
+				compiler.emit(Opcode.Integer, 0, regL_True, 0, null, 0); // Set false
+
+				// Evaluate R (Result 1 if true, 0 if false)
+				compiler.emit(Opcode.Integer, 1, regR_True, 0, null, 0); // Assume true
+				compiler.emit(Opcode.IfFalse, regR, compiler.getCurrentAddress() + 2, 0, null, 0); // If R is false, jump past setting 0
+				compiler.emit(Opcode.Integer, 0, regR_True, 0, null, 0); // Set false
+
+				// Perform XOR: target = (regL_True != regR_True)
+				const addrSetTrue = compiler.allocateAddress('xorSetTrue');
+				compiler.emit(Opcode.Ne, regL_True, addrSetTrue, regR_True, null, 0x01, "XOR: If (L != R), result is TRUE"); // Use 0x01 to handle NULLs correctly if IfFalse didn't fully coerce
+				compiler.emit(Opcode.Integer, 0, targetReg, 0, null, 0, "XOR: Result is FALSE (L == R)");
+				compiler.emit(Opcode.Goto, 0, addrEnd, 0, null, 0);
+				compiler.resolveAddress(addrSetTrue);
+				compiler.emit(Opcode.Integer, 1, targetReg, 0, null, 0, "XOR: Result is TRUE (L != R)");
+
+				// End path
+				compiler.resolveAddress(addrEnd);
+			}
 			break;
 		}
 		default:
@@ -351,14 +408,21 @@ export function compileBinary(compiler: Compiler, expr: AST.BinaryExpr, targetRe
 	}
 }
 
-export function compileUnary(compiler: Compiler, expr: AST.UnaryExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
+export function compileUnary(
+	compiler: Compiler,
+	expr: AST.UnaryExpr,
+	targetReg: number,
+	correlation?: SubqueryCorrelationResult,
+	havingContext?: HavingContext,
+	argumentMap?: ArgumentMap,
+	overrideCollation?: string // Added overrideCollation
+): void {
 	if (expr.operator.toUpperCase() === 'NOT' && expr.expr.type === 'binary' && expr.expr.operator.toUpperCase() === 'IN' && expr.expr.right.type === 'subquery') {
 		compiler.compileInSubquery(expr.expr.left, expr.expr.right.query, targetReg, true);
 		return;
 	}
 	if (expr.operator.toUpperCase() === 'NOT' && expr.expr.type === 'subquery') {
 		compiler.compileExistsSubquery(expr.expr.query, targetReg);
-		const addrIsNull = compiler.allocateAddress();
 		const addrEnd = compiler.allocateAddress();
 		compiler.emit(Opcode.IfNull, targetReg, addrEnd, 0, null, 0, "NOT EXISTS: Skip if NULL");
 		compiler.emit(Opcode.Not, targetReg, targetReg, 0, null, 0, "NOT EXISTS: Invert boolean");
@@ -371,24 +435,25 @@ export function compileUnary(compiler: Compiler, expr: AST.UnaryExpr, targetReg:
 	}
 	if (expr.operator.toUpperCase() === 'IS NULL') {
 		const operandReg = compiler.allocateMemoryCells(1);
-		compiler.compileExpression(expr.expr, operandReg, correlation, havingContext, argumentMap);
+		compiler.compileExpression(expr.expr, operandReg, correlation, havingContext, argumentMap, overrideCollation);
 		compiler.emit(Opcode.IsNull, operandReg, targetReg, 0, null, 0, "Check IS NULL");
 		return;
 	}
 	if (expr.operator.toUpperCase() === 'IS NOT NULL') {
 		const operandReg = compiler.allocateMemoryCells(1);
-		compiler.compileExpression(expr.expr, operandReg, correlation, havingContext, argumentMap);
+		compiler.compileExpression(expr.expr, operandReg, correlation, havingContext, argumentMap, overrideCollation);
 		compiler.emit(Opcode.NotNull, operandReg, targetReg, 0, null, 0, "Check IS NOT NULL");
 		return;
 	}
 
 	const operandReg = compiler.allocateMemoryCells(1);
-	compiler.compileExpression(expr.expr, operandReg, correlation, havingContext, argumentMap);
+	// Pass overrideCollation to inner expression
+	compileExpression(compiler, expr.expr, operandReg, correlation, havingContext, argumentMap, overrideCollation);
 	switch (expr.operator.toUpperCase()) {
 		case '-': compiler.emit(Opcode.Negative, operandReg, targetReg, 0, null, 0, "Unary Minus"); break;
 		case '+': compiler.emit(Opcode.SCopy, operandReg, targetReg, 0, null, 0, "Unary Plus (no-op)"); break;
 		case '~': compiler.emit(Opcode.BitNot, operandReg, targetReg, 0, null, 0, "Bitwise NOT"); break;
-		case 'NOT':
+		case 'NOT': {
 			const addrIsNull = compiler.allocateAddress();
 			const addrSetTrue = compiler.allocateAddress();
 			const addrEnd = compiler.allocateAddress();
@@ -408,12 +473,16 @@ export function compileUnary(compiler: Compiler, expr: AST.UnaryExpr, targetReg:
 
 			compiler.resolveAddress(addrEnd);
 			break;
+		}
 		default: throw new SqliteError(`Unsupported unary operator: ${expr.operator}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }
 
 export function compileCast(compiler: Compiler, expr: AST.CastExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
-	compiler.compileExpression(expr.expr, targetReg, correlation, havingContext, argumentMap);
+	// CAST itself doesn't use collation in its operation, but its operand might.
+	// So, we don't pass overrideCollation to its inner expression here *unless* it was already present from an outer COLLATE.
+	// The compileExpression in expression.ts will handle passing the existing overrideCollation if it comes from compileCollate.
+	compileExpression(compiler, expr.expr, targetReg, correlation, havingContext, argumentMap, undefined /* CAST does not introduce a new collation scope for its operand unless itself collated */);
 	const targetType = expr.targetType.toUpperCase();
 	const affinity = getAffinityForType(targetType);
 	let affinityStr: string;
@@ -460,8 +529,6 @@ export function compileFunction(compiler: Compiler, expr: AST.FunctionExpr, targ
 	}
 	else if (isAggregate && havingContext && !funcDef.xFunc) {
 		throw new SqliteError(`Aggregate function ${funcDef.name} used incorrectly in HAVING clause.`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
-	} else if (isAggregate && !havingContext) {
-		throw new SqliteError(`Aggregate function ${funcDef.name} used in a scalar context`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	} else {
 		throw new SqliteError(`Invalid function call context for ${funcDef.name}`, StatusCode.INTERNAL, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
@@ -473,23 +540,16 @@ export function compileParameter(compiler: Compiler, expr: AST.ParameterExpr, ta
 	compiler.emit(Opcode.Null, 0, targetReg, 0, null, 0, `Parameter placeholder: ${key} -> R[${targetReg}]`);
 }
 
-export function compileCollate(compiler: Compiler, expr: AST.CollateExpr, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
-	compiler.compileExpression(expr.expr, targetReg, correlation, havingContext, argumentMap);
+export function compileCollate(
+	compiler: Compiler,
+	expr: AST.CollateExpr,
+	targetReg: number,
+	correlation?: SubqueryCorrelationResult,
+	havingContext?: HavingContext,
+	argumentMap?: ArgumentMap,
+	_overrideCollation?: string // Parent overrideCollation is ignored; this node dictates the new one.
+): void {
+	// Compile the inner expression, overriding its collation with this CollateExpr's collation.
+	compileExpression(compiler, expr.expr, targetReg, correlation, havingContext, argumentMap, expr.collation.toUpperCase());
 }
 
-export function compileExpression(compiler: Compiler, expr: AST.Expression, targetReg: number, correlation?: SubqueryCorrelationResult, havingContext?: HavingContext, argumentMap?: ArgumentMap): void {
-	switch (expr.type) {
-		case 'literal': compileLiteralValue(compiler, expr.value, targetReg); break;
-		case 'identifier': compileColumn(compiler, { type: 'column', name: expr.name, alias: expr.name }, targetReg, correlation, havingContext, argumentMap); break;
-		case 'column': compileColumn(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
-		case 'binary': compileBinary(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
-		case 'unary': compileUnary(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
-		case 'cast': compileCast(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
-		case 'function': compileFunction(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
-		case 'parameter': compileParameter(compiler, expr, targetReg); break;
-		case 'subquery': compiler.compileSubquery(expr, targetReg); break;
-		case 'collate': compileCollate(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
-		default:
-			throw new SqliteError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
-	}
-}

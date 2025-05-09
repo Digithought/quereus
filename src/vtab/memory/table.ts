@@ -2,14 +2,12 @@
 import { VirtualTable } from '../table.js';
 import type { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
-import type { IndexInfo } from '../indexInfo.js';
 import type { Database } from '../../core/database.js';
 import type { SqlValue } from '../../common/types.js';
 import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
 import { MemoryTableCursor } from './cursor.js';
-import type { ColumnDef } from '../../parser/ast.js';
 import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/constants.js';
 import { createLogger } from '../../common/logger.js';
@@ -151,10 +149,11 @@ export class MemoryTable extends VirtualTable {
 				case 'renameColumn':
 					await this.manager.renameColumn(changeInfo.oldName, changeInfo.newName);
 					break;
-				default:
+				default: {
 					// This should not happen if types are correct
 					const exhaustiveCheck: never = changeInfo;
 					throw new SqliteError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
+				}
 			}
 			// Update this instance's schema reference after alteration succeeds
 			this.tableSchema = this.manager.tableSchema;
