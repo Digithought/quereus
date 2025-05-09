@@ -310,12 +310,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 	let needsExternalSort = false;
 	let sortKeyInfo: P4SortKey | null = null;
 	if (stmt.orderBy && stmt.orderBy.length > 0) {
-		// TODO: Determine orderByConsumed based on the final step in plannedSteps
-		// This requires the planner to potentially propagate orderByConsumed property.
-		// For now, assume external sort is needed if ORDER BY exists.
-		// warnLog("OrderByConsumed check based on new planner output not implemented. Assuming external sort.");
-		// needsExternalSort = true;
-		// --- NEW Logic --- >
+		// Check if the plan consumes ORDER BY
 		if (!isOrderConsumedByPlan) {
 			log("Plan does not consume ORDER BY, external sort needed.");
 			needsExternalSort = true;
@@ -323,7 +318,6 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 			log("Plan consumes ORDER BY, skipping external sort.");
 			needsExternalSort = false;
 		}
-		// < --- END NEW Logic ---
 	}
 
 	// ... (Window sorter setup, core compilation, final column mapping etc. as before) ...
@@ -361,7 +355,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 
 	// --- Determine Final Column Structure and Aliases (logic as before) --- //
 	if (hasWindowFunctions && windowSorterInfo) {
-		// ... (Window function column mapping logic - assume exists) ...
+		// ... window function column mapping logic...
 		finalColumnMap = []; // Placeholder - restore actual logic if needed
 		stmt.columns.forEach((col) => {
 			if (col.type === 'column') {
@@ -519,15 +513,15 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		});
 	}
 
-	// --- Build Sort Key Info and Prepare External Sorter (AFTER final structure known) --- //
-	if (needsExternalSort && !hasWindowFunctions) {
-		// ... (build sortKeyInfo as before, using finalColumnMap or coreColumnMap)
+	// --- Build Sort Key Info now that we have column maps defined --- //
+	if (needsExternalSort && stmt.orderBy && stmt.orderBy.length > 0) {
+		// Build sort key info (needed for external sort)
 		const columnMapForSort = needsAggProcessing ? finalColumnMap : coreColumnMap;
 		const keyIndices: number[] = [];
 		const collations: string[] = [];
 		const directions: boolean[] = [];
 
-		stmt.orderBy!.forEach(orderTerm => {
+		stmt.orderBy.forEach(orderTerm => {
 			let found = false;
 			const exprStr = expressionToString(orderTerm.expr);
 			for (let i = 0; i < columnMapForSort.length; i++) {
@@ -549,7 +543,10 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 		if (keyIndices.length > 0) {
 			sortKeyInfo = { type: 'sortkey', keyIndices, collations, directions };
 		}
+	}
 
+	// --- Prepare External Sorter if needed --- //
+	if (needsExternalSort && !hasWindowFunctions) {
 		ephSortCursor = compiler.allocateCursor();
 		ephSortSchema = compiler.createEphemeralSchema(ephSortCursor, finalNumCols, sortKeyInfo ?? undefined);
 		compiler.emit(Opcode.OpenEphemeral, ephSortCursor, finalNumCols, 0, ephSortSchema, 0, "Open ORDER BY Sorter");
