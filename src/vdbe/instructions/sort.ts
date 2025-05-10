@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { MemoryTable } from '../../vtab/memory/table.js';
 import type { Handler } from '../handler-types.js';
@@ -18,13 +18,13 @@ export function registerHandlers(handlers: Handler[]) {
     const cursor = ctx.getCursor(cIdx);
 
     if (!cursor || !cursor.vtab || !(cursor.vtab instanceof MemoryTable) || !cursor.isEphemeral) {
-      throw new SqliteError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new SqliterError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!cursor.instance || !(cursor.instance instanceof MemoryTableCursor)) {
-        throw new SqliteError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
+        throw new SqliterError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!sortInfo || sortInfo.type !== 'sortkey') {
-      throw new SqliteError(`Sort requires valid P4SortKey info (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new SqliterError(`Sort requires valid P4SortKey info (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
 
     const cursorInstance = cursor.instance as MemoryTableCursor;
@@ -39,8 +39,8 @@ export function registerHandlers(handlers: Handler[]) {
       cursor.sortedResults = null;
     } catch (e) {
       errorLog(`Error creating/populating ephemeral sorter index for cursor ${cIdx}: %O`, e);
-      if (e instanceof SqliteError) throw e;
-      throw new SqliteError(`Failed to create/populate sorter index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
+      if (e instanceof SqliterError) throw e;
+      throw new SqliterError(`Failed to create/populate sorter index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
     }
 
     return undefined; // Continue execution

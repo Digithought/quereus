@@ -8,8 +8,8 @@ import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
 import { MemoryTableCursor } from './cursor.js';
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 
 const log = createLogger('vtab:memory:table');
@@ -152,7 +152,7 @@ export class MemoryTable extends VirtualTable {
 				default: {
 					// This should not happen if types are correct
 					const exhaustiveCheck: never = changeInfo;
-					throw new SqliteError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
+					throw new SqliterError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
 				}
 			}
 			// Update this instance's schema reference after alteration succeeds

@@ -1,4 +1,4 @@
-import type { SqliteContext } from '../func/context';
+import type { SqliterContext } from '../func/context';
 import type { SqlValue } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
@@ -17,15 +17,15 @@ export interface FunctionSchema {
 	/** User data pointer passed during registration */
 	userData?: unknown;
 	/** Callback for scalar functions */
-	xFunc?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
+	xFunc?: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Callback for aggregate step function */
-	xStep?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
+	xStep?: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Callback for aggregate final function */
-	xFinal?: (context: SqliteContext) => void;
+	xFinal?: (context: SqliterContext) => void;
 	/** Callback for window function value */
-	xValue?: (context: SqliteContext) => void;
+	xValue?: (context: SqliterContext) => void;
 	/** Callback for window function inverse step */
-	xInverse?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
+	xInverse?: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Destructor for user data (if provided during registration) */
 	xDestroy?: (userData: unknown) => void;
 	/** Recommended affinity for the function's return value (optional) */

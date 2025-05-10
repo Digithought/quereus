@@ -14,7 +14,7 @@ export { StatusCode, SqlDataType } from './common/types.js';
 export type { SqlValue } from './common/types.js';
 export { ConflictResolution } from './common/constants.js';
 export { Opcode } from './vdbe/opcodes.js';
-export { SqliteError, MisuseError, ConstraintError } from './common/errors.js';
+export { SqliterError as SqliteError, MisuseError, ConstraintError } from './common/errors.js';
 
 // Virtual Table API
 export { VirtualTable } from './vtab/table.js';

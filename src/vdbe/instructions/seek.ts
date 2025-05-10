@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Handler, VmCtx } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
@@ -10,8 +10,8 @@ const errorLog = log.extend('error');
 // Re-use VTab error helper if applicable, or define a local one
 function handleSeekError(ctx: VmCtx, e: any, cursorIdx: number, method: string) {
     const message = `Error in cursor ${cursorIdx} during ${method}: ${e instanceof Error ? e.message : String(e)}`;
-    const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
-    ctx.error = new SqliteError(message, code, e instanceof Error ? e : undefined);
+    const code = e instanceof SqliterError ? e.code : StatusCode.ERROR;
+    ctx.error = new SqliterError(message, code, e instanceof Error ? e : undefined);
     ctx.done = true;
     errorLog(ctx.error);
 }
@@ -25,10 +25,10 @@ export function registerHandlers(handlers: Handler[]) {
 
     const cursor = ctx.getCursor(cIdx);
     if (!cursor?.instance) {
-      throw new SqliteError(`SeekRelative: Invalid or unopened cursor index ${cIdx}`, StatusCode.INTERNAL);
+      throw new SqliterError(`SeekRelative: Invalid or unopened cursor index ${cIdx}`, StatusCode.INTERNAL);
     }
     if (typeof cursor.instance.seekRelative !== 'function') {
-        throw new SqliteError(`SeekRelative not supported by cursor ${cIdx}`, StatusCode.MISUSE);
+        throw new SqliterError(`SeekRelative not supported by cursor ${cIdx}`, StatusCode.MISUSE);
     }
 
     const offsetValue = ctx.getStack(offsetReg);
@@ -38,7 +38,7 @@ export function registerHandlers(handlers: Handler[]) {
     } else if (typeof offsetValue === 'bigint') {
       offset = Number(offsetValue); // Potential precision loss, but likely ok for relative seeks
     } else {
-      throw new SqliteError(`SeekRelative: Offset value must be a number or bigint, got ${typeof offsetValue} (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new SqliterError(`SeekRelative: Offset value must be a number or bigint, got ${typeof offsetValue} (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
 
     let seekResult = false;
@@ -66,10 +66,10 @@ export function registerHandlers(handlers: Handler[]) {
 
     const cursor = ctx.getCursor(cIdx);
     if (!cursor?.instance) {
-        throw new SqliteError(`SeekRowid: Invalid or unopened cursor index ${cIdx}`, StatusCode.INTERNAL);
+        throw new SqliterError(`SeekRowid: Invalid or unopened cursor index ${cIdx}`, StatusCode.INTERNAL);
     }
     if (typeof cursor.instance.seekToRowid !== 'function') {
-        throw new SqliteError(`SeekRowid not supported by cursor ${cIdx}`, StatusCode.MISUSE);
+        throw new SqliterError(`SeekRowid not supported by cursor ${cIdx}`, StatusCode.MISUSE);
     }
 
     const rowidValue = ctx.getStack(rowidReg);
@@ -79,7 +79,7 @@ export function registerHandlers(handlers: Handler[]) {
     } else if (typeof rowidValue === 'number' && Number.isInteger(rowidValue)) {
       targetRowid = BigInt(rowidValue);
     } else {
-      throw new SqliteError(`SeekRowid: Target rowid must be an integer or bigint, got ${typeof rowidValue} (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new SqliterError(`SeekRowid: Target rowid must be an integer or bigint, got ${typeof rowidValue} (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
 
     let seekResult = false;

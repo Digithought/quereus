@@ -7,7 +7,7 @@ import { compileUnhandledWhereConditions, verifyPlannedConstraints } from './whe
 import { createLogger } from '../common/logger.js'; // Import logger
 import type { PlannedStep, PlannedScanStep, PlannedJoinStep, QueryRelation } from './planner/types.js';
 import { getStepPrimaryAlias } from './planner/helpers.js';
-import { SqliteError } from '../common/errors.js';
+import { SqliterError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import type { ColumnResultInfo } from './structs.js'; // Corrected import path
 import { expressionToString } from '../util/ddl-stringify.js';
@@ -116,7 +116,7 @@ function generateVdbeForStep(
 			plan.usage.forEach((usage: { argvIndex: number; omit: boolean }, constraintIdx: number) => {
 				if (usage.argvIndex > 0) {
 					const expr = plan.constraintExpressions?.get(constraintIdx);
-					if (!expr) throw new SqliteError(`Internal error: Missing expression for constraint ${constraintIdx} in Scan step`, StatusCode.INTERNAL);
+					if (!expr) throw new SqliterError(`Internal error: Missing expression for constraint ${constraintIdx} in Scan step`, StatusCode.INTERNAL);
 					while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
 					argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
 				}
@@ -208,7 +208,7 @@ function generateVdbeForStep(
 		const innerStepIndex = plannedSteps.findIndex(s => s === innerPlannedStep);
 
 		if (outerStepIndex === -1 || innerStepIndex === -1) {
-			throw new SqliteError(`Internal error: Could not find outer/inner step index for join ${outerAlias}<->${innerAlias}`, StatusCode.INTERNAL);
+			throw new SqliterError(`Internal error: Could not find outer/inner step index for join ${outerAlias}<->${innerAlias}`, StatusCode.INTERNAL);
 		}
 
 		log(`  Generating Outer Loop for ${outerAlias} (Step Index: ${outerStepIndex})`);
@@ -230,7 +230,7 @@ function generateVdbeForStep(
 		const outerRelation = (outerPlannedStep.type === 'Scan')
 			? outerPlannedStep.relation
 			: (outerPlannedStep.type === 'Join' ? outerPlannedStep.outputRelation : null);
-		if (!outerRelation) throw new SqliteError(`Internal error: Could not determine outer relation for join step`, StatusCode.INTERNAL);
+		if (!outerRelation) throw new SqliterError(`Internal error: Could not determine outer relation for join step`, StatusCode.INTERNAL);
 		const innerLoopActiveOuterCursors = new Set([...activeOuterCursors, ...outerRelation.contributingCursors]);
 
 		log(`    Active cursors for inner loop (${innerAlias}): {${[...innerLoopActiveOuterCursors].join(',')}}`);
@@ -267,7 +267,7 @@ function generateVdbeForStep(
 		const innerRelation = (innerPlannedStep.type === 'Scan')
 			? innerPlannedStep.relation
 			: (innerPlannedStep.type === 'Join' ? innerPlannedStep.outputRelation : null);
-		if (!innerRelation) throw new SqliteError(`Internal error: Could not determine inner relation for join step`, StatusCode.INTERNAL);
+		if (!innerRelation) throw new SqliterError(`Internal error: Could not determine inner relation for join step`, StatusCode.INTERNAL);
 
 		// Get the specific cursor for the innerLoopPlan (find the first cursor with planning info)
 		const innerCursorIdx = [...innerRelation.contributingCursors][0];

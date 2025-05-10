@@ -6,10 +6,10 @@ import { Database } from '../src/core/database.js';
 import { Statement } from '../src/core/statement.js';
 import { StatusCode, type SqlValue } from '../src/common/types.js';
 import type { VdbeProgram } from '../src/vdbe/program.js';
-import type { SqliteContext } from '../src/func/context.js';
+import type { SqliterContext } from '../src/func/context.js';
 import type { FunctionSchema } from '../src/schema/function.js';
 import { FunctionFlags } from '../src/common/constants.js';
-import { SqliteError } from '../src/common/errors.js';
+import { SqliterError } from '../src/common/errors.js';
 
 /* ------------------------------------------------------------------
    Helper utilities (consider refactoring to shared utils)
@@ -62,7 +62,7 @@ async function runTestProgram(db: Database, program: VdbeProgram, expectedSteps 
              const lastStatus = await runtime.run();
              // Ensure runtime.error has code property before accessing
              finalStatus = runtime.error && typeof runtime.error === 'object' && 'code' in runtime.error
-                 ? (runtime.error as SqliteError).code
+                 ? (runtime.error as SqliterError).code
                  : lastStatus;
         } else if (runtime.done && finalStatus === StatusCode.ERROR) {
             // If runtime is done but we didn't capture status via break, assume OK from Halt
@@ -88,7 +88,7 @@ const testAggSum: FunctionSchema = {
     name: 'TEST_SUM',
     numArgs: 1,
     flags: FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC,
-    xStep: (ctx: SqliteContext, args: readonly SqlValue[]) => {
+    xStep: (ctx: SqliterContext, args: readonly SqlValue[]) => {
         let aggCtx = ctx.getAggregateContext<SumContext>();
         if (!aggCtx) {
             aggCtx = { sum: 0, count: 0 }; // Initialize
@@ -100,7 +100,7 @@ const testAggSum: FunctionSchema = {
             ctx.setAggregateContext(aggCtx);
         }
     },
-    xFinal: (ctx: SqliteContext) => {
+    xFinal: (ctx: SqliterContext) => {
         const aggCtx = ctx.getAggregateContext<SumContext>();
         if (aggCtx?.count && aggCtx.count > 0) {
             ctx.resultDouble(aggCtx.sum);

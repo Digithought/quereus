@@ -1,5 +1,5 @@
 // src/vtab/memory/table-mutation.ts
-import { SqliteError, ConstraintError } from '../../common/errors.js';
+import { SqliterError, ConstraintError } from '../../common/errors.js';
 import { type SqlValue, StatusCode } from '../../common/types.js';
 import type { MemoryTable } from './table.js';
 import type { MemoryTableConnection } from './layer/connection.js';

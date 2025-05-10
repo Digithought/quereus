@@ -3,8 +3,8 @@ import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { type SqlValue, StatusCode, SqlDataType } from '../../common/types.js';
-import { SqliteError } from '../../common/errors.js';
-import type { SqliteContext } from '../../func/context.js';
+import { SqliterError } from '../../common/errors.js';
+import type { SqliterContext } from '../../func/context.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -63,7 +63,7 @@ class JsonTreeTable extends VirtualTable {
 		this.rootPath = (typeof rootPath === 'string' && rootPath) ? rootPath : null;
 
 		if (this.parsedJson === null && typeof jsonText === 'string') {
-			throw new SqliteError(`Invalid JSON provided to ${tableName}`, StatusCode.ERROR);
+			throw new SqliterError(`Invalid JSON provided to ${tableName}`, StatusCode.ERROR);
 		}
 
 		this.tableSchema = Object.freeze({
@@ -101,7 +101,7 @@ class JsonTreeTable extends VirtualTable {
 	}
 
 	async xUpdate(): Promise<{ rowid?: bigint }> {
-		throw new SqliteError("json_tree table is read-only", StatusCode.READONLY);
+		throw new SqliterError("json_tree table is read-only", StatusCode.READONLY);
 	}
 
 	async xBegin() { return Promise.resolve(); }
@@ -109,7 +109,7 @@ class JsonTreeTable extends VirtualTable {
 	async xCommit() { return Promise.resolve(); }
 	async xRollback() { return Promise.resolve(); }
 	async xRename() {
-		throw new SqliteError("Cannot rename json_tree table", StatusCode.ERROR);
+		throw new SqliterError("Cannot rename json_tree table", StatusCode.ERROR);
 	}
 
 	async xDisconnect(): Promise<void> { /* No-op */ }
@@ -294,7 +294,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 	/**
 	 * Returns the value for the specified column of the current row
 	 */
-	column(context: SqliteContext, index: number): number {
+	column(context: SqliterContext, index: number): number {
 		if (!this.currentRow) {
 			context.resultNull();
 			return StatusCode.OK;
@@ -319,13 +319,13 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 	 */
 	async rowid(): Promise<bigint> {
 		if (!this.currentRow) {
-			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
+			throw new SqliterError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
 		const id = this.currentRow['id'];
 		if (typeof id === 'number') {
 			return BigInt(id);
 		}
-		throw new SqliteError("Cannot get rowid for json_tree cursor (missing ID)", StatusCode.INTERNAL);
+		throw new SqliterError("Cannot get rowid for json_tree cursor (missing ID)", StatusCode.INTERNAL);
 	}
 
 	/**

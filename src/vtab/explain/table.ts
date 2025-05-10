@@ -4,8 +4,8 @@ import type { Database } from '../../core/database.js';
 import type { QueryPlanStep } from '../../core/explain.js';
 import type { TableSchema } from '../../schema/table.js';
 import { QueryPlanCursor } from './cursor.js';
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import { VirtualTableCursor } from '../cursor.js';
 
 /**
@@ -49,7 +49,7 @@ export class QueryPlanTable extends VirtualTable {
     }
 
     async xUpdate(/* values: SqlValue[], rowid: bigint | null */): Promise<{ rowid?: bigint; }> {
-        throw new SqliteError("Cannot modify query plan table", StatusCode.READONLY);
+        throw new SqliterError("Cannot modify query plan table", StatusCode.READONLY);
     }
 
     // Other methods like xUpdate, xBegin etc. are not applicable

@@ -3,8 +3,8 @@ import type { VdbeProgramModule } from './module.js';
 import type { Database } from '../../core/database.js';
 import { VDBE_PROGRAM_SCHEMA } from './schema.js'; // Import schema
 import { VdbeProgramCursor } from './cursor.js';
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import { VirtualTableCursor } from '../cursor.js';
 import type { VdbeProgram } from '../../vdbe/program.js';
 import type { TableSchema } from '../../schema/table.js'; // Import TableSchema
@@ -44,6 +44,6 @@ export class VdbeProgramTable extends VirtualTable {
     async xDisconnect(): Promise<void> {}
 
     async xUpdate(): Promise<{ rowid?: bigint; }> {
-        throw new SqliteError("Cannot modify vdbe_program table", StatusCode.READONLY);
+        throw new SqliterError("Cannot modify vdbe_program table", StatusCode.READONLY);
     }
 }

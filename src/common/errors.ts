@@ -1,11 +1,11 @@
-import { StatusCode } from './constants.js';
+import { StatusCode } from './types.js';
 import type { Token } from '../parser/lexer.js';
 
 /**
  * Base class for SQLiter specific errors
  * Provides location information and status code support
  */
-export class SqliteError extends Error {
+export class SqliterError extends Error {
 	public code: number;
 	public cause?: Error;
 	public line?: number;
@@ -26,7 +26,7 @@ export class SqliteError extends Error {
 
 		// Maintain stack trace in V8
 		if (Error.captureStackTrace) {
-			Error.captureStackTrace(this, SqliteError);
+			Error.captureStackTrace(this, SqliterError);
 		}
 	}
 }
@@ -35,7 +35,7 @@ export class SqliteError extends Error {
  * Parser-specific error that includes token information
  * Used during SQL parsing to provide precise error locations
  */
-export class ParseError extends SqliteError {
+export class ParseError extends SqliterError {
 	public token: Token;
 
 	constructor(message: string, token: Token) {
@@ -48,7 +48,7 @@ export class ParseError extends SqliteError {
 /**
  * Error thrown when a database constraint is violated
  */
-export class ConstraintError extends SqliteError {
+export class ConstraintError extends SqliterError {
 	constructor(message: string, code: number = StatusCode.CONSTRAINT) {
 		super(message, code);
 		this.name = 'ConstraintError';
@@ -58,7 +58,7 @@ export class ConstraintError extends SqliteError {
 /**
  * Error thrown for SQL syntax issues
  */
-export class SyntaxError extends SqliteError {
+export class SyntaxError extends SqliterError {
 	constructor(message: string = "SQL syntax error") {
 		super(message, StatusCode.ERROR);
 		this.name = 'SyntaxError';
@@ -69,7 +69,7 @@ export class SyntaxError extends SqliteError {
 /**
  * Error thrown when the API is used incorrectly
  */
-export class MisuseError extends SqliteError {
+export class MisuseError extends SqliterError {
 	constructor(message: string = "API misuse") {
 		super(message, StatusCode.MISUSE);
 		this.name = 'MisuseError';

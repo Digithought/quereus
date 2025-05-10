@@ -1,9 +1,9 @@
 import { createLogger } from '../common/logger.js';
-import { MisuseError, SqliteError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { MisuseError, SqliterError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
-import type { SqlValue } from '../common/types.js';
+import type { SqlParameters, SqlValue } from '../common/types.js';
 import { SchemaManager } from '../schema/manager.js';
 import type { TableSchema } from '../schema/table.js';
 import type { FunctionSchema } from '../schema/function.js';
@@ -116,7 +116,7 @@ export class Database {
 	 */
 	async exec(
 		sql: string,
-		params?: SqlValue[] | Record<string, SqlValue> | ((row: Record<string, SqlValue>, columns: string[]) => void),
+		params?: SqlParameters | ((row: Record<string, SqlValue>, columns: string[]) => void),
 		callback?: (row: Record<string, SqlValue>) => void
 	): Promise<void> {
 		if (!this.isOpen) {
@@ -196,13 +196,13 @@ export class Database {
 								} catch (cbError: any) {
 									errorLog("Error in exec() callback: %O", cbError);
 									// Stop further execution if callback fails?
-									throw new SqliteError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
+									throw new SqliterError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
 								}
 							}
 						} else if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK) {
 							// Error occurred during step() - step() should throw the error
 							// If it somehow returns an error code without throwing, create a generic one
-							throw new SqliteError(`VDBE execution failed with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
+							throw new SqliterError(`VDBE execution failed with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
 						}
 					} while (resultStatus === StatusCode.ROW); // Continue stepping ONLY if a row was returned
 
@@ -252,7 +252,7 @@ export class Database {
 			const status = await stmt.step();
 			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
 				// step() should have thrown, but if not, throw a generic error
-				throw new SqliteError(`Implicit command '${sqlCommand}' failed with status ${status}`, status);
+				throw new SqliterError(`Implicit command '${sqlCommand}' failed with status ${status}`, status);
 			}
 		} finally {
 			if (stmt) {
@@ -274,7 +274,7 @@ export class Database {
 
 		const lowerName = name.toLowerCase();
 		if (this.registeredVTabs.has(lowerName)) {
-			throw new SqliteError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
+			throw new SqliterError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
 		}
 
 		log('Registering VTab module: %s', name);
@@ -291,7 +291,7 @@ export class Database {
 		}
 
 		if (this.inTransaction) {
-			throw new SqliteError("Transaction already active", StatusCode.ERROR);
+			throw new SqliterError("Transaction already active", StatusCode.ERROR);
 		}
 
 		await this.exec(`BEGIN ${mode.toUpperCase()} TRANSACTION`);
@@ -308,7 +308,7 @@ export class Database {
 		}
 
 		if (!this.inTransaction) {
-			throw new SqliteError("No transaction active", StatusCode.ERROR);
+			throw new SqliterError("No transaction active", StatusCode.ERROR);
 		}
 
 		await this.exec("COMMIT");
@@ -325,7 +325,7 @@ export class Database {
 		}
 
 		if (!this.inTransaction) {
-			throw new SqliteError("No transaction active", StatusCode.ERROR);
+			throw new SqliterError("No transaction active", StatusCode.ERROR);
 		}
 
 		await this.exec("ROLLBACK");
@@ -392,7 +392,7 @@ export class Database {
 	}
 
 	/** @internal */
-	_findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
+	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
 		return this.schemaManager.findTable(tableName, dbName);
 	}
 
@@ -542,7 +542,7 @@ export class Database {
 			this.setDefaultVtabArgs(parsedArgs);
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			throw new SqliteError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
+			throw new SqliterError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
 		}
 	}
 
@@ -576,7 +576,7 @@ export class Database {
 	 */
 	registerCollation(name: string, func: CollationFunction): void {
 		if (!this.isOpen) {
-			throw new SqliteError("Database is closed", StatusCode.ERROR);
+			throw new SqliterError("Database is closed", StatusCode.ERROR);
 		}
 		registerCollation(name, func);
 		log('Registered collation: %s', name);
@@ -611,7 +611,7 @@ export class Database {
 	 * }
 	 * ```
 	 */
-	async *eval(sql: string, params?: SqlValue[] | Record<string, SqlValue>): AsyncIterableIterator<Record<string, SqlValue>> {
+	async *eval(sql: string, params?: SqlParameters): AsyncIterableIterator<Record<string, SqlValue>> {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
 		}

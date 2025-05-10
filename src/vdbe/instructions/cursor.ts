@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Handler, VmCtx, Status, MemoryCell } from '../handler-types.js';
 import type { VdbeInstruction } from '../instruction.js';
@@ -20,7 +20,7 @@ export function registerHandlers(handlers: Handler[]) {
 
 		const startIdx = ctx.framePointer + startOffset;
 		if (startIdx < 0 || startIdx + count > ctx.stackPointer) {
-			throw new SqliteError(
+			throw new SqliterError(
 				`ResultRow stack access out of bounds: FP=${ctx.framePointer} ` +
 				`Offset=${startOffset} Count=${count} SP=${ctx.stackPointer}`,
 				StatusCode.INTERNAL
@@ -51,22 +51,22 @@ export function registerHandlers(handlers: Handler[]) {
 		const p4Info = inst.p4 as { type: 'vtab', tableSchema: TableSchema } | undefined;
 
 		if (!p4Info || !p4Info.tableSchema) {
-			throw new SqliteError("OpenRead/OpenWrite called without valid p4 table schema info", StatusCode.INTERNAL);
+			throw new SqliterError("OpenRead/OpenWrite called without valid p4 table schema info", StatusCode.INTERNAL);
 		}
 		const tableSchema = p4Info.tableSchema; // Extract the actual schema
 
 		if (!tableSchema.vtabModuleName) {
 			// Keep the detailed error message using the extracted tableSchema
-			throw new SqliteError(`Table schema for ${tableSchema.name} is missing vtabModuleName`, StatusCode.INTERNAL);
+			throw new SqliterError(`Table schema for ${tableSchema.name} is missing vtabModuleName`, StatusCode.INTERNAL);
 		}
 
 		const moduleInfo = ctx.db._getVtabModule(tableSchema.vtabModuleName);
 		if (!moduleInfo) {
-			throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
+			throw new SqliterError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
 		}
 		const module = moduleInfo.module;
 		if (typeof module.xConnect !== 'function') {
-			throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
+			throw new SqliterError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
 		}
 
 		let vtabInstance: VirtualTable;
@@ -82,11 +82,11 @@ export function registerHandlers(handlers: Handler[]) {
 			);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
-			throw new SqliteError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof SqliteError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+			throw new SqliterError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof SqliterError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		}
 
 		if (typeof vtabInstance.xOpen !== 'function') {
-			throw new SqliteError(`Virtual table instance for '${tableSchema.name}' does not implement xOpen`, StatusCode.MISUSE);
+			throw new SqliterError(`Virtual table instance for '${tableSchema.name}' does not implement xOpen`, StatusCode.MISUSE);
 		}
 		const cursorInstance = await vtabInstance.xOpen();
 
@@ -94,7 +94,7 @@ export function registerHandlers(handlers: Handler[]) {
 		if (!vdbeCursor) {
 			await cursorInstance?.close();
 			await vtabInstance?.xDisconnect();
-			throw new SqliteError(`VDBE cursor slot ${cIdx} not found during OpenRead/Write`, StatusCode.INTERNAL);
+			throw new SqliterError(`VDBE cursor slot ${cIdx} not found during OpenRead/Write`, StatusCode.INTERNAL);
 		}
 
 		if (vdbeCursor.instance) await vdbeCursor.instance.close();

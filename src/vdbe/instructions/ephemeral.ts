@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { TableSchema } from '../../schema/table.js';
 import { MemoryTable } from '../../vtab/memory/table.js';
@@ -87,7 +87,7 @@ export function registerHandlers(handlers: Handler[]) {
       // 4. Store cursor state in VmCtx
       const cursor = ctx.getCursor(ephCursorIdx);
       if (!cursor) {
-        throw new SqliteError(`Cursor slot ${ephCursorIdx} not available for ephemeral table`, StatusCode.INTERNAL);
+        throw new SqliterError(`Cursor slot ${ephCursorIdx} not available for ephemeral table`, StatusCode.INTERNAL);
       }
       cursor.instance = ephInstance;
       cursor.vtab = ephTable;
@@ -96,8 +96,8 @@ export function registerHandlers(handlers: Handler[]) {
 
     } catch (e) {
       errorLog("Error opening ephemeral table: %O", e);
-      if (e instanceof SqliteError) throw e;
-      throw new SqliteError(`Failed to open ephemeral table ${ephCursorIdx}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
+      if (e instanceof SqliterError) throw e;
+      throw new SqliterError(`Failed to open ephemeral table ${ephCursorIdx}: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
     }
 
     return undefined; // Continue execution

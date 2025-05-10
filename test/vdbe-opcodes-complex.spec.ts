@@ -9,8 +9,8 @@ import type { VdbeProgram } from '../src/vdbe/program.js';
 import type { FunctionContext } from '../src/func/context.js';
 import type { FunctionSchema } from '../src/schema/function.js';
 import { FunctionFlags } from '../src/common/constants.js';
-import type { SqliteContext } from '../src/func/context.js';
-import { SqliteError } from '../src/common/errors.js';
+import type { SqliterContext } from '../src/func/context.js';
+import { SqliterError } from '../src/common/errors.js';
 
 /* ------------------------------------------------------------------
    Helper utilities (consider refactoring to shared utils)
@@ -68,7 +68,7 @@ const testFuncUpper: FunctionSchema = {
     name: 'TEST_UPPER',
     numArgs: 1,
     flags: FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC,
-    xFunc: (ctx: SqliteContext, args: readonly SqlValue[]) => {
+    xFunc: (ctx: SqliterContext, args: readonly SqlValue[]) => {
         const input = args[0];
         if (typeof input === 'string') {
             ctx.resultText(input.toUpperCase());
@@ -82,7 +82,7 @@ const testFuncAdd: FunctionSchema = {
     name: 'TEST_ADD',
     numArgs: 2,
     flags: FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC,
-    xFunc: (ctx: SqliteContext, args: readonly SqlValue[]) => {
+    xFunc: (ctx: SqliterContext, args: readonly SqlValue[]) => {
         const a = args[0];
         const b = args[1];
         if (typeof a === 'number' && typeof b === 'number') {
@@ -244,7 +244,7 @@ describe('VDBE Complex Opcode Tests', () => {
                 }
             } catch (e) {
                 console.error('>>> Once test (second run) caught error:', e);
-                if (e instanceof SqliteError) {
+                if (e instanceof SqliterError) {
                      status = e.code as StatusCode;
                 }
             }
@@ -300,7 +300,7 @@ describe('VDBE Complex Opcode Tests', () => {
                 finalStatus = await runtime.run(); // Execute Halt
             } catch (e) {
                 console.error('>>> ResultRow Test: Error during final runtime.run():', e);
-                if (e instanceof SqliteError) finalStatus = e.code as StatusCode;
+                if (e instanceof SqliterError) finalStatus = e.code as StatusCode;
                 else finalStatus = StatusCode.ERROR; // Assign generic error if not SqliteError
             }
             console.log('>>> ResultRow Test: finalStatus received:', finalStatus, 'Expected:', StatusCode.OK);

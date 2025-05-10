@@ -1,4 +1,4 @@
-import { SqliteError } from '../common/errors.js';
+import { SqliterError } from '../common/errors.js';
 import type { StatusCode, SqlValue } from '../common/types.js';
 import type { Database } from '../core/database.js';
 import type { FunctionContext } from '../func/context.js';
@@ -60,7 +60,7 @@ export interface VmCtx {
   /** Whether execution has yielded a row */
   hasYielded: boolean;
   /** Error encountered during execution, if any */
-  error?: SqliteError;
+  error?: SqliterError;
 
   // Stack and registers
   /** Gets a value from a register, relative to frame pointer */

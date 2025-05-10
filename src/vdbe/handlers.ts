@@ -1,6 +1,6 @@
 import type { Handler } from './handler-types.js';
 import { Opcode } from './opcodes.js';
-import { SqliteError } from '../common/errors.js';
+import { SqliterError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import * as Core from './instructions/core.js';
 import * as Compare from './instructions/compare.js';
@@ -26,7 +26,7 @@ export const handlers: Handler[] = new Array(256);
 // Initialize with fallback handler that throws for unsupported opcodes
 for (let i = 0; i < handlers.length; i++) {
 	handlers[i] = (ctx, inst) => {
-		throw new SqliteError(`Unsupported opcode: ${Opcode[inst.opcode] || inst.opcode}`, StatusCode.INTERNAL);
+		throw new SqliterError(`Unsupported opcode: ${Opcode[inst.opcode] || inst.opcode}`, StatusCode.INTERNAL);
 	};
 }
 

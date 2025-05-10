@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table.js';
@@ -35,7 +35,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		// Ensure table doesn't already exist
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		if (this.tables.has(tableKey)) {
-			throw new SqliteError(`Memory table '${tableName}' already exists in schema '${schemaName}'.`, StatusCode.ERROR);
+			throw new SqliterError(`Memory table '${tableName}' already exists in schema '${schemaName}'.`, StatusCode.ERROR);
 		}
 
 		// Build the full ColumnSchema array for the TableSchema
@@ -108,7 +108,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		const existingManager = this.tables.get(tableKey);
 
 		if (!existingManager) {
-			throw new SqliteError(`Memory table definition for '${tableName}' not found. Cannot connect.`, StatusCode.INTERNAL);
+			throw new SqliterError(`Memory table definition for '${tableName}' not found. Cannot connect.`, StatusCode.INTERNAL);
 		}
 
 		// Create a new MemoryTable instance connected to the existing manager

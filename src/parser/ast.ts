@@ -32,12 +32,11 @@ export interface LiteralExpr extends AstNode {
 	dataType?: string; // Optional type hint
 }
 
-// Identifier expression (table name, column name, etc.)
+// Identifier expression (table name or pragma name)
 export interface IdentifierExpr extends AstNode {
 	type: 'identifier';
 	name: string;
 	schema?: string; // Optional schema qualifier
-	table?: string;  // Optional table qualifier
 }
 
 // Column reference expression
@@ -267,10 +266,16 @@ export interface ReleaseStmt extends AstNode {
 
 // --- Supporting Types ---
 
+export type ResultColumnExpr = {
+	type: 'column',
+	expr: Expression,
+	alias?: string
+}
+
 // Result column in SELECT
 export type ResultColumn =
 	| { type: 'all', table?: string }
-	| { type: 'column', expr: Expression, alias?: string };
+	| ResultColumnExpr;
 
 // FROM clause item (table, join, function call, or subquery)
 export type FromClause = TableSource | JoinClause | FunctionSource | SubquerySource;

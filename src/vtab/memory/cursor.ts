@@ -2,8 +2,8 @@ import { VirtualTableCursor } from "../cursor.js";
 import type { MemoryTable } from "./table.js";
 import type { MemoryTableRow, BTreeKey } from "./types.js";
 import { StatusCode, type SqlValue } from "../../common/types.js";
-import type { SqliteContext } from "../../func/context.js";
-import { SqliteError } from "../../common/errors.js";
+import type { SqliterContext } from "../../func/context.js";
+import { SqliterError } from "../../common/errors.js";
 import { MemoryIndex, type IndexSpec } from './index.js'; // Change to regular import for MemoryIndex
 import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexConstraint, IndexInfo } from '../indexInfo.js'; // Keep for filter signature
@@ -125,7 +125,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			// Find the schema definition for the chosen index
 			const schema = this.table.getSchema();
 			if (!schema) {
-				throw new SqliteError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
+				throw new SqliterError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
 			}
 
 			// Get index schema, handling both primary and secondary
@@ -142,7 +142,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			} else if (indexSchema) {
 				// General case for EQ plans (composite keys or secondary indexes)
 				if (!indexSchema || !indexSchema.columns) {
-					throw new SqliteError(`Internal error: Index schema or columns not found for index '${indexName}'`, StatusCode.INTERNAL);
+					throw new SqliterError(`Internal error: Index schema or columns not found for index '${indexName}'`, StatusCode.INTERNAL);
 				}
 
 				const keyParts: SqlValue[] = [];
@@ -202,7 +202,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 			// Find the first column of the index
 			const schema = this.table.getSchema();
 			if (!schema) {
-				throw new SqliteError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
+				throw new SqliterError("Internal Error: Table schema not available in cursor during plan building.", StatusCode.INTERNAL);
 			}
 			const indexSchema = indexName === 'primary'
 				? { name: '_primary_', columns: schema.primaryKeyDefinition ?? [{ index: -1, desc: false }] }
@@ -263,7 +263,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		// 1. Define IndexSpec based on sortInfo
 		const schema = this.table.getSchema();
 		if (!schema) {
-			throw new SqliteError("Cannot create sorter index: Table schema not found.", StatusCode.INTERNAL);
+			throw new SqliterError("Cannot create sorter index: Table schema not found.", StatusCode.INTERNAL);
 		}
 		const sortIndexSpec: IndexSpec = {
 			name: `_sorter_${Date.now()}`,
@@ -407,7 +407,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		}
 	}
 
-	column(context: SqliteContext, columnIndex: number): number {
+	column(context: SqliterContext, columnIndex: number): number {
 		const row = this.getCurrentRow();
 		if (!row) {
 			// Per SQLite docs, behavior is undefined if called when EOF.
@@ -445,7 +445,7 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 		const row = this.getCurrentRow();
 		if (row === null) {
 			// Match SQLite C API behavior - accessing rowid when EOF is an error
-			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
+			throw new SqliterError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
 		return row._rowid_;
 	}
@@ -469,13 +469,13 @@ export class MemoryTableCursor extends VirtualTableCursor<MemoryTable> {
 	async seekRelative(_offset: number): Promise<boolean> {
 		// Use namespaced warn logger
 		// REMOVED warnLog
-		throw new SqliteError(`seekRelative not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
+		throw new SqliterError(`seekRelative not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 
 	async seekToRowid(_rowid: bigint): Promise<boolean> {
 		// Use namespaced warn logger
 		// REMOVED warnLog
-		throw new SqliteError(`seekToRowid not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
+		throw new SqliterError(`seekToRowid not implemented by MemoryTableCursor (layered)`, StatusCode.INTERNAL);
 	}
 }
 

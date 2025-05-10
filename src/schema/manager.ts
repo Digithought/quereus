@@ -2,8 +2,8 @@ import { Schema } from './schema.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
-import { SqliteError, MisuseError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { SqliterError, MisuseError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
@@ -108,7 +108,7 @@ export class SchemaManager {
 			this.defaultVTabModule = lowerName;
 			log(`Default VTab module set to: %s`, lowerName);
 		} else {
-			throw new SqliteError(`Cannot set default VTab module: module '${lowerName}' not registered.`);
+			throw new SqliterError(`Cannot set default VTab module: module '${lowerName}' not registered.`);
 		}
 	}
 
@@ -166,7 +166,7 @@ export class SchemaManager {
 	addSchema(name: string): Schema {
 		const lowerName = name.toLowerCase();
 		if (this.schemas.has(lowerName)) {
-			throw new SqliteError(`Schema '${name}' already exists`, StatusCode.ERROR);
+			throw new SqliterError(`Schema '${name}' already exists`, StatusCode.ERROR);
 		}
 		const schema = new Schema(name);
 		this.schemas.set(lowerName, schema);
@@ -184,7 +184,7 @@ export class SchemaManager {
 	removeSchema(name: string): boolean {
 		const lowerName = name.toLowerCase();
 		if (lowerName === 'main' || lowerName === 'temp') {
-			throw new SqliteError(`Cannot detach schema '${name}'`, StatusCode.ERROR);
+			throw new SqliterError(`Cannot detach schema '${name}'`, StatusCode.ERROR);
 		}
 		const schema = this.schemas.get(lowerName);
 		if (schema) {
@@ -201,7 +201,7 @@ export class SchemaManager {
 	/**
 	 * @internal Finds a table or virtual table by name across schemas
 	 */
-	_findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
+	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
 		const lowerTableName = tableName.toLowerCase();
 
 		// Handle sqlite_schema dynamically
@@ -266,7 +266,7 @@ export class SchemaManager {
 	 * @param dbName Optional specific schema name to search
 	 * @returns The TableSchema or undefined if not found
 	 */
-	findTable(tableName: string, dbName?: string | null): TableSchema | undefined {
+	findTable(tableName: string, dbName?: string): TableSchema | undefined {
 		return this._findTable(tableName, dbName);
 	}
 
@@ -300,7 +300,7 @@ export class SchemaManager {
 	): TableSchema {
 		const schema = this.schemas.get(schemaName.toLowerCase());
 		if (!schema) {
-			throw new SqliteError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
+			throw new SqliterError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
 		}
 
 		log(`Declaring VTab in '%s' using SQL: %s`, schemaName, createTableSql);
@@ -311,11 +311,11 @@ export class SchemaManager {
 			const parser = new Parser();
 			const ast = parser.parse(createTableSql);
 			if (ast.type !== 'createTable') {
-				throw new SqliteError(`Expected CREATE TABLE statement, got ${ast.type}`, StatusCode.ERROR);
+				throw new SqliterError(`Expected CREATE TABLE statement, got ${ast.type}`, StatusCode.ERROR);
 			}
 			createVtabAst = ast as AST.CreateTableStmt;
 		} catch (e: any) {
-			throw new SqliteError(`Failed to parse CREATE TABLE statement: ${e.message}`, StatusCode.ERROR);
+			throw new SqliterError(`Failed to parse CREATE TABLE statement: ${e.message}`, StatusCode.ERROR);
 		}
 
 		const tableName = createVtabAst.table.name;
@@ -327,7 +327,7 @@ export class SchemaManager {
 				log(`VTab %s already exists in schema %s, skipping creation (IF NOT EXISTS).`, tableName, schemaName);
 				return schema.getTable(tableName)!;
 			}
-			throw new SqliteError(`Table ${tableName} already exists in schema ${schemaName}`, StatusCode.ERROR);
+			throw new SqliterError(`Table ${tableName} already exists in schema ${schemaName}`, StatusCode.ERROR);
 		}
 
 		// Create placeholder schema - modules should override with actual columns
@@ -463,7 +463,7 @@ export class SchemaManager {
 	getSchemaOrFail(name: string): Schema {
 		const schema = this.schemas.get(name.toLowerCase());
 		if (!schema) {
-			throw new SqliteError(`Schema not found: ${name}`);
+			throw new SqliterError(`Schema not found: ${name}`);
 		}
 		return schema;
 	}
@@ -475,7 +475,7 @@ export class SchemaManager {
 	 * @param tableName The name of the table
 	 * @returns The TableSchema or undefined if not found
 	 */
-	getTable(schemaName: string | null, tableName: string): TableSchema | undefined {
+	getTable(schemaName: string | undefined, tableName: string): TableSchema | undefined {
 		const targetSchemaName = schemaName ?? this.currentSchemaName;
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getTable(tableName);

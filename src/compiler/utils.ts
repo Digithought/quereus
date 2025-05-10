@@ -1,6 +1,6 @@
 import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
-import { SqlDataType } from '../common/constants.js';
+import { SqlDataType } from '../common/types.js';
 import { getAffinityForType } from '../schema/schema.js';
 import type { TableSchema } from '../schema/table.js';
 import type { ColumnSchema } from '../schema/column.js';

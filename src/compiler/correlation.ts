@@ -1,7 +1,7 @@
 import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
-import { SqliteError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { SqliterError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const warnLog = createLogger('compiler:correlation').extend('warn');
@@ -125,7 +125,7 @@ export function analyzeSubqueryCorrelation(
 						foundCursorId = cursorId;
 					}
 				}
-				if (ambiguous) throw new SqliteError(`Ambiguous column in subquery correlation check: ${colName}`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
+				if (ambiguous) throw new SqliterError(`Ambiguous column in subquery correlation check: ${colName}`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
 				if (foundCursorId !== -1) {
 					sourceCursor = foundCursorId;
 					resolved = true;

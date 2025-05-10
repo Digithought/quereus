@@ -1,14 +1,12 @@
 import { Opcode } from '../vdbe/opcodes.js';
 import type { Compiler } from './compiler.js';
-import { createDefaultColumnSchema } from '../schema/column.js';
-import { buildColumnIndexMap } from '../schema/table.js';
 import type { TableSchema } from '../schema/table.js';
 import type { P4SortKey } from '../vdbe/instruction.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { BaseModuleConfig } from '../vtab/module.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
-import { MisuseError, SqliteError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { SqliterError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('compiler:ephemeral');
@@ -35,7 +33,7 @@ export function createEphemeralTableHelper(
 ): TableSchema {
 	const moduleInfo = compiler.db._getVtabModule('memory');
 	if (!moduleInfo || !(moduleInfo.module instanceof MemoryTableModule)) {
-		throw new SqliteError("MemoryTableModule not registered or found.", StatusCode.INTERNAL);
+		throw new SqliterError("MemoryTableModule not registered or found.", StatusCode.INTERNAL);
 	}
 	const memoryModule = moduleInfo.module as MemoryTableModule;
 
@@ -79,12 +77,12 @@ export function createEphemeralTableHelper(
 	} catch (e) {
 		errorLog("Failed to create internal MemoryTable instance: %O", e);
 		const msg = e instanceof Error ? e.message : String(e);
-		throw new SqliteError(`Internal error creating ephemeral table: ${msg}`, StatusCode.INTERNAL);
+		throw new SqliterError(`Internal error creating ephemeral table: ${msg}`, StatusCode.INTERNAL);
 	}
 
 	const tableSchema = tableInstance.tableSchema;
 	if (!tableSchema) {
-		throw new SqliteError("Internal MemoryTable instance did not provide a schema.", StatusCode.INTERNAL);
+		throw new SqliterError("Internal MemoryTable instance did not provide a schema.", StatusCode.INTERNAL);
 	}
 
 	(tableSchema as any).schemaName = 'temp';

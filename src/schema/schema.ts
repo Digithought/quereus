@@ -3,8 +3,8 @@ import type { FunctionSchema } from './function.js';
 import { getFunctionKey } from './function.js';
 import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
-import { SqliteError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { SqliterError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:schema');
@@ -76,7 +76,7 @@ export class Schema {
 	addTable(table: TableSchema): void {
 		// Ensure no view conflict
 		if (this.views.has(table.name.toLowerCase())) {
-			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
+			throw new SqliterError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
 		}
 		this.tables.set(table.name.toLowerCase(), table);
 	}
@@ -123,7 +123,7 @@ export class Schema {
 			throw new Error(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
 		}
 		if (this.tables.has(view.name.toLowerCase())) {
-			throw new SqliteError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
+			throw new SqliterError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
 		}
 		this.views.set(view.name.toLowerCase(), view);
 		log(`Added/Updated view '%s' in schema '%s'`, view.name, this.name);

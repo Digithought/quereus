@@ -1,7 +1,7 @@
 import type { Compiler } from "./compiler.js";
 import type * as AST from "../parser/ast.js";
-import { StatusCode, SqlDataType } from "../common/constants.js";
-import { SqliteError } from "../common/errors.js";
+import { SqlDataType, StatusCode } from "../common/types.js";
+import { SqliterError } from "../common/errors.js";
 import { Opcode } from '../vdbe/opcodes.js';
 import type { VirtualTable } from "../vtab/table.js";
 import type { ViewSchema } from '../schema/view.js';
@@ -54,7 +54,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 
 	const moduleInfo = db._getVtabModule(moduleName);
 	if (!moduleInfo) {
-		throw new SqliteError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		throw new SqliterError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
 	// --- Construct Module Options (TConfig) ---
@@ -142,7 +142,7 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 			options = {}; // Empty BaseModuleConfig
 		}
 	} catch (e: any) {
-		throw new SqliteError(`Failed to parse arguments for module '${moduleName}': ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		throw new SqliterError(`Failed to parse arguments for module '${moduleName}': ${e.message}`, StatusCode.ERROR, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 	// --- End Construct Module Options ---
 
@@ -159,13 +159,13 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 		);
 	} catch (e: any) {
 		const message = e instanceof Error ? e.message : String(e);
-		const code = e instanceof SqliteError ? e.code : StatusCode.ERROR;
-		throw new SqliteError(`Module '${moduleName}' xCreate failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		const code = e instanceof SqliterError ? e.code : StatusCode.ERROR;
+		throw new SqliterError(`Module '${moduleName}' xCreate failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
 	const schema = db.schemaManager.getSchema(schemaName);
 	if (!schema) {
-		throw new SqliteError(`Internal error: Schema '${schemaName}' not found during CREATE TABLE.`, StatusCode.INTERNAL);
+		throw new SqliterError(`Internal error: Schema '${schemaName}' not found during CREATE TABLE.`, StatusCode.INTERNAL);
 	}
 
 	if (schema.getTable(tableName)) {
@@ -174,12 +174,12 @@ export function compileCreateTableStatement(compiler: Compiler, stmt: AST.Create
 			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `CREATE TABLE ${tableName} (skipped IF NOT EXISTS)`);
 			return;
 		} else {
-			throw new SqliteError(`Table ${schemaName}.${tableName} already exists`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			throw new SqliterError(`Table ${schemaName}.${tableName} already exists`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 	}
 
 	if (!tableInstance.tableSchema) {
-		throw new SqliteError(`Module '${moduleName}' xCreate did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
+		throw new SqliterError(`Module '${moduleName}' xCreate did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
 	}
 	if (tableInstance.tableSchema.schemaName.toLowerCase() !== schemaName.toLowerCase()) {
 		warnLog(`VTab module %s created table %s in schema %s, but expected %s.`, moduleName, tableName, tableInstance.tableSchema.schemaName, schemaName);
@@ -213,27 +213,27 @@ export function compileCreateIndexStatement(compiler: Compiler, stmt: AST.Create
 	// Find the table schema
 	const tableSchema = db.schemaManager.getTable(schemaName, tableName);
 	if (!tableSchema) {
-		throw new SqliteError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		throw new SqliterError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 	}
 
 	// Check if the virtual table prototype supports xCreateIndex
 	if (typeof (tableSchema.vtabModule as any)?.xCreateIndex !== 'function') {
-		throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		throw new SqliterError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 	}
 
 	// Convert AST columns to IndexSchema columns
 	const indexColumns = stmt.columns.map((indexedCol: AST.IndexedColumn) => {
 		if (indexedCol.expr) {
-			throw new SqliteError(`Indices on expressions are not supported yet.`, StatusCode.ERROR, undefined, indexedCol.expr.loc?.start.line, indexedCol.expr.loc?.start.column);
+			throw new SqliterError(`Indices on expressions are not supported yet.`, StatusCode.ERROR, undefined, indexedCol.expr.loc?.start.line, indexedCol.expr.loc?.start.column);
 		}
 		const colName = indexedCol.name;
 		if (!colName) {
 			// Should not happen if expr is checked first
-			throw new SqliteError(`Indexed column must be a simple column name.`, StatusCode.ERROR);
+			throw new SqliterError(`Indexed column must be a simple column name.`, StatusCode.ERROR);
 		}
 		const tableColIndex = tableSchema.columnIndexMap.get(colName.toLowerCase());
 		if (tableColIndex === undefined) {
-			throw new SqliteError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			throw new SqliterError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
 		const tableColSchema = tableSchema.columns[tableColIndex];
 		return {
@@ -290,7 +290,7 @@ export function compileCreateViewStatement(compiler: Compiler, stmt: AST.CreateV
 	} catch (e) {
 		const foundSchema = compiler.db.schemaManager.getSchema(schemaName);
 		if (!foundSchema) {
-			throw new SqliteError(`Schema '${schemaName}' not found`, StatusCode.ERROR);
+			throw new SqliterError(`Schema '${schemaName}' not found`, StatusCode.ERROR);
 		}
 		schema = foundSchema;
 	}
@@ -304,7 +304,7 @@ export function compileCreateViewStatement(compiler: Compiler, stmt: AST.CreateV
 			return;
 		} else {
 			const itemType = ('selectAst' in existingItem) ? 'view' : 'table'; // Check if it's a view or table
-			throw new SqliteError(`cannot create ${itemType} ${viewName}: already exists in schema ${schema.name}`, StatusCode.ERROR);
+			throw new SqliterError(`cannot create ${itemType} ${viewName}: already exists in schema ${schema.name}`, StatusCode.ERROR);
 		}
 	}
 
@@ -322,10 +322,10 @@ export function compileCreateViewStatement(compiler: Compiler, stmt: AST.CreateV
 		schema.addView(viewSchema);
 	} catch (e: any) {
 		// Catch potential conflicts thrown by schema.addView
-		if (e instanceof SqliteError) {
+		if (e instanceof SqliterError) {
 			throw e; // Re-throw schema-level conflict errors
 		} else {
-			throw new SqliteError(`Error adding view ${viewName} to schema ${schema.name}: ${e.message}`, StatusCode.INTERNAL);
+			throw new SqliterError(`Error adding view ${viewName} to schema ${schema.name}: ${e.message}`, StatusCode.INTERNAL);
 		}
 	}
 
@@ -368,7 +368,7 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 				}
 
 				if (!tableSchema) {
-					if (!stmt.ifExists) throw new SqliteError(`no such index: ${objectName}`, StatusCode.ERROR);
+					if (!stmt.ifExists) throw new SqliterError(`no such index: ${objectName}`, StatusCode.ERROR);
 					// Emit Noop if index doesn't exist but IF EXISTS was specified
 					compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `DROP INDEX ${schemaName}.${objectName} (Not found, IF EXISTS)`);
 					success = true; // Report success if IF EXISTS
@@ -377,7 +377,7 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 
 				// Check if the virtual table prototype supports xDropIndex
 				if (typeof (tableSchema.vtabModule as any)?.xDropIndex !== 'function') {
-					throw new SqliteError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableSchema.name}' does not support DROP INDEX.`, StatusCode.ERROR);
+					throw new SqliterError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableSchema.name}' does not support DROP INDEX.`, StatusCode.ERROR);
 				}
 
 				// Allocate a cursor for the target table
@@ -410,17 +410,17 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 			// 	 break;
 			default:
 				// Should not happen if parser is correct
-				throw new SqliteError(`Unsupported object type for DROP: ${stmt.objectType}`);
+				throw new SqliterError(`Unsupported object type for DROP: ${stmt.objectType}`);
 		}
 
 		// Check success only if not IF EXISTS
 		if (!success && !stmt.ifExists) {
-			throw new SqliteError(`no such ${itemType}: ${objectName}`, StatusCode.ERROR);
+			throw new SqliterError(`no such ${itemType}: ${objectName}`, StatusCode.ERROR);
 		}
 
 	} catch (e: any) {
 		// Re-throw schema-level errors
-		if (e instanceof SqliteError) {
+		if (e instanceof SqliterError) {
 			// If error code indicates 'no such table/view/index' and IF EXISTS is true, ignore
 			if (stmt.ifExists && (e.code === StatusCode.ERROR /* Need specific code? */ || e.message.includes('no such'))) {
 				success = true;
@@ -428,7 +428,7 @@ export function compileDropStatement(compiler: Compiler, stmt: AST.DropStmt): vo
 				throw e;
 			}
 		} else {
-			throw new SqliteError(`Error dropping ${itemType} ${objectName}: ${e.message}`, StatusCode.INTERNAL);
+			throw new SqliterError(`Error dropping ${itemType} ${objectName}: ${e.message}`, StatusCode.INTERNAL);
 		}
 	}
 
@@ -451,10 +451,10 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 		const tableSchema = db.schemaManager.getTable(schemaName, tableName);
 
 		if (!tableSchema) {
-			throw new SqliteError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			throw new SqliterError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 		if ('selectAst' in tableSchema) {
-			throw new SqliteError(`${tableName} is a view, not a table`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			throw new SqliterError(`${tableName} is a view, not a table`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 
 		if (stmt.action.type === 'renameTable') {
@@ -471,7 +471,7 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 				case 'addColumn':
 					columnName = stmt.action.column.name;
 					if (tableSchema.columns.some((c: ColumnSchema) => c.name.toLowerCase() === columnName.toLowerCase())) {
-						throw new SqliteError(`duplicate column name: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+						throw new SqliterError(`duplicate column name: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					if (stmt.action.column.constraints?.some(c => c.type === 'primaryKey' || c.type === 'unique' || c.type === 'foreignKey')) {
 						warnLog(`ALTER TABLE ADD COLUMN with complex constraints (PK, UNIQUE, FK) might not be fully enforced by all VTabs.`);
@@ -483,10 +483,10 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 					columnName = stmt.action.name;
 					const colIndex = tableSchema.columnIndexMap.get(columnName.toLowerCase());
 					if (colIndex === undefined) {
-						throw new SqliteError(`no such column: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+						throw new SqliterError(`no such column: ${columnName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					if (tableSchema.primaryKeyDefinition.some((pk: { index: number; desc: boolean }) => pk.index === colIndex)) {
-						throw new SqliteError(`cannot drop column ${columnName}: is part of primary key`, StatusCode.CONSTRAINT, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+						throw new SqliterError(`cannot drop column ${columnName}: is part of primary key`, StatusCode.CONSTRAINT, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					changeInfo = { type: 'dropColumn', columnName: columnName };
 					break;
@@ -497,13 +497,13 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 					columnName = oldName;
 					const oldColIndex = tableSchema.columnIndexMap.get(oldName.toLowerCase());
 					if (oldColIndex === undefined) {
-						throw new SqliteError(`no such column: ${oldName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+						throw new SqliterError(`no such column: ${oldName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					if (tableSchema.columns.some((c: ColumnSchema) => c.name.toLowerCase() === newName.toLowerCase())) {
-						throw new SqliteError(`duplicate column name: ${newName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+						throw new SqliterError(`duplicate column name: ${newName}`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					if (tableSchema.primaryKeyDefinition.some((pk: { index: number; desc: boolean }) => pk.index === oldColIndex)) {
-						throw new SqliteError(`cannot rename column ${oldName}: is part of primary key`, StatusCode.CONSTRAINT, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+						throw new SqliterError(`cannot rename column ${oldName}: is part of primary key`, StatusCode.CONSTRAINT, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 					}
 					changeInfo = { type: 'renameColumn', oldName: oldName, newName: newName };
 					break;
@@ -529,12 +529,12 @@ export function compileAlterTableStatement(compiler: Compiler, stmt: AST.AlterTa
 			compiler.emit(Opcode.SchemaInvalidate, 0, 0, 0, null, 0, `Invalidate schema after ALTER TABLE`);
 
 		} else {
-			throw new SqliteError(`Unsupported ALTER TABLE action type: ${(stmt.action as any).type}`, StatusCode.INTERNAL);
+			throw new SqliterError(`Unsupported ALTER TABLE action type: ${(stmt.action as any).type}`, StatusCode.INTERNAL);
 		}
 
 	} catch (e: any) {
-		if (e instanceof SqliteError) throw e;
-		throw new SqliteError(`Error processing ALTER TABLE: ${e.message}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
+		if (e instanceof SqliterError) throw e;
+		throw new SqliterError(`Error processing ALTER TABLE: ${e.message}`, StatusCode.INTERNAL, e instanceof Error ? e : undefined);
 	}
 }
 
@@ -566,7 +566,7 @@ export function compilePragmaStatement(compiler: Compiler, stmt: AST.PragmaStmt)
 		case 'default_vtab_module': {
 			const moduleName = getStringValue(valueNode);
 			if (moduleName === null) {
-				throw new SqliteError(`PRAGMA default_vtab_module requires a string or identifier value.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+				throw new SqliterError(`PRAGMA default_vtab_module requires a string or identifier value.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
 			// We modify the setter slightly to only take the name here
 			// The args are set by a separate pragma

@@ -3,9 +3,9 @@ import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { StatusCode, SqlDataType, type SqlValue } from '../../common/types.js';
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
-import type { SqliteContext } from '../../func/context.js';
+import type { SqliterContext } from '../../func/context.js';
 import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -58,7 +58,7 @@ class SchemaTable extends VirtualTable {
 	}
 
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
-		throw new SqliteError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
+		throw new SqliterError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
 	}
 
 	async xBegin(): Promise<void> {}
@@ -67,7 +67,7 @@ class SchemaTable extends VirtualTable {
 	async xRollback(): Promise<void> {}
 
 	async xRename(zNew: string): Promise<void> {
-		throw new SqliteError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
+		throw new SqliterError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
 	}
 
 	async xSavepoint(iSavepoint: number): Promise<void> {}
@@ -257,7 +257,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		}
 	}
 
-	column(context: SqliteContext, columnIndex: number): number {
+	column(context: SqliterContext, columnIndex: number): number {
 		const row = this.getCurrentRow();
 		if (!row) {
 			context.resultNull();
@@ -301,7 +301,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 	async rowid(): Promise<bigint> {
 		const rowid = this.getCurrentRowId();
 		if (rowid === null) {
-			throw new SqliteError("Cursor is not pointing to a valid schema row", StatusCode.MISUSE);
+			throw new SqliterError("Cursor is not pointing to a valid schema row", StatusCode.MISUSE);
 		}
 		return Promise.resolve(rowid);
 	}

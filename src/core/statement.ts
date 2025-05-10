@@ -1,8 +1,8 @@
 import { createLogger } from '../common/logger.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
-import { MisuseError, SqliteError } from '../common/errors.js';
+import { MisuseError, SqliterError } from '../common/errors.js';
 import type { Database } from './database.js';
-import { SqlDataType } from '../common/constants.js';
+import { SqlDataType } from '../common/types.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import { Compiler } from '../compiler/compiler.js';
 import { type VdbeProgram } from '../vdbe/program.js';
@@ -60,19 +60,19 @@ export class Statement {
 		} catch (e) {
 			errorLog("Compilation failed: %O", e);
 			// Convert errors to SqliteError if they aren't already
-			if (e instanceof SqliteError) {
+			if (e instanceof SqliterError) {
 				throw e;
 			} else if (e instanceof ParseError) {
-				throw new SqliteError(`Parse error: ${e.message}`, StatusCode.ERROR);
+				throw new SqliterError(`Parse error: ${e.message}`, StatusCode.ERROR);
 			} else if (e instanceof Error) {
-				throw new SqliteError(`Compilation error: ${e.message}`, StatusCode.INTERNAL);
+				throw new SqliterError(`Compilation error: ${e.message}`, StatusCode.INTERNAL);
 			} else {
-				throw new SqliteError("Unknown compilation error", StatusCode.INTERNAL);
+				throw new SqliterError("Unknown compilation error", StatusCode.INTERNAL);
 			}
 		}
 
 		if (!this.vdbeProgram) {
-			throw new SqliteError("Compilation resulted in no program", StatusCode.INTERNAL);
+			throw new SqliterError("Compilation resulted in no program", StatusCode.INTERNAL);
 		}
 
 		return this.vdbeProgram;
@@ -146,7 +146,7 @@ export class Statement {
 
 		if (!this.vdbe) {
 			// Should not happen if compile succeeded
-			throw new SqliteError("VDBE not initialized after compile", StatusCode.INTERNAL);
+			throw new SqliterError("VDBE not initialized after compile", StatusCode.INTERNAL);
 		}
 
 		this.busy = true;
@@ -160,7 +160,7 @@ export class Statement {
 			// Row is ready - OpCode.ResultRow should have set currentRowInternal
 			if (!this.currentRowInternal) {
 				this.busy = false;
-				throw new SqliteError("VDBE returned ROW but setCurrentRow failed to store data", StatusCode.INTERNAL);
+				throw new SqliterError("VDBE returned ROW but setCurrentRow failed to store data", StatusCode.INTERNAL);
 			}
 			log('Step result: %s', StatusCode[status]);
 			return StatusCode.ROW;
@@ -177,7 +177,7 @@ export class Statement {
 			const errorDetail = this.vdbe?.error?.message || `Status code ${status}`;
 			errorLog('VDBE execution failed: %s', errorDetail);
 			// Re-throw the error, preserving the original code if available
-			throw this.vdbe?.error || new SqliteError(`VDBE execution failed with status: ${StatusCode[status] || status}`, status);
+			throw this.vdbe?.error || new SqliterError(`VDBE execution failed with status: ${StatusCode[status] || status}`, status);
 		}
 	}
 
@@ -239,7 +239,7 @@ export class Statement {
 			return this.currentRowInternal.map((cell, i) => `col_${i}`);
 		}
 		if (names.length !== this.currentRowInternal.length) {
-			throw new SqliteError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
+			throw new SqliterError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
 		}
 		// Convert readonly array to regular array if needed
 		return [...names];
@@ -317,7 +317,7 @@ export class Statement {
 					this.currentRowInternal = null;
 				} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
 					// Error occurred during step
-					throw new SqliteError("Execution failed during run()", status);
+					throw new SqliterError("Execution failed during run()", status);
 				}
 			} while (status === StatusCode.ROW);
 			// Status is DONE or OK here
@@ -352,7 +352,7 @@ export class Statement {
 			if (status === StatusCode.ROW) {
 				result = this.getAsObject(); // Use existing getAsObject
 			} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-				throw new SqliteError("Execution failed during get()", status);
+				throw new SqliterError("Execution failed during get()", status);
 			}
 			// Consume any potential subsequent rows if the user didn't LIMIT 1
 			let remainingStatus: StatusCode = status;
@@ -400,7 +400,7 @@ export class Statement {
 				if (status === StatusCode.ROW) {
 					results.push(this.getAsObject()); // Use existing getAsObject
 				} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-					throw new SqliteError("Execution failed during all()", status);
+					throw new SqliterError("Execution failed during all()", status);
 				}
 			} while (status === StatusCode.ROW);
 		} finally {

@@ -5,8 +5,8 @@ import type { P4SortKey } from '../vdbe/instruction.js';
 import { createDefaultColumnSchema } from '../schema/column.js';
 import { SqlDataType } from '../common/types.js';
 import { expressionToString } from '../util/ddl-stringify.js';
-import { SqliteError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { SqliterError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import { getExpressionAffinity } from './utils.js';
 
 /** Information about the sorter used for window functions */
@@ -44,7 +44,7 @@ export function setupWindowSorter(compiler: Compiler, stmt: AST.SelectStmt): Win
 	});
 
 	if (allWindowFunctions.length === 0) {
-		throw new SqliteError("Internal error: setupWindowSorter called with no window functions found in SELECT list.", StatusCode.INTERNAL);
+		throw new SqliterError("Internal error: setupWindowSorter called with no window functions found in SELECT list.", StatusCode.INTERNAL);
 	}
 
 	// --- Check for RANGE offset requirements ---
@@ -70,12 +70,12 @@ export function setupWindowSorter(compiler: Compiler, stmt: AST.SelectStmt): Win
 
 	if (requiresRangeOffsetCheck) {
 		if (!orderByClause || orderByClause.length !== 1) {
-			throw new SqliteError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
+			throw new SqliterError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
 		}
 		const orderByExpr = orderByClause[0].expr;
 		const affinity = getExpressionAffinity(compiler, orderByExpr);
 		if (affinity !== SqlDataType.INTEGER && affinity !== SqlDataType.REAL && affinity !== SqlDataType.NUMERIC) {
-			throw new SqliteError(`RANGE with offset requires ORDER BY clause with NUMERIC affinity (inferred: ${SqlDataType[affinity]})`, StatusCode.ERROR);
+			throw new SqliterError(`RANGE with offset requires ORDER BY clause with NUMERIC affinity (inferred: ${SqlDataType[affinity]})`, StatusCode.ERROR);
 		}
 	}
 	// --- End check ---

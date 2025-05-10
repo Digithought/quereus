@@ -1,9 +1,9 @@
 import type { QueryPlanStep } from '../../core/explain.js';
-import type { SqliteContext } from '../../func/context.js';
+import type { SqliterContext } from '../../func/context.js';
 import { StatusCode } from '../../common/types.js';
 import type { SqlValue } from '../../common/types.js';
 import { VirtualTableCursor } from '../cursor.js';
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import type { QueryPlanTable } from './table.js';
 
 /**
@@ -37,7 +37,7 @@ export class QueryPlanCursor extends VirtualTableCursor<QueryPlanTable> {
         }
     }
 
-    column(context: SqliteContext, columnIndex: number): number {
+    column(context: SqliterContext, columnIndex: number): number {
         if (this._isEof || this.currentIndex < 0 || this.currentIndex >= this.planSteps.length) {
             context.resultNull();
             return StatusCode.OK;
@@ -80,7 +80,7 @@ export class QueryPlanCursor extends VirtualTableCursor<QueryPlanTable> {
 
     // rowid is not applicable for this virtual table
     async rowid(): Promise<bigint> {
-        throw new SqliteError("query_plan table has no rowid", StatusCode.MISUSE);
+        throw new SqliterError("query_plan table has no rowid", StatusCode.MISUSE);
     }
 
     async close(): Promise<void> {

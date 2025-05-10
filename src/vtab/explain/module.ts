@@ -1,5 +1,5 @@
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import type { QueryPlanStep } from '../../core/explain.js';
 import { buildColumnIndexMap, type TableSchema } from '../../schema/table.js';
@@ -54,7 +54,7 @@ export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, Query
     constructor() { }
 
     xCreate(): QueryPlanTable {
-        throw new SqliteError(`Cannot CREATE TABLE using module 'query_plan'`, StatusCode.ERROR);
+        throw new SqliterError(`Cannot CREATE TABLE using module 'query_plan'`, StatusCode.ERROR);
     }
 
     xConnect(
@@ -67,7 +67,7 @@ export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, Query
     ): QueryPlanTable {
 
         if (!options || typeof options.sql !== 'string') {
-            throw new SqliteError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
+            throw new SqliterError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
         }
 
         const sqlToExplain = options.sql;
@@ -76,7 +76,7 @@ export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, Query
         try {
              planSteps = db.getPlanInfo(sqlToExplain);
         } catch (e: any) {
-            throw new SqliteError(`Failed to generate plan for SQL: ${e.message}`, StatusCode.ERROR, e);
+            throw new SqliterError(`Failed to generate plan for SQL: ${e.message}`, StatusCode.ERROR, e);
         }
 
         return new QueryPlanTable(db, this, tableName, QUERY_PLAN_SCHEMA, planSteps);

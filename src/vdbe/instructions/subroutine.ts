@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Handler } from '../handler-types.js';
 import { Opcode } from '../opcodes.js';
@@ -35,7 +35,7 @@ export function registerHandlers(handlers: Handler[]) {
 			const oldFP = typeof oldFPVal === 'number' ? oldFPVal : -1;
 			if (isNaN(oldFP) || oldFP < 0) {
 				errorLog(`Invalid old frame pointer %s at FP %d + 1`, oldFPVal, ctx.framePointer);
-				throw new SqliteError(`Invalid old frame pointer ${oldFPVal} at FP ${ctx.framePointer + 1}`, StatusCode.INTERNAL);
+				throw new SqliterError(`Invalid old frame pointer ${oldFPVal} at FP ${ctx.framePointer + 1}`, StatusCode.INTERNAL);
 			}
 
 			ctx.stackPointer = ctx.framePointer;
@@ -59,7 +59,7 @@ export function registerHandlers(handlers: Handler[]) {
 
 		if (!Number.isInteger(jumpTarget) || jumpTarget < 0) {
 			errorLog(`Invalid return address %s at SP %d (expected after FrameLeave)`, jumpTargetVal, ctx.stackPointer);
-			throw new SqliteError(`Invalid return address ${jumpTargetVal} at SP ${ctx.stackPointer} (expected after FrameLeave)`, StatusCode.INTERNAL);
+			throw new SqliterError(`Invalid return address ${jumpTargetVal} at SP ${ctx.stackPointer} (expected after FrameLeave)`, StatusCode.INTERNAL);
 		}
 
 		ctx.stackPointer++; // SP advances past the return address
@@ -74,12 +74,12 @@ export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.StackPop] = (ctx, inst) => {
 		const count = inst.p1;
 		if (count < 0) {
-			throw new SqliteError("StackPop count cannot be negative", StatusCode.INTERNAL);
+			throw new SqliterError("StackPop count cannot be negative", StatusCode.INTERNAL);
 		}
 
 		if (ctx.stackPointer < count) {
 			errorLog(`Stack underflow during StackPop: SP=%d, Count=%d`, ctx.stackPointer, count);
-			throw new SqliteError(`Stack underflow during StackPop: SP=${ctx.stackPointer}, Count=${count}`, StatusCode.INTERNAL);
+			throw new SqliterError(`Stack underflow during StackPop: SP=${ctx.stackPointer}, Count=${count}`, StatusCode.INTERNAL);
 		}
 
 		ctx.stackPointer -= count;

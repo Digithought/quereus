@@ -2,9 +2,9 @@ import { VirtualTableCursor } from '../cursor.js';
 import type { VdbeProgramTable } from './table.js';
 import type { VdbeInstruction } from '../../vdbe/instruction.js';
 import { Opcode } from '../../vdbe/opcodes.js';
-import type { SqliteContext } from '../../func/context.js';
+import type { SqliterContext } from '../../func/context.js';
 import { StatusCode } from '../../common/types.js';
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { safeJsonStringify } from '../../util/serialization.js';
 
 /**
@@ -40,7 +40,7 @@ export class VdbeProgramCursor extends VirtualTableCursor<VdbeProgramTable> {
         }
     }
 
-    column(context: SqliteContext, columnIndex: number): number {
+    column(context: SqliterContext, columnIndex: number): number {
         if (this._isEof || this.currentIndex < 0 || this.currentIndex >= this.instructions.length) {
             context.resultNull();
             return StatusCode.OK;
@@ -93,7 +93,7 @@ export class VdbeProgramCursor extends VirtualTableCursor<VdbeProgramTable> {
 
     // rowid is not applicable
     async rowid(): Promise<bigint> {
-        throw new SqliteError("vdbe_program table has no rowid", StatusCode.MISUSE);
+        throw new SqliterError("vdbe_program table has no rowid", StatusCode.MISUSE);
     }
 
     async close(): Promise<void> {

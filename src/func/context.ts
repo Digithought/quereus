@@ -1,6 +1,6 @@
 import { createLogger } from '../common/logger.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
-import { SqliteError } from '../common/errors.js';
+import { SqliterError } from '../common/errors.js';
 import type { Database } from '../core/database.js';
 
 /**
@@ -12,7 +12,7 @@ import type { Database } from '../core/database.js';
  * implementation. Setting multiple results or setting a result then
  * throwing an error leads to undefined behavior.
  */
-export interface SqliteContext {
+export interface SqliterContext {
 	/**
 	 * Sets the result of the function to a BLOB value.
 	 * @param value The BLOB data
@@ -125,10 +125,10 @@ const errorLog = log.extend('error');
  * Concrete implementation of SqliteContext used by the engine.
  * @internal
  */
-export class FunctionContext implements SqliteContext {
+export class FunctionContext implements SqliterContext {
 	private _result: SqlValue | undefined = undefined;
 	private _result_set = false;
-	private _error: SqliteError | null = null;
+	private _error: SqliterError | null = null;
 	private _subtype: number = 0;
 	private userData: unknown;
 	private db: Database;
@@ -151,7 +151,7 @@ export class FunctionContext implements SqliteContext {
 	/**
 	 * @internal Gets the error if one occurred
 	 */
-	_getError(): SqliteError | null { return this._error; }
+	_getError(): SqliterError | null { return this._error; }
 
 	/**
 	 * @internal Gets the result subtype
@@ -192,7 +192,7 @@ export class FunctionContext implements SqliteContext {
 	resultDouble(value: number): void { this.setResult(value); }
 	resultError(message: string, code: StatusCode = StatusCode.ERROR): void {
 		if (this._result_set || this._error) return;
-		this._error = new SqliteError(message, code);
+		this._error = new SqliterError(message, code);
 	}
 	resultInt(value: number): void { this.setResult(Math.trunc(value)); }
 	resultInt64(value: bigint): void { this.setResult(value); }

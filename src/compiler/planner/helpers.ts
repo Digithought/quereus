@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type * as AST from '../../parser/ast.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -162,7 +162,7 @@ export function planTableAccessHelper(
 	}
 
 	if (status !== StatusCode.OK) {
-		throw new SqliteError(`xBestIndex failed for table ${tableSchema.name} with code ${status}`, status, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		throw new SqliterError(`xBestIndex failed for table ${tableSchema.name} with code ${status}`, status, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 
 	// Calculate nArgs based on usage information from xBestIndex

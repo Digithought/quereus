@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { ColumnDef } from '../../parser/index.js';
 import { getAffinity } from '../../schema/column.js';

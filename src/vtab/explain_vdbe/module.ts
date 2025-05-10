@@ -1,5 +1,5 @@
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import type { VirtualTableModule } from '../module.js';
 import { VdbeProgramTable } from './table.js';
@@ -13,7 +13,7 @@ export class VdbeProgramModule implements VirtualTableModule<VdbeProgramTable, V
     constructor() { }
 
     xCreate(): VdbeProgramTable {
-        throw new SqliteError(`Cannot CREATE TABLE using module 'vdbe_program'`, StatusCode.ERROR);
+        throw new SqliterError(`Cannot CREATE TABLE using module 'vdbe_program'`, StatusCode.ERROR);
     }
 
     xConnect(
@@ -26,7 +26,7 @@ export class VdbeProgramModule implements VirtualTableModule<VdbeProgramTable, V
     ): VdbeProgramTable {
 
         if (!options || typeof options.sql !== 'string') {
-            throw new SqliteError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
+            throw new SqliterError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
         }
 
         const sqlToExplain = options.sql;
@@ -41,7 +41,7 @@ export class VdbeProgramModule implements VirtualTableModule<VdbeProgramTable, V
              // Return the table instance holding the program
              return new VdbeProgramTable(db, this, program);
         } catch (e: any) {
-            throw new SqliteError(`Failed to compile SQL for vdbe_program: ${e.message}`, StatusCode.ERROR, e);
+            throw new SqliterError(`Failed to compile SQL for vdbe_program: ${e.message}`, StatusCode.ERROR, e);
         }
     }
 

@@ -1,3 +1,5 @@
+export type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
+
 /**
  * Represents the primitive types SQLite can handle internally in this JS implementation.
  * These are the values that can be stored in SQLite columns and passed as parameters.
@@ -13,6 +15,8 @@ export interface SqlResult<T> {
 	value?: T;
 	error?: Error;
 }
+
+export type SqlParameters = SqlValue[] | Record<string, SqlValue>
 
 /**
  * Standard SQLite status/error codes that match the C implementation.
@@ -50,6 +54,7 @@ export enum StatusCode {
 	WARNING = 28,
 	ROW = 100,
 	DONE = 101,
+	UNSUPPORTED = 200,
 }
 
 /**

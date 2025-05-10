@@ -1,6 +1,3 @@
-// Re-export from types for potentially wider use
-export { StatusCode, SqlDataType } from './types.js';
-
 // Constants for function flags (matching C API where sensible)
 export enum FunctionFlags {
 	UTF8 = 1,
