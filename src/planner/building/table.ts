@@ -1,11 +1,11 @@
 import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type * as AST from '../../parser/ast.js';
-import type { TableReferenceNode } from '../nodes/reference-nodes.js';
-import { TableScanNode } from '../nodes/table-scan-node.js';
+import type { TableReferenceNode } from '../nodes/reference.js';
+import { TableScanNode } from '../nodes/scan.js';
 import type { PlanningContext } from '../planning-context.js';
 import { resolveTable } from '../resolve.js';
-import { Ambiguous } from '../scope.js';
+import { Ambiguous } from '../scopes/scope.js';
 
 /**
  * Plans a table reference operation based on a FROM clause item.

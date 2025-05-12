@@ -1,21 +1,20 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode } from './plan-node.js';
-import type { RelationType, ScalarType } from '../../common/datatype.js';
-import { Scope } from '../scope.js';
-import { type SqlParameters, type SqlValue, SqlDataType } from '../../common/types.js';
+import type { RelationType } from '../../common/datatype.js';
+import { Scope } from '../scopes/scope.js';
 
 export class ResultNode extends PlanNode implements UnaryRelationalNode {
   override readonly nodeType = PlanNodeType.Result;
 
   constructor(
     scope: Scope,
-    public readonly input: RelationalPlanNode,
+    public readonly source: RelationalPlanNode,
   ) {
     super(scope);
   }
 
   getType(): RelationType {
-    return this.input.getType();
+    return this.source.getType();
   }
 
   getChildren(): readonly [] {
@@ -23,10 +22,10 @@ export class ResultNode extends PlanNode implements UnaryRelationalNode {
   }
 
 	getRelations(): readonly [RelationalPlanNode] {
-		return [this.input];
+		return [this.source];
 	}
 
   get estimatedRows(): number | undefined {
-    return this.input.estimatedRows;
+    return this.source.estimatedRows;
   }
 }

@@ -1,15 +1,15 @@
 import type * as AST from '../../parser/ast.js';
-import { MultiScope, Scope } from '../scope.js';
+import { MultiScope, Scope } from '../scopes/scope.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import { SqliterError } from '../../common/errors.js';
 import { StatusCode, type SqlParameters } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
-import { ResultNode } from '../nodes/result-node.js';
+import { ResultNode } from '../nodes/result.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
-import { SingleRowSourceNode } from '../nodes/single-row-source-node.js';
-import { ColumnReferenceNode, ParameterReferenceNode, TableReferenceNode } from '../nodes/reference-nodes.js';
+import { SingleRowNode } from '../nodes/single-row.js';
+import { ColumnReferenceNode, ParameterReferenceNode, TableReferenceNode } from '../nodes/reference.js';
 import { buildTableScan } from './table.js';
-import { AliasedScope } from '../aliasedScope.js';
+import { AliasedScope } from '../scopes/aliased.js';
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -29,7 +29,7 @@ export function buildSelectStmt(
 
   // Phase 1: Plan FROM clause and determine local input relations for the current select scope
   const fromTables = !stmt.from || stmt.from.length === 0
-		? [SingleRowSourceNode.instance]
+		? [SingleRowNode.instance]
 		: stmt.from.map(from => buildFrom(from, context));
 
 	// TODO: Support multiple FROM sources (joins)

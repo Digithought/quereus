@@ -1,6 +1,6 @@
-import { Ambiguous, Scope } from "./scope.js";
+import { Ambiguous, Scope } from "./scopes/scope.js";
 import * as AST from "../parser/ast.js";
-import { ColumnReferenceNode, FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference-nodes.js";
+import { ColumnReferenceNode, FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference.js";
 import { SqliterError } from "../common/errors.js";
 import { StatusCode } from "../common/types.js";
 

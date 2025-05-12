@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import type { Scope } from '../scope.js';
+import type { Scope } from '../scopes/scope.js';
 import type { BaseType, RelationType, ScalarType } from '../../common/datatype.js';
 import type { Expression } from '../../parser/ast.js';
 
@@ -77,7 +77,7 @@ export interface ZeroAryRelationalNode extends RelationalPlanNode {
 
 /** A relational plan node that operates on a single relational input. */
 export interface UnaryRelationalNode extends RelationalPlanNode {
-  readonly input: RelationalPlanNode;
+  readonly source: RelationalPlanNode;
   getRelations(): readonly [RelationalPlanNode];
 }
 
@@ -114,5 +114,3 @@ export interface NaryScalarNode extends ScalarPlanNode {
   readonly operands: ReadonlyArray<ScalarPlanNode>;
   getChildren(): readonly ScalarPlanNode[];
 }
-
-

@@ -2,9 +2,8 @@ import type { BaseType, ScalarType, RelationType } from '../../common/datatype.j
 import { PlanNode, type RelationalPlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
-import type { Scope } from '../scope.js';
+import type { Scope } from '../scopes/scope.js';
 import type * as AST from '../../parser/ast.js';
-import type { SqlValue } from '../../common/types.js';
 import { relationTypeFromTableSchema } from '../type-utils.js';
 import { Cached } from '../../util/cached.js';
 import type { FunctionSchema } from '../../schema/function.js';

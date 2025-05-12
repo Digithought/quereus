@@ -1,10 +1,21 @@
 export type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
 
 /**
- * Represents the primitive types SQLite can handle internally in this JS implementation.
+ * Represents the primitive scalar types SQLite can handle internally in this implementation.
  * These are the values that can be stored in SQLite columns and passed as parameters.
  */
 export type SqlValue = number | string | bigint | Uint8Array | boolean | null;
+
+/**
+ * Represents a row of data, which is an array of SqlValue.
+ */
+export type Row = SqlValue[];
+
+/**
+ * Represents a value that can be used in the runtime environment.
+ * This type can be a scalar value, a promise of a scalar value, an async iterable of rows (cursor), or an array of RuntimeValue (results).
+ */
+export type RuntimeValue = SqlValue | Promise<SqlValue> | AsyncIterable<Row> | RuntimeValue[];
 
 /**
  * Represents the result of an operation that might return a value or an error.
@@ -70,4 +81,4 @@ export enum SqlDataType {
 	NUMERIC = 6,
 }
 
-// Add other core types/interfaces as needed, e.g., for Error objects.
+export type CompareFn = (a: SqlValue, b: SqlValue) => number;

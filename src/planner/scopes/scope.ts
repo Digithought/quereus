@@ -1,7 +1,7 @@
-import { StatusCode } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
-import type { PlanNode } from './nodes/plan-node.js';
-import * as AST from '../parser/ast.js';
+import { StatusCode } from '../../common/types.js';
+import { SqliterError } from '../../common/errors.js';
+import type { PlanNode } from '../nodes/plan-node.js';
+import * as AST from '../../parser/ast.js';
 
 // Create a javascript symbol that represents an ambiguous symbol.
 export const Ambiguous = Symbol();

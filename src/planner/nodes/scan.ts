@@ -2,8 +2,8 @@ import { PlanNode, type UnaryRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { RelationType } from '../../common/datatype.js';
 import { relationTypeFromTableSchema } from '../type-utils.js';
-import type { Scope } from '../scope.js';
-import type { TableReferenceNode } from './reference-nodes.js';
+import type { Scope } from '../scopes/scope.js';
+import type { TableReferenceNode } from './reference.js';
 
 export class TableScanNode extends PlanNode implements UnaryRelationalNode {
   override readonly nodeType = PlanNodeType.TableScan;
@@ -12,14 +12,14 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
 
   constructor(
     scope: Scope,
-    public readonly input: TableReferenceNode,
+    public readonly source: TableReferenceNode,
   ) {
     super(scope, 1);
-    this.outputType = relationTypeFromTableSchema(input.tableSchema);
+    this.outputType = relationTypeFromTableSchema(source.tableSchema);
   }
 
   get estimatedRows(): number {
-    return this.input.estimatedRows ?? 100; // Arbitrary assumption if no estimatedRows are available
+    return this.source.estimatedRows ?? 100; // Arbitrary assumption if no estimatedRows are available
   }
 
 	getTotalCost(): number {
@@ -35,10 +35,10 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
   }
 
 	getRelations(): readonly [TableReferenceNode] {
-		return [this.input];
+		return [this.source];
 	}
 
   override toString(): string {
-    return `${this.nodeType} ${this.input.tableSchema.name}`;
+    return `${this.nodeType} ${this.source.tableSchema.name}`;
   }
 }

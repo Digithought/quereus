@@ -1,10 +1,10 @@
-import { ResultNode } from "../nodes/result-node.js";
+import { ResultNode } from "../nodes/result.js";
 import * as AST from "../../parser/ast.js";
 import type { Database } from "../../core/database.js";
-import { MultiScope, Scope } from "../scope.js";
+import { MultiScope, Scope } from "../scopes/scope.js";
 import { type SqlParameters, type SqlValue, SqlDataType } from "../../common/types.js";
-import { ParameterReferenceNode } from "../nodes/reference-nodes.js";
-import { GlobalScope } from "../global-scope.js";
+import { ParameterReferenceNode } from "../nodes/reference.js";
+import { GlobalScope } from "../scopes/global.js";
 import type { ScalarType } from "../../common/datatype.js";
 import type { PlanNode } from "../nodes/plan-node.js";
 import { buildSelectStmt } from "./select.js";

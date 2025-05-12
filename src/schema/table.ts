@@ -30,7 +30,7 @@ export interface TableSchema {
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
 	vtabArgs?: ReadonlyArray<string>;
 	/** If virtual, the name the module was registered with */
-	vtabModuleName?: string;
+	vtabModuleName: string;
 	/** Whether the table is declared WITHOUT ROWID */
 	isWithoutRowid: boolean;
 	/** Whether the table is a temporary table */
