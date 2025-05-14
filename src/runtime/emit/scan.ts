@@ -1,11 +1,11 @@
-import { StatusCode, type Row } from "../common/types.js";
-import type { TableScanNode } from "../planner/nodes/scan.js";
-import { SqliterError } from "../common/errors";
-import type { VirtualTable } from "../vtab/table.js";
-import type { BaseModuleConfig } from "../vtab/module.js";
-import type { Instruction, RuntimeContext } from "./types.js";
+import { StatusCode, type Row } from "../../common/types.js";
+import type { TableScanNode } from "../../planner/nodes/scan.js";
+import { SqliterError } from "../../common/errors.js";
+import type { VirtualTable } from "../../vtab/table.js";
+import type { BaseModuleConfig } from "../../vtab/module.js";
+import type { Instruction, RuntimeContext } from "../types.js";
 
-export function emitScanTable(plan: TableScanNode): Instruction {
+export function emitTableScan(plan: TableScanNode): Instruction {
 
 	async function *run(ctx: RuntimeContext): AsyncIterable<Row> {
 		const tableSchema = plan.source.tableSchema;
@@ -39,17 +39,19 @@ export function emitScanTable(plan: TableScanNode): Instruction {
 		}
 
 		// TODO: separately converting vtable interface to use async iterable
-		const cursor = await vtabInstance.xOpen();
-		try {
-			await cursor.next();
-			while (!cursor.eof) {
-				yield cursor.row;
-				await cursor.next();
-			}
-		} finally {
-			await cursor.close();
-			await vtabInstance.xDisconnect();
-		}
+		// return vtabInstance.rows();
+		throw new SqliterError("Not implemented", StatusCode.UNSUPPORTED);
+		// const cursor = await vtabInstance.xOpen();
+		// try {
+		// 	await cursor.next();
+		// 	while (!cursor.eof) {
+		// 		yield cursor.row;
+		// 		await cursor.next();
+		// 	}
+		// } finally {
+		// 	await cursor.close();
+		// 	await vtabInstance.xDisconnect();
+		// }
 	}
 
 	return { params: [], run };

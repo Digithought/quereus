@@ -1,19 +1,21 @@
 import { ResultNode } from "../nodes/result.js";
 import * as AST from "../../parser/ast.js";
 import type { Database } from "../../core/database.js";
-import { MultiScope, Scope } from "../scopes/scope.js";
 import { type SqlParameters, type SqlValue, SqlDataType } from "../../common/types.js";
 import { ParameterReferenceNode } from "../nodes/reference.js";
 import { GlobalScope } from "../scopes/global.js";
 import type { ScalarType } from "../../common/datatype.js";
 import type { PlanNode } from "../nodes/plan-node.js";
 import { buildSelectStmt } from "./select.js";
+import { RegisteredScope } from "../scopes/registered.js";
+import { MultiScope } from "../scopes/multi.js";
+import type { Scope } from "../scopes/scope.js";
 
 export function buildBatch(statements: AST.Statement[], db: Database, params?: SqlParameters): PlanNode[] {
 	const globalScope = new GlobalScope(db.schemaManager);
 	let scope: Scope = globalScope;
 	if (params && params.length) {
-		const paramScope = new Scope();
+		const paramScope = new RegisteredScope();
 		if (Array.isArray(params)) {
 			params.forEach((param, index) => {
 				paramScope.registerSymbol(`:${index}`, (exp, s) => new ParameterReferenceNode(s, exp as AST.ParameterExpr, index, getParameterScalarType(param)));

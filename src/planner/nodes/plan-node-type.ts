@@ -29,6 +29,7 @@ export enum PlanNodeType {
   ScalarFunctionCall = 'ScalarFunctionCall',
   Cast = 'Cast',
   Collate = 'Collate',
-  Subquery = 'Subquery', // Represents a scalar subquery, IN subquery, or EXISTS subquery
+  In = 'In',
+  Exists = 'Exists',
   CaseExpr = 'CaseExpr',
 }

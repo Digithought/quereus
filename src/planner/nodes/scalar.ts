@@ -5,6 +5,7 @@ import type { Scope } from "../scopes/scope.js";
 import { SqlDataType } from "../../common/types.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import { Cached } from "../../util/cached.js";
+import { getLiteralSqlType } from "../../runtime/type-inference.js";
 
 export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 	readonly nodeType = PlanNodeType.BinaryOp;
@@ -21,8 +22,8 @@ export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 		this.cachedType = new Cached(this.generateType);
 	}
 
-  // Required by PlanNode
-  getType(): ScalarType {
+	// Required by PlanNode
+	getType(): ScalarType {
 		return this.cachedType.value;
 	}
 
@@ -69,11 +70,46 @@ export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 		};
 	}
 
-  getChildren(): readonly [ScalarPlanNode, ScalarPlanNode] {
+	getChildren(): readonly [ScalarPlanNode, ScalarPlanNode] {
 		return [this.left, this.right];
 	}
 
-  getRelations(): readonly [] {
+	getRelations(): readonly [] {
 		return [];
+	}
+}
+
+export class LiteralNode extends PlanNode implements ScalarPlanNode {
+	readonly nodeType = PlanNodeType.Literal;
+
+	constructor(
+		public readonly scope: Scope,
+		public readonly expression: AST.LiteralExpr,
+	) {
+		super(scope);
+	}
+
+	getType(): ScalarType {
+		const sqlType = getLiteralSqlType(this.expression.value);
+		return {
+			typeClass: 'scalar',
+			affinity: sqlType === SqlDataType.NULL ? SqlDataType.TEXT : sqlType,
+			nullable: sqlType === SqlDataType.NULL,
+			isReadOnly: true,
+			datatype: sqlType,
+			collationName: undefined,
+		}
+	}
+
+	getChildren(): readonly [] {
+		return [];
+	}
+
+	getRelations(): readonly [] {
+		return [];
+	}
+
+	toString(): string {
+		return `${super.toString()} (${this.expression.value})`;
 	}
 }

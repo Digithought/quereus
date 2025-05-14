@@ -12,10 +12,16 @@ export type SqlValue = number | string | bigint | Uint8Array | boolean | null;
 export type Row = SqlValue[];
 
 /**
- * Represents a value that can be used in the runtime environment.
- * This type can be a scalar value, a promise of a scalar value, an async iterable of rows (cursor), or an array of RuntimeValue (results).
+ * Represents a value that can be expected as an input in the runtime environment.
+ * This type can be a scalar value, or an async iterable of rows (cursor).
  */
-export type RuntimeValue = SqlValue | Promise<SqlValue> | AsyncIterable<Row> | RuntimeValue[];
+export type RuntimeValue = SqlValue | AsyncIterable<Row>;
+
+/**
+ * Represents a value that can be output from the runtime, or an intermediate thereof.
+ * This type can be a scalar value, a promise of a scalar value, an async iterable of rows (cursor), or an array of OutputValue (results).
+ */
+export type OutputValue = RuntimeValue | Promise<SqlValue> | RuntimeValue[];
 
 /**
  * Represents the result of an operation that might return a value or an error.

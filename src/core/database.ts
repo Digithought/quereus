@@ -37,11 +37,8 @@ export class Database {
 	public readonly schemaManager: SchemaManager;
 	private isOpen = true;
 	private statements = new Set<Statement>();
-	private registeredVTabs: Map<string, { module: VirtualTableModule<any, any>, auxData: unknown }> = new Map();
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
-	private defaultVtabModuleName: string = 'memory';
-	private defaultVtabModuleArgs: string[] = [];
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -49,13 +46,20 @@ export class Database {
 
 		// Register built-in functions
 		this.registerBuiltinFunctions();
-		// Register default virtual table modules
-		this.registerVtabModule('memory', new MemoryTableModule());
-		this.registerVtabModule('json_each', new JsonEachModule());
-		this.registerVtabModule('json_tree', new JsonTreeModule());
-		this.registerVtabModule('sqlite_schema', new SchemaTableModule());
-		this.registerVtabModule('query_plan', new QueryPlanModule());
-		this.registerVtabModule('vdbe_program', new VdbeProgramModule());
+
+		// Register default virtual table modules via SchemaManager
+		// The SchemaManager.defaultVTabModuleName is already initialized (e.g. to 'memory')
+		// No need to set defaultVtabModuleName explicitly here unless it's different from SchemaManager's init value.
+		// this.schemaManager.setDefaultVTabModuleName('memory'); // Already 'memory' by default in SchemaManager
+		// this.schemaManager.setDefaultVTabArgs([]); // Already [] by default in SchemaManager
+
+		this.schemaManager.registerModule('memory', new MemoryTableModule());
+		this.schemaManager.registerModule('json_each', new JsonEachModule());
+		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
+		this.schemaManager.registerModule('sqlite_schema', new SchemaTableModule()); // sqlite_schema uses auxData, but it's null/undefined by default
+		this.schemaManager.registerModule('query_plan', new QueryPlanModule());
+		this.schemaManager.registerModule('vdbe_program', new VdbeProgramModule());
+
 		// Register built-in collations
 		this.registerDefaultCollations();
 	}
@@ -271,14 +275,15 @@ export class Database {
 		if (!this.isOpen) {
 			throw new MisuseError("Database is closed");
 		}
-
-		const lowerName = name.toLowerCase();
-		if (this.registeredVTabs.has(lowerName)) {
-			throw new SqliterError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
-		}
-
-		log('Registering VTab module: %s', name);
-		this.registeredVTabs.set(lowerName, { module, auxData });
+		// Delegate to SchemaManager
+		this.schemaManager.registerModule(name, module, auxData);
+		// Original logic below is removed:
+		// const lowerName = name.toLowerCase();
+		// if (this.registeredVTabs.has(lowerName)) {
+		// 	throw new SqliterError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
+		// }
+		// log('Registering VTab module: %s', name);
+		// this.registeredVTabs.set(lowerName, { module, auxData });
 	}
 
 	/**
@@ -351,9 +356,10 @@ export class Database {
 		this.statements.clear();
 
 		// Clear schemas, ensuring VTabs are potentially disconnected
+		// This will also call xDestroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
 		this.schemaManager.clearAll();
 
-		this.registeredVTabs.clear();
+		// this.registeredVTabs.clear(); // Removed, SchemaManager handles module lifecycle
 		log("Database closed.");
 	}
 
@@ -387,8 +393,10 @@ export class Database {
 	}
 
 	/** @internal */
-	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData: unknown } | undefined {
-		return this.registeredVTabs.get(name.toLowerCase());
+	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
+		// Delegate to SchemaManager
+		return this.schemaManager.getModule(name);
+		// return this.registeredVTabs.get(name.toLowerCase()); // Old implementation
 	}
 
 	/** @internal */
@@ -514,36 +522,48 @@ export class Database {
 	 * without a USING clause.
 	 */
 	setDefaultVtabModule(name: string, args: string[] = []): void {
-		warnLog("Deprecated: Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` instead.");
-		this.setDefaultVtabName(name);
-		this.setDefaultVtabArgs(args);
+		warnLog("Deprecated: Database.setDefaultVtabModule. Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` which interact with SchemaManager.");
+		// Delegate to SchemaManager
+		this.schemaManager.setDefaultVTabModuleName(name);
+		this.schemaManager.setDefaultVTabArgs(args);
 	}
 
-	/** @internal Sets only the name of the default module */
+	/** @internal Sets only the name of the default module. Should be managed by SchemaManager now. */
 	setDefaultVtabName(name: string): void {
-		if (!this.registeredVTabs.has(name.toLowerCase())) {
-			warnLog(`Setting default VTab module to '${name}', which is not currently registered.`);
-		}
-		this.defaultVtabModuleName = name;
+		if (!this.isOpen) throw new MisuseError("Database is closed");
+		warnLog("Database.setDefaultVtabName is forwarding to SchemaManager. Use PRAGMA or direct SchemaManager methods.");
+		this.schemaManager.setDefaultVTabModuleName(name);
+		// Original logic:
+		// if (!this.registeredVTabs.has(name.toLowerCase())) {
+		// 	warnLog(`Setting default VTab module to '${name}', which is not currently registered.`);
+		// }
+		// this.defaultVtabModuleName = name;
 	}
 
-	/** @internal Sets the default args directly */
-	private setDefaultVtabArgs(args: string[]): void {
-		this.defaultVtabModuleArgs = [...args]; // Store a copy
+	/** @internal Sets the default args directly. Should be managed by SchemaManager now. */
+	private setDefaultVtabArgs(args: string[]): void { // This method was only used by the deprecated setDefaultVtabModule
+		if (!this.isOpen) throw new MisuseError("Database is closed");
+		warnLog("Database.setDefaultVtabArgs is forwarding to SchemaManager. Use PRAGMA or direct SchemaManager methods.");
+		this.schemaManager.setDefaultVTabArgs(args);
+		// this.defaultVtabModuleArgs = [...args]; // Store a copy // Old implementation
 	}
 
-	/** @internal Sets the default args by parsing a JSON string */
+	/** @internal Sets the default args by parsing a JSON string. Should be managed by SchemaManager now. */
 	setDefaultVtabArgsFromJson(argsJsonString: string): void {
-		try {
-			const parsedArgs = JSON.parse(argsJsonString);
-			if (!Array.isArray(parsedArgs) || !parsedArgs.every(arg => typeof arg === 'string')) {
-				throw new Error("JSON value must be an array of strings.");
-			}
-			this.setDefaultVtabArgs(parsedArgs);
-		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
-			throw new SqliterError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
-		}
+		if (!this.isOpen) throw new MisuseError("Database is closed");
+		warnLog("Database.setDefaultVtabArgsFromJson is forwarding to SchemaManager. Use PRAGMA or direct SchemaManager methods.");
+		this.schemaManager.setDefaultVTabArgsFromJson(argsJsonString);
+		// Original logic:
+		// try {
+		// 	const parsedArgs = JSON.parse(argsJsonString);
+		// 	if (!Array.isArray(parsedArgs) || !parsedArgs.every(arg => typeof arg === 'string')) {
+		// 		throw new Error("JSON value must be an array of strings.");
+		// 	}
+		// 	this.setDefaultVtabArgs(parsedArgs);
+		// } catch (e) {
+		// 	const msg = e instanceof Error ? e.message : String(e);
+		// 	throw new SqliterError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
+		// }
 	}
 
 	/**
@@ -551,10 +571,14 @@ export class Database {
 	 * @returns An object containing the module name and arguments.
 	 */
 	getDefaultVtabModule(): { name: string; args: string[] } {
-		return {
-			name: this.defaultVtabModuleName,
-			args: [...this.defaultVtabModuleArgs],
-		};
+		if (!this.isOpen) throw new MisuseError("Database is closed");
+		// Delegate to SchemaManager
+		return this.schemaManager.getDefaultVTabModule();
+		// Original logic:
+		// return {
+		// 	name: this.defaultVtabModuleName,
+		// 	args: [...this.defaultVtabModuleArgs],
+		// };
 	}
 
 	/**

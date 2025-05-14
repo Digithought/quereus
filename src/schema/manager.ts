@@ -28,8 +28,9 @@ const debugLog = log;
 export class SchemaManager {
 	private schemas: Map<string, Schema> = new Map();
 	private currentSchemaName: string = 'main';
-	private modules: Map<string, VirtualTableModule<any, any>> = new Map();
-	private defaultVTabModule: string | null = null;
+	private modules: Map<string, { module: VirtualTableModule<any, any>, auxData?: unknown }> = new Map();
+	private defaultVTabModuleName: string = 'memory';
+	private defaultVTabModuleArgs: string[] = [];
 	private db: Database;
 
 	/**
@@ -71,13 +72,14 @@ export class SchemaManager {
 	 *
 	 * @param name Module name
 	 * @param module Module implementation
+	 * @param auxData Optional client data associated with the module registration
 	 */
-	registerModule(name: string, module: VirtualTableModule<any, any>): void {
+	registerModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
 			warnLog(`Replacing existing virtual table module: %s`, lowerName);
 		}
-		this.modules.set(lowerName, module);
+		this.modules.set(lowerName, { module, auxData });
 		log(`Registered VTab module: %s`, lowerName);
 	}
 
@@ -85,40 +87,75 @@ export class SchemaManager {
 	 * Retrieves a registered virtual table module by name
 	 *
 	 * @param name Module name to look up
-	 * @returns The module or undefined if not found
+	 * @returns The module and its auxData, or undefined if not found
 	 */
-	getModule(name: string): VirtualTableModule<any, any> | undefined {
+	getModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
 		return this.modules.get(name.toLowerCase());
 	}
 
 	/**
 	 * Sets the default virtual table module to use when USING is omitted
 	 *
-	 * @param name Module name or null to clear the default
+	 * @param name Module name. Must be a registered module.
 	 * @throws SqliteError if the module name is not registered
 	 */
-	setDefaultVTabModule(name: string | null): void {
-		if (name === null) {
-			this.defaultVTabModule = null;
-			log("Default VTab module cleared.");
-			return;
-		}
+	setDefaultVTabModuleName(name: string): void {
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
-			this.defaultVTabModule = lowerName;
-			log(`Default VTab module set to: %s`, lowerName);
+			this.defaultVTabModuleName = lowerName;
+			log(`Default VTab module name set to: %s`, lowerName);
 		} else {
-			throw new SqliterError(`Cannot set default VTab module: module '${lowerName}' not registered.`);
+			warnLog(`Setting default VTab module to \'${lowerName}\', which is not currently registered in SchemaManager. Ensure it gets registered.`);
+			this.defaultVTabModuleName = lowerName;
 		}
 	}
 
 	/**
 	 * Gets the currently configured default virtual table module name
 	 *
-	 * @returns The default module name or null if none set
+	 * @returns The default module name
 	 */
-	getDefaultVTabModuleName(): string | null {
-		return this.defaultVTabModule;
+	getDefaultVTabModuleName(): string {
+		return this.defaultVTabModuleName;
+	}
+
+	/** @internal Sets the default VTab args directly */
+	setDefaultVTabArgs(args: string[]): void {
+		this.defaultVTabModuleArgs = [...args];
+		log('Default VTab module args set to: %o', args);
+	}
+
+	/** @internal Sets the default VTab args by parsing a JSON string */
+	setDefaultVTabArgsFromJson(argsJsonString: string): void {
+		try {
+			const parsedArgs = JSON.parse(argsJsonString);
+			if (!Array.isArray(parsedArgs) || !parsedArgs.every(arg => typeof arg === 'string')) {
+				throw new Error("JSON value must be an array of strings.");
+			}
+			this.setDefaultVTabArgs(parsedArgs);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			throw new SqliterError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
+		}
+	}
+
+	/**
+	 * Gets the default virtual table module arguments.
+	 * @returns A copy of the default arguments array.
+	 */
+	getDefaultVTabArgs(): string[] {
+		return [...this.defaultVTabModuleArgs];
+	}
+
+	/**
+	 * Gets the default virtual table module name and arguments.
+	 * @returns An object containing the module name and arguments.
+	 */
+	getDefaultVTabModule(): { name: string; args: string[] } {
+		return {
+			name: this.defaultVTabModuleName,
+			args: [...this.defaultVTabModuleArgs],
+		};
 	}
 
 	/**
@@ -206,9 +243,9 @@ export class SchemaManager {
 
 		// Handle sqlite_schema dynamically
 		if (lowerTableName === 'sqlite_schema') {
-			const moduleInfo = this.db._getVtabModule('sqlite_schema');
-			if (!moduleInfo) {
-				errorLog("sqlite_schema module not registered!");
+			const moduleInfo = this.getModule('sqlite_schema');
+			if (!moduleInfo || !moduleInfo.module) {
+				errorLog("sqlite_schema module not registered or module structure invalid!");
 				return undefined;
 			}
 
@@ -337,6 +374,15 @@ export class SchemaManager {
 			createDefaultColumnSchema('column2')
 		];
 
+		const vtabModuleNameAssigned = createVtabAst.moduleName ?? this.defaultVTabModuleName;
+
+		const moduleRegistration = this.getModule(vtabModuleNameAssigned);
+		const resolvedAuxData = moduleRegistration ? moduleRegistration.auxData : undefined;
+
+		if (!moduleRegistration) {
+			warnLog(`VTab module '${vtabModuleNameAssigned}' not found in SchemaManager during declareVtab for table '${tableName}'. This might lead to issues if auxData is expected.`);
+		}
+
 		const tableSchema: TableSchema = {
 			name: tableName,
 			schemaName: schema.name,
@@ -345,9 +391,9 @@ export class SchemaManager {
 			columnIndexMap: Object.freeze(buildColumnIndexMap(placeholderColumns)),
 			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)),
 			vtabModule: associatedVtab.module,
-			vtabAuxData: auxData,
+			vtabAuxData: resolvedAuxData,
 			vtabArgs: Object.freeze(vtabArgs || []),
-			vtabModuleName: createVtabAst.moduleName,
+			vtabModuleName: vtabModuleNameAssigned,
 			isWithoutRowid: false,
 			isStrict: false,
 			isView: false,
@@ -405,16 +451,21 @@ export class SchemaManager {
 
 		// Call xDestroy on the module, providing table details
 		if (tableSchema?.vtabModuleName) {
-			log(`Calling xDestroy for VTab %s.%s via module %s`, schemaName, tableName, tableSchema.vtabModuleName);
-			destroyPromise = tableSchema.vtabModule.xDestroy(
-				this.db,
-				tableSchema.vtabAuxData,
-				tableSchema.vtabModuleName,
-				schemaName,
-				tableName
-			).catch(err => {
-				errorLog(`Error during VTab module xDestroy for %s.%s: %O`, schemaName, tableName, err);
-			});
+			const moduleRegistration = this.getModule(tableSchema.vtabModuleName);
+			if (moduleRegistration && moduleRegistration.module && moduleRegistration.module.xDestroy) {
+				log(`Calling xDestroy for VTab %s.%s via module %s`, schemaName, tableName, tableSchema.vtabModuleName);
+				destroyPromise = moduleRegistration.module.xDestroy(
+					this.db,
+					moduleRegistration.auxData,
+					tableSchema.vtabModuleName,
+					schemaName,
+					tableName
+				).catch(err => {
+					errorLog(`Error during VTab module xDestroy for %s.%s: %O`, schemaName, tableName, err);
+				});
+			} else {
+				warnLog(`VTab module %s (for table %s.%s) or its xDestroy method not found during dropTable.`, tableSchema.vtabModuleName, schemaName, tableName);
+			}
 		}
 
 		// Remove from schema map immediately

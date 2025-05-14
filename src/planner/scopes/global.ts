@@ -1,19 +1,16 @@
-import { SqliterError } from "../common/errors.js";
-import { StatusCode } from "../common/types.js";
-import type { SchemaManager } from "../schema/manager.js";
-import { Ambiguous, Scope } from "./scope.js";
-import type { PlanNode } from "./nodes/plan-node";
-import { FunctionReferenceNode, TableReferenceNode } from "./nodes/reference-nodes.js";
-import type { ScalarType } from "../common/datatype.js";
-import * as AST from "../parser/ast.js";
+import { SqliterError } from "../../common/errors.js";
+import { StatusCode } from "../../common/types.js";
+import type { ScalarType } from "../../common/datatype.js";
+import * as AST from "../../parser/ast.js";
+import type { SchemaManager } from "../../schema/manager.js";
+import type { PlanNode } from "../nodes/plan-node.js";
+import { TableReferenceNode, FunctionReferenceNode } from "../nodes/reference.js";
+import { BaseScope } from "./base.js";
+import { Ambiguous, type Scope } from "./scope.js";
 
-export class GlobalScope extends Scope {
+export class GlobalScope extends BaseScope {
 	constructor(public readonly manager: SchemaManager) {
 		super();
-	}
-
-	registerSymbol(symbolKey: string, getReference: (expression: AST.Expression, currentScope: Scope) => PlanNode): void {
-		throw new SqliterError('GlobalScope does not support registering symbols.', StatusCode.ERROR);
 	}
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
@@ -36,5 +33,4 @@ export class GlobalScope extends Scope {
 		}
 		return new TableReferenceNode(this, tableSchema);
 	}
-
 }

@@ -1,4 +1,4 @@
-import { Ambiguous, Scope } from "./scopes/scope.js";
+import { Ambiguous, type Scope } from "./scopes/scope.js";
 import * as AST from "../parser/ast.js";
 import { ColumnReferenceNode, FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference.js";
 import { SqliterError } from "../common/errors.js";
@@ -6,9 +6,9 @@ import { StatusCode } from "../common/types.js";
 
 export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSchema: string = 'main'): TableReferenceNode | typeof Ambiguous | undefined {
 	// table: [schema.]name
-	const idName = exp.name.toLowerCase();
-	const idSchema = exp.schema?.toLowerCase();
-	const symbolKey = idSchema ? `${idSchema}.${idName}` : `${selectedSchema.toLowerCase()}.${idName}`;
+	const idName = exp.name;
+	const idSchema = exp.schema;
+	const symbolKey = idSchema ? `${idSchema}.${idName}` : `${selectedSchema}.${idName}`;
 
 	const result = scope.resolveSymbol(symbolKey, exp);
 	if (result === Ambiguous || result instanceof TableReferenceNode) {
@@ -29,14 +29,14 @@ export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSche
 // }
 
 export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema: string = 'main'): ColumnReferenceNode | typeof Ambiguous | undefined {
-	const schemaQualifier = exp.schema?.toLowerCase();
-	const tableQualifier = exp.table?.toLowerCase();
-	const columnName = exp.name.toLowerCase();
+	const schemaQualifier = exp.schema;
+	const tableQualifier = exp.table;
+	const columnName = exp.name;
 
 	const symbolKey = tableQualifier
 		? schemaQualifier
 			? `${schemaQualifier}.${tableQualifier}.${columnName}`
-			: `${selectedSchema.toLowerCase()}.${tableQualifier}.${columnName}`
+			: `${selectedSchema}.${tableQualifier}.${columnName}`
 		: columnName;
 
 	const result = scope.resolveSymbol(symbolKey, exp);
@@ -56,7 +56,7 @@ export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): Paramete
 }
 
 export function resolveFunction(scope: Scope, exp: AST.FunctionExpr): FunctionReferenceNode | typeof Ambiguous | undefined {
-	const symbolKey = exp.name.toLowerCase() + '(' + exp.args.length + ')';
+	const symbolKey = exp.name + '(' + exp.args.length + ')';
 	const result = scope.resolveSymbol(symbolKey, exp);
 	if (result === Ambiguous || result instanceof FunctionReferenceNode) {
 		return result;

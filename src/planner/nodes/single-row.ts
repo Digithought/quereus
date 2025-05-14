@@ -1,7 +1,8 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type ZeroAryRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
-import { Scope, EmptyScope } from '../scopes/scope.js';
+import { EmptyScope } from '../scopes/empty.js';
+import type { Scope } from '../scopes/scope.js';
 
 /**
  * A dummy relational node that produces a single row with no columns.
@@ -10,7 +11,7 @@ import { Scope, EmptyScope } from '../scopes/scope.js';
 export class SingleRowNode extends PlanNode implements ZeroAryRelationalNode {
   override readonly nodeType = PlanNodeType.Values; // Using Values for now, can make a dedicated type
 
-  private static readonly singleInstance = new SingleRowNode(EmptyScope); // HACK: null scope for singleton
+  private static readonly singleInstance = new SingleRowNode(EmptyScope.instance); // HACK: null scope for singleton
 
   private readonly outputType: RelationType = {
     typeClass: 'relation',

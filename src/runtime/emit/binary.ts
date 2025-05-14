@@ -1,19 +1,34 @@
 import { StatusCode } from "../../common/types";
 import { SqliterError } from "../../common/errors";
 import type { SqlValue } from "../../common/types";
-import type { RuntimeContext } from "../types";
+import type { Instruction, InstructionRun, RuntimeContext } from "../types";
 import type { BinaryOpNode } from "../../planner/nodes/scalar";
+import { emitPlanNode } from "../emitters";
 
-export function emitBinaryOp(plan: BinaryOpNode) {
-	let inner: (v1: bigint, v2: bigint) => bigint;
+export function emitBinaryOp(plan: BinaryOpNode): Instruction {
+	switch (plan.expression.operator) {
+		case '+':
+		case '-':
+		case '*':
+		case '/':
+			return emitNumericOp(plan);
+		// TODO: emitConcat
+		// TODO: emitBitwise
+		// TODO: emitComparison
+		// TODO: emitLogical
+		default:
+			throw new SqliterError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+	}
+}
+
+export function emitNumericOp(plan: BinaryOpNode): Instruction {
+	let inner: (v1: any, v2: any) => any;
 	switch (plan.expression.operator) {
 		case '+': inner = (v1, v2) => v1 + v2; break;
 		case '-': inner = (v1, v2) => v1 - v2; break;
 		case '*': inner = (v1, v2) => v1 * v2; break;
 		case '/': inner = (v1, v2) => v1 / v2; break;
-		case 'AND': inner = (v1, v2) => v1 && v2; break;
-		case 'OR': inner = (v1, v2) => v1 || v2; break;
-		// TODO: other operators
+		// TODO: check all of these and add other operators
 		default: throw new SqliterError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
 
@@ -21,7 +36,7 @@ export function emitBinaryOp(plan: BinaryOpNode) {
 		if (v1 !== null && v2 !== null) {
 			if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
 				try {
-					return inner(BigInt(v1 as any), BigInt(v2 as any));
+					return inner(BigInt(v1 as any), BigInt(v2 as any)) ? 1 : 0;
 				} catch {
 					return null;
 				}
@@ -31,10 +46,10 @@ export function emitBinaryOp(plan: BinaryOpNode) {
 				if (!isNaN(n1) && !isNaN(n2)) {
 					try {
 						const result = inner(n1 as any, n2 as any);
-						if (typeof result === 'number' && !Number.isFinite(result)) {
+						if (!Number.isFinite(result)) {
 							return null;
 						}
-						return result;
+						return result ? 1 : 0;
 					} catch {
 						return null;
 					}
@@ -44,8 +59,9 @@ export function emitBinaryOp(plan: BinaryOpNode) {
 		return null;
 	}
 
-	const left = emitScalarExpression(plan.left);
-	const right = emitScalarExpression(plan.right);
+	const left = emitPlanNode(plan.left);
+	const right = emitPlanNode(plan.right);
 
-	return { params: [left, right], run }
+	return { params: [left, right], run: run as InstructionRun }
 }
+

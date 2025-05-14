@@ -50,24 +50,24 @@ select id, name, age from users where age > 21;
 
 -- Select with join
 select u.name, o.product 
-from users as u
-inner join orders as o on u.id = o.userId
-where o.status = 'shipped';
+  from users as u
+  inner join orders as o on u.id = o.userId
+  where o.status = 'shipped';
 
 -- Group by with aggregates
 select department, count(*) as employeeCount, avg(salary) as avgSalary
-from employees
-group by department
-having count(*) > 5
-order by avgSalary desc;
+  from employees
+  group by department
+  having count(*) > 5
+  order by avgSalary desc;
 
 -- With CTE and union
 with active_users as (
   select * from users where status = 'active'
 )
-select name, email from active_users where age < 30
-union all
-select name, email from premium_users where subscriptionStatus = 'paid';
+  select name, email from active_users where age < 30
+  union all
+  select name, email from premium_users where subscriptionStatus = 'paid';
 ```
 
 ### 2.2 INSERT Statement
@@ -77,8 +77,8 @@ The insert statement adds new rows to a table.
 **Syntax:**
 ```sql
 [ with [recursive] with_clause[,...] ]
-insert into table_name [(column [, column...])]
-{ values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
+  insert into table_name [(column [, column...])]
+  { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
 ```
 
 **Options:**
@@ -95,23 +95,23 @@ insert into users (name, email, age) values ('John', 'john@example.com', 35);
 
 -- Multiple rows insert
 insert into products (name, price, category) 
-values 
-  ('Keyboard', 49.99, 'Electronics'),
-  ('Mouse', 29.99, 'Electronics'),
-  ('Headphones', 99.99, 'Audio');
+  values 
+    ('Keyboard', 49.99, 'Electronics'),
+    ('Mouse', 29.99, 'Electronics'),
+    ('Headphones', 99.99, 'Audio');
 
 -- Insert from select
 insert into active_users (id, name, email)
-select id, name, email from users where last_login > date('now', '-30 days');
+  select id, name, email from users where last_login > date('now', '-30 days');
 
 -- With CTE
 with recent_orders as (
   select * from orders where order_date > date('now', '-7 days')
 )
-insert into order_summary (order_id, customer, total)
-select id, customer_name, sum(price * quantity) 
-from recent_orders
-group by id, customer_name;
+  insert into order_summary (order_id, customer, total)
+    select id, customer_name, sum(price * quantity) 
+    from recent_orders
+    group by id, customer_name;
 ```
 
 ### 2.3 UPDATE Statement
@@ -121,9 +121,9 @@ The update statement modifies existing rows in a table.
 **Syntax:**
 ```sql
 [ with [recursive] with_clause[,...] ]
-update table_name
-set column = expr [, column = expr...]
-[ where condition ]
+  update table_name
+    set column = expr [, column = expr...]
+    [ where condition ]
 ```
 
 **Options:**
@@ -139,19 +139,19 @@ update users set status = 'inactive' where last_login < date('now', '-90 days');
 
 -- Multi-column update
 update products 
-set price = price * 1.1, 
-    updated_at = datetime('now')
-where category = 'Electronics';
+  set price = price * 1.1, 
+      updated_at = datetime('now')
+  where category = 'Electronics';
 
 -- Update with expression
 update orders
-set 
-  total = (select sum(price * quantity) from order_items where order_id = orders.id),
-  status = case 
-    when paid = 1 then 'completed' 
-    else 'pending' 
-  end
-where order_date > date('now', '-30 days');
+  set 
+    total = (select sum(price * quantity) from order_items where order_id = orders.id),
+    status = case 
+      when paid = 1 then 'completed' 
+      else 'pending' 
+    end
+  where order_date > date('now', '-30 days');
 
 -- With CTE
 with discounted_items as (
@@ -159,10 +159,10 @@ with discounted_items as (
   from products
   where category = 'Clearance'
 )
-update products
-set price = di.sale_price
-from discounted_items as di
-where products.id = di.product_id;
+  update products
+    set price = di.sale_price
+    from discounted_items as di
+    where products.id = di.product_id;
 ```
 
 ### 2.4 DELETE Statement
@@ -188,18 +188,18 @@ delete from users where status = 'deactivated';
 
 -- Delete with subquery
 delete from products
-where id in (
-  select product_id 
-  from inventory 
-  where stock = 0 and last_updated < date('now', '-180 days')
-);
+  where id in (
+    select product_id 
+    from inventory 
+    where stock = 0 and last_updated < date('now', '-180 days')
+  );
 
 -- With CTE
 with old_orders as (
   select id from orders where order_date < date('now', '-365 days')
 )
-delete from order_items
-where order_id in (select id from old_orders);
+  delete from order_items
+  where order_id in (select id from old_orders);
 ```
 
 ### 2.5 CREATE TABLE Statement

@@ -1,6 +1,6 @@
 import type { Database } from '../core/database.js';
-import type { Scope } from './scope.js';
 import type { SchemaManager } from '../schema/manager.js';
+import type { Scope } from './scopes/scope.js';
 
 /**
  * Provides contextual information necessary during the query planning phase.

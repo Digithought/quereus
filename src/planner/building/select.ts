@@ -1,5 +1,4 @@
 import type * as AST from '../../parser/ast.js';
-import { MultiScope, Scope } from '../scopes/scope.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import { SqliterError } from '../../common/errors.js';
 import { StatusCode, type SqlParameters } from '../../common/types.js';
@@ -10,6 +9,9 @@ import { SingleRowNode } from '../nodes/single-row.js';
 import { ColumnReferenceNode, ParameterReferenceNode, TableReferenceNode } from '../nodes/reference.js';
 import { buildTableScan } from './table.js';
 import { AliasedScope } from '../scopes/aliased.js';
+import { RegisteredScope } from '../scopes/registered.js';
+import type { Scope } from '../scopes/scope.js';
+import { MultiScope } from '../scopes/multi.js';
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -76,7 +78,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	if (fromClause.type === 'table') {
 		fromTable = buildTableScan(fromClause, parentContext);
 
-		const tableScope = new Scope(parentContext.scope);
+		const tableScope = new RegisteredScope(parentContext.scope);
 		fromTable.getType().columns.forEach((c, i) =>
 			tableScope.registerSymbol(c.name, (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));

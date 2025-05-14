@@ -1,6 +1,6 @@
 import { SqliteError, StatusCode } from "../index.js";
 import type { Instruction, RuntimeContext } from "./types.js";
-import type { RuntimeValue } from "../common/types.js";
+import type { OutputValue, RuntimeValue } from "../common/types.js";
 
 type ResultDestination = number | null;
 
@@ -16,7 +16,7 @@ export class Scheduler {
 
 		const finalOutputInstruction: Instruction = {
 			params: roots,
-			run: (_ctx: RuntimeContext, ...args: RuntimeValue[]): RuntimeValue => {
+			run: (_ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue => {
 				return args;
 			}
 		};
@@ -47,21 +47,21 @@ export class Scheduler {
 		}
 	}
 
-	async run(ctx: RuntimeContext): Promise<RuntimeValue[]> {
+	async run(ctx: RuntimeContext): Promise<OutputValue[]> {
 		// Argument lists for each instruction.
-		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as RuntimeValue[] | undefined);
+		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as OutputValue[] | undefined);
 		// Instruction indexes that have promise arguments
 		const hasPromise: boolean[] = [];
 		// Running output
-		let output: RuntimeValue | undefined;
+		let output: OutputValue | undefined;
 
 		for (let i = 0; i < this.instructions.length; ++i) {
 			let args = instrArgs[i]!;
-			if (hasPromise[i]) {	// Resolve any promise arguments
+			if (hasPromise[i]) {
 				args = await Promise.all(args);	// (Promise.all() can take non-promise values)
 			}
 
-			output = this.instructions[i].run(ctx, ...args);
+			output = this.instructions[i].run(ctx, ...(args as RuntimeValue[]));
 
 			// Clear args as we go to minimize memory usage.
 			instrArgs[i] = undefined;
@@ -76,6 +76,6 @@ export class Scheduler {
 			}
 		}
 
-		return output as RuntimeValue[];
+		return output as OutputValue[];
 	}
 }

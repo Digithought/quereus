@@ -1,7 +1,7 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
-import { Scope } from '../scopes/scope.js';
+import type { Scope } from '../scopes/scope.js';
 
 export class ResultNode extends PlanNode implements UnaryRelationalNode {
   override readonly nodeType = PlanNodeType.Result;

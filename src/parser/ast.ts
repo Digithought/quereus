@@ -29,7 +29,6 @@ export interface LiteralExpr extends AstNode {
 	type: 'literal';
 	value: SqlValue;
 	lexeme?: string; // Optional: Original text representation, e.g., for numbers like '2.0'
-	dataType?: string; // Optional type hint
 }
 
 // Identifier expression (table name or pragma name)

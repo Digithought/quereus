@@ -2,6 +2,7 @@ import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
+import { getLiteralSqlType } from '../runtime/type-inference.js';
 
 const log = createLogger('parser:parser'); // Create logger instance
 const errorLog = log.extend('error');
