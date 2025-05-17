@@ -2,8 +2,8 @@ import { VirtualTable } from '../table.js';
 import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
-import { StatusCode, SqlDataType, type SqlValue } from '../../common/types.js';
-import { SqliterError } from '../../common/errors.js';
+import { StatusCode, SqlDataType, type SqlValue, type Row } from '../../common/types.js';
+import { SqliteError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import type { SqliterContext } from '../../func/context.js';
 import type { Schema } from '../../schema/schema.js';
@@ -12,8 +12,7 @@ import type { TableSchema } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 import { IndexConstraintOp } from '../../common/constants.js';
 import { compareSqlValues } from '../../util/comparison.js';
-import { createLogger } from '../../common/logger.js';
-import { safeJsonStringify } from '../../util/serialization.js';
+import { createDefaultColumnSchema } from '../../schema/column.js';
 
 /**
  * Structure of rows returned by sqlite_schema
@@ -43,6 +42,31 @@ function stringifyCreateFunction(func: FunctionSchema): string {
 class SchemaTable extends VirtualTable {
 	async xOpen(): Promise<SchemaTableCursor<this>> {
 		return new SchemaTableCursor(this);
+	}
+
+	getSchema(): TableSchema | undefined {
+		const module = this.module as SchemaTableModule;
+		if (!module || !SchemaTableModule.COLUMNS) {
+			throw new SqliteError("SchemaTable: Module or COLUMNS not defined.", StatusCode.INTERNAL);
+		}
+		return {
+			name: this.tableName,
+			schemaName: this.schemaName,
+			columns: SchemaTableModule.COLUMNS.map(c => ({...createDefaultColumnSchema(c.name), affinity: c.type, collation: c.collation })),
+			columnIndexMap: new Map(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP)) as ReadonlyMap<string, number>,
+			primaryKeyDefinition: [],
+			checkConstraints: [],
+			indexes: [],
+			vtabModule: this.module,
+			vtabModuleName: 'sqlite_schema',
+			isWithoutRowid: true,
+			isStrict: false,
+			isView: false,
+			vtabAuxData: undefined,
+			vtabArgs: [],
+			isTemporary: false,
+			subqueryAST: undefined,
+		} as TableSchema;
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
@@ -80,48 +104,43 @@ class SchemaTable extends VirtualTable {
 
 	async xDisconnect(): Promise<void> {}
 	async xDestroy(): Promise<void> {}
+
+	async* xQuery(filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+		const { constraints, args } = filterInfo;
+
+		// Use the cursor's internal generator directly.
+		const cursor = new SchemaTableCursor(this); // Transient cursor
+		const internalGenerator = cursor['_internalIteratorGenerator'](constraints, args);
+
+		for await (const schemaRow of internalGenerator) {
+			if (!schemaRow) continue;
+			const row: SqlValue[] = [
+				schemaRow.type,
+				schemaRow.name,
+				schemaRow.tbl_name,
+				schemaRow.rootpage,
+				schemaRow.sql
+			];
+			yield [schemaRow._rowid_, row];
+		}
+	}
 }
 
 /**
  * Cursor for iterating over sqlite_schema rows
  */
 class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
-	private schemaRows: SchemaRow[] = [];
+	private schemaRowsData: SchemaRow[] = [];
 	private currentIndex: number = -1;
+	private internalIterator: AsyncIterator<SchemaRow | null> | null = null;
+	private currentFilteredRows: SchemaRow[] = [];
+	private currentIteratorIndex: number = -1;
 
 	constructor(table: T) {
 		super(table);
 	}
 
-	reset(): void {
-		this.schemaRows = [];
-		this.currentIndex = -1;
-		this._isEof = true;
-	}
-
-	setResults(results: SchemaRow[]): void {
-		this.schemaRows = results;
-		this.currentIndex = -1;
-		this._isEof = this.schemaRows.length === 0;
-		if (!this._isEof) {
-			this.currentIndex = 0;
-		}
-	}
-
-	getCurrentRow(): SchemaRow | null {
-		if (this._isEof || this.currentIndex < 0 || this.currentIndex >= this.schemaRows.length) {
-			return null;
-		}
-		return this.schemaRows[this.currentIndex];
-	}
-
-	getCurrentRowId(): bigint | null {
-		const row = this.getCurrentRow();
-		return row?._rowid_ ?? null;
-	}
-
-	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
-		this.reset();
+	private async* _internalIteratorGenerator(constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): AsyncIterable<SchemaRow> {
 		const db = this.table.db;
 		const schemaManager = db.schemaManager;
 		let generatedRows: SchemaRow[] = [];
@@ -130,19 +149,15 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		const processSchema = (schema: Schema) => {
 			// Process Tables
 			for (const tableSchema of schema.getAllTables()) {
-				// Skip the schema table itself
 				if (tableSchema.name.toLowerCase() === 'sqlite_schema' && tableSchema.schemaName === 'main') {
 					continue;
 				}
-
 				let createSql: string | null = null;
 				try {
-					// Basic representation for virtual tables
 					createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(...)`;
 				} catch (e) {
 					createSql = null;
 				}
-
 				generatedRows.push({
 					type: 'table',
 					name: tableSchema.name,
@@ -152,7 +167,6 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 					_rowid_: rowidCounter++,
 				});
 			}
-
 			// Process Functions
 			for (const funcSchema of schema._getAllFunctions()) {
 				generatedRows.push({
@@ -166,94 +180,91 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 			}
 		};
 
-		// Iterate through schemas
 		processSchema(schemaManager.getMainSchema());
 		processSchema(schemaManager.getTempSchema());
 
-		// --- Start: Apply filtering based on constraints ---
 		if (constraints.length > 0 && args.length > 0) {
 			generatedRows = generatedRows.filter(row => {
 				for (const { constraint, argvIndex } of constraints) {
 					if (constraint.usable === false || argvIndex <= 0) continue;
-
 					const columnIndex = constraint.iColumn;
 					const op = constraint.op;
 					const valueToCompare = args[argvIndex - 1];
-
-					if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) {
-						console.warn(`[sqlite_schema] Invalid column index ${columnIndex} in constraint.`);
-						return false;
-					}
+					if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) return false;
 					const columnName = SchemaTableModule.COLUMNS[columnIndex].name as keyof SchemaRow;
 					const rowValue = row[columnName];
-
-					// Perform comparison based on operator
 					const comparisonResult = compareSqlValues(rowValue, valueToCompare);
 					let match = false;
-
 					switch (op) {
-						case IndexConstraintOp.EQ:
-							match = comparisonResult === 0;
-							break;
-						case IndexConstraintOp.GT:
-							match = comparisonResult > 0;
-							break;
-						case IndexConstraintOp.LE:
-							match = comparisonResult <= 0;
-							break;
-						case IndexConstraintOp.LT:
-							match = comparisonResult < 0;
-							break;
-						case IndexConstraintOp.GE:
-							match = comparisonResult >= 0;
-							break;
-						case IndexConstraintOp.NE:
-							match = comparisonResult !== 0;
-							break;
-						case IndexConstraintOp.ISNULL:
-							match = rowValue === null;
-							break;
-						case IndexConstraintOp.ISNOTNULL:
-							match = rowValue !== null;
-							break;
-						case IndexConstraintOp.IS:
-							// IS comparison is strict equality (null IS null)
-							match = (rowValue === null && valueToCompare === null) || comparisonResult === 0;
-							break;
-						case IndexConstraintOp.ISNOT:
-							match = !((rowValue === null && valueToCompare === null) || comparisonResult === 0);
-							break;
-						// TODO: Add cases for LIKE, GLOB, REGEXP if needed and supported
-						// case IndexConstraintOp.LIKE:
-						// case IndexConstraintOp.GLOB:
-						// case IndexConstraintOp.REGEXP:
-						// case IndexConstraintOp.MATCH:
-						default:
-							console.warn(`[sqlite_schema] Unsupported operator ${op} in constraint.`);
-							return false; // Not a match if operator is unsupported
+						case IndexConstraintOp.EQ: match = comparisonResult === 0; break;
+						case IndexConstraintOp.GT: match = comparisonResult > 0; break;
+						case IndexConstraintOp.LE: match = comparisonResult <= 0; break;
+						case IndexConstraintOp.LT: match = comparisonResult < 0; break;
+						case IndexConstraintOp.GE: match = comparisonResult >= 0; break;
+						case IndexConstraintOp.NE: match = comparisonResult !== 0; break;
+						case IndexConstraintOp.ISNULL: match = rowValue === null; break;
+						case IndexConstraintOp.ISNOTNULL: match = rowValue !== null; break;
+						case IndexConstraintOp.IS: match = (rowValue === null && valueToCompare === null) || comparisonResult === 0; break;
+						case IndexConstraintOp.ISNOT: match = !((rowValue === null && valueToCompare === null) || comparisonResult === 0); break;
+						default: return false;
 					}
-
-					if (!match) {
-						return false; // If any constraint fails, the row doesn't match
-					}
+					if (!match) return false;
 				}
-				return true; // All constraints passed
+				return true;
 			});
 		}
-		// --- End: Apply filtering ---
+		for (const row of generatedRows) {
+			yield row;
+		}
+	}
 
-		this.setResults(generatedRows);
+	reset(): void {
+		this.schemaRowsData = [];
+		this.currentIndex = -1;
+		this._isEof = true;
+		this.internalIterator = null;
+		this.currentFilteredRows = [];
+		this.currentIteratorIndex = -1;
+	}
+
+	getCurrentRow(): SchemaRow | null {
+		if (this._isEof || this.currentIteratorIndex < 0 || this.currentIteratorIndex >= this.currentFilteredRows.length) {
+			return null;
+		}
+		return this.currentFilteredRows[this.currentIteratorIndex];
+	}
+
+	getCurrentRowId(): bigint | null {
+		const row = this.getCurrentRow();
+		return row?._rowid_ ?? null;
+	}
+
+	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
+		this.reset();
+		this.internalIterator = this._internalIteratorGenerator(constraints, args)[Symbol.asyncIterator]();
+
+		let result = await this.internalIterator.next();
+		while (!result.done) {
+			if (result.value) {
+				this.currentFilteredRows.push(result.value);
+			}
+			result = await this.internalIterator.next();
+		}
+
+		if (this.currentFilteredRows.length > 0) {
+			this.currentIteratorIndex = 0;
+			this._isEof = false;
+		} else {
+			this._isEof = true;
+		}
 	}
 
 	async next(): Promise<void> {
 		if (this._isEof) return;
 
-		if (this.currentIndex >= this.schemaRows.length - 1) {
+		this.currentIteratorIndex++;
+		if (this.currentIteratorIndex >= this.currentFilteredRows.length) {
 			this._isEof = true;
-			this.currentIndex = this.schemaRows.length;
-		} else {
-			this.currentIndex++;
-			this._isEof = false;
 		}
 	}
 
@@ -306,6 +317,50 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		return Promise.resolve(rowid);
 	}
 
+	async* rows(): AsyncIterable<Row> {
+		if (this.eof()) {
+			return;
+		}
+
+		while (!this.eof()) {
+			const currentSchemaRow = this.getCurrentRow();
+			if (!currentSchemaRow) {
+				// This might happen if next() was called and eof became true
+				// but the loop condition hadn't checked yet.
+				break;
+			}
+
+			const row: SqlValue[] = [];
+			const columnDefinitions = SchemaTableModule.COLUMNS;
+
+			for (const colDef of columnDefinitions) {
+				switch (colDef.name as keyof SchemaRow) {
+					case 'type':
+						row.push(currentSchemaRow.type);
+						break;
+					case 'name':
+						row.push(currentSchemaRow.name);
+						break;
+					case 'tbl_name':
+						row.push(currentSchemaRow.tbl_name);
+						break;
+					case 'rootpage':
+						row.push(currentSchemaRow.rootpage);
+						break;
+					case 'sql':
+						row.push(currentSchemaRow.sql);
+						break;
+					// _rowid_ is not a standard column, handled by rowid()
+					default:
+						// Should not happen if COLUMNS is aligned with SchemaRow
+						row.push(null);
+				}
+			}
+			yield row;
+			await this.next();
+		}
+	}
+
 	async close(): Promise<void> {
 		this.reset();
 	}
@@ -314,7 +369,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 /**
  * Module implementation for sqlite_schema virtual table
  */
-export class SchemaTableModule implements VirtualTableModule<SchemaTable, SchemaTableCursor<SchemaTable>> {
+export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 	static readonly COLUMNS = [
 		{ name: 'type', type: SqlDataType.TEXT, collation: 'BINARY' },
 		{ name: 'name', type: SqlDataType.TEXT, collation: 'BINARY' },
@@ -328,15 +383,15 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 
 	constructor() {}
 
-	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: BaseModuleConfig): SchemaTable {
-		return new SchemaTable(db, this, schemaName, tableName);
+	xCreate(_db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, _options: BaseModuleConfig): SchemaTable {
+		return new SchemaTable(_db, this, schemaName, tableName);
 	}
 
-	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: BaseModuleConfig): SchemaTable {
-		return new SchemaTable(db, this, schemaName, tableName);
+	xConnect(_db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, _options: BaseModuleConfig): SchemaTable {
+		return new SchemaTable(_db, this, schemaName, tableName);
 	}
 
-	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
+	xBestIndex(_db: Database, _tableInfo: TableSchema, indexInfo: IndexInfo): number {
 		console.log(`[sqlite_schema] xBestIndex called. nConstraint: ${indexInfo.nConstraint}`);
 		indexInfo.idxNum = 0;
 		indexInfo.estimatedCost = 1000.0;
@@ -348,11 +403,11 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable, Schema
 		return StatusCode.OK;
 	}
 
-	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
+	async xDestroy(_db: Database, _pAux: unknown, _moduleName: string, _schemaName: string, _tableName: string): Promise<void> {
 		return Promise.resolve();
 	}
 
-	xShadowName?(name: string): boolean {
+	xShadowName?(_name: string): boolean {
 		return false;
 	}
 }

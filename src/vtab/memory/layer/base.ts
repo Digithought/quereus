@@ -1,19 +1,63 @@
 import { BTree } from 'digitree';
 import type { TableSchema, IndexSchema } from '../../../schema/table.js';
-import type { MemoryTableRow, BTreeKey } from '../types.js'; // Updated import path
+import type { MemoryTableRow, BTreeKey } from '../types.js';
 import type { Layer, ModificationValue } from './interface.js';
-import { DELETED } from './constants.js';
-import { MemoryIndex } from '../index.js'; // Assuming MemoryIndex structure remains similar
-import { isDeletionMarker } from './interface.js'; // Import type guard
-import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison
-import { createLogger } from '../../../common/logger.js'; // Import logger
+import { MemoryIndex } from '../index.js';
+import { isDeletionMarker } from './interface.js';
+import { compareSqlValues } from '../../../util/comparison.js';
+import { createLogger } from '../../../common/logger.js';
 import { safeJsonStringify } from '../../../util/serialization.js';
+import type { SqlValue } from '../../../common/types.js';
 
 let baseLayerCounter = 0;
-const log = createLogger('vtab:memory:layer:base'); // Create logger
+const log = createLogger('vtab:memory:layer:base');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
-const debugLog = log; // Use base log for debug level
+const debugLog = log.extend('debug');
+
+/**
+ * Helper function to create the primary key extractor and comparator for BaseLayer.
+ */
+export function createBaseLayerPkFunctions(schema: TableSchema): {
+	keyFromEntry: (rowTuple: MemoryTableRow) => BTreeKey;
+	compareKeys: (a: BTreeKey, b: BTreeKey) => number;
+} {
+	const pkDef = schema.primaryKeyDefinition ?? [];
+
+	if (pkDef.length === 0) { // Rowid key
+		return {
+			keyFromEntry: (rowTuple) => rowTuple[0], // rowid is at index 0
+			compareKeys: (a, b) => compareSqlValues(a as bigint, b as bigint)
+		};
+	} else if (pkDef.length === 1) { // Single column PK
+		const { index: pkSchemaIndex, desc: isDesc, collation } = pkDef[0];
+		return {
+			keyFromEntry: (rowTuple) => rowTuple[1][pkSchemaIndex] as BTreeKey,
+			compareKeys: (a, b) => {
+				const cmp = compareSqlValues(a as SqlValue, b as SqlValue, collation || 'BINARY');
+				return isDesc ? -cmp : cmp;
+			}
+		};
+	} else { // Composite PK
+		const pkColSchemaIndices = pkDef.map(def => def.index);
+		return {
+			keyFromEntry: (rowTuple) => pkColSchemaIndices.map(i => rowTuple[1][i]),
+			compareKeys: (a, b) => {
+				const arrA = a as SqlValue[];
+				const arrB = b as SqlValue[];
+				for (let i = 0; i < pkDef.length; i++) {
+					if (i >= arrA.length || i >= arrB.length) return arrA.length - arrB.length;
+					const def = pkDef[i];
+					const dirMultiplier = def.desc ? -1 : 1;
+					const collation = def.collation || 'BINARY';
+					const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
+					if (cmp !== 0) return cmp;
+				}
+				return arrA.length - arrB.length; // Should be 0 if lengths match and all components equal
+			}
+		};
+	}
+}
 
 /**
  * Represents the foundational, fully collapsed data layer for a MemoryTable.
@@ -22,45 +66,45 @@ const debugLog = log; // Use base log for debug level
  */
 export class BaseLayer implements Layer {
 	private readonly layerId: number;
-	public readonly tableSchema: TableSchema; // Made public
-	public primaryTree: BTree<BTreeKey, MemoryTableRow>; // Changed from readonly to allow replacement
-	public readonly secondaryIndexes: Map<string, MemoryIndex>; // Use MemoryIndex to encapsulate BTree+metadata
+	public readonly tableSchema: TableSchema;
+	public primaryTree: BTree<BTreeKey, MemoryTableRow>;
+	public readonly secondaryIndexes: Map<string, MemoryIndex>;
 	private readonly emptyDeletedSet: ReadonlySet<bigint>;
-	public readonly keyFromEntry: (row: MemoryTableRow) => BTreeKey; // Made public
-	public readonly compareKeys: (a: BTreeKey, b: BTreeKey) => number; // Made public
-	public readonly rowidToKeyMap: Map<bigint, BTreeKey> | null; // Store the map
+	public readonly keyFromEntry: (rowTuple: MemoryTableRow) => BTreeKey;
+	public readonly compareKeys: (a: BTreeKey, b: BTreeKey) => number;
+	public readonly rowidToKeyMap: Map<bigint, BTreeKey> | null;
 
 	constructor(
 		schema: TableSchema,
-		keyFromEntry: (row: MemoryTableRow) => BTreeKey,
-		compareKeys: (a: BTreeKey, b: BTreeKey) => number,
-		columns: ReadonlyArray<{ name: string }>, // Needed for MemoryIndex constructor
-		needsRowidMap: boolean // Explicitly control map creation
+		columnsForSecondaryIdx: ReadonlyArray<{ name: string }>, // Only names needed by MemoryIndex constructor
+		needsRowidMap: boolean
 	) {
 		this.layerId = baseLayerCounter++;
 		this.tableSchema = schema;
-		this.keyFromEntry = keyFromEntry;
-		this.compareKeys = compareKeys;
-		this.primaryTree = new BTree<BTreeKey, MemoryTableRow>(keyFromEntry, compareKeys);
+
+		const pkFuncs = createBaseLayerPkFunctions(schema);
+		this.keyFromEntry = pkFuncs.keyFromEntry;
+		this.compareKeys = pkFuncs.compareKeys;
+
+		this.primaryTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
 		this.secondaryIndexes = new Map();
 		this.emptyDeletedSet = Object.freeze(new Set<bigint>());
 		this.rowidToKeyMap = needsRowidMap ? new Map() : null;
 
-		// Initialize secondary index structures based on schema
 		if (schema.indexes) {
 			for (const indexSchema of schema.indexes) {
 				try {
-					// Adapt IndexSpec from IndexSchema if needed
 					const indexSpec: ConstructorParameters<typeof MemoryIndex>[0] = {
 						name: indexSchema.name,
-						columns: indexSchema.columns // Assuming MemoryIndex constructor can take this directly now
+						columns: indexSchema.columns
 					};
-					const memoryIndex = new MemoryIndex(indexSpec, columns);
+					// MemoryIndex constructor expects allTableColumns to determine schema indices
+					// Here, columnsForSecondaryIdx provides the names, which MemoryIndex uses with its spec.
+					// The spec in IndexSchema already contains the *schema indices*.
+					const memoryIndex = new MemoryIndex(indexSpec, columnsForSecondaryIdx);
 					this.secondaryIndexes.set(indexSchema.name, memoryIndex);
 				} catch (e) {
-					// Use namespaced error logger
 					errorLog(`Failed to initialize secondary index '${indexSchema.name}': %O`, e);
-					// Depending on requirements, might want to throw or just log
 				}
 			}
 		}
@@ -87,7 +131,7 @@ export class BaseLayer implements Layer {
 
 
 	getDeletedRowids(): ReadonlySet<bigint> {
-		// Base layer doesn't track deletions distinctly; deletions are applied directly.
+		// BaseLayer doesn't track deletions distinctly; deletions are applied directly.
 		return this.emptyDeletedSet;
 	}
 
@@ -105,33 +149,27 @@ export class BaseLayer implements Layer {
 	 * This should only be called under the MemoryTable's management lock.
 	 *
 	 * @param key The primary key of the row being modified.
-	 * @param value The new value (MemoryTableRow) or DELETED symbol.
-	 * @param oldEffectiveValue The value of the row *before* this change was applied (needed for secondary index updates).
+	 * @param modValue The new value (MemoryTableRow tuple or DELETED symbol) from the transaction layer.
+	 * @param oldEffectiveTuple The value of the row *before* this change was applied (as a MemoryTableRow tuple or null).
 	 * @returns void
 	 * @throws Error on BTree operation failure.
 	 */
-	applyChange(key: BTreeKey, value: ModificationValue, oldEffectiveValue: MemoryTableRow | null): void {
-		const isDelete = isDeletionMarker(value);
-		const newValue = isDelete ? null : value; // Row data or null if deleting
-		const oldValue = oldEffectiveValue; // Row data before change, or null if it was an insert
+	applyChange(key: BTreeKey, modValue: ModificationValue, oldEffectiveTuple: MemoryTableRow | null): void {
+		const isDelete = isDeletionMarker(modValue);
+		const newTuple = isDelete ? null : modValue as MemoryTableRow; // Row data tuple or null if deleting
+		const oldTuple = oldEffectiveTuple; // Row data tuple before change, or null if it was an insert
 
-		// 1. Update Secondary Indexes (Needs old and new values)
+		// 1. Update Secondary Indexes (Needs old and new tuples)
 		for (const [indexName, index] of this.secondaryIndexes.entries()) {
 			try {
-				if (oldValue) {
-					// If there was an old value, try removing its index entry
-					index.removeEntry(oldValue);
+				if (oldTuple) {
+					index.removeEntry(oldTuple);
 				}
-				if (newValue) {
-					// If there is a new value (not a delete), add its index entry
-					index.addEntry(newValue);
+				if (newTuple) {
+					index.addEntry(newTuple);
 				}
 			} catch (e) {
-				// This is critical during collapse. Needs robust handling.
-				// Possibility: Mark table as corrupt? Halt collapse? Log detailed error.
-				// Use namespaced error logger
 				errorLog(`applyChange: Failed to update secondary index '${indexName}' for key ${safeJsonStringify(key)}. Data might be inconsistent. Error: %O`, e);
-				// Re-throwing might be necessary to signal failure of collapse
 				throw new Error(`Secondary index update failed during layer collapse: ${e instanceof Error ? e.message : String(e)}`);
 			}
 		}
@@ -141,36 +179,25 @@ export class BaseLayer implements Layer {
 			const path = this.primaryTree.find(key);
 			if (isDelete) {
 				if (path.on) {
-					const deletedRow = this.primaryTree.at(path);
+					const deletedTuple = this.primaryTree.at(path);
 					this.primaryTree.deleteAt(path);
-					// Update rowidToKeyMap if necessary (handled by MemoryTable during collapse)
-					if (this.rowidToKeyMap && deletedRow) {
-						this.rowidToKeyMap.delete(deletedRow._rowid_);
+					if (this.rowidToKeyMap && deletedTuple) {
+						this.rowidToKeyMap.delete(deletedTuple[0]); // rowid from tuple
 					}
 				} else {
-					// Trying to delete a key that doesn't exist in the base. This might
-					// happen if the change originated from an insert+delete in the merged layer.
-					// Usually a no-op for the primary tree, but log a warning.
-					// Use namespaced warn logger
 					warnLog(`applyChange: Attempted to delete non-existent primary key %s during collapse.`, safeJsonStringify(key));
 				}
-			} else if (newValue) { // newValue is guaranteed to be MemoryTableRow here
+			} else if (newTuple) { // newTuple is MemoryTableRow here
 				if (path.on) {
-					// Key exists, update it
-					this.primaryTree.updateAt(path, newValue);
-					// rowidToKeyMap should already be correct if key didn't change (which it shouldn't for updateAt)
+					this.primaryTree.updateAt(path, newTuple);
 				} else {
-					// Key doesn't exist, insert it
-					this.primaryTree.insert(newValue);
-					// Update rowidToKeyMap if necessary (handled by MemoryTable during collapse)
+					this.primaryTree.insert(newTuple);
 					if (this.rowidToKeyMap) {
-						this.rowidToKeyMap.set(newValue._rowid_, key);
+						this.rowidToKeyMap.set(newTuple[0], key); // rowid from tuple
 					}
 				}
 			}
 		} catch (e) {
-			// Failure here is also critical.
-			// Use namespaced error logger
 			errorLog(`applyChange: Failed to update primary tree for key ${safeJsonStringify(key)}. Data might be inconsistent. Error: %O`, e);
 			throw new Error(`Primary index update failed during layer collapse: ${e instanceof Error ? e.message : String(e)}`);
 		}
@@ -184,35 +211,24 @@ export class BaseLayer implements Layer {
 	 * @param defaultValue Default value to use for the new column in existing rows
 	 */
 	addColumnToBase(columnName: string, defaultValue: any): void {
-		// Iterate through all rows in the BTree and add the new column with default value
 		const rowsToUpdate: MemoryTableRow[] = [];
 
-		// Collect all rows first
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
-			const row = this.primaryTree.at(path);
-			if (row) {
-				rowsToUpdate.push(row);
+			const rowTuple = this.primaryTree.at(path);
+			if (rowTuple) {
+				rowsToUpdate.push(rowTuple);
 			}
 		}
 
-		// Create a new BTree instance instead of clearing
 		const newTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
 
-		// Insert all rows with the new column into the new tree
-		for (const row of rowsToUpdate) {
-			const updatedRow = { ...row, [columnName]: defaultValue };
-			newTree.insert(updatedRow);
-
-			// No need to update rowid mapping as the keys should remain the same
+		for (const rowTuple of rowsToUpdate) {
+			const [rowid, dataArray] = rowTuple;
+			const updatedDataArray = [...dataArray, defaultValue];
+			newTree.insert([rowid, updatedDataArray]);
 		}
 
-		// Replace the old tree with the new one
 		this.primaryTree = newTree;
-
-		// No need to update secondary indexes as they're based on existing columns
-		// The column didn't exist before so no index would reference it
-
-		// Use namespaced debug logger
 		debugLog(`Added column '%s' to %d rows with default value %s`, columnName, rowsToUpdate.length, defaultValue);
 	}
 
@@ -221,46 +237,37 @@ export class BaseLayer implements Layer {
 	 * This should be called under a schema change lock.
 	 *
 	 * @param columnName Name of the column to remove
+	 * @param columnIndexInSchema The index of the column in the *current* (pre-drop) table schema
 	 * @returns true if the operation was successful
 	 */
-	dropColumnFromBase(columnName: string): boolean {
-		// Iterate through all rows in the BTree and remove the specified column
+	dropColumnFromBase(columnName: string, columnIndexInSchema: number): boolean {
 		const rowsToUpdate: MemoryTableRow[] = [];
 
-		// Collect all rows first
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
-			const row = this.primaryTree.at(path);
-			if (row) {
-				rowsToUpdate.push(row);
+			const rowTuple = this.primaryTree.at(path);
+			if (rowTuple) {
+				rowsToUpdate.push(rowTuple);
 			}
 		}
 
-		// Create a new BTree instead of clearing the existing one
 		const newTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
 
-		// Insert all rows without the dropped column into the new tree
-		for (const row of rowsToUpdate) {
-			// Create a new row without the specified column
-			const { [columnName]: removedValue, ...updatedRow } = row;
-			newTree.insert(updatedRow as MemoryTableRow);
-
-			// No need to update rowid mapping as the keys should remain the same
-			// unless the column is part of a key, which should be prevented at a higher level
+		for (const rowTuple of rowsToUpdate) {
+			const [rowid, dataArray] = rowTuple;
+			// Create a new data array without the specified column
+			const newDataArray = dataArray.filter((_, idx) => idx !== columnIndexInSchema);
+			newTree.insert([rowid, newDataArray]);
 		}
 
-		// Replace the old tree with the new one
 		this.primaryTree = newTree;
-
-		// If any secondary indexes were based on this column, they should have been
-		// dropped already by the manager before calling this method
-
-		// Use namespaced debug logger
-		debugLog(`Removed column '%s' from %d rows`, columnName, rowsToUpdate.length);
+		debugLog(`Removed column '%s' (at schema index %d) from %d rows`, columnName, columnIndexInSchema, rowsToUpdate.length);
 		return true;
 	}
 
 	/**
 	 * Renames a column in all rows in the base layer tables.
+	 * For the tuple-based MemoryTableRow, this operation doesn't change the stored data itself,
+	 * only the schema interpretation. The tree is rebuilt for consistency, but data arrays are identical.
 	 * This should be called under a schema change lock.
 	 *
 	 * @param oldName Original name of the column
@@ -268,123 +275,60 @@ export class BaseLayer implements Layer {
 	 * @returns true if the operation was successful
 	 */
 	renameColumnInBase(oldName: string, newName: string): boolean {
-		// Iterate through all rows in the BTree and rename the specified column
 		const rowsToUpdate: MemoryTableRow[] = [];
 
-		// Collect all rows first
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
-			const row = this.primaryTree.at(path);
-			if (row) {
-				rowsToUpdate.push(row);
+			const rowTuple = this.primaryTree.at(path);
+			if (rowTuple) {
+				rowsToUpdate.push(rowTuple);
 			}
 		}
 
-		// Create a new BTree instead of clearing the existing one
 		const newTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
 
-		// Insert all rows with the renamed column into the new tree
-		for (const row of rowsToUpdate) {
-			// Skip if the column doesn't exist in this row
-			if (!(oldName in row)) {
-				newTree.insert(row);
-				continue;
-			}
-
-			// Create a new row with the renamed column
-			const { [oldName]: value, ...rest } = row;
-			const updatedRow = { ...rest, [newName]: value } as MemoryTableRow;
-			newTree.insert(updatedRow);
-
-			// No need to update rowid mapping as the keys should remain the same
-			// unless the column is part of a key, which should be prevented at a higher level
+		for (const rowTuple of rowsToUpdate) {
+			// Data itself doesn't change for a rename with tuple storage
+			newTree.insert(rowTuple);
 		}
 
-		// Replace the old tree with the new one
 		this.primaryTree = newTree;
-
-		// If any secondary indexes were based on this column, they should have been
-		// updated already by the manager before calling this method
-
-		// Use namespaced debug logger
-		debugLog(`Renamed column '%s' to '%s' in rows`, oldName, newName);
+		debugLog(`Renamed column '%s' to '%s'. Tree rebuilt, data arrays unchanged. %d rows processed.`, oldName, newName, rowsToUpdate.length);
 		return true;
 	}
 
-	/**
-	 * Adds a new index to the base layer.
-	 * This should be called under a schema change lock.
-	 *
-	 * @param indexSchema The schema definition for the new index
-	 */
 	addIndexToBase(indexSchema: IndexSchema): void {
-		// Check if the index already exists
 		if (this.secondaryIndexes.has(indexSchema.name)) {
 			throw new Error(`Index '${indexSchema.name}' already exists in BaseLayer`);
 		}
-
-		// Create the MemoryIndex instance for this schema
 		const indexSpec: ConstructorParameters<typeof MemoryIndex>[0] = {
 			name: indexSchema.name,
 			columns: indexSchema.columns
 		};
-
-		const memoryIndex = new MemoryIndex(
-			indexSpec,
-			this.tableSchema.columns.map(c => ({ name: c.name }))
-		);
-
-		// Populate the index with existing rows
+		const memoryIndex = new MemoryIndex(indexSpec, this.tableSchema.columns.map(c => ({ name: c.name })));
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
-			const row = this.primaryTree.at(path);
-			if (row) {
-				try {
-					memoryIndex.addEntry(row);
-				} catch (e) {
-					// Use namespaced error logger
+			const rowTuple = this.primaryTree.at(path);
+			if (rowTuple) {
+				try { memoryIndex.addEntry(rowTuple); } catch (e) {
 					errorLog(`Failed to add row to new index '%s': %O`, indexSchema.name, e);
-					// Consider whether to roll back or continue
 				}
 			}
 		}
-
-		// Store the new index
 		this.secondaryIndexes.set(indexSchema.name, memoryIndex);
-		// Use namespaced debug logger
 		debugLog(`Added and populated index '%s'`, indexSchema.name);
 	}
 
-	/**
-	 * Drops an index from the base layer.
-	 * This should be called under a schema change lock.
-	 *
-	 * @param indexName Name of the index to drop
-	 * @returns true if the index was found and dropped, false otherwise
-	 */
 	dropIndexFromBase(indexName: string): boolean {
 		const index = this.secondaryIndexes.get(indexName);
 		if (!index) {
-			// Use namespaced warn logger
 			warnLog(`Attempted to drop non-existent index '%s'`, indexName);
 			return false;
 		}
-
-		// Simply remove the index from the map
-		// The BTree inside will be garbage collected
 		this.secondaryIndexes.delete(indexName);
-		// Use namespaced debug logger
 		debugLog(`Dropped index '%s'`, indexName);
 		return true;
 	}
 
-	/**
-	 * Checks if the BTree contains a row with the specified key.
-	 * Helper method for finding rowids.
-	 *
-	 * @param key The key to look for
-	 * @returns true if the key exists in the BTree
-	 */
 	has(key: BTreeKey): boolean {
-		// Use get instead of has since BTree doesn't have a has method
 		return this.primaryTree.get(key) !== undefined;
 	}
 }

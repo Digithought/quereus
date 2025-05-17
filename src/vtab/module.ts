@@ -1,6 +1,5 @@
 import type { Database } from '../core/database.js'; // Assuming Database class exists
 import type { VirtualTable } from './table.js';
-import type { VirtualTableCursor } from './cursor.js';
 import type { IndexInfo } from './indexInfo.js';
 import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema } from '../schema/table.js'; // Add import for TableSchema
@@ -9,6 +8,7 @@ import type { TableSchema } from '../schema/table.js'; // Add import for TableSc
  * Base interface for module-specific configuration passed to xCreate/xConnect.
  * Modules should define their own interface extending this if they need options.
  */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface, @typescript-eslint/no-empty-object-type
 export interface BaseModuleConfig {}
 
 /**
@@ -22,8 +22,7 @@ export interface BaseModuleConfig {}
  */
 export interface VirtualTableModule<
 	TTable extends VirtualTable,
-	TCursor extends VirtualTableCursor<TTable>,
-	TConfig extends BaseModuleConfig = BaseModuleConfig // Add generic config type
+	TConfig extends BaseModuleConfig = BaseModuleConfig
 > {
 
 	/**

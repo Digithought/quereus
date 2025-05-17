@@ -87,4 +87,38 @@ export class QueryPlanCursor extends VirtualTableCursor<QueryPlanTable> {
         this.currentIndex = -1;
         this._isEof = true;
     }
+
+    async* rows(): AsyncIterable<import('../../common/types.js').Row> {
+        if (!this.table.tableSchema) { // Access schema via table instance
+            throw new SqliteError("QueryPlanCursor: Schema not found for rows() iteration.", StatusCode.INTERNAL);
+        }
+
+        while (!this.eof()) {
+            if (this.currentIndex < 0 || this.currentIndex >= this.planSteps.length) {
+                // Should not happen if eof() is false, but as a safeguard
+                throw new SqliteError("QueryPlanCursor: Invalid current index while not EOF.", StatusCode.INTERNAL);
+            }
+            const currentStep = this.planSteps[this.currentIndex];
+            const row: SqlValue[] = [
+                currentStep.id, // Not nullable
+                currentStep.parentId ?? null, // Coalesce undefined to null
+                currentStep.subqueryLevel, // Not nullable
+                currentStep.op, // Not nullable
+                currentStep.detail ?? null, // Coalesce undefined to null
+                currentStep.objectName ?? null, // Coalesce undefined to null
+                currentStep.alias ?? null, // Coalesce undefined to null
+                currentStep.estimatedCost ?? null, // Coalesce undefined to null
+                (currentStep.estimatedRows === undefined || currentStep.estimatedRows === null) ? null : ((typeof currentStep.estimatedRows === 'bigint' && currentStep.estimatedRows <= BigInt(Number.MAX_SAFE_INTEGER) && currentStep.estimatedRows >= BigInt(Number.MIN_SAFE_INTEGER)) ? Number(currentStep.estimatedRows) : currentStep.estimatedRows),
+                currentStep.idxNum ?? null, // Coalesce undefined to null
+                currentStep.idxStr ?? null, // Already handles null, ensure undefined also becomes null
+                currentStep.orderByConsumed ? 1 : 0, // Not nullable
+                currentStep.constraintsDesc ?? null, // Coalesce undefined to null
+                currentStep.orderByDesc ?? null, // Coalesce undefined to null
+                currentStep.joinType ?? null, // Coalesce undefined to null
+                currentStep.isCorrelated ? 1 : 0 // Not nullable
+            ];
+            yield row;
+            await this.next();
+        }
+    }
 }

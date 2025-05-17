@@ -1,16 +1,18 @@
 import type { Layer } from './interface.js';
-import type { TransactionLayer } from './transaction.js';
-import type { MemoryTableManager } from './manager.js'; // Assuming manager class name
-import type { LayerCursorInternal } from './cursor.js';
+import { TransactionLayer } from './transaction.js'; // Changed to value import
+import type { MemoryTableManager } from './manager.js';
 import type { ScanPlan } from './scan-plan.js';
+import { BaseLayer } from './base.js'; // Changed to value import
+import { createLogger } from '../../../common/logger.js';
+import type { MemoryTableRow } from '../types.js';
+import type { LayerCursorInternal } from './cursor.js';
 import { BaseLayerCursorInternal } from './base-cursor.js';
 import { TransactionLayerCursorInternal } from './transaction-cursor.js';
-import { createLogger } from '../../../common/logger.js'; // Import logger
 
 let connectionCounter = 0;
-const log = createLogger('vtab:memory:layer:connection'); // Create logger
+const log = createLogger('vtab:memory:layer:connection');
 const warnLog = log.extend('warn');
-const debugLog = log; // Use base log for debug level
+const debugLog = log;
 
 /**
  * Represents the state of a single connection to a MemoryTable
@@ -18,10 +20,10 @@ const debugLog = log; // Use base log for debug level
  */
 export class MemoryTableConnection {
 	public readonly connectionId: number;
-	public readonly tableManager: MemoryTableManager; // Reference back to the manager
-	public readLayer: Layer; // The committed layer snapshot this connection reads from
-	public pendingTransactionLayer: TransactionLayer | null = null; // Uncommitted changes for this connection
-	private savepoints: Map<number, TransactionLayer> = new Map(); // Savepoint name -> Layer snapshot
+	public readonly tableManager: MemoryTableManager;
+	public readLayer: Layer;
+	public pendingTransactionLayer: TransactionLayer | null = null;
+	private savepoints: Map<number, TransactionLayer> = new Map();
 
 	constructor(manager: MemoryTableManager, initialReadLayer: Layer) {
 		this.connectionId = connectionCounter++;
@@ -29,10 +31,7 @@ export class MemoryTableConnection {
 		this.readLayer = initialReadLayer;
 	}
 
-	/**
-	 * Creates the internal cursor chain for a given scan plan, starting from the
-	 * appropriate layer (pending layer if active, otherwise the connection's read layer).
-	 */
+	/** Creates the internal cursor chain for a given scan plan */
 	createLayerCursor(plan: ScanPlan): LayerCursorInternal {
 		const startLayer = this.pendingTransactionLayer ?? this.readLayer;
 		return this._buildCursorRecursive(startLayer, plan);
@@ -41,26 +40,18 @@ export class MemoryTableConnection {
 	/** Recursive helper to build the cursor chain */
 	private _buildCursorRecursive(layer: Layer, plan: ScanPlan): LayerCursorInternal {
 		const parentLayer = layer.getParent();
-
 		if (!parentLayer) {
-			// Reached the BaseLayer
-			if (!(layer instanceof this.tableManager.getBaseLayerConstructor())) {
-				throw new Error("Cursor creation error: Layer chain did not end with a valid BaseLayer.");
+			if (!(layer instanceof BaseLayer)) { // Value import of BaseLayer allows instanceof
+				throw new Error("Cursor creation error: Layer chain did not end with BaseLayer.");
 			}
-			// Cast is safe due to check above and BaseLayer being the only layer type with null parent
-			return new BaseLayerCursorInternal(layer as InstanceType<ReturnType<MemoryTableManager['getBaseLayerConstructor']>>, plan);
+			return new BaseLayerCursorInternal(layer, plan);
 		} else {
-			// Create parent cursor first
 			const parentCursor = this._buildCursorRecursive(parentLayer, plan);
-
-			// Create TransactionLayer cursor for the current layer
-			if (!(layer instanceof this.tableManager.getTransactionLayerConstructor())) {
-				// Clean up parent cursor if we fail here
+			if (!(layer instanceof TransactionLayer)) { // Value import of TransactionLayer allows instanceof
 				try { parentCursor.close(); } catch { /* ignore */ }
-				throw new Error("Cursor creation error: Non-base layer was not a valid TransactionLayer.");
+				throw new Error("Cursor creation error: Non-base layer was not TransactionLayer.");
 			}
-			// Cast is safe due to the check above
-			return new TransactionLayerCursorInternal(layer as TransactionLayer, plan, parentCursor);
+			return new TransactionLayerCursorInternal(layer, plan, parentCursor, this.tableManager);
 		}
 	}
 
@@ -156,5 +147,16 @@ export class MemoryTableConnection {
 
 		// Use namespaced debug logger
 		debugLog(`Connection %d: Rolled back to savepoint %d`, this.connectionId, savepointIndex);
+	}
+
+	/**
+	 * Looks up a complete row (MemoryTableRow tuple) by its rowid, searching through the relevant layer chain.
+	 * This is primarily for the sorter in MemoryTableCursor.
+	 */
+	async lookupRowByRowid(rowid: bigint): Promise<MemoryTableRow | null> {
+		// Delegate to a new manager method that can search from a specific startLayer.
+		// The start layer for this lookup should be the connection's current read snapshot.
+		const effectiveRow = await this.tableManager.lookupRowByRowidInternal(rowid, this.readLayer);
+		return effectiveRow;
 	}
 }

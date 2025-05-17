@@ -3,11 +3,8 @@ import type { SqlValue } from '../../common/types.js';
 /** Key type used in B-Trees (primary key or index key part) */
 export type BTreeKey = SqlValue | SqlValue[];
 
-/** Represents a row stored in the MemoryTable */
-export type MemoryTableRow = Record<string, SqlValue> & {
-	/** Internal row identifier */
-	readonly _rowid_: bigint;
-};
+/** Represents a row stored internally in the MemoryTable as a tuple: [rowid, data_array] */
+export type MemoryTableRow = [rowid: bigint, data: SqlValue[]];
 
 // --- Re-export types needed by other modules ---
 // These might be defined elsewhere but are central to the memory table structure
@@ -22,10 +19,10 @@ export type ModificationKey = BTreeKey | [BTreeKey, bigint];
 export interface DeletionMarker {
 	_marker_: typeof DELETED;
 	_key_: ModificationKey; // The key of the deleted item
-	_rowid_?: bigint;       // The rowid of the deleted item (often redundant for secondary key mods)
+	_rowid_: bigint;       // The rowid of the deleted item (now non-optional)
 }
 
-/** Value stored in modification trees (either a full row or a deletion marker) */
+/** Value stored in modification trees (either a full row tuple or a deletion marker) */
 export type ModificationValue = MemoryTableRow | DeletionMarker;
 
 /** Type guard to check if a value is a DeletionMarker */

@@ -8,17 +8,16 @@ import type { Layer, ModificationKey, ModificationValue, DeletionMarker } from '
 import { isDeletionMarker, DELETED } from '../types.js';
 import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js'; // Simple async lock
-import { SqliterError, ConstraintError } from '../../../common/errors.js';
-import { StatusCode } from '../../../common/types.js';
-import { ConflictResolution } from '../../../common/constants.js';
-import { MemoryIndex, type IndexSpec } from '../index.js'; // Needed for index ops
-import { getAffinity } from '../../../schema/column.js'; // Needed for schema ops
+import { SqliteError, ConstraintError } from '../../../common/errors.js';
+import { StatusCode, ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
+import { MemoryIndex } from '../index.js'; // Needed for index ops
 import type { ColumnDef } from '../../../parser/ast.js'; // Needed for schema ops
-import type { SchemaChangeInfo } from '../../module.js'; // Needed for schema ops
 import { buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js'; // Needed for schema ops
 import { compareSqlValues } from '../../../util/comparison.js'; // Import for comparison functions
 import { createLogger } from '../../../common/logger.js'; // Import logger
 import { safeJsonStringify } from '../../../util/serialization.js';
+import { createBaseLayerPkFunctions } from './base.js'; // Import the new helper
+import type { ScanPlan } from './scan-plan.js'; // Added ScanPlan
 
 let tableManagerCounter = 0;
 const log = createLogger('vtab:memory:layer:manager'); // Create logger
@@ -85,42 +84,24 @@ export class MemoryTableManager {
 		this.tableSchema = initialSchema; // Store the canonical schema
 		this.readOnly = readOnly;
 
-		// Derive PK info from schema
 		this.pkIndices = Object.freeze(this.tableSchema.primaryKeyDefinition.map(def => def.index));
 		this.pkIsRowid = this.pkIndices.length === 0;
 
-		const { keyExtractor, comparator } = this.getBTreeFuncsForIndex('primary', this.tableSchema);
-		this.primaryKeyFromRow = keyExtractor as (row: MemoryTableRow) => BTreeKey; // Cast assumes PK extractor works on rows
-		this.comparePrimaryKeys = comparator;
+		// Get BTree functions for the primary index based on the *current* canonical schema
+		const primaryPkFuncs = createBaseLayerPkFunctions(this.tableSchema); // Use the same helper as BaseLayer
+		this.primaryKeyFromRow = primaryPkFuncs.keyFromEntry;
+		this.comparePrimaryKeys = primaryPkFuncs.compareKeys;
 
 		const needsRowidMap = !this.pkIsRowid;
 
-		// Initialize BaseLayer using the canonical schema
 		this.baseLayer = new BaseLayer(
 			this.tableSchema,
-			this.primaryKeyFromRow,
-			this.comparePrimaryKeys,
-			this.tableSchema.columns.map(c => ({ name: c.name })), // Pass column names
+			this.tableSchema.columns.map(c => ({ name: c.name })), // Pass column names for MemoryIndex
 			needsRowidMap
 		);
 
-		// Initialize secondary indexes in the BaseLayer
-		this.tableSchema.indexes?.forEach(indexSchema => {
-			try {
-				// BaseLayer constructor already handles creating MemoryIndex instances
-				// No need to add them here again, just ensure constructor did it.
-				if (!this.baseLayer.secondaryIndexes.has(indexSchema.name)) {
-					// This indicates an issue in BaseLayer construction
-					throw new Error(`BaseLayer failed to initialize index '${indexSchema.name}'`);
-				}
-			} catch (e) {
-				// Use namespaced error logger
-				errorLog(`Failed to initialize secondary index '%s' in BaseLayer: %O`, indexSchema.name, e);
-				throw e; // Fail fast if index setup fails
-			}
-		});
-
-		this.currentCommittedLayer = this.baseLayer; // Initially, the base layer is the only committed layer
+		// Initialize secondary indexes in the BaseLayer (already handled by BaseLayer constructor)
+		this.currentCommittedLayer = this.baseLayer;
 	}
 
 	/** Connects a new client/statement to this table */
@@ -346,101 +327,42 @@ export class MemoryTableManager {
 			throw new Error("Cannot apply layer: Merging layer has no parent.");
 		}
 
-		// Get the schema *as it was* when the layer to merge was created.
-		// This is crucial for interpreting its modifications correctly, especially
-		// for calculating old/new secondary keys if the schema changed later.
-		const schemaAtMergeTime = layer.getSchema();
-
-		// Get BTree functions based on the schema *at merge time*.
-		const getFuncs = (indexName: string | 'primary') => this.getBTreeFuncsForIndex(indexName, schemaAtMergeTime);
-
-		// Iterate through primary key modifications in the layer being merged
 		const primaryModTree = layer.getModificationTree('primary');
 		if (primaryModTree) {
-			// Create BTree funcs using the schema *from the layer being merged*
-			const { comparator: primaryKeyComparator } = getFuncs('primary');
-			const primaryModKeyExtractor = layer.getKeyExtractor('primary'); // Use layer's extractor for its own tree
-
+			const primaryModKeyExtractor = layer.getKeyExtractor('primary');
 			for (const path of primaryModTree.ascending(primaryModTree.first())) {
 				const modValue = primaryModTree.at(path);
 				if (modValue === undefined) continue;
-
-				const primaryKey = primaryModKeyExtractor(modValue); // Extract PK (ModificationKey)
-
-				// Find the value *before* this modification was applied by looking up
-				// the primary key starting from the *parent* layer.
+				const primaryKey = primaryModKeyExtractor(modValue);
 				const oldEffectiveValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', parentLayer);
-
-				// Apply the change (modValue) to the base layer, using oldEffectiveValue for index updates.
-				// The baseLayer's applyChange method needs the *current* baseLayer schema internally
-				// to correctly interact with its own secondary index MemoryIndex instances.
-				// However, the calculation of old/new secondary keys within applyChange *should* ideally
-				// use the schema associated with the oldEffectiveValue and modValue respectively.
-				// Let's simplify: BaseLayer.applyChange will use its *current* schema to update indices.
-				// This assumes secondary key extraction logic is consistent enough across schema versions,
-				// or that schema changes affecting index keys are handled carefully.
 				try {
-					// Here we need to safely handle the typing for oldEffectiveValue
-					const oldRowValue = oldEffectiveValue !== undefined &&
-						!isDeletionMarker(oldEffectiveValue)
-						? oldEffectiveValue
-						: null;
-
-					this.baseLayer.applyChange(
-						primaryKey as BTreeKey, // BaseLayer expects BTreeKey
-						modValue, // Pass the actual modification value
-						oldRowValue // Pass MemoryTableRow | null
-					);
+					const oldRowTuple = oldEffectiveValue !== undefined && !isDeletionMarker(oldEffectiveValue) ? oldEffectiveValue as MemoryTableRow : null;
+					this.baseLayer.applyChange(primaryKey as BTreeKey, modValue, oldRowTuple);
 				} catch (applyError) {
-					// This is critical. Log details and potentially halt collapse.
-					// Use namespaced error logger
-					errorLog(`[Collapse Apply] Failed to apply change for key %s from layer %d to base layer. Table %s may be inconsistent. Error: %O`, safeJsonStringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
-					// Re-throw to stop the collapse process?
+					errorLog(`[Collapse Apply] Failed for PK %s from layer %d to base. Table %s. Error: %O`, safeJsonStringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
 					throw applyError;
 				}
 			}
 		}
 
-		// Handle rows explicitly deleted in this layer that might not have had a primary key mod entry
-		// (e.g., insert + delete within the layer). We still need to ensure they are removed from base.
 		for (const rowid of layer.getDeletedRowids()) {
-			// Find the primary key for this rowid *before* this layer's changes
 			const pk = this.findPrimaryKeyForRowid(rowid, parentLayer);
 			if (pk !== null) {
 				const oldEffectiveValue = this.lookupEffectiveValueInternal(pk, 'primary', parentLayer);
-				// Apply a deletion to the base layer if it wasn't already handled via primary mods
-				// Check if baseLayer already reflects deletion for this PK
 				const currentBaseValue = this.baseLayer.primaryTree.get(pk);
-				if (currentBaseValue !== undefined) { // If base still has the row
-					// Use namespaced debug logger
-					debugLog(`[Collapse Apply] Applying explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, safeJsonStringify(pk), layer.getLayerId());
+				if (currentBaseValue !== undefined) {
+					debugLog(`[Collapse Apply] Explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, safeJsonStringify(pk), layer.getLayerId());
 					try {
-						// Create a properly typed DeletionMarker
-						const deletionMarker: DeletionMarker = {
-							_marker_: DELETED,
-							_key_: pk,
-							_rowid_: rowid
-						};
-
-						// Safely handle oldEffectiveValue typing
-						const oldRowValue = oldEffectiveValue !== undefined &&
-							!isDeletionMarker(oldEffectiveValue)
-							? oldEffectiveValue
-							: null;
-
-						this.baseLayer.applyChange(
-							pk,
-							deletionMarker, // Use properly typed DeletionMarker
-							oldRowValue
-						);
+						const deletionMarker: DeletionMarker = { _marker_: DELETED, _key_: pk, _rowid_: rowid };
+						const oldRowTuple = oldEffectiveValue !== undefined && !isDeletionMarker(oldEffectiveValue) ? oldEffectiveValue as MemoryTableRow : null;
+						this.baseLayer.applyChange(pk, deletionMarker, oldRowTuple);
 					} catch (applyError) {
-						// Use namespaced error logger
-						errorLog(`[Collapse Apply] Failed to apply explicit delete for rowid %s (PK: %s) from layer %d to base. Error: %O`, rowid, safeJsonStringify(pk), layer.getLayerId(), applyError);
+						errorLog(`[Collapse Apply] Failed explicit delete for rowid %s (PK: %s). Error: %O`, rowid, safeJsonStringify(pk), applyError);
 						throw applyError;
 					}
 				}
 			} else {
-				debugLog(`[Collapse Apply] Explicitly deleted rowid ${rowid} from layer ${layer.getLayerId()} had no primary key found in parent layers.`);
+				debugLog(`[Collapse Apply] Explicitly deleted rowid ${rowid} from layer ${layer.getLayerId()} had no PK in parent.`);
 			}
 		}
 	}
@@ -475,7 +397,6 @@ export class MemoryTableManager {
 			const modTree = currentLayer.getModificationTree(indexName);
 			if (modTree) {
 				// Need BTree funcs for the schema *at the time currentLayer was created*
-				const { comparator } = this.getBTreeFuncsForIndex(indexName, currentLayer.getSchema());
 				const keyExtractor = currentLayer.getKeyExtractor(indexName); // Use layer's own extractor
 
 				// Find using the key directly, BTree uses its internal funcs
@@ -498,10 +419,8 @@ export class MemoryTableManager {
 						}
 						// If the key part no longer matches, stop iterating
 						if (this.compareModificationKeys(currentKey, key, indexName, currentLayer.getSchema()) !== 0) {
-						    break;
+							break;
 						}
-
-
 					}
 
 					if (foundValue !== undefined) {
@@ -533,7 +452,6 @@ export class MemoryTableManager {
 				// *But* if the modTree check above returned a DeletionMarker for this PK, we should have caught it.
 				// If it didn't, and the rowid isn't explicitly deleted, we should proceed to the parent.
 			}
-
 		} else if (currentLayer instanceof BaseLayer) {
 			// 2. Reached the BaseLayer
 			const baseLayer = currentLayer as BaseLayer;
@@ -564,56 +482,41 @@ export class MemoryTableManager {
 		return this.lookupEffectiveValueInternal(key, indexName, currentLayer.getParent());
 	}
 
-
 	/** Finds the primary key for a given rowid by searching down the layer chain */
 	private findPrimaryKeyForRowid(rowid: bigint, startLayer: Layer | null): BTreeKey | null {
 		let currentLayer = startLayer;
 		while (currentLayer) {
 			if (currentLayer instanceof TransactionLayer) {
-				// Check pending updates/inserts in this layer first
-				// This requires iterating maps, potentially slow. Optimize if needed.
 				let foundKey: BTreeKey | null = null;
 				const primaryModTree = currentLayer.getModificationTree('primary');
 				if (primaryModTree) {
 					const pkExtractor = currentLayer.getKeyExtractor('primary');
 					for (const path of primaryModTree.ascending(primaryModTree.first())) {
 						const modValue = primaryModTree.at(path);
-						if (modValue && !isDeletionMarker(modValue) && modValue._rowid_ === rowid) {
-							foundKey = pkExtractor(modValue) as BTreeKey;
-							break;
-						}
-						if(modValue && isDeletionMarker(modValue) && modValue._rowid_ === rowid) {
-							// If we find a deletion marker for this rowid, it means the row *was*
-							// present before this layer or inserted then deleted within it.
-							// We should continue searching parent layers for the key *before* deletion.
-							break; // Stop checking this layer's mods, go to parent
+						if (modValue && !isDeletionMarker(modValue)) {
+							const rowTuple = modValue as MemoryTableRow;
+							if (rowTuple[0] === rowid) {
+								foundKey = pkExtractor(modValue) as BTreeKey;
+								break;
+							}
+						} else if (modValue && isDeletionMarker(modValue)) {
+							if (modValue._rowid_ === rowid) {
+								break;
+							}
 						}
 					}
 				}
 				if (foundKey !== null) return foundKey;
-
-				// Check if explicitly deleted in this layer - if so, continue searching parent
-				if (currentLayer.getDeletedRowids().has(rowid)) {
-					currentLayer = currentLayer.getParent();
-					continue;
-				}
-
+				if (currentLayer.getDeletedRowids().has(rowid)) { currentLayer = currentLayer.getParent(); continue; }
 			} else if (currentLayer instanceof BaseLayer) {
-				// Check BaseLayer's map or assume rowid is key
-				if (currentLayer.rowidToKeyMap) {
-					return currentLayer.rowidToKeyMap.get(rowid) ?? null;
-				} else if (this.pkIsRowid) {
-					// Check if the rowid exists as a key in the primary tree
-					return currentLayer.primaryTree.get(rowid) !== undefined ? rowid : null;
-				} else {
-					return null; // Keyed table without map, cannot find PK from rowid easily
-				}
+				if (currentLayer.rowidToKeyMap) return currentLayer.rowidToKeyMap.get(rowid) ?? null;
+				else if (this.pkIsRowid) return currentLayer.primaryTree.get(rowid) !== undefined ? rowid : null;
+				else return null;
 			}
 			currentLayer = currentLayer.getParent();
 		}
 		return null;
 	}
-
 
 	/** Gets the next available rowid (requires locking) */
 	async getNextRowid(): Promise<bigint> {
@@ -630,49 +533,33 @@ export class MemoryTableManager {
 
 	/** Helper to get BTree key extractor and comparator for a specific index, based on a given schema */
 	private getBTreeFuncsForIndex(indexName: string | 'primary', schema: TableSchema): {
-		keyExtractor: (value: MemoryTableRow | ModificationValue) => ModificationKey | BTreeKey; // Allow broader input for mods
+		keyExtractor: (value: ModificationValue) => ModificationKey | BTreeKey; // Adjusted return for primary/secondary logic
 		comparator: (a: BTreeKey, b: BTreeKey) => number;
 	} {
-		// This logic is similar to TransactionLayer.getBTreeFuncs, but adapted
-		// to use the provided schema instead of `this.getSchema()`.
-
-		const columnsMeta = schema.columns.map(c => ({ name: c.name }));
-
 		if (indexName === 'primary') {
 			const pkDef = schema.primaryKeyDefinition ?? [];
 			if (pkDef.length === 0) { // Rowid key
 				return {
-					keyExtractor: (value: MemoryTableRow | ModificationValue) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)._rowid_,
+					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[0],
 					comparator: (a, b) => compareSqlValues(a as bigint, b as bigint)
 				};
 			} else if (pkDef.length === 1) { // Single column PK
-				const { index: pkIndex, desc: isDesc } = pkDef[0];
-				const pkColName = columnsMeta[pkIndex]?.name;
-				const pkCollation = schema.columns[pkIndex]?.collation ?? 'BINARY';
-				if (!pkColName) throw new Error("Invalid PK schema");
+				const { index: pkSchemaIndex, desc: isDesc, collation } = pkDef[0];
 				return {
-					keyExtractor: (value: MemoryTableRow | ModificationValue) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[pkColName] as BTreeKey,
-					comparator: (a, b) => {
-						const cmp = compareSqlValues(a as SqlValue, b as SqlValue, pkCollation);
-						return isDesc ? -cmp : cmp;
-					}
+					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[1][pkSchemaIndex],
+					comparator: (a, b) => { const cmp = compareSqlValues(a as SqlValue, b as SqlValue, collation || 'BINARY'); return isDesc ? -cmp : cmp; }
 				};
 			} else { // Composite PK
-				const pkCols = pkDef.map(def => ({
-					name: columnsMeta[def.index]?.name,
-					desc: def.desc,
-					collation: schema.columns[def.index]?.collation || 'BINARY'
-				}));
-				if (pkCols.some(c => !c.name)) throw new Error("Invalid composite PK schema");
-				const pkColNames = pkCols.map(c => c.name!);
+				const pkColSchemaIndices = pkDef.map(def => def.index);
 				return {
-					keyExtractor: (value: MemoryTableRow | ModificationValue) => isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColNames.map(name => (value as MemoryTableRow)[name]),
+					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColSchemaIndices.map(i => (value as MemoryTableRow)[1][i]),
 					comparator: (a, b) => {
 						const arrA = a as SqlValue[]; const arrB = b as SqlValue[];
-						for (let i = 0; i < pkCols.length; i++) {
+						for (let i = 0; i < pkDef.length; i++) {
 							if (i >= arrA.length || i >= arrB.length) return arrA.length - arrB.length;
-							const dirMultiplier = pkCols[i].desc ? -1 : 1;
-							const collation = pkCols[i].collation;
+							const def = pkDef[i];
+							const dirMultiplier = def.desc ? -1 : 1;
+							const collation = def.collation || 'BINARY';
 							const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
 							if (cmp !== 0) return cmp;
 						}
@@ -680,28 +567,25 @@ export class MemoryTableManager {
 					}
 				};
 			}
-		} else {
-			// Secondary Index Key: BTreeKey (SqlValue | SqlValue[])
+		} else { // Secondary Index
 			const indexSchema = schema.indexes?.find(idx => idx.name === indexName);
-			if (!indexSchema) throw new Error(`Secondary index ${indexName} not found in schema`);
-
-			// Use MemoryIndex logic for extraction and comparison of the key part
-			const tempIndex = new MemoryIndex({ name: indexSchema.name, columns: indexSchema.columns }, columnsMeta);
-
+			if (!indexSchema) throw new Error(`Secondary index ${indexName} not found in schema for getBTreeFuncsForIndex`);
+			// MemoryIndex needs table column *names* for its own spec interpretation if names were used in IndexSpec.columns
+			// However, our IndexSchema from tableSchema.indexes has .columns with .index (schema index), .desc, .collation.
+			// MemoryIndex constructor was updated to use these direct indices.
+			const tableColNames = schema.columns.map(c => ({ name: c.name }));
+			const tempIndex = new MemoryIndex({ name: indexSchema.name, columns: indexSchema.columns }, tableColNames);
 			return {
-				// Note: This extractor returns the BTreeKey part, suitable for comparison,
-				// but TransactionLayer's mod extractor returns ModificationKey ([Key, rowid]).
-				// Keep this distinction in mind where used.
-				keyExtractor: (value: MemoryTableRow | ModificationValue) => {
+				keyExtractor: (value) => { // This should return BTreeKey (the actual index key part)
 					if (isDeletionMarker(value)) {
-						// If it's a marker, the key stored is already [IndexKey, rowid]. Extract IndexKey.
+						// _key_ for secondary index deletion marker is [IndexKey, rowid]
 						return (value._key_ as [BTreeKey, bigint])[0];
 					} else {
-						// Otherwise, extract from the row data.
+						// value is MemoryTableRow tuple [rowid, data_array]
 						return tempIndex.keyFromRow(value as MemoryTableRow);
 					}
 				},
-				comparator: tempIndex.compareKeys // Use MemoryIndex's key comparator
+				comparator: tempIndex.compareKeys // This compares BTreeKeys (IndexKey parts)
 			};
 		}
 	}
@@ -725,12 +609,11 @@ export class MemoryTableManager {
 		}
 	}
 
+	// --- Schema Operations ---
+	// These need the management lock and potentially layer collapse checks
 
-    // --- Schema Operations ---
-    // These need the management lock and potentially layer collapse checks
-
-    async addColumn(columnDef: ColumnDef): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+	async addColumn(columnDef: ColumnDef): Promise<void> {
+		if (this.readOnly) throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
@@ -768,55 +651,40 @@ export class MemoryTableManager {
 	}
 
 	async dropColumn(columnName: string): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
-        const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
+		if (this.readOnly) throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
-        try {
-            await this.ensureSchemaChangeSafety();
-
+		try {
+			await this.ensureSchemaChangeSafety();
 			const colNameLower = columnName.toLowerCase();
 			const colIndex = this.tableSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
-			if (colIndex === -1) {
-				throw new SqliterError(`Column not found: ${columnName}`, StatusCode.ERROR);
-			}
-			if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
-				throw new SqliterError(`Cannot drop column '${columnName}' because it is part of the primary key`, StatusCode.CONSTRAINT);
-			}
-			// TODO: Check secondary indexes
+			if (colIndex === -1) throw new SqliteError(`Column not found: ${columnName}`, StatusCode.ERROR);
+			if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) throw new SqliteError(`Cannot drop PK column: ${columnName}`, StatusCode.CONSTRAINT);
+			// TODO: Check secondary indexes using this column and prevent drop or drop them too.
 
 			const oldTableSchema = this.tableSchema;
-
-            // Update canonical schema
-            const updatedColumnsSchema = oldTableSchema.columns.filter((_, idx) => idx !== colIndex);
-            const updatedPkDefinition = oldTableSchema.primaryKeyDefinition
-                .map(def => ({ ...def, index: def.index > colIndex ? def.index - 1 : def.index }))
-                .filter(def => def.index !== colIndex); // Ensure dropped PK col is removed if somehow missed above check
-            // TODO: Update IndexSchema definitions
+			const updatedColumnsSchema = oldTableSchema.columns.filter((_, idx) => idx !== colIndex);
+			const updatedPkDefinition = oldTableSchema.primaryKeyDefinition.map(def => ({ ...def, index: def.index > colIndex ? def.index - 1 : def.index })).filter(def => def.index !== colIndex);
+			const updatedIndexes = (oldTableSchema.indexes ?? []).map(idx => ({
+				...idx,
+				columns: idx.columns.map(ic => ({ ...ic, index: ic.index > colIndex ? ic.index -1 : ic.index })).filter(ic => ic.index !== colIndex)
+			})).filter(idx => idx.columns.length > 0);
 
 			this.tableSchema = Object.freeze({
-				...oldTableSchema,
-				columns: updatedColumnsSchema,
-				columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
-				primaryKeyDefinition: updatedPkDefinition,
-                // TODO: Update indexes array in schema
+				...oldTableSchema, columns: updatedColumnsSchema, columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
+				primaryKeyDefinition: updatedPkDefinition, indexes: Object.freeze(updatedIndexes)
 			});
-
-            // Apply change to BaseLayer data
-            this.baseLayer.dropColumnFromBase(columnName);
-
-            // Use namespaced log
-            log(`MemoryTable %s: Dropped column %s`, this.tableName, columnName);
-        } finally {
-            release();
-        }
+			this.baseLayer.dropColumnFromBase(columnName, colIndex); // Verified: passing colIndex
+			log(`MemoryTable %s: Dropped column %s`, this.tableName, columnName);
+		} finally { release(); }
 	}
 
 	async renameColumn(oldName: string, newName: string): Promise<void> {
-        if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
-        const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
+		if (this.readOnly) throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
-        try {
-             await this.ensureSchemaChangeSafety();
+		try {
+			await this.ensureSchemaChangeSafety();
 
 			const oldNameLower = oldName.toLowerCase();
 			const newNameLower = newName.toLowerCase();
@@ -826,67 +694,67 @@ export class MemoryTableManager {
 			if (this.tableSchema.columns.some((c, i) => i !== colIndex && c.name.toLowerCase() === newNameLower)) {
 				throw new SqliterError(`Duplicate column name: ${newName}`, StatusCode.ERROR);
 			}
-             // TODO: Check PK / Indexes
+			// TODO: Check PK / Indexes
 
 			const oldTableSchema = this.tableSchema;
 
-            // Update canonical schema
-            const updatedColumnsSchema = oldTableSchema.columns.map((colSchema, idx) =>
+			// Update canonical schema
+			const updatedColumnsSchema = oldTableSchema.columns.map((colSchema, idx) =>
 				idx === colIndex ? { ...colSchema, name: newName } : colSchema
 			);
-            // TODO: Update IndexSchema definitions if column name is used there
+			// TODO: Update IndexSchema definitions if column name is used there
 
-            this.tableSchema = Object.freeze({
-                ...oldTableSchema,
-                columns: updatedColumnsSchema,
-                columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
-                // TODO: Update indexes array
-            });
+			this.tableSchema = Object.freeze({
+				...oldTableSchema,
+				columns: updatedColumnsSchema,
+				columnIndexMap: buildColumnIndexMap(updatedColumnsSchema),
+				// TODO: Update indexes array
+			});
 
-             // Apply change to BaseLayer data
-            this.baseLayer.renameColumnInBase(oldName, newName);
+			// Apply change to BaseLayer data
+			this.baseLayer.renameColumnInBase(oldName, newName);
 
-            // Use namespaced log
-            log(`MemoryTable %s: Renamed column %s to %s`, this.tableName, oldName, newName);
-        } finally {
-            release();
-        }
+			// Use namespaced log
+			log(`MemoryTable %s: Renamed column %s to %s`, this.tableName, oldName, newName);
+		} finally {
+			release();
+		}
 	}
 
-    async renameTable(newName: string): Promise<void> {
-        // This needs coordination with the MemoryTableModule's table registry
-        const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`; // Use schema lock
+	async renameTable(newName: string): Promise<void> {
+		// This needs coordination with the MemoryTableModule's table registry
+		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`; // Use schema lock
 		const release = await Latches.acquire(lockKey);
-        try {
-             await this.ensureSchemaChangeSafety(); // Ensure stable state
+		try {
+			await this.ensureSchemaChangeSafety(); // Ensure stable state
 
-            const oldTableKey = `${this.schemaName.toLowerCase()}.${this.tableName.toLowerCase()}`;
-            const newTableKey = `${this.schemaName.toLowerCase()}.${newName.toLowerCase()}`;
+			const oldTableKey = `${this.schemaName.toLowerCase()}.${this.tableName.toLowerCase()}`;
+			const newTableKey = `${this.schemaName.toLowerCase()}.${newName.toLowerCase()}`;
 
-            if (oldTableKey === newTableKey) return; // No change
+			if (oldTableKey === newTableKey) return; // No change
 
-            // Check registry via module reference
-            if (!this.module || typeof this.module.tables?.has !== 'function' || typeof this.module.tables?.delete !== 'function' || typeof this.module.tables?.set !== 'function') {
-                throw new SqliterError("Cannot rename: Module context or table registry is invalid.", StatusCode.INTERNAL);
-            }
-            if (this.module.tables.has(newTableKey)) {
-                throw new SqliterError(`Cannot rename memory table: target name '${newName}' already exists in schema '${this.schemaName}'`);
-            }
+			// Check registry via module reference
+			if (!this.module || typeof this.module.tables?.has !== 'function' || typeof this.module.tables?.delete !== 'function' || typeof this.module.tables?.set !== 'function') {
+				throw new SqliteError("Cannot rename: Module context or table registry is invalid.", StatusCode.INTERNAL);
+			}
+			if (this.module.tables.has(newTableKey)) {
+				throw new SqliteError(`Cannot rename memory table: target name '${newName}' already exists in schema '${this.schemaName}'`);
+			}
 
-            // Update registry
-            this.module.tables.delete(oldTableKey);
-            (this as any).tableName = newName; // Update instance property (hacky, assumes writable)
-            this.module.tables.set(newTableKey, this);
+			// Update registry
+			this.module.tables.delete(oldTableKey);
+			(this as any).tableName = newName; // Update instance property (hacky, assumes writable)
+			this.module.tables.set(newTableKey, this);
 
-            // Update canonical schema
-            this.tableSchema = Object.freeze({ ...this.tableSchema, name: newName });
+			// Update canonical schema
+			this.tableSchema = Object.freeze({ ...this.tableSchema, name: newName });
 
-             // Use namespaced log
-             log(`Memory table renamed from '%s' to '%s'`, oldTableKey, newName);
-        } finally {
-            release();
-        }
-    }
+			// Use namespaced log
+			log(`Memory table renamed from '%s' to '%s'`, oldTableKey, newName);
+		} finally {
+			release();
+		}
+	}
 
 	async createIndex(indexSchema: IndexSchema): Promise<void> {
 		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
@@ -967,175 +835,253 @@ export class MemoryTableManager {
 		}
 	}
 
-    // --- Helper Methods for accessing constructors ---
-    getBaseLayerConstructor(): typeof BaseLayer {
-        return BaseLayer;
-    }
-    getTransactionLayerConstructor(): typeof TransactionLayer {
-        return TransactionLayer;
-    }
+	// --- Helper Methods for accessing constructors ---
+	getBaseLayerConstructor(): typeof BaseLayer {
+		return BaseLayer;
+	}
+	getTransactionLayerConstructor(): typeof TransactionLayer {
+		return TransactionLayer;
+	}
 
-    /** Checks if the table is in read-only mode */
-    isReadOnly(): boolean {
-        return this.readOnly;
-    }
+	/** Checks if the table is in read-only mode */
+	isReadOnly(): boolean {
+		return this.readOnly;
+	}
 
-    /** Destroys the manager and cleans up resources */
-    async destroy(): Promise<void> {
-        // Acquire a lock to ensure no operations are in progress
-        const lockKey = `MemoryTable.Destroy:${this.schemaName}.${this.tableName}`;
-        const release = await Latches.acquire(lockKey);
+	/** Destroys the manager and cleans up resources */
+	async destroy(): Promise<void> {
+		// Acquire a lock to ensure no operations are in progress
+		const lockKey = `MemoryTable.Destroy:${this.schemaName}.${this.tableName}`;
+		const release = await Latches.acquire(lockKey);
 
-        try {
-            // Disconnect any remaining connections
-            for (const connection of this.connections.values()) {
-                // Roll back any pending transaction
-                if (connection.pendingTransactionLayer) {
-                    connection.rollback();
-                }
-            }
+		try {
+			// Disconnect any remaining connections
+			for (const connection of this.connections.values()) {
+				// Roll back any pending transaction
+				if (connection.pendingTransactionLayer) {
+					connection.rollback();
+				}
+			}
 
-            // Clear connections map
-            this.connections.clear();
+			// Clear connections map
+			this.connections.clear();
 
-            // Force collapse layers to base
-            this.currentCommittedLayer = this.baseLayer;
+			// Force collapse layers to base
+			this.currentCommittedLayer = this.baseLayer;
 
-            // Clear the base layer data
-            this.baseLayer = new BaseLayer(
-                this.tableSchema,
-                this.primaryKeyFromRow,
-                this.comparePrimaryKeys,
-                this.tableSchema.columns.map(c => ({ name: c.name })),
-                !this.pkIsRowid
-            );
+			// Clear the base layer data
+			this.baseLayer = new BaseLayer(
+				this.tableSchema,
+				this.tableSchema.columns.map(c => ({ name: c.name })),
+				!this.pkIsRowid
+			);
 
-            // Use namespaced log
-            log(`MemoryTable %s manager destroyed.`, this.tableName);
-        } finally {
-            release();
-        }
-    }
+			// Use namespaced log
+			log(`MemoryTable %s manager destroyed.`, this.tableName);
+		} finally {
+			release();
+		}
+	}
 
 	// --- xUpdate / Mutation ---
 	// This needs to delegate to the *connection's* pending layer
+
+	/**
+	 * Internal helper to find a MemoryTableRow tuple by its rowid, searching down the layer chain.
+	 * Used by MemoryTableConnection.lookupRowByRowid for sorter population.
+	 */
+	async lookupRowByRowidInternal(rowidToFind: bigint, currentLayer: Layer | null): Promise<MemoryTableRow | null> {
+		if (!currentLayer) {
+			return null; // Reached end of chain
+		}
+
+		if (currentLayer instanceof TransactionLayer) {
+			// 1. Check if this rowid was explicitly deleted in this layer
+			if (currentLayer.getDeletedRowids().has(rowidToFind)) {
+				return null; // Deleted in this layer
+			}
+
+			// 2. Check primary modifications in this layer.
+			// We need to iterate primary mods to see if any of them correspond to the rowidToFind.
+			const primaryModTree = currentLayer.getModificationTree('primary');
+			if (primaryModTree) {
+				// Iterate all modifications. This might not be super efficient for large transactions.
+				// BTree values are ModificationValue (MemoryTableRow tuple or DeletionMarker)
+				for (const path of primaryModTree.ascending(primaryModTree.first())) {
+					const modValue = primaryModTree.at(path);
+					if (modValue) {
+						if (isDeletionMarker(modValue)) {
+							if (modValue._rowid_ === rowidToFind) {
+								return null; // Explicitly deleted by marker with this rowid
+							}
+						} else {
+							// modValue is MemoryTableRow tuple: [rowid, data_array]
+							const currentRowTuple = modValue as MemoryTableRow;
+							if (currentRowTuple[0] === rowidToFind) {
+								return currentRowTuple; // Found the row in this layer's modifications
+							}
+						}
+					}
+				}
+			}
+			// Not found or not affected by primary mods in this layer, recurse to parent
+			return this.lookupRowByRowidInternal(rowidToFind, currentLayer.getParent());
+
+		} else if (currentLayer instanceof BaseLayer) {
+			// Reached the BaseLayer
+			const baseLayer = currentLayer;
+			const schema = baseLayer.getSchema();
+
+			if (schema.primaryKeyDefinition.length === 0) { // Rowid is the primary key
+				return baseLayer.primaryTree.get(rowidToFind) ?? null;
+			} else {
+				// Table has an explicit primary key, need to use rowidToKeyMap
+				if (baseLayer.rowidToKeyMap) {
+					const primaryKey = baseLayer.rowidToKeyMap.get(rowidToFind);
+					if (primaryKey !== undefined) {
+						return baseLayer.primaryTree.get(primaryKey) ?? null;
+					} else {
+						return null; // Rowid not in map
+					}
+				} else {
+					// Should not happen if PK is not rowid, rowidToKeyMap should exist.
+					warnLog(`BaseLayer has primary key but no rowidToKeyMap when looking up rowid ${rowidToFind}`);
+					return null;
+				}
+			}
+		} else {
+			// Should not happen if layer chain is valid
+			errorLog("lookupRowByRowidInternal: Encountered unknown layer type.");
+			return null;
+		}
+	}
 
 	async performMutation(connection: MemoryTableConnection, values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint; }> {
 		if (this.readOnly) {
 			throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		}
-		const onConflict = (values as any)._onConflict || ConflictResolution.ABORT; // Assuming hidden property like before
+		const onConflict = (values as any)._onConflict || ConflictResolution.ABORT;
 
-		// Ensure transaction is started on the connection
 		if (!connection.pendingTransactionLayer) {
 			connection.begin();
 		}
 		const targetLayer = connection.pendingTransactionLayer;
 		if (!targetLayer) {
-			// Should not happen after calling begin()
-			throw new SqliterError("Internal error: Pending transaction layer not found after begin.", StatusCode.INTERNAL);
+			throw new SqliteError("Internal error: Pending transaction layer not found after begin.", StatusCode.INTERNAL);
 		}
 
 		try {
 			if (values.length === 1 && typeof values[0] === 'bigint') {
 				// --- DELETE ---
 				const targetRowid = values[0];
-				// Find primary key and old row state *before* this delete
 				const primaryKey = this.findPrimaryKeyForRowid(targetRowid, targetLayer.getParent());
-				if (primaryKey === null) return {}; // Row doesn't exist effectively
+				if (primaryKey === null) return {};
 
-				const oldEffectiveRow = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer.getParent());
-				if (!oldEffectiveRow || isDeletionMarker(oldEffectiveRow)) return {}; // Row already deleted or never existed
+				const oldEffectiveValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer.getParent());
+				if (!oldEffectiveValue || isDeletionMarker(oldEffectiveValue)) return {};
 
-				// Find secondary keys for the old row state
+				const oldRowTuple = oldEffectiveValue as MemoryTableRow; // It must be a MemoryTableRow here
+
 				const indexKeys = new Map<string, [BTreeKey, bigint]>();
-				const schema = targetLayer.getSchema(); // Schema relevant for this layer's mods
+				const schema = targetLayer.getSchema();
 				schema.indexes?.forEach(indexSchema => {
 					const tempIndex = new MemoryIndex({ name: indexSchema.name, columns: indexSchema.columns }, schema.columns.map(c => ({ name: c.name })));
-					const secKey = tempIndex.keyFromRow(oldEffectiveRow);
+					const secKey = tempIndex.keyFromRow(oldRowTuple); // Pass tuple to keyFromRow
 					indexKeys.set(indexSchema.name, [secKey, targetRowid]);
 				});
 
-				// Record deletion in the transaction layer
 				targetLayer.recordDelete(targetRowid, primaryKey, indexKeys);
-				return {}; // Success
+				return {};
 
 			} else if (values.length > 1) {
+				const dataArray = values.slice(1);
 				if (rowid === null) {
 					// --- INSERT ---
-					const data = Object.fromEntries(this.tableSchema.columns.map((col, idx) => [col.name, values[idx + 1]]));
 					const newRowid = await this.getNextRowid();
-					const newRow: MemoryTableRow = { ...data, _rowid_: newRowid };
+					const newRowTuple: MemoryTableRow = [newRowid, dataArray];
 
-					// Check constraints (PK, NOT NULL, CHECK) against newRow
-					// Calculate primary key
-					const primaryKey = this.primaryKeyFromRow(newRow);
-
-					// Check for PK conflict by looking up key starting from parent layer
-					const existingValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer); // Check current layer too!
+					const primaryKey = this.primaryKeyFromRow(newRowTuple);
+					const existingValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer);
 					if (existingValue !== undefined && !isDeletionMarker(existingValue)) {
-						// Conflict
 						if (onConflict === ConflictResolution.IGNORE) return {};
-						const pkColName = this.pkIndices.map(idx => this.tableSchema.columns[idx].name).join(', ') || 'rowid';
-						throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColName}`);
+						const pkColNames = this.tableSchema.primaryKeyDefinition.map(def => this.tableSchema.columns[def.index].name).join(', ') || 'rowid';
+						throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColNames}`);
 					}
-
-					// Record insert in the transaction layer
-					const affectedIndexes: (string | 'primary')[] = ['primary'];
-					this.tableSchema.indexes?.forEach(idx => affectedIndexes.push(idx.name));
-					targetLayer.recordUpsert(newRow, affectedIndexes);
-
-					return { rowid: newRowid }; // Success
+					const affectedIndexes: (string | 'primary')[] = ['primary', ...(this.tableSchema.indexes?.map(idx => idx.name) ?? [])];
+					targetLayer.recordUpsert(newRowTuple, affectedIndexes);
+					return { rowid: newRowid };
 				} else {
 					// --- UPDATE ---
 					const targetRowid = rowid;
-					const updateData = Object.fromEntries(this.tableSchema.columns.map((col, idx) => [col.name, values[idx + 1]]));
+					// For UPDATE, values[0] is the rowid to update, values[1..] are new column values.
+					// We need the *old* row to preserve PK columns not being updated, and to update indexes.
+					const oldRowTuple = await this.lookupRowByRowidInternal(targetRowid, targetLayer); // Find current state
+					if (!oldRowTuple) return {}; // Row doesn't exist or already deleted effectively
 
-					// For UPDATE operation where we're given the rowid directly,
-					// we should update ONLY the row with exactly that rowid.
+					// dataArray here contains the values for *all* columns in table order, as per SQLite's xUpdate.
+					const newRowTuple: MemoryTableRow = [targetRowid, dataArray];
 
-					// Get the row directly by rowid
-					let oldRow: MemoryTableRow | null = null;
-
-					// If rowid is the primary key, do direct lookup
-					if (this.pkIsRowid) {
-						// Direct lookup of primary tree - baseLayer contains the canonical data
-						oldRow = this.baseLayer.primaryTree.get(targetRowid) ?? null;
+					// PK conflict check if PK changed (only if NOT ROWID table and PK cols are part of update)
+					const oldPrimaryKey = this.primaryKeyFromRow(oldRowTuple);
+					const newPrimaryKey = this.primaryKeyFromRow(newRowTuple);
+					let pkChanged = false;
+					if (Array.isArray(oldPrimaryKey) && Array.isArray(newPrimaryKey)) {
+						pkChanged = oldPrimaryKey.some((val, i) => compareSqlValues(val, newPrimaryKey[i]) !== 0) || oldPrimaryKey.length !== newPrimaryKey.length;
 					} else {
-						// For complex PKs, we need to find the PK mapped to this rowid
-						const pk = this.findPrimaryKeyForRowid(targetRowid, targetLayer);
-						if (pk) {
-							oldRow = this.baseLayer.primaryTree.get(pk) ?? null;
+						pkChanged = compareSqlValues(oldPrimaryKey as SqlValue, newPrimaryKey as SqlValue) !== 0;
+					}
+
+					if (pkChanged) {
+						const existingValueForNewPk = this.lookupEffectiveValueInternal(newPrimaryKey, 'primary', targetLayer);
+						if (existingValueForNewPk !== undefined && !isDeletionMarker(existingValueForNewPk)) {
+							// If the existing value for the new PK is not the row we are currently updating, it's a conflict.
+							const existingRowTuple = existingValueForNewPk as MemoryTableRow;
+							if (existingRowTuple[0] !== targetRowid) {
+								if (onConflict === ConflictResolution.IGNORE) return {};
+								const pkColNames = this.tableSchema.primaryKeyDefinition.map(def => this.tableSchema.columns[def.index].name).join(', ') || 'rowid';
+								throw new ConstraintError(`UNIQUE constraint failed: ${this.tableName}.${pkColNames} (during UPDATE)`);
+							}
 						}
 					}
 
-					// If we can't find the row, nothing to update
-					if (!oldRow) {
-						log(`No row found with rowid ${targetRowid.toString()} to update`);
-						return {}; // Nothing updated
-					}
-
-					// Create the updated row - preserve primary key fields and rowid
-					const newRow: MemoryTableRow = { ...oldRow, ...updateData, _rowid_: targetRowid };
-
-					// Record update in the transaction layer
-					log(`Updating row with rowid ${targetRowid.toString()}`);
-					const affectedIndexes: (string | 'primary')[] = ['primary'];
-					this.tableSchema.indexes?.forEach(idx => affectedIndexes.push(idx.name));
-					targetLayer.recordUpsert(newRow, affectedIndexes);
-
-					return {}; // Success
+					const affectedIndexes: (string | 'primary')[] = ['primary', ...(this.tableSchema.indexes?.map(idx => idx.name) ?? [])];
+					targetLayer.recordUpsert(newRowTuple, affectedIndexes, oldRowTuple);
+					return {};
 				}
 			} else {
 				throw new SqliterError("Unsupported arguments for mutation operation", StatusCode.ERROR);
 			}
 		} catch (e) {
-			// If ConstraintError and IGNORE, swallow error, otherwise rethrow
 			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {
 				return {};
 			}
 			throw e;
 		}
+	}
+
+	// Helper to check if a key satisfies plan bounds and equality, used by cursors/iterators
+	public planAppliesToKeyForLayer(plan: ScanPlan, key: ModificationKey, comparator: (a:BTreeKey,b:BTreeKey)=>number, _schema: TableSchema): boolean {
+		const keyForComparison = plan.indexName === 'primary' ? key as BTreeKey : (key as [BTreeKey, bigint])[0];
+		if (plan.equalityKey !== undefined) {
+			return comparator(keyForComparison, plan.equalityKey) === 0;
+		}
+
+		const firstColKey = ( () => {
+			const bKey = plan.indexName === 'primary' ? key as BTreeKey : (key as [BTreeKey, bigint])[0];
+			return Array.isArray(bKey) ? (bKey[0] as SqlValue) : bKey as SqlValue;
+		})();
+
+		if (firstColKey === null && (plan.lowerBound || plan.upperBound)) return false;
+
+		if (plan.lowerBound && firstColKey !== null) {
+			const cmp = compareSqlValues(firstColKey, plan.lowerBound.value);
+			if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
+		}
+		if (plan.upperBound && firstColKey !== null) {
+			const cmp = compareSqlValues(firstColKey, plan.upperBound.value);
+			if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
+		}
+		return true;
 	}
 
 }
