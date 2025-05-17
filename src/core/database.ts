@@ -56,7 +56,7 @@ export class Database {
 		this.schemaManager.registerModule('memory', new MemoryTableModule());
 		this.schemaManager.registerModule('json_each', new JsonEachModule());
 		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
-		this.schemaManager.registerModule('sqlite_schema', new SchemaTableModule()); // sqlite_schema uses auxData, but it's null/undefined by default
+		this.schemaManager.registerModule('_schema', new SchemaTableModule());
 		this.schemaManager.registerModule('query_plan', new QueryPlanModule());
 		this.schemaManager.registerModule('vdbe_program', new VdbeProgramModule());
 

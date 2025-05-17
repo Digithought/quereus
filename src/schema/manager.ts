@@ -241,11 +241,11 @@ export class SchemaManager {
 	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
 		const lowerTableName = tableName.toLowerCase();
 
-		// Handle sqlite_schema dynamically
-		if (lowerTableName === 'sqlite_schema') {
-			const moduleInfo = this.getModule('sqlite_schema');
+		// Handle _schema dynamically
+		if (lowerTableName === '_schema') {
+			const moduleInfo = this.getModule('_schema');
 			if (!moduleInfo || !moduleInfo.module) {
-				errorLog("sqlite_schema module not registered or module structure invalid!");
+				errorLog("_schema module not registered or module structure invalid!");
 				return undefined;
 			}
 
@@ -264,7 +264,7 @@ export class SchemaManager {
 			const columnIndexMap = new Map<string, number>(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP));
 
 			return {
-				name: 'sqlite_schema',
+				name: '_schema',
 				schemaName: 'main',
 				columns: Object.freeze(columns),
 				columnIndexMap: Object.freeze(columnIndexMap),
@@ -273,7 +273,7 @@ export class SchemaManager {
 				vtabModule: moduleInfo.module,
 				vtabAuxData: moduleInfo.auxData,
 				vtabArgs: [],
-				vtabModuleName: 'sqlite_schema',
+				vtabModuleName: '_schema',
 				isWithoutRowid: false,
 				isStrict: false,
 				isView: false,

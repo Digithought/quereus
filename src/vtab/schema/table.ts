@@ -15,7 +15,7 @@ import { compareSqlValues } from '../../util/comparison.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 
 /**
- * Structure of rows returned by sqlite_schema
+ * Structure of rows returned by _schema
  */
 interface SchemaRow {
 	type: 'table' | 'index' | 'view' | 'trigger' | 'function' | 'module';
@@ -37,7 +37,7 @@ function stringifyCreateFunction(func: FunctionSchema): string {
 }
 
 /**
- * Virtual Table implementation for sqlite_schema
+ * Virtual Table implementation for _schema
  */
 class SchemaTable extends VirtualTable {
 	async xOpen(): Promise<SchemaTableCursor<this>> {
@@ -58,7 +58,7 @@ class SchemaTable extends VirtualTable {
 			checkConstraints: [],
 			indexes: [],
 			vtabModule: this.module,
-			vtabModuleName: 'sqlite_schema',
+			vtabModuleName: '_schema',
 			isWithoutRowid: true,
 			isStrict: false,
 			isView: false,
@@ -82,7 +82,7 @@ class SchemaTable extends VirtualTable {
 	}
 
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
-		throw new SqliterError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
+		throw new SqliterError("Cannot modify read-only table: _schema", StatusCode.READONLY);
 	}
 
 	async xBegin(): Promise<void> {}
@@ -91,7 +91,7 @@ class SchemaTable extends VirtualTable {
 	async xRollback(): Promise<void> {}
 
 	async xRename(zNew: string): Promise<void> {
-		throw new SqliterError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
+		throw new SqliterError("Cannot rename built-in table: _schema", StatusCode.ERROR);
 	}
 
 	async xSavepoint(iSavepoint: number): Promise<void> {}
@@ -127,7 +127,7 @@ class SchemaTable extends VirtualTable {
 }
 
 /**
- * Cursor for iterating over sqlite_schema rows
+ * Cursor for iterating over _schema rows
  */
 class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 	private schemaRowsData: SchemaRow[] = [];
@@ -149,7 +149,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		const processSchema = (schema: Schema) => {
 			// Process Tables
 			for (const tableSchema of schema.getAllTables()) {
-				if (tableSchema.name.toLowerCase() === 'sqlite_schema' && tableSchema.schemaName === 'main') {
+				if (tableSchema.name.toLowerCase() === '_schema' && tableSchema.schemaName === 'main') {
 					continue;
 				}
 				let createSql: string | null = null;
@@ -301,7 +301,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 				if (columnIndex === -1) {
 					context.resultInt64(row._rowid_);
 				} else {
-					context.resultError(`Invalid column index ${columnIndex} for sqlite_schema`, StatusCode.RANGE);
+					context.resultError(`Invalid column index ${columnIndex} for _schema`, StatusCode.RANGE);
 					return StatusCode.RANGE;
 				}
 				break;
@@ -367,7 +367,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 }
 
 /**
- * Module implementation for sqlite_schema virtual table
+ * Module implementation for _schema virtual table
  */
 export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 	static readonly COLUMNS = [
@@ -392,7 +392,7 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 	}
 
 	xBestIndex(_db: Database, _tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		console.log(`[sqlite_schema] xBestIndex called. nConstraint: ${indexInfo.nConstraint}`);
+		console.log(`[_schema] xBestIndex called. nConstraint: ${indexInfo.nConstraint}`);
 		indexInfo.idxNum = 0;
 		indexInfo.estimatedCost = 1000.0;
 		indexInfo.estimatedRows = BigInt(100);

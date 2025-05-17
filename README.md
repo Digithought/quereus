@@ -52,7 +52,7 @@ SQLiter follows a classic query processing pipeline, adapted for its specific go
     *   The `SchemaManager` (`manager.ts`) orchestrates access to different database schemas ('main', 'temp').
     *   Each `Schema` (`schema.ts`) holds definitions for tables (`table.ts`), columns (`column.ts`), and functions (`function.ts`).
     *   Supports programmatic schema definition and JSON import/export (`json-schema.ts`).
-    *   Reflection virtual table (`schema-table.ts`) provides a built-in `sqlite_schema` table for introspection.
+    *   Reflection virtual table (`schema-table.ts`) provides a built-in `_schema` table for introspection.
 7.  **User-Defined Functions (`src/func`)**:
     *   Allows registering custom JavaScript functions to be called from SQL (`registration.ts`).
     *   The `FunctionContext` (`context.ts`) provides the API for functions to set results, access user data, and manage auxiliary data.
@@ -188,7 +188,7 @@ SQLiter is functional for a significant subset of SQL focused on querying and ma
 *   Basic `CREATE TABLE`/`DROP TABLE` for managing VTabs.
 *   `CREATE INDEX`/`DROP INDEX` support for virtual tables that implement `xCreateIndex`/`xDropIndex` (like `MemoryTable`).
 *   Schema export/import via JSON.
-*   Basic read-only access to `sqlite_schema` for introspection.
+*   Basic read-only access to `_schema` for introspection.
 *   Row-level `CHECK` constraints with `ON (INSERT|UPDATE|DELETE)` clause and support for `NEW`/`OLD` row aliases.
 
 **Limitations & Missing Features:**

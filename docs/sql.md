@@ -1097,11 +1097,11 @@ where path like '$.users[%].name';
 
 #### 6.2.3 Schema Table Module
 
-The `sqlite_schema` module provides access to schema information:
+The `_schema` module provides access to schema information:
 
 ```sql
 -- Query schema information
-select * from sqlite_schema;
+select * from _schema;
 -- Returns information about tables, indexes, and views
 ```
 
