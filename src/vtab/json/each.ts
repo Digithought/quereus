@@ -3,8 +3,8 @@ import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
-import { SqliteError } from '../../common/errors.js';
-import type { SqliteContext } from '../../func/context.js';
+import { SqliterError } from '../../common/errors.js';
+import type { SqliterContext } from '../../func/context.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -152,7 +152,7 @@ class JsonEachTable extends VirtualTable {
 
 			const valueColumnIndex = JSON_EACH_COLUMN_MAP.get('value');
 			if (valueColumnIndex === undefined) {
-				throw new SqliteError("Internal error: 'value' column not found in JSON_EACH_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
+				throw new SqliterError("Internal error: 'value' column not found in JSON_EACH_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
 			}
 
 			if (CrtRwDt.type === 'object' || CrtRwDt.type === 'array') {
@@ -394,7 +394,7 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	/**
 	 * Returns the value for the specified column index of the current row
 	 */
-	column(context: SqliteContext, index: number): number {
+	column(context: SqliterContext, index: number): number {
 		if (!this.currentRowData) {
 			context.resultNull();
 			return StatusCode.OK;
@@ -422,7 +422,7 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	 */
 	async rowid(): Promise<bigint> {
 		if (!this.currentRowData) {
-			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
+			throw new SqliterError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
 		const id = this.currentRowData['id'];
 		if (typeof id === 'number') {
@@ -445,7 +445,7 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 
 		// Create a dummy context for calling this.column()
 		// This is okay because JsonEachCursor.column() doesn't actually use the context.
-		const dummyContext: SqliteContext = {
+		const dummyContext: SqliterContext = {
 			setAuxData: (_N: number, _data: unknown) => { /* no-op */ },
 			resultBlob: () => { /* no-op */ },
 			resultDouble: () => { /* no-op */ },

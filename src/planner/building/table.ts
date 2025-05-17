@@ -6,6 +6,8 @@ import { TableScanNode } from '../nodes/scan.js';
 import type { PlanningContext } from '../planning-context.js';
 import { resolveTable } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
+import type { IndexInfo, IndexConstraintUsage } from '../../vtab/indexInfo.js';
+import type { FilterInfo } from '../../vtab/filter-info.js';
 
 /**
  * Plans a table reference operation based on a FROM clause item.
@@ -44,5 +46,28 @@ export function buildTableReference(fromClause: AST.FromClause, context: Plannin
 export function buildTableScan(fromClause: AST.FromClause, context: PlanningContext): TableScanNode {
 	const tableReference = buildTableReference(fromClause, context);
 
-	return new TableScanNode(context.scope, tableReference);
+	const defaultIndexInfo: IndexInfo = {
+		nConstraint: 0,
+		aConstraint: [],
+		nOrderBy: 0,
+		aOrderBy: [],
+		aConstraintUsage: [] as IndexConstraintUsage[],
+		idxNum: 0,
+		idxStr: 'fullscan',
+		orderByConsumed: false,
+		estimatedCost: tableReference.estimatedRows ?? 1000,
+		estimatedRows: BigInt(tableReference.estimatedRows ?? 100),
+		idxFlags: 0,
+		colUsed: 0n,
+	};
+
+	const filterInfo: FilterInfo = {
+		idxNum: 0,
+		idxStr: 'fullscan',
+		constraints: [],
+		args: [],
+		indexInfoOutput: defaultIndexInfo,
+	};
+
+	return new TableScanNode(context.scope, tableReference, filterInfo);
 }

@@ -49,7 +49,7 @@ const QUERY_PLAN_SCHEMA: TableSchema = Object.freeze({
 }) as TableSchema;
 
 
-export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, QueryPlanCursor, { sql: string }> {
+export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, { sql: string }> {
 
     constructor() { }
 

@@ -12,6 +12,11 @@ export type SqlValue = number | string | bigint | Uint8Array | boolean | null;
 export type Row = SqlValue[];
 
 /**
+ * Represents a row with a rowid header.
+ */
+export type RowIdRow = [rowid: bigint, row: Row];
+
+/**
  * Represents a value that can be expected as an input in the runtime environment.
  * This type can be a scalar value, or an async iterable of rows (cursor).
  */

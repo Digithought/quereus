@@ -1,4 +1,4 @@
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table.js';

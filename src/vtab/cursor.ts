@@ -1,6 +1,6 @@
 import type { VirtualTable } from './table.js';
 import { StatusCode, type SqlValue, type Row } from '../common/types.js';
-import { SqliteError } from '../common/errors.js';
+import { SqliterError } from '../common/errors.js';
 import type { IndexConstraint, IndexInfo } from './indexInfo.js';
 
 /**
@@ -81,7 +81,7 @@ export abstract class VirtualTableCursor<
 	 * @throws SqliteError if seeking is not supported or other errors occur
 	 */
 	async seekRelative(_offset: number): Promise<boolean> {
-		throw new SqliteError(`seekRelative not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
+		throw new SqliterError(`seekRelative not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
 	}
 
 	/**
@@ -93,6 +93,6 @@ export abstract class VirtualTableCursor<
 	 * @throws SqliteError if seeking is not supported or other errors occur
 	 */
 	async seekToRowid(_rowid: bigint): Promise<boolean> {
-		throw new SqliteError(`seekToRowid not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
+		throw new SqliterError(`seekToRowid not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
 	}
 }

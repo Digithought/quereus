@@ -90,13 +90,13 @@ export class QueryPlanCursor extends VirtualTableCursor<QueryPlanTable> {
 
     async* rows(): AsyncIterable<import('../../common/types.js').Row> {
         if (!this.table.tableSchema) { // Access schema via table instance
-            throw new SqliteError("QueryPlanCursor: Schema not found for rows() iteration.", StatusCode.INTERNAL);
+            throw new SqliterError("QueryPlanCursor: Schema not found for rows() iteration.", StatusCode.INTERNAL);
         }
 
         while (!this.eof()) {
             if (this.currentIndex < 0 || this.currentIndex >= this.planSteps.length) {
                 // Should not happen if eof() is false, but as a safeguard
-                throw new SqliteError("QueryPlanCursor: Invalid current index while not EOF.", StatusCode.INTERNAL);
+                throw new SqliterError("QueryPlanCursor: Invalid current index while not EOF.", StatusCode.INTERNAL);
             }
             const currentStep = this.planSteps[this.currentIndex];
             const row: SqlValue[] = [

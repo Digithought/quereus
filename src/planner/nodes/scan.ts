@@ -4,6 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import { relationTypeFromTableSchema } from '../type-utils.js';
 import type { Scope } from '../scopes/scope.js';
 import type { TableReferenceNode } from './reference.js';
+import type { FilterInfo } from '../../vtab/filter-info.js';
 
 export class TableScanNode extends PlanNode implements UnaryRelationalNode {
   override readonly nodeType = PlanNodeType.TableScan;
@@ -13,17 +14,18 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
   constructor(
     scope: Scope,
     public readonly source: TableReferenceNode,
+    public readonly filterInfo: FilterInfo,
   ) {
     super(scope, 1);
     this.outputType = relationTypeFromTableSchema(source.tableSchema);
   }
 
   get estimatedRows(): number {
-    return this.source.estimatedRows ?? 100; // Arbitrary assumption if no estimatedRows are available
+    return this.filterInfo.indexInfoOutput?.estimatedRows ? Number(this.filterInfo.indexInfoOutput.estimatedRows) : (this.source.estimatedRows ?? 100);
   }
 
 	getTotalCost(): number {
-		return this.estimatedRows;
+		return this.filterInfo.indexInfoOutput?.estimatedCost ?? this.estimatedRows;
 	}
 
   getType(): RelationType {

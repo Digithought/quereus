@@ -3,8 +3,7 @@ import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
-import { SqliteError } from '../../common/errors.js';
-import type { SqliteContext } from '../../func/context.js';
+import { SqliterError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -12,6 +11,7 @@ import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 import { jsonStringify } from '../../util/serialization.js';
+import type { SqliterContext } from '../../func/context.js';
 
 /**
  * Configuration interface for JSON virtual tables
@@ -146,7 +146,7 @@ class JsonTreeTable extends VirtualTable {
 
 			const valueColumnIndex = JSON_TREE_COLUMN_MAP.get('value');
 			if (valueColumnIndex === undefined) {
-				throw new SqliteError("Internal error: 'value' column not found in JSON_TREE_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
+				throw new SqliterError("Internal error: 'value' column not found in JSON_TREE_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
 			}
 
 			if (CrtRwDt.type === 'object' || CrtRwDt.type === 'array') {
@@ -296,7 +296,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 		}
 	}
 
-	column(context: SqliteContext, index: number): number {
+	column(context: SqliterContext, index: number): number {
 		if (!this.currentRowData) {
 			context.resultNull();
 			return StatusCode.OK;
@@ -319,7 +319,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 
 	async rowid(): Promise<bigint> {
 		if (!this.currentRowData) {
-			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
+			throw new SqliterError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
 		const id = this.currentRowData['id'];
 		if (typeof id === 'number') {
@@ -335,7 +335,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 
 		// Create a dummy context for calling this.column()
 		// This is okay because JsonTreeCursor.column() doesn't actually use the context.
-		const dummyContext: SqliteContext = {
+		const dummyContext: SqliterContext = {
 			setAuxData: (_N: number, _data: unknown) => { /* no-op */ },
 			resultBlob: () => { /* no-op */ },
 			resultDouble: () => { /* no-op */ },

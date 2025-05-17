@@ -8,8 +8,8 @@ import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
 import { MemoryTableCursor } from './cursor.js'; // Restored for xOpen
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { FilterInfo } from '../filter-info.js';
 import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';

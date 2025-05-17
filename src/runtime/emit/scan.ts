@@ -7,7 +7,7 @@ import type { Instruction, RuntimeContext } from "../types.js";
 
 export function emitTableScan(plan: TableScanNode): Instruction {
 
-	async function *run(ctx: RuntimeContext): AsyncIterable<Row> {
+	async function* run(ctx: RuntimeContext): AsyncIterable<Row> {
 		const tableSchema = plan.source.tableSchema;
 		const moduleInfo = ctx.db._getVtabModule(tableSchema.vtabModuleName);
 		if (!moduleInfo) {
@@ -20,7 +20,7 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 
 		let vtabInstance: VirtualTable;
 		try {
-			const options: BaseModuleConfig = {};
+			const options: BaseModuleConfig = {}; // TODO: Populate options from plan.source.tableSchema.vtabArgs or similar if needed
 			vtabInstance = module.xConnect(
 				ctx.db,
 				moduleInfo.auxData,
@@ -34,17 +34,37 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 			throw new SqliterError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof SqliterError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		}
 
-		// TODO: separately converting vtable interface to use async iterable.  Then we can enable the following code.
+		if (typeof vtabInstance.xQuery !== 'function') {
+			// Fallback or error if xQuery is not available. For now, throwing an error.
+			// Later, we could implement the xOpen/xFilter/xNext loop here as a fallback.
+			throw new SqliterError(`Virtual table '${tableSchema.name}' does not support xQuery.`, StatusCode.UNSUPPORTED);
+		}
 
-		// const cursor = await vtabInstance.xFilter(plan.idxNum, plan.idxStr, [], [], plan.indexInfo);
-		// let row: Row;
-		// ctx.context.set(plan, () => row);
-		// for (row of cursor) {
-		// 	yield row;
-		// }
-		// ctx.context.delete(plan);
+		try {
+			// Put cursor row into context
+			let row: Row;
+			ctx.context.set(plan, () => row);
 
-		throw new SqliterError("Not implemented", StatusCode.UNSUPPORTED);
+			const asyncRowIterable = vtabInstance.xQuery(plan.filterInfo);
+			for await (const [_rowid, fetched] of asyncRowIterable) {
+				row = fetched;
+				yield row;
+			}
+
+			// Remove cursor row from context
+			ctx.context.delete(plan);
+		} catch (e: any) {
+			const message = e instanceof Error ? e.message : String(e);
+			throw new SqliterError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof SqliterError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+		} finally {
+			// Ensure xDisconnect is called if the vtabInstance was successfully created.
+			if (vtabInstance && typeof vtabInstance.xDisconnect === 'function') {
+				await vtabInstance.xDisconnect().catch(disconnectError => {
+					// Log disconnect error, but don't let it hide the original query error if one occurred.
+					console.error(`Error during xDisconnect for table '${tableSchema.name}': ${disconnectError}`);
+				});
+			}
+		}
 	}
 
 	return { params: [], run };

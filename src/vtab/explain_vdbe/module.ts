@@ -8,7 +8,7 @@ import { VDBE_PROGRAM_SCHEMA } from './schema.js';
 import { Parser } from '../../parser/parser.js';
 import { Compiler } from '../../compiler/compiler.js';
 
-export class VdbeProgramModule implements VirtualTableModule<VdbeProgramTable, VdbeProgramCursor, { sql: string }> {
+export class VdbeProgramModule implements VirtualTableModule<VdbeProgramTable, { sql: string }> {
 
     constructor() { }
 

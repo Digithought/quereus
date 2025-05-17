@@ -103,12 +103,12 @@ export class VdbeProgramCursor extends VirtualTableCursor<VdbeProgramTable> {
 
     async* rows(): AsyncIterable<import('../../common/types.js').Row> {
         if (!this.table.tableSchema) { // Access schema via table instance
-            throw new SqliteError("VdbeProgramCursor: Schema not found for rows() iteration.", StatusCode.INTERNAL);
+            throw new SqliterError("VdbeProgramCursor: Schema not found for rows() iteration.", StatusCode.INTERNAL);
         }
 
         while (!this.eof()) {
             if (this.currentIndex < 0 || this.currentIndex >= this.instructions.length) {
-                throw new SqliteError("VdbeProgramCursor: Invalid current index while not EOF.", StatusCode.INTERNAL);
+                throw new SqliterError("VdbeProgramCursor: Invalid current index while not EOF.", StatusCode.INTERNAL);
             }
             const currentInstr = this.instructions[this.currentIndex];
             let p4Value: any = currentInstr.p4;

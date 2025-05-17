@@ -18,10 +18,10 @@ export function registerHandlers(handlers: Handler[]) {
     const openCursor = ctx.getCursor(cIdx);
 
     if (!openCursor || !openCursor.vtab || !(openCursor.vtab instanceof MemoryTable) || !openCursor.isEphemeral) {
-      throw new SqliteError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new SqliterError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!openCursor.instance || !(openCursor.instance instanceof MemoryTableCursor)) {
-        throw new SqliteError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
+        throw new SqliterError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!sortInfo || sortInfo.type !== 'sortkey') {
       throw new SqliterError(`Sort requires valid P4SortKey info (cursor ${cIdx})`, StatusCode.INTERNAL);

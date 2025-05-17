@@ -2,7 +2,7 @@ import { VirtualTableCursor } from "../cursor.js";
 import type { MemoryTable } from "./table.js";
 import type { MemoryTableRow } from "./types.js";
 import { StatusCode, type SqlValue, type Row } from "../../common/types.js";
-import { SqliteError } from "../../common/errors.js";
+import { SqliterError } from "../../common/errors.js";
 import { MemoryIndex, type IndexSpec } from './index.js';
 import type { IndexConstraint, IndexInfo } from '../indexInfo.js';
 import type { MemoryTableConnection } from './layer/connection.js';
@@ -41,7 +41,7 @@ export class MemoryTableCursor<Tbl extends MemoryTable = MemoryTable> extends Vi
 	async createAndPopulateSorterIndex(sortInfo: P4SortKey): Promise<void> {
 		debugLog("MemoryTableCursor: Creating sorter index spec: %O", sortInfo);
 		const schema = this.table.getSchema();
-		if (!schema) throw new SqliteError("Cannot create sorter: Table schema not found.", StatusCode.INTERNAL);
+		if (!schema) throw new SqliterError("Cannot create sorter: Table schema not found.", StatusCode.INTERNAL);
 		const sortIndexSpec: IndexSpec = {
 			name: `_sorter_idx_${Date.now()}`,
 			columns: sortInfo.keyIndices.map((colIndex, i) => ({ index: colIndex, desc: sortInfo.directions[i] ?? false, collation: sortInfo.collations?.[i] ?? 'BINARY' })),
@@ -91,7 +91,7 @@ export class MemoryTableCursor<Tbl extends MemoryTable = MemoryTable> extends Vi
 			indexInfoOutput: indexInfo // Pass the full IndexInfo object
 		};
 		const tableSchema = this.table.getSchema();
-		if (!tableSchema) throw new SqliteError("Schema not found for scan plan build in cursor", StatusCode.INTERNAL);
+		if (!tableSchema) throw new SqliterError("Schema not found for scan plan build in cursor", StatusCode.INTERNAL);
 
 		this.plan = buildScanPlanFromFilterInfo(filterInfoForPlan, tableSchema); // Use unified builder
 		this.internalCursor = this.connection.createLayerCursor(this.plan);
@@ -100,10 +100,10 @@ export class MemoryTableCursor<Tbl extends MemoryTable = MemoryTable> extends Vi
 
 	async* rows(): AsyncIterable<Row> {
 		if (!this.internalCursor && !this.isUsingSorter) {
-			throw new SqliteError("MemoryTableCursor.rows() called before filter() or after close().", StatusCode.MISUSE);
+			throw new SqliterError("MemoryTableCursor.rows() called before filter() or after close().", StatusCode.MISUSE);
 		}
 		const schema = this.table.getSchema();
-		if (!schema) throw new SqliteError("Schema not found for rows() iteration.", StatusCode.INTERNAL);
+		if (!schema) throw new SqliterError("Schema not found for rows() iteration.", StatusCode.INTERNAL);
 
 		while (!this.eof()) {
 			let memoryTableRowTuple: MemoryTableRow | null = null;
@@ -143,7 +143,7 @@ export class MemoryTableCursor<Tbl extends MemoryTable = MemoryTable> extends Vi
 			currentMemoryTableRow = this.internalCursor.getCurrentRowObject();
 		}
 		if (currentMemoryTableRow === null) {
-			throw new SqliteError("Cursor is not pointing to a valid row for rowid()", StatusCode.MISUSE);
+			throw new SqliterError("Cursor is not pointing to a valid row for rowid()", StatusCode.MISUSE);
 		}
 		return currentMemoryTableRow[0]; // rowid from tuple
 	}
@@ -153,6 +153,6 @@ export class MemoryTableCursor<Tbl extends MemoryTable = MemoryTable> extends Vi
 		this.reset();
 	}
 
-	async seekRelative(_offset: number): Promise<boolean> { log('seekRelative not implemented'); throw new SqliteError(`seekRelative not implemented`, StatusCode.INTERNAL); }
-	async seekToRowid(_rowid: bigint): Promise<boolean> { log('seekToRowid not implemented'); throw new SqliteError(`seekToRowid not implemented`, StatusCode.INTERNAL); }
+	async seekRelative(_offset: number): Promise<boolean> { log('seekRelative not implemented'); throw new SqliterError(`seekRelative not implemented`, StatusCode.INTERNAL); }
+	async seekToRowid(_rowid: bigint): Promise<boolean> { log('seekToRowid not implemented'); throw new SqliterError(`seekToRowid not implemented`, StatusCode.INTERNAL); }
 }

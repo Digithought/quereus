@@ -232,10 +232,10 @@ export function registerHandlers(handlers: Handler[]) {
     try {
       // Reuse VTab context provided by VmCtx
       ctx.vtabContext._clear();
-      const status = cursor.instance.column(ctx.vtabContext, colIdx);
-      if (status !== StatusCode.OK) {
-        throw new SqliterError(`VColumn failed (col ${colIdx}, cursor ${cIdx})`, status);
-      }
+      // const status = cursor.instance.column(ctx.vtabContext, colIdx);
+      // if (status !== StatusCode.OK) {
+      //   throw new SqliterError(`VColumn failed (col ${colIdx}, cursor ${cIdx})`, status);
+      // }
       ctx.setStack(destOffset, ctx.vtabContext._getResult());
     } catch (e) {
       handleVTabError(ctx, e, cursor.vtab?.tableName ?? `cursor ${cIdx}`, 'column');

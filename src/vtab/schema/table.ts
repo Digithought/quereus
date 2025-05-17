@@ -3,7 +3,7 @@ import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { StatusCode, SqlDataType, type SqlValue, type Row } from '../../common/types.js';
-import { SqliteError } from '../../common/errors.js';
+import { SqliterError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import type { SqliterContext } from '../../func/context.js';
 import type { Schema } from '../../schema/schema.js';
@@ -47,7 +47,7 @@ class SchemaTable extends VirtualTable {
 	getSchema(): TableSchema | undefined {
 		const module = this.module as SchemaTableModule;
 		if (!module || !SchemaTableModule.COLUMNS) {
-			throw new SqliteError("SchemaTable: Module or COLUMNS not defined.", StatusCode.INTERNAL);
+			throw new SqliterError("SchemaTable: Module or COLUMNS not defined.", StatusCode.INTERNAL);
 		}
 		return {
 			name: this.tableName,

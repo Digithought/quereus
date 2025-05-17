@@ -1,15 +1,15 @@
 import type { Database } from '../../../core/database.js';
 import type { TableSchema, IndexSchema } from '../../../schema/table.js';
 import type { MemoryTableRow, BTreeKey } from '../types.js';
-import type { SqlValue } from '../../../common/types.js';
+import { StatusCode, type SqlValue } from '../../../common/types.js';
 import { BaseLayer } from './base.js';
 import { TransactionLayer } from './transaction.js';
 import type { Layer, ModificationKey, ModificationValue, DeletionMarker } from './interface.js';
 import { isDeletionMarker, DELETED } from '../types.js';
 import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js'; // Simple async lock
-import { SqliteError, ConstraintError } from '../../../common/errors.js';
-import { StatusCode, ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
+import { SqliterError, ConstraintError } from '../../../common/errors.js';
+import { ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
 import { MemoryIndex } from '../index.js'; // Needed for index ops
 import type { ColumnDef } from '../../../parser/ast.js'; // Needed for schema ops
 import { buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js'; // Needed for schema ops
@@ -613,7 +613,7 @@ export class MemoryTableManager {
 	// These need the management lock and potentially layer collapse checks
 
 	async addColumn(columnDef: ColumnDef): Promise<void> {
-		if (this.readOnly) throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
@@ -651,15 +651,15 @@ export class MemoryTableManager {
 	}
 
 	async dropColumn(columnName: string): Promise<void> {
-		if (this.readOnly) throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
 			await this.ensureSchemaChangeSafety();
 			const colNameLower = columnName.toLowerCase();
 			const colIndex = this.tableSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
-			if (colIndex === -1) throw new SqliteError(`Column not found: ${columnName}`, StatusCode.ERROR);
-			if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) throw new SqliteError(`Cannot drop PK column: ${columnName}`, StatusCode.CONSTRAINT);
+			if (colIndex === -1) throw new SqliterError(`Column not found: ${columnName}`, StatusCode.ERROR);
+			if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) throw new SqliterError(`Cannot drop PK column: ${columnName}`, StatusCode.CONSTRAINT);
 			// TODO: Check secondary indexes using this column and prevent drop or drop them too.
 
 			const oldTableSchema = this.tableSchema;
@@ -680,7 +680,7 @@ export class MemoryTableManager {
 	}
 
 	async renameColumn(oldName: string, newName: string): Promise<void> {
-		if (this.readOnly) throw new SqliteError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
@@ -735,10 +735,10 @@ export class MemoryTableManager {
 
 			// Check registry via module reference
 			if (!this.module || typeof this.module.tables?.has !== 'function' || typeof this.module.tables?.delete !== 'function' || typeof this.module.tables?.set !== 'function') {
-				throw new SqliteError("Cannot rename: Module context or table registry is invalid.", StatusCode.INTERNAL);
+				throw new SqliterError("Cannot rename: Module context or table registry is invalid.", StatusCode.INTERNAL);
 			}
 			if (this.module.tables.has(newTableKey)) {
-				throw new SqliteError(`Cannot rename memory table: target name '${newName}' already exists in schema '${this.schemaName}'`);
+				throw new SqliterError(`Cannot rename memory table: target name '${newName}' already exists in schema '${this.schemaName}'`);
 			}
 
 			// Update registry
@@ -967,7 +967,7 @@ export class MemoryTableManager {
 		}
 		const targetLayer = connection.pendingTransactionLayer;
 		if (!targetLayer) {
-			throw new SqliteError("Internal error: Pending transaction layer not found after begin.", StatusCode.INTERNAL);
+			throw new SqliterError("Internal error: Pending transaction layer not found after begin.", StatusCode.INTERNAL);
 		}
 
 		try {
