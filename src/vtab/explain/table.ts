@@ -7,6 +7,7 @@ import { QueryPlanCursor } from './cursor.js';
 import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/constants.js';
 import { VirtualTableCursor } from '../cursor.js';
+import type { SqlValue, Row } from '../../common/types.js';
 
 /**
  * Represents an instance of the query_plan virtual table for a specific query.
@@ -54,4 +55,31 @@ export class QueryPlanTable extends VirtualTable {
 
     // Other methods like xUpdate, xBegin etc. are not applicable
     // and will likely throw errors if called via base class or VDBE misuse.
+
+    async* xQuery(_filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+        // QueryPlanTable iteration doesn't use filterInfo for filtering itself.
+        // The planSteps are fixed at table connection time.
+        for (const currentStep of this.planSteps) {
+            const rowId = BigInt(currentStep.id);
+            const row: SqlValue[] = [
+                currentStep.id,
+                currentStep.parentId ?? null,
+                currentStep.subqueryLevel,
+                currentStep.op,
+                currentStep.detail ?? null,
+                currentStep.objectName ?? null,
+                currentStep.alias ?? null,
+                currentStep.estimatedCost ?? null,
+                (currentStep.estimatedRows === undefined || currentStep.estimatedRows === null) ? null : ((typeof currentStep.estimatedRows === 'bigint' && currentStep.estimatedRows <= BigInt(Number.MAX_SAFE_INTEGER) && currentStep.estimatedRows >= BigInt(Number.MIN_SAFE_INTEGER)) ? Number(currentStep.estimatedRows) : currentStep.estimatedRows),
+                currentStep.idxNum ?? null,
+                currentStep.idxStr ?? null,
+                currentStep.orderByConsumed ? 1 : 0,
+                currentStep.constraintsDesc ?? null,
+                currentStep.orderByDesc ?? null,
+                currentStep.joinType ?? null,
+                currentStep.isCorrelated ? 1 : 0
+            ];
+            yield [rowId, row];
+        }
+    }
 }

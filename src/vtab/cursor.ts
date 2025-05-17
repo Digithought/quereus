@@ -1,6 +1,5 @@
 import type { VirtualTable } from './table.js';
-import type { SqliteContext } from '../func/context.js';
-import { StatusCode, type SqlValue } from '../common/types.js';
+import { StatusCode, type SqlValue, type Row } from '../common/types.js';
 import { SqliteError } from '../common/errors.js';
 import type { IndexConstraint, IndexInfo } from './indexInfo.js';
 
@@ -52,14 +51,11 @@ export abstract class VirtualTableCursor<
 	abstract next(): Promise<void>;
 
 	/**
-	 * Returns the value for the specified column of the current row
-	 * This method MUST be synchronous as it's called during result processing
-	 *
-	 * @param context Context for setting the result (use context.result*(...))
-	 * @param i The column index (0-based)
-	 * @returns StatusCode.OK on success, or an error code
+	 * Returns an async iterable that yields each row for the current filter settings.
+	 * filter() must be called before iterating.
+	 * @returns An AsyncIterable yielding Row objects.
 	 */
-	abstract column(context: SqliteContext, i: number): number;
+	abstract rows(): AsyncIterable<Row>;
 
 	/**
 	 * Returns the rowid for the current row
@@ -84,7 +80,7 @@ export abstract class VirtualTableCursor<
 	 * @returns true if seek was successful, false if cursor moved out of bounds
 	 * @throws SqliteError if seeking is not supported or other errors occur
 	 */
-	async seekRelative(offset: number): Promise<boolean> {
+	async seekRelative(_offset: number): Promise<boolean> {
 		throw new SqliteError(`seekRelative not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
 	}
 
@@ -96,7 +92,7 @@ export abstract class VirtualTableCursor<
 	 * @returns true if seek was successful, false if rowid not found
 	 * @throws SqliteError if seeking is not supported or other errors occur
 	 */
-	async seekToRowid(rowid: bigint): Promise<boolean> {
+	async seekToRowid(_rowid: bigint): Promise<boolean> {
 		throw new SqliteError(`seekToRowid not implemented by this cursor type (${this.constructor.name})`, StatusCode.INTERNAL);
 	}
 }

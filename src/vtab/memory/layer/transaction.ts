@@ -1,11 +1,11 @@
 import { BTree } from 'digitree';
-import type { TableSchema, IndexSchema } from '../../../schema/table.js';
+import type { TableSchema } from '../../../schema/table.js';
 import type { MemoryTableRow, BTreeKey, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
-import { compareSqlValues } from '../../../util/comparison.js'; // Corrected path
-import { MemoryIndex } from '../index.js'; // Needed for key extraction/comparison logic
-import type { SqlValue } from '../../../common/types.js'; // Corrected path
-import { isDeletionMarker, DELETED } from '../types.js'; // Import from types.ts
-import type { Layer } from './interface.js'; // Corrected path
+import { compareSqlValues } from '../../../util/comparison.js';
+import { MemoryIndex } from '../index.js';
+import type { SqlValue } from '../../../common/types.js';
+import { isDeletionMarker, DELETED } from '../types.js';
+import type { Layer } from './interface.js';
 
 let transactionLayerCounter = 0;
 
@@ -95,42 +95,33 @@ export class TransactionLayer implements Layer {
 
 		if (indexName === 'primary') {
 			const pkDef = schema.primaryKeyDefinition ?? [];
-			const columns = schema.columns.map(c => ({ name: c.name }));
 
 			if (pkDef.length === 0) { // Rowid key
 				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as bigint : value._rowid_; // Check marker
+					isDeletionMarker(value) ? value._key_ as bigint : (value as MemoryTableRow)[0]; // rowid from tuple
 				const comparator = (a: ModificationKey, b: ModificationKey): number =>
 					compareSqlValues(a as bigint, b as bigint);
 				funcs = { keyExtractor, comparator };
 			} else if (pkDef.length === 1) { // Single column PK
-				const { index: pkIndex, desc: isDesc } = pkDef[0];
-				const pkColName = columns[pkIndex]?.name;
-				const pkCollation = schema.columns[pkIndex]?.collation ?? 'BINARY';
-				if (!pkColName) throw new Error("Invalid PK schema in TransactionLayer");
+				const { index: pkSchemaIndex, desc: isDesc, collation } = pkDef[0];
 				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as BTreeKey : value[pkColName] as BTreeKey; // Check marker
+					isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[1][pkSchemaIndex] as BTreeKey;
 				const comparator = (a: ModificationKey, b: ModificationKey): number => {
-					const cmp = compareSqlValues(a as SqlValue, b as SqlValue, pkCollation);
+					const cmp = compareSqlValues(a as SqlValue, b as SqlValue, collation || 'BINARY');
 					return isDesc ? -cmp : cmp;
 				};
 				funcs = { keyExtractor, comparator };
 			} else { // Composite PK
-				const pkCols = pkDef.map(def => ({
-					name: columns[def.index]?.name,
-					desc: def.desc,
-					collation: schema.columns[def.index]?.collation || 'BINARY'
-				}));
-				if (pkCols.some(c => !c.name)) throw new Error("Invalid composite PK schema in TransactionLayer");
-				const pkColNames = pkCols.map(c => c.name!);
+				const pkColSchemaIndices = pkDef.map(def => def.index);
 				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColNames.map(name => value[name]); // Check marker
+					isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColSchemaIndices.map(i => (value as MemoryTableRow)[1][i]);
 				const comparator = (a: ModificationKey, b: ModificationKey): number => {
 					const arrA = a as SqlValue[]; const arrB = b as SqlValue[];
-					const len = Math.min(arrA.length, arrB.length);
+					const len = Math.min(arrA.length, arrB.length, pkDef.length);
 					for (let i = 0; i < len; i++) {
-						const dirMultiplier = pkCols[i].desc ? -1 : 1;
-						const collation = pkCols[i].collation;
+						const def = pkDef[i];
+						const dirMultiplier = def.desc ? -1 : 1;
+						const collation = def.collation || 'BINARY';
 						const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
 						if (cmp !== 0) return cmp;
 					}
@@ -139,27 +130,31 @@ export class TransactionLayer implements Layer {
 				funcs = { keyExtractor, comparator };
 			}
 		} else {
-			// Secondary Index: Key is [IndexKey, rowid]
+			// Secondary Index: Key for modification BTree is [IndexKey, rowid]
 			const indexSchema = schema.indexes?.find(idx => idx.name === indexName);
 			if (!indexSchema) throw new Error(`Secondary index ${indexName} not found in schema for TransactionLayer`);
 
-			const tempIndex = new MemoryIndex({ name: indexSchema.name, columns: indexSchema.columns }, schema.columns.map(c => ({ name: c.name })));
+			// Create a temporary MemoryIndex to leverage its keyFromRow and compareKeys logic for the *IndexKey* part.
+			// MemoryIndex constructor expects allTableColumns as {name: string}[], but it only uses it for validation if spec has names.
+			// Here, our indexSchema.columns already have schema indices.
+			// We pass a dummy name array, as MemoryIndex.keyFromRow (new version) uses specColumn.index directly.
+			const dummyTableCols = schema.columns.map(c => ({ name: c.name }));
+			const tempIndex = new MemoryIndex({ name: indexSchema.name, columns: indexSchema.columns }, dummyTableCols);
 
-			// Key for the modification BTree is [IndexKey, rowid]
 			const keyExtractor = (value: ModificationValue): ModificationKey => {
 				if (isDeletionMarker(value)) {
-					return value._key_ as [BTreeKey, bigint]; // Deletion marker stores the composite key
+					return value._key_ as [BTreeKey, bigint]; // Deletion marker stores the composite [IndexKey, rowid]
 				} else {
-					const indexKey = tempIndex.keyFromRow(value);
-					const rowid = value._rowid_;
-					return [indexKey, rowid];
+					const rowTuple = value as MemoryTableRow;
+					const indexKeyPart = tempIndex.keyFromRow(rowTuple); // Extracts IndexKey from tuple data array
+					const rowid = rowTuple[0]; // rowid from tuple
+					return [indexKeyPart, rowid];
 				}
 			};
-			// Comparator for [IndexKey, rowid] pairs
 			const comparator = (a: ModificationKey, b: ModificationKey): number => {
 				const [keyA, rowidA] = a as [BTreeKey, bigint];
 				const [keyB, rowidB] = b as [BTreeKey, bigint];
-				const keyCmp = tempIndex.compareKeys(keyA, keyB);
+				const keyCmp = tempIndex.compareKeys(keyA, keyB); // Compares IndexKey part
 				if (keyCmp !== 0) return keyCmp;
 				return compareSqlValues(rowidA, rowidB);
 			};
@@ -173,11 +168,7 @@ export class TransactionLayer implements Layer {
 
 	/** Gets the appropriate key comparator for the modification tree of a given index */
 	public getComparator(indexName: string | 'primary'): (a: ModificationKey, b: ModificationKey) => number {
-		// Retrieve or create the tree to ensure its comparator is initialized
-		const tree = this.getOrCreateModificationTree(indexName);
-		// The BTree's comparator operates on the *entry type* (ModificationValue).
-		// We need to return a comparator that works on the *key type* (ModificationKey).
-		// We can leverage the getBTreeFuncs helper which already defines the key comparator.
+		// this.getOrCreateModificationTree(indexName); // Ensures tree exists, but result not needed here
 		return this.getBTreeFuncs(indexName).comparator;
 	}
 
@@ -207,9 +198,7 @@ export class TransactionLayer implements Layer {
 
 	/** Gets the appropriate key extractor for the modification tree of a given index */
 	public getKeyExtractor(indexName: string | 'primary'): (value: ModificationValue) => ModificationKey {
-		// Retrieve or create the tree to ensure its extractor is initialized
-		const tree = this.getOrCreateModificationTree(indexName);
-		// Similar to comparator, leverage getBTreeFuncs.
+		// this.getOrCreateModificationTree(indexName); // Ensures tree exists, but result not needed here
 		return this.getBTreeFuncs(indexName).keyExtractor;
 	}
 
@@ -217,7 +206,7 @@ export class TransactionLayer implements Layer {
 		return this.modifications.get(indexName) ?? null;
 	}
 
-	getSecondaryIndexTree(indexName: string): BTree<[BTreeKey, bigint], [BTreeKey, bigint]> | null {
+	getSecondaryIndexTree(_indexName: string): BTree<[BTreeKey, bigint], [BTreeKey, bigint]> | null {
 		// Transaction layers store modifications, not full index trees. Cursors handle merging.
 		return null; // Return null as this layer doesn't hold the full index data
 	}
@@ -227,16 +216,22 @@ export class TransactionLayer implements Layer {
 	}
 
 	/** Records an insert or update in this transaction layer */
-	recordUpsert(row: MemoryTableRow, affectedIndexes: ReadonlyArray<string | 'primary'>): void {
+	recordUpsert(newRowTuple: MemoryTableRow, affectedIndexes: ReadonlyArray<string | 'primary'>, _oldRowTuple?: MemoryTableRow | null): void {
 		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
+		const rowid = newRowTuple[0];
 
-		// If this row was previously deleted in *this* layer, remove the delete marker.
-		this.deletedRowidsInLayer.delete(row._rowid_);
+		// If an old row tuple is provided (for an update), we might need to remove its old secondary index entries.
+		// This is complex because the ModificationValue stored in secondary index B-trees is the newRowTuple (or deletion marker).
+		// For simplicity, the current MemoryTableManager.applyChange handles old/new secondary index updates during collapse.
+		// So, here we just focus on adding/overwriting the new state.
+
+		this.deletedRowidsInLayer.delete(rowid);
 
 		for (const indexName of affectedIndexes) {
 			const tree = this.getOrCreateModificationTree(indexName);
-			// BTree.insert takes the value; the key is extracted by the tree's keyExtractor
-			tree.insert(row);
+			// For primary index, key is PK. For secondary, key is [IndexKey, rowid].
+			// The BTree uses its keyExtractor on newRowTuple to get the key for insertion.
+			tree.insert(newRowTuple); // Store the new tuple directly
 		}
 	}
 

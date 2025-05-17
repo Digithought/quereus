@@ -1,16 +1,18 @@
 // src/vtab/memory/table.ts
 import { VirtualTable } from '../table.js';
-import type { VirtualTableCursor } from '../cursor.js';
+import type { VirtualTableCursor } from '../cursor.js'; // Restored for xOpen
 import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
-import type { SqlValue } from '../../common/types.js';
+import type { SqlValue, Row } from '../../common/types.js';
 import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
-import { MemoryTableCursor } from './cursor.js';
+import { MemoryTableCursor } from './cursor.js'; // Restored for xOpen
 import { SqliteError } from '../../common/errors.js';
 import { StatusCode } from '../../common/constants.js';
 import { createLogger } from '../../common/logger.js';
+import type { FilterInfo } from '../filter-info.js';
+import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';
 
 const log = createLogger('vtab:memory:table');
 const errorLog = log.extend('error');
@@ -32,7 +34,7 @@ export class MemoryTable extends VirtualTable {
 	 */
 	constructor(
 		db: Database,
-		module: VirtualTableModule<any, any, any>,
+		module: VirtualTableModule<any, any>,
 		manager: MemoryTableManager // Pass the shared manager instance
 	) {
 		// Use manager's schema and name for the base class constructor
@@ -69,8 +71,32 @@ export class MemoryTable extends VirtualTable {
 	 */
 	async xOpen(): Promise<VirtualTableCursor<this>> {
 		const conn = this.ensureConnection();
-		// Create a new cursor instance associated with *this* table instance (connection)
-		return new MemoryTableCursor(this, conn) as unknown as VirtualTableCursor<this>;
+		return new MemoryTableCursor(this, conn);
+	}
+
+	// New xQuery method for direct async iteration
+	async* xQuery(filterInfo: FilterInfo): AsyncIterable<[rowid: bigint, row: Row]> {
+		const conn = this.ensureConnection();
+		const currentSchema = this.getSchema();
+		if (!currentSchema) {
+			errorLog("MemoryTable.xQuery: Table schema is undefined. Cannot proceed.");
+			yield* []; return;
+		}
+		const plan = buildScanPlanFromFilterInfo(filterInfo, currentSchema);
+		log('MemoryTable.xQuery invoked, plan: %O', plan);
+
+		const cursor = conn.createLayerCursor(plan);
+		try {
+			while (!cursor.isEof()) {
+				const rowObject = cursor.getCurrentRowObject(); // This is MemoryTableRow
+				if (rowObject) {
+					yield [rowObject[0], rowObject[1]]; // Yield [rowid, data_array]
+				}
+				await cursor.next();
+			}
+		} finally {
+			await cursor.close();
+		}
 	}
 
 	// Note: xBestIndex is handled by the MemoryTableModule, not the table instance.
@@ -188,5 +214,8 @@ export class MemoryTable extends VirtualTable {
 	}
 	// --- End Index DDL methods ---
 }
+
+// Helper function (moved from MemoryTableCursor and adapted)
+// function buildScanPlanInternal(filterInfo: FilterInfo, tableSchema: TableSchema): ScanPlan { ... MOVED ... }
 
 

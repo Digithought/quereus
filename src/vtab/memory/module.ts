@@ -1,10 +1,9 @@
 import { SqliteError } from '../../common/errors.js';
-import { StatusCode, type SqlValue } from '../../common/types.js';
+import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table.js';
 import { MemoryTable } from './table.js';
 import type { VirtualTableModule } from '../module.js';
-import { MemoryTableCursor } from './cursor.js';
 import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexInfo } from '../indexInfo.js';
 import { MemoryTableManager } from './layer/manager.js';
@@ -13,8 +12,6 @@ import { createLogger } from '../../common/logger.js';
 import { SqlDataType } from '../../common/types.js';
 
 const log = createLogger('vtab:memory:module');
-const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
 const debugLog = log.extend('debug');
 
 /**
@@ -22,8 +19,8 @@ const debugLog = log.extend('debug');
  * Tables created with this module persist only for the lifetime of the
  * database connection.
  */
-export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableCursor, MemoryTableConfig> {
-	private static SCHEMA_VERSION = 2; // Incremented for layer-based implementation
+export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableConfig> {
+	private static SCHEMA_VERSION = 2; // Reverted version, cursor model is back
 	public readonly tables: Map<string, MemoryTableManager> = new Map();
 
 	constructor() { }
@@ -103,7 +100,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Connects to an existing memory table definition
 	 */
-	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
+	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig): MemoryTable {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const existingManager = this.tables.get(tableKey);
 
@@ -120,7 +117,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 */
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
 		// Constants for planning
-		const INDEX_ID_PRIMARY = 0;
 		const PLAN_TYPE_FULL_ASC = 0;
 		const PLAN_TYPE_FULL_DESC = 1;
 		const PLAN_TYPE_EQ = 2;
@@ -321,6 +317,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			bestPlan.planType = PLAN_TYPE_FULL_ASC;
 			bestPlan.cost = tableSize * 10.0;
 			bestPlan.rows = BigInt(tableSize);
+			bestPlan.usedConstraintIndices.clear(); // No constraints used for default full scan
+			bestPlan.orderByConsumed = false;
 		}
 
 		indexInfo.idxNum = encodeIdxNum(bestPlan.indexId, bestPlan.planType);
@@ -341,7 +339,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 		// Construct idxStr for debugging
 		const chosenIndex = availableIndexes[bestPlan.indexId];
-		let idxStrParts = [
+		const idxStrParts = [
 			`idx=${chosenIndex?.name ?? 'unknown'}(${bestPlan.indexId})`,
 			`plan=${bestPlan.planType}`
 		];

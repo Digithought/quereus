@@ -20,7 +20,7 @@ export interface TableSchema {
 	/** Map from column name (lowercase) to column index */
 	columnIndexMap: ReadonlyMap<string, number>;
 	/** Definition of the primary key, including order and direction */
-	primaryKeyDefinition: ReadonlyArray<{ index: number; desc: boolean }>;
+	primaryKeyDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>;
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<{ name?: string, expr: Expression }>;
 	/** Reference to the registered module */
@@ -71,13 +71,19 @@ export function buildColumnIndexMap(columns: ReadonlyArray<ColumnSchema>): Map<s
  * @param columns Array of column schemas
  * @returns Array of objects with index and direction for primary key columns
  */
-export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<{ index: number; desc: boolean }> {
+export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<PrimaryKeyColumnDefinition> {
 	const pkCols = columns
 		.map((col, index) => ({ ...col, index }))
 		.filter(col => col.primaryKey)
 		.sort((a, b) => a.pkOrder - b.pkOrder);
 
-	return Object.freeze(pkCols.map(col => ({ index: col.index, desc: false })));
+	return Object.freeze(pkCols.map(col => ({
+		index: col.index,
+		desc: false,
+		// TODO: there is no autoIncrement in the ColumnSchema
+		autoIncrement: (col as any).autoIncrement ?? undefined,
+		collation: col.collation ?? 'BINARY'
+	})));
 }
 
 /**
@@ -86,7 +92,7 @@ export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): 
  * @param pkDef Primary key definition array
  * @returns Array of column indices that form the primary key
  */
-export function getPrimaryKeyIndices(pkDef: ReadonlyArray<{ index: number; desc: boolean }>): ReadonlyArray<number> {
+export function getPrimaryKeyIndices(pkDef: ReadonlyArray<PrimaryKeyColumnDefinition>): ReadonlyArray<number> {
 	return Object.freeze(pkDef.map(def => def.index));
 }
 
@@ -260,4 +266,11 @@ export interface RowConstraintSchema {
 	expr: Expression;
 	/** Bitmask of operations the constraint applies to */
 	operations: RowOpMask;
+}
+
+export interface PrimaryKeyColumnDefinition {
+	index: number;
+	desc: boolean;
+	autoIncrement?: boolean;
+	collation?: string;
 }

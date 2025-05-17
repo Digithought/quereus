@@ -2,7 +2,7 @@ import { VirtualTable } from '../table.js';
 import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
-import { type SqlValue, StatusCode, SqlDataType } from '../../common/types.js';
+import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
 import { SqliteError } from '../../common/errors.js';
 import type { SqliteContext } from '../../func/context.js';
 import type { Database } from '../../core/database.js';
@@ -73,12 +73,16 @@ class JsonTreeTable extends VirtualTable {
 			columns: JSON_TREE_COLUMNS,
 			columnIndexMap: JSON_TREE_COLUMN_MAP,
 			primaryKeyDefinition: [],
-			vtabModule: module,
-			vtabInstance: this,
+			vtabModule: module as any,
 			vtabModuleName: 'json_tree',
 			isWithoutRowid: false,
 			isStrict: false,
 			isView: false,
+			vtabAuxData: undefined,
+			vtabArgs: [],
+			indexes: [],
+			isTemporary: false,
+			subqueryAST: undefined,
 		});
 	}
 
@@ -114,6 +118,46 @@ class JsonTreeTable extends VirtualTable {
 
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
+
+	async* xQuery(filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+		// JsonTree doesn't typically use filterInfo for complex filtering via xBestIndex.
+		const rootPath = this.rootPath;
+		let startNode = this.parsedJson;
+		if (rootPath) {
+			startNode = evaluateJsonPathBasic(startNode, rootPath);
+		}
+
+		const cursor = new JsonTreeCursor(this); // Transient cursor to access generator
+		const internalGenerator = cursor['_internalIteratorGenerator'](startNode, rootPath);
+
+		for await (const CrtRwDt of internalGenerator) {
+			if (!CrtRwDt) continue;
+			const rowId = BigInt(CrtRwDt.id as number);
+			const row: SqlValue[] = [
+				CrtRwDt.key,
+				CrtRwDt.value, // Placeholder
+				CrtRwDt.type,
+				CrtRwDt.atom,
+				CrtRwDt.id,
+				CrtRwDt.parent,
+				CrtRwDt.fullkey,
+				CrtRwDt.path
+			];
+
+			const valueColumnIndex = JSON_TREE_COLUMN_MAP.get('value');
+			if (valueColumnIndex === undefined) {
+				throw new SqliteError("Internal error: 'value' column not found in JSON_TREE_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
+			}
+
+			if (CrtRwDt.type === 'object' || CrtRwDt.type === 'array') {
+				const originalValue = (CrtRwDt as any)._originalValue;
+				row[valueColumnIndex] = originalValue !== undefined ? jsonStringify(originalValue) : null;
+			} else {
+				row[valueColumnIndex] = CrtRwDt.value ?? null;
+			}
+			yield [rowId, row];
+		}
+	}
 }
 
 /**
@@ -133,68 +177,51 @@ interface IterationState {
  */
 class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 	private stack: IterationState[] = [];
-	private currentRow: Record<string, SqlValue> | null = null;
-	private currentState: IterationState | null = null;
-	private originalValue: any = null;
+	private currentRowData: Record<string, SqlValue> | null = null;
 	private elementIdCounter: number = 0;
+	private internalIterator: AsyncIterator<Record<string, SqlValue> | null> | null = null;
 
 	constructor(table: T) {
 		super(table);
 		this._isEof = true;
 	}
 
-	/**
-	 * Resets the cursor state
-	 */
 	reset(): void {
 		this.stack = [];
-		this.currentRow = null;
-		this.currentState = null;
-		this.originalValue = null;
+		this.currentRowData = null;
 		this._isEof = true;
 		this.elementIdCounter = 0;
+		this.internalIterator = null;
 	}
 
-	/**
-	 * Initializes iteration based on the JSON start node and optional root path
-	 */
-	private startIteration(startNode: any, rootPath: string | null): void {
-		this.reset();
+	private async* _internalIteratorGenerator(startNode: any, _initialRootPath: string | null): AsyncIterable<Record<string, SqlValue>> {
+		const localStack: IterationState[] = [];
+		let localElementIdCounter = 0;
+
 		if (startNode !== undefined) {
-			this.stack.push({
+			localStack.push({
 				value: startNode,
 				parentPath: '',
 				parentKey: null,
 				parentId: 0,
 				childrenPushed: false,
 			});
-			this._isEof = false;
-			this.advanceToNextRow();
-		} else {
-			this._isEof = true;
 		}
-	}
 
-	/**
-	 * Advances to the next row in the JSON tree using depth-first traversal
-	 * First visits each node, then processes its children
-	 */
-	private advanceToNextRow(): void {
-		while (this.stack.length > 0) {
-			const state = this.stack[this.stack.length - 1];
+		while (localStack.length > 0) {
+			const state = localStack[localStack.length - 1];
 			const value = state.value;
 			const isContainer = typeof value === 'object' && value !== null;
 
-			// If we haven't processed this node (yielded its row) yet...
-			if (!this.currentState || this.currentState !== state) {
+			if (!state.childrenPushed) {
 				const key = state.parentKey;
-				const id = ++this.elementIdCounter;
+				const id = ++localElementIdCounter;
 				const path = state.parentPath;
 				const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
 				const type = getJsonType(value);
 				const atom = !isContainer ? value : null;
 
-				this.currentRow = {
+				const generatedRow: Record<string, SqlValue> = {
 					key: key,
 					value: isContainer ? jsonStringify(value) : value,
 					type: type,
@@ -203,134 +230,140 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 					parent: state.parentId,
 					fullkey: fullkey,
 					path: path,
+					_originalValue: value,
 				};
-
-				// Save references to current state and original value for later use
-				this.currentState = state;
-				this.originalValue = isContainer ? value : undefined;
-
-				// Found a row to yield, break the loop and return
-				this._isEof = false;
-				return;
-			}
-
-			// If we have processed this node and its children haven't been pushed yet...
-			if (isContainer && !state.childrenPushed) {
 				state.childrenPushed = true;
-				const parentId = this.currentRow?.id as number;
-				const parentFullKey = this.currentRow?.fullkey as string;
+				yield generatedRow;
 
-				// Push children in reverse order
-				if (Array.isArray(value)) {
-					for (let i = value.length - 1; i >= 0; i--) {
-						this.stack.push({
-							value: value[i],
-							parentPath: parentFullKey,
-							parentKey: i,
-							parentId: parentId,
-							childrenPushed: false,
-						});
+				if (isContainer) {
+					const parentIdForRow = id;
+					const parentFullKeyForRow = fullkey;
+
+					if (Array.isArray(value)) {
+						for (let i = value.length - 1; i >= 0; i--) {
+							localStack.push({
+								value: value[i],
+								parentPath: parentFullKeyForRow,
+								parentKey: i,
+								parentId: parentIdForRow,
+								childrenPushed: false,
+							});
+						}
+					} else {
+						const keys = Object.keys(value).sort().reverse();
+						for (const objKey of keys) {
+							localStack.push({
+								value: value[objKey],
+								parentPath: parentFullKeyForRow,
+								parentKey: objKey,
+								parentId: parentIdForRow,
+								childrenPushed: false,
+							});
+						}
 					}
-				} else {
-					const keys = Object.keys(value).sort().reverse();
-					for (const objKey of keys) {
-						this.stack.push({
-							value: value[objKey],
-							parentPath: parentFullKey,
-							parentKey: objKey,
-							parentId: parentId,
-							childrenPushed: false,
-						});
-					}
+					continue;
 				}
-
-				// Reset current state so the next loop iteration processes the first child
-				this.currentRow = null;
-				this.currentState = null;
-				this.originalValue = null;
-				continue;
 			}
-
-			// If we've processed the node and its children, pop it from the stack
-			this.stack.pop();
-			this.currentRow = null;
-			this.currentState = null;
-			this.originalValue = null;
+			localStack.pop();
 		}
-
-		// If the loop finishes, the stack is empty, so we are EOF
-		this._isEof = true;
-		this.currentRow = null;
-		this.currentState = null;
-		this.originalValue = null;
 	}
 
-	/**
-	 * Initializes the cursor for a new query with the given constraints
-	 * For json_tree, we don't use the constraints - we just traverse the entire JSON structure
-	 */
 	async filter(
-		idxNum: number,
-		idxStr: string | null,
-		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
-		args: ReadonlyArray<SqlValue>
+		_idxNum: number,
+		_idxStr: string | null,
+		_constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
+		_args: ReadonlyArray<SqlValue>
 	): Promise<void> {
+		this.reset();
 		const rootPath = this.table.rootPath;
 		let startNode = this.table.parsedJson;
 		if (rootPath) {
 			startNode = evaluateJsonPathBasic(startNode, rootPath);
 		}
-		this.startIteration(startNode, rootPath);
+		this.internalIterator = this._internalIteratorGenerator(startNode, rootPath)[Symbol.asyncIterator]();
+		await this.next();
 	}
 
-	/**
-	 * Advances the cursor to the next row in the result set
-	 */
 	async next(): Promise<void> {
-		if (this._isEof) return;
-		this.advanceToNextRow();
+		if (this._isEof || !this.internalIterator) return;
+		const result = await this.internalIterator.next();
+		if (result.done) {
+			this._isEof = true;
+			this.currentRowData = null;
+		} else {
+			this._isEof = false;
+			this.currentRowData = result.value;
+		}
 	}
 
-	/**
-	 * Returns the value for the specified column of the current row
-	 */
 	column(context: SqliteContext, index: number): number {
-		if (!this.currentRow) {
+		if (!this.currentRowData) {
 			context.resultNull();
 			return StatusCode.OK;
 		}
 		const colName = JSON_TREE_COLUMNS[index]?.name;
 
 		if (colName === 'value') {
-			const type = this.currentRow['type'];
+			const type = this.currentRowData['type'];
 			if (type === 'object' || type === 'array') {
-				context.resultValue(this.originalValue !== undefined ? jsonStringify(this.originalValue) : null);
+				const originalValue = (this.currentRowData as any)._originalValue;
+				context.resultValue(originalValue !== undefined ? jsonStringify(originalValue) : null);
 			} else {
-				context.resultValue(this.currentRow[colName] ?? null);
+				context.resultValue(this.currentRowData[colName] ?? null);
 			}
 		} else {
-			context.resultValue(this.currentRow[colName] ?? null);
+			context.resultValue(this.currentRowData[colName] ?? null);
 		}
 		return StatusCode.OK;
 	}
 
-	/**
-	 * Returns the rowid for the current row
-	 */
 	async rowid(): Promise<bigint> {
-		if (!this.currentRow) {
+		if (!this.currentRowData) {
 			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
-		const id = this.currentRow['id'];
+		const id = this.currentRowData['id'];
 		if (typeof id === 'number') {
 			return BigInt(id);
 		}
 		throw new SqliteError("Cannot get rowid for json_tree cursor (missing ID)", StatusCode.INTERNAL);
 	}
 
-	/**
-	 * Closes the cursor and releases resources
-	 */
+	async* rows(): AsyncIterable<Row> {
+		if (this.eof()) {
+			return;
+		}
+
+		// Create a dummy context for calling this.column()
+		// This is okay because JsonTreeCursor.column() doesn't actually use the context.
+		const dummyContext: SqliteContext = {
+			setAuxData: (_N: number, _data: unknown) => { /* no-op */ },
+			resultBlob: () => { /* no-op */ },
+			resultDouble: () => { /* no-op */ },
+			resultError: () => { /* no-op */ },
+			resultInt: () => { /* no-op */ },
+			resultInt64: () => { /* no-op */ },
+			resultNull: () => { /* no-op */ },
+			resultText: () => { /* no-op */ },
+			resultValue: () => { /* no-op */ },
+			resultZeroblob: () => { /* no-op */ },
+			resultSubtype: () => { /* no-op */ },
+			getUserData: () => null,
+			getDbConnection: () => this.table.db, // Provide actual db connection
+			getAuxData: (_N: number) => undefined,
+			getAggregateContext: () => undefined,
+			setAggregateContext: () => { /* no-op */ },
+		};
+
+		while (!this.eof()) {
+			const row: SqlValue[] = [];
+			for (let i = 0; i < this.table.tableSchema.columns.length; i++) {
+				row.push(this.column(dummyContext, i));
+			}
+			yield row;
+			await this.next();
+		}
+	}
+
 	async close(): Promise<void> {
 		this.reset();
 	}
@@ -339,7 +372,7 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 /**
  * Module implementation for json_tree virtual table function
  */
-export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonTreeCursor<JsonTreeTable>, JsonConfig> {
+export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonConfig> {
 	xConnect(
 		db: Database,
 		pAux: unknown,

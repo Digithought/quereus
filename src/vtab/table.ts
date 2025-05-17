@@ -1,9 +1,10 @@
 import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { VirtualTableCursor } from './cursor.js';
-import type { SqlValue } from '../common/types.js';
+import type { VirtualTableCursor } from './cursor.js'; // Restored import
+import type { SqlValue, Row } from '../common/types.js'; // Added Row
 import type { IndexSchema } from '../schema/table.js';
+import type { FilterInfo } from './filter-info.js'; // Import FilterInfo
 
 /**
  * Base class representing a virtual table instance.
@@ -40,11 +41,21 @@ export abstract class VirtualTable {
 	abstract xDisconnect(): Promise<void>;
 
 	/**
-	 * Creates a new cursor for scanning this virtual table
+	 * Creates a new cursor for scanning this virtual table.
+	 * The cursor is then configured by calling its filter() method.
 	 * @returns A new cursor instance for this table
 	 * @throws SqliteError on failure
 	 */
-	abstract xOpen(): Promise<VirtualTableCursor<this>>;
+	abstract xOpen(): Promise<VirtualTableCursor<this>>; // Reverted to cursor-based signature
+
+	/**
+	 * (Optional) Opens a direct data stream for this virtual table based on filter criteria.
+	 * This is an alternative to the cursor-based xOpen/filter/next model.
+	 * @param filterInfo Information from xBestIndex and query parameters.
+	 * @returns An AsyncIterable yielding [rowid, Row] tuples.
+	 * @throws SqliteError on failure
+	 */
+	xQuery?(filterInfo: FilterInfo): AsyncIterable<[rowid: bigint, row: Row]>; // New optional method
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation

@@ -2,7 +2,7 @@ import { VirtualTable } from '../table.js';
 import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
-import { type SqlValue, StatusCode, SqlDataType } from '../../common/types.js';
+import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
 import { SqliteError } from '../../common/errors.js';
 import type { SqliteContext } from '../../func/context.js';
 import type { Database } from '../../core/database.js';
@@ -74,12 +74,16 @@ class JsonEachTable extends VirtualTable {
 			columns: JSON_EACH_COLUMNS,
 			columnIndexMap: JSON_EACH_COLUMN_MAP,
 			primaryKeyDefinition: [],
-			vtabModule: module,
-			vtabInstance: this,
+			vtabModule: module as any,
 			vtabModuleName: 'json_each',
 			isWithoutRowid: false,
 			isStrict: false,
 			isView: false,
+			vtabAuxData: undefined,
+			vtabArgs: [],
+			indexes: [],
+			isTemporary: false,
+			subqueryAST: undefined,
 		});
 	}
 
@@ -116,6 +120,50 @@ class JsonEachTable extends VirtualTable {
 
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
+
+	async* xQuery(filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+		// JsonEach doesn't typically use filterInfo for complex filtering via xBestIndex,
+		// but we can extract rootPath if it were passed via VDBE arguments (not standard for TVFs like this yet).
+		// For now, assume rootPath is from table construction.
+		const rootPath = this.rootPath;
+		let startNode = this.parsedJson;
+		if (rootPath) {
+			startNode = evaluateJsonPathBasic(startNode, rootPath);
+		}
+
+		// Use the cursor's internal generator directly.
+		// The cursor instance is transient here, just to access the generator.
+		const cursor = new JsonEachCursor(this);
+		const internalGenerator = cursor['_internalIteratorGenerator'](startNode, rootPath);
+
+		for await (const CrtRwDt of internalGenerator) {
+			if (!CrtRwDt) continue;
+			const rowId = BigInt(CrtRwDt.id as number); // Assuming id is always a number here
+			const row: SqlValue[] = [
+				CrtRwDt.key,
+				CrtRwDt.value, // Placeholder, will be correctly set below
+				CrtRwDt.type,
+				CrtRwDt.atom,
+				CrtRwDt.id,
+				CrtRwDt.parent,
+				CrtRwDt.fullkey,
+				CrtRwDt.path
+			];
+
+			const valueColumnIndex = JSON_EACH_COLUMN_MAP.get('value');
+			if (valueColumnIndex === undefined) {
+				throw new SqliteError("Internal error: 'value' column not found in JSON_EACH_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
+			}
+
+			if (CrtRwDt.type === 'object' || CrtRwDt.type === 'array') {
+				const originalValue = (CrtRwDt as any)._originalValue;
+				row[valueColumnIndex] = originalValue !== undefined ? jsonStringify(originalValue) : null;
+			} else {
+				row[valueColumnIndex] = CrtRwDt.value ?? null;
+			}
+			yield [rowId, row];
+		}
+	}
 }
 
 /**
@@ -135,8 +183,9 @@ interface IterationState {
  */
 class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	private stack: IterationState[] = [];
-	private currentRow: Record<string, SqlValue> | null = null;
+	private currentRowData: Record<string, SqlValue> | null = null;
 	private elementIdCounter: number = 0;
+	private internalIterator: AsyncIterator<Record<string, SqlValue> | null> | null = null;
 
 	constructor(table: T) {
 		super(table);
@@ -148,17 +197,83 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	 */
 	reset(): void {
 		this.stack = [];
-		this.currentRow = null;
+		this.currentRowData = null;
 		this._isEof = true;
 		this.elementIdCounter = 0;
+		this.internalIterator = null;
+	}
+
+	// New internal async generator
+	private async* _internalIteratorGenerator(startNode: any, initialRootPath: string | null): AsyncIterable<Record<string, SqlValue>> {
+		const localStack: IterationState[] = [];
+		let localElementIdCounter = 0;
+
+		if (startNode !== undefined) {
+			localStack.push({
+				value: startNode,
+				parentPath: '',
+				parentKey: null,
+				parentId: 0,
+				currentIndex: -1,
+			});
+		}
+
+		while (localStack.length > 0) {
+			const currentState = localStack[localStack.length - 1];
+			const currentValue = currentState.value;
+
+			const key = currentState.parentKey;
+			const id = localElementIdCounter++; // Use local counter
+			const path = currentState.parentPath;
+			const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
+			const type = getJsonType(currentValue);
+			const atom = (type === 'object' || type === 'array') ? null : currentValue;
+
+			const generatedRow: Record<string, SqlValue> = {
+				key: key,
+				value: (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue,
+				type: type,
+				atom: atom,
+				id: id,
+				parent: currentState.parentId,
+				fullkey: fullkey,
+				path: path,
+				_originalValue: currentValue,
+			};
+
+			localStack.pop(); // Pop the current state as it's now processed
+
+			if (Array.isArray(currentValue)) {
+				for (let i = currentValue.length - 1; i >= 0; i--) {
+					localStack.push({
+						value: currentValue[i],
+						parentPath: fullkey,
+						parentKey: i,
+						parentId: id,
+						currentIndex: -1,
+					});
+				}
+			} else if (typeof currentValue === 'object' && currentValue !== null) {
+				const keys = Object.keys(currentValue).sort().reverse();
+				for (const objKey of keys) {
+					localStack.push({
+						value: currentValue[objKey],
+						parentPath: fullkey,
+						parentKey: objKey,
+						parentId: id,
+						currentIndex: -1,
+					});
+				}
+			}
+			yield generatedRow;
+		}
 	}
 
 	/**
 	 * Initializes iteration based on the JSON start node and optional root path
 	 */
-	private startIteration(startNode: any, rootPath: string | null): void {
+	private startIteration(startNode: any, _rootPath: string | null): void {
 		this.reset();
-		const initialPath = rootPath ?? '$';
 		if (startNode !== undefined) {
 			// Push the root node to start
 			this.stack.push({
@@ -177,12 +292,11 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 
 	/**
 	 * Advances to the next row by moving through the JSON structure
-	 * The iterator processes each node and then places all its children on the stack
 	 */
 	private advanceToNextRow(): void {
 		if (this.stack.length === 0) {
 			this._isEof = true;
-			this.currentRow = null;
+			this.currentRowData = null;
 			return;
 		}
 
@@ -197,7 +311,7 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 		const type = getJsonType(currentValue);
 		const atom = (type === 'object' || type === 'array') ? null : currentValue;
 
-		this.currentRow = {
+		this.currentRowData = {
 			key: key,
 			value: (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue,
 			type: type,
@@ -244,35 +358,44 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	 * For json_each, we don't use the query constraints - we iterate the entire JSON structure
 	 */
 	async filter(
-		idxNum: number,
-		idxStr: string | null,
-		constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
-		args: ReadonlyArray<SqlValue>
+		_idxNum: number,
+		_idxStr: string | null,
+		_constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
+		_args: ReadonlyArray<SqlValue>
 	): Promise<void> {
+		this.reset(); // Resets currentRowData, _isEof, elementIdCounter, and internalIterator
 		const rootPath = this.table.rootPath;
 		let startNode = this.table.parsedJson;
 
-		// Apply root path if provided
 		if (rootPath) {
 			startNode = evaluateJsonPathBasic(startNode, rootPath);
 		}
 
-		this.startIteration(startNode, rootPath);
+		this.internalIterator = this._internalIteratorGenerator(startNode, rootPath)[Symbol.asyncIterator]();
+		await this.next(); // Populate the first row
 	}
 
 	/**
 	 * Advances the cursor to the next row in the result set
 	 */
 	async next(): Promise<void> {
-		if (this._isEof) return;
-		this.advanceToNextRow();
+		if (this._isEof || !this.internalIterator) return;
+
+		const result = await this.internalIterator.next();
+		if (result.done) {
+			this._isEof = true;
+			this.currentRowData = null;
+		} else {
+			this._isEof = false;
+			this.currentRowData = result.value;
+		}
 	}
 
 	/**
 	 * Returns the value for the specified column index of the current row
 	 */
 	column(context: SqliteContext, index: number): number {
-		if (!this.currentRow) {
+		if (!this.currentRowData) {
 			context.resultNull();
 			return StatusCode.OK;
 		}
@@ -280,16 +403,16 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 
 		// Handle value formatting specifically for column requests
 		if (colName === 'value') {
-			const type = this.currentRow['type'];
+			const type = this.currentRowData['type'];
 			if (type === 'object' || type === 'array') {
 				// Use the stored original value for stringification
-				const originalValue = (this.currentRow as any)._originalValue;
+				const originalValue = (this.currentRowData as any)._originalValue;
 				context.resultValue(originalValue !== undefined ? jsonStringify(originalValue) : null);
 			} else {
-				context.resultValue(this.currentRow[colName] ?? null);
+				context.resultValue(this.currentRowData[colName] ?? null);
 			}
 		} else {
-			context.resultValue(this.currentRow[colName] ?? null);
+			context.resultValue(this.currentRowData[colName] ?? null);
 		}
 		return StatusCode.OK;
 	}
@@ -298,10 +421,10 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	 * Returns the rowid for the current row
 	 */
 	async rowid(): Promise<bigint> {
-		if (!this.currentRow) {
+		if (!this.currentRowData) {
 			throw new SqliteError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
 		}
-		const id = this.currentRow['id'];
+		const id = this.currentRowData['id'];
 		if (typeof id === 'number') {
 			return BigInt(id);
 		}
@@ -314,12 +437,48 @@ class JsonEachCursor<T extends JsonEachTable> extends VirtualTableCursor<T> {
 	async close(): Promise<void> {
 		this.reset();
 	}
+
+	async* rows(): AsyncIterable<Row> {
+		if (this.eof()) {
+			return;
+		}
+
+		// Create a dummy context for calling this.column()
+		// This is okay because JsonEachCursor.column() doesn't actually use the context.
+		const dummyContext: SqliteContext = {
+			setAuxData: (_N: number, _data: unknown) => { /* no-op */ },
+			resultBlob: () => { /* no-op */ },
+			resultDouble: () => { /* no-op */ },
+			resultError: () => { /* no-op */ },
+			resultInt: () => { /* no-op */ },
+			resultInt64: () => { /* no-op */ },
+			resultNull: () => { /* no-op */ },
+			resultText: () => { /* no-op */ },
+			resultValue: () => { /* no-op */ },
+			resultZeroblob: () => { /* no-op */ },
+			resultSubtype: () => { /* no-op */ },
+			getUserData: () => null,
+			getDbConnection: () => this.table.db,
+			getAuxData: (_N: number) => undefined,
+			getAggregateContext: () => undefined,
+			setAggregateContext: () => { /* no-op */ },
+		};
+
+		while (!this.eof()) {
+			const row: SqlValue[] = [];
+			for (let i = 0; i < this.table.tableSchema.columns.length; i++) {
+				row.push(this.column(dummyContext, i));
+			}
+			yield row;
+			await this.next();
+		}
+	}
 }
 
 /**
  * Module implementation for json_each virtual table function
  */
-export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonEachCursor<JsonEachTable>, JsonConfig> {
+export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonConfig> {
 	xConnect(
 		db: Database,
 		pAux: unknown,

@@ -8,6 +8,9 @@ import { StatusCode } from '../../common/constants.js';
 import { VirtualTableCursor } from '../cursor.js';
 import type { VdbeProgram } from '../../vdbe/program.js';
 import type { TableSchema } from '../../schema/table.js'; // Import TableSchema
+import { safeJsonStringify } from '../../util/serialization.js';
+import type { Row, SqlValue } from '../../common/types.js';
+import { Opcode } from '../../vdbe/opcodes.js';
 
 /**
  * Represents an instance of the vdbe_program virtual table for a specific query.
@@ -45,5 +48,35 @@ export class VdbeProgramTable extends VirtualTable {
 
     async xUpdate(): Promise<{ rowid?: bigint; }> {
         throw new SqliteError("Cannot modify vdbe_program table", StatusCode.READONLY);
+    }
+
+    async* xQuery(_filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+        // VdbeProgramTable iteration doesn't use filterInfo for filtering.
+        // The program is fixed at table connection time.
+        for (let i = 0; i < this.program.instructions.length; i++) {
+            const currentInstr = this.program.instructions[i];
+            const rowId = BigInt(i); // Use address as rowid
+
+            let p4Value: any = currentInstr.p4;
+            if (p4Value !== null && typeof p4Value === 'object') {
+                try {
+                    p4Value = safeJsonStringify(p4Value);
+                } catch {
+                    p4Value = '[unstringifiable P4]';
+                }
+            }
+
+            const row: SqlValue[] = [
+                i,                                           // addr
+                Opcode[currentInstr.opcode],                 // opcode
+                currentInstr.p1,                             // p1
+                currentInstr.p2,                             // p2
+                currentInstr.p3,                             // p3
+                p4Value,                                     // p4
+                currentInstr.p5,                             // p5
+                currentInstr.comment ?? null                 // comment
+            ];
+            yield [rowId, row];
+        }
     }
 }

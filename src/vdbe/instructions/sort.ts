@@ -15,28 +15,28 @@ export function registerHandlers(handlers: Handler[]) {
     const cIdx = inst.p1;
     const sortInfo = inst.p4 as P4SortKey | null;
 
-    const cursor = ctx.getCursor(cIdx);
+    const openCursor = ctx.getCursor(cIdx);
 
-    if (!cursor || !cursor.vtab || !(cursor.vtab instanceof MemoryTable) || !cursor.isEphemeral) {
+    if (!openCursor || !openCursor.vtab || !(openCursor.vtab instanceof MemoryTable) || !openCursor.isEphemeral) {
       throw new SqliteError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
-    if (!cursor.instance || !(cursor.instance instanceof MemoryTableCursor)) {
+    if (!openCursor.instance || !(openCursor.instance instanceof MemoryTableCursor)) {
         throw new SqliteError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!sortInfo || sortInfo.type !== 'sortkey') {
       throw new SqliteError(`Sort requires valid P4SortKey info (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
 
-    const cursorInstance = cursor.instance as MemoryTableCursor;
+    const cursorInstance = openCursor.instance as MemoryTableCursor;
 
     try {
-      // Call the new method on the cursor instance
-      const ephemeralIndex = await cursorInstance.createAndPopulateSorterIndex(sortInfo);
+      // Call the method on the cursor instance.
+      // This method internally sets up the ephemeralSortingIndex and populates sorterResults.
+      await cursorInstance.createAndPopulateSorterIndex(sortInfo);
 
-      // Attach the ephemeral index directly to the cursor instance
-      cursorInstance.ephemeralSortingIndex = ephemeralIndex;
-      // Clear any previous sorted results array if present
-      cursor.sortedResults = null;
+      // The cursor instance manages its internal state (ephemeralSortingIndex, sorterResults).
+      // No need to re-assign ephemeralSortingIndex here.
+      // Also, OpenCursor (openCursor variable) does not have sortedResults property.
     } catch (e) {
       errorLog(`Error creating/populating ephemeral sorter index for cursor ${cIdx}: %O`, e);
       if (e instanceof SqliteError) throw e;
