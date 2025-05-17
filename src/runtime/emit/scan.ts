@@ -34,24 +34,17 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 			throw new SqliterError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof SqliterError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		}
 
-		if (typeof vtabInstance.xOpen !== 'function') {
-			throw new SqliterError(`Virtual table instance for '${tableSchema.name}' does not implement xOpen`, StatusCode.MISUSE);
-		}
+		// TODO: separately converting vtable interface to use async iterable.  Then we can enable the following code.
 
-		// TODO: separately converting vtable interface to use async iterable
-		// return vtabInstance.rows();
-		throw new SqliterError("Not implemented", StatusCode.UNSUPPORTED);
-		// const cursor = await vtabInstance.xOpen();
-		// try {
-		// 	await cursor.next();
-		// 	while (!cursor.eof) {
-		// 		yield cursor.row;
-		// 		await cursor.next();
-		// 	}
-		// } finally {
-		// 	await cursor.close();
-		// 	await vtabInstance.xDisconnect();
+		// const cursor = await vtabInstance.xFilter(plan.idxNum, plan.idxStr, [], [], plan.indexInfo);
+		// let row: Row;
+		// ctx.context.set(plan, () => row);
+		// for (row of cursor) {
+		// 	yield row;
 		// }
+		// ctx.context.delete(plan);
+
+		throw new SqliterError("Not implemented", StatusCode.UNSUPPORTED);
 	}
 
 	return { params: [], run };

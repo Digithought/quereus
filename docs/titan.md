@@ -4,58 +4,57 @@ Mission: Migrate SQLite's compiler and runtime from fragile messes to a robust, 
 
 ## Phases
 
-* Phase I: Robustify existing architecture
-  * Compartmentalize and encapsulate compiler state
-  * Add debug log-points to runtime
-  * Introduce planner - reasons in logical planning nodes - IR between AST and runtime
-  * Initial logical nodes built from AST - optimizer can move them around later
-  * Allow reasoning in Relational Algebra; e.g HAVING becomes mere restriction
-* Phase II: Optimization and serialization
-  * Serialization of plans allows for visualization and debugging
-  * Compiler generates runtime code from logical plan
-  * Query planner adopts current planner to push down predicates, join order, etc.
-* Phase III: Node-based runtime
-  * Runtime is composed of execution nodes, rather than instructions
-  * Composes more like a functional program
-  * In debugging mode, intermediate nodes are placed between runtime nodes to capture state and/or log
-  * Cursor and scalar, async and sync nodes; compiler will transition between them
+*   **Phase I: Core `PlanNode` to `Instruction` Architecture**
+    *   Establish the foundational `PlanNode` hierarchy representing the logical query structure.
+    *   Develop the `Instruction`-based runtime, including the `Instruction` interface, `Scheduler`, and `RuntimeContext`.
+    *   Implement essential `PlanNode` types (e.g., for table scans, literal values, basic expressions) and their corresponding `Instruction` emitters.
+    *   Integrate these components to successfully execute basic SQL queries, thereby validating the core architectural design.
+    *   Set up an initial testing framework and a suite of basic tests.
+*   **Phase II: SQL Feature Completion & Robustness**
+    *   Systematically implement the full range of `PlanNode` types required to cover a comprehensive set of SQL features (e.g., various join types, aggregations, complex subqueries, DML, DDL operations).
+    *   Develop and test `Instruction` emitters for all new `PlanNode` types.
+    *   Implement robust plan serialization capabilities to aid in debugging, visualization, and potentially caching of query plans.
+    *   Achieve comprehensive test coverage for all supported SQL features, including edge cases and error handling.
+*   **Phase III: Optimization, Extensibility, and Advanced Features**
+    *   Develop a sophisticated query optimization layer that operates on the `PlanNode` tree. This includes transformations like predicate pushdown, join reordering, selection of optimal access paths (e.g., index selection), and cost-based optimization.
+    *   Explore and potentially implement alternative execution backends or targets (e.g., re-evaluating VDBE generation from `PlanNode`s if specific use cases demand it, or targeting WebAssembly).
+    *   Enhance debugging capabilities within the runtime, possibly including detailed performance profiling and step-through execution of plans.
+    *   Introduce support for advanced SQL features, user-defined functions/extensions, or other value-added capabilities.
 
-## Phase I: Robustify Compiler Architecture
+## Core Architectural Components
 
-### Compartmentalize and Encapsulate Compiler State
+The new query processing architecture is built upon two primary pillars, designed for clarity, extensibility, and robust execution:
 
-The current `Compiler` class mixes logical query representation, planning information, and VDBE emission state. This makes it difficult to manage, debug, and extend. We will introduce a clear separation between these concerns by:
+1.  **Immutable `PlanNode`s**: These objects represent the logical structure of the query. They are constructed from the Abstract Syntax Tree (AST) and contain all necessary information for their part of the query, but do not directly generate executable code or hold mutable emission state. They form a tree that serves as the input for the runtime generation process.
+2.  **`Instruction`-based Runtime**: The query execution is driven by a graph of `Instruction` objects, which are generated from the `PlanNode` tree. These instructions are managed and executed by a `Scheduler`.
 
-1.  **Defining an `EmissionContext`**: This class/object will be responsible for managing the mutable state related to VDBE code generation.
-2.  **Introducing a Hierarchy of Immutable `PlanNode`s**: These objects will represent the logical structure of the query and its components. They are constructed from the AST and contain all necessary information for their part of the query, but do not directly generate code or hold mutable emission state.
+This separation allows for a modular system where the logical representation of a query is distinct from its physical execution details.
 
-This approach allows for incremental refactoring. Existing compiler functions will first be responsible for building the relevant `PlanNode` and then invoking a method on that node (or a dedicated compiler function) that takes the `EmissionContext` to generate VDBE instructions.
+#### 1. Instruction-based Runtime (Execution Model)
 
-#### 1. EmissionContext (Physical Context)
+Instead of directly emitting VDBE instructions, the planner now facilitates the creation of a tree of `Instruction` objects, which are then executed by a `Scheduler`.
 
-This mutable object will be passed to emission functions and will be responsible for:
-
-*   **VDBE Instructions**: Managing the list of `VdbeInstruction`s.
-    *   `instructions: VdbeInstruction[]`
-    *   `emit(opcode: Opcode, ...)`: Method to add an instruction.
-*   **Constants Pool**:
-    *   `constants: SqlValue[]`
-    *   `addConstant(value: SqlValue): number`: Method to add a constant and get its index.
-*   **Resource Allocation**: Tracking VDBE resources.
-    *   `numMemCells: number`, `numCursors: number`
-    *   `allocateMemoryCells(count: number): number`: Allocates stack slots.
-    *   `allocateCursor(): number`: Allocates a new cursor.
-*   **Jump/Address Management**: Handling placeholders and resolving jump targets.
-    *   `pendingPlaceholders`, `nextPlaceholderId`, `resolvedAddresses`
-    *   `allocateAddress(purpose: string): number`: Gets a placeholder for a future address.
-    *   `resolveAddress(placeholder: number, targetAddress?: number): void`: Sets the target for a placeholder (current address if targetAddress is omitted).
-    *   `getCurrentAddress(): number`
-*   **Subroutine Management**:
-    *   `subroutineCode: VdbeInstruction[]`
-    *   `beginSubroutine(...)`, `endSubroutine()`
-*   **VDBE Stack Frame Management**:
-    *   `stackPointer: number`, `framePointer: number`
-    *   `currentFrameEnterInsn`, `maxLocalOffsetInCurrentFrame`, `subroutineFrameStack`
+*   **`Instruction` Interface**:
+    *   Defines a simple structure, typically with:
+        *   `params: Instruction[]`: An array of child/input `Instruction`s.
+        *   `run(ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue`: A function that executes the logic of this instruction, taking a `RuntimeContext` and the results of its parameter instructions. It can be synchronous or asynchronous.
+*   **Emitters (`emitters.ts`)**:
+    *   A system for translating `PlanNode`s into `Instruction`s.
+    *   `registerEmitter(planNodeType: PlanNodeType, emit: EmitterFunc)`: Used to map a `PlanNodeType` to a specific function that generates an `Instruction` for that node type.
+    *   `emitPlanNode(plan: PlanNode): Instruction`: The core function that takes a `PlanNode` and returns its corresponding `Instruction` by looking up the registered emitter.
+*   **`Scheduler` (`scheduler.ts`)**:
+    *   Responsible for executing the graph of `Instruction`s.
+    *   It takes one or more root `Instruction`s (typically the final output/result of the query).
+    *   It builds an execution plan, determining the order of execution and managing dependencies between instructions.
+    *   The `run(ctx: RuntimeContext)` method executes the plan, handling the flow of data (including promises for async operations) between instructions.
+*   **`RuntimeContext` (`types.ts`)**:
+    *   An object passed to each `Instruction`'s `run` method.
+    *   Contains essential information needed during execution, such as:
+        *   `db: Database`: Access to the database instance (for schema, virtual tables, etc.).
+        *   `stmt: Statement`: The current statement being executed.
+        *   `params: SqlParameters`: The bound parameters for the query.
+*   **Resource Management (Implicit)**:
+    *   Unlike a VDBE context that explicitly manages memory cells and cursors, resource management in the new runtime is more implicit, handled by JavaScript's garbage collection and the lifecycle of objects within the `Instruction` execution (e.g., virtual table cursors managed within their respective `Instruction`s). If a VDBE-like backend were to be targeted in the future, an `EmissionContext` for that specific backend might be reintroduced.
 
 ### 2. Logical Plan Nodes (Immutable Hierarchical Context)
 
@@ -75,8 +74,7 @@ Thinking ahead to a tree-walk emission model, each PlanNode would need to encaps
 *   **`TableScanNode`**:
     *   Target table schema (name, columns, types, keys).
     *   Alias.
-    *   Index to use (if determined by an early planning stage or based on `xBestIndex` results).
-    *   Reference to the virtual table instance or module.
+    *   Reference to the virtual table instance or module (handled by its emitter, e.g., `emitTableScan`).
 *   **`TableSeekNode`**:
     *   Target table schema (name, columns, types, keys).
     *   Alias.
@@ -161,16 +159,20 @@ Each PlanNode operates within a specific scope, defining what data (columns) and
 
 **Transition Strategy:**
 
-The introduction of PlanNodes and the refinement of the `EmissionContext` will be an incremental process:
+The introduction of PlanNodes and the new `Instruction`-based runtime is an incremental process:
 
 1.  **Define Core PlanNode Interfaces/Classes**: Start with a few fundamental PlanNode types (e.g., `TableScanNode`, `FilterNode`, `ProjectNode`, `ExpressionNode` and its basic subtypes).
 2.  **Scope Object**: Define the `Scope` object and its methods for abstracting symbol resolution.
-3.  **Develop Emission Logic & `EmissionContext` Refinement**:
-    *   Solidify the `EmissionContext` interface and implementation as described earlier.
-4.  **Integrate the new emission context**:
-    *   Retrofit existing compiler functions to use the new `EmissionContext` for VDBE code generation.  This way, the old code will continue to work, but actually uses the new emmision logic underneath.  New code will use the new `EmissionContext` directly.
-5.  **Develop PlanNode Emission Functions**:
-    *   Develop planner functions or methods. These will take an AST and output `PlanNode`s.
-6.  **Develop VDBE Emission Module**:
-    *   This system registers a set of emitters that, given a `PlanNode` and an `EmissionContext` will generate the appropriate VDBE instructions.
-    *   the PlanNode tree is then *visited*, applying the appropriate emitter to each node.
+3.  **Develop `Instruction`-based Runtime & Emitters**:
+    *   Solidify the `Instruction` interface, `Scheduler`, and `RuntimeContext`.
+    *   Develop emitter functions (`emitters.ts`) that translate `PlanNode`s into `Instruction` objects.
+4.  **Integrate the new runtime**:
+    *   Planner (`buildBatch`, `buildSelectStmt`, etc.) constructs `PlanNode` trees.
+    *   These `PlanNode` trees are then passed to a system that uses `emitPlanNode` to convert them into a graph of `Instruction`s.
+    *   The `Scheduler` executes these `Instruction`s.
+5.  **Develop PlanNode Construction Logic**:
+    *   Develop planner functions (e.g., in `src/planner/building/`) that take an AST and output `PlanNode`s, using the `Scope` objects for symbol resolution.
+6.  **Iteratively Expand PlanNode and Emitter Coverage**:
+    *   Incrementally add more `PlanNode` types to support a wider range of SQL features.
+    *   For each new `PlanNode`, implement the corresponding emitter function to generate the runtime `Instruction`(s).
+    *   If, in the future, a different execution backend (like VDBE) is desired, a separate set of "emitters" could be developed to translate `PlanNode`s into that target format (e.g., VDBE instructions, using a dedicated `EmissionContext` for that backend).

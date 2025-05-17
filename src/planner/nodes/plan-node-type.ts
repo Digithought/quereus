@@ -10,7 +10,7 @@ export enum PlanNodeType {
   Sort = 'Sort',
   Aggregate = 'Aggregate',
   LimitOffset = 'LimitOffset',
-  Result = 'Result',
+  Batch = 'Result',
 	TableFunctionCall = 'TableFunctionCall',
   TableReference = 'TableReference',
 	TableFunctionReference = 'TableFunctionReference',

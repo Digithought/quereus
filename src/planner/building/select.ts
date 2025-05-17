@@ -1,9 +1,9 @@
 import type * as AST from '../../parser/ast.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import { SqliterError } from '../../common/errors.js';
-import { StatusCode, type SqlParameters } from '../../common/types.js';
+import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
-import { ResultNode } from '../nodes/result.js';
+import { BatchNode } from '../nodes/batch.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { SingleRowNode } from '../nodes/single-row.js';
 import { ColumnReferenceNode, ParameterReferenceNode, TableReferenceNode } from '../nodes/reference.js';
@@ -21,13 +21,13 @@ import { MultiScope } from '../scopes/multi.js';
  *
  * @param stmt The AST.SelectStmt to plan.
  * @param context The parent planning context for this SELECT statement.
- * @returns A ResultNode representing the plan for the SELECT statement.
+ * @returns A BatchNode representing the plan for the SELECT statement.
  * @throws {SqliterError} If the FROM clause is missing, empty, or contains more than one source.
  */
 export function buildSelectStmt(
   stmt: AST.SelectStmt,
   context: PlanningContext,
-): ResultNode {
+): BatchNode {
 
   // Phase 1: Plan FROM clause and determine local input relations for the current select scope
   const fromTables = !stmt.from || stmt.from.length === 0
@@ -48,7 +48,7 @@ export function buildSelectStmt(
 	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
 	const selectContext: PlanningContext = {...context, scope: selectScope};
 
-	let input = fromTables[0]; // Placeholder
+	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
 
 	// TODO: Plan WHERE clause using currentExpressionPlanningContext, potentially creating a FilterNode
 
@@ -68,7 +68,7 @@ export function buildSelectStmt(
   //const projectNode = new ProjectNode(currentScope, filteredInput, projections);
 
 
-	return new ResultNode(selectScope, input);
+	return new BatchNode(selectScope, [input]); // Changed from ResultNode. BatchNode constructor expects an array of statements (PlanNode[]).
 }
 
 export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext): RelationalPlanNode {
@@ -80,12 +80,11 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 		const tableScope = new RegisteredScope(parentContext.scope);
 		fromTable.getType().columns.forEach((c, i) =>
-			tableScope.registerSymbol(c.name, (exp, s) =>
+			tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));
 		if (fromClause.alias) {
-			fromScope = new AliasedScope(tableScope, fromClause.table.name, fromClause.alias);
+			const aliasScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
 		} else {
-			fromScope = tableScope;
 		}
 	} else {
 		throw new SqliterError(
