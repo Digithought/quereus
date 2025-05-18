@@ -1,4 +1,4 @@
-import { BatchNode } from '../nodes/batch.js';
+import { BlockNode } from '../nodes/block.js';
 import * as AST from '../../parser/ast.js';
 import type { Database } from '../../core/database.js';
 import { type SqlParameters, type SqlValue, SqlDataType } from '../../common/types.js';
@@ -8,7 +8,7 @@ import type { PlanNode } from '../nodes/plan-node.js';
 import { buildSelectStmt } from './select.js';
 import { ParameterScope } from '../scopes/param.js';
 
-export function buildBatch(statements: AST.Statement[], db: Database, paramsInfo?: SqlParameters): BatchNode {
+export function buildBlock(statements: AST.Statement[], db: Database, paramsInfo?: SqlParameters): BlockNode {
 	const globalScope = new GlobalScope(db.schemaManager);
 
 	let parameterTypesHint = getParameterTypeHints(paramsInfo);
@@ -31,7 +31,7 @@ export function buildBatch(statements: AST.Statement[], db: Database, paramsInfo
 
     // The final BatchNode for the entire batch.
     // Its scope is batchParameterScope, and it contains all successfully planned statements.
-	return new BatchNode(parameterScope, plannedStatements);
+	return new BlockNode(parameterScope, plannedStatements);
 }
 
 function getParameterTypeHints(paramsInfo: SqlParameters | undefined) {

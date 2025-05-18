@@ -1,9 +1,8 @@
 import { createLogger } from '../common/logger.js';
 import { MisuseError, SqliterError } from '../common/errors.js';
-import { StatusCode } from '../common/types.js';
+import { StatusCode, type Row, type SqlParameters, type SqlValue } from '../common/types.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
-import type { SqlParameters, SqlValue } from '../common/types.js';
 import { SchemaManager } from '../schema/manager.js';
 import type { TableSchema } from '../schema/table.js';
 import type { FunctionSchema } from '../schema/function.js';
@@ -18,11 +17,14 @@ import { QueryPlanModule } from '../vtab/explain/module.js';
 import { VdbeProgramModule } from '../vtab/explain_vdbe/module.js';
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization.js';
-import { Parser } from '../parser/parser.js';
-import { Compiler } from '../compiler/compiler.js';
+import { Parser, ParseError } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
-import type { VdbeProgram } from '../vdbe/program.js';
-import { transformPlannedStepsToQueryPlanSteps, type QueryPlanStep } from './explain.js';
+import { type QueryPlanStep } from './explain.js';
+import { buildBlock } from '../planner/building/block.js';
+import { emitPlanNode } from '../runtime/emitters.js';
+import { Scheduler } from '../runtime/scheduler.js';
+import type { RuntimeContext } from '../runtime/types.js';
+import type { BlockNode } from '../planner/nodes/block.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -89,175 +91,130 @@ export class Database {
 	/**
 	 * Prepares an SQL statement for execution.
 	 * @param sql The SQL string to prepare.
-	 * @returns A Promise resolving to the prepared Statement object.
-	 * @throws SqliteError on failure (e.g., syntax error).
+	 * @returns A Statement object.
+	 * @throws SqliterError on failure (e.g., syntax error).
 	 */
 	prepare(sql: string): Statement {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
-		log('Preparing SQL: %s', sql);
+		this.checkOpen();
+		log('Preparing SQL (new runtime): %s', sql);
 
-		// Create the statement using the standard constructor (compilation deferred)
+		// Statement constructor defers planning/compilation until first step or explicit compile()
 		const stmt = new Statement(this, sql);
 
-		// Attempt initial compilation within prepare to catch immediate parse errors
-		stmt.compile();
-
-		// Add to active statements list *after* successful initial compile check
 		this.statements.add(stmt);
 		return stmt;
 	}
 
 	/**
 	 * Executes one or more SQL statements directly.
-	 * The callback, if provided, is invoked for each result row of the *last* statement executed.
 	 * @param sql The SQL string(s) to execute.
-	 * @param params Optional parameters to bind (only applicable if the SQL string contains exactly one statement).
-	 * @param callback Optional callback to process result rows of the last statement.
+	 * @param params Optional parameters to bind.
 	 * @returns A Promise resolving when execution completes.
-	 * @throws SqliteError on failure.
+	 * @throws SqliterError on failure.
 	 */
 	async exec(
 		sql: string,
-		params?: SqlParameters | ((row: Record<string, SqlValue>, columns: string[]) => void),
-		callback?: (row: Record<string, SqlValue>) => void
+		params?: SqlParameters,
 	): Promise<void> {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+		this.checkOpen();
 
-		// Handle overloaded signature where params is the callback
-		if (typeof params === 'function' && callback === undefined) {
-			callback = params as (row: Record<string, SqlValue>) => void;
-			params = undefined;
-		}
+		log('Executing SQL block (new runtime): %s', sql);
 
-		log('Executing SQL block: %s', sql);
-
-		// 1. Parse all statements
 		const parser = new Parser();
-		const statementsAst = parser.parseAll(sql);
-
-		if (statementsAst.length === 0) {
-			return; // No statements to execute
-		}
-
-		// 2. Check for params with multiple statements (disallowed)
-		if (params && typeof params !== 'function' && statementsAst.length > 1) {
-			throw new MisuseError("Binding parameters is only supported for single-statement execution in exec().");
-		}
-
-		// 3. Determine if implicit transaction is needed
-		let needsImplicitTransaction = false;
-		const hasExplicitTransaction = statementsAst.some(
-			ast => ast.type === 'begin' || ast.type === 'commit' || ast.type === 'rollback' || ast.type === 'savepoint' || ast.type === 'release'
-		);
-		if (statementsAst.length > 1 && !hasExplicitTransaction && this.isAutocommit) {
-			needsImplicitTransaction = true;
-		}
-
-		// 4. Execute statements sequentially
-		const compiler = new Compiler(this);
-		let executionError: Error | null = null;
-
+		let batch: AST.Statement[];
 		try {
-			// 4a. Begin implicit transaction if needed
+			batch = parser.parseAll(sql);
+		} catch (e) {
+			if (e instanceof ParseError) throw new SqliterError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+			throw e;
+		}
+
+		if (batch.length === 0) return;
+
+		const needsImplicitTransaction = batch.length > 1
+			&& this.isAutocommit
+			// has explicit transaction
+			&& !batch.some(
+				ast => ast.type === 'begin' || ast.type === 'commit' || ast.type === 'rollback' || ast.type === 'savepoint' || ast.type === 'release'
+			);
+
+		let executionError: Error | null = null;
+		try {
 			if (needsImplicitTransaction) {
 				debugLog("Exec: Starting implicit transaction for multi-statement block.");
-				// Use internal helper or simplified exec for BEGIN
-				await this._executeSimpleCommand("BEGIN DEFERRED TRANSACTION");
-				this.inTransaction = true; // Manually update state for internal logic
+				await this.execSimple("BEGIN DEFERRED TRANSACTION"); // This will use new Statement logic
+				this.inTransaction = true;
 				this.isAutocommit = false;
 			}
 
-			// 4b. Execute each statement
-			for (let i = 0; i < statementsAst.length; i++) {
-				const ast = statementsAst[i];
-				const isLastStatement = (i === statementsAst.length - 1);
-				let stmt: Statement | null = null;
+			for (let i = 0; i < batch.length; i++) {
+				const statementAst = batch[i];
+				let plan: BlockNode;
 
 				try {
-					// Compile the individual statement
-					const program = compiler.compile(ast, sql);
-					stmt = new Statement(this, sql, program); // Pass program directly
+					// Plan the individual statement within a batch
+					// buildBlock expects an array of statements, and also the full parameters object.
+					// Each statement will be executed with the same parameters.
+					plan = buildBlock([statementAst], this, params);
 
-					// Bind parameters ONLY if it's the *single* statement being executed
-					if (statementsAst.length === 1 && params && typeof params !== 'function') {
-						stmt.bindAll(params);
-					}
+					if (plan.statements.length === 0) continue; // No-op for this AST
 
-					// Execute the statement steps until done/error
-					let resultStatus: StatusCode;
+					// TODO: Optimizer/planner
+					const optimizedPlan = plan;
 
-					do {
-						resultStatus = await stmt.step();
-						if (resultStatus === StatusCode.ROW) {
-							// If it's the last statement and a callback exists, process row
-							if (isLastStatement && callback) {
-								try {
-									callback(stmt.getAsObject());
-								} catch (cbError: any) {
-									errorLog("Error in exec() callback: %O", cbError);
-									// Stop further execution if callback fails?
-									throw new SqliterError(`Callback error: ${cbError.message}`, StatusCode.ABORT, cbError);
-								}
-							}
-						} else if (resultStatus !== StatusCode.DONE && resultStatus !== StatusCode.OK) {
-							// Error occurred during step() - step() should throw the error
-							// If it somehow returns an error code without throwing, create a generic one
-							throw new SqliterError(`VDBE execution failed with status: ${StatusCode[resultStatus] || resultStatus}`, resultStatus);
-						}
-					} while (resultStatus === StatusCode.ROW); // Continue stepping ONLY if a row was returned
+					const rootInstruction = emitPlanNode(optimizedPlan);
+
+					const scheduler = new Scheduler(rootInstruction);
+
+					const runtimeCtx: RuntimeContext = {
+						db: this,
+						stmt: null as any, // No persistent Statement object for transient exec statements
+						params: params ?? {},
+						context: new Map(),
+					};
+
+					void await scheduler.run(runtimeCtx);
+					// Nothing to do with the result, this is executed for side effects only
 
 				} catch (err: any) {
-					executionError = err; // Store the first error encountered (already an Error/SqliteError)
+					executionError = err instanceof SqliterError ? err : new SqliterError(err.message, StatusCode.ERROR, err);
 					break; // Stop processing further statements on error
-				} finally {
-					if (stmt) {
-						await stmt.finalize(); // Finalize the transient statement
-					}
 				}
+				// No explicit finalize for transient plan/scheduler used in exec loop
 			}
 
 		} finally {
-			// 5. Commit or Rollback implicit transaction
 			if (needsImplicitTransaction) {
 				try {
 					if (executionError) {
 						debugLog("Exec: Rolling back implicit transaction due to error.", executionError);
-						await this._executeSimpleCommand("ROLLBACK");
+						await this.execSimple("ROLLBACK");
 					} else {
 						debugLog("Exec: Committing implicit transaction.");
-						await this._executeSimpleCommand("COMMIT");
+						await this.execSimple("COMMIT");
 					}
 				} catch (txError) {
-					// Log error during commit/rollback but don't overwrite original execution error
 					errorLog(`Error during implicit transaction ${executionError ? 'rollback' : 'commit'}: %O`, txError);
 				} finally {
-					// Reset DB state regardless of commit/rollback success/failure
 					this.inTransaction = false;
 					this.isAutocommit = true;
 				}
 			}
 		}
 
-		// 6. Re-throw the execution error if one occurred
 		if (executionError) {
 			throw executionError;
 		}
 	}
 
-	/** @internal Helper to execute simple commands without parameter binding or row results */
-	private async _executeSimpleCommand(sqlCommand: string): Promise<void> {
+	/** Helper to execute simple commands (BEGIN, COMMIT, ROLLBACK) internally
+	 * This method is for commands that don't produce rows and don't need complex parameter handling.
+	*/
+	private async execSimple(sqlCommand: string): Promise<void> {
 		let stmt: Statement | null = null;
 		try {
 			stmt = this.prepare(sqlCommand);
-			const status = await stmt.step();
-			if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-				// step() should have thrown, but if not, throw a generic error
-				throw new SqliterError(`Implicit command '${sqlCommand}' failed with status ${status}`, status);
-			}
+			await stmt.run();
 		} finally {
 			if (stmt) {
 				await stmt.finalize();
@@ -272,18 +229,8 @@ export class Database {
 	 * @param auxData Optional client data passed to xCreate/xConnect.
 	 */
 	registerVtabModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
-		// Delegate to SchemaManager
+		this.checkOpen();
 		this.schemaManager.registerModule(name, module, auxData);
-		// Original logic below is removed:
-		// const lowerName = name.toLowerCase();
-		// if (this.registeredVTabs.has(lowerName)) {
-		// 	throw new SqliterError(`Virtual table module '${name}' already registered`, StatusCode.ERROR);
-		// }
-		// log('Registering VTab module: %s', name);
-		// this.registeredVTabs.set(lowerName, { module, auxData });
 	}
 
 	/**
@@ -291,9 +238,7 @@ export class Database {
 	 * @param mode Transaction mode ('deferred', 'immediate', or 'exclusive').
 	 */
 	async beginTransaction(mode: 'deferred' | 'immediate' | 'exclusive' = 'deferred'): Promise<void> {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+		this.checkOpen();
 
 		if (this.inTransaction) {
 			throw new SqliterError("Transaction already active", StatusCode.ERROR);
@@ -308,9 +253,7 @@ export class Database {
 	 * Commits the current transaction.
 	 */
 	async commit(): Promise<void> {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+		this.checkOpen();
 
 		if (!this.inTransaction) {
 			throw new SqliterError("No transaction active", StatusCode.ERROR);
@@ -325,9 +268,7 @@ export class Database {
 	 * Rolls back the current transaction.
 	 */
 	async rollback(): Promise<void> {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+		this.checkOpen();
 
 		if (!this.inTransaction) {
 			throw new SqliterError("No transaction active", StatusCode.ERROR);
@@ -372,19 +313,17 @@ export class Database {
 	 * Checks if the database connection is in autocommit mode.
 	 */
 	getAutocommit(): boolean {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+		this.checkOpen();
 		return this.isAutocommit;
 	}
 
 	/**
-	 * Programmatically defines or replaces a virtual table in the 'main' schema.
-	 * This is an alternative/supplement to using `CREATE VIRTUAL TABLE`.
+	 * Programmatically defines or replaces a table in the 'main' schema.
+	 * This is an alternative/supplement to using `CREATE TABLE`.
 	 * @param definition The schema definition for the table.
 	 */
-	defineVirtualTable(definition: TableSchema): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
+	defineTable(definition: TableSchema): void {
+		this.checkOpen();
 		if (definition.schemaName !== 'main') {
 			throw new MisuseError("Programmatic definition only supported for 'main' schema currently");
 		}
@@ -425,9 +364,9 @@ export class Database {
 		},
 		func: (...args: any[]) => SqlValue
 	): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
+		this.checkOpen();
 
-		const baseFlags = options.deterministic ? FunctionFlags.DETERMINISTIC | FunctionFlags.UTF8 : FunctionFlags.UTF8;
+		const baseFlags = (options.deterministic ? FunctionFlags.DETERMINISTIC : 0) | FunctionFlags.UTF8;
 		const flags = options.flags ?? baseFlags;
 
 		const schema = createScalarFunction(
@@ -461,7 +400,7 @@ export class Database {
 		stepFunc: (acc: any, ...args: any[]) => any,
 		finalFunc: (acc: any) => SqlValue
 	): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
+		this.checkOpen();
 
 		const flags = options.flags ?? FunctionFlags.UTF8;
 
@@ -486,7 +425,7 @@ export class Database {
 	 * @param schema The FunctionSchema object describing the function.
 	 */
 	registerFunction(schema: FunctionSchema): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
+		this.checkOpen();
 		try {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
@@ -516,54 +455,22 @@ export class Database {
 		importSchemaJsonUtil(this, jsonString);
 	}
 
-	/**
-	 * @deprecated Use setDefaultVtabName and setDefaultVtabArgsFromJson via PRAGMA instead.
-	 * Sets the default virtual table module used when CREATE TABLE is called
-	 * without a USING clause.
-	 */
-	setDefaultVtabModule(name: string, args: string[] = []): void {
-		warnLog("Deprecated: Database.setDefaultVtabModule. Use `PRAGMA default_vtab_module` and `PRAGMA default_vtab_args` which interact with SchemaManager.");
-		// Delegate to SchemaManager
-		this.schemaManager.setDefaultVTabModuleName(name);
-		this.schemaManager.setDefaultVTabArgs(args);
-	}
-
-	/** @internal Sets only the name of the default module. Should be managed by SchemaManager now. */
+	/** Sets only the name of the default module. */
 	setDefaultVtabName(name: string): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
-		warnLog("Database.setDefaultVtabName is forwarding to SchemaManager. Use PRAGMA or direct SchemaManager methods.");
+		this.checkOpen();
 		this.schemaManager.setDefaultVTabModuleName(name);
-		// Original logic:
-		// if (!this.registeredVTabs.has(name.toLowerCase())) {
-		// 	warnLog(`Setting default VTab module to '${name}', which is not currently registered.`);
-		// }
-		// this.defaultVtabModuleName = name;
 	}
 
-	/** @internal Sets the default args directly. Should be managed by SchemaManager now. */
-	private setDefaultVtabArgs(args: string[]): void { // This method was only used by the deprecated setDefaultVtabModule
-		if (!this.isOpen) throw new MisuseError("Database is closed");
-		warnLog("Database.setDefaultVtabArgs is forwarding to SchemaManager. Use PRAGMA or direct SchemaManager methods.");
+	/** Sets the default args directly. */
+	setDefaultVtabArgs(args: string[]): void {
+		this.checkOpen();
 		this.schemaManager.setDefaultVTabArgs(args);
-		// this.defaultVtabModuleArgs = [...args]; // Store a copy // Old implementation
 	}
 
 	/** @internal Sets the default args by parsing a JSON string. Should be managed by SchemaManager now. */
 	setDefaultVtabArgsFromJson(argsJsonString: string): void {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
-		warnLog("Database.setDefaultVtabArgsFromJson is forwarding to SchemaManager. Use PRAGMA or direct SchemaManager methods.");
+		this.checkOpen();
 		this.schemaManager.setDefaultVTabArgsFromJson(argsJsonString);
-		// Original logic:
-		// try {
-		// 	const parsedArgs = JSON.parse(argsJsonString);
-		// 	if (!Array.isArray(parsedArgs) || !parsedArgs.every(arg => typeof arg === 'string')) {
-		// 		throw new Error("JSON value must be an array of strings.");
-		// 	}
-		// 	this.setDefaultVtabArgs(parsedArgs);
-		// } catch (e) {
-		// 	const msg = e instanceof Error ? e.message : String(e);
-		// 	throw new SqliterError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
-		// }
 	}
 
 	/**
@@ -571,14 +478,8 @@ export class Database {
 	 * @returns An object containing the module name and arguments.
 	 */
 	getDefaultVtabModule(): { name: string; args: string[] } {
-		if (!this.isOpen) throw new MisuseError("Database is closed");
-		// Delegate to SchemaManager
+		this.checkOpen();
 		return this.schemaManager.getDefaultVTabModule();
-		// Original logic:
-		// return {
-		// 	name: this.defaultVtabModuleName,
-		// 	args: [...this.defaultVtabModuleArgs],
-		// };
 	}
 
 	/**
@@ -599,9 +500,7 @@ export class Database {
 	 * // SELECT * FROM contacts ORDER BY phone COLLATE PHONENUMBER;
 	 */
 	registerCollation(name: string, func: CollationFunction): void {
-		if (!this.isOpen) {
-			throw new SqliterError("Database is closed", StatusCode.ERROR);
-		}
+		this.checkOpen();
 		registerCollation(name, func);
 		log('Registered collation: %s', name);
 	}
@@ -635,18 +534,22 @@ export class Database {
 	 * }
 	 * ```
 	 */
-	async *eval(sql: string, params?: SqlParameters): AsyncIterableIterator<Record<string, SqlValue>> {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+	async *eval(sql: string, params?: SqlParameters): AsyncIterable<Record<string, SqlValue>> {
+		this.checkOpen();
 
 		let stmt: Statement | null = null;
 		try {
 			stmt = this.prepare(sql);
-			if (params) { stmt.bindAll(params); }
-			log(`eval loop: Starting loop for SQL: ${sql.substring(0, 50)}...`);
-			while ((await stmt.step()) === StatusCode.ROW) {
-				yield stmt.getAsObject();
+			if (stmt.astBatch.length > 1) {
+				log.extend('warn')(`Database.eval called with multi-statement SQL. Only results from the first statement will be yielded.`);
+			}
+
+			if (stmt.astBatch.length > 0) { // Check if there are any statements to execute
+				// If currentAstIndex defaults to 0 and astBatch is not empty, this will run the first statement.
+				yield* stmt.all(params);
+			} else {
+				// No statements, yield nothing.
+				return;
 			}
 		} finally {
 			if (stmt) { await stmt.finalize(); }
@@ -654,9 +557,7 @@ export class Database {
 	}
 
 	getPlanInfo(sqlOrAst: string | AST.AstNode): QueryPlanStep[] {
-		if (!this.isOpen) {
-			throw new MisuseError("Database is closed");
-		}
+		this.checkOpen();
 
 		let ast: AST.AstNode;
 		let originalSqlString: string | undefined = undefined;
@@ -674,31 +575,10 @@ export class Database {
 			ast = sqlOrAst;
 		}
 
-		const compiler = new Compiler(this);
-		if (originalSqlString) {
-			compiler.sql = originalSqlString;
-		} else if (ast.type !== 'select') {
-			compiler.sql = ast.type.toUpperCase();
-		}
+		throw new Error("Not implemented");
+	}
 
-		let program: VdbeProgram;
-		try {
-			program = compiler.compile(ast, originalSqlString ?? compiler.sql);
-		} catch (e: any) {
-			errorLog("Failed to compile for query plan: %O", e);
-			return [{ id: 0, parentId: null, subqueryLevel: 0, op: "ERROR", detail: `Compilation Error: ${e.message}` }];
-		}
-
-		const plannedSteps = program.plannedSteps;
-
-		if (!plannedSteps || plannedSteps.length === 0) {
-			let detail = "No plan steps generated by compiler.";
-			if (ast.type !== 'select' && ast.type !== 'insert' && ast.type !== 'update' && ast.type !== 'delete' && ast.type !== 'with') {
-				detail = `Query Plan generation via plannedSteps focuses on SELECT, INSERT, UPDATE, DELETE, WITH (Actual type: ${ast.type.toUpperCase()})`;
-			}
-			return [{ id: 0, parentId: null, subqueryLevel: 0, op: "INFO", detail }];
-		}
-
-		return transformPlannedStepsToQueryPlanSteps(plannedSteps, null, 0, 0, compiler).steps;
+	private checkOpen(): void {
+		if (!this.isOpen) throw new MisuseError("Database is closed");
 	}
 }

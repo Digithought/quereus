@@ -3,10 +3,11 @@ import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
 import type { PlanNode } from "../planner/nodes/plan-node.js";
 
+
 export type RuntimeContext = {
 	db: Database;
-	stmt: Statement;
-	params: SqlParameters;
+	stmt: Statement | null; // Can be null for transient exec statements
+	params: SqlParameters; // User-provided values for the current execution
 	context: Map<PlanNode, () => SqlValue | Row>;
 };
 
@@ -16,4 +17,3 @@ export type Instruction = {
 	params: Instruction[];
 	run: InstructionRun;
 };
-
