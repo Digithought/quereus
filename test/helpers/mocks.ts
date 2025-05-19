@@ -1,8 +1,9 @@
 // Placeholder for mock VTab modules and helpers
 import type { Database } from '../../src/core/database.js';
 import type { TableSchema } from '../../src/schema/table.js';
-import { type VirtualTableModule, VirtualTable } from '../../src/index.js';
-import type { IndexInfo, IndexConstraint } from '../../src/vtab/indexInfo.js';
+import { VirtualTable } from '../../src/index.js';
+import type { VirtualTableModule } from '../../src/vtab/module.js';
+import type { IndexInfo, IndexConstraint } from '../../src/vtab/index-info.js';
 import { StatusCode, type SqlValue } from '../../src/common/types.js';
 
 // Define BestIndexResult based on IndexInfo fields used

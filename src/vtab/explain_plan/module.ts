@@ -1,11 +1,10 @@
 import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
-import type { QueryPlanStep } from '../../core/explain.js';
 import { buildColumnIndexMap, type TableSchema } from '../../schema/table.js';
 import type { ColumnSchema } from '../../schema/column.js';
 import type { VirtualTableModule } from '../module.js';
-import { QueryPlanTable } from './table.js';
+import { ExplainPlanTable } from './table.js';
 import { SqlDataType } from '../../common/types.js';
 
 // Define the fixed schema for the query_plan function
@@ -48,11 +47,11 @@ const QUERY_PLAN_SCHEMA: TableSchema = Object.freeze({
 }) as TableSchema;
 
 
-export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, { sql: string }> {
+export class ExplainPlanModule implements VirtualTableModule<ExplainPlanTable, { sql: string }> {
 
     constructor() { }
 
-    xCreate(): QueryPlanTable {
+    xCreate(): ExplainPlanTable {
         throw new SqliterError(`Cannot CREATE TABLE using module 'query_plan'`, StatusCode.ERROR);
     }
 
@@ -63,25 +62,19 @@ export class QueryPlanModule implements VirtualTableModule<QueryPlanTable, { sql
         schemaName: string,
         tableName: string,
         options: { sql: string }
-    ): QueryPlanTable {
+    ): ExplainPlanTable {
 
         if (!options || typeof options.sql !== 'string') {
             throw new SqliterError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
         }
 
         const sqlToExplain = options.sql;
-        let planSteps: QueryPlanStep[];
+				const plan = db.getPlan(sqlToExplain);
 
-        try {
-             planSteps = db.getPlanInfo(sqlToExplain);
-        } catch (e: any) {
-            throw new SqliterError(`Failed to generate plan for SQL: ${e.message}`, StatusCode.ERROR, e);
-        }
-
-        return new QueryPlanTable(db, this, tableName, QUERY_PLAN_SCHEMA, planSteps);
+        return new ExplainPlanTable(db, this, tableName, QUERY_PLAN_SCHEMA, plan);
     }
 
-    xDisconnect(table: QueryPlanTable): void { }
+    xDisconnect(table: ExplainPlanTable): void { }
 
     async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> { }
 

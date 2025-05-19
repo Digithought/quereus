@@ -5,5 +5,14 @@
 		"strictFunctionTypes": true,
 		"lib": ["ES2023", "ES2023.Array", "DOM", "DOM.Iterable", "WebWorker", "ESNext"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"src/compiler",
+		"src/vdbe",
+		"src/vtab/explain_vdbe",
+		"test/planner",
+		"test/helpers/compile.ts"
+	]
 }

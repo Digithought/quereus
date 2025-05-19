@@ -5,7 +5,7 @@ import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSch
 import { MemoryTable } from './table.js';
 import type { VirtualTableModule } from '../module.js';
 import { IndexConstraintOp } from '../../common/constants.js';
-import type { IndexInfo } from '../indexInfo.js';
+import type { IndexInfo } from '../index-info.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
 import { createLogger } from '../../common/logger.js';

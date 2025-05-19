@@ -1,5 +1,5 @@
 import { createLogger } from '../common/logger.js';
-import { type SqlValue, StatusCode, type Row, type SqlParameters, type SqlDataType, type DeepReadonly } from '../common/types.js';
+import { type SqlValue, StatusCode, type Row, type SqlParameters, type DeepReadonly } from '../common/types.js';
 import { MisuseError, SqliterError } from '../common/errors.js';
 import type { Database } from './database.js';
 import { isRelationType, type ColumnDef, type ScalarType } from '../common/datatype.js';
@@ -134,15 +134,14 @@ export class Statement {
 	/**
 	 * Binds all user-provided argument values for the current statement.
 	 */
-	bindAll(args: SqlParameters): this {
+	bindAll(args: SqlParameters | SqlValue[]): this {
 		this.validateStatement("bind all parameters for");
 		if (this.busy) throw new MisuseError("Statement busy, reset first");
 		this.boundArgs = {};
 		if (Array.isArray(args)) {
-			for (let i = 0; i < args.length; i++) {
-				this.boundArgs[i + 1] = args[i];
-			}
-		} else if (typeof args === 'object' && args !== null) {
+			args = { ...args };
+		}
+		if (typeof args === 'object' && args !== null) {
 			Object.assign(this.boundArgs, args);
 		} else {
 			throw new MisuseError("Invalid parameters type for bindAll. Use array or object.");
@@ -160,7 +159,7 @@ export class Statement {
 		return isRelationType(relationType);
 	}
 
-	async *iterateRows(params?: SqlParameters): AsyncIterable<Row> {
+	async *iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
 		this.validateStatement("iterate rows for");
 		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
 
@@ -240,7 +239,7 @@ export class Statement {
 	/**
 	 * Executes the prepared statement with the given parameters until completion.
 	 */
-	async run(params?: SqlParameters): Promise<void> {
+	async run(params?: SqlParameters | SqlValue[]): Promise<void> {
 		this.validateStatement("run");
 		for await (const _ of this.iterateRows(params)) { /* Consume */ }
 	}
@@ -248,7 +247,7 @@ export class Statement {
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves the first result row.
 	 */
-	async get(params?: SqlParameters): Promise<Record<string, SqlValue> | undefined> {
+	async get(params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
 		this.validateStatement("get first row for");
 		const names = this.getColumnNames();
 		for await (const rowArray of this.iterateRows(params)) {
@@ -264,7 +263,7 @@ export class Statement {
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves all result rows.
 	 */
-	async *all(params?: SqlParameters): AsyncIterable<Record<string, SqlValue>> {
+	async *all(params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
 		this.validateStatement("get all rows for");
 		const names = this.getColumnNames();
 		for await (const rowArray of this.iterateRows(params)) {

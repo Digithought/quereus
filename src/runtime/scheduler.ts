@@ -1,13 +1,12 @@
-import { SqliteError, StatusCode } from "../index.js";
 import type { Instruction, RuntimeContext } from "./types.js";
 import type { OutputValue, RuntimeValue } from "../common/types.js";
 
 type ResultDestination = number | null;
 
 export class Scheduler {
-	private readonly instructions: Instruction[] = [];
+	readonly instructions: Instruction[] = [];
 	/** Index of the instruction that consumes the output of each instruction. */
-	private readonly destinations: ResultDestination[];
+	readonly destinations: ResultDestination[];
 
 	constructor(root: Instruction) {
 		const argIndexes: number[][] = [];

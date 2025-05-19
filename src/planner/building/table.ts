@@ -6,7 +6,7 @@ import { TableScanNode } from '../nodes/scan.js';
 import type { PlanningContext } from '../planning-context.js';
 import { resolveTable } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
-import type { IndexInfo, IndexConstraintUsage } from '../../vtab/indexInfo.js';
+import type { IndexInfo, IndexConstraintUsage } from '../../vtab/index-info.js';
 import type { FilterInfo } from '../../vtab/filter-info.js';
 
 /**

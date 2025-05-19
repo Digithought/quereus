@@ -1,6 +1,6 @@
 import { createLogger } from '../common/logger.js';
 import { MisuseError, SqliterError } from '../common/errors.js';
-import { StatusCode, type Row, type SqlParameters, type SqlValue } from '../common/types.js';
+import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import { SchemaManager } from '../schema/manager.js';
@@ -13,13 +13,12 @@ import { MemoryTableModule } from '../vtab/memory/module.js';
 import { JsonEachModule } from '../vtab/json/each.js';
 import { JsonTreeModule } from '../vtab/json/tree.js';
 import { SchemaTableModule } from '../vtab/schema/table.js';
-import { QueryPlanModule } from '../vtab/explain/module.js';
-import { VdbeProgramModule } from '../vtab/explain_vdbe/module.js';
+import { ExplainPlanModule } from '../vtab/explain_plan/module.js';
+import { ExplainProgramModule } from '../vtab/explain_code/module.js';
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
-import { type QueryPlanStep } from './explain.js';
 import { buildBlock } from '../planner/building/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
@@ -28,6 +27,7 @@ import type { BlockNode } from '../planner/nodes/block.js';
 import type { PlanningContext } from '../planner/planning-context.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
+import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -62,8 +62,8 @@ export class Database {
 		this.schemaManager.registerModule('json_each', new JsonEachModule());
 		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
 		this.schemaManager.registerModule('_schema', new SchemaTableModule());
-		this.schemaManager.registerModule('query_plan', new QueryPlanModule());
-		this.schemaManager.registerModule('vdbe_program', new VdbeProgramModule());
+		this.schemaManager.registerModule('query_plan', new ExplainPlanModule());
+		this.schemaManager.registerModule('vdbe_program', new ExplainProgramModule());
 
 		// Register built-in collations
 		this.registerDefaultCollations();
@@ -502,14 +502,14 @@ export class Database {
 	 * }
 	 * ```
 	 */
-	async *eval(sql: string, params?: SqlParameters): AsyncIterable<Record<string, SqlValue>> {
+	async *eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
 		this.checkOpen();
 
 		let stmt: Statement | null = null;
 		try {
 			stmt = this.prepare(sql);
 			if (stmt.astBatch.length > 1) {
-				log.extend('warn')(`Database.eval called with multi-statement SQL. Only results from the first statement will be yielded.`);
+				warnLog(`Database.eval called with multi-statement SQL. Only results from the first statement will be yielded.`);
 			}
 
 			if (stmt.astBatch.length > 0) { // Check if there are any statements to execute
@@ -524,7 +524,7 @@ export class Database {
 		}
 	}
 
-	getPlanInfo(sqlOrAst: string | AST.AstNode): QueryPlanStep[] {
+	getPlan(sqlOrAst: string | AST.AstNode): PlanNode {
 		this.checkOpen();
 
 		let ast: AST.AstNode;
@@ -537,13 +537,13 @@ export class Database {
 				ast = parser.parse(originalSqlString);
 			} catch (e: any) {
 				errorLog("Failed to parse SQL for query plan: %O", e);
-				return [{ id: 0, parentId: null, subqueryLevel: 0, op: "ERROR", detail: `Parse Error: ${e.message}` }];
+				throw new SqliterError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
 			}
 		} else {
 			ast = sqlOrAst;
 		}
 
-		throw new Error("Not implemented");
+		return this._buildPlan([ast as AST.Statement]);
 	}
 
 	/** @internal */
@@ -564,7 +564,7 @@ export class Database {
 	}
 
 	/** @internal */
-	_buildPlan(statements: AST.Statement[], params?: SqlParameters) {
+	_buildPlan(statements: AST.Statement[], params?: SqlParameters | SqlValue[]) {
 		const globalScope = new GlobalScope(this.schemaManager);
 
 		// TODO: way to generate type hints from parameters?  Maybe we should extract that from the expression context?

@@ -1,5 +1,5 @@
 import type { SqlValue } from '../common/types.js';
-import type { IndexConstraint, IndexInfo } from './indexInfo.js';
+import type { IndexConstraint, IndexInfo } from './index-info.js';
 
 /**
  * Structure to pass all necessary filter and planning information

@@ -1,6 +1,6 @@
 import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
-import type { IndexInfo } from '../indexInfo.js';
+import type { IndexInfo } from '../index-info.js';
 import { type SqlValue, StatusCode, SqlDataType, type Row, type RowIdRow } from '../../common/types.js';
 import { SqliterError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
@@ -8,7 +8,7 @@ import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/bu
 import type { TableSchema } from '../../schema/table.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
-import type { IndexConstraint } from '../indexInfo.js';
+import type { IndexConstraint } from '../index-info.js';
 import { jsonStringify } from '../../util/serialization.js';
 import type { FilterInfo } from '../filter-info.js';
 

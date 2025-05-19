@@ -1,6 +1,6 @@
 import type { Database } from '../core/database.js'; // Assuming Database class exists
 import type { VirtualTable } from './table.js';
-import type { IndexInfo } from './indexInfo.js';
+import type { IndexInfo } from './index-info.js';
 import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema } from '../schema/table.js'; // Add import for TableSchema
 
