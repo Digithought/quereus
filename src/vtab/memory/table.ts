@@ -1,13 +1,11 @@
 // src/vtab/memory/table.ts
 import { VirtualTable } from '../table.js';
-import type { VirtualTableCursor } from '../cursor.js'; // Restored for xOpen
 import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
-import type { SqlValue, Row } from '../../common/types.js';
+import type { SqlValue, Row, RowIdRow } from '../../common/types.js';
 import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
-import { MemoryTableCursor } from './cursor.js'; // Restored for xOpen
 import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
@@ -66,16 +64,8 @@ export class MemoryTable extends VirtualTable {
 		return this.connection;
 	}
 
-	/**
-	 * Opens a cursor for this connection's view of the table.
-	 */
-	async xOpen(): Promise<VirtualTableCursor<this>> {
-		const conn = this.ensureConnection();
-		return new MemoryTableCursor(this, conn);
-	}
-
 	// New xQuery method for direct async iteration
-	async* xQuery(filterInfo: FilterInfo): AsyncIterable<[rowid: bigint, row: Row]> {
+	async* xQuery(filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
 		const conn = this.ensureConnection();
 		const currentSchema = this.getSchema();
 		if (!currentSchema) {
@@ -88,14 +78,16 @@ export class MemoryTable extends VirtualTable {
 		const cursor = conn.createLayerCursor(plan);
 		try {
 			while (!cursor.isEof()) {
-				const rowObject = cursor.getCurrentRowObject(); // This is MemoryTableRow
+				const rowObject = cursor.getCurrentRowObject(); // This is MemoryTableRow: [rowid, data_array]
 				if (rowObject) {
-					yield [rowObject[0], rowObject[1]]; // Yield [rowid, data_array]
+					yield rowObject; // Yield [rowid, data_array] which is RowIdRow compatible
 				}
 				await cursor.next();
 			}
 		} finally {
-			await cursor.close();
+			// LayerCursorInternal might not have an async close, ensure it's handled if it does.
+			// For now, assuming close is synchronous as per LayerCursorInternal interface.
+			cursor.close();
 		}
 	}
 

@@ -1,8 +1,7 @@
 import { VirtualTable } from '../table.js';
-import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
-import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
+import { type SqlValue, StatusCode, SqlDataType, type Row, type RowIdRow } from '../../common/types.js';
 import { SqliterError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
@@ -11,7 +10,7 @@ import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { IndexConstraint } from '../indexInfo.js';
 import { jsonStringify } from '../../util/serialization.js';
-import type { SqliterContext } from '../../func/context.js';
+import type { FilterInfo } from '../filter-info.js';
 
 /**
  * Configuration interface for JSON virtual tables
@@ -86,10 +85,6 @@ class JsonTreeTable extends VirtualTable {
 		});
 	}
 
-	async xOpen(): Promise<JsonTreeCursor<this>> {
-		return new JsonTreeCursor(this);
-	}
-
 	xBestIndex(indexInfo: IndexInfo): number {
 		indexInfo.estimatedCost = 100000;
 		indexInfo.idxNum = 0;
@@ -119,83 +114,14 @@ class JsonTreeTable extends VirtualTable {
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
 
-	async* xQuery(filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
-		// JsonTree doesn't typically use filterInfo for complex filtering via xBestIndex.
+	async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
 		const rootPath = this.rootPath;
 		let startNode = this.parsedJson;
 		if (rootPath) {
 			startNode = evaluateJsonPathBasic(startNode, rootPath);
 		}
 
-		const cursor = new JsonTreeCursor(this); // Transient cursor to access generator
-		const internalGenerator = cursor['_internalIteratorGenerator'](startNode, rootPath);
-
-		for await (const CrtRwDt of internalGenerator) {
-			if (!CrtRwDt) continue;
-			const rowId = BigInt(CrtRwDt.id as number);
-			const row: SqlValue[] = [
-				CrtRwDt.key,
-				CrtRwDt.value, // Placeholder
-				CrtRwDt.type,
-				CrtRwDt.atom,
-				CrtRwDt.id,
-				CrtRwDt.parent,
-				CrtRwDt.fullkey,
-				CrtRwDt.path
-			];
-
-			const valueColumnIndex = JSON_TREE_COLUMN_MAP.get('value');
-			if (valueColumnIndex === undefined) {
-				throw new SqliterError("Internal error: 'value' column not found in JSON_TREE_COLUMN_MAP during xQuery", StatusCode.INTERNAL);
-			}
-
-			if (CrtRwDt.type === 'object' || CrtRwDt.type === 'array') {
-				const originalValue = (CrtRwDt as any)._originalValue;
-				row[valueColumnIndex] = originalValue !== undefined ? jsonStringify(originalValue) : null;
-			} else {
-				row[valueColumnIndex] = CrtRwDt.value ?? null;
-			}
-			yield [rowId, row];
-		}
-	}
-}
-
-/**
- * Represents the state of a depth-first iteration through the JSON structure
- */
-interface IterationState {
-	value: any;
-	parentPath: string;
-	parentKey: string | number | null;
-	parentId: number;
-	childrenPushed: boolean;
-}
-
-/**
- * Cursor implementation for json_tree table
- * Uses depth-first traversal, including both nodes and their children
- */
-class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
-	private stack: IterationState[] = [];
-	private currentRowData: Record<string, SqlValue> | null = null;
-	private elementIdCounter: number = 0;
-	private internalIterator: AsyncIterator<Record<string, SqlValue> | null> | null = null;
-
-	constructor(table: T) {
-		super(table);
-		this._isEof = true;
-	}
-
-	reset(): void {
-		this.stack = [];
-		this.currentRowData = null;
-		this._isEof = true;
-		this.elementIdCounter = 0;
-		this.internalIterator = null;
-	}
-
-	private async* _internalIteratorGenerator(startNode: any, _initialRootPath: string | null): AsyncIterable<Record<string, SqlValue>> {
-		const localStack: IterationState[] = [];
+		const localStack: { value: any; parentPath: string; parentKey: string | number | null; parentId: number; childrenPushed: boolean; }[] = [];
 		let localElementIdCounter = 0;
 
 		if (startNode !== undefined) {
@@ -220,20 +146,20 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 				const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
 				const type = getJsonType(value);
 				const atom = !isContainer ? value : null;
+				const valueForColumn = isContainer ? jsonStringify(value) : value;
 
-				const generatedRow: Record<string, SqlValue> = {
-					key: key,
-					value: isContainer ? jsonStringify(value) : value,
-					type: type,
-					atom: atom,
-					id: id,
-					parent: state.parentId,
-					fullkey: fullkey,
-					path: path,
-					_originalValue: value,
-				};
+				const row: Row = [
+					key,
+					valueForColumn,
+					type,
+					atom,
+					id,
+					state.parentId,
+					fullkey,
+					path
+				];
 				state.childrenPushed = true;
-				yield generatedRow;
+				yield [BigInt(id), row];
 
 				if (isContainer) {
 					const parentIdForRow = id;
@@ -266,106 +192,6 @@ class JsonTreeCursor<T extends JsonTreeTable> extends VirtualTableCursor<T> {
 			}
 			localStack.pop();
 		}
-	}
-
-	async filter(
-		_idxNum: number,
-		_idxStr: string | null,
-		_constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>,
-		_args: ReadonlyArray<SqlValue>
-	): Promise<void> {
-		this.reset();
-		const rootPath = this.table.rootPath;
-		let startNode = this.table.parsedJson;
-		if (rootPath) {
-			startNode = evaluateJsonPathBasic(startNode, rootPath);
-		}
-		this.internalIterator = this._internalIteratorGenerator(startNode, rootPath)[Symbol.asyncIterator]();
-		await this.next();
-	}
-
-	async next(): Promise<void> {
-		if (this._isEof || !this.internalIterator) return;
-		const result = await this.internalIterator.next();
-		if (result.done) {
-			this._isEof = true;
-			this.currentRowData = null;
-		} else {
-			this._isEof = false;
-			this.currentRowData = result.value;
-		}
-	}
-
-	column(context: SqliterContext, index: number): number {
-		if (!this.currentRowData) {
-			context.resultNull();
-			return StatusCode.OK;
-		}
-		const colName = JSON_TREE_COLUMNS[index]?.name;
-
-		if (colName === 'value') {
-			const type = this.currentRowData['type'];
-			if (type === 'object' || type === 'array') {
-				const originalValue = (this.currentRowData as any)._originalValue;
-				context.resultValue(originalValue !== undefined ? jsonStringify(originalValue) : null);
-			} else {
-				context.resultValue(this.currentRowData[colName] ?? null);
-			}
-		} else {
-			context.resultValue(this.currentRowData[colName] ?? null);
-		}
-		return StatusCode.OK;
-	}
-
-	async rowid(): Promise<bigint> {
-		if (!this.currentRowData) {
-			throw new SqliterError("Cursor is not pointing to a valid row", StatusCode.MISUSE);
-		}
-		const id = this.currentRowData['id'];
-		if (typeof id === 'number') {
-			return BigInt(id);
-		}
-		throw new SqliterError("Cannot get rowid for json_tree cursor (missing ID)", StatusCode.INTERNAL);
-	}
-
-	async* rows(): AsyncIterable<Row> {
-		if (this.eof()) {
-			return;
-		}
-
-		// Create a dummy context for calling this.column()
-		// This is okay because JsonTreeCursor.column() doesn't actually use the context.
-		const dummyContext: SqliterContext = {
-			setAuxData: (_N: number, _data: unknown) => { /* no-op */ },
-			resultBlob: () => { /* no-op */ },
-			resultDouble: () => { /* no-op */ },
-			resultError: () => { /* no-op */ },
-			resultInt: () => { /* no-op */ },
-			resultInt64: () => { /* no-op */ },
-			resultNull: () => { /* no-op */ },
-			resultText: () => { /* no-op */ },
-			resultValue: () => { /* no-op */ },
-			resultZeroblob: () => { /* no-op */ },
-			resultSubtype: () => { /* no-op */ },
-			getUserData: () => null,
-			getDbConnection: () => this.table.db, // Provide actual db connection
-			getAuxData: (_N: number) => undefined,
-			getAggregateContext: () => undefined,
-			setAggregateContext: () => { /* no-op */ },
-		};
-
-		while (!this.eof()) {
-			const row: SqlValue[] = [];
-			for (let i = 0; i < this.table.tableSchema.columns.length; i++) {
-				row.push(this.column(dummyContext, i));
-			}
-			yield row;
-			await this.next();
-		}
-	}
-
-	async close(): Promise<void> {
-		this.reset();
 	}
 }
 

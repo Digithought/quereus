@@ -3,11 +3,9 @@ import type { QueryPlanModule } from './module.js';
 import type { Database } from '../../core/database.js';
 import type { QueryPlanStep } from '../../core/explain.js';
 import type { TableSchema } from '../../schema/table.js';
-import { QueryPlanCursor } from './cursor.js';
 import { SqliterError } from '../../common/errors.js';
-import { StatusCode } from '../../common/types.js';
-import { VirtualTableCursor } from '../cursor.js';
-import type { SqlValue, Row } from '../../common/types.js';
+import { StatusCode, type Row, type SqlValue, type RowIdRow } from '../../common/types.js';
+import type { FilterInfo } from '../filter-info.js';
 
 /**
  * Represents an instance of the query_plan virtual table for a specific query.
@@ -40,10 +38,6 @@ export class QueryPlanTable extends VirtualTable {
     // Override xBestIndex - not needed as module handles it
     // xBestIndex(...) { ... }
 
-    async xOpen(): Promise<VirtualTableCursor<this>> {
-        return new QueryPlanCursor(this, this.planSteps) as unknown as VirtualTableCursor<this>;
-    }
-
     // Implement required abstract methods
     async xDisconnect(): Promise<void> {
         // No resources to release for this table instance
@@ -56,11 +50,12 @@ export class QueryPlanTable extends VirtualTable {
     // Other methods like xUpdate, xBegin etc. are not applicable
     // and will likely throw errors if called via base class or VDBE misuse.
 
-    async* xQuery(_filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
-        // QueryPlanTable iteration doesn't use filterInfo for filtering itself.
+    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+        // QueryPlanTable iteration doesn't typically use filterInfo for filtering itself.
         // The planSteps are fixed at table connection time.
+        // Column order must match QUERY_PLAN_COLUMNS in module.ts
         for (const currentStep of this.planSteps) {
-            const rowId = BigInt(currentStep.id);
+            const rowId = BigInt(currentStep.id); // Assuming id can be safely cast to BigInt for rowid
             const row: SqlValue[] = [
                 currentStep.id,
                 currentStep.parentId ?? null,
@@ -70,7 +65,7 @@ export class QueryPlanTable extends VirtualTable {
                 currentStep.objectName ?? null,
                 currentStep.alias ?? null,
                 currentStep.estimatedCost ?? null,
-                (currentStep.estimatedRows === undefined || currentStep.estimatedRows === null) ? null : ((typeof currentStep.estimatedRows === 'bigint' && currentStep.estimatedRows <= BigInt(Number.MAX_SAFE_INTEGER) && currentStep.estimatedRows >= BigInt(Number.MIN_SAFE_INTEGER)) ? Number(currentStep.estimatedRows) : currentStep.estimatedRows),
+                (currentStep.estimatedRows === undefined || currentStep.estimatedRows === null) ? null : ((typeof currentStep.estimatedRows === 'bigint' && currentStep.estimatedRows <= BigInt(Number.MAX_SAFE_INTEGER) && currentStep.estimatedRows >= BigInt(Number.MIN_SAFE_INTEGER)) ? Number(currentStep.estimatedRows) : String(currentStep.estimatedRows)), // Convert BigInt to number or string
                 currentStep.idxNum ?? null,
                 currentStep.idxStr ?? null,
                 currentStep.orderByConsumed ? 1 : 0,

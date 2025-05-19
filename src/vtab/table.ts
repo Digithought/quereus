@@ -1,8 +1,7 @@
 import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { VirtualTableCursor } from './cursor.js'; // Restored import
-import type { SqlValue, Row } from '../common/types.js'; // Added Row
+import type { SqlValue, Row, RowIdRow } from '../common/types.js'; // Added RowIdRow, removed VirtualTableCursor
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js'; // Import FilterInfo
 
@@ -41,21 +40,13 @@ export abstract class VirtualTable {
 	abstract xDisconnect(): Promise<void>;
 
 	/**
-	 * Creates a new cursor for scanning this virtual table.
-	 * The cursor is then configured by calling its filter() method.
-	 * @returns A new cursor instance for this table
-	 * @throws SqliteError on failure
-	 */
-	abstract xOpen(): Promise<VirtualTableCursor<this>>; // Reverted to cursor-based signature
-
-	/**
 	 * (Optional) Opens a direct data stream for this virtual table based on filter criteria.
 	 * This is an alternative to the cursor-based xOpen/filter/next model.
 	 * @param filterInfo Information from xBestIndex and query parameters.
-	 * @returns An AsyncIterable yielding [rowid, Row] tuples.
+	 * @returns An AsyncIterable yielding RowIdRow tuples ([rowid, Row]).
 	 * @throws SqliteError on failure
 	 */
-	xQuery?(filterInfo: FilterInfo): AsyncIterable<[rowid: bigint, row: Row]>; // New optional method
+	xQuery?(filterInfo: FilterInfo): AsyncIterable<RowIdRow>;
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation
@@ -109,13 +100,6 @@ export abstract class VirtualTable {
 	 * @param savepointIndex The savepoint identifier
 	 */
 	xRollbackTo?(savepointIndex: number): Promise<void>;
-
-	/**
-	 * Checks if the given name would conflict with this table's shadow names
-	 * @param name The name to check
-	 * @returns true if there's a conflict
-	 */
-	xShadowName?(name: string): boolean;
 
 	/**
 	 * Modifies the schema of this virtual table

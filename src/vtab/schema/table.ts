@@ -1,11 +1,9 @@
 import { VirtualTable } from '../table.js';
-import { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../indexInfo.js';
-import { StatusCode, SqlDataType, type SqlValue, type Row } from '../../common/types.js';
+import { StatusCode, SqlDataType, type SqlValue, type Row, type RowIdRow } from '../../common/types.js';
 import { SqliterError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
-import type { SqliterContext } from '../../func/context.js';
 import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -13,6 +11,7 @@ import type { IndexConstraint } from '../indexInfo.js';
 import { IndexConstraintOp } from '../../common/constants.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
+import type { FilterInfo } from '../filter-info.js';
 
 /**
  * Structure of rows returned by _schema
@@ -40,10 +39,6 @@ function stringifyCreateFunction(func: FunctionSchema): string {
  * Virtual Table implementation for _schema
  */
 class SchemaTable extends VirtualTable {
-	async xOpen(): Promise<SchemaTableCursor<this>> {
-		return new SchemaTableCursor(this);
-	}
-
 	getSchema(): TableSchema | undefined {
 		const module = this.module as SchemaTableModule;
 		if (!module || !SchemaTableModule.COLUMNS) {
@@ -70,14 +65,21 @@ class SchemaTable extends VirtualTable {
 	}
 
 	xBestIndex(indexInfo: IndexInfo): number {
-		// Always a full table scan
 		indexInfo.idxNum = 0;
 		indexInfo.estimatedCost = 1000.0;
 		indexInfo.estimatedRows = BigInt(100);
 		indexInfo.orderByConsumed = false;
 		indexInfo.idxFlags = 0;
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
-		indexInfo.idxStr = "fullscan";
+
+		let currentArgvIndex = 1;
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, (_, i) => {
+			const constraint = indexInfo.aConstraint[i];
+			if (constraint.usable) {
+				return { argvIndex: currentArgvIndex++, omit: false };
+			}
+			return { argvIndex: 0, omit: false };
+		});
+		indexInfo.idxStr = "filtered_scan";
 		return StatusCode.OK;
 	}
 
@@ -98,14 +100,10 @@ class SchemaTable extends VirtualTable {
 	async xRelease(iSavepoint: number): Promise<void> {}
 	async xRollbackTo(iSavepoint: number): Promise<void> {}
 
-	xShadowName?(name: string): boolean {
-		return false;
-	}
-
 	async xDisconnect(): Promise<void> {}
 	async xDestroy(): Promise<void> {}
 
-	async* xQuery(filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+	private async* _generateSchemaRows(filterInfo: FilterInfo): AsyncIterable<SchemaRow> {
 		const { constraints, args } = filterInfo;
 
 		// Use the cursor's internal generator directly.
@@ -154,7 +152,9 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 				}
 				let createSql: string | null = null;
 				try {
-					createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(...)`;
+					createSql = tableSchema.vtabModuleName
+						? `CREATE VIRTUAL TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(...)`
+						: `CREATE TABLE "${tableSchema.name}"(...)`;
 				} catch (e) {
 					createSql = null;
 				}
@@ -167,8 +167,7 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 					_rowid_: rowidCounter++,
 				});
 			}
-			// Process Functions
-			for (const funcSchema of schema._getAllFunctions()) {
+			for (const funcSchema of schemaInstance._getAllFunctions()) {
 				generatedRows.push({
 					type: 'function',
 					name: funcSchema.name,
@@ -183,70 +182,35 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 		processSchema(schemaManager.getMainSchema());
 		processSchema(schemaManager.getTempSchema());
 
-		if (constraints.length > 0 && args.length > 0) {
-			generatedRows = generatedRows.filter(row => {
-				for (const { constraint, argvIndex } of constraints) {
-					if (constraint.usable === false || argvIndex <= 0) continue;
-					const columnIndex = constraint.iColumn;
-					const op = constraint.op;
-					const valueToCompare = args[argvIndex - 1];
-					if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) return false;
-					const columnName = SchemaTableModule.COLUMNS[columnIndex].name as keyof SchemaRow;
-					const rowValue = row[columnName];
-					const comparisonResult = compareSqlValues(rowValue, valueToCompare);
-					let match = false;
-					switch (op) {
-						case IndexConstraintOp.EQ: match = comparisonResult === 0; break;
-						case IndexConstraintOp.GT: match = comparisonResult > 0; break;
-						case IndexConstraintOp.LE: match = comparisonResult <= 0; break;
-						case IndexConstraintOp.LT: match = comparisonResult < 0; break;
-						case IndexConstraintOp.GE: match = comparisonResult >= 0; break;
-						case IndexConstraintOp.NE: match = comparisonResult !== 0; break;
-						case IndexConstraintOp.ISNULL: match = rowValue === null; break;
-						case IndexConstraintOp.ISNOTNULL: match = rowValue !== null; break;
-						case IndexConstraintOp.IS: match = (rowValue === null && valueToCompare === null) || comparisonResult === 0; break;
-						case IndexConstraintOp.ISNOT: match = !((rowValue === null && valueToCompare === null) || comparisonResult === 0); break;
-						default: return false;
-					}
-					if (!match) return false;
+		for (const schemaRow of generatedRows) {
+			let matchesAllConstraints = true;
+			for (const { constraint, argvIndex } of constraints) {
+				if (constraint.usable === false || argvIndex <= 0) continue;
+				const columnIndex = constraint.iColumn;
+				const op = constraint.op;
+				const valueToCompare = args[argvIndex - 1];
+
+				if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) {
+					matchesAllConstraints = false; break;
 				}
-				return true;
-			});
-		}
-		for (const row of generatedRows) {
-			yield row;
-		}
-	}
-
-	reset(): void {
-		this.schemaRowsData = [];
-		this.currentIndex = -1;
-		this._isEof = true;
-		this.internalIterator = null;
-		this.currentFilteredRows = [];
-		this.currentIteratorIndex = -1;
-	}
-
-	getCurrentRow(): SchemaRow | null {
-		if (this._isEof || this.currentIteratorIndex < 0 || this.currentIteratorIndex >= this.currentFilteredRows.length) {
-			return null;
-		}
-		return this.currentFilteredRows[this.currentIteratorIndex];
-	}
-
-	getCurrentRowId(): bigint | null {
-		const row = this.getCurrentRow();
-		return row?._rowid_ ?? null;
-	}
-
-	async filter(idxNum: number, idxStr: string | null, constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): Promise<void> {
-		this.reset();
-		this.internalIterator = this._internalIteratorGenerator(constraints, args)[Symbol.asyncIterator]();
-
-		let result = await this.internalIterator.next();
-		while (!result.done) {
-			if (result.value) {
-				this.currentFilteredRows.push(result.value);
+				const columnName = SchemaTableModule.COLUMNS[columnIndex].name as keyof SchemaRow;
+				const rowValue = schemaRow[columnName];
+				const comparisonResult = compareSqlValues(rowValue, valueToCompare);
+				let currentConstraintMatch = false;
+				switch (op) {
+					case IndexConstraintOp.EQ: currentConstraintMatch = comparisonResult === 0; break;
+					case IndexConstraintOp.GT: currentConstraintMatch = comparisonResult > 0; break;
+					case IndexConstraintOp.LE: currentConstraintMatch = comparisonResult <= 0; break;
+					case IndexConstraintOp.LT: currentConstraintMatch = comparisonResult < 0; break;
+					case IndexConstraintOp.GE: currentConstraintMatch = comparisonResult >= 0; break;
+					case IndexConstraintOp.NE: currentConstraintMatch = comparisonResult !== 0; break;
+					case IndexConstraintOp.ISNULL: currentConstraintMatch = rowValue === null; break;
+					case IndexConstraintOp.ISNOTNULL: currentConstraintMatch = rowValue !== null; break;
+					case IndexConstraintOp.IS: currentConstraintMatch = (rowValue === null && valueToCompare === null) || comparisonResult === 0; break;
+					case IndexConstraintOp.ISNOT: currentConstraintMatch = !((rowValue === null && valueToCompare === null) || comparisonResult === 0); break;
+					default: matchesAllConstraints = false; break;
+				}
+				if (!currentConstraintMatch) { matchesAllConstraints = false; break; }
 			}
 			result = await this.internalIterator.next();
 		}
@@ -329,40 +293,20 @@ class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
 				// but the loop condition hadn't checked yet.
 				break;
 			}
-
-			const row: SqlValue[] = [];
-			const columnDefinitions = SchemaTableModule.COLUMNS;
-
-			for (const colDef of columnDefinitions) {
-				switch (colDef.name as keyof SchemaRow) {
-					case 'type':
-						row.push(currentSchemaRow.type);
-						break;
-					case 'name':
-						row.push(currentSchemaRow.name);
-						break;
-					case 'tbl_name':
-						row.push(currentSchemaRow.tbl_name);
-						break;
-					case 'rootpage':
-						row.push(currentSchemaRow.rootpage);
-						break;
-					case 'sql':
-						row.push(currentSchemaRow.sql);
-						break;
-					// _rowid_ is not a standard column, handled by rowid()
-					default:
-						// Should not happen if COLUMNS is aligned with SchemaRow
-						row.push(null);
-				}
-			}
-			yield row;
-			await this.next();
 		}
 	}
 
-	async close(): Promise<void> {
-		this.reset();
+	async* xQuery(filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+		for await (const schemaRow of this._generateSchemaRows(filterInfo)) {
+			const row: SqlValue[] = [
+				schemaRow.type,
+				schemaRow.name,
+				schemaRow.tbl_name,
+				schemaRow.rootpage,
+				schemaRow.sql
+			];
+			yield [schemaRow._rowid_, row];
+		}
 	}
 }
 

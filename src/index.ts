@@ -18,7 +18,6 @@ export { SqliterError as SqliteError, MisuseError, ConstraintError } from './com
 
 // Virtual Table API
 export { VirtualTable } from './vtab/table.js';
-export { VirtualTableCursor } from './vtab/cursor.js';
 export { type VirtualTableModule } from './vtab/module.js';
 export { MemoryTableModule } from './vtab/memory/module.js';
 

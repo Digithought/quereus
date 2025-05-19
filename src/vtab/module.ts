@@ -17,7 +17,6 @@ export interface BaseModuleConfig {}
  * The module primarily acts as a factory for connection-specific VirtualTable instances.
  *
  * @template TTable The specific type of VirtualTable managed by this module.
- * @template TCursor The specific type of VirtualTableCursor used by this module.
  * @template TConfig The type defining module-specific configuration options.
  */
 export interface VirtualTableModule<
