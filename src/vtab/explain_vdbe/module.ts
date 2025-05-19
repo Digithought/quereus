@@ -3,8 +3,6 @@ import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import type { VirtualTableModule } from '../module.js';
 import { VdbeProgramTable } from './table.js';
-import { VdbeProgramCursor } from './cursor.js';
-import { VDBE_PROGRAM_SCHEMA } from './schema.js';
 import { Parser } from '../../parser/parser.js';
 import { Compiler } from '../../compiler/compiler.js';
 

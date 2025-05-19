@@ -6,7 +6,6 @@ import { buildColumnIndexMap, type TableSchema } from '../../schema/table.js';
 import type { ColumnSchema } from '../../schema/column.js';
 import type { VirtualTableModule } from '../module.js';
 import { QueryPlanTable } from './table.js';
-import { QueryPlanCursor } from './cursor.js';
 import { SqlDataType } from '../../common/types.js';
 
 // Define the fixed schema for the query_plan function

@@ -2,15 +2,15 @@ import { VirtualTable } from '../table.js';
 import type { VdbeProgramModule } from './module.js';
 import type { Database } from '../../core/database.js';
 import { VDBE_PROGRAM_SCHEMA } from './schema.js'; // Import schema
-import { VdbeProgramCursor } from './cursor.js';
 import { SqliterError } from '../../common/errors.js';
-import { StatusCode } from '../../common/types.js';
-import { VirtualTableCursor } from '../cursor.js';
+import { StatusCode, type RowIdRow } from '../../common/types.js'; // Added RowIdRow
 import type { VdbeProgram } from '../../vdbe/program.js';
+import type { VdbeInstruction } from '../../vdbe/instruction.js'; // Corrected import path
 import type { TableSchema } from '../../schema/table.js'; // Import TableSchema
 import { safeJsonStringify } from '../../util/serialization.js';
 import type { Row, SqlValue } from '../../common/types.js';
 import { Opcode } from '../../vdbe/opcodes.js';
+import type { FilterInfo } from '../filter-info.js'; // Added FilterInfo
 
 /**
  * Represents an instance of the vdbe_program virtual table for a specific query.
@@ -39,9 +39,7 @@ export class VdbeProgramTable extends VirtualTable {
         return true; // VDBE program is read-only
     }
 
-    async xOpen(): Promise<VirtualTableCursor<this>> {
-        return new VdbeProgramCursor(this) as unknown as VirtualTableCursor<this>;
-    }
+    // xOpen removed
 
     // Implement required abstract methods
     async xDisconnect(): Promise<void> {}
@@ -50,11 +48,11 @@ export class VdbeProgramTable extends VirtualTable {
         throw new SqliterError("Cannot modify vdbe_program table", StatusCode.READONLY);
     }
 
-    async* xQuery(_filterInfo: import('../filter-info.js').FilterInfo): AsyncIterable<[bigint, Row]> {
+    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
         // VdbeProgramTable iteration doesn't use filterInfo for filtering.
         // The program is fixed at table connection time.
         for (let i = 0; i < this.program.instructions.length; i++) {
-            const currentInstr = this.program.instructions[i];
+            const currentInstr: VdbeInstruction = this.program.instructions[i];
             const rowId = BigInt(i); // Use address as rowid
 
             let p4Value: any = currentInstr.p4;
