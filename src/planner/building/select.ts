@@ -3,7 +3,7 @@ import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import { SqliterError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
-import { BatchNode } from '../nodes/batch.js';
+import { BlockNode } from '../nodes/block.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { SingleRowNode } from '../nodes/single-row.js';
 import { ColumnReferenceNode, ParameterReferenceNode, TableReferenceNode } from '../nodes/reference.js';
@@ -27,7 +27,7 @@ import { MultiScope } from '../scopes/multi.js';
 export function buildSelectStmt(
   stmt: AST.SelectStmt,
   context: PlanningContext,
-): BatchNode {
+): BlockNode {
 
   // Phase 1: Plan FROM clause and determine local input relations for the current select scope
   const fromTables = !stmt.from || stmt.from.length === 0
@@ -68,7 +68,7 @@ export function buildSelectStmt(
   //const projectNode = new ProjectNode(currentScope, filteredInput, projections);
 
 
-	return new BatchNode(selectScope, [input]); // Changed from ResultNode. BatchNode constructor expects an array of statements (PlanNode[]).
+	return new BlockNode(selectScope, [input]); // Changed from ResultNode. BatchNode constructor expects an array of statements (PlanNode[]).
 }
 
 export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext): RelationalPlanNode {

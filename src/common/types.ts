@@ -38,7 +38,7 @@ export interface SqlResult<T> {
 	error?: Error;
 }
 
-export type SqlParameters = SqlValue[] | Record<string, SqlValue>
+export type SqlParameters = Record<string | number, SqlValue>
 
 /**
  * Standard SQLite status/error codes that match the C implementation.

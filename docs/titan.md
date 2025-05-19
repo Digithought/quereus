@@ -167,7 +167,7 @@ The introduction of PlanNodes and the new `Instruction`-based runtime is an incr
     *   Solidify the `Instruction` interface, `Scheduler`, and `RuntimeContext`.
     *   Develop emitter functions (`emitters.ts`) that translate `PlanNode`s into `Instruction` objects.
 4.  **Integrate the new runtime**:
-    *   Planner (`buildBatch`, `buildSelectStmt`, etc.) constructs `PlanNode` trees.
+    *   Planner (`buildBlock`, `buildSelectStmt`, etc.) constructs `PlanNode` trees.
     *   These `PlanNode` trees are then passed to a system that uses `emitPlanNode` to convert them into a graph of `Instruction`s.
     *   The `Scheduler` executes these `Instruction`s.
 5.  **Develop PlanNode Construction Logic**:

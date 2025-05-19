@@ -11,34 +11,6 @@ const log = createLogger('schema:schema');
 const errorLog = log.extend('error');
 
 /**
- * Determines the affinity of a column based on its declared type name.
- * Follows SQLite affinity rules: https://www.sqlite.org/datatype3.html#type_affinity
- *
- * @param typeName The declared type name (case-insensitive)
- * @returns The determined affinity
- */
-export function getAffinityForType(typeName: string | undefined | null): SqlDataType {
-	if (!typeName) {
-		return SqlDataType.BLOB;
-	}
-	const type = typeName.toUpperCase();
-
-	if (type.includes('INT')) {
-		return SqlDataType.INTEGER;
-	}
-	if (type.includes('TEXT') || type.includes('CHAR') || type.includes('CLOB')) {
-		return SqlDataType.TEXT;
-	}
-	if (type.includes('BLOB')) {
-		return SqlDataType.BLOB;
-	}
-	if (type.includes('REAL') || type.includes('FLOA') || type.includes('DOUB')) {
-		return SqlDataType.REAL;
-	}
-	return SqlDataType.NUMERIC;
-}
-
-/**
  * Represents a single database schema (e.g., "main", "temp").
  * Contains collections of tables, functions, etc. defined within that schema.
  */

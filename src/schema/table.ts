@@ -2,7 +2,7 @@ import type { ColumnSchema } from './column.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast.js';
-import { getAffinity } from './column.js';
+import { getAffinity } from '../runtime/type-inference.js';
 import { SqlDataType } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';

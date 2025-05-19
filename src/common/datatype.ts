@@ -60,3 +60,19 @@ export type RelationType = DeepReadonly<BaseType & {
 	/** The row constraints of the relation - limited to the relation itself. */
 	rowConstraints: { name?: string, expr: Expression }[];
 }>
+
+export type ListType = DeepReadonly<BaseType & {
+	typeClass: 'list';
+}>
+
+export function isRelationType(type: BaseType): type is RelationType {
+	return type.typeClass === 'relation';
+}
+
+export function isScalarType(type: BaseType): type is ScalarType {
+	return type.typeClass === 'scalar';
+}
+
+export function isListType(type: BaseType): type is ListType {
+	return type.typeClass === 'list';
+}

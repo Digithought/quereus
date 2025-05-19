@@ -5,10 +5,18 @@ export class Cached<T> {
 	constructor(private readonly compute: () => T) {}
 
 	get value(): T {
-		if (!this.cachedValue) {
+		if (this.cachedValue === undefined) {	// More strict than truthy
 			this.cachedValue = this.compute();
 		}
 		return this.cachedValue;
+	}
+
+	set value(value: T) {
+		this.cachedValue = value;
+	}
+
+	get hasValue(): boolean {
+		return this.cachedValue !== undefined;
 	}
 
 	clear() {

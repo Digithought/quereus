@@ -14,7 +14,7 @@ import { createDefaultColumnSchema } from '../../schema/column.js';
 import type { FilterInfo } from '../filter-info.js';
 
 /**
- * Structure of rows returned by sqlite_schema
+ * Structure of rows returned by _schema
  */
 interface SchemaRow {
 	type: 'table' | 'index' | 'view' | 'trigger' | 'function' | 'module';
@@ -36,7 +36,7 @@ function stringifyCreateFunction(func: FunctionSchema): string {
 }
 
 /**
- * Virtual Table implementation for sqlite_schema
+ * Virtual Table implementation for _schema
  */
 class SchemaTable extends VirtualTable {
 	getSchema(): TableSchema | undefined {
@@ -53,7 +53,7 @@ class SchemaTable extends VirtualTable {
 			checkConstraints: [],
 			indexes: [],
 			vtabModule: this.module,
-			vtabModuleName: 'sqlite_schema',
+			vtabModuleName: '_schema',
 			isWithoutRowid: true,
 			isStrict: false,
 			isView: false,
@@ -84,7 +84,7 @@ class SchemaTable extends VirtualTable {
 	}
 
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
-		throw new SqliterError("Cannot modify read-only table: sqlite_schema", StatusCode.READONLY);
+		throw new SqliterError("Cannot modify read-only table: _schema", StatusCode.READONLY);
 	}
 
 	async xBegin(): Promise<void> {}
@@ -93,7 +93,7 @@ class SchemaTable extends VirtualTable {
 	async xRollback(): Promise<void> {}
 
 	async xRename(zNew: string): Promise<void> {
-		throw new SqliterError("Cannot rename built-in table: sqlite_schema", StatusCode.ERROR);
+		throw new SqliterError("Cannot rename built-in table: _schema", StatusCode.ERROR);
 	}
 
 	async xSavepoint(iSavepoint: number): Promise<void> {}
@@ -105,14 +105,49 @@ class SchemaTable extends VirtualTable {
 
 	private async* _generateSchemaRows(filterInfo: FilterInfo): AsyncIterable<SchemaRow> {
 		const { constraints, args } = filterInfo;
-		const db = this.db;
+
+		// Use the cursor's internal generator directly.
+		const cursor = new SchemaTableCursor(this); // Transient cursor
+		const internalGenerator = cursor['_internalIteratorGenerator'](constraints, args);
+
+		for await (const schemaRow of internalGenerator) {
+			if (!schemaRow) continue;
+			const row: SqlValue[] = [
+				schemaRow.type,
+				schemaRow.name,
+				schemaRow.tbl_name,
+				schemaRow.rootpage,
+				schemaRow.sql
+			];
+			yield [schemaRow._rowid_, row];
+		}
+	}
+}
+
+/**
+ * Cursor for iterating over _schema rows
+ */
+class SchemaTableCursor<T extends SchemaTable> extends VirtualTableCursor<T> {
+	private schemaRowsData: SchemaRow[] = [];
+	private currentIndex: number = -1;
+	private internalIterator: AsyncIterator<SchemaRow | null> | null = null;
+	private currentFilteredRows: SchemaRow[] = [];
+	private currentIteratorIndex: number = -1;
+
+	constructor(table: T) {
+		super(table);
+	}
+
+	private async* _internalIteratorGenerator(constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>, args: ReadonlyArray<SqlValue>): AsyncIterable<SchemaRow> {
+		const db = this.table.db;
 		const schemaManager = db.schemaManager;
 		let generatedRows: SchemaRow[] = [];
 		let rowidCounter = BigInt(0);
 
-		const processSchema = (schemaInstance: Schema) => {
-			for (const tableSchema of schemaInstance.getAllTables()) {
-				if (tableSchema.name.toLowerCase() === 'sqlite_schema' && tableSchema.schemaName === 'main') {
+		const processSchema = (schema: Schema) => {
+			// Process Tables
+			for (const tableSchema of schema.getAllTables()) {
+				if (tableSchema.name.toLowerCase() === '_schema' && tableSchema.schemaName === 'main') {
 					continue;
 				}
 				let createSql: string | null = null;
@@ -177,8 +212,86 @@ class SchemaTable extends VirtualTable {
 				}
 				if (!currentConstraintMatch) { matchesAllConstraints = false; break; }
 			}
-			if (matchesAllConstraints) {
-				yield schemaRow;
+			result = await this.internalIterator.next();
+		}
+
+		if (this.currentFilteredRows.length > 0) {
+			this.currentIteratorIndex = 0;
+			this._isEof = false;
+		} else {
+			this._isEof = true;
+		}
+	}
+
+	async next(): Promise<void> {
+		if (this._isEof) return;
+
+		this.currentIteratorIndex++;
+		if (this.currentIteratorIndex >= this.currentFilteredRows.length) {
+			this._isEof = true;
+		}
+	}
+
+	column(context: SqliterContext, columnIndex: number): number {
+		const row = this.getCurrentRow();
+		if (!row) {
+			context.resultNull();
+			return StatusCode.OK;
+		}
+
+		const columnName = SchemaTableModule.COLUMNS[columnIndex]?.name;
+
+		switch (columnName) {
+			case 'type':
+				context.resultText(row.type);
+				break;
+			case 'name':
+				context.resultText(row.name);
+				break;
+			case 'tbl_name':
+				context.resultText(row.tbl_name);
+				break;
+			case 'rootpage':
+				context.resultInt(row.rootpage);
+				break;
+			case 'sql':
+				if (row.sql === null) {
+					context.resultNull();
+				} else {
+					context.resultText(row.sql);
+				}
+				break;
+			default:
+				if (columnIndex === -1) {
+					context.resultInt64(row._rowid_);
+				} else {
+					context.resultError(`Invalid column index ${columnIndex} for _schema`, StatusCode.RANGE);
+					return StatusCode.RANGE;
+				}
+				break;
+		}
+		return StatusCode.OK;
+	}
+
+	async rowid(): Promise<bigint> {
+		const rowid = this.getCurrentRowId();
+		if (rowid === null) {
+			throw new SqliterError("Cursor is not pointing to a valid schema row", StatusCode.MISUSE);
+		}
+		return Promise.resolve(rowid);
+	}
+
+	async* rows(): AsyncIterable<Row> {
+		if (this.eof()) {
+			return;
+		}
+
+		while (!this.eof()) {
+			const currentSchemaRow = this.getCurrentRow();
+			if (!currentSchemaRow) {
+				// This might happen if next() was called and eof became true
+				// but the loop condition hadn't checked yet.
+				break;
 			}
 		}
 	}
@@ -198,7 +311,7 @@ class SchemaTable extends VirtualTable {
 }
 
 /**
- * Module implementation for sqlite_schema virtual table
+ * Module implementation for _schema virtual table
  */
 export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 	static readonly COLUMNS = [
@@ -222,9 +335,16 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 		return new SchemaTable(_db, this, schemaName, tableName);
 	}
 
-	xBestIndex(_db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		const table = new SchemaTable(_db, this, tableInfo.schemaName, tableInfo.name);
-		return table.xBestIndex(indexInfo);
+	xBestIndex(_db: Database, _tableInfo: TableSchema, indexInfo: IndexInfo): number {
+		console.log(`[_schema] xBestIndex called. nConstraint: ${indexInfo.nConstraint}`);
+		indexInfo.idxNum = 0;
+		indexInfo.estimatedCost = 1000.0;
+		indexInfo.estimatedRows = BigInt(100);
+		indexInfo.orderByConsumed = false;
+		indexInfo.idxFlags = 0;
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, (_, i) => ({ argvIndex: i + 1, omit: false }));
+		indexInfo.idxStr = "fullscan";
+		return StatusCode.OK;
 	}
 
 	async xDestroy(_db: Database, _pAux: unknown, _moduleName: string, _schemaName: string, _tableName: string): Promise<void> {

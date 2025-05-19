@@ -9,18 +9,7 @@ export class Scheduler {
 	/** Index of the instruction that consumes the output of each instruction. */
 	private readonly destinations: ResultDestination[];
 
-	constructor(roots: Instruction[]) {
-		if (roots.length === 0) {
-			throw new SqliteError("Scheduler must be initialized with at least one root instruction.", StatusCode.INTERNAL);
-		}
-
-		const finalOutputInstruction: Instruction = {
-			params: roots,
-			run: (_ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue => {
-				return args;
-			}
-		};
-
+	constructor(root: Instruction) {
 		const argIndexes: number[][] = [];
 
 		const buildPlan = (inst: Instruction): number => {
@@ -33,7 +22,7 @@ export class Scheduler {
 			return currentIndex;
 		};
 
-		buildPlan(finalOutputInstruction);
+		buildPlan(root);
 
 		this.destinations = new Array<ResultDestination>(this.instructions.length).fill(null);
 
