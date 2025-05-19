@@ -1,28 +1,17 @@
 import { BlockNode } from '../nodes/block.js';
 import * as AST from '../../parser/ast.js';
 import type { Database } from '../../core/database.js';
-import { type SqlParameters, type SqlValue, SqlDataType } from '../../common/types.js';
 import { GlobalScope } from '../scopes/global.js';
-import type { ScalarType } from '../../common/datatype.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import { buildSelectStmt } from './select.js';
 import { ParameterScope } from '../scopes/param.js';
+import type { PlanningContext } from '../planning-context.js';
 
-export function buildBlock(statements: AST.Statement[], db: Database, paramsInfo?: SqlParameters): BlockNode {
-	const globalScope = new GlobalScope(db.schemaManager);
-
-	let parameterTypesHint = getParameterTypeHints(paramsInfo);
-
-  // This ParameterScope is for the entire batch. It has globalScope as its parent.
-	const parameterScope = new ParameterScope(globalScope, parameterTypesHint);
-
-    // Individual statements are planned using this batchParameterScope.
-	const planningContext = { db, schemaManager: db.schemaManager, scope: parameterScope };
-
+export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
 		if (stmt.type === 'select') {
             // buildSelectStmt returns a BatchNode, which is a PlanNode.
-			return buildSelectStmt(stmt as AST.SelectStmt, planningContext);
+			return buildSelectStmt(stmt as AST.SelectStmt, ctx);
 		} else {
 			// Placeholder for other statement types
 			return undefined;
@@ -31,44 +20,7 @@ export function buildBlock(statements: AST.Statement[], db: Database, paramsInfo
 
     // The final BatchNode for the entire batch.
     // Its scope is batchParameterScope, and it contains all successfully planned statements.
-	return new BlockNode(parameterScope, plannedStatements);
+	return new BlockNode(ctx.scope, plannedStatements, { ...ctx.parameters });
 }
 
-function getParameterTypeHints(paramsInfo: SqlParameters | undefined) {
-	let parameterTypesHint: Map<string | number, ScalarType> | undefined;
-	if (paramsInfo) {
-		parameterTypesHint = new Map<string | number, ScalarType>();
-		if (Array.isArray(paramsInfo)) {
-			paramsInfo.forEach((paramValue, index) => {
-				// ParameterScope resolves '?' to 1-based indices internally when it sees the AST node.
-				// The hints should be keyed by these 1-based indices for anonymous params.
-				parameterTypesHint!.set(index + 1, getParameterScalarType(paramValue));
-			});
-		} else {
-			Object.entries(paramsInfo).forEach(([key, value]) => {
-				// For named params like ':name', ParameterScope expects 'name' as key for hints.
-				parameterTypesHint!.set(key.startsWith(':') ? key.substring(1) : key, getParameterScalarType(value));
-			});
-		}
-	}
-	return parameterTypesHint;
-}
 
-function getParameterScalarType(value: SqlValue): ScalarType {
-	let affinity: SqlDataType;
-	if (value === null) affinity = SqlDataType.NULL;
-	else if (typeof value === 'number') affinity = SqlDataType.REAL;
-	else if (typeof value === 'bigint') affinity = SqlDataType.INTEGER;
-	else if (typeof value === 'string') affinity = SqlDataType.TEXT;
-	else if (value instanceof Uint8Array) affinity = SqlDataType.BLOB;
-	else if (typeof value === 'boolean') affinity = SqlDataType.INTEGER;
-	else affinity = SqlDataType.BLOB;
-
-	return {
-		typeClass: 'scalar',
-		affinity: affinity,
-		nullable: value === null,
-		isReadOnly: true,
-		datatype: affinity,
-	};
-}

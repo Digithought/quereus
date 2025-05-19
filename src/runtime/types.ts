@@ -3,7 +3,6 @@ import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
 import type { PlanNode } from "../planner/nodes/plan-node.js";
 
-
 export type RuntimeContext = {
 	db: Database;
 	stmt: Statement | null; // Can be null for transient exec statements

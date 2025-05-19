@@ -28,16 +28,6 @@ export type RuntimeValue = SqlValue | AsyncIterable<Row>;
  */
 export type OutputValue = RuntimeValue | Promise<SqlValue> | RuntimeValue[];
 
-/**
- * Represents the result of an operation that might return a value or an error.
- * Used for operations where either success or failure needs to be explicitly handled.
- */
-export interface SqlResult<T> {
-	success: boolean;
-	value?: T;
-	error?: Error;
-}
-
 export type SqlParameters = Record<string | number, SqlValue>
 
 /**

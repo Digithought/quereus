@@ -1,19 +1,20 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode } from './plan-node.js';
 import type { BaseType } from '../../common/datatype.js';
-import type { ParameterScope } from '../scopes/param.js';
+import type { Scope } from '../scopes/scope.js';
+import type { SqlParameters } from '../../common/types.js';
 
 export class BlockNode extends PlanNode {
   override readonly nodeType = PlanNodeType.Batch;
 
   constructor(
-    scope: ParameterScope,
+    scope: Scope,
     public readonly statements: PlanNode[],
+		/** Snapshot of parameters utilized by the block. */
+		public readonly parameters: SqlParameters
   ) {
     super(scope);
   }
-
-	declare readonly scope: ParameterScope;
 
   getType(): BaseType {
     return { typeClass: 'list' };

@@ -1,3 +1,4 @@
+import type { SqlParameters } from '../common/types.js';
 import type { Database } from '../core/database.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { Scope } from './scopes/scope.js';
@@ -24,4 +25,9 @@ export interface PlanningContext {
    * with the current scope as its parent and pass that down in a new PlanningContext.
    */
   readonly scope: Scope;
+
+	/**
+	 * The current parameters for the statement, as discovered by references.
+	 */
+	readonly parameters: SqlParameters;
 }

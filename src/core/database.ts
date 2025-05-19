@@ -25,6 +25,9 @@ import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
 import type { BlockNode } from '../planner/nodes/block.js';
+import type { PlanningContext } from '../planner/planning-context.js';
+import { ParameterScope } from '../planner/scopes/param.js';
+import { GlobalScope } from '../planner/scopes/global.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -152,10 +155,7 @@ export class Database {
 				let plan: BlockNode;
 
 				try {
-					// Plan the individual statement within a batch
-					// buildBlock expects an array of statements, and also the full parameters object.
-					// Each statement will be executed with the same parameters.
-					plan = buildBlock([statementAst], this, params);
+					plan = this._buildPlan([statementAst], params);
 
 					if (plan.statements.length === 0) continue; // No-op for this AST
 
@@ -204,21 +204,6 @@ export class Database {
 
 		if (executionError) {
 			throw executionError;
-		}
-	}
-
-	/** Helper to execute simple commands (BEGIN, COMMIT, ROLLBACK) internally
-	 * This method is for commands that don't produce rows and don't need complex parameter handling.
-	*/
-	private async execSimple(sqlCommand: string): Promise<void> {
-		let stmt: Statement | null = null;
-		try {
-			stmt = this.prepare(sqlCommand);
-			await stmt.run();
-		} finally {
-			if (stmt) {
-				await stmt.finalize();
-			}
 		}
 	}
 
@@ -329,23 +314,6 @@ export class Database {
 		}
 
 		this.schemaManager.getMainSchema().addTable(definition);
-	}
-
-	/** @internal */
-	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
-		// Delegate to SchemaManager
-		return this.schemaManager.getModule(name);
-		// return this.registeredVTabs.get(name.toLowerCase()); // Old implementation
-	}
-
-	/** @internal */
-	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
-		return this.schemaManager.findTable(tableName, dbName);
-	}
-
-	/** @internal */
-	_findFunction(funcName: string, nArg: number): FunctionSchema | undefined {
-		return this.schemaManager.findFunction(funcName, nArg);
 	}
 
 	/**
@@ -578,7 +546,52 @@ export class Database {
 		throw new Error("Not implemented");
 	}
 
+	/** @internal */
+	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
+		// Delegate to SchemaManager
+		return this.schemaManager.getModule(name);
+		// return this.registeredVTabs.get(name.toLowerCase()); // Old implementation
+	}
+
+	/** @internal */
+	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
+		return this.schemaManager.findTable(tableName, dbName);
+	}
+
+	/** @internal */
+	_findFunction(funcName: string, nArg: number): FunctionSchema | undefined {
+		return this.schemaManager.findFunction(funcName, nArg);
+	}
+
+	/** @internal */
+	_buildPlan(statements: AST.Statement[], params?: SqlParameters) {
+		const globalScope = new GlobalScope(this.schemaManager);
+
+		// TODO: way to generate type hints from parameters?  Maybe we should extract that from the expression context?
+		// This ParameterScope is for the entire batch. It has globalScope as its parent.
+		const parameterScope = new ParameterScope(globalScope);
+
+		const ctx = { db: this, schemaManager: this.schemaManager, parameters: params ?? {}, scope: parameterScope } as PlanningContext;
+
+		return buildBlock(ctx, statements);
+	}
+
 	private checkOpen(): void {
 		if (!this.isOpen) throw new MisuseError("Database is closed");
+	}
+
+	/** Helper to execute simple commands (BEGIN, COMMIT, ROLLBACK) internally
+	 * This method is for commands that don't produce rows and don't need complex parameter handling.
+	*/
+	private async execSimple(sqlCommand: string): Promise<void> {
+		let stmt: Statement | null = null;
+		try {
+			stmt = this.prepare(sqlCommand);
+			await stmt.run();
+		} finally {
+			if (stmt) {
+				await stmt.finalize();
+			}
+		}
 	}
 }
