@@ -36,7 +36,7 @@ const QUERY_PLAN_SCHEMA: TableSchema = Object.freeze({
     checkConstraints: [],
     indexes: [],
     vtabModule: null as any,
-    vtabModuleName: 'query_plan',
+    vtabModuleName: 'explain_plan',
     vtabAuxData: undefined,
     vtabArgs: [],
     isTemporary: true,
@@ -52,7 +52,7 @@ export class ExplainPlanModule implements VirtualTableModule<ExplainPlanTable, {
     constructor() { }
 
     xCreate(): ExplainPlanTable {
-        throw new SqliterError(`Cannot CREATE TABLE using module 'query_plan'`, StatusCode.ERROR);
+        throw new SqliterError(`Cannot CREATE TABLE using module 'explain_plan'`, StatusCode.ERROR);
     }
 
     xConnect(

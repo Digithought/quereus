@@ -62,8 +62,8 @@ export class Database {
 		this.schemaManager.registerModule('json_each', new JsonEachModule());
 		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
 		this.schemaManager.registerModule('_schema', new SchemaTableModule());
-		this.schemaManager.registerModule('query_plan', new ExplainPlanModule());
-		this.schemaManager.registerModule('vdbe_program', new ExplainProgramModule());
+		this.schemaManager.registerModule('explain_plan', new ExplainPlanModule());
+		this.schemaManager.registerModule('explain_program', new ExplainProgramModule());
 
 		// Register built-in collations
 		this.registerDefaultCollations();

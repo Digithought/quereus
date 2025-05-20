@@ -7,7 +7,6 @@ import type { Database } from '../../core/database.js';
 import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
-import type { IndexConstraint } from '../index-info.js';
 import { IndexConstraintOp } from '../../common/constants.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
@@ -62,29 +61,6 @@ class SchemaTable extends VirtualTable {
 			isTemporary: false,
 			subqueryAST: undefined,
 		} as TableSchema;
-	}
-
-	xBestIndex(indexInfo: IndexInfo): number {
-		// For _schema, we always do a full scan, but we can utilize constraints.
-		indexInfo.idxNum = 0; // Using 0 to indicate a scan that will use filterInfo
-		indexInfo.estimatedCost = 1000.0; // Default cost for a scan
-		indexInfo.estimatedRows = BigInt(100); // Arbitrary estimate
-		indexInfo.orderByConsumed = false;
-		indexInfo.idxFlags = 0;
-
-		// Populate aConstraintUsage to inform SQLite which constraints are used
-		let argvIndex = 1;
-		indexInfo.aConstraintUsage = indexInfo.aConstraint.map(constraint => {
-			if (constraint.usable) {
-				// Check if the column index is valid for our known columns
-				if (constraint.iColumn >= 0 && constraint.iColumn < SchemaTableModule.COLUMNS.length) {
-					return { argvIndex: argvIndex++, omit: false };
-				}
-			}
-			return { argvIndex: 0, omit: true }; // Not usable or invalid column
-		});
-		indexInfo.idxStr = "filtered_scan_by_xQuery"; // Indicate xQuery will handle filtering
-		return StatusCode.OK;
 	}
 
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
@@ -249,17 +225,26 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 	}
 
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		// This module-level xBestIndex is typically for CREATE VIRTUAL TABLE time argument parsing.
-		// _schema takes no arguments, so this is a simple pass-through indicating a full scan.
-		// The actual query planning (filtering) is handled by SchemaTable.xBestIndex instance method.
-		indexInfo.idxNum = 0; // Indicate a full scan (or a generic plan to be detailed by instance)
-		indexInfo.estimatedCost = 1000.0; // Default high cost
-		indexInfo.estimatedRows = BigInt(100); // Default estimate
+		// For _schema, we always do a full scan, but we can utilize constraints.
+		// This xBestIndex (on the module) is called for query planning.
+		indexInfo.idxNum = 0; // Using 0 to indicate a scan that will use filterInfo for xQuery
+		indexInfo.estimatedCost = 1000.0; // Default cost for a scan
+		indexInfo.estimatedRows = BigInt(100); // Arbitrary estimate
 		indexInfo.orderByConsumed = false;
 		indexInfo.idxFlags = 0;
-		// No constraints are processed at this module declaration level for _schema
-		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: true }));
-		indexInfo.idxStr = "_schema_default_module_scan";
+
+		// Populate aConstraintUsage to inform SQLite which constraints can be handled by xQuery
+		let argvIndex = 1;
+		indexInfo.aConstraintUsage = indexInfo.aConstraint.map(constraint => {
+			if (constraint.usable) {
+				// Check if the column index is valid for our known columns
+				if (constraint.iColumn >= 0 && constraint.iColumn < SchemaTableModule.COLUMNS.length) {
+					return { argvIndex: argvIndex++, omit: false }; // We will handle it, SQLite doesn't need to omit
+				}
+			}
+			return { argvIndex: 0, omit: true }; // Not usable by us or invalid column
+		});
+		indexInfo.idxStr = "_schema_filtered_scan_by_xQuery"; // Indicate xQuery will handle filtering
 		return StatusCode.OK;
 	}
 
