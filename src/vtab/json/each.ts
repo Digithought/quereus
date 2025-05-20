@@ -79,7 +79,7 @@ class JsonEachTable extends VirtualTable {
 			isStrict: false,
 			isView: false,
 			vtabAuxData: undefined,
-			vtabArgs: [],
+			vtabArgs: {},
 			indexes: [],
 			isTemporary: false,
 			subqueryAST: undefined,
@@ -205,13 +205,12 @@ export class JsonEachModule implements VirtualTableModule<JsonEachTable, JsonCon
 
 	xCreate(
 		db: Database,
-		pAux: unknown,
-		moduleName: string,
-		schemaName: string,
-		tableName: string,
-		options: JsonConfig
+		tableSchema: TableSchema,
 	): JsonEachTable {
-		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
+		if (!tableSchema.vtabArgs || !('jsonSource' in tableSchema.vtabArgs)) {
+			throw new QuereusError("json_each table requires a jsonSource argument", StatusCode.ERROR);
+		}
+		return this.xConnect(db, tableSchema.vtabAuxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, tableSchema.vtabArgs as unknown as JsonConfig);
 	}
 
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {

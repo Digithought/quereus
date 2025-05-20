@@ -78,7 +78,7 @@ export class MemoryTable extends VirtualTable {
 		const cursor = conn.createLayerCursor(plan);
 		try {
 			while (!cursor.isEof()) {
-				const rowObject = cursor.getCurrentRowObject(); // This is MemoryTableRow: [rowid, data_array]
+				const rowObject = cursor.getCurrentRowObject(); // This is RowIdRow: [rowid, data_array]
 				if (rowObject) {
 					yield rowObject; // Yield [rowid, data_array] which is RowIdRow compatible
 				}

@@ -198,7 +198,7 @@ export interface CreateTableStmt extends AstNode {
 	withoutRowid?: boolean;
 	isTemporary?: boolean;
 	moduleName?: string;   // Optional module name from USING clause
-	moduleArgs?: string[]; // Optional module arguments from USING clause
+	moduleArgs?: Record<string, SqlValue>; // Optional module arguments from USING clause
 }
 
 // CREATE INDEX statement

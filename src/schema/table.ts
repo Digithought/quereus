@@ -1,11 +1,16 @@
 import type { ColumnSchema } from './column.js';
 import type { VirtualTableModule } from '../vtab/module.js';
+import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast.js';
-import { getAffinity } from '../runtime/type-inference.js';
-import { SqlDataType } from '../common/types.js';
+import { getAffinity } from '../common/type-inference.js';
+import { SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
-import { MemoryTableModule } from '../vtab/memory/module.js';
+import { QuereusError } from '../common/errors.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('schema:table');
+const warnLog = log.extend('warn');
 
 /**
  * Represents the schema definition of a table (real or virtual).
@@ -28,15 +33,13 @@ export interface TableSchema {
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
-	vtabArgs?: ReadonlyArray<string>;
+	vtabArgs?: Record<string, SqlValue>;
 	/** If virtual, the name the module was registered with */
 	vtabModuleName: string;
 	/** Whether the table is declared WITHOUT ROWID */
 	isWithoutRowid: boolean;
 	/** Whether the table is a temporary table */
 	isTemporary?: boolean;
-	/** Whether the table is a strict table */
-	isStrict: boolean;
 	/** Whether the table is a view */
 	isView: boolean;
 	/** Whether the table is a subquery source */
@@ -49,6 +52,8 @@ export interface TableSchema {
 	indexes?: ReadonlyArray<IndexSchema>;
 	/** Estimated number of rows in the table (for query planning) */
 	readonly estimatedRows?: number;
+	/** Whether the table is read-only */
+	isReadOnly?: boolean;	// default false
 }
 
 /**
@@ -63,27 +68,6 @@ export function buildColumnIndexMap(columns: ReadonlyArray<ColumnSchema>): Map<s
 		map.set(col.name.toLowerCase(), index);
 	});
 	return map;
-}
-
-/**
- * Extracts primary key information from column definitions
- *
- * @param columns Array of column schemas
- * @returns Array of objects with index and direction for primary key columns
- */
-export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<PrimaryKeyColumnDefinition> {
-	const pkCols = columns
-		.map((col, index) => ({ ...col, index }))
-		.filter(col => col.primaryKey)
-		.sort((a, b) => a.pkOrder - b.pkOrder);
-
-	return Object.freeze(pkCols.map(col => ({
-		index: col.index,
-		desc: false,
-		// TODO: there is no autoIncrement in the ColumnSchema
-		autoIncrement: (col as any).autoIncrement ?? undefined,
-		collation: col.collation ?? 'BINARY'
-	})));
 }
 
 /**
@@ -164,7 +148,7 @@ export interface IndexColumnSchema {
 	/** Column index in TableSchema.columns */
 	index: number;
 	/** Whether the index should sort in descending order */
-	desc: boolean;
+	desc?: boolean;	// default false
 	/** Optional collation sequence for the column */
 	collation?: string;
 }
@@ -187,7 +171,7 @@ export interface IndexSchema {
  * @param pkColNames Optional array of primary key column names
  * @returns A frozen TableSchema object
  */
-export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): TableSchema {
+export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): Readonly<TableSchema> {
 	const columnSchemas = columns.map(c => columnDefToSchema({
 		name: c.name,
 		dataType: c.type,
@@ -214,16 +198,15 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		indexes: [],
 		vtabModule: defaultMemoryModule,
 		vtabAuxData: null,
-		vtabArgs: [],
+		vtabArgs: {},
 		vtabModuleName: 'memory',
 		isWithoutRowid: false,
 		isTemporary: false,
-		isStrict: false,
 		isView: false,
 		subqueryAST: undefined,
 		viewDefinition: undefined,
 		tableConstraints: [],
-	}) as TableSchema;
+	});
 }
 
 /** Bitmask for row operations */
@@ -270,7 +253,111 @@ export interface RowConstraintSchema {
 
 export interface PrimaryKeyColumnDefinition {
 	index: number;
-	desc: boolean;
+	desc?: boolean;	// default false
 	autoIncrement?: boolean;
 	collation?: string;
 }
+
+/**
+ * Helper to parse primary key from AST column and table constraints.
+ * @param columns Parsed column definitions from AST.
+ * @param constraints Parsed table constraints from AST.
+ * @param withoutRowid Whether the table is a WITHOUT ROWID table.
+ * @returns A ReadonlyArray defining the primary key columns (index and direction), or undefined.
+ * @throws QuereusError if multiple primary keys are defined or PK column not found.
+ */
+export function findPKDefinition(
+	columns: ReadonlyArray<ColumnSchema>,
+	constraints: ReadonlyArray<AST.TableConstraint> | undefined,
+	withoutRowid: boolean,
+): ReadonlyArray<PrimaryKeyColumnDefinition> {
+	const columnPK = findColumnPKDefinition(columns);
+	const constraintPK = findConstraintPKDefinition(columns, constraints);
+
+	if (constraintPK && columnPK) {
+		throw new QuereusError("Cannot define both table-level and column-level PRIMARY KEYs", StatusCode.CONSTRAINT);
+	}
+
+	let finalPkDef = constraintPK ?? columnPK;
+
+	if (!finalPkDef) {
+		if (withoutRowid) {
+			warnLog(`Table is WITHOUT ROWID but no PRIMARY KEY is explicitly defined. Defaulting to all non-generated columns as PRIMARY KEY.`);
+			finalPkDef = Object.freeze(
+				columns.map((col, index) => ({
+					index,
+					desc: false,
+					collation: col.collation || 'BINARY',
+				}))
+			);
+		} else {
+			finalPkDef = Object.freeze([{ index: -1, desc: false, collation: 'BINARY' }]);
+		}
+	}
+
+	// Don't require NOT NULL, we want to be more flexible
+
+	return finalPkDef as ReadonlyArray<PrimaryKeyColumnDefinition>;
+}
+
+function findConstraintPKDefinition(
+	columns: readonly ColumnSchema[],
+	constraints: readonly TableConstraint[] | undefined
+): PrimaryKeyColumnDefinition[] | undefined {
+	const colMap = buildColumnIndexMap(columns);
+	let constraintPKs: PrimaryKeyColumnDefinition[] | undefined;
+
+	if (constraints) {
+		for (const constraint of constraints) {
+			if (constraint.type === 'primaryKey') {
+				if (constraintPKs) {
+					throw new QuereusError("Multiple table-level PRIMARY KEY constraints defined", StatusCode.CONSTRAINT);
+				}
+				if (!constraint.columns || constraint.columns.length === 0) {
+					// An empty column list is fine; means table can have 0-1 rows
+					constraintPKs = [];
+				} else {
+					constraintPKs = constraint.columns.map(colInfo => {
+						const colIndex = colMap.get(colInfo.name.toLowerCase());
+						if (colIndex === undefined) {
+							throw new QuereusError(`PRIMARY KEY column '${colInfo.name}' not found in table definition`, StatusCode.ERROR);
+						}
+						return {
+							index: colIndex,
+							desc: colInfo.direction === 'desc',
+							collation: columns[colIndex].collation || 'BINARY'
+						};
+					});
+				}
+			}
+		}
+	}
+	return constraintPKs;
+}
+
+function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<PrimaryKeyColumnDefinition> | undefined {
+	const pkCols = columns
+		.map((col, index) => ({ ...col, originalIndex: index }))
+		.filter(col => col.primaryKey)
+		.sort((a, b) => a.pkOrder - b.pkOrder);
+
+	if (pkCols.length > 1 && pkCols.some(col => col.pkOrder === 0)) {
+		warnLog("Multiple column-level PRIMARY KEYs defined without explicit pkOrder; consider a table-level PRIMARY KEY for composite keys.");
+	}
+
+	if (pkCols.length > 1) {
+		warnLog('Multiple columns defined as PRIMARY KEY at column level. Forming a composite key.');
+	}
+
+	if (pkCols.length === 0) {
+		return undefined;
+	}
+
+	return Object.freeze(pkCols.map(col => ({
+		index: col.originalIndex,
+		desc: col.affinity === SqlDataType.INTEGER && (col as any).autoIncrement ? false : (col as any).pkDirection === 'desc',
+		autoIncrement: col.affinity === SqlDataType.INTEGER && !!((col as any).autoIncrement),
+		collation: col.collation || 'BINARY'
+	})));
+}
+

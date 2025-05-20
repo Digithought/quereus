@@ -1,4 +1,4 @@
-import { SqlDataType, type SqlValue } from "../common/types.js";
+import { SqlDataType, type SqlValue } from "./types.js";
 
 export function getLiteralSqlType(v: SqlValue): SqlDataType {
 	if (v === null) return SqlDataType.NULL;
@@ -11,6 +11,7 @@ export function getLiteralSqlType(v: SqlValue): SqlDataType {
 	if (v instanceof Uint8Array) return SqlDataType.BLOB;
 	return SqlDataType.BLOB;
 }
+
 /**
  * Determines the column affinity in a similar way to SQLite rules.
  * @see https://www.sqlite.org/datatype3.html#determination_of_column_affinity
@@ -18,7 +19,6 @@ export function getLiteralSqlType(v: SqlValue): SqlDataType {
  * @param typeName The declared type name (case-insensitive)
  * @returns The determined SqlDataType affinity
  */
-
 export function getAffinity(typeName: string | undefined): SqlDataType {
 	if (!typeName) {
 		return SqlDataType.BLOB;

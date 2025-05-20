@@ -1,7 +1,7 @@
 import { BTree } from 'digitree';
-import type { SqlValue } from '../../common/types.js';
+import type { RowIdRow, SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
-import type { MemoryTableRow, BTreeKey } from './types.js';
+import type { BTreeKey } from './types.js';
 import { createLogger } from '../../common/logger.js';
 
 const log = createLogger('vtab:memory:index');
@@ -10,7 +10,7 @@ const errorLog = log.extend('error');
 /** Definition for creating a memory index */
 export interface IndexSpec {
 	name?: string;
-	columns: ReadonlyArray<{ index: number; desc: boolean; collation?: string }>;
+	columns: ReadonlyArray<{ index: number; desc?: boolean; collation?: string }>;
 	// unique?: boolean; // Future extension
 }
 
@@ -18,7 +18,7 @@ export interface IndexSpec {
 export class MemoryIndex {
 	public readonly name: string | undefined;
 	public readonly specColumns: IndexSpec['columns']; // Store original spec columns
-	public readonly keyFromRow: (rowTuple: MemoryTableRow) => BTreeKey;
+	public readonly keyFromRow: (rowTuple: RowIdRow) => BTreeKey;
 	public readonly compareKeys: (a: BTreeKey, b: BTreeKey) => number;
 	public data: BTree<[BTreeKey, bigint], [BTreeKey, bigint]>;
 
@@ -31,7 +31,7 @@ export class MemoryIndex {
 			throw new Error(`Invalid column index specified in index definition '${this.name ?? '(unnamed)'}'. Index spec: ${JSON.stringify(this.specColumns)}, Table columns count: ${allTableColumns.length}`);
 		}
 
-		// --- Key Generation and Comparison Logic --- (Operates on MemoryTableRow = [rowid, data_array])
+		// --- Key Generation and Comparison Logic --- (Operates on RowIdRow = [rowid, data_array])
 		if (this.specColumns.length === 1) {
 			// Single column index
 			const specCol = this.specColumns[0];
@@ -68,7 +68,7 @@ export class MemoryIndex {
 		);
 	}
 
-	addEntry(rowTuple: MemoryTableRow): void {
+	addEntry(rowTuple: RowIdRow): void {
 		const key = this.keyFromRow(rowTuple);
 		const rowid = rowTuple[0]; // Get rowid from the tuple
 		try {
@@ -79,7 +79,7 @@ export class MemoryIndex {
 		}
 	}
 
-	removeEntry(rowTuple: MemoryTableRow): boolean {
+	removeEntry(rowTuple: RowIdRow): boolean {
 		const key = this.keyFromRow(rowTuple);
 		const rowid = rowTuple[0]; // Get rowid from the tuple
 

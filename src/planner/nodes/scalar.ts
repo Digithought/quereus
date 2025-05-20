@@ -5,7 +5,7 @@ import type { Scope } from "../scopes/scope.js";
 import { SqlDataType } from "../../common/types.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import { Cached } from "../../util/cached.js";
-import { getLiteralSqlType } from "../../runtime/type-inference.js";
+import { getLiteralSqlType } from "../../common/type-inference.js";
 
 export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 	readonly nodeType = PlanNodeType.BinaryOp;

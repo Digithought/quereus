@@ -1,7 +1,7 @@
 import type { Database } from '../../../core/database.js';
 import type { TableSchema, IndexSchema } from '../../../schema/table.js';
-import type { MemoryTableRow, BTreeKey } from '../types.js';
-import { StatusCode, type SqlValue } from '../../../common/types.js';
+import type { BTreeKey } from '../types.js';
+import { StatusCode, type SqlValue, type RowIdRow } from '../../../common/types.js';
 import { BaseLayer } from './base.js';
 import { TransactionLayer } from './transaction.js';
 import type { Layer, ModificationKey, ModificationValue, DeletionMarker } from './interface.js';
@@ -54,7 +54,7 @@ export class MemoryTableManager {
 	private pkIndices: ReadonlyArray<number> = [];
 	private pkIsRowid: boolean = true;
 	private comparePrimaryKeys: (a: BTreeKey, b: BTreeKey) => number;
-	private primaryKeyFromRow: (row: MemoryTableRow) => BTreeKey;
+	private primaryKeyFromRow: (row: RowIdRow) => BTreeKey;
 	// Helper to get columns info easily
 	private get columnInfo(): ReadonlyArray<{ name: string, type: SqlValue, collation?: string }> {
 		return this.tableSchema.columns.map(cs => ({
@@ -336,7 +336,7 @@ export class MemoryTableManager {
 				const primaryKey = primaryModKeyExtractor(modValue);
 				const oldEffectiveValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', parentLayer);
 				try {
-					const oldRowTuple = oldEffectiveValue !== undefined && !isDeletionMarker(oldEffectiveValue) ? oldEffectiveValue as MemoryTableRow : null;
+					const oldRowTuple = oldEffectiveValue !== undefined && !isDeletionMarker(oldEffectiveValue) ? oldEffectiveValue as RowIdRow : null;
 					this.baseLayer.applyChange(primaryKey as BTreeKey, modValue, oldRowTuple);
 				} catch (applyError) {
 					errorLog(`[Collapse Apply] Failed for PK %s from layer %d to base. Table %s. Error: %O`, safeJsonStringify(primaryKey), layer.getLayerId(), this.tableName, applyError);
@@ -354,7 +354,7 @@ export class MemoryTableManager {
 					debugLog(`[Collapse Apply] Explicit delete for rowid %s (PK: %s) from layer %d to base.`, rowid, safeJsonStringify(pk), layer.getLayerId());
 					try {
 						const deletionMarker: DeletionMarker = { _marker_: DELETED, _key_: pk, _rowid_: rowid };
-						const oldRowTuple = oldEffectiveValue !== undefined && !isDeletionMarker(oldEffectiveValue) ? oldEffectiveValue as MemoryTableRow : null;
+						const oldRowTuple = oldEffectiveValue !== undefined && !isDeletionMarker(oldEffectiveValue) ? oldEffectiveValue as RowIdRow : null;
 						this.baseLayer.applyChange(pk, deletionMarker, oldRowTuple);
 					} catch (applyError) {
 						errorLog(`[Collapse Apply] Failed explicit delete for rowid %s (PK: %s). Error: %O`, rowid, safeJsonStringify(pk), applyError);
@@ -374,7 +374,7 @@ export class MemoryTableManager {
 	 * @param key The index-specific key (BTreeKey for primary, [IndexKey, rowid] for secondary mods)
 	 * @param indexName Index name or 'primary'
 	 * @param startLayer The layer to begin searching from
-	 * @returns The effective value (MemoryTableRow or DELETED) or null if not found
+	 * @returns The effective value (RowIdRow or DELETED) or null if not found
 	 */
 	lookupEffectiveValue(key: ModificationKey, indexName: string | 'primary', startLayer: Layer): ModificationValue | null {
 		// Public facing method, ensures base case returns null if not found
@@ -457,7 +457,7 @@ export class MemoryTableManager {
 			const baseLayer = currentLayer as BaseLayer;
 			if (indexName === 'primary') {
 				const value = baseLayer.primaryTree.get(key as BTreeKey);
-				return value; // Returns MemoryTableRow or undefined
+				return value; // Returns RowIdRow or undefined
 			} else {
 				// Lookup in base secondary index requires the full [IndexKey, rowid] pair
 				const secondaryTree = baseLayer.getSecondaryIndexTree(indexName);
@@ -470,7 +470,7 @@ export class MemoryTableManager {
 						const primaryKey = baseLayer.rowidToKeyMap?.get(rowid) ?? (this.pkIsRowid ? rowid : null);
 						if (primaryKey !== null) {
 							const row = baseLayer.primaryTree.get(primaryKey);
-							return row; // Returns MemoryTableRow or undefined
+							return row; // Returns RowIdRow or undefined
 						}
 					}
 				}
@@ -494,7 +494,7 @@ export class MemoryTableManager {
 					for (const path of primaryModTree.ascending(primaryModTree.first())) {
 						const modValue = primaryModTree.at(path);
 						if (modValue && !isDeletionMarker(modValue)) {
-							const rowTuple = modValue as MemoryTableRow;
+							const rowTuple = modValue as RowIdRow;
 							if (rowTuple[0] === rowid) {
 								foundKey = pkExtractor(modValue) as BTreeKey;
 								break;
@@ -540,19 +540,19 @@ export class MemoryTableManager {
 			const pkDef = schema.primaryKeyDefinition ?? [];
 			if (pkDef.length === 0) { // Rowid key
 				return {
-					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[0],
+					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as RowIdRow)[0],
 					comparator: (a, b) => compareSqlValues(a as bigint, b as bigint)
 				};
 			} else if (pkDef.length === 1) { // Single column PK
 				const { index: pkSchemaIndex, desc: isDesc, collation } = pkDef[0];
 				return {
-					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[1][pkSchemaIndex],
+					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as BTreeKey : (value as RowIdRow)[1][pkSchemaIndex],
 					comparator: (a, b) => { const cmp = compareSqlValues(a as SqlValue, b as SqlValue, collation || 'BINARY'); return isDesc ? -cmp : cmp; }
 				};
 			} else { // Composite PK
 				const pkColSchemaIndices = pkDef.map(def => def.index);
 				return {
-					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColSchemaIndices.map(i => (value as MemoryTableRow)[1][i]),
+					keyExtractor: (value) => isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColSchemaIndices.map(i => (value as RowIdRow)[1][i]),
 					comparator: (a, b) => {
 						const arrA = a as SqlValue[]; const arrB = b as SqlValue[];
 						for (let i = 0; i < pkDef.length; i++) {
@@ -581,8 +581,8 @@ export class MemoryTableManager {
 						// _key_ for secondary index deletion marker is [IndexKey, rowid]
 						return (value._key_ as [BTreeKey, bigint])[0];
 					} else {
-						// value is MemoryTableRow tuple [rowid, data_array]
-						return tempIndex.keyFromRow(value as MemoryTableRow);
+						// value is RowIdRow tuple [rowid, data_array]
+						return tempIndex.keyFromRow(value as RowIdRow);
 					}
 				},
 				comparator: tempIndex.compareKeys // This compares BTreeKeys (IndexKey parts)
@@ -887,10 +887,10 @@ export class MemoryTableManager {
 	// This needs to delegate to the *connection's* pending layer
 
 	/**
-	 * Internal helper to find a MemoryTableRow tuple by its rowid, searching down the layer chain.
+	 * Internal helper to find a RowIdRow tuple by its rowid, searching down the layer chain.
 	 * Used by MemoryTableConnection.lookupRowByRowid for sorter population.
 	 */
-	async lookupRowByRowidInternal(rowidToFind: bigint, currentLayer: Layer | null): Promise<MemoryTableRow | null> {
+	async lookupRowByRowidInternal(rowidToFind: bigint, currentLayer: Layer | null): Promise<RowIdRow | null> {
 		if (!currentLayer) {
 			return null; // Reached end of chain
 		}
@@ -906,7 +906,7 @@ export class MemoryTableManager {
 			const primaryModTree = currentLayer.getModificationTree('primary');
 			if (primaryModTree) {
 				// Iterate all modifications. This might not be super efficient for large transactions.
-				// BTree values are ModificationValue (MemoryTableRow tuple or DeletionMarker)
+				// BTree values are ModificationValue (RowIdRow tuple or DeletionMarker)
 				for (const path of primaryModTree.ascending(primaryModTree.first())) {
 					const modValue = primaryModTree.at(path);
 					if (modValue) {
@@ -915,8 +915,8 @@ export class MemoryTableManager {
 								return null; // Explicitly deleted by marker with this rowid
 							}
 						} else {
-							// modValue is MemoryTableRow tuple: [rowid, data_array]
-							const currentRowTuple = modValue as MemoryTableRow;
+							// modValue is RowIdRow tuple: [rowid, data_array]
+							const currentRowTuple = modValue as RowIdRow;
 							if (currentRowTuple[0] === rowidToFind) {
 								return currentRowTuple; // Found the row in this layer's modifications
 							}
@@ -980,7 +980,7 @@ export class MemoryTableManager {
 				const oldEffectiveValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer.getParent());
 				if (!oldEffectiveValue || isDeletionMarker(oldEffectiveValue)) return {};
 
-				const oldRowTuple = oldEffectiveValue as MemoryTableRow; // It must be a MemoryTableRow here
+				const oldRowTuple = oldEffectiveValue as RowIdRow; // It must be a RowIdRow here
 
 				const indexKeys = new Map<string, [BTreeKey, bigint]>();
 				const schema = targetLayer.getSchema();
@@ -998,7 +998,7 @@ export class MemoryTableManager {
 				if (rowid === null) {
 					// --- INSERT ---
 					const newRowid = await this.getNextRowid();
-					const newRowTuple: MemoryTableRow = [newRowid, dataArray];
+					const newRowTuple: RowIdRow = [newRowid, dataArray];
 
 					const primaryKey = this.primaryKeyFromRow(newRowTuple);
 					const existingValue = this.lookupEffectiveValueInternal(primaryKey, 'primary', targetLayer);
@@ -1019,7 +1019,7 @@ export class MemoryTableManager {
 					if (!oldRowTuple) return {}; // Row doesn't exist or already deleted effectively
 
 					// dataArray here contains the values for *all* columns in table order, as per SQLite's xUpdate.
-					const newRowTuple: MemoryTableRow = [targetRowid, dataArray];
+					const newRowTuple: RowIdRow = [targetRowid, dataArray];
 
 					// PK conflict check if PK changed (only if NOT ROWID table and PK cols are part of update)
 					const oldPrimaryKey = this.primaryKeyFromRow(oldRowTuple);
@@ -1035,7 +1035,7 @@ export class MemoryTableManager {
 						const existingValueForNewPk = this.lookupEffectiveValueInternal(newPrimaryKey, 'primary', targetLayer);
 						if (existingValueForNewPk !== undefined && !isDeletionMarker(existingValueForNewPk)) {
 							// If the existing value for the new PK is not the row we are currently updating, it's a conflict.
-							const existingRowTuple = existingValueForNewPk as MemoryTableRow;
+							const existingRowTuple = existingValueForNewPk as RowIdRow;
 							if (existingRowTuple[0] !== targetRowid) {
 								if (onConflict === ConflictResolution.IGNORE) return {};
 								const pkColNames = this.tableSchema.primaryKeyDefinition.map(def => this.tableSchema.columns[def.index].name).join(', ') || 'rowid';

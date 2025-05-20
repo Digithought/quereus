@@ -1,7 +1,7 @@
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
-import { columnDefToSchema, type TableSchema, buildColumnIndexMap, type IndexSchema } from '../../schema/table.js';
+import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTable } from './table.js';
 import type { VirtualTableModule } from '../module.js';
 import { IndexConstraintOp } from '../../common/constants.js';
@@ -13,6 +13,7 @@ import { SqlDataType } from '../../common/types.js';
 
 const log = createLogger('vtab:memory:module');
 const debugLog = log.extend('debug');
+const warnLog = log.extend('warn');
 
 /**
  * A module that provides in-memory table functionality using digitree.
@@ -20,7 +21,6 @@ const debugLog = log.extend('debug');
  * database connection.
  */
 export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableConfig> {
-	private static SCHEMA_VERSION = 2; // Reverted version, cursor model is back
 	public readonly tables: Map<string, MemoryTableManager> = new Map();
 
 	constructor() { }
@@ -28,66 +28,23 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Creates a new memory table definition
 	 */
-	xCreate(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig): MemoryTable {
+	xCreate(db: Database, tableSchema: TableSchema): MemoryTable {
 		// Ensure table doesn't already exist
-		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 		if (this.tables.has(tableKey)) {
-			throw new QuereusError(`Memory table '${tableName}' already exists in schema '${schemaName}'.`, StatusCode.ERROR);
+			throw new QuereusError(`Memory table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'.`, StatusCode.ERROR);
 		}
-
-		// Build the full ColumnSchema array for the TableSchema
-		const finalColumnSchemas = options.columns.map((optCol, index) => columnDefToSchema({
-			name: optCol.name,
-			dataType: optCol.type,
-			constraints: [
-				...(options.primaryKey?.some(pk => pk.index === index) ? [{ type: 'primaryKey' as const }] : []),
-				...(optCol.collation ? [{ type: 'collate' as const, collation: optCol.collation }] : []),
-			]
-		}));
-
-		// Build IndexSchema array for TableSchema
-		const finalIndexSchemas: IndexSchema[] = (options.indexes ?? []).map((indexSpec, i) => {
-			const indexName = indexSpec.name ?? `_auto_${i + 1}`;
-			// Map the structure for validation during addIndex
-			const indexColumns = indexSpec.columns.map(c => ({
-				index: c.index,
-				desc: c.desc,
-				collation: c.collation,
-			}));
-			return Object.freeze({
-				name: indexName,
-				columns: indexColumns,
-			});
-		});
-
-		// Build and freeze the definitive TableSchema
-		const tableSchema = {
-			name: tableName,
-			schemaName: schemaName,
-			columns: finalColumnSchemas,
-			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
-			primaryKeyDefinition: options.primaryKey ?? [],
-			checkConstraints: (options.checkConstraints ?? []) as unknown as any[],
-			indexes: Object.freeze(finalIndexSchemas),
-			vtabModule: this,
-			vtabAuxData: pAux,
-			vtabArgs: [],
-			vtabModuleName: moduleName,
-			isWithoutRowid: false,
-			isStrict: false,
-			isView: false,
-		} as unknown as TableSchema; // Handle type incompatibilities with double casting
 
 		// Create the MemoryTableManager instance
 		const manager = new MemoryTableManager(
 			db,
 			this,
-			pAux,
-			moduleName,
-			schemaName,
-			tableName,
+			tableSchema.vtabAuxData,
+			tableSchema.vtabModuleName,
+			tableSchema.schemaName,
+			tableSchema.name,
 			tableSchema,
-			options.readOnly ?? false
+			tableSchema.isReadOnly ?? false
 		);
 
 		// Register the manager

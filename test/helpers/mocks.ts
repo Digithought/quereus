@@ -49,7 +49,7 @@ export class MockVtabModule implements VirtualTableModule<any, any> {
     xDisconnect = () => { return StatusCode.OK; };
     xDestroy = async () => { /* No-op */ };
 
-    xCreate = (db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: any) => {
+    xCreate = (db: Database, tableSchema: TableSchema) => {
         return StatusCode.OK;
     };
 
@@ -98,7 +98,6 @@ export function mockTable(db: Database, options: MockTableOptions): MockVtabModu
         vtabModuleName: options.schema.name,
         isTemporary: options.schema.isTemporary ?? false,
         isView: options.schema.isView ?? false,
-        isStrict: options.schema.isStrict ?? false,
         isWithoutRowid: options.schema.isWithoutRowid ?? true,
         schemaName: options.schema.schemaName ?? 'main',
         primaryKeyDefinition: options.schema.primaryKeyDefinition ?? [],

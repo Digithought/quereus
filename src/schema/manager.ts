@@ -3,25 +3,20 @@ import type { Database } from '../core/database.js';
 import type { TableSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { QuereusError, MisuseError } from '../common/errors.js';
-import { StatusCode } from '../common/types.js';
-import type { VirtualTableModule } from '../vtab/module.js';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import type { VirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
-import { createDefaultColumnSchema } from './column.js';
-import { buildColumnIndexMap, findPrimaryKeyDefinition } from './table.js';
-import { Parser } from '../parser/parser.js';
-import type * as AST from '../parser/ast.js';
+import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, type RowOpMask } from './table.js';
 import type { ViewSchema } from './view.js';
 import { SchemaTableModule } from '../vtab/schema/table.js';
 import { SqlDataType } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
-import type { BaseModuleConfig } from '../vtab/module.js';
-import { opsToMask, type RowOpMask } from './table.js';
+import type * as AST from '../parser/ast.js';
 
 const log = createLogger('schema:manager');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
-const debugLog = log;
 
 /**
  * Generic options passed to VTab modules during CREATE TABLE.
@@ -44,7 +39,7 @@ export class SchemaManager {
 	private currentSchemaName: string = 'main';
 	private modules: Map<string, { module: VirtualTableModule<any, any>, auxData?: unknown }> = new Map();
 	private defaultVTabModuleName: string = 'memory';
-	private defaultVTabModuleArgs: string[] = [];
+	private defaultVTabModuleArgs: Record<string, SqlValue> = {};
 	private db: Database;
 
 	/**
@@ -134,8 +129,8 @@ export class SchemaManager {
 	}
 
 	/** @internal Sets the default VTab args directly */
-	setDefaultVTabArgs(args: string[]): void {
-		this.defaultVTabModuleArgs = [...args];
+	setDefaultVTabArgs(args: Record<string, SqlValue>): void {
+		this.defaultVTabModuleArgs = args;
 		log('Default VTab module args set to: %o', args);
 	}
 
@@ -143,8 +138,8 @@ export class SchemaManager {
 	setDefaultVTabArgsFromJson(argsJsonString: string): void {
 		try {
 			const parsedArgs = JSON.parse(argsJsonString);
-			if (!Array.isArray(parsedArgs) || !parsedArgs.every(arg => typeof arg === 'string')) {
-				throw new Error("JSON value must be an array of strings.");
+			if (typeof parsedArgs !== 'object') {
+				throw new Error("JSON value must be an object.");
 			}
 			this.setDefaultVTabArgs(parsedArgs);
 		} catch (e) {
@@ -157,18 +152,18 @@ export class SchemaManager {
 	 * Gets the default virtual table module arguments.
 	 * @returns A copy of the default arguments array.
 	 */
-	getDefaultVTabArgs(): string[] {
-		return [...this.defaultVTabModuleArgs];
+	getDefaultVTabArgs(): Record<string, SqlValue> {
+		return { ...this.defaultVTabModuleArgs };
 	}
 
 	/**
 	 * Gets the default virtual table module name and arguments.
 	 * @returns An object containing the module name and arguments.
 	 */
-	getDefaultVTabModule(): { name: string; args: string[] } {
+	getDefaultVTabModule(): { name: string; args: Record<string, SqlValue> } {
 		return {
 			name: this.defaultVTabModuleName,
-			args: [...this.defaultVTabModuleArgs],
+			args: this.defaultVTabModuleArgs,
 		};
 	}
 
@@ -282,14 +277,13 @@ export class SchemaManager {
 				schemaName: 'main',
 				columns: Object.freeze(columns),
 				columnIndexMap: Object.freeze(columnIndexMap),
-				primaryKeyDefinition: [],
+				primaryKeyDefinition: [{ index: 0 }, { index: 1 }],
 				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>),
 				vtabModule: moduleInfo.module,
 				vtabAuxData: moduleInfo.auxData,
-				vtabArgs: [],
+				vtabArgs: {},
 				vtabModuleName: '_schema',
 				isWithoutRowid: false,
-				isStrict: false,
 				isView: false,
 			} satisfies TableSchema;
 		}
@@ -330,91 +324,6 @@ export class SchemaManager {
 	 */
 	findFunction(funcName: string, nArg: number): FunctionSchema | undefined {
 		return this.getMainSchema().getFunction(funcName, nArg);
-	}
-
-	/**
-	 * Declares a virtual table's schema based on a CREATE VIRTUAL TABLE string
-	 * This is intended to be called from VTab `xCreate`/`xConnect` methods
-	 *
-	 * @param schemaName The schema the table belongs to ('main', 'temp', etc.)
-	 * @param createTableSql The full `CREATE VIRTUAL TABLE ...` string
-	 * @param associatedVtab The VirtualTable instance to link
-	 * @param auxData The auxData associated with the module registration
-	 * @returns The created TableSchema
-	 * @throws QuereusError on parsing or definition errors
-	 */
-	declareVtab(
-		schemaName: string,
-		createTableSql: string,
-		associatedVtab: VirtualTable,
-		auxData?: unknown,
-	): TableSchema {
-		const schema = this.schemas.get(schemaName.toLowerCase());
-		if (!schema) {
-			throw new QuereusError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
-		}
-
-		log(`Declaring VTab in '%s' using SQL: %s`, schemaName, createTableSql);
-
-		// Parse the CREATE TABLE statement
-		let createVtabAst: AST.CreateTableStmt;
-		try {
-			const parser = new Parser();
-			const ast = parser.parse(createTableSql);
-			if (ast.type !== 'createTable') {
-				throw new QuereusError(`Expected CREATE TABLE statement, got ${ast.type}`, StatusCode.ERROR);
-			}
-			createVtabAst = ast as AST.CreateTableStmt;
-		} catch (e: any) {
-			throw new QuereusError(`Failed to parse CREATE TABLE statement: ${e.message}`, StatusCode.ERROR);
-		}
-
-		const tableName = createVtabAst.table.name;
-		const vtabArgs = createVtabAst.moduleArgs;
-
-		if (schema.getTable(tableName)) {
-			// Handle IF NOT EXISTS
-			if (createVtabAst.ifNotExists) {
-				log(`VTab %s already exists in schema %s, skipping creation (IF NOT EXISTS).`, tableName, schemaName);
-				return schema.getTable(tableName)!;
-			}
-			throw new QuereusError(`Table ${tableName} already exists in schema ${schemaName}`, StatusCode.ERROR);
-		}
-
-		// Create placeholder schema - modules should override with actual columns
-		warnLog(`declareVtab: Using placeholder column definition for %s. VTab module should define actual columns.`, tableName);
-		const placeholderColumns: ColumnSchema[] = [
-			createDefaultColumnSchema('column1'),
-			createDefaultColumnSchema('column2')
-		];
-
-		const vtabModuleNameAssigned = createVtabAst.moduleName ?? this.defaultVTabModuleName;
-
-		const moduleRegistration = this.getModule(vtabModuleNameAssigned);
-		const resolvedAuxData = moduleRegistration ? moduleRegistration.auxData : undefined;
-
-		if (!moduleRegistration) {
-			warnLog(`VTab module '${vtabModuleNameAssigned}' not found in SchemaManager during declareVtab for table '${tableName}'. This might lead to issues if auxData is expected.`);
-		}
-
-		const tableSchema: TableSchema = {
-			name: tableName,
-			schemaName: schema.name,
-			checkConstraints: [],
-			columns: Object.freeze(placeholderColumns),
-			columnIndexMap: Object.freeze(buildColumnIndexMap(placeholderColumns)),
-			primaryKeyDefinition: Object.freeze(findPrimaryKeyDefinition(placeholderColumns)),
-			vtabModule: associatedVtab.module,
-			vtabAuxData: resolvedAuxData,
-			vtabArgs: Object.freeze(vtabArgs || []),
-			vtabModuleName: vtabModuleNameAssigned,
-			isWithoutRowid: false,
-			isStrict: false,
-			isView: false,
-		};
-
-		schema.addTable(tableSchema);
-		return tableSchema;
 	}
 
 	/**
@@ -577,39 +486,83 @@ export class SchemaManager {
 		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
 		const tableName = stmt.table.name;
 		let moduleName: string;
-		let effectiveModuleArgs: readonly string[];
+		let effectiveModuleArgs: Record<string, SqlValue>;
 
 		if (stmt.moduleName) {
 			moduleName = stmt.moduleName;
-			effectiveModuleArgs = Object.freeze(stmt.moduleArgs || []);
+			effectiveModuleArgs = Object.freeze(stmt.moduleArgs || {});
 		} else {
 			const defaultVtab = this.getDefaultVTabModule();
 			moduleName = defaultVtab.name;
-			effectiveModuleArgs = Object.freeze(defaultVtab.args || []);
+			effectiveModuleArgs = Object.freeze(defaultVtab.args || {});
 		}
 
 		const moduleInfo = this.getModule(moduleName);
-		if (!moduleInfo || !moduleInfo.module) { // Ensure moduleInfo.module exists
+		if (!moduleInfo || !moduleInfo.module) {
 			throw new QuereusError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
 
-		const moduleCallOpts: GenericModuleCallOptions = {
-			moduleArgs: effectiveModuleArgs,
-			statementColumns: stmt.columns ? Object.freeze([...stmt.columns]) : undefined,
-			statementConstraints: stmt.constraints ? Object.freeze([...stmt.constraints]) : undefined,
-			withoutRowid: stmt.withoutRowid,
-			isTemporary: stmt.isTemporary,
+		const astColumnsToProcess = stmt.columns || [];
+		const astConstraintsToProcess = stmt.constraints;
+		const astWithoutRowidFinal = !!stmt.withoutRowid;
+
+		if (astColumnsToProcess.length === 0 && astWithoutRowidFinal) {
+			throw new QuereusError(`Table '${tableName}' is WITHOUT ROWID and requires column definitions for the PRIMARY KEY.`, StatusCode.MISUSE);
+		}
+
+		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef));
+		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess, astWithoutRowidFinal);
+
+		const finalColumnSchemas = preliminaryColumnSchemas.map((col, idx) => {
+			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
+			let pkOrder = 0;
+			if (isPkColumn) {
+				pkOrder = pkDefinition.findIndex(pkC => pkC.index === idx) + 1;
+			}
+			return {
+				...col,
+				primaryKey: isPkColumn,
+				pkOrder: pkOrder,
+				notNull: (astWithoutRowidFinal && isPkColumn) ? true : col.notNull,
+			};
+		});
+
+		const checkConstraintsSchema: { name?: string; expr: AST.Expression; operations?: RowOpMask }[] = [];
+		astColumnsToProcess.forEach(colDef => {
+			colDef.constraints?.forEach(con => {
+				if (con.type === 'check' && con.expr) {
+					checkConstraintsSchema.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
+				}
+			});
+		});
+		(astConstraintsToProcess || []).forEach(con => {
+			if (con.type === 'check' && con.expr) {
+				checkConstraintsSchema.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
+			}
+		});
+
+		const baseTableSchema: TableSchema = {
+			name: tableName,
+			schemaName: targetSchemaName,
+			columns: Object.freeze(finalColumnSchemas),
+			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
+			primaryKeyDefinition: pkDefinition,
+			checkConstraints: Object.freeze(checkConstraintsSchema.map(cc => ({name: cc.name, expr: cc.expr}))),
+			isWithoutRowid: astWithoutRowidFinal,
+			isTemporary: !!stmt.isTemporary,
+			isView: false,
+			vtabModuleName: moduleName,
+			vtabArgs: effectiveModuleArgs,
+			vtabModule: moduleInfo.module,
+			vtabAuxData: moduleInfo.auxData,
+			estimatedRows: 0,
 		};
 
 		let tableInstance: VirtualTable;
 		try {
 			tableInstance = moduleInfo.module.xCreate(
-				this.db, // Pass the Database instance stored in SchemaManager
-				moduleInfo.auxData,
-				moduleName,
-				targetSchemaName,
-				tableName,
-				moduleCallOpts
+				this.db,
+				baseTableSchema
 			);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
@@ -619,38 +572,44 @@ export class SchemaManager {
 
 		const schema = this.getSchema(targetSchemaName);
 		if (!schema) {
-			// This case should ideally not happen if getCurrentSchemaName() is robust
-			// and addSchema is used for any non-main/temp schemas.
-			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found during CREATE TABLE.`, StatusCode.INTERNAL);
+			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found.`, StatusCode.INTERNAL);
 		}
 
-		if (schema.getTable(tableName)) {
-			if (stmt.ifNotExists) {
-				log(`Skipping CREATE TABLE: Table %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, tableName);
-				// Return the existing table schema if IF NOT EXISTS is used and table exists
-				return schema.getTable(tableName)!;
-			} else {
-				throw new QuereusError(`Table ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-			}
-		}
-
-		if (!tableInstance.tableSchema) {
+		const finalRegisteredSchema = tableInstance.tableSchema;
+		if (!finalRegisteredSchema) {
 			throw new QuereusError(`Module '${moduleName}' xCreate did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
 		}
 
-		// Ensure essential fields in the returned TableSchema are consistent
-		const finalTableSchema = tableInstance.tableSchema as any; // Modifiable reference
-		finalTableSchema.schemaName = targetSchemaName;
-		finalTableSchema.vtabModuleName = moduleName;
-		finalTableSchema.vtabArgs = effectiveModuleArgs;
-		if (finalTableSchema.estimatedRows === undefined) {
-			finalTableSchema.estimatedRows = BigInt(10_000);
+		if (finalRegisteredSchema.name.toLowerCase() !== tableName.toLowerCase() ||
+			finalRegisteredSchema.schemaName.toLowerCase() !== targetSchemaName.toLowerCase()) {
+			warnLog(`Module ${moduleName} returned schema for ${finalRegisteredSchema.schemaName}.${finalRegisteredSchema.name} but expected ${targetSchemaName}.${tableName}. Overwriting name/schemaName.`);
+			(finalRegisteredSchema as any).name = tableName;
+			(finalRegisteredSchema as any).schemaName = targetSchemaName;
 		}
-		// Ensure `name` from AST is respected, even if module provides a different one in its schema
-		finalTableSchema.name = tableName;
+		(finalRegisteredSchema as any).vtabModuleName = moduleName;
+		(finalRegisteredSchema as any).vtabArgs = effectiveModuleArgs;
+		(finalRegisteredSchema as any).vtabModule = moduleInfo.module;
+		(finalRegisteredSchema as any).vtabAuxData = moduleInfo.auxData;
+		if (finalRegisteredSchema.estimatedRows === undefined) {
+			(finalRegisteredSchema as any).estimatedRows = 0;
+		}
 
-		schema.addTable(finalTableSchema as TableSchema);
+		const existingTable = schema.getTable(tableName);
+		const existingView = schema.getView(tableName);
+
+		if (existingTable || existingView) {
+			if (stmt.ifNotExists) {
+				log(`Skipping CREATE TABLE: Item %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, tableName);
+				if (existingTable) return existingTable;
+				throw new QuereusError(`Cannot CREATE TABLE ${targetSchemaName}.${tableName}: a VIEW with the same name already exists.`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			} else {
+				const itemType = existingTable ? 'Table' : 'View';
+				throw new QuereusError(`${itemType} ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			}
+		}
+
+		schema.addTable(finalRegisteredSchema);
 		log(`Successfully created table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
-		return finalTableSchema as TableSchema;
+		return finalRegisteredSchema;
 	}
 }

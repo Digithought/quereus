@@ -430,7 +430,7 @@ export class Database {
 	}
 
 	/** Sets the default args directly. */
-	setDefaultVtabArgs(args: string[]): void {
+	setDefaultVtabArgs(args: Record<string, SqlValue>): void {
 		this.checkOpen();
 		this.schemaManager.setDefaultVTabArgs(args);
 	}
@@ -445,7 +445,7 @@ export class Database {
 	 * Gets the default virtual table module name and arguments.
 	 * @returns An object containing the module name and arguments.
 	 */
-	getDefaultVtabModule(): { name: string; args: string[] } {
+	getDefaultVtabModule(): { name: string; args: Record<string, SqlValue> } {
 		this.checkOpen();
 		return this.schemaManager.getDefaultVTabModule();
 	}

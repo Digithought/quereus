@@ -1,4 +1,4 @@
-import type { MemoryTableRow } from '../types.js';
+import type { RowIdRow } from '../../../common/types.js';
 import type { ModificationKey } from './interface.js';
 
 /**
@@ -8,7 +8,7 @@ import type { ModificationKey } from './interface.js';
  */
 export interface LayerCursorInternal {
 	next(): Promise<void>;
-	getCurrentRowObject(): MemoryTableRow | null;
+	getCurrentRowObject(): RowIdRow | null;
 	getCurrentModificationKey(): ModificationKey | null;
 	isEof(): boolean;
 	close(): void;

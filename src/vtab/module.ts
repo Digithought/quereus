@@ -28,21 +28,13 @@ export interface VirtualTableModule<
 	 * Called by CREATE VIRTUAL TABLE to define schema and initialize storage.
 	 *
 	 * @param db The database connection
-	 * @param pAux Client data passed during module registration
-	 * @param moduleName The name the module was registered with
-	 * @param schemaName The name of the database schema (e.g., 'main', 'temp')
-	 * @param tableName The name of the virtual table being created
-	 * @param options Module-specific configuration options from the USING clause
+	 * @param tableSchema The schema definition for the table being created
 	 * @returns The new VirtualTable instance
 	 * @throws QuereusError on failure
 	 */
 	xCreate(
 		db: Database,
-		pAux: unknown,
-		moduleName: string,
-		schemaName: string,
-		tableName: string,
-		options: TConfig
+		tableSchema: TableSchema,
 	): TTable;
 
 	/**

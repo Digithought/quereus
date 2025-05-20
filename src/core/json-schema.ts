@@ -1,5 +1,5 @@
 import type { ConflictResolution } from '../common/constants.js';
-import type { SqlDataType } from '../common/types.js';
+import type { SqlDataType, SqlValue } from '../common/types.js';
 
 export interface JsonColumnSchema {
 	name: string;
@@ -14,7 +14,7 @@ export interface JsonColumnSchema {
 
 export interface JsonIndexColumnSchema {
 	index: number;
-	desc: boolean;
+	desc?: boolean;
 	collation?: string; // Optional collation
 }
 
@@ -26,7 +26,7 @@ export interface JsonIndexSchema {
 
 export interface JsonPrimaryKeyDefinition {
 	index: number;
-	desc: boolean;
+	desc?: boolean;	// default false
 }
 
 export interface JsonTableSchema {
@@ -34,7 +34,7 @@ export interface JsonTableSchema {
 	columns: JsonColumnSchema[];
 	primaryKeyDefinition: JsonPrimaryKeyDefinition[];
 	vtabModule: string;
-	vtabArgs?: string[];
+	vtabArgs?: Record<string, SqlValue>;
 	indexes?: JsonIndexSchema[];
 	checkConstraints?: (JsonColumnConstraint | JsonTableConstraint)[];
 }

@@ -25,10 +25,9 @@ export const EXPLAIN_PROGRAM_SCHEMA: TableSchema = Object.freeze({
     vtabModule: null as any, // Set by module constructor/registration if needed
     vtabModuleName: 'explain_program',
     vtabAuxData: undefined,
-    vtabArgs: [],
+    vtabArgs: {},
     isTemporary: true,
     isView: false,
-    isStrict: false,
     isWithoutRowid: true, // Doesn't have a rowid
     subqueryAST: undefined,
 }) as TableSchema;

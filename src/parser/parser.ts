@@ -2,7 +2,8 @@ import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
-import { getLiteralSqlType } from '../runtime/type-inference.js';
+import { getLiteralSqlType } from '../common/type-inference.js';
+import type { SqlValue } from '../common/types.js';
 
 const log = createLogger('parser:parser'); // Create logger instance
 const errorLog = log.extend('error');
@@ -233,6 +234,7 @@ export class Parser {
 			case 'ROLLBACK': this.advance(); return this.rollbackStatement(startToken);
 			case 'SAVEPOINT': this.advance(); return this.savepointStatement(startToken);
 			case 'RELEASE': this.advance(); return this.releaseStatement(startToken);
+			// TODO: Replace pragmas with build-in functions
 			case 'PRAGMA': this.advance(); return this.pragmaStatement(startToken);
 			// --- Add default case ---
 			default:
@@ -1324,6 +1326,21 @@ export class Parser {
 
 		const table = this.tableIdentifier();
 
+		let moduleName: string | undefined;
+		let moduleArgs: Record<string, SqlValue> = {};
+		if (this.matchKeyword('USING')) {
+			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
+			if (this.matchKeyword('(')) {
+				while (!this.match(TokenType.RPAREN)) {
+					const nameValue = this.nameValueItem("module argument");
+					moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? nameValue.value.value : nameValue.value.name;
+					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
+						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
+					}
+				}
+			}
+		}
+
 		const columns: AST.ColumnDef[] = [];
 		const constraints: AST.TableConstraint[] = [];
 		let withoutRowid = false;
@@ -1345,7 +1362,7 @@ export class Parser {
 				withoutRowid = true;
 			}
 		} else if (this.matchKeyword('AS')) {
-			throw new Error('CREATE TABLE AS SELECT is not fully implemented.');
+			throw new Error('CREATE TABLE AS SELECT is not supported.');
 		} else {
 			throw this.error(this.peek(), "Expected '(' or 'AS' after table name.");
 		}
@@ -1358,6 +1375,8 @@ export class Parser {
 			constraints,
 			withoutRowid,
 			isTemporary,
+			moduleName,
+			moduleArgs,
 			loc: _createLoc(startToken, this.previous()),
 		};
 	}
@@ -1612,7 +1631,12 @@ export class Parser {
 	 * @returns AST for PRAGMA statement
 	 */
 	private pragmaStatement(startToken: Token): AST.PragmaStmt {
-		const name = this.consumeIdentifier("Expected pragma name.");
+		const nameValue = this.nameValueItem("pragma");
+		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
+	}
+
+	private nameValueItem(context: string): { name: string, value: AST.IdentifierExpr | AST.LiteralExpr } {
+		const name = this.consumeIdentifier(`Expected ${context} name.`);
 
 		let value: AST.LiteralExpr | AST.IdentifierExpr | undefined;
 		if (this.match(TokenType.EQUAL)) {
@@ -1629,13 +1653,13 @@ export class Parser {
 					throw this.error(this.peek(), "Expected number after '-'.");
 				}
 			} else {
-				throw this.error(this.peek(), "Expected pragma value (identifier, string, number, or NULL).");
+				throw this.error(this.peek(), `Expected ${context} value (identifier, string, number, or NULL).`);
 			}
 		} else {
-			throw this.error(this.peek(), "Expected '=' after pragma name.");
+			throw this.error(this.peek(), `Expected '=' after ${context} name.`);
 		}
 
-		return { type: 'pragma', name: name.toLowerCase(), value, loc: _createLoc(startToken, this.previous()) };
+		return { name: name.toLowerCase(), value };
 	}
 
 	// --- Supporting Clause / Definition Parsers ---

@@ -81,7 +81,7 @@ export function exportSchemaJson(db: Database): string {
         }),
         primaryKeyDefinition: [...tableSchema.primaryKeyDefinition],
         vtabModule: tableSchema.vtabModuleName ?? '',
-        vtabArgs: tableSchema.vtabArgs ? [...tableSchema.vtabArgs] : undefined,
+        vtabArgs: tableSchema.vtabArgs ? {...tableSchema.vtabArgs} : undefined,
         indexes: tableSchema.indexes?.map((idx: IndexSchema): JsonIndexSchema => ({
           name: idx.name,
           columns: idx.columns.map((col): JsonIndexColumnSchema => ({
@@ -251,7 +251,6 @@ export function importSchemaJson(db: Database, jsonString: string): void {
           }))),
         }))) : undefined,
         isWithoutRowid: false,
-        isStrict: false,
         isView: false,
       };
       schema.addTable(tableSchema);

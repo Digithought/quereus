@@ -4,7 +4,7 @@ import type { MemoryTableManager } from './manager.js';
 import type { ScanPlan } from './scan-plan.js';
 import { BaseLayer } from './base.js'; // Changed to value import
 import { createLogger } from '../../../common/logger.js';
-import type { MemoryTableRow } from '../types.js';
+import type { RowIdRow } from '../../../common/types.js';
 import type { LayerCursorInternal } from './cursor.js';
 import { BaseLayerCursorInternal } from './base-cursor.js';
 import { TransactionLayerCursorInternal } from './transaction-cursor.js';
@@ -150,10 +150,10 @@ export class MemoryTableConnection {
 	}
 
 	/**
-	 * Looks up a complete row (MemoryTableRow tuple) by its rowid, searching through the relevant layer chain.
+	 * Looks up a complete row (RowIdRow tuple) by its rowid, searching through the relevant layer chain.
 	 * This is primarily for the sorter in MemoryTableCursor.
 	 */
-	async lookupRowByRowid(rowid: bigint): Promise<MemoryTableRow | null> {
+	async lookupRowByRowid(rowid: bigint): Promise<RowIdRow | null> {
 		// Delegate to a new manager method that can search from a specific startLayer.
 		// The start layer for this lookup should be the connection's current read snapshot.
 		const effectiveRow = await this.tableManager.lookupRowByRowidInternal(rowid, this.readLayer);

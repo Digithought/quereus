@@ -1,9 +1,9 @@
 import { BTree } from 'digitree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { MemoryTableRow, BTreeKey, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
+import type { BTreeKey, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { MemoryIndex } from '../index.js';
-import type { SqlValue } from '../../../common/types.js';
+import type { RowIdRow, SqlValue } from '../../../common/types.js';
 import { isDeletionMarker, DELETED } from '../types.js';
 import type { Layer } from './interface.js';
 
@@ -20,9 +20,9 @@ export class TransactionLayer implements Layer {
 	public readonly parentLayer: Layer;
 	private readonly tableSchemaAtCreation: TableSchema; // Schema when this layer was started
 	// Stores modifications keyed by index-specific keys.
-	// 'primary' maps primary keys -> MemoryTableRow | DELETED
-	// indexName maps [indexKey, rowid] -> MemoryTableRow | DELETED (value needed for filtering?)
-	// Alternatively, secondary mods could just store rowids? Let's start with MemoryTableRow | DELETED for simplicity.
+	// 'primary' maps primary keys -> RowIdRow | DELETED
+	// indexName maps [indexKey, rowid] -> RowIdRow | DELETED (value needed for filtering?)
+	// Alternatively, secondary mods could just store rowids? Let's start with RowIdRow | DELETED for simplicity.
 	private modifications: Map<string | 'primary', BTree<ModificationKey, ModificationValue>>;
 	private deletedRowidsInLayer: Set<bigint>; // Rowids explicitly deleted *in this layer*
 	private _isCommitted: boolean = false;
@@ -98,14 +98,14 @@ export class TransactionLayer implements Layer {
 
 			if (pkDef.length === 0) { // Rowid key
 				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as bigint : (value as MemoryTableRow)[0]; // rowid from tuple
+					isDeletionMarker(value) ? value._key_ as bigint : (value as RowIdRow)[0]; // rowid from tuple
 				const comparator = (a: ModificationKey, b: ModificationKey): number =>
 					compareSqlValues(a as bigint, b as bigint);
 				funcs = { keyExtractor, comparator };
 			} else if (pkDef.length === 1) { // Single column PK
 				const { index: pkSchemaIndex, desc: isDesc, collation } = pkDef[0];
 				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as BTreeKey : (value as MemoryTableRow)[1][pkSchemaIndex] as BTreeKey;
+					isDeletionMarker(value) ? value._key_ as BTreeKey : (value as RowIdRow)[1][pkSchemaIndex] as BTreeKey;
 				const comparator = (a: ModificationKey, b: ModificationKey): number => {
 					const cmp = compareSqlValues(a as SqlValue, b as SqlValue, collation || 'BINARY');
 					return isDesc ? -cmp : cmp;
@@ -114,7 +114,7 @@ export class TransactionLayer implements Layer {
 			} else { // Composite PK
 				const pkColSchemaIndices = pkDef.map(def => def.index);
 				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColSchemaIndices.map(i => (value as MemoryTableRow)[1][i]);
+					isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColSchemaIndices.map(i => (value as RowIdRow)[1][i]);
 				const comparator = (a: ModificationKey, b: ModificationKey): number => {
 					const arrA = a as SqlValue[]; const arrB = b as SqlValue[];
 					const len = Math.min(arrA.length, arrB.length, pkDef.length);
@@ -145,7 +145,7 @@ export class TransactionLayer implements Layer {
 				if (isDeletionMarker(value)) {
 					return value._key_ as [BTreeKey, bigint]; // Deletion marker stores the composite [IndexKey, rowid]
 				} else {
-					const rowTuple = value as MemoryTableRow;
+					const rowTuple = value as RowIdRow;
 					const indexKeyPart = tempIndex.keyFromRow(rowTuple); // Extracts IndexKey from tuple data array
 					const rowid = rowTuple[0]; // rowid from tuple
 					return [indexKeyPart, rowid];
@@ -216,7 +216,7 @@ export class TransactionLayer implements Layer {
 	}
 
 	/** Records an insert or update in this transaction layer */
-	recordUpsert(newRowTuple: MemoryTableRow, affectedIndexes: ReadonlyArray<string | 'primary'>, _oldRowTuple?: MemoryTableRow | null): void {
+	recordUpsert(newRowTuple: RowIdRow, affectedIndexes: ReadonlyArray<string | 'primary'>, _oldRowTuple?: RowIdRow | null): void {
 		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
 		const rowid = newRowTuple[0];
 

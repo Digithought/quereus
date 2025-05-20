@@ -2,10 +2,10 @@ import type { BTree, Path } from 'digitree';
 import type { LayerCursorInternal } from './cursor.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { BaseLayer } from './base.js';
-import type { MemoryTableRow, BTreeKey, ModificationKey } from '../types.js';
+import type { BTreeKey, ModificationKey } from '../types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
-import type { SqlValue } from '../../../common/types.js';
+import type { RowIdRow, SqlValue } from '../../../common/types.js';
 import { createLogger } from '../../../common/logger.js';
 import type { TableSchema } from '../../../schema/table.js';
 
@@ -16,14 +16,14 @@ const errorLog = log.extend('error');
 export class BaseLayerCursorInternal implements LayerCursorInternal {
 	private readonly layer: BaseLayer;
 	private readonly plan: ScanPlan;
-	private readonly targetTree: BTree<BTreeKey, MemoryTableRow> | BTree<[BTreeKey, bigint], [BTreeKey, bigint]>;
+	private readonly targetTree: BTree<BTreeKey, RowIdRow> | BTree<[BTreeKey, bigint], [BTreeKey, bigint]>;
 	private readonly keyComparator: (a: BTreeKey, b: BTreeKey) => number;
 	// keyExtractor was removed as unused
 
 	private iterator: IterableIterator<Path<any, any>> | null = null;
 	private currentPath: Path<any, any> | null = null;
 	private _isEof: boolean = true;
-	private currentValue: MemoryTableRow | null = null; // Stores [rowid, data_array] | null
+	private currentValue: RowIdRow | null = null; // Stores [rowid, data_array] | null
 	private currentModKey: ModificationKey | null = null;
 	private isEqPlanCursor: boolean = false;
 	private readonly tableSchema: TableSchema;
@@ -35,7 +35,7 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 		this.isEqPlanCursor = plan.equalityKey !== undefined;
 
 		if (plan.indexName === 'primary') {
-			this.targetTree = layer.primaryTree as BTree<BTreeKey, MemoryTableRow>;
+			this.targetTree = layer.primaryTree as BTree<BTreeKey, RowIdRow>;
 			this.keyComparator = layer.compareKeys;
 		} else {
 			const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
@@ -48,11 +48,11 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 		this.initializeIterator();
 	}
 
-	private extractKeyValueAt(path: Path<any, any>): { itemKey: ModificationKey | null, itemValue: MemoryTableRow | null } {
-		let itemValue: MemoryTableRow | null = null;
+	private extractKeyValueAt(path: Path<any, any>): { itemKey: ModificationKey | null, itemValue: RowIdRow | null } {
+		let itemValue: RowIdRow | null = null;
 		let itemKey: ModificationKey | null = null;
 		if (this.plan.indexName === 'primary') {
-			const rowTuple = (this.targetTree as BTree<BTreeKey, MemoryTableRow>).at(path);
+			const rowTuple = (this.targetTree as BTree<BTreeKey, RowIdRow>).at(path);
 			if (rowTuple) {
 				itemValue = rowTuple;
 				try { itemKey = this.layer.keyFromEntry(rowTuple); } catch (e) {
@@ -143,7 +143,7 @@ export class BaseLayerCursorInternal implements LayerCursorInternal {
 		this.advanceIterator();
 	}
 
-	getCurrentRowObject(): MemoryTableRow | null { return this._isEof ? null : this.currentValue; }
+	getCurrentRowObject(): RowIdRow | null { return this._isEof ? null : this.currentValue; }
 	getCurrentModificationKey(): ModificationKey | null { return this._isEof ? null : this.currentModKey; }
 	isEof(): boolean { return this._isEof; }
 	close(): void { this.iterator = null; this.currentPath = null; this.currentValue = null; this.currentModKey = null; this._isEof = true; }

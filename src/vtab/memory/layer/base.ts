@@ -1,13 +1,13 @@
 import { BTree } from 'digitree';
 import type { TableSchema, IndexSchema } from '../../../schema/table.js';
-import type { MemoryTableRow, BTreeKey } from '../types.js';
+import type { BTreeKey } from '../types.js';
 import type { Layer, ModificationValue } from './interface.js';
 import { MemoryIndex } from '../index.js';
 import { isDeletionMarker } from './interface.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { createLogger } from '../../../common/logger.js';
 import { safeJsonStringify } from '../../../util/serialization.js';
-import type { SqlValue } from '../../../common/types.js';
+import type { RowIdRow, SqlValue } from '../../../common/types.js';
 
 let baseLayerCounter = 0;
 const log = createLogger('vtab:memory:layer:base');
@@ -19,7 +19,7 @@ const debugLog = log.extend('debug');
  * Helper function to create the primary key extractor and comparator for BaseLayer.
  */
 export function createBaseLayerPkFunctions(schema: TableSchema): {
-	keyFromEntry: (rowTuple: MemoryTableRow) => BTreeKey;
+	keyFromEntry: (rowTuple: RowIdRow) => BTreeKey;
 	compareKeys: (a: BTreeKey, b: BTreeKey) => number;
 } {
 	const pkDef = schema.primaryKeyDefinition ?? [];
@@ -67,10 +67,10 @@ export function createBaseLayerPkFunctions(schema: TableSchema): {
 export class BaseLayer implements Layer {
 	private readonly layerId: number;
 	public readonly tableSchema: TableSchema;
-	public primaryTree: BTree<BTreeKey, MemoryTableRow>;
+	public primaryTree: BTree<BTreeKey, RowIdRow>;
 	public readonly secondaryIndexes: Map<string, MemoryIndex>;
 	private readonly emptyDeletedSet: ReadonlySet<bigint>;
-	public readonly keyFromEntry: (rowTuple: MemoryTableRow) => BTreeKey;
+	public readonly keyFromEntry: (rowTuple: RowIdRow) => BTreeKey;
 	public readonly compareKeys: (a: BTreeKey, b: BTreeKey) => number;
 	public readonly rowidToKeyMap: Map<bigint, BTreeKey> | null;
 
@@ -86,7 +86,7 @@ export class BaseLayer implements Layer {
 		this.keyFromEntry = pkFuncs.keyFromEntry;
 		this.compareKeys = pkFuncs.compareKeys;
 
-		this.primaryTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
+		this.primaryTree = new BTree<BTreeKey, RowIdRow>(this.keyFromEntry, this.compareKeys);
 		this.secondaryIndexes = new Map();
 		this.emptyDeletedSet = Object.freeze(new Set<bigint>());
 		this.rowidToKeyMap = needsRowidMap ? new Map() : null;
@@ -118,7 +118,7 @@ export class BaseLayer implements Layer {
 		return null; // Base layer has no parent
 	}
 
-	getModificationTree(indexName: string | 'primary'): BTree<BTreeKey, MemoryTableRow> | null {
+	getModificationTree(indexName: string | 'primary'): BTree<BTreeKey, RowIdRow> | null {
 		// BaseLayer doesn't store modifications per se, but cursors might need access to the primary tree.
 		// Return primary tree for 'primary', null for secondary indexes via this interface method.
 		// Specific secondary tree access should use getSecondaryIndexTree.
@@ -149,14 +149,14 @@ export class BaseLayer implements Layer {
 	 * This should only be called under the MemoryTable's management lock.
 	 *
 	 * @param key The primary key of the row being modified.
-	 * @param modValue The new value (MemoryTableRow tuple or DELETED symbol) from the transaction layer.
-	 * @param oldEffectiveTuple The value of the row *before* this change was applied (as a MemoryTableRow tuple or null).
+	 * @param modValue The new value (RowIdRow tuple or DELETED symbol) from the transaction layer.
+	 * @param oldEffectiveTuple The value of the row *before* this change was applied (as a RowIdRow tuple or null).
 	 * @returns void
 	 * @throws Error on BTree operation failure.
 	 */
-	applyChange(key: BTreeKey, modValue: ModificationValue, oldEffectiveTuple: MemoryTableRow | null): void {
+	applyChange(key: BTreeKey, modValue: ModificationValue, oldEffectiveTuple: RowIdRow | null): void {
 		const isDelete = isDeletionMarker(modValue);
-		const newTuple = isDelete ? null : modValue as MemoryTableRow; // Row data tuple or null if deleting
+		const newTuple = isDelete ? null : modValue as RowIdRow; // Row data tuple or null if deleting
 		const oldTuple = oldEffectiveTuple; // Row data tuple before change, or null if it was an insert
 
 		// 1. Update Secondary Indexes (Needs old and new tuples)
@@ -187,7 +187,7 @@ export class BaseLayer implements Layer {
 				} else {
 					warnLog(`applyChange: Attempted to delete non-existent primary key %s during collapse.`, safeJsonStringify(key));
 				}
-			} else if (newTuple) { // newTuple is MemoryTableRow here
+			} else if (newTuple) { // newTuple is RowIdRow here
 				if (path.on) {
 					this.primaryTree.updateAt(path, newTuple);
 				} else {
@@ -211,7 +211,7 @@ export class BaseLayer implements Layer {
 	 * @param defaultValue Default value to use for the new column in existing rows
 	 */
 	addColumnToBase(columnName: string, defaultValue: any): void {
-		const rowsToUpdate: MemoryTableRow[] = [];
+		const rowsToUpdate: RowIdRow[] = [];
 
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
 			const rowTuple = this.primaryTree.at(path);
@@ -220,7 +220,7 @@ export class BaseLayer implements Layer {
 			}
 		}
 
-		const newTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
+		const newTree = new BTree<BTreeKey, RowIdRow>(this.keyFromEntry, this.compareKeys);
 
 		for (const rowTuple of rowsToUpdate) {
 			const [rowid, dataArray] = rowTuple;
@@ -241,7 +241,7 @@ export class BaseLayer implements Layer {
 	 * @returns true if the operation was successful
 	 */
 	dropColumnFromBase(columnName: string, columnIndexInSchema: number): boolean {
-		const rowsToUpdate: MemoryTableRow[] = [];
+		const rowsToUpdate: RowIdRow[] = [];
 
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
 			const rowTuple = this.primaryTree.at(path);
@@ -250,7 +250,7 @@ export class BaseLayer implements Layer {
 			}
 		}
 
-		const newTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
+		const newTree = new BTree<BTreeKey, RowIdRow>(this.keyFromEntry, this.compareKeys);
 
 		for (const rowTuple of rowsToUpdate) {
 			const [rowid, dataArray] = rowTuple;
@@ -266,7 +266,7 @@ export class BaseLayer implements Layer {
 
 	/**
 	 * Renames a column in all rows in the base layer tables.
-	 * For the tuple-based MemoryTableRow, this operation doesn't change the stored data itself,
+	 * For the tuple-based RowIdRow, this operation doesn't change the stored data itself,
 	 * only the schema interpretation. The tree is rebuilt for consistency, but data arrays are identical.
 	 * This should be called under a schema change lock.
 	 *
@@ -275,7 +275,7 @@ export class BaseLayer implements Layer {
 	 * @returns true if the operation was successful
 	 */
 	renameColumnInBase(oldName: string, newName: string): boolean {
-		const rowsToUpdate: MemoryTableRow[] = [];
+		const rowsToUpdate: RowIdRow[] = [];
 
 		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
 			const rowTuple = this.primaryTree.at(path);
@@ -284,7 +284,7 @@ export class BaseLayer implements Layer {
 			}
 		}
 
-		const newTree = new BTree<BTreeKey, MemoryTableRow>(this.keyFromEntry, this.compareKeys);
+		const newTree = new BTree<BTreeKey, RowIdRow>(this.keyFromEntry, this.compareKeys);
 
 		for (const rowTuple of rowsToUpdate) {
 			// Data itself doesn't change for a rename with tuple storage

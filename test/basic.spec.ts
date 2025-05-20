@@ -24,4 +24,16 @@ describe(`Basic query`, () => {
 		const schemaEntry = resultRows.find(r => r.name === 'upper' && r.type === 'function');
 		expect(schemaEntry).to.exist;
 	});
+
+	it('should create a simple table', async () => {
+		await db.exec('create table t (a text, b integer);');
+
+		const resultRows: Record<string, any>[] = [];
+		for await (const row of db.eval(`select * from _schema`)) {
+			resultRows.push(row);
+		}
+		expect(resultRows.length).to.be.greaterThan(0);
+		const schemaEntry = resultRows.find(r => r.name === 't' && r.type === 'table');
+		expect(schemaEntry).to.exist;
+	});
 });

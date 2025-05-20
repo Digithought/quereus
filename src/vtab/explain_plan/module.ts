@@ -38,10 +38,9 @@ const QUERY_PLAN_SCHEMA: TableSchema = Object.freeze({
     vtabModule: null as any,
     vtabModuleName: 'explain_plan',
     vtabAuxData: undefined,
-    vtabArgs: [],
+    vtabArgs: {},
     isTemporary: true,
     isView: false,
-    isStrict: false,
     isWithoutRowid: true,
     subqueryAST: undefined,
 }) as TableSchema;

@@ -46,7 +46,7 @@ class SchemaTable extends VirtualTable {
 			schemaName: this.schemaName,
 			columns: SchemaTableModule.COLUMNS.map(c => ({...createDefaultColumnSchema(c.name), affinity: c.type, collation: c.collation })),
 			columnIndexMap: new Map(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP)) as ReadonlyMap<string, number>,
-			primaryKeyDefinition: [],
+			primaryKeyDefinition: [{ index: 0 }, { index: 1 }],
 			checkConstraints: [],
 			indexes: [],
 			vtabModule: this.module,
@@ -55,9 +55,10 @@ class SchemaTable extends VirtualTable {
 			isStrict: false,
 			isView: false,
 			vtabAuxData: undefined,
-			vtabArgs: [],
+			vtabArgs: {},
 			isTemporary: false,
 			subqueryAST: undefined,
+			isReadOnly: true,
 		} as TableSchema;
 	}
 
@@ -112,7 +113,7 @@ class SchemaTable extends VirtualTable {
 				let createSql: string | null = null;
 				try {
 					const columnsStr = tableSchema.columns.map(c => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
-					const argsStr = tableSchema.vtabArgs?.join(', ') || '';
+					const argsStr = Object.entries(tableSchema.vtabArgs ?? {}).map(([key, value]) => `${key}=${value}`).join(', ');
 					createSql = `create table "${tableSchema.name}" (${columnsStr}) using ${tableSchema.vtabModuleName}(${argsStr})`;
 				} catch (e) {
 					createSql = null;
@@ -147,14 +148,14 @@ class SchemaTable extends VirtualTable {
 		// No need for filterInfo.constraints or filterInfo.args as we are not filtering here.
 		// Quereus will do the filtering.
 
-		for (const internalRow of allSchemaRows) {
+		for (const row of allSchemaRows) {
 			const outputRow: Row = [
-				internalRow.type,
-				internalRow.name,
-				internalRow.tbl_name,
-				internalRow.sql
+				row.type,
+				row.name,
+				row.tbl_name,
+				row.sql
 			];
-			yield [internalRow._rowid_, outputRow];
+			yield [row._rowid_, outputRow];
 		}
 	}
 }
@@ -175,11 +176,11 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 
 	constructor() {}
 
-	xCreate(_db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, _options: BaseModuleConfig): SchemaTable {
-		return new SchemaTable(_db, this, schemaName, tableName);
+	xCreate(): SchemaTable {
+		throw new QuereusError("Cannot create table using module _schema", StatusCode.ERROR);
 	}
 
-	xConnect(_db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, _options: BaseModuleConfig): SchemaTable {
+	xConnect(_db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string): SchemaTable {
 		return new SchemaTable(_db, this, schemaName, tableName);
 	}
 

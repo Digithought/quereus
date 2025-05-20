@@ -78,10 +78,11 @@ class JsonTreeTable extends VirtualTable {
 			isStrict: false,
 			isView: false,
 			vtabAuxData: undefined,
-			vtabArgs: [],
+			vtabArgs: {},
 			indexes: [],
 			isTemporary: false,
 			subqueryAST: undefined,
+			isReadOnly: true,
 		});
 	}
 
@@ -213,13 +214,12 @@ export class JsonTreeModule implements VirtualTableModule<JsonTreeTable, JsonCon
 
 	xCreate(
 		db: Database,
-		pAux: unknown,
-		moduleName: string,
-		schemaName: string,
-		tableName: string,
-		options: JsonConfig
+		tableSchema: TableSchema,
 	): JsonTreeTable {
-		return this.xConnect(db, pAux, moduleName, schemaName, tableName, options);
+		if (!tableSchema.vtabArgs || !('jsonSource' in tableSchema.vtabArgs)) {
+			throw new QuereusError("json_tree table requires a jsonSource argument", StatusCode.ERROR);
+		}
+		return this.xConnect(db, tableSchema.vtabAuxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, tableSchema.vtabArgs as unknown as JsonConfig);
 	}
 
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {

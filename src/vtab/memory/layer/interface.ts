@@ -1,7 +1,6 @@
 import type { BTree } from 'digitree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { BTreeKey, MemoryTableRow, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
-import { DELETED } from './constants.js';
+import type { BTreeKey, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
 import { isDeletionMarker } from '../types.js';
 
 // Re-export these for backward compatibility

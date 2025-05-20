@@ -2,20 +2,14 @@ import type { BTree, Path } from 'digitree';
 import type { LayerCursorInternal } from './cursor.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { TransactionLayer } from './transaction.js';
-import type { MemoryTableRow, BTreeKey, ModificationKey, ModificationValue } from '../types.js';
-// import { compareSqlValues } from '../../../util/comparison.js'; // Unused
+import type { BTreeKey, ModificationKey, ModificationValue } from '../types.js';
 import { isDeletionMarker } from './interface.js';
-// import { createLogger } from '../../../common/logger.js'; // Unused
-// import { safeJsonStringify } from '../../../util/serialization.js'; // Unused
-// import type { SqlValue } from '../../../common/types.js'; // Unused
-// import { IndexConstraintOp } from '../../../common/constants.js'; // Unused
 import type { TableSchema } from '../../../schema/table.js';
 import type { MemoryTableManager } from './manager.js';
-
-// Loggers removed as they were unused
+import type { RowIdRow } from '../../../common/types.js';
 
 type MergeAction = { useMod: boolean; useParent: boolean; advanceMod: boolean; advanceParent: boolean; };
-type PotentialResult = { potentialKey: ModificationKey | null; potentialRow: MemoryTableRow | null; isDeletedHere: boolean; };
+type PotentialResult = { potentialKey: ModificationKey | null; potentialRow: RowIdRow | null; isDeletedHere: boolean; };
 
 export class TransactionLayerCursorInternal implements LayerCursorInternal {
 	private readonly layer: TransactionLayer;
@@ -33,11 +27,11 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 	private currentModKey: ModificationKey | null = null;
 
 	private parentResultDone: boolean = true;
-	private parentValueObject: MemoryTableRow | null = null;
+	private parentValueObject: RowIdRow | null = null;
 	private parentModKey: ModificationKey | null = null;
 
 	private _currentKey: ModificationKey | null = null;
-	private _currentRowObject: MemoryTableRow | null = null;
+	private _currentRowObject: RowIdRow | null = null;
 	private _isEof: boolean = true;
 	private readonly tableSchema: TableSchema;
 
@@ -120,7 +114,7 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 		if (action.useMod && this.currentModValue) {
 			result.potentialKey = this.currentModKey;
 			if (isDeletionMarker(this.currentModValue)) { result.isDeletedHere = true; result.potentialRow = null; }
-			else { result.potentialRow = this.currentModValue as MemoryTableRow; }
+			else { result.potentialRow = this.currentModValue as RowIdRow; }
 		} else if (action.useParent && this.parentValueObject) {
 			result.potentialKey = this.parentModKey;
 			result.potentialRow = this.parentValueObject;
@@ -166,7 +160,7 @@ export class TransactionLayerCursorInternal implements LayerCursorInternal {
 	}
 
 	async next(): Promise<void> { if (!this._isEof) await this.mergeNextState(); }
-	getCurrentRowObject(): MemoryTableRow | null { return this._isEof ? null : this._currentRowObject; }
+	getCurrentRowObject(): RowIdRow | null { return this._isEof ? null : this._currentRowObject; }
 	getCurrentModificationKey(): ModificationKey | null { return this._isEof ? null : this._currentKey; }
 	isEof(): boolean { return this._isEof; }
 	close(): void { this.modBTreeIterator = null; this.parentCursor.close(); this._isEof = true; }
