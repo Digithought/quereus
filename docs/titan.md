@@ -176,3 +176,110 @@ The introduction of PlanNodes and the new `Instruction`-based runtime is an incr
     *   Incrementally add more `PlanNode` types to support a wider range of SQL features.
     *   For each new `PlanNode`, implement the corresponding emitter function to generate the runtime `Instruction`(s).
     *   If, in the future, a different execution backend (like VDBE) is desired, a separate set of "emitters" could be developed to translate `PlanNode`s into that target format (e.g., VDBE instructions, using a dedicated `EmissionContext` for that backend).
+
+## Current Implementation Status (as of analysis of `src/planner` and `src/runtime`)
+
+Project Titan is actively under development, with significant portions of Phase I completed and Phase II initiated.
+
+**Phase I: Core `PlanNode` to `Instruction` Architecture - Current Status: Partially Complete**
+
+*   **`PlanNode` Hierarchy (`src/planner/nodes`):**
+    *   **Foundation:** The base `PlanNode` class, `RelationalPlanNode`, `ScalarPlanNode`, and arity-based interfaces (e.g., `UnaryRelationalNode`, `BinaryScalarNode`) are established. `PlanNodeType` enum defines a wide range of planned operations.
+    *   **Implemented Core Nodes:**
+        *   `BlockNode`: Represents a batch of statements.
+        *   `TableReferenceNode`, `ColumnReferenceNode`, `ParameterReferenceNode`, `FunctionReferenceNode`: For resolving schema objects and parameters.
+        *   `ScalarFunctionCallNode`: For user-defined scalar functions.
+        *   `LiteralNode`: For constant values.
+        *   `BinaryOpNode`: For binary expressions (currently, emitter supports basic numeric operations).
+        *   `TableScanNode`: For full table scans.
+        *   `SingleRowNode`: For `SELECT` statements without a `FROM` clause.
+        *   `InNode`: For `IN` subquery conditions.
+        *   `ProjectNode`: Class defined, including type inference for projected columns. Planner integration is basic.
+    *   **Nodes Defined but Less Integrated or Awaiting Full Planner Logic:** `FilterNode`, `JoinNode`, `SortNode`, `AggregateNode`, `LimitOffsetNode` have classes defined. Others like `TableSeekNode`, `UnaryOpNode`, `CastNode`, `CollateNode`, `CaseExprNode` are primarily present as `PlanNodeType` enum members.
+*   **`Instruction`-based Runtime (`src/runtime`):**
+    *   **Core Components:** `Instruction` interface, `Scheduler` (for managing execution flow and promises), and `RuntimeContext` (providing DB access, parameters) are implemented.
+    *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`):** The system for registering and dispatching emitters based on `PlanNode` type is in place.
+    *   **Implemented Emitters:**
+        *   `emitBlock` for `BlockNode`.
+        *   `emitTableScan` for `TableScanNode` (interacts with VTab `xConnect` and `xQuery`).
+        *   `emitLiteral` for `LiteralNode`.
+        *   `emitBinaryOp` for `BinaryOpNode` (currently supports `+`, `-`, `*`, `/`; other operations like concatenation, logical, comparison are TODO).
+        *   `emitParameterReference` for `ParameterReferenceNode`.
+        *   `emitIn` for `InNode`.
+    *   **Missing Emitters:** For `ProjectNode`, `FilterNode`, `JoinNode`, `AggregateNode`, `SortNode`, `LimitOffsetNode`, `ScalarFunctionCallNode`, and other scalar expression nodes.
+*   **Basic SQL Query Execution:** The current infrastructure can plan and execute simple SQL queries, such as:
+    *   `SELECT <literal_value(s)>`
+    *   `SELECT <parameter(s)>`
+    *   `SELECT * FROM <single_table>`
+    *   `SELECT <column> FROM <single_table>` (projection logic in planner is basic)
+    *   `SELECT <numeric_expr> FROM <single_table>` (e.g. `col1 + col2`)
+    *   Queries involving `IN (SELECT ...)` conditions.
+*   **Planning Logic (`src/planner/building`):**
+    *   `buildBlock`: Can process a sequence of statements (currently focusing on `SELECT`).
+    *   `buildSelectStmt`:
+        *   Handles `SELECT` from a single table (creating `TableScanNode`) or `SELECT` without a `FROM` clause (using `SingleRowNode`).
+        *   Multi-table `FROM` clauses (joins) are explicitly not yet supported.
+        *   **Major TODOs:** Full planning for WHERE clauses (`FilterNode`), projection lists (`ProjectNode` with complex expressions), DISTINCT, GROUP BY/HAVING (`AggregateNode`), ORDER BY (`SortNode`), LIMIT/OFFSET (`LimitOffsetNode`).
+    *   `buildTableScan`: Creates `TableScanNode` using `buildTableReference`. Currently defaults to a "fullscan" `FilterInfo`.
+*   **Scope and Symbol Resolution (`src/planner/scopes`, `src/planner/resolve.ts`):**
+    *   This area is well-developed.
+    *   Implemented Scopes: `GlobalScope` (for tables and functions from `SchemaManager`), `ParameterScope` (for `?`, `:name`, `:idx` parameters), `RegisteredScope` (used in `buildFrom` to make table columns available), `MultiScope` (combining scopes, e.g., parent + FROM clause), `AliasedScope`, `EmptyScope`.
+    *   Resolution functions (`resolveTable`, `resolveColumn`, `resolveParameter`, `resolveFunction`) are used to find schema objects and parameters. `resolveColumn` is available but full integration into `buildSelectStmt` (e.g., for arbitrary expressions in projections) is pending.
+
+**Phase II: SQL Feature Completion & Robustness - Current Status: Early Stages**
+
+*   While many `PlanNode` classes for advanced SQL features are defined, their integration into the main planning logic (especially `buildSelectStmt`) and the creation of corresponding runtime emitters are largely outstanding.
+*   Robust error handling and comprehensive test coverage specific to the Titan architecture are ongoing needs. Plan serialization is not yet implemented.
+
+**Phase III: Optimization, Extensibility, and Advanced Features - Current Status: Not Started**
+
+*   The current planner does not perform significant optimizations (e.g., index selection relies on a default full scan).
+*   Features like alternative execution backends, advanced debugging, or UDF/extension enhancements specific to Titan are future work.
+
+## Outstanding Work / Next Steps
+
+To advance Project Titan, particularly through Phase II, the following areas require significant development:
+
+**1. Planner Enhancements (`src/planner/building/select.ts` and new modules):**
+*   **WHERE Clause:** Implement planning of `WHERE` conditions into `FilterNode`s. This involves parsing expressions within the WHERE clause into `ScalarPlanNode` trees.
+*   **Projection Lists:** Fully implement planning for `SELECT` list items.
+    *   Handle `SELECT *` correctly.
+    *   Plan arbitrary expressions (e.g., `col1 + col2`, `my_func(col)`, `CASE...END`) into their respective `ScalarPlanNode`s (`BinaryOpNode`, `ScalarFunctionCallNode`, `CaseExprNode`, etc.) and incorporate them into a `ProjectNode`.
+*   **Joins:** Implement planning for various `JOIN` types (`INNER`, `LEFT`, etc.), creating `JoinNode`s. This includes handling join conditions and updating scopes correctly.
+*   **Aggregations:** Implement `GROUP BY` and aggregate functions (e.g., `COUNT`, `SUM`, `AVG`), creating `AggregateNode`s. Plan `HAVING` clauses as `FilterNode`s applied to the output of `AggregateNode`.
+*   **Sorting:** Implement `ORDER BY` clause planning, creating `SortNode`s.
+*   **Limit/Offset:** Implement `LIMIT` and `OFFSET` clause planning, creating `LimitOffsetNode`s.
+*   **Distinct:** Implement support for `SELECT DISTINCT`.
+
+**2. `PlanNode` Implementation (`src/planner/nodes`):**
+*   Complete the implementation for `ScalarPlanNode` subtypes that are currently only enum members or basic classes: `UnaryOpNode`, `CastNode`, `CollateNode`, `CaseExprNode`.
+*   Develop `TableSeekNode` for indexed access when optimization is introduced.
+
+**3. Emitter Implementation (`src/runtime/emit/`):**
+*   Create emitters for all planned `PlanNode` types:
+    *   `emitProject` for `ProjectNode`.
+    *   `emitFilter` for `FilterNode`.
+    *   `emitJoin` for `JoinNode`.
+    *   `emitAggregate` for `AggregateNode`.
+    *   `emitSort` for `SortNode`.
+    *   `emitLimitOffset` for `LimitOffsetNode`.
+    *   `emitScalarFunctionCall` for `ScalarFunctionCallNode`.
+    *   Emitters for missing `ScalarPlanNode`s: `emitUnaryOp`, `emitCast`, `emitCollate`, `emitCaseExpr`.
+*   Complete `emitBinaryOp` to support all SQL binary operators (logical, comparison, string concatenation, bitwise).
+
+**4. DML and DDL Operations:**
+*   Extend the planner and runtime to support `INSERT`, `UPDATE`, `DELETE` statements.
+*   Plan and execute DDL statements like `CREATE TABLE`, `DROP TABLE`, `CREATE INDEX` within the Titan framework.
+
+**5. Query Optimization (Phase III Prelude):**
+*   Introduce a basic cost model.
+*   Implement mechanisms for index selection in `buildTableScan` / `buildTableSeek` instead of defaulting to full scans.
+*   Explore simple rule-based optimizations (e.g., predicate pushdown).
+
+**6. Testing and Robustness:**
+*   Develop a comprehensive suite of tests specifically targeting the Titan planner and runtime for various SQL features and edge cases.
+*   Improve error reporting and handling throughout the new query processing pipeline.
+
+**7. Plan Serialization and Visualization:**
+*   Implement mechanisms to serialize `PlanNode` trees (e.g., to JSON) for debugging and analysis.
+*   Potentially develop tools to visualize query plans.
