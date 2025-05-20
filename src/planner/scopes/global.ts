@@ -1,4 +1,4 @@
-import { SqliterError } from "../../common/errors.js";
+import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { ScalarType } from "../../common/datatype.js";
 import * as AST from "../../parser/ast.js";

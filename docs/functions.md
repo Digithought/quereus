@@ -48,7 +48,7 @@ These functions operate on single values and return a single value.
     *   **Description:** Returns the 1-based index of the first occurrence of string Y within string X. Case-sensitive.
     *   **Arguments:** `X` (TEXT), `Y` (TEXT).
     *   **Returns:** An INTEGER representing the starting position (1-based). Returns `0` if Y is not found within X, or if either argument is `NULL`, or if Y is an empty string.
-    *   **Example:** `instr('SQLite', 'Lite')` returns `4`, `instr('banana', 'a')` returns `2`, `instr('apple', 'z')` returns `0`.
+    *   **Example:** `instr('Quereus', 'reus')` returns `4`, `instr('banana', 'a')` returns `2`, `instr('apple', 'z')` returns `0`.
 
 *   `length(X)`
     *   **Description:** Returns the length of string X in characters or the size of blob X in bytes.

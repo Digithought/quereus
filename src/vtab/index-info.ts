@@ -10,7 +10,7 @@ export interface IndexConstraint {
 	op: IndexConstraintOp;
 	/** True if the constraint expression is usable */
 	usable: boolean;
-	/** Internal offset used by SQLite - ignore in xBestIndex */
+	/** Internal offset used by Quereus - ignore in xBestIndex */
 	iTermOffset?: number;
 }
 
@@ -30,7 +30,7 @@ export interface IndexOrderBy {
 export interface IndexConstraintUsage {
 	/** If >0, constraint value becomes the (argvIndex-1)-th arg to xFilter */
 	argvIndex: number;
-	/** If true, SQLite might skip re-checking this constraint */
+	/** If true, Quereus might skip re-checking this constraint */
 	omit: boolean;
 }
 

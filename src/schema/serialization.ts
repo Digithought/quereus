@@ -1,4 +1,4 @@
-import { MisuseError, SqliterError } from '../common/errors.js';
+import { MisuseError, QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { SqlDataType } from '../common/types.js';
 import type { SqlValue } from '../common/types.js';
@@ -156,7 +156,7 @@ export function importSchemaJson(db: Database, jsonString: string): void {
     if (!schema) {
       if (schemaName === 'main' || schemaName === 'temp') {
         errorLog(`Core schema %s missing during import!`, schemaName);
-        throw new SqliterError(`Internal error: Core schema ${schemaName} is missing.`, StatusCode.INTERNAL);
+        throw new QuereusError(`Internal error: Core schema ${schemaName} is missing.`, StatusCode.INTERNAL);
       } else {
         schema = schemaManager.addSchema(schemaName);
       }
@@ -228,7 +228,7 @@ export function importSchemaJson(db: Database, jsonString: string): void {
       const vtabModuleName = jsonTable.vtabModule;
       const moduleInfo = db._getVtabModule(vtabModuleName);
       if (!moduleInfo) {
-        throw new SqliterError(`Virtual table module '${vtabModuleName}' for table '${jsonTable.name}' is not registered with the current Database instance. Cannot import schema.`, StatusCode.ERROR);
+        throw new QuereusError(`Virtual table module '${vtabModuleName}' for table '${jsonTable.name}' is not registered with the current Database instance. Cannot import schema.`, StatusCode.ERROR);
       }
       const vtabModule: VirtualTableModule<any, any> = moduleInfo.module;
 

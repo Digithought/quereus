@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import type { Handler, VmCtx } from '../handler-types.js';
 import type { P4Update, VdbeInstruction, P4OpenTvf } from '../instruction.js';
@@ -11,8 +11,8 @@ import type { VirtualTable } from '../../vtab/table.js';
 // Helper for handling errors from VTab methods
 function handleVTabError(ctx: VmCtx, e: any, vtabName: string, method: string) {
   const message = `Error in VTab ${vtabName}.${method}: ${e instanceof Error ? e.message : String(e)}`;
-  const code = e instanceof SqliterError ? e.code : StatusCode.ERROR;
-  ctx.error = new SqliterError(message, code, e instanceof Error ? e : undefined);
+  const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
+  ctx.error = new QuereusError(message, code, e instanceof Error ? e : undefined);
   ctx.done = true;
 }
 
@@ -40,11 +40,11 @@ export function registerHandlers(handlers: Handler[]) {
 
     const cursor = ctx.getCursor(cIdx);
     if (!cursor?.instance) {
-      throw new SqliterError(`VFilter on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
+      throw new QuereusError(`VFilter on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
     cursor.currentEofJumpTarget = addrIfEmpty; // Store VFilter's EOF jump target
     if (!p4Info) {
-      throw new SqliterError(`VFilter missing P4 info for cursor ${cIdx}`, StatusCode.INTERNAL);
+      throw new QuereusError(`VFilter missing P4 info for cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     const args: SqlValue[] = [];
@@ -118,7 +118,7 @@ export function registerHandlers(handlers: Handler[]) {
         s.index++;
         if (s.index >= s.rows.length) { // EOF for sorted results
           if (cursor.currentEofJumpTarget === undefined) { // cursor is definitely defined here
-            throw new SqliterError(`VNext (sorted) on cursor ${cIdx} found EOF, but no EOF jump target was set.`, StatusCode.INTERNAL);
+            throw new QuereusError(`VNext (sorted) on cursor ${cIdx} found EOF, but no EOF jump target was set.`, StatusCode.INTERNAL);
           }
           ctx.pc = cursor.currentEofJumpTarget;
         } else { // Not EOF for sorted results
@@ -131,7 +131,7 @@ export function registerHandlers(handlers: Handler[]) {
     // If we reach here, it's not sorted results, or cursor was initially undefined.
     // The next check handles !cursor or !cursor.instance
     if (!cursor?.instance) { // This check is fine as is, or can be if (!cursor || !cursor.instance)
-      throw new SqliterError(`VNext on unopened or undefined cursor ${cIdx}`, StatusCode.INTERNAL);
+      throw new QuereusError(`VNext on unopened or undefined cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     try {
@@ -139,7 +139,7 @@ export function registerHandlers(handlers: Handler[]) {
       const eof = cursor.instance.eof();
       if (eof) {
         if (cursor.currentEofJumpTarget === undefined) {
-          throw new SqliterError(`VNext on cursor ${cIdx} found EOF, but no EOF jump target was set by VFilter/Rewind.`, StatusCode.INTERNAL);
+          throw new QuereusError(`VNext on cursor ${cIdx} found EOF, but no EOF jump target was set by VFilter/Rewind.`, StatusCode.INTERNAL);
         }
         ctx.pc = cursor.currentEofJumpTarget;
         // log is not available here by default, VDBE runtime log will show PC change.
@@ -159,7 +159,7 @@ export function registerHandlers(handlers: Handler[]) {
     const cursor = ctx.getCursor(cIdx);
 
     if (!cursor?.instance) {
-      throw new SqliterError(`Rewind on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
+      throw new QuereusError(`Rewind on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     cursor.currentEofJumpTarget = addrIfEmpty; // Store Rewind's EOF jump target
@@ -208,24 +208,24 @@ export function registerHandlers(handlers: Handler[]) {
     if (cursor?.sortedResults) {
       const s = cursor.sortedResults;
       if (s.index < 0 || s.index >= s.rows.length) {
-        throw new SqliterError(`VColumn on invalid sorted cursor index ${s.index} (cursor ${cIdx})`, StatusCode.INTERNAL);
+        throw new QuereusError(`VColumn on invalid sorted cursor index ${s.index} (cursor ${cIdx})`, StatusCode.INTERNAL);
       }
       const row = s.rows[s.index];
       if (colIdx < 0 || colIdx >= row.length) {
         // Potentially handle RowID request (colIdx == -1) if stored explicitly
-        throw new SqliterError(`VColumn index ${colIdx} out of bounds for sorted row (cursor ${cIdx})`, StatusCode.INTERNAL);
+        throw new QuereusError(`VColumn index ${colIdx} out of bounds for sorted row (cursor ${cIdx})`, StatusCode.INTERNAL);
       }
       ctx.setStack(destOffset, row[colIdx].value);
       return undefined;
     }
 
     if (!cursor?.instance) {
-      throw new SqliterError(`VColumn on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
+      throw new QuereusError(`VColumn on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
     if (cursor.instance.eof()) {
       // Reading from EOF cursor should yield NULL, consistent with SQLite
       ctx.setStack(destOffset, null);
-      // throw new SqliteError(`VColumn on EOF cursor ${cIdx}`, StatusCode.INTERNAL);
+      // throw new QuereusError(`VColumn on EOF cursor ${cIdx}`, StatusCode.INTERNAL);
       return undefined;
     }
 
@@ -234,7 +234,7 @@ export function registerHandlers(handlers: Handler[]) {
       ctx.vtabContext._clear();
       // const status = cursor.instance.column(ctx.vtabContext, colIdx);
       // if (status !== StatusCode.OK) {
-      //   throw new SqliterError(`VColumn failed (col ${colIdx}, cursor ${cIdx})`, status);
+      //   throw new QuereusError(`VColumn failed (col ${colIdx}, cursor ${cIdx})`, status);
       // }
       ctx.setStack(destOffset, ctx.vtabContext._getResult());
     } catch (e) {
@@ -250,10 +250,10 @@ export function registerHandlers(handlers: Handler[]) {
     const cursor = ctx.getCursor(cIdx);
 
     if (!cursor?.instance) {
-      throw new SqliterError(`VRowid on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
+      throw new QuereusError(`VRowid on unopened cursor ${cIdx}`, StatusCode.INTERNAL);
     }
     if (cursor.instance.eof()) {
-       throw new SqliterError(`VRowid on EOF cursor ${cIdx}`, StatusCode.INTERNAL);
+       throw new QuereusError(`VRowid on EOF cursor ${cIdx}`, StatusCode.INTERNAL);
     }
 
     try {
@@ -275,20 +275,20 @@ export function registerHandlers(handlers: Handler[]) {
     // Get target cursor index from p5
     const updateCursorIdx = inst.p5;
     if (updateCursorIdx === undefined || updateCursorIdx < 0) {
-      throw new SqliterError(`VUpdate instruction requires a valid cursor index in p5`, StatusCode.INTERNAL);
+      throw new QuereusError(`VUpdate instruction requires a valid cursor index in p5`, StatusCode.INTERNAL);
     }
 
     const cursor = ctx.getCursor(updateCursorIdx);
     const vtabInstance = cursor?.vtab;
 
     if (!p4Info || p4Info.type !== 'update' || !p4Info.table) {
-      throw new SqliterError("VUpdate missing P4 info or table schema", StatusCode.INTERNAL);
+      throw new QuereusError("VUpdate missing P4 info or table schema", StatusCode.INTERNAL);
     }
     if (!vtabInstance) {
-      throw new SqliterError(`VUpdate target cursor ${updateCursorIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
+      throw new QuereusError(`VUpdate target cursor ${updateCursorIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
     }
     if (typeof vtabInstance.xUpdate !== 'function') {
-      throw new SqliterError(`VTab instance for ${vtabInstance.tableName} does not implement xUpdate`, StatusCode.MISUSE);
+      throw new QuereusError(`VTab instance for ${vtabInstance.tableName} does not implement xUpdate`, StatusCode.MISUSE);
     }
 
     // const module = vtabInstance.module; // No longer needed
@@ -373,13 +373,13 @@ export function registerHandlers(handlers: Handler[]) {
     const vtabInstance = cursor?.vtab;
 
     if (!vtabInstance) {
-      throw new SqliterError(`VCreateIndex target cursor ${cIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
+      throw new QuereusError(`VCreateIndex target cursor ${cIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
     }
     if (typeof vtabInstance.xCreateIndex !== 'function') {
-      throw new SqliterError(`VTab instance for ${vtabInstance.tableName} does not implement xCreateIndex`, StatusCode.MISUSE);
+      throw new QuereusError(`VTab instance for ${vtabInstance.tableName} does not implement xCreateIndex`, StatusCode.MISUSE);
     }
     if (!indexSchema) {
-      throw new SqliterError(`VCreateIndex missing IndexSchema info in P4`, StatusCode.INTERNAL);
+      throw new QuereusError(`VCreateIndex missing IndexSchema info in P4`, StatusCode.INTERNAL);
     }
 
     try {
@@ -400,13 +400,13 @@ export function registerHandlers(handlers: Handler[]) {
     const vtabInstance = cursor?.vtab;
 
     if (!vtabInstance) {
-      throw new SqliterError(`VDropIndex target cursor ${cIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
+      throw new QuereusError(`VDropIndex target cursor ${cIdx} does not have an active VTab instance`, StatusCode.INTERNAL);
     }
     if (typeof vtabInstance.xDropIndex !== 'function') {
-      throw new SqliterError(`VTab instance for ${vtabInstance.tableName} does not implement xDropIndex`, StatusCode.MISUSE);
+      throw new QuereusError(`VTab instance for ${vtabInstance.tableName} does not implement xDropIndex`, StatusCode.MISUSE);
     }
     if (typeof indexName !== 'string' || !indexName) {
-      throw new SqliterError(`VDropIndex missing index name string in P4`, StatusCode.INTERNAL);
+      throw new QuereusError(`VDropIndex missing index name string in P4`, StatusCode.INTERNAL);
     }
 
     try {
@@ -426,7 +426,7 @@ export function registerHandlers(handlers: Handler[]) {
     const p4 = inst.p4 as P4OpenTvf | null; // Get P4 object
 
     if (!p4 || p4.type !== 'opentvf') {
-      throw new SqliterError(`OpenTvf P4 must be a P4OpenTvf object`, StatusCode.INTERNAL);
+      throw new QuereusError(`OpenTvf P4 must be a P4OpenTvf object`, StatusCode.INTERNAL);
     }
     const moduleName = p4.moduleName;
     const alias = p4.alias;
@@ -434,7 +434,7 @@ export function registerHandlers(handlers: Handler[]) {
     // 1. Get the VTab module
     const moduleInfo = ctx.db._getVtabModule(moduleName);
     if (!moduleInfo) {
-      throw new SqliterError(`Table-valued function or module not found: ${moduleName}`, StatusCode.ERROR);
+      throw new QuereusError(`Table-valued function or module not found: ${moduleName}`, StatusCode.ERROR);
     }
 
     // 2. Read evaluated arguments from registers
@@ -474,7 +474,7 @@ export function registerHandlers(handlers: Handler[]) {
       }
     } catch (e: any) {
         const message = `Failed to map arguments for TVF module '${moduleName}': ${e.message}`;
-        ctx.error = new SqliterError(message, StatusCode.ERROR, e instanceof Error ? e : undefined);
+        ctx.error = new QuereusError(message, StatusCode.ERROR, e instanceof Error ? e : undefined);
         ctx.done = true;
         return ctx.error.code;
     }
@@ -492,7 +492,7 @@ export function registerHandlers(handlers: Handler[]) {
             options
         );
         if (!vtabInstance || !vtabInstance.tableSchema) {
-            throw new SqliterError(`Module ${moduleName} xConnect did not return a valid table instance or schema.`, StatusCode.INTERNAL);
+            throw new QuereusError(`Module ${moduleName} xConnect did not return a valid table instance or schema.`, StatusCode.INTERNAL);
         }
     } catch (e) {
         handleVTabError(ctx, e, moduleName, 'xConnect');
@@ -504,7 +504,7 @@ export function registerHandlers(handlers: Handler[]) {
     try {
         cursorInstance = await vtabInstance.xOpen();
         if (!cursorInstance) {
-            throw new SqliterError(`Module ${moduleName} xOpen did not return a cursor instance.`, StatusCode.INTERNAL);
+            throw new QuereusError(`Module ${moduleName} xOpen did not return a cursor instance.`, StatusCode.INTERNAL);
         }
     } catch (e) {
         handleVTabError(ctx, e, alias, 'xOpen');
@@ -515,7 +515,7 @@ export function registerHandlers(handlers: Handler[]) {
     const vdbeCursor = ctx.getCursor(cIdx);
     if (!vdbeCursor) {
         // This shouldn't happen if compiler allocated cursor correctly
-        throw new SqliterError(`OpenTvf target cursor ${cIdx} not allocated in runtime`, StatusCode.INTERNAL);
+        throw new QuereusError(`OpenTvf target cursor ${cIdx} not allocated in runtime`, StatusCode.INTERNAL);
     }
     vdbeCursor.instance = cursorInstance;
     vdbeCursor.vtab = vtabInstance; // Store VTab instance too

@@ -2,7 +2,7 @@
 
 -- Scalar Functions
 SELECT lower('Quereus'), upper('Quereus'), length('Quereus');
-→ [{"lower('Quereus')":"quereus","upper('Quereus')":"SQLITER","length('Quereus')":7}]
+→ [{"lower('Quereus')":"quereus","upper('Quereus')":"QUEREUS","length('Quereus')":7}]
 SELECT substr('Quereus', 2, 3), substring('Quereus', 4);
 → [{"substr('Quereus', 2, 3)":"QLi","substring('Quereus', 4)":"iter"}]
 SELECT abs(-10), round(12.345, 1), round(12.345);

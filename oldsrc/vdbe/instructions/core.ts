@@ -1,4 +1,4 @@
-import { ConstraintError, SqliterError } from '../../common/errors.js';
+import { ConstraintError, QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { evaluateIsTrue } from '../../util/comparison.js';
 import type { Handler } from '../handler-types.js';
@@ -18,7 +18,7 @@ export function registerHandlers(handlers: Handler[]) {
 	handlers[Opcode.Halt] = (ctx, inst) => {
 		ctx.done = true;
 		if (inst.p1 !== StatusCode.OK) {
-			ctx.error = new SqliterError(inst.p4 ?? `Execution halted with code ${inst.p1}`, inst.p1);
+			ctx.error = new QuereusError(inst.p4 ?? `Execution halted with code ${inst.p1}`, inst.p1);
 		}
 		return inst.p1;
 	};
@@ -109,7 +109,7 @@ export function registerHandlers(handlers: Handler[]) {
 
 		if (srcBaseIdx < 0 || destBaseIdx < 0 || maxSrcReadIndex >= ctx.stackPointer) {
 			// Check if source read goes out of bounds relative to current SP
-			throw new SqliterError(
+			throw new QuereusError(
 				`Move opcode stack READ access out of bounds: FP=${ctx.framePointer} ` +
 				`SrcOff=${srcOffset} Count=${count} SP=${ctx.stackPointer}`,
 				StatusCode.INTERNAL
@@ -143,7 +143,7 @@ export function registerHandlers(handlers: Handler[]) {
 
 		// Bounds check for the range of absolute registers to clear
 		if (startReg < 0 || count < 0 ) { // count cannot be negative
-			throw new SqliterError(
+			throw new QuereusError(
 				`Clear opcode invalid arguments: StartReg=${startReg} Count=${count}`,
 				StatusCode.INTERNAL
 			);

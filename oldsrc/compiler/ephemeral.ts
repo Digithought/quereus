@@ -5,7 +5,7 @@ import type { P4SortKey } from '../vdbe/instruction.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { BaseModuleConfig } from '../vtab/module.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
@@ -33,7 +33,7 @@ export function createEphemeralTableHelper(
 ): TableSchema {
 	const moduleInfo = compiler.db._getVtabModule('memory');
 	if (!moduleInfo || !(moduleInfo.module instanceof MemoryTableModule)) {
-		throw new SqliterError("MemoryTableModule not registered or found.", StatusCode.INTERNAL);
+		throw new QuereusError("MemoryTableModule not registered or found.", StatusCode.INTERNAL);
 	}
 	const memoryModule = moduleInfo.module as MemoryTableModule;
 
@@ -77,12 +77,12 @@ export function createEphemeralTableHelper(
 	} catch (e) {
 		errorLog("Failed to create internal MemoryTable instance: %O", e);
 		const msg = e instanceof Error ? e.message : String(e);
-		throw new SqliterError(`Internal error creating ephemeral table: ${msg}`, StatusCode.INTERNAL);
+		throw new QuereusError(`Internal error creating ephemeral table: ${msg}`, StatusCode.INTERNAL);
 	}
 
 	const tableSchema = tableInstance.tableSchema;
 	if (!tableSchema) {
-		throw new SqliterError("Internal MemoryTable instance did not provide a schema.", StatusCode.INTERNAL);
+		throw new QuereusError("Internal MemoryTable instance did not provide a schema.", StatusCode.INTERNAL);
 	}
 
 	(tableSchema as any).schemaName = 'temp';

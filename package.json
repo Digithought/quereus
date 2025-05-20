@@ -2,7 +2,7 @@
   "name": "@digithought/quereus",
   "version": "0.1.0",
   "type": "module",
-  "description": "Federated SQL query processor based on SQLite",
+  "description": "Federated SQL query processor inspired by SQLite",
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [

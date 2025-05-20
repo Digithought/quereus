@@ -5,7 +5,7 @@ import type { Compiler } from './compiler.js';
 import type { CursorPlanningResult } from './structs.js';
 import type * as AST from '../parser/ast.js';
 import type { TableSchema } from '../schema/table.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { analyzeSubqueryCorrelation } from './correlation.js';
 import { expressionToString } from '../util/ddl-stringify.js';
@@ -162,7 +162,7 @@ export function verifyWhereConstraintsHelper(
 	}
 	const tableSchema = compiler.tableSchemas.get(cursorIdx);
 	if (!tableSchema) {
-		throw new SqliterError(`Internal: Schema missing for cursor ${cursorIdx} during helper verification`, StatusCode.INTERNAL);
+		throw new QuereusError(`Internal: Schema missing for cursor ${cursorIdx} during helper verification`, StatusCode.INTERNAL);
 	}
 
 	// For a base table scan, there are no "outer" cursors relative to the constraints being checked.

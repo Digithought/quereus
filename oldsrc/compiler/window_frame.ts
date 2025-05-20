@@ -1,7 +1,7 @@
 import { Compiler } from './compiler.js';
 import type { WindowSorterInfo } from './window.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import type * as AST from '../parser/ast.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 import type { P4FuncDef } from '../vdbe/instruction.js';
@@ -61,7 +61,7 @@ export function compileFrameBoundary(
 
 	if (isRangeFrame) {
 		if (!orderByInfo || orderByInfo.keyIndices.length === 0) {
-			throw new SqliterError("RANGE frames require an ORDER BY clause.", StatusCode.ERROR);
+			throw new QuereusError("RANGE frames require an ORDER BY clause.", StatusCode.ERROR);
 		}
 		// ===============================================
 		// --- RANGE Frame Boundary Logic ---
@@ -141,17 +141,17 @@ export function compileFrameBoundary(
 			case 'following': {
 				// --- RANGE N PRECEDING / N FOLLOWING ---
 				if (orderByInfo.keyIndices.length !== 1) {
-					throw new SqliterError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
+					throw new QuereusError("RANGE with offset requires exactly one ORDER BY clause", StatusCode.ERROR);
 				}
 				if (!boundValueReg) {
-					throw new SqliterError(`Missing bound value register for RANGE ${bound.type}`, StatusCode.INTERNAL);
+					throw new QuereusError(`Missing bound value register for RANGE ${bound.type}`, StatusCode.INTERNAL);
 				}
 
 				const regCurrentOrderByKey = compiler.allocateMemoryCells(1);
 				const regTargetValue = compiler.allocateMemoryCells(1);
 				const regIterOrderByKey = compiler.allocateMemoryCells(1);
 				if (numPartitionKeys === undefined) {
-					throw new SqliterError("Internal error: numPartitionKeys is undefined in RANGE N boundary calc", StatusCode.INTERNAL);
+					throw new QuereusError("Internal error: numPartitionKeys is undefined in RANGE N boundary calc", StatusCode.INTERNAL);
 				}
 				const regIterPartKeys = compiler.allocateMemoryCells(numPartitionKeys > 0 ? numPartitionKeys : 1);
 				const addrValueSeekLoopEnd = compiler.allocateAddress();
@@ -299,7 +299,7 @@ export function compileFrameBoundary(
 				// This case should be unreachable due to exhaustive bound type checking
 				// If it occurs, it indicates an issue with the AST or frame definition logic.
 				const exhaustiveCheck: never = bound;
-				throw new SqliterError(`Unhandled RANGE bound: ${safeJsonStringify(exhaustiveCheck)}`, StatusCode.INTERNAL);
+				throw new QuereusError(`Unhandled RANGE bound: ${safeJsonStringify(exhaustiveCheck)}`, StatusCode.INTERNAL);
 			}
 		}
 
@@ -328,7 +328,7 @@ export function compileFrameBoundary(
 				}
 				break;
 			case 'preceding': {
-				if (!boundValueReg) throw new SqliterError("Missing bound value register for PRECEDING", StatusCode.INTERNAL);
+				if (!boundValueReg) throw new QuereusError("Missing bound value register for PRECEDING", StatusCode.INTERNAL);
 				const negatedOffsetReg = compiler.allocateMemoryCells(1);
 				compiler.emit(Opcode.Negative, boundValueReg, negatedOffsetReg, 0, null, 0, "Negate PRECEDING offset");
 				// Seek backward. P5=1 jumps to addrSeekFailed if seek goes out of bounds/partition.
@@ -346,7 +346,7 @@ export function compileFrameBoundary(
 				break;
 			}
 			case 'following': {
-				if (!boundValueReg) throw new SqliterError("Missing bound value register for FOLLOWING", StatusCode.INTERNAL);
+				if (!boundValueReg) throw new QuereusError("Missing bound value register for FOLLOWING", StatusCode.INTERNAL);
 				// Seek forward. P5=1 jumps to addrSeekFailed if seek goes out of bounds/partition.
 				compiler.emit(Opcode.SeekRelative, cursorIdx, addrSeekFailed, boundValueReg, null, 1,
 					`ROWS FOLLOWING: Seek relative ${boundValueReg}`);
@@ -381,7 +381,7 @@ export function compileFrameBoundary(
 				break;
 			}
 			default:
-				throw new SqliterError(`Unsupported frame bound type: ${(bound as any).type}`, StatusCode.INTERNAL);
+				throw new QuereusError(`Unsupported frame bound type: ${(bound as any).type}`, StatusCode.INTERNAL);
 		}
 	} // --- End ROWS/RANGE Logic ---
 
@@ -464,7 +464,7 @@ export function compileFrameAggregate(
 	// Find the aggregate function definition
 	const funcDef = compiler.db._findFunction(funcName, winExpr.function.args?.length ?? 0);
 	if (!funcDef || !funcDef.xStep || !funcDef.xFinal) {
-		throw new SqliterError(`Aggregate function '${funcName}' not found or incomplete`, StatusCode.ERROR);
+		throw new QuereusError(`Aggregate function '${funcName}' not found or incomplete`, StatusCode.ERROR);
 	}
 	const p4Func: P4FuncDef = { type: 'funcdef', funcDef: funcDef, nArgs: winExpr.function.args?.length ?? 0 };
 

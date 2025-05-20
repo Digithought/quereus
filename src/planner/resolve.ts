@@ -1,7 +1,7 @@
 import { Ambiguous, type Scope } from "./scopes/scope.js";
 import * as AST from "../parser/ast.js";
 import { ColumnReferenceNode, FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference.js";
-import { SqliterError } from "../common/errors.js";
+import { QuereusError } from "../common/errors.js";
 import { StatusCode } from "../common/types.js";
 
 export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSchema: string = 'main'): TableReferenceNode | typeof Ambiguous | undefined {
@@ -14,7 +14,7 @@ export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSche
 	if (result === Ambiguous || result instanceof TableReferenceNode) {
 		return result;
 	}
-	throw new SqliterError(`${symbolKey} isn't a table`, StatusCode.ERROR);
+	throw new QuereusError(`${symbolKey} isn't a table`, StatusCode.ERROR);
 }
 
 // TODO: pragma resolution
@@ -25,7 +25,7 @@ export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSche
 // 	if (result === Ambiguous || result instanceof PragmaReferenceNode) {
 // 		return result;
 // 	}
-// 	throw new SqliterError(`${idName} isn't a pragma`, StatusCode.ERROR);
+// 	throw new QuereusError(`${idName} isn't a pragma`, StatusCode.ERROR);
 // }
 
 export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema: string = 'main'): ColumnReferenceNode | typeof Ambiguous | undefined {
@@ -43,7 +43,7 @@ export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema:
 	if (result === Ambiguous || result instanceof ColumnReferenceNode) {
 		return result;
 	}
-	throw new SqliterError(`${symbolKey} isn't a column`, StatusCode.ERROR);
+	throw new QuereusError(`${symbolKey} isn't a column`, StatusCode.ERROR);
 }
 
 export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): ParameterReferenceNode | typeof Ambiguous | undefined {
@@ -52,7 +52,7 @@ export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): Paramete
 	if (result === Ambiguous || result instanceof ParameterReferenceNode) {
 		return result;
 	}
-	throw new SqliterError(`${symbolKey} isn't a parameter`, StatusCode.ERROR);
+	throw new QuereusError(`${symbolKey} isn't a parameter`, StatusCode.ERROR);
 }
 
 export function resolveFunction(scope: Scope, exp: AST.FunctionExpr): FunctionReferenceNode | typeof Ambiguous | undefined {
@@ -61,5 +61,5 @@ export function resolveFunction(scope: Scope, exp: AST.FunctionExpr): FunctionRe
 	if (result === Ambiguous || result instanceof FunctionReferenceNode) {
 		return result;
 	}
-	throw new SqliterError(`${symbolKey} isn't a function`, StatusCode.ERROR);
+	throw new QuereusError(`${symbolKey} isn't a function`, StatusCode.ERROR);
 }

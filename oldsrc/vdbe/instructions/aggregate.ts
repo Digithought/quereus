@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import { FunctionContext } from '../../func/context.js';
 import type { Handler, VmCtx } from '../handler-types.js';
@@ -13,10 +13,10 @@ const errorLog = log.extend('error');
 // Helper for error handling in aggregate functions
 function handleAggError(ctx: VmCtx, e: any, funcName: string, step: string) {
   errorLog(`Error in function ${funcName} (${step}): %O`, e);
-  let error: SqliterError;
-  if (e instanceof SqliterError) { error = e; }
-  else if (e instanceof Error) { error = new SqliterError(`Runtime error in aggregate ${funcName} ${step}: ${e.message}`, StatusCode.ERROR); }
-  else { error = new SqliterError(`Unknown runtime error in aggregate ${funcName} ${step}`, StatusCode.INTERNAL); }
+  let error: QuereusError;
+  if (e instanceof QuereusError) { error = e; }
+  else if (e instanceof Error) { error = new QuereusError(`Runtime error in aggregate ${funcName} ${step}: ${e.message}`, StatusCode.ERROR); }
+  else { error = new QuereusError(`Unknown runtime error in aggregate ${funcName} ${step}`, StatusCode.INTERNAL); }
   ctx.error = error;
   ctx.done = true;
 }
@@ -44,7 +44,7 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.AggStep] = (ctx, inst) => {
     const p4Func = inst.p4 as P4FuncDef;
     if (!p4Func || p4Func.type !== 'funcdef') {
-      throw new SqliterError("Invalid P4 for AggStep", StatusCode.INTERNAL);
+      throw new QuereusError("Invalid P4 for AggStep", StatusCode.INTERNAL);
     }
 
     const groupKeyStartOffset = inst.p1;
@@ -54,7 +54,7 @@ export function registerHandlers(handlers: Handler[]) {
 
     const serializedKey = ctx.getStack(serializedKeyRegOffset) as string;
     if (typeof serializedKey !== 'string') {
-      throw new SqliterError(`AggStep key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
+      throw new QuereusError(`AggStep key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
     }
 
     const args: SqlValue[] = [];
@@ -98,7 +98,7 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.AggFinal] = (ctx, inst) => {
     const p4Func = inst.p4 as P4FuncDef;
     if (!p4Func || p4Func.type !== 'funcdef') {
-      throw new SqliterError("Invalid P4 for AggFinal", StatusCode.INTERNAL);
+      throw new QuereusError("Invalid P4 for AggFinal", StatusCode.INTERNAL);
     }
 
     // P1 is now the *offset* of the register containing the aggregate context accumulator
@@ -133,7 +133,7 @@ export function registerHandlers(handlers: Handler[]) {
 
   handlers[Opcode.AggIterate] = (ctx) => {
     if (!ctx.aggregateContexts) {
-      throw new SqliterError("Aggregate context map not initialized", StatusCode.INTERNAL);
+      throw new QuereusError("Aggregate context map not initialized", StatusCode.INTERNAL);
     }
     ctx.aggregateIterator = ctx.aggregateContexts.entries();
     ctx.currentAggregateEntry = null;
@@ -143,7 +143,7 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.AggNext] = (ctx, inst) => {
     const jumpTarget = inst.p2;
     if (!ctx.aggregateIterator) {
-      throw new SqliterError("AggNext without AggIterate", StatusCode.INTERNAL);
+      throw new QuereusError("AggNext without AggIterate", StatusCode.INTERNAL);
     }
     const nextResult = ctx.aggregateIterator.next();
     if (nextResult.done) {
@@ -159,7 +159,7 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.AggKey] = (ctx, inst) => {
     const destOffset = inst.p2;
     if (!ctx.currentAggregateEntry) {
-      throw new SqliterError("AggKey on invalid iterator", StatusCode.INTERNAL);
+      throw new QuereusError("AggKey on invalid iterator", StatusCode.INTERNAL);
     }
     // Key is the first element of the entry [serializedKey, {accumulator, keyValues}]
     ctx.setStack(destOffset, ctx.currentAggregateEntry[0]);
@@ -169,7 +169,7 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.AggContext] = (ctx, inst) => {
     const destOffset = inst.p2;
     if (!ctx.currentAggregateEntry) {
-      throw new SqliterError("AggContext on invalid iterator", StatusCode.INTERNAL);
+      throw new QuereusError("AggContext on invalid iterator", StatusCode.INTERNAL);
     }
     // Accumulator is in the second element of the entry
     ctx.setStack(destOffset, ctx.currentAggregateEntry[1]?.accumulator);
@@ -180,11 +180,11 @@ export function registerHandlers(handlers: Handler[]) {
     const keyIndex = inst.p2;
     const destOffset = inst.p3;
     if (!ctx.currentAggregateEntry) {
-      throw new SqliterError("AggGroupValue on invalid iterator", StatusCode.INTERNAL);
+      throw new QuereusError("AggGroupValue on invalid iterator", StatusCode.INTERNAL);
     }
     const keyValues = ctx.currentAggregateEntry[1]?.keyValues;
     if (!keyValues || keyIndex < 0 || keyIndex >= keyValues.length) {
-      throw new SqliterError(`Invalid key index ${keyIndex} for AggGroupValue`, StatusCode.INTERNAL);
+      throw new QuereusError(`Invalid key index ${keyIndex} for AggGroupValue`, StatusCode.INTERNAL);
     }
     ctx.setStack(destOffset, keyValues[keyIndex] ?? null);
     return undefined;
@@ -196,11 +196,11 @@ export function registerHandlers(handlers: Handler[]) {
     const key = ctx.getStack(keyReg);
 
     if (typeof key !== 'string') {
-      throw new SqliterError(`AggGetContext key must be a string (got ${typeof key})`, StatusCode.INTERNAL);
+      throw new QuereusError(`AggGetContext key must be a string (got ${typeof key})`, StatusCode.INTERNAL);
     }
 
     if (!ctx.aggregateContexts) {
-      throw new SqliterError("AggGetContext: Aggregate context map not initialized", StatusCode.INTERNAL);
+      throw new QuereusError("AggGetContext: Aggregate context map not initialized", StatusCode.INTERNAL);
     }
 
     const entry = ctx.aggregateContexts.get(key);
@@ -215,12 +215,12 @@ export function registerHandlers(handlers: Handler[]) {
     const destAccumulatorRegOffset = inst.p2;
 
     if (!ctx.aggregateContexts) {
-      throw new SqliterError("AggGetAccumulatorByKey: Aggregate context map not initialized", StatusCode.INTERNAL);
+      throw new QuereusError("AggGetAccumulatorByKey: Aggregate context map not initialized", StatusCode.INTERNAL);
     }
 
     const serializedKey = ctx.getStack(keyRegOffset) as string;
     if (typeof serializedKey !== 'string') {
-      throw new SqliterError(`AggGetAccumulatorByKey key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
+      throw new QuereusError(`AggGetAccumulatorByKey key must be a string (got ${typeof serializedKey})`, StatusCode.INTERNAL);
     }
 
     const entry = ctx.aggregateContexts.get(serializedKey);

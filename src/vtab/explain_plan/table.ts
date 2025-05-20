@@ -2,7 +2,7 @@ import { VirtualTable } from '../table.js';
 import type { ExplainPlanModule } from './module.js';
 import type { Database } from '../../core/database.js';
 import type { TableSchema } from '../../schema/table.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type Row, type SqlValue, type RowIdRow } from '../../common/types.js';
 import type { FilterInfo } from '../filter-info.js';
 import type { PlanNode } from '../../planner/nodes/plan-node.js';
@@ -41,7 +41,7 @@ export class ExplainPlanTable extends VirtualTable {
     }
 
     async xUpdate(/* values: SqlValue[], rowid: bigint | null */): Promise<{ rowid?: bigint; }> {
-        throw new SqliterError("Cannot modify query plan table", StatusCode.READONLY);
+        throw new QuereusError("Cannot modify query plan table", StatusCode.READONLY);
     }
 
     async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {

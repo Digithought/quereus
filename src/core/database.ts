@@ -1,5 +1,5 @@
 import { createLogger } from '../common/logger.js';
-import { MisuseError, SqliterError } from '../common/errors.js';
+import { MisuseError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
@@ -35,7 +35,7 @@ const errorLog = log.extend('error');
 const debugLog = log.extend('debug');
 
 /**
- * Represents a connection to an SQLite database (in-memory in this port).
+ * Represents a connection to an Quereus database (in-memory in this port).
  * Manages schema, prepared statements, virtual tables, and functions.
  */
 export class Database {
@@ -95,7 +95,7 @@ export class Database {
 	 * Prepares an SQL statement for execution.
 	 * @param sql The SQL string to prepare.
 	 * @returns A Statement object.
-	 * @throws SqliterError on failure (e.g., syntax error).
+	 * @throws QuereusError on failure (e.g., syntax error).
 	 */
 	prepare(sql: string): Statement {
 		this.checkOpen();
@@ -113,7 +113,7 @@ export class Database {
 	 * @param sql The SQL string(s) to execute.
 	 * @param params Optional parameters to bind.
 	 * @returns A Promise resolving when execution completes.
-	 * @throws SqliterError on failure.
+	 * @throws QuereusError on failure.
 	 */
 	async exec(
 		sql: string,
@@ -128,7 +128,7 @@ export class Database {
 		try {
 			batch = parser.parseAll(sql);
 		} catch (e) {
-			if (e instanceof ParseError) throw new SqliterError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+			if (e instanceof ParseError) throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
 			throw e;
 		}
 
@@ -177,7 +177,7 @@ export class Database {
 					// Nothing to do with the result, this is executed for side effects only
 
 				} catch (err: any) {
-					executionError = err instanceof SqliterError ? err : new SqliterError(err.message, StatusCode.ERROR, err);
+					executionError = err instanceof QuereusError ? err : new QuereusError(err.message, StatusCode.ERROR, err);
 					break; // Stop processing further statements on error
 				}
 				// No explicit finalize for transient plan/scheduler used in exec loop
@@ -226,7 +226,7 @@ export class Database {
 		this.checkOpen();
 
 		if (this.inTransaction) {
-			throw new SqliterError("Transaction already active", StatusCode.ERROR);
+			throw new QuereusError("Transaction already active", StatusCode.ERROR);
 		}
 
 		await this.exec(`BEGIN ${mode.toUpperCase()} TRANSACTION`);
@@ -241,7 +241,7 @@ export class Database {
 		this.checkOpen();
 
 		if (!this.inTransaction) {
-			throw new SqliterError("No transaction active", StatusCode.ERROR);
+			throw new QuereusError("No transaction active", StatusCode.ERROR);
 		}
 
 		await this.exec("COMMIT");
@@ -256,7 +256,7 @@ export class Database {
 		this.checkOpen();
 
 		if (!this.inTransaction) {
-			throw new SqliterError("No transaction active", StatusCode.ERROR);
+			throw new QuereusError("No transaction active", StatusCode.ERROR);
 		}
 
 		await this.exec("ROLLBACK");
@@ -489,7 +489,7 @@ export class Database {
 	 * @yields Each result row as an object (`Record<string, SqlValue>`).
 	 * @returns An `AsyncIterableIterator` yielding result rows.
 	 * @throws MisuseError if the database is closed.
-	 * @throws SqliteError on prepare/bind/execution errors.
+	 * @throws QuereusError on prepare/bind/execution errors.
 	 *
 	 * @example
 	 * ```typescript
@@ -537,7 +537,7 @@ export class Database {
 				ast = parser.parse(originalSqlString);
 			} catch (e: any) {
 				errorLog("Failed to parse SQL for query plan: %O", e);
-				throw new SqliterError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+				throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
 			}
 		} else {
 			ast = sqlOrAst;

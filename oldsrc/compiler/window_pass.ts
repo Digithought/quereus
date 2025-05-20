@@ -1,7 +1,7 @@
 import { Compiler } from './compiler.js';
 import type { WindowSorterInfo } from './window.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import type * as AST from '../parser/ast.js';
 import { expressionToString } from '../util/ddl-stringify.js';
 import { StatusCode } from '../common/types.js';
@@ -369,7 +369,7 @@ export function compileWindowFunctionsPass(
 				const argExpr = winExpr.function.args[0];
 				const argColIndex = windowSorterInfo.exprToSorterIndex.get(expressionToString(argExpr));
 				if (argColIndex === undefined) {
-					throw new SqliterError(`${functionName} argument expression not found in sorter: ${expressionToString(argExpr)}`, StatusCode.ERROR);
+					throw new QuereusError(`${functionName} argument expression not found in sorter: ${expressionToString(argExpr)}`, StatusCode.ERROR);
 				}
 
 				const regBoundaryRowid = compiler.allocateMemoryCells(1);
@@ -456,7 +456,7 @@ export function compileWindowFunctionsPass(
 				const argExpr = winExpr.function.args[0];
 				const argColIndex = windowSorterInfo.exprToSorterIndex.get(expressionToString(argExpr));
 				if (argColIndex === undefined) {
-					throw new SqliterError(`${functionName} argument expression not found in sorter: ${expressionToString(argExpr)}`, StatusCode.ERROR);
+					throw new QuereusError(`${functionName} argument expression not found in sorter: ${expressionToString(argExpr)}`, StatusCode.ERROR);
 				}
 
 				// Create jump addresses for branching

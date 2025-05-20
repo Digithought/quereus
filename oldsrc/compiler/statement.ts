@@ -1,7 +1,7 @@
 import { ConflictResolution } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { StatusCode } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { type P4Update, type P4Vtab } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
@@ -11,7 +11,7 @@ import { RowOp, type RowConstraintSchema } from '../schema/table.js';
 
 export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
-	if (!tableSchema) { throw new SqliterError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	if (!tableSchema) { throw new QuereusError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	let targetColumns = stmt.columns;
 	if (!targetColumns) {
@@ -20,7 +20,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 		const schemaCols = new Set(tableSchema.columns.map(c => c.name.toLowerCase()));
 		for (const col of targetColumns) {
 			if (!schemaCols.has(col.toLowerCase())) {
-				throw new SqliterError(`Column '${col}' not found in table '${tableSchema.name}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+				throw new QuereusError(`Column '${col}' not found in table '${tableSchema.name}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
 		}
 	}
@@ -37,7 +37,7 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 
 	if (stmt.values) {
 		for (const valueRow of stmt.values) {
-			if (valueRow.length !== numCols) { throw new SqliterError(`Column count mismatch: table ${tableSchema.name} expected ${numCols} columns, but ${valueRow.length} values were supplied`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
+			if (valueRow.length !== numCols) { throw new QuereusError(`Column count mismatch: table ${tableSchema.name} expected ${numCols} columns, but ${valueRow.length} values were supplied`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
 
 			compiler.emit(Opcode.Null, 0, regDataStart, 0, null, 0, "Rowid=NULL for INSERT");
 			for (let i = 0; i < tableSchema.columns.length; i++) {
@@ -188,14 +188,14 @@ export function compileInsertStatement(compiler: Compiler, stmt: AST.InsertStmt)
 			// Pass the allocated cursor index in p5
 			compiler.emit(Opcode.VUpdate, tableSchema.columns.length + 1, regDataStart, regNewRowid, p4Update, cursor, `VUpdate INSERT ${tableSchema.name}`);
 		}
-	} else if (stmt.select) { throw new SqliterError("INSERT ... SELECT compilation not implemented yet.", StatusCode.ERROR, undefined, stmt.select.loc?.start.line, stmt.select.loc?.start.column); }
-	else { throw new SqliterError("INSERT statement missing VALUES or SELECT clause.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
+	} else if (stmt.select) { throw new QuereusError("INSERT ... SELECT compilation not implemented yet.", StatusCode.ERROR, undefined, stmt.select.loc?.start.line, stmt.select.loc?.start.column); }
+	else { throw new QuereusError("INSERT statement missing VALUES or SELECT clause.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
 	compiler.emit(Opcode.Close, cursor, 0, 0, null, 0, `Close ${tableSchema.name}`);
 }
 
 export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
-	if (!tableSchema) { throw new SqliterError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	if (!tableSchema) { throw new QuereusError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -217,7 +217,7 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 		planningInfo.usage.forEach((usage: { argvIndex: number; omit?: boolean }, constraintIdx: number) => {
 			if (usage.argvIndex > 0) {
 				const expr = planningInfo.constraintExpressions?.get(constraintIdx);
-				if (!expr) throw new SqliterError(`Internal error: Missing expression for constraint ${constraintIdx} used in UPDATE VFilter`, StatusCode.INTERNAL);
+				if (!expr) throw new QuereusError(`Internal error: Missing expression for constraint ${constraintIdx} used in UPDATE VFilter`, StatusCode.INTERNAL);
 				while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
 				argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
 			}
@@ -242,8 +242,8 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 	for (const assignment of stmt.assignments) {
 		const colNameLower = assignment.column.toLowerCase();
 		const colIndex = tableSchema.columnIndexMap.get(colNameLower);
-		if (colIndex === undefined) { throw new SqliterError(`Column '${assignment.column}' not found in table '${tableSchema.name}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
-		if (assignmentRegs.has(colIndex)) { throw new SqliterError(`Column '${assignment.column}' specified more than once in SET clause`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
+		if (colIndex === undefined) { throw new QuereusError(`Column '${assignment.column}' not found in table '${tableSchema.name}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
+		if (assignmentRegs.has(colIndex)) { throw new QuereusError(`Column '${assignment.column}' specified more than once in SET clause`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column); }
 		const valueReg = compiler.allocateMemoryCells(1);
 		compiler.compileExpression(assignment.value, valueReg /* Pass correlation/argMap? */);
 
@@ -362,7 +362,7 @@ export function compileUpdateStatement(compiler: Compiler, stmt: AST.UpdateStmt)
 
 export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt): void {
 	const tableSchema = compiler.db._findTable(stmt.table.name, stmt.table.schema);
-	if (!tableSchema) { throw new SqliterError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
+	if (!tableSchema) { throw new QuereusError(`Table not found: ${stmt.table.schema || 'main'}.${stmt.table.name}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column); }
 
 	const cursor = compiler.allocateCursor();
 	const p4Vtab: P4Vtab = { type: 'vtab', tableSchema };
@@ -384,7 +384,7 @@ export function compileDeleteStatement(compiler: Compiler, stmt: AST.DeleteStmt)
 		planningInfo.usage.forEach((usage: { argvIndex: number; omit?: boolean }, constraintIdx: number) => {
 			if (usage.argvIndex > 0) {
 				const expr = planningInfo.constraintExpressions?.get(constraintIdx);
-				if (!expr) throw new SqliterError(`Internal error: Missing expression for constraint ${constraintIdx} used in DELETE VFilter`, StatusCode.INTERNAL);
+				if (!expr) throw new QuereusError(`Internal error: Missing expression for constraint ${constraintIdx} used in DELETE VFilter`, StatusCode.INTERNAL);
 				while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
 				argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
 			}
@@ -471,7 +471,7 @@ export function compileSavepointStatement(compiler: Compiler, stmt: AST.Savepoin
 
 export function compileReleaseStatement(compiler: Compiler, stmt: AST.ReleaseStmt): void {
 	if (!stmt.savepoint) {
-		throw new SqliterError("RELEASE statement requires a savepoint name.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		throw new QuereusError("RELEASE statement requires a savepoint name.", StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 	}
 	const savepointName = compiler.addConstant(stmt.savepoint);
 	compiler.emit(Opcode.Savepoint, 2, 0, 0, savepointName, 0, `RELEASE ${stmt.savepoint}`);

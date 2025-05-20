@@ -1,5 +1,5 @@
 import { StatusCode } from '../../common/types.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import * as AST from '../../parser/ast.js';
 import { type ReferenceCallback, type Scope, Ambiguous } from './scope.js';
@@ -35,7 +35,7 @@ export class RegisteredScope implements Scope {
 	registerSymbol(symbolKey: string, getReference: ReferenceCallback): void {
 		const lowerSymbolKey = symbolKey.toLowerCase();
 		if (this.registeredSymbols.has(lowerSymbolKey)) {
-			throw new SqliterError(`Symbol '${lowerSymbolKey}' already exists in the same scope.`, StatusCode.ERROR);
+			throw new QuereusError(`Symbol '${lowerSymbolKey}' already exists in the same scope.`, StatusCode.ERROR);
 		}
 		this.registeredSymbols.set(lowerSymbolKey, getReference);
 	}

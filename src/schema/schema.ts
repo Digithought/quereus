@@ -3,7 +3,7 @@ import type { FunctionSchema } from './function.js';
 import { getFunctionKey } from './function.js';
 import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
@@ -43,12 +43,12 @@ export class Schema {
 	 * Adds or replaces a table definition in the schema
 	 *
 	 * @param table The table schema object
-	 * @throws SqliteError if a view with the same name exists
+	 * @throws QuereusError if a view with the same name exists
 	 */
 	addTable(table: TableSchema): void {
 		// Ensure no view conflict
 		if (this.views.has(table.name.toLowerCase())) {
-			throw new SqliterError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
+			throw new QuereusError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
 		}
 		this.tables.set(table.name.toLowerCase(), table);
 	}
@@ -95,7 +95,7 @@ export class Schema {
 			throw new Error(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
 		}
 		if (this.tables.has(view.name.toLowerCase())) {
-			throw new SqliterError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
+			throw new QuereusError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
 		}
 		this.views.set(view.name.toLowerCase(), view);
 		log(`Added/Updated view '%s' in schema '%s'`, view.name, this.name);

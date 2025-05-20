@@ -1,5 +1,5 @@
 import { StatusCode } from "../../common/types.js";
-import { SqliterError } from "../../common/errors.js";
+import { QuereusError } from "../../common/errors.js";
 import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
@@ -17,7 +17,7 @@ export function emitBinaryOp(plan: BinaryOpNode): Instruction {
 		// TODO: emitComparison
 		// TODO: emitLogical
 		default:
-			throw new SqliterError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+			throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
 }
 
@@ -29,7 +29,7 @@ export function emitNumericOp(plan: BinaryOpNode): Instruction {
 		case '*': inner = (v1, v2) => v1 * v2; break;
 		case '/': inner = (v1, v2) => v1 / v2; break;
 		// TODO: check all of these and add other operators
-		default: throw new SqliterError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+		default: throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
 
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {

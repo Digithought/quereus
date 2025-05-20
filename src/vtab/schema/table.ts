@@ -2,7 +2,7 @@ import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../index-info.js';
 import { StatusCode, SqlDataType, type SqlValue, type Row, type RowIdRow } from '../../common/types.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
@@ -39,7 +39,7 @@ class SchemaTable extends VirtualTable {
 	getSchema(): TableSchema | undefined {
 		const module = this.module as SchemaTableModule;
 		if (!module || !SchemaTableModule.COLUMNS) {
-			throw new SqliterError("SchemaTable: Module or COLUMNS not defined.", StatusCode.INTERNAL);
+			throw new QuereusError("SchemaTable: Module or COLUMNS not defined.", StatusCode.INTERNAL);
 		}
 		return {
 			name: this.tableName,
@@ -64,25 +64,25 @@ class SchemaTable extends VirtualTable {
 	// This xBestIndex is for the TABLE INSTANCE, called during query planning.
 	xBestIndex(indexInfo: IndexInfo): number {
 		// For _schema, we always do a full scan. We will not process any constraints ourselves.
-		// SQLite will handle filtering after we return all rows via xQuery.
+		// Quereus will handle filtering after we return all rows via xQuery.
 		indexInfo.idxNum = 0; // Single plan: full scan by xQuery
 		indexInfo.estimatedCost = 1000.0; // Default cost for a scan
 		indexInfo.estimatedRows = BigInt(100); // Arbitrary estimate of total schema objects
 		indexInfo.orderByConsumed = false; // We don't handle ORDER BY
 		indexInfo.idxFlags = 0;
 
-		// Tell SQLite we are not using any constraints directly.
-		// SQLite will then apply them after xQuery returns all rows.
+		// Tell Quereus we are not using any constraints directly.
+		// Quereus will then apply them after xQuery returns all rows.
 		indexInfo.aConstraintUsage = indexInfo.aConstraint.map(() => ({
 			argvIndex: 0, // Not used by xQuery
-			omit: false    // SQLite should still evaluate the constraint
+			omit: false    // Quereus should still evaluate the constraint
 		}));
 		indexInfo.idxStr = "_schema_full_scan_by_xQuery";
 		return StatusCode.OK;
 	}
 
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
-		throw new SqliterError("Cannot modify read-only table: _schema", StatusCode.READONLY);
+		throw new QuereusError("Cannot modify read-only table: _schema", StatusCode.READONLY);
 	}
 
 	async xBegin(): Promise<void> {}
@@ -91,7 +91,7 @@ class SchemaTable extends VirtualTable {
 	async xRollback(): Promise<void> {}
 
 	async xRename(zNew: string): Promise<void> {
-		throw new SqliterError("Cannot rename built-in table: _schema", StatusCode.ERROR);
+		throw new QuereusError("Cannot rename built-in table: _schema", StatusCode.ERROR);
 	}
 
 	async xSavepoint(iSavepoint: number): Promise<void> {}
@@ -113,7 +113,7 @@ class SchemaTable extends VirtualTable {
 				try {
 					const columnsStr = tableSchema.columns.map(c => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
 					const argsStr = tableSchema.vtabArgs?.join(', ') || '';
-					createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(${argsStr}) (${columnsStr})`;
+					createSql = `create table "${tableSchema.name}" (${columnsStr}) using ${tableSchema.vtabModuleName}(${argsStr})`;
 				} catch (e) {
 					createSql = null;
 				}
@@ -145,7 +145,7 @@ class SchemaTable extends VirtualTable {
 	async *xQuery(filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
 		const allSchemaRows = this._generateInternalSchemaRows(this.db);
 		// No need for filterInfo.constraints or filterInfo.args as we are not filtering here.
-		// SQLite will do the filtering.
+		// Quereus will do the filtering.
 
 		for (const internalRow of allSchemaRows) {
 			const outputRow: Row = [

@@ -1,6 +1,6 @@
 import { createLogger } from '../common/logger.js';
 import { type SqlValue, StatusCode, type Row, type SqlParameters, type DeepReadonly } from '../common/types.js';
-import { MisuseError, SqliterError } from '../common/errors.js';
+import { MisuseError, QuereusError } from '../common/errors.js';
 import type { Database } from './database.js';
 import { isRelationType, type ColumnDef, type ScalarType } from '../common/datatype.js';
 import { Parser, ParseError } from '../parser/parser.js';
@@ -45,7 +45,7 @@ export class Statement {
 			try {
 				this.astBatch = parser.parseAll(this.originalSql);
 			} catch (e) {
-				if (e instanceof ParseError) throw new SqliterError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+				if (e instanceof ParseError) throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
 				throw e;
 			}
 		} else {
@@ -105,11 +105,11 @@ export class Statement {
 			log("Planning complete for current statement.");
 		} catch (e) {
 			errorLog("Planning failed for current statement: %O", e);
-			if (e instanceof SqliterError) throw e;
-			if (e instanceof Error) throw new SqliterError(`Planning error: ${e.message}`, StatusCode.INTERNAL, e);
-			throw new SqliterError("Unknown planning error", StatusCode.INTERNAL);
+			if (e instanceof QuereusError) throw e;
+			if (e instanceof Error) throw new QuereusError(`Planning error: ${e.message}`, StatusCode.INTERNAL, e);
+			throw new QuereusError("Unknown planning error", StatusCode.INTERNAL);
 		}
-		if (!plan) throw new SqliterError("Planning resulted in no plan for current statement", StatusCode.INTERNAL);
+		if (!plan) throw new QuereusError("Planning resulted in no plan for current statement", StatusCode.INTERNAL);
 		this.plan = plan;
 		return plan;
 	}
@@ -188,8 +188,8 @@ export class Statement {
 			}
 		} catch (e: any) {
 			errorLog('Runtime execution failed in iterateRows for current statement: %O', e);
-			if (e instanceof SqliterError) throw e;
-			throw new SqliterError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
 		} finally {
 			this.busy = false;
 		}

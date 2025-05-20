@@ -1,8 +1,8 @@
 export type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
 
 /**
- * Represents the primitive scalar types SQLite can handle internally in this implementation.
- * These are the values that can be stored in SQLite columns and passed as parameters.
+ * Represents the primitive scalar types Quereus can handle internally in this implementation.
+ * These are the values that can be stored in Quereus columns and passed as parameters.
  */
 export type SqlValue = number | string | bigint | Uint8Array | boolean | null;
 
@@ -31,7 +31,7 @@ export type OutputValue = RuntimeValue | Promise<SqlValue> | RuntimeValue[];
 export type SqlParameters = Record<string | number, SqlValue>
 
 /**
- * Standard SQLite status/error codes that match the C implementation.
+ * Standard status/error codes that significantly match SQLite.
  * Used for error handling and determining operation results.
  */
 export enum StatusCode {
@@ -70,7 +70,7 @@ export enum StatusCode {
 }
 
 /**
- * Fundamental SQLite datatypes/affinity types.
+ * Fundamental SQLite compatible datatypes/affinity types.
  * These determine how values are stored and compared within the database.
  */
 export enum SqlDataType {

@@ -8,7 +8,7 @@ import type { Layer, ModificationKey, ModificationValue, DeletionMarker } from '
 import { isDeletionMarker, DELETED } from '../types.js';
 import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js'; // Simple async lock
-import { SqliterError, ConstraintError } from '../../../common/errors.js';
+import { QuereusError, ConstraintError } from '../../../common/errors.js';
 import { ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
 import { MemoryIndex } from '../index.js'; // Needed for index ops
 import type { ColumnDef } from '../../../parser/ast.js'; // Needed for schema ops
@@ -152,7 +152,7 @@ export class MemoryTableManager {
 	 */
 	async commitTransaction(connection: MemoryTableConnection): Promise<void> {
 		if (this.readOnly) {
-			throw new SqliterError(`Table ${this.tableName} is read-only`, StatusCode.READONLY);
+			throw new QuereusError(`Table ${this.tableName} is read-only`, StatusCode.READONLY);
 		}
 		const pendingLayer = connection.pendingTransactionLayer;
 		if (!pendingLayer) {
@@ -174,9 +174,9 @@ export class MemoryTableManager {
 				connection.pendingTransactionLayer = null;
 				// Use namespaced warn logger
 				warnLog(`[Commit %d] Stale commit detected for %s. Rolling back.`, connection.connectionId, this.tableName);
-				// TODO: Should this throw SQLITE_BUSY or similar? Standard behavior might depend on isolation level.
+				// TODO: Should this throw busy or similar? Standard behavior might depend on isolation level.
 				// For now, treat as a failed commit leading to automatic rollback.
-				throw new SqliterError(`Commit failed due to concurrent update (staleness check failed) on table ${this.tableName}`, StatusCode.BUSY); // Or StatusCode.ABORT?
+				throw new QuereusError(`Commit failed due to concurrent update (staleness check failed) on table ${this.tableName}`, StatusCode.BUSY); // Or StatusCode.ABORT?
 			}
 
 			// Mark the pending layer as committed (making it immutable)
@@ -613,7 +613,7 @@ export class MemoryTableManager {
 	// These need the management lock and potentially layer collapse checks
 
 	async addColumn(columnDef: ColumnDef): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new QuereusError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
@@ -622,7 +622,7 @@ export class MemoryTableManager {
 
 			const newColNameLower = columnDef.name.toLowerCase();
 			if (this.tableSchema.columns.some(c => c.name.toLowerCase() === newColNameLower)) {
-				throw new SqliterError(`Duplicate column name: ${columnDef.name}`, StatusCode.ERROR);
+				throw new QuereusError(`Duplicate column name: ${columnDef.name}`, StatusCode.ERROR);
 			}
 			const defaultValue = null; // TODO: Handle column defaults
 
@@ -651,15 +651,15 @@ export class MemoryTableManager {
 	}
 
 	async dropColumn(columnName: string): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new QuereusError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
 			await this.ensureSchemaChangeSafety();
 			const colNameLower = columnName.toLowerCase();
 			const colIndex = this.tableSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
-			if (colIndex === -1) throw new SqliterError(`Column not found: ${columnName}`, StatusCode.ERROR);
-			if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) throw new SqliterError(`Cannot drop PK column: ${columnName}`, StatusCode.CONSTRAINT);
+			if (colIndex === -1) throw new QuereusError(`Column not found: ${columnName}`, StatusCode.ERROR);
+			if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) throw new QuereusError(`Cannot drop PK column: ${columnName}`, StatusCode.CONSTRAINT);
 			// TODO: Check secondary indexes using this column and prevent drop or drop them too.
 
 			const oldTableSchema = this.tableSchema;
@@ -680,7 +680,7 @@ export class MemoryTableManager {
 	}
 
 	async renameColumn(oldName: string, newName: string): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new QuereusError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
@@ -690,9 +690,9 @@ export class MemoryTableManager {
 			const newNameLower = newName.toLowerCase();
 			const colIndex = this.tableSchema.columns.findIndex(c => c.name.toLowerCase() === oldNameLower);
 
-			if (colIndex === -1) throw new SqliterError(`Column not found: ${oldName}`, StatusCode.ERROR);
+			if (colIndex === -1) throw new QuereusError(`Column not found: ${oldName}`, StatusCode.ERROR);
 			if (this.tableSchema.columns.some((c, i) => i !== colIndex && c.name.toLowerCase() === newNameLower)) {
-				throw new SqliterError(`Duplicate column name: ${newName}`, StatusCode.ERROR);
+				throw new QuereusError(`Duplicate column name: ${newName}`, StatusCode.ERROR);
 			}
 			// TODO: Check PK / Indexes
 
@@ -735,10 +735,10 @@ export class MemoryTableManager {
 
 			// Check registry via module reference
 			if (!this.module || typeof this.module.tables?.has !== 'function' || typeof this.module.tables?.delete !== 'function' || typeof this.module.tables?.set !== 'function') {
-				throw new SqliterError("Cannot rename: Module context or table registry is invalid.", StatusCode.INTERNAL);
+				throw new QuereusError("Cannot rename: Module context or table registry is invalid.", StatusCode.INTERNAL);
 			}
 			if (this.module.tables.has(newTableKey)) {
-				throw new SqliterError(`Cannot rename memory table: target name '${newName}' already exists in schema '${this.schemaName}'`);
+				throw new QuereusError(`Cannot rename memory table: target name '${newName}' already exists in schema '${this.schemaName}'`);
 			}
 
 			// Update registry
@@ -757,7 +757,7 @@ export class MemoryTableManager {
 	}
 
 	async createIndex(indexSchema: IndexSchema): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new QuereusError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
@@ -765,7 +765,7 @@ export class MemoryTableManager {
 
 			const indexName = indexSchema.name;
 			if (this.tableSchema.indexes?.some(idx => idx.name === indexName)) {
-				throw new SqliterError(`Index '${indexName}' already exists on table '${this.tableName}'.`, StatusCode.ERROR);
+				throw new QuereusError(`Index '${indexName}' already exists on table '${this.tableName}'.`, StatusCode.ERROR);
 			}
 			// TODO: Validate index columns exist
 
@@ -790,14 +790,14 @@ export class MemoryTableManager {
 	}
 
 	async dropIndex(indexName: string): Promise<void> {
-		if (this.readOnly) throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+		if (this.readOnly) throw new QuereusError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this.tableName}`;
 		const release = await Latches.acquire(lockKey);
 		try {
 			await this.ensureSchemaChangeSafety();
 
 			if (!this.tableSchema.indexes?.some(idx => idx.name === indexName)) {
-				throw new SqliterError(`Index not found: ${indexName}`);
+				throw new QuereusError(`Index not found: ${indexName}`);
 			}
 
 			// Update canonical schema
@@ -830,7 +830,7 @@ export class MemoryTableManager {
 			// Throwing is safer for now.
 			await this.tryCollapseLayers(); // Attempt collapse first
 			if (this.currentCommittedLayer !== this.baseLayer) {
-				throw new SqliterError(`Cannot perform schema change on table ${this.tableName} while older transaction versions exist. Commit/rollback active transactions.`, StatusCode.BUSY);
+				throw new QuereusError(`Cannot perform schema change on table ${this.tableName} while older transaction versions exist. Commit/rollback active transactions.`, StatusCode.BUSY);
 			}
 		}
 	}
@@ -958,7 +958,7 @@ export class MemoryTableManager {
 
 	async performMutation(connection: MemoryTableConnection, values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint; }> {
 		if (this.readOnly) {
-			throw new SqliterError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
+			throw new QuereusError(`Table '${this.tableName}' is read-only`, StatusCode.READONLY);
 		}
 		const onConflict = (values as any)._onConflict || ConflictResolution.ABORT;
 
@@ -967,7 +967,7 @@ export class MemoryTableManager {
 		}
 		const targetLayer = connection.pendingTransactionLayer;
 		if (!targetLayer) {
-			throw new SqliterError("Internal error: Pending transaction layer not found after begin.", StatusCode.INTERNAL);
+			throw new QuereusError("Internal error: Pending transaction layer not found after begin.", StatusCode.INTERNAL);
 		}
 
 		try {
@@ -1049,7 +1049,7 @@ export class MemoryTableManager {
 					return {};
 				}
 			} else {
-				throw new SqliterError("Unsupported arguments for mutation operation", StatusCode.ERROR);
+				throw new QuereusError("Unsupported arguments for mutation operation", StatusCode.ERROR);
 			}
 		} catch (e) {
 			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {

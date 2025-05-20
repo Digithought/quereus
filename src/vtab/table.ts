@@ -35,7 +35,7 @@ export abstract class VirtualTable {
 	/**
 	 * Disconnects from this virtual table connection instance
 	 * Called when the database connection closes or the statement is finalized
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	abstract xDisconnect(): Promise<void>;
 
@@ -44,7 +44,7 @@ export abstract class VirtualTable {
 	 * This is an alternative to the cursor-based xOpen/filter/next model.
 	 * @param filterInfo Information from xBestIndex and query parameters.
 	 * @returns An AsyncIterable yielding RowIdRow tuples ([rowid, Row]).
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xQuery?(filterInfo: FilterInfo): AsyncIterable<RowIdRow>;
 
@@ -53,7 +53,7 @@ export abstract class VirtualTable {
 	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, often just the rowid
 	 * @param rowid For UPDATE/DELETE, the rowid of the row to modify. Null for INSERT
 	 * @returns Object with rowid property (for INSERT) or empty object
-	 * @throws SqliteError or ConstraintError on failure
+	 * @throws QuereusError or ConstraintError on failure
 	 */
 	abstract xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }>;
 
@@ -104,7 +104,7 @@ export abstract class VirtualTable {
 	/**
 	 * Modifies the schema of this virtual table
 	 * @param changeInfo Object describing the schema modification
-	 * @throws SqliteError or ConstraintError on failure
+	 * @throws QuereusError or ConstraintError on failure
 	 */
 	xAlterSchema?(changeInfo: SchemaChangeInfo): Promise<void>;
 

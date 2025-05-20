@@ -1571,11 +1571,11 @@ pragma synchronous = 'off';
 
 ## 10. Error Handling
 
-Quereus provides structured error handling through the `SqliteError` class hierarchy. Understanding these errors helps in debugging and creating robust applications.
+Quereus provides structured error handling through the `QuereusError` class hierarchy. Understanding these errors helps in debugging and creating robust applications.
 
 ### 10.1 Error Types
 
-#### 10.1.1 SqliteError
+#### 10.1.1 QuereusError
 
 The base error class for all Quereus errors. Contains:
 - `message`: Description of the error
@@ -1654,7 +1654,7 @@ insert into users (email) values ('existing@example.com');
 #### Schema Errors
 
 ```sql
--- Reference to non-existent table (will cause SqliteError)
+-- Reference to non-existent table (will cause QuereusError)
 select * from nonexistent_table;
 ```
 

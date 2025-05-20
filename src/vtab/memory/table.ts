@@ -6,7 +6,7 @@ import type { SqlValue, Row, RowIdRow } from '../../common/types.js';
 import { type TableSchema, type IndexSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { FilterInfo } from '../filter-info.js';
@@ -170,7 +170,7 @@ export class MemoryTable extends VirtualTable {
 				default: {
 					// This should not happen if types are correct
 					const exhaustiveCheck: never = changeInfo;
-					throw new SqliterError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
+					throw new QuereusError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
 				}
 			}
 			// Update this instance's schema reference after alteration succeeds

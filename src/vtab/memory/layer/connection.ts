@@ -94,7 +94,7 @@ export class MemoryTableConnection {
 	/** Creates a savepoint with the given identifier */
 	createSavepoint(savepointIndex: number): void {
 		if (!this.pendingTransactionLayer) {
-			// SQLite treats SAVEPOINT outside a transaction as an implicit BEGIN + SAVEPOINT
+			// Quereus treats SAVEPOINT outside a transaction as an implicit BEGIN + SAVEPOINT
 			this.begin();
 		}
 

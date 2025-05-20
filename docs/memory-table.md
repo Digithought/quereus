@@ -8,7 +8,7 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
 **Key Features:**
 
 *   **B+Tree Backend:** Uses the `digitree` library for efficient, sorted storage.
-*   **Flexible Primary Indexing:** Data is primarily indexed by either the implicit SQLite `rowid` (default) or by a user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
+*   **Flexible Primary Indexing:** Data is primarily indexed by either the implicit `rowid` (default) or by a user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
 *   **Secondary Index Support:** Allows creation of secondary indexes on one or more columns using `CREATE INDEX`. These are also backed by B+Trees for efficient lookups.
 *   **Query Planning:** Implements `xBestIndex` to provide basic query plans:
     *   Considers both primary and secondary indexes.

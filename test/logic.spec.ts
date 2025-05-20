@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/database.js';
-import { ParseError, SqliterError } from '../src/common/errors.js';
+import { ParseError, QuereusError } from '../src/common/errors.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
 
 // ESM equivalent for __dirname
@@ -138,7 +138,7 @@ describe('SQL Logic Tests', () => {
 								}
 							}
 						} catch (error: any) {
-							if (expectedErrorSubstring !== null && error instanceof SqliterError) { // Check if SqliterError for more consistent error source
+							if (expectedErrorSubstring !== null && error instanceof QuereusError) { // Check if QuereusError for more consistent error source
 								expect(error.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
 									`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${error.message}"`
 								);

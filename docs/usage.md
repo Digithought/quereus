@@ -9,7 +9,7 @@ Quereus provides a lightweight, TypeScript-native SQL interface inspired by SQLi
 ```typescript
 import { Database } from 'quereus';
 // Make sure to import other necessary types if using them directly
-// import { type SqlValue, StatusCode, SqliteError, MisuseError } from 'quereus';
+// import { type SqlValue, StatusCode, QuereusError, MisuseError } from 'quereus';
 
 // Create an in-memory database
 const db = new Database();
@@ -76,7 +76,7 @@ try {
   }
 } catch (e) {
   console.error("Query failed:", e);
-  // Handle errors (e.g., SqliteError, MisuseError)
+  // Handle errors (e.g., QuereusError, MisuseError)
 }
 ```
 
@@ -363,8 +363,8 @@ Quereus throws specific error types that you can catch and handle:
 try {
   await db.exec("insert into nonexistent_table values (1)");
 } catch (err) {
-  if (err instanceof SqliteError) {
-    console.error(`SQLite error (code ${err.code}): ${err.message}`);
+  if (err instanceof QuereusError) {
+    console.error(`Quereus error (code ${err.code}): ${err.message}`);
   } else if (err instanceof MisuseError) {
     console.error(`API misuse: ${err.message}`);
   } else {

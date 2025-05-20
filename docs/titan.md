@@ -1,6 +1,6 @@
 # Project Titan 
 
-Mission: Migrate SQLite's compiler and runtime from fragile messes to a robust, transparent, and extensible system
+Mission: Migrate Quereus' compiler and runtime from fragile messes to a robust, transparent, and extensible system
 
 ## Phases
 

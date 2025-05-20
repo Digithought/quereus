@@ -1,4 +1,4 @@
-import type { SqliterContext } from '../func/context';
+import type { QuereusContext } from '../func/context';
 import type { SqlValue } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
@@ -17,15 +17,15 @@ export interface FunctionSchema {
 	/** User data pointer passed during registration */
 	userData?: unknown;
 	/** Callback for scalar functions */
-	xFunc?: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => void;
+	xFunc?: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Callback for aggregate step function */
-	xStep?: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => void;
+	xStep?: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Callback for aggregate final function */
-	xFinal?: (context: SqliterContext) => void;
+	xFinal?: (context: QuereusContext) => void;
 	/** Callback for window function value */
-	xValue?: (context: SqliterContext) => void;
+	xValue?: (context: QuereusContext) => void;
 	/** Callback for window function inverse step */
-	xInverse?: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => void;
+	xInverse?: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => void;
 	/** Destructor for user data (if provided during registration) */
 	xDestroy?: (userData: unknown) => void;
 	/** Recommended affinity for the function's return value (optional) */

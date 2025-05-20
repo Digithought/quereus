@@ -1,5 +1,5 @@
 import { IndexConstraintOp } from '../../common/constants.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type * as AST from '../../parser/ast.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -38,7 +38,7 @@ export function extractConstraints(compiler: Compiler, cursorIdx: number, tableS
 						foundInOuter = true;
 					}
 				}
-				if (ambiguous) throw new SqliterError(`Ambiguous column in constraint analysis: ${colExpr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+				if (ambiguous) throw new QuereusError(`Ambiguous column in constraint analysis: ${colExpr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 			}
 			return sourceCursor !== -1 && sourceCursor !== cursorIdx;
 		}

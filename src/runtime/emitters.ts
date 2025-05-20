@@ -1,4 +1,4 @@
-import { SqliterError } from "../common/errors.js";
+import { QuereusError } from "../common/errors.js";
 import type { PlanNode } from "../planner/nodes/plan-node.js";
 import type { PlanNodeType } from "../planner/nodes/plan-node-type.js";
 import type { Instruction } from "./types.js";
@@ -14,7 +14,7 @@ export function registerEmitter(planNodeType: PlanNodeType, emit: EmitterFunc): 
 export function emitPlanNode(plan: PlanNode): Instruction {
 	const emitter = emitters.get(plan.nodeType);
 	if (!emitter) {
-		throw new SqliterError(`No emitter registered for plan node type ${plan.nodeType}`);
+		throw new QuereusError(`No emitter registered for plan node type ${plan.nodeType}`);
 	}
 	return emitter(plan);
 }

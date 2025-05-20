@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { buildColumnIndexMap, type TableSchema } from '../../schema/table.js';
@@ -52,7 +52,7 @@ export class ExplainPlanModule implements VirtualTableModule<ExplainPlanTable, {
     constructor() { }
 
     xCreate(): ExplainPlanTable {
-        throw new SqliterError(`Cannot CREATE TABLE using module 'explain_plan'`, StatusCode.ERROR);
+        throw new QuereusError(`Cannot CREATE TABLE using module 'explain_plan'`, StatusCode.ERROR);
     }
 
     xConnect(
@@ -65,7 +65,7 @@ export class ExplainPlanModule implements VirtualTableModule<ExplainPlanTable, {
     ): ExplainPlanTable {
 
         if (!options || typeof options.sql !== 'string') {
-            throw new SqliterError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
+            throw new QuereusError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
         }
 
         const sqlToExplain = options.sql;

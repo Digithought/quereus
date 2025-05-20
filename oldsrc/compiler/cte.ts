@@ -1,4 +1,4 @@
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode, SqlDataType } from '../common/types.js';
 import { ConflictResolution } from '../common/constants.js';
 import { Opcode } from '../vdbe/opcodes.js';
@@ -119,7 +119,7 @@ function _compileMaterializedCte(compiler: Compiler, cteInfo: CteInfo): void {
 
 			log(`CTE '%s': Created ephemeral table instance %d with %d columns.`, cteName, cteCursorIdx, resultInfo.numCols);
 		} else {
-			throw new SqliterError(`CTE query type '${cte.query.type}' not yet supported for materialization`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
+			throw new QuereusError(`CTE query type '${cte.query.type}' not yet supported for materialization`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 		}
 
 	} finally {
@@ -131,7 +131,7 @@ function _compileMaterializedCte(compiler: Compiler, cteInfo: CteInfo): void {
 	const existingCteInfo = compiler.cteMap.get(cteName);
 	if (!existingCteInfo) {
 		// This shouldn't happen if called from compileWithClause
-		throw new SqliterError(`Internal: CteInfo not found for '${cteName}' during materialization.`, StatusCode.INTERNAL);
+		throw new QuereusError(`Internal: CteInfo not found for '${cteName}' during materialization.`, StatusCode.INTERNAL);
 	}
 	// Update the existing CteInfo object with materialization details
 	existingCteInfo.cursorIdx = cteCursorIdx;
@@ -156,13 +156,13 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 	const cte = cteInfo.node;
 	const cteName = cte.name.toLowerCase();
 	if (cte.query.type !== 'select' || (!cte.query.union && !cte.query.unionAll)) {
-		throw new SqliterError(`Recursive CTE '${cteName}' must use UNION or UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
+		throw new QuereusError(`Recursive CTE '${cteName}' must use UNION or UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 	}
 
 	const initialSelect = { ...cte.query, union: undefined, unionAll: undefined }; // Extract initial SELECT
 	const recursiveSelect = cte.query.union;
 	if (!recursiveSelect) {
-		throw new SqliterError(`Recursive CTE '${cteName}' is missing the recursive part after UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
+		throw new QuereusError(`Recursive CTE '${cteName}' is missing the recursive part after UNION ALL`, StatusCode.ERROR, undefined, cte.query.loc?.start.line, cte.query.loc?.start.column);
 	}
 	const isUnionAll = cte.query.unionAll ?? false; // Default to UNION (distinct)
 
@@ -219,7 +219,7 @@ function _compileRecursiveCte(compiler: Compiler, cteInfo: CteInfo): void {
 	const existingCteInfo = compiler.cteMap.get(cteName);
 	if (!existingCteInfo) {
 		// This shouldn't happen if called from compileWithClause
-		throw new SqliterError(`Internal: CteInfo not found for '${cteName}' during recursive materialization.`, StatusCode.INTERNAL);
+		throw new QuereusError(`Internal: CteInfo not found for '${cteName}' during recursive materialization.`, StatusCode.INTERNAL);
 	}
 	existingCteInfo.cursorIdx = resCursor; // Result table cursor
 	existingCteInfo.schema = cteSchema;
@@ -345,7 +345,7 @@ function _compileSelectAndPopulateEphemeral(
 					planningInfo.usage.forEach((usage: IndexConstraintUsage, constraintIdx: number) => {
 						if (usage.argvIndex > 0) {
 							const expr = planningInfo.constraintExpressions?.get(constraintIdx);
-							if (!expr) throw new SqliterError(`Internal error: Missing expression for constraint ${constraintIdx} used in CTE pop VFilter`, StatusCode.INTERNAL);
+							if (!expr) throw new QuereusError(`Internal error: Missing expression for constraint ${constraintIdx} used in CTE pop VFilter`, StatusCode.INTERNAL);
 							while (argsToCompile.length < usage.argvIndex) { argsToCompile.push(null as any); }
 							argsToCompile[usage.argvIndex - 1] = { constraintIdx, expr };
 						}
@@ -381,7 +381,7 @@ function _compileSelectAndPopulateEphemeral(
 		queryResultBase = innerResult.resultBaseReg;
 		queryNumCols = innerResult.numCols;
 		if (queryNumCols !== targetSchema.columns.length) {
-			throw new SqliterError(`CTE column count mismatch during population: expected ${targetSchema.columns.length}, got ${queryNumCols}`, StatusCode.ERROR, undefined, selectStmt.loc?.start.line, selectStmt.loc?.start.column);
+			throw new QuereusError(`CTE column count mismatch during population: expected ${targetSchema.columns.length}, got ${queryNumCols}`, StatusCode.ERROR, undefined, selectStmt.loc?.start.line, selectStmt.loc?.start.column);
 		}
 
 		// Prepare data for VUpdate

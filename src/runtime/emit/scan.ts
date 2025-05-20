@@ -1,6 +1,6 @@
 import { StatusCode, type Row } from "../../common/types.js";
 import type { TableScanNode } from "../../planner/nodes/scan.js";
-import { SqliterError } from "../../common/errors.js";
+import { QuereusError } from "../../common/errors.js";
 import type { VirtualTable } from "../../vtab/table.js";
 import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
@@ -11,11 +11,11 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 		const tableSchema = plan.source.tableSchema;
 		const moduleInfo = ctx.db._getVtabModule(tableSchema.vtabModuleName);
 		if (!moduleInfo) {
-			throw new SqliterError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
+			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
 		}
 		const module = moduleInfo.module;
 		if (typeof module.xConnect !== 'function') {
-			throw new SqliterError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
+			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
 		}
 
 		let vtabInstance: VirtualTable;
@@ -31,13 +31,13 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 			);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
-			throw new SqliterError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof SqliterError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+			throw new QuereusError(`Module '${tableSchema.vtabModuleName}' xConnect failed for table '${tableSchema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		}
 
 		if (typeof vtabInstance.xQuery !== 'function') {
 			// Fallback or error if xQuery is not available. For now, throwing an error.
 			// Later, we could implement the xOpen/xFilter/xNext loop here as a fallback.
-			throw new SqliterError(`Virtual table '${tableSchema.name}' does not support xQuery.`, StatusCode.UNSUPPORTED);
+			throw new QuereusError(`Virtual table '${tableSchema.name}' does not support xQuery.`, StatusCode.UNSUPPORTED);
 		}
 
 		try {
@@ -55,7 +55,7 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 			ctx.context.delete(plan);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
-			throw new SqliterError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof SqliterError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+			throw new QuereusError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		} finally {
 			// Ensure xDisconnect is called if the vtabInstance was successfully created.
 			if (vtabInstance && typeof vtabInstance.xDisconnect === 'function') {

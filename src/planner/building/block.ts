@@ -1,22 +1,29 @@
 import { BlockNode } from '../nodes/block.js';
 import * as AST from '../../parser/ast.js';
-import type { Database } from '../../core/database.js';
-import { GlobalScope } from '../scopes/global.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import { buildSelectStmt } from './select.js';
-import { ParameterScope } from '../scopes/param.js';
 import type { PlanningContext } from '../planning-context.js';
+import { buildCreateTableStmt } from './create-table.js';
+import { buildDropTableStmt } from './drop-table.js';
 
 export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
-		if (stmt.type === 'select') {
-            // buildSelectStmt returns a BatchNode, which is a PlanNode.
-			return buildSelectStmt(stmt as AST.SelectStmt, ctx);
-		} else {
-			// Placeholder for other statement types
-			return undefined;
+		switch (stmt.type) {
+			case 'select':
+				// buildSelectStmt returns a BatchNode, which is a PlanNode.
+				return buildSelectStmt(stmt as AST.SelectStmt, ctx);
+			case 'createTable':
+				return buildCreateTableStmt(ctx, stmt as AST.CreateTableStmt);
+			case 'drop':
+				if (stmt.objectType === 'table') {
+					return buildDropTableStmt(ctx, stmt as AST.DropStmt);
+				}
+				break;
+			default:
+				// Placeholder for other statement types
+				return undefined;
 		}
-	}).filter(p => p !== undefined); // Ensure we only have valid PlanNodes
+	}).filter(p => p !== undefined) as PlanNode[]; // Ensure we only have valid PlanNodes and cast
 
     // The final BatchNode for the entire batch.
     // Its scope is batchParameterScope, and it contains all successfully planned statements.

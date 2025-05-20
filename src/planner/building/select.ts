@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
 import { SingleRowNode } from '../nodes/single-row.js';
@@ -20,7 +20,7 @@ import { MultiScope } from '../scopes/multi.js';
  * @param stmt The AST.SelectStmt to plan.
  * @param context The parent planning context for this SELECT statement.
  * @returns A BatchNode representing the plan for the SELECT statement.
- * @throws {SqliterError} If the FROM clause is missing, empty, or contains more than one source.
+ * @throws {QuereusError} If the FROM clause is missing, empty, or contains more than one source.
  */
 export function buildSelectStmt(
   stmt: AST.SelectStmt,
@@ -34,7 +34,7 @@ export function buildSelectStmt(
 
 	// TODO: Support multiple FROM sources (joins)
 	if (fromTables.length > 1) {
-		throw new SqliterError(
+		throw new QuereusError(
 			'SELECT with multiple FROM sources (joins) not yet supported.',
 			StatusCode.UNSUPPORTED, undefined, stmt.from![1].loc?.start.line, stmt.from![1].loc?.start.column
 		);
@@ -84,7 +84,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		} else {
 		}
 	} else {
-		throw new SqliterError(
+		throw new QuereusError(
 			`Unsupported FROM clause item type: ${fromClause.type}`,
 			StatusCode.UNSUPPORTED, undefined, fromClause.loc?.start.line, fromClause.loc?.start.column
 		);

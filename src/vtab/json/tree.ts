@@ -2,7 +2,7 @@ import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../index-info.js';
 import { type SqlValue, StatusCode, SqlDataType, type Row, type RowIdRow } from '../../common/types.js';
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -62,7 +62,7 @@ class JsonTreeTable extends VirtualTable {
 		this.rootPath = (typeof rootPath === 'string' && rootPath) ? rootPath : null;
 
 		if (this.parsedJson === null && typeof jsonText === 'string') {
-			throw new SqliterError(`Invalid JSON provided to ${tableName}`, StatusCode.ERROR);
+			throw new QuereusError(`Invalid JSON provided to ${tableName}`, StatusCode.ERROR);
 		}
 
 		this.tableSchema = Object.freeze({
@@ -100,7 +100,7 @@ class JsonTreeTable extends VirtualTable {
 	}
 
 	async xUpdate(): Promise<{ rowid?: bigint }> {
-		throw new SqliterError("json_tree table is read-only", StatusCode.READONLY);
+		throw new QuereusError("json_tree table is read-only", StatusCode.READONLY);
 	}
 
 	async xBegin() { return Promise.resolve(); }
@@ -108,7 +108,7 @@ class JsonTreeTable extends VirtualTable {
 	async xCommit() { return Promise.resolve(); }
 	async xRollback() { return Promise.resolve(); }
 	async xRename() {
-		throw new SqliterError("Cannot rename json_tree table", StatusCode.ERROR);
+		throw new QuereusError("Cannot rename json_tree table", StatusCode.ERROR);
 	}
 
 	async xDisconnect(): Promise<void> { /* No-op */ }

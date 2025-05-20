@@ -34,7 +34,7 @@ export interface VirtualTableModule<
 	 * @param tableName The name of the virtual table being created
 	 * @param options Module-specific configuration options from the USING clause
 	 * @returns The new VirtualTable instance
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xCreate(
 		db: Database,
@@ -56,7 +56,7 @@ export interface VirtualTableModule<
 	 * @param tableName The name of the virtual table to connect to
 	 * @param options Module-specific configuration options from the original CREATE VIRTUAL TABLE
 	 * @returns The connection-specific VirtualTable instance
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xConnect(
 		db: Database,
@@ -87,7 +87,7 @@ export interface VirtualTableModule<
 	 * @param moduleName The name the module was registered with
 	 * @param schemaName The name of the database schema
 	 * @param tableName The name of the virtual table being destroyed
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xDestroy(
 		db: Database,

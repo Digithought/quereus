@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import { FunctionContext } from '../../func/context.js';
 import type { Handler } from '../handler-types.js';
@@ -13,7 +13,7 @@ export function registerHandlers(handlers: Handler[]) {
   handlers[Opcode.Function] = (ctx, inst) => {
     const p4Func = inst.p4 as P4FuncDef;
     if (!p4Func || p4Func.type !== 'funcdef') {
-      throw new SqliterError("Invalid P4 for Function", StatusCode.INTERNAL);
+      throw new QuereusError("Invalid P4 for Function", StatusCode.INTERNAL);
     }
 
     const argsReg = inst.p1;
@@ -43,9 +43,9 @@ export function registerHandlers(handlers: Handler[]) {
       log(`  Set result reg ${resultReg} to: ${safeJsonStringify(funcResult)}`); // DEBUG
     } catch (e) {
       log(`  Error during function execution: ${e instanceof Error ? e.message : String(e)}`); // DEBUG
-      if (e instanceof SqliterError) { throw e; }
-      if (e instanceof Error) { throw new SqliterError(`Runtime error in func ${p4Func.funcDef.name}: ${e.message}`, StatusCode.ERROR); }
-      throw new SqliterError(`Unknown runtime error in func ${p4Func.funcDef.name}`, StatusCode.INTERNAL);
+      if (e instanceof QuereusError) { throw e; }
+      if (e instanceof Error) { throw new QuereusError(`Runtime error in func ${p4Func.funcDef.name}: ${e.message}`, StatusCode.ERROR); }
+      throw new QuereusError(`Unknown runtime error in func ${p4Func.funcDef.name}`, StatusCode.INTERNAL);
     } finally {
       localUdfContext._cleanupAuxData();
     }

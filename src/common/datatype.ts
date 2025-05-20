@@ -1,7 +1,7 @@
 import type { Expression } from "../parser/ast.js";
 import type { DeepReadonly, SqlDataType } from "./types.js";
 
-export type TypeClass = 'scalar' | 'relation' | 'list';
+export type TypeClass = 'scalar' | 'relation' | 'list' | 'void';
 
 export type BaseType = DeepReadonly<{
 	typeClass: TypeClass;
@@ -63,6 +63,10 @@ export type RelationType = DeepReadonly<BaseType & {
 
 export type ListType = DeepReadonly<BaseType & {
 	typeClass: 'list';
+}>
+
+export type VoidType = DeepReadonly<BaseType & {
+	typeClass: 'void';
 }>
 
 export function isRelationType(type: BaseType): type is RelationType {

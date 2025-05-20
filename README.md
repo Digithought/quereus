@@ -152,18 +152,18 @@ Using specific namespaces helps users of Quereus enable precisely the logs they 
     *   Table-valued functions (like `json_each`, `json_tree`) can be invoked dynamically in the `FROM` clause using standard function call syntax: `SELECT ... FROM my_function(arg1, arg2) [AS alias] ...`.
     *   If `USING` is omitted in `CREATE TABLE`, it defaults to the configured default module (initially `memory` base on the `MemoryTable` module).
 *   **Async Core**: Core operations like `Statement.step()` and VDBE execution involving VTab interactions are asynchronous (`async`/`await`) to handle potentially long-running I/O from virtual tables.
-*   **Sync Callbacks**: VTab `xBestIndex` and `xColumn`, as well as UDFs, are expected to be synchronous for performance, following the SQLite C API design. `xCreate` and `xConnect` are also synchronous.
+*   **Sync Callbacks**: VTab `xBestIndex` and `xColumn`, as well as UDFs, are expected to be synchronous for performance, losely following the SQLite C API design. `xCreate` and `xConnect` are also synchronous.
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
 *   **Object-Based API**: Uses classes (`Database`, `Statement`) to represent resources with lifecycles, rather than handles.
 *   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Programmatic definition and JSON import/export are supported.
 
-## Specific variations from SQLite
+## Major variations from SQLite
 
 *   Uses `CREATE TABLE ... USING module(...)` syntax for static virtual tables. Supports dynamic invocation of table-valued functions (e.g., `json_each(...)`) in the `FROM` clause.
 *   `PRAGMA default_vtab_module` can be used to set the default module for `CREATE TABLE` without `USING`.
 *   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions in `CREATE TABLE`.
-*   Interface enhancements: `eval()` async enumerable helper on `Database`; easy to use parameters as names or indexed
-*   Core VDBE execution stepping is asynchronous.
+*   Interface enhancements: `eval()` async enumerable on `Database`; easy to use parameters as names or indexed
+*   Core execution stepping is asynchronous.
 *   Built-in functions tailored for JS environments (e.g., extensive JSON support).
 *   No plans for:
   *   Triggers - not well suited to federated environment

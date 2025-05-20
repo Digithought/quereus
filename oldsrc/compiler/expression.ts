@@ -1,5 +1,5 @@
 import { StatusCode } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import type { Compiler } from './compiler.js';
 import type { HavingContext } from './structs.js';
 import type * as AST from '../parser/ast.js';
@@ -46,6 +46,6 @@ export function compileExpression(
 		case 'collate': compileCollateHandler(compiler, expr, targetReg, correlation, havingContext, argumentMap, expr.collation.toUpperCase()); break;
 		case 'case': compileCaseExpression(compiler, expr, targetReg, correlation, havingContext, argumentMap); break;
 		default:
-			throw new SqliterError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+			throw new QuereusError(`Unsupported expression type: ${(expr as any).type}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 	}
 }

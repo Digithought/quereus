@@ -1,5 +1,5 @@
 import { StatusCode, type SqlValue } from '../common/types.js';
-import { SqliterError, ParseError } from '../common/errors.js';
+import { QuereusError, ParseError } from '../common/errors.js';
 import { Opcode } from '../vdbe/opcodes.js';
 import { type P4SortKey, type VdbeInstruction } from '../vdbe/instruction.js';
 import type { VdbeProgram } from '../vdbe/program.js';
@@ -197,7 +197,7 @@ export class Compiler {
 					this.compilePragma(ast as AST.PragmaStmt);
 					break;
 				default:
-					throw new SqliterError(`Compilation not implemented for statement type: ${(ast as any).type}`);
+					throw new QuereusError(`Compilation not implemented for statement type: ${(ast as any).type}`);
 			}
 
 			// Append Halt instruction
@@ -222,19 +222,19 @@ export class Compiler {
 			};
 		} catch (error) {
 			if (error instanceof ParseError) {
-				// Re-throw ParseError as SqliteError, preserving location and cause
-				throw new SqliterError(
+				// Re-throw ParseError as QuereusError, preserving location and cause
+				throw new QuereusError(
 					error.message,
 					StatusCode.ERROR,
 					error,
 					error.token.startLine, // Use token location from ParseError
 					error.token.startColumn
 				);
-			} else if (error instanceof SqliterError) {
+			} else if (error instanceof QuereusError) {
 				throw error;
 			} else {
 				// Wrap other unexpected errors
-				throw new SqliterError(
+				throw new QuereusError(
 					`Unexpected compiler error: ${error instanceof Error ? error.message : String(error)}`,
 					StatusCode.INTERNAL,
 					error instanceof Error ? error : undefined

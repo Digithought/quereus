@@ -1,6 +1,6 @@
 import { SqlDataType } from '../common/types.js';
 import { Opcode } from '../vdbe/opcodes.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import type { Compiler } from './compiler.js';
 import type { TableSchema } from '../schema/table.js';
@@ -75,14 +75,14 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				}
 
 				if (resolvedCursor === undefined || resolvedSchema === undefined) {
-					throw new SqliterError(`Internal: Failed to resolve cursor/schema for CTE '${cteNameLower}' with strategy '${cteInfo.strategy}'`, StatusCode.INTERNAL);
+					throw new QuereusError(`Internal: Failed to resolve cursor/schema for CTE '${cteNameLower}' with strategy '${cteInfo.strategy}'`, StatusCode.INTERNAL);
 				}
 
 				openedCursors.push(resolvedCursor);
 				compiler.tableSchemas.set(resolvedCursor, resolvedSchema);
 
 				if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-					throw new SqliterError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+					throw new QuereusError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 				}
 
 				compiler.tableAliases.set(lookupName, resolvedCursor);
@@ -100,7 +100,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 				compiler.tableSchemas.set(cursor, tableSchema);
 
 				if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-					throw new SqliterError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+					throw new QuereusError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 				}
 				compiler.tableAliases.set(lookupName, cursor);
 				currentLevelAliases.set(lookupName, cursor);
@@ -112,7 +112,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			}
 
 			// 3. If not CTE and not found in schema, throw error
-			throw new SqliterError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
+			throw new QuereusError(`Table not found: ${schemaName}.${tableName}`, StatusCode.ERROR, undefined, source.table.loc?.start.line, source.table.loc?.start.column);
 
 		} else if (source.type === 'join') {
 			openCursorsRecursive(source.left, currentLevelAliases);
@@ -122,7 +122,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const funcName = source.name.name;
 			const moduleInfo = compiler.db._getVtabModule(funcName);
 			if (!moduleInfo) {
-				throw new SqliterError(`Table-valued function or virtual table module not found: ${funcName}`, StatusCode.ERROR, undefined, source.name.loc?.start.line, source.name.loc?.start.column);
+				throw new QuereusError(`Table-valued function or virtual table module not found: ${funcName}`, StatusCode.ERROR, undefined, source.name.loc?.start.line, source.name.loc?.start.column);
 			}
 
 			// Compile function arguments
@@ -139,7 +139,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const lookupName = (source.alias || funcName).toLowerCase();
 
 			if (compiler.tableAliases.has(lookupName) || currentLevelAliases.has(lookupName)) {
-				throw new SqliterError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+				throw new QuereusError(`Duplicate table name or alias: ${lookupName}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 			}
 			compiler.tableAliases.set(lookupName, cursor);
 			currentLevelAliases.set(lookupName, cursor);
@@ -153,7 +153,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			const alias = source.alias.toLowerCase();
 
 			if (compiler.tableAliases.has(alias) || currentLevelAliases.has(alias)) {
-				throw new SqliterError(`Duplicate table name or alias: ${alias}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
+				throw new QuereusError(`Duplicate table name or alias: ${alias}`, StatusCode.ERROR, undefined, source.loc?.start.line, source.loc?.start.column);
 			}
 
 			// Compile subquery into an ephemeral table
@@ -174,7 +174,7 @@ export function compileFromCoreHelper(compiler: Compiler, sources: AST.FromClaus
 			warnLog(`FROM clause subquery compilation for '%s' is incomplete.`, alias);
 			compiler.emit(Opcode.Noop, 0, 0, 0, null, 0, `Placeholder for subquery ${alias} execution`);
 		} else {
-			throw new SqliterError(`Unsupported FROM clause type during cursor opening: ${(source as any).type}`, StatusCode.INTERNAL);
+			throw new QuereusError(`Unsupported FROM clause type during cursor opening: ${(source as any).type}`, StatusCode.INTERNAL);
 		}
 	};
 

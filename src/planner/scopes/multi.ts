@@ -1,6 +1,6 @@
 import { Ambiguous } from "./scope.js";
 import * as AST from "../../parser/ast.js";
-import { SqliterError } from "../../common/errors.js";
+import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { PlanNode } from "../nodes/plan-node.js";
 import type { Scope } from "./scope.js";
@@ -19,7 +19,7 @@ export class MultiScope extends BaseScope {
 	}
 
 	registerSymbol(symbolKey: string, getReference: (expression: AST.Expression, currentScope: Scope) => PlanNode): void {
-		throw new SqliterError('MultiScope does not support registering symbols.', StatusCode.ERROR);
+		throw new QuereusError('MultiScope does not support registering symbols.', StatusCode.ERROR);
 	}
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {

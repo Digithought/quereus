@@ -13,7 +13,7 @@ export { Statement } from './core/statement.js';
 export { StatusCode, SqlDataType } from './common/types.js';
 export type { SqlValue, SqlParameters, Row, RowIdRow } from './common/types.js';
 export { ConflictResolution } from './common/constants.js';
-export { SqliterError, MisuseError, ConstraintError } from './common/errors.js';
+export { QuereusError, MisuseError, ConstraintError } from './common/errors.js';
 
 // Virtual Table API
 export { VirtualTable } from './vtab/table.js';

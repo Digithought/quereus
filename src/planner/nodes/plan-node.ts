@@ -45,6 +45,25 @@ export abstract class PlanNode {
 export type PlanNodeVisitor = (node: PlanNode) => void;
 
 /**
+ * Base class for PlanNodes that do not produce a relational or scalar output,
+ * typically used for DDL or other side-effecting operations.
+ */
+export abstract class VoidNode extends PlanNode {
+  getType(): BaseType {
+    // Indicates a non-relational, non-scalar result, e.g., status object or no output.
+    return { typeClass: 'void' };
+  }
+
+  getChildren(): readonly PlanNode[] {
+    return []; // No direct child plan nodes in the execution sense
+  }
+
+	getRelations(): readonly RelationalPlanNode[] {
+    return []; // Does not operate on input relations
+  }
+}
+
+/**
  * Base interface for PlanNodes that produce a relation (a set of rows).
  * Note: this is an interface that concrete RelationalNode classes will implement.
  */

@@ -1,7 +1,7 @@
 import { createLogger } from '../common/logger.js';
 import type { FunctionSchema } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
-import type { SqliterContext } from './context.js';
+import type { QuereusContext } from './context.js';
 import { type SqlValue, StatusCode } from '../common/types.js';
 
 const log = createLogger('func:registration');
@@ -97,7 +97,7 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...arg
 		name: options.name,
 		numArgs: options.numArgs,
 		flags: options.flags ?? (FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC),
-		xFunc: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => {
+		xFunc: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => {
 			try {
 				if (options.numArgs >= 0 && args.length !== options.numArgs) {
 					throw new Error(`Function ${options.name} called with ${args.length} arguments, expected ${options.numArgs}`);
@@ -151,7 +151,7 @@ export function createAggregateFunction(
 		name: options.name,
 		numArgs: options.numArgs,
 		flags: options.flags ?? FunctionFlags.UTF8,
-		xStep: (context: SqliterContext, args: ReadonlyArray<SqlValue>) => {
+		xStep: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => {
 			if (options.numArgs >= 0 && args.length !== options.numArgs) {
 				throw new Error(`Aggregate ${options.name} step called with ${args.length} arguments, expected ${options.numArgs}`);
 			}
@@ -165,7 +165,7 @@ export function createAggregateFunction(
 			const newAccumulator = stepFunc(accumulator, ...coercedArgs);
 			context.setAggregateContext(newAccumulator);
 		},
-		xFinal: (context: SqliterContext) => {
+		xFinal: (context: QuereusContext) => {
 			try {
 				let accumulator = context.getAggregateContext<any>();
 				if (accumulator === undefined) {

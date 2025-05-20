@@ -1,6 +1,6 @@
 import { Opcode } from '../vdbe/opcodes.js';
 import { StatusCode, SqlDataType } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { type P4SortKey } from '../vdbe/instruction.js';
 import type { Compiler } from './compiler.js'; // Ensure HavingContext is imported
 import type { ColumnResultInfo } from './structs.js';
@@ -52,7 +52,7 @@ export interface JoinLevelInfo {
 function compileSubquerySource(compiler: Compiler, node: AST.SubquerySource): void {
 	const alias = node.alias.toLowerCase();
 	if (compiler.tableAliases.has(alias)) {
-		throw new SqliterError(`Duplicate alias '${node.alias}'`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
+		throw new QuereusError(`Duplicate alias '${node.alias}'`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
 	}
 
 	const outerResultColumns = compiler.resultColumns;
@@ -142,7 +142,7 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 	const alias = node.alias ? node.alias.toLowerCase() : functionName;
 
 	if (compiler.tableAliases.has(alias)) {
-		throw new SqliterError(`Duplicate alias '${alias}'`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
+		throw new QuereusError(`Duplicate alias '${alias}'`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
 	}
 
 	// --- Get Schema for the Table-Valued Function ---
@@ -153,7 +153,7 @@ function compileFunctionSource(compiler: Compiler, node: AST.FunctionSource): vo
 	const moduleInfo = compiler.db._getVtabModule(functionName);
 	if (!moduleInfo) {
 		// This should have been caught earlier, but double-check
-		throw new SqliterError(`Module not found for TVF ${functionName}`, StatusCode.INTERNAL);
+		throw new QuereusError(`Module not found for TVF ${functionName}`, StatusCode.INTERNAL);
 	}
 
 	// Create a placeholder schema for now
@@ -363,7 +363,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 					const winExpr = col.expr as AST.WindowFunctionExpr;
 					const placeholderInfo = windowSorterInfo!.windowResultPlaceholders.get(winExpr);
 					if (!placeholderInfo) {
-						throw new SqliterError(`Internal error: Window function placeholder not found for ${winExpr.function.name}`, StatusCode.INTERNAL);
+						throw new QuereusError(`Internal error: Window function placeholder not found for ${winExpr.function.name}`, StatusCode.INTERNAL);
 					}
 					finalColumnMap.push({
 						targetReg: placeholderInfo.resultReg,
@@ -375,7 +375,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 					const exprStr = expressionToString(col.expr);
 					const sorterColIdx = windowSorterInfo!.exprToSorterIndex.get(exprStr);
 					if (sorterColIdx === undefined) {
-						throw new SqliterError(`Internal error: SELECT expression ${exprStr} not found in window sorter schema`, StatusCode.INTERNAL);
+						throw new QuereusError(`Internal error: SELECT expression ${exprStr} not found in window sorter schema`, StatusCode.INTERNAL);
 					}
 					finalColumnMap.push({
 						targetReg: compiler.allocateMemoryCells(1),
@@ -386,7 +386,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				}
 			} else if (col.type === 'all') {
 				// TODO: Handle SELECT * with window functions
-				throw new SqliterError("SELECT * with window functions is not yet supported. Please specify columns explicitly.", StatusCode.ERROR);
+				throw new QuereusError("SELECT * with window functions is not yet supported. Please specify columns explicitly.", StatusCode.ERROR);
 			}
 		});
 		finalNumCols = finalColumnMap.length;
@@ -536,7 +536,7 @@ export function compileSelectStatement(compiler: Compiler, stmt: AST.SelectStmt)
 				}
 			}
 			if (!found) {
-				throw new SqliterError(`ORDER BY expression '${exprStr}' not found in result columns...`, StatusCode.ERROR);
+				throw new QuereusError(`ORDER BY expression '${exprStr}' not found in result columns...`, StatusCode.ERROR);
 			}
 		});
 

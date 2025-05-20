@@ -1,6 +1,6 @@
 import { createLogger } from '../common/logger.js'; // Import logger
 import { StatusCode } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import type { Compiler } from './compiler.js';
 import type { SubroutineInfo } from './structs.js';
 import type * as AST from '../parser/ast.js';
@@ -36,7 +36,7 @@ export function compileScalarSubquery(compiler: Compiler, subQuery: AST.SelectSt
 // --- Uncorrelated Scalar Subquery --- //
 function compileUncorrelatedScalarSubquery(compiler: Compiler, subQuery: AST.SelectStmt, targetReg: number): void {
 	if (subQuery.columns.length !== 1 || subQuery.columns[0].type === 'all') {
-		throw new SqliterError("Scalar subquery must return exactly one column (cannot be *)", StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
+		throw new QuereusError("Scalar subquery must return exactly one column (cannot be *)", StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 	const regHasRow = compiler.allocateMemoryCells(1);
 	const addrLoopStart = compiler.allocateAddress(); // Re-add loop start address
@@ -110,7 +110,7 @@ function compileCorrelatedScalarSubquery(
 		// Compile subquery core inside the subroutine context
 		const subQueryCursors: number[] = [];
 		const { resultBaseReg, numCols } = compiler.getSelectCoreStructure(subQuery, subQueryCursors, correlation, argumentMap); // Pass the map
-		if (numCols !== 1) throw new SqliterError("Correlated scalar subquery must return one column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
+		if (numCols !== 1) throw new QuereusError("Correlated scalar subquery must return one column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 
 		const addrSubLoopStart = compiler.allocateAddress();
 		const addrSubLoopEnd = compiler.allocateAddress();
@@ -218,7 +218,7 @@ function compileCorrelatedScalarSubquery(
 
 	// 3. Call Subroutine
 	if (!subInfo) {
-		throw new SqliterError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+		throw new QuereusError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
 	}
 	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, `Call correlated subquery`);
 
@@ -255,7 +255,7 @@ export function compileInSubquery(
 	invert: boolean
 ): void {
 	if (subQuery.columns.length !== 1 || subQuery.columns[0].type === 'all') {
-		throw new SqliterError("Subquery for IN operator must return exactly one column (cannot be *)", StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
+		throw new QuereusError("Subquery for IN operator must return exactly one column (cannot be *)", StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 
 	const subqueryCorrelation = analyzeSubqueryCorrelation(compiler, subQuery, new Set(compiler.tableAliases.values()));
@@ -414,7 +414,7 @@ function compileCorrelatedInSubquery(
 		// Compile subquery core
 		const subQueryCursors: number[] = [];
 		const { resultBaseReg, numCols } = compiler.getSelectCoreStructure(subQuery, subQueryCursors, correlation, subArgumentMap);
-		if (numCols !== 1) throw new SqliterError("Correlated IN subquery requires 1 column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
+		if (numCols !== 1) throw new QuereusError("Correlated IN subquery requires 1 column", StatusCode.INTERNAL, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 
 		// --- Subroutine Logic ---
 		const addrSubLoopStart = compiler.allocateAddress();
@@ -527,7 +527,7 @@ function compileCorrelatedInSubquery(
 
 	// Call Subroutine
 	if (!subInfo) {
-		throw new SqliterError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+		throw new QuereusError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
 	}
 	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, "Call SubIN");
 
@@ -589,7 +589,7 @@ function compileUncorrelatedComparisonSubquery(
 		case '<=': compareOpcode = Opcode.Le; break;
 		case '>': compareOpcode = Opcode.Gt; break;
 		case '>=': compareOpcode = Opcode.Ge; break;
-		default: throw new SqliterError(`Unsupported comparison operator with subquery: ${op}`, StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
+		default: throw new QuereusError(`Unsupported comparison operator with subquery: ${op}`, StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 
 	// Use correct comparison order: compare(regSubResult, regLeft)
@@ -651,7 +651,7 @@ function compileCorrelatedComparisonSubquery(
 
 	// Call the scalar subroutine
 	if (!subInfo) {
-		throw new SqliterError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+		throw new QuereusError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
 	}
 	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, "Call correlated subquery for comparison");
 
@@ -677,7 +677,7 @@ function compileCorrelatedComparisonSubquery(
 		case '<=': compareOpcode = Opcode.Le; break;
 		case '>': compareOpcode = Opcode.Gt; break;
 		case '>=': compareOpcode = Opcode.Ge; break;
-		default: throw new SqliterError(`Unsupported comparison operator with subquery: ${op}`, StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
+		default: throw new QuereusError(`Unsupported comparison operator with subquery: ${op}`, StatusCode.ERROR, undefined, subQuery.loc?.start.line, subQuery.loc?.start.column);
 	}
 
 	// Compare regLeftValue with retrieved subquery result (note order: compare(sub, left))
@@ -848,7 +848,7 @@ function compileCorrelatedExistsSubquery(
 
 	// Call Subroutine
 	if (!subInfo) {
-		throw new SqliterError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
+		throw new QuereusError("Internal error: Subroutine info not found after compilation.", StatusCode.INTERNAL);
 	}
 	compiler.emit(Opcode.Subroutine, totalArgsPushed, subInfo.startAddr, 0, null, 0, "Call SubEXISTS");
 

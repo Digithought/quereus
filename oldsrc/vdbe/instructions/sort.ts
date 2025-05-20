@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { MemoryTable } from '../../vtab/memory/table.js';
 import type { Handler } from '../handler-types.js';
@@ -18,13 +18,13 @@ export function registerHandlers(handlers: Handler[]) {
     const openCursor = ctx.getCursor(cIdx);
 
     if (!openCursor || !openCursor.vtab || !(openCursor.vtab instanceof MemoryTable) || !openCursor.isEphemeral) {
-      throw new SqliterError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new QuereusError(`Sort requires an open ephemeral MemoryTable cursor (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!openCursor.instance || !(openCursor.instance instanceof MemoryTableCursor)) {
-        throw new SqliterError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
+        throw new QuereusError(`Sort requires an active MemoryTableCursor instance (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
     if (!sortInfo || sortInfo.type !== 'sortkey') {
-      throw new SqliterError(`Sort requires valid P4SortKey info (cursor ${cIdx})`, StatusCode.INTERNAL);
+      throw new QuereusError(`Sort requires valid P4SortKey info (cursor ${cIdx})`, StatusCode.INTERNAL);
     }
 
     const cursorInstance = openCursor.instance as MemoryTableCursor;
@@ -39,8 +39,8 @@ export function registerHandlers(handlers: Handler[]) {
       // Also, OpenCursor (openCursor variable) does not have sortedResults property.
     } catch (e) {
       errorLog(`Error creating/populating ephemeral sorter index for cursor ${cIdx}: %O`, e);
-      if (e instanceof SqliterError) throw e;
-      throw new SqliterError(`Failed to create/populate sorter index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
+      if (e instanceof QuereusError) throw e;
+      throw new QuereusError(`Failed to create/populate sorter index: ${e instanceof Error ? e.message : String(e)}`, StatusCode.ERROR);
     }
 
     return undefined; // Continue execution

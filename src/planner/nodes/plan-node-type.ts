@@ -19,6 +19,10 @@ export enum PlanNodeType {
   Join = 'Join',
   // SetOperation (UNION, INTERSECT, EXCEPT) // To be added as needed
 
+  // DDL Nodes
+  CreateTable = 'CreateTable',
+  DropTable = 'DropTable',
+
   // Scalar Nodes (ExpressionNode subtypes)
   Literal = 'Literal',
   ColumnReference = 'ColumnReference',

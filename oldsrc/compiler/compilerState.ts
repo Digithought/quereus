@@ -4,7 +4,7 @@ import { createInstruction, type VdbeInstruction } from '../vdbe/instruction.js'
 import type { Compiler } from './compiler.js';
 import { createLogger } from '../common/logger.js';
 import { StatusCode } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import type { ArgumentMap } from './handlers.js';
 
 const log = createLogger('compiler:state');
@@ -191,7 +191,7 @@ export function patchJumpAddresses(compiler: Compiler): void {
 		const unresolved = Array.from(compiler.pendingPlaceholders.entries())
 			.map(([id, info]) => `${id} (${info.purpose})`).join(', ');
 		errorLog(`Internal error: Unresolved address placeholders remain after compilation: ${unresolved}`);
-		throw new SqliterError(`Internal error: Unresolved address placeholders: ${unresolved}`, StatusCode.INTERNAL);
+		throw new QuereusError(`Internal error: Unresolved address placeholders: ${unresolved}`, StatusCode.INTERNAL);
 	}
 }
 

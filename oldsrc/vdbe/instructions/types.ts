@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import { applyNumericAffinity, applyIntegerAffinity, applyRealAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity.js';
 import type { Handler } from '../handler-types.js';
@@ -13,7 +13,7 @@ export function registerHandlers(handlers: Handler[]) {
 
 		// Validate bounds
 		if (startOffset < 2) { // Assuming 2 is the minimum valid offset
-			throw new SqliterError(`Affinity opcode attempt on control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
+			throw new QuereusError(`Affinity opcode attempt on control/arg area: Offset=${startOffset}`, StatusCode.INTERNAL);
 		}
 
 		let applyAffinityFn: (v: SqlValue) => SqlValue;

@@ -1,5 +1,5 @@
 import { StatusCode, type SqlValue } from '../common/types.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import type { Database } from '../core/database.js';
 import type { Statement } from '../core/statement.js';
 import type { VdbeProgram } from './program.js';
@@ -32,7 +32,7 @@ export class VdbeRuntime implements VmCtx {
   pc: number = 0;
   done: boolean = false;
   hasYielded: boolean = false;
-  error?: SqliterError;
+  error?: QuereusError;
 
   // Internal state
   private stack: MemoryCell[] = [];
@@ -146,7 +146,7 @@ export class VdbeRuntime implements VmCtx {
         const inst = code[currentPc];
 
         if (!inst) {
-          this.error = new SqliterError(`Invalid program counter: ${currentPc}`, StatusCode.INTERNAL);
+          this.error = new QuereusError(`Invalid program counter: ${currentPc}`, StatusCode.INTERNAL);
           break;
         }
 
@@ -168,7 +168,7 @@ export class VdbeRuntime implements VmCtx {
         // Get the handler for this opcode
         const handler = handlers[inst.opcode];
         if (!handler) {
-            this.error = new SqliterError(`No handler found for opcode ${inst.opcode} (${Opcode[inst.opcode]})`, StatusCode.INTERNAL);
+            this.error = new QuereusError(`No handler found for opcode ${inst.opcode} (${Opcode[inst.opcode]})`, StatusCode.INTERNAL);
             break;
         }
 
@@ -208,7 +208,7 @@ export class VdbeRuntime implements VmCtx {
           return StatusCode.DONE;
         }
         if (this.error) { // If handler set an error without returning code?
-           const errCode = (this.error as SqliterError).code ?? StatusCode.MISUSE;
+           const errCode = (this.error as QuereusError).code ?? StatusCode.MISUSE;
            // console.log(`>>> run [PC=${currentPc}, Op=${Opcode[inst.opcode]}] RETURNING: Error from post-handler check: ${errCode} (${StatusCode[errCode] ?? 'Unknown'})`);
           return errCode;
         }
@@ -220,12 +220,12 @@ export class VdbeRuntime implements VmCtx {
       }
     } catch (e) {
       errorLog('VDBE Execution Error: %O', e);
-      if (e instanceof SqliterError) {
+      if (e instanceof QuereusError) {
         this.error = e;
       } else if (e instanceof Error) {
-        this.error = new SqliterError(`Runtime error: ${e.message}`, StatusCode.ERROR);
+        this.error = new QuereusError(`Runtime error: ${e.message}`, StatusCode.ERROR);
       } else {
-        this.error = new SqliterError("Unknown runtime error", StatusCode.INTERNAL);
+        this.error = new QuereusError("Unknown runtime error", StatusCode.INTERNAL);
       }
       this.done = true;
     }
@@ -252,7 +252,7 @@ export class VdbeRuntime implements VmCtx {
    * Sets a value at an absolute stack index.
    */
   setStack(index: number, value: SqlValue): void {
-    if (index < 0) throw new SqliterError(`Invalid stack write index ${index}`, StatusCode.INTERNAL);
+    if (index < 0) throw new QuereusError(`Invalid stack write index ${index}`, StatusCode.INTERNAL);
 
     // Ensure stack capacity
     while (index >= this.stack.length) {
@@ -299,7 +299,7 @@ export class VdbeRuntime implements VmCtx {
   setMem(offset: number, value: SqlValue): void {
     // Locals should be at or above localsStartOffset
     if (offset < this.localsStartOffset) {
-      throw new SqliterError(`Write attempt to control info/argument area: Offset=${offset}`, StatusCode.INTERNAL);
+      throw new QuereusError(`Write attempt to control info/argument area: Offset=${offset}`, StatusCode.INTERNAL);
     }
     const stackIndex = this.framePointer + offset;
     this.setStack(stackIndex, value);

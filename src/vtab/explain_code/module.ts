@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import type { VirtualTableModule } from '../module.js';
@@ -9,7 +9,7 @@ export class ExplainProgramModule implements VirtualTableModule<ExplainProgramTa
     constructor() { }
 
     xCreate(): ExplainProgramTable {
-        throw new SqliterError(`Cannot CREATE TABLE using module 'explain_program'`, StatusCode.ERROR);
+        throw new QuereusError(`Cannot CREATE TABLE using module 'explain_program'`, StatusCode.ERROR);
     }
 
     xConnect(
@@ -22,7 +22,7 @@ export class ExplainProgramModule implements VirtualTableModule<ExplainProgramTa
     ): ExplainProgramTable {
 
         if (!options || typeof options.sql !== 'string') {
-            throw new SqliterError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
+            throw new QuereusError(`Module '${moduleName}' requires one argument: the SQL string to explain.`, StatusCode.ERROR);
         }
 
         try {
@@ -30,7 +30,7 @@ export class ExplainProgramModule implements VirtualTableModule<ExplainProgramTa
              return new ExplainProgramTable(db, this, { instructions: [], plannedSteps: [] }); // Pass a dummy/empty program
         } catch (e: any) {
             // This catch might not be reached if compilation is removed, but kept for safety.
-            throw new SqliterError(`Failed to connect to explain_program: ${e.message}`, StatusCode.ERROR, e);
+            throw new QuereusError(`Failed to connect to explain_program: ${e.message}`, StatusCode.ERROR, e);
         }
     }
 

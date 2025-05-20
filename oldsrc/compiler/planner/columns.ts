@@ -1,4 +1,4 @@
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type * as AST from '../../parser/ast.js';
 import type { Compiler } from '../compiler.js';
@@ -27,7 +27,7 @@ function findReferencedColumns(compiler: Compiler, expr: AST.Expression | undefi
 						foundCursor = cursorId;
 					}
 				}
-				if (ambiguous) throw new SqliterError(`Ambiguous column reference in usage analysis: ${colExpr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+				if (ambiguous) throw new QuereusError(`Ambiguous column reference in usage analysis: ${colExpr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
 			}
 
 			if (activeCursors.has(foundCursor)) {

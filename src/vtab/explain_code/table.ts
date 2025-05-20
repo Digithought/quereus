@@ -2,7 +2,7 @@ import { VirtualTable } from '../table.js';
 import type { ExplainProgramModule } from './module.js';
 import type { Database } from '../../core/database.js';
 import { EXPLAIN_PROGRAM_SCHEMA } from './schema.js'; // Import schema
-import { SqliterError } from '../../common/errors.js';
+import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type RowIdRow } from '../../common/types.js'; // Added RowIdRow
 import type { TableSchema } from '../../schema/table.js'; // Import TableSchema
 import type { Row, SqlValue } from '../../common/types.js';
@@ -45,7 +45,7 @@ export class ExplainProgramTable extends VirtualTable {
     async xDisconnect(): Promise<void> {}
 
     async xUpdate(): Promise<{ rowid?: bigint; }> {
-        throw new SqliterError("Cannot modify explain_program table", StatusCode.READONLY);
+        throw new QuereusError("Cannot modify explain_program table", StatusCode.READONLY);
     }
 
     async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {

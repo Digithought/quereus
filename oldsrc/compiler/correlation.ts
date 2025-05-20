@@ -1,6 +1,6 @@
 import type { Compiler } from './compiler.js';
 import type * as AST from '../parser/ast.js';
-import { SqliterError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
@@ -125,7 +125,7 @@ export function analyzeSubqueryCorrelation(
 						foundCursorId = cursorId;
 					}
 				}
-				if (ambiguous) throw new SqliterError(`Ambiguous column in subquery correlation check: ${colName}`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
+				if (ambiguous) throw new QuereusError(`Ambiguous column in subquery correlation check: ${colName}`, StatusCode.ERROR, undefined, node.loc?.start.line, node.loc?.start.column);
 				if (foundCursorId !== -1) {
 					sourceCursor = foundCursorId;
 					resolved = true;
