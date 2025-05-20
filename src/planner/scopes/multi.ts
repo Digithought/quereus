@@ -1,10 +1,10 @@
-import { Ambiguous } from "./scope";
+import { Ambiguous } from "./scope.js";
 import * as AST from "../../parser/ast.js";
-import { SqliterError } from "../../common/errors";
-import { StatusCode } from "../../common/types";
-import type { PlanNode } from "../nodes/plan-node";
+import { SqliterError } from "../../common/errors.js";
+import { StatusCode } from "../../common/types.js";
+import type { PlanNode } from "../nodes/plan-node.js";
 import type { Scope } from "./scope.js";
-import { BaseScope } from "./base";
+import { BaseScope } from "./base.js";
 
 /**
  * A Scope that contains multiple other scopes.

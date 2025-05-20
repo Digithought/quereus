@@ -1,7 +1,7 @@
-import type { SqlValue } from "../../common/types";
-import type { InNode } from "../../planner/nodes/subquery";
-import { emitPlanNode } from "../emitters";
-import type { RuntimeContext } from "../types";
+import type { SqlValue } from "../../common/types.js";
+import type { InNode } from "../../planner/nodes/subquery.js";
+import { emitPlanNode } from "../emitters.js";
+import type { RuntimeContext } from "../types.js";
 
 export function emitIn(plan: InNode) {
 	async function run(ctx: RuntimeContext, condition: SqlValue, input: AsyncIterable<SqlValue[]>): Promise<SqlValue> {

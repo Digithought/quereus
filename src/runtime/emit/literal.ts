@@ -1,6 +1,6 @@
-import type { SqlValue } from "../../common/types";
-import type { Instruction, InstructionRun, RuntimeContext } from "../types";
-import type { LiteralNode } from "../../planner/nodes/scalar";
+import type { SqlValue } from "../../common/types.js";
+import type { Instruction, InstructionRun } from "../types.js";
+import type { LiteralNode } from "../../planner/nodes/scalar.js";
 
 export function emitLiteral(plan: LiteralNode): Instruction {
 	function run(): SqlValue {

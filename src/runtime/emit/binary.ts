@@ -1,9 +1,9 @@
-import { StatusCode } from "../../common/types";
-import { SqliterError } from "../../common/errors";
-import type { SqlValue } from "../../common/types";
-import type { Instruction, InstructionRun, RuntimeContext } from "../types";
-import type { BinaryOpNode } from "../../planner/nodes/scalar";
-import { emitPlanNode } from "../emitters";
+import { StatusCode } from "../../common/types.js";
+import { SqliterError } from "../../common/errors.js";
+import type { SqlValue } from "../../common/types.js";
+import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
+import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
+import { emitPlanNode } from "../emitters.js";
 
 export function emitBinaryOp(plan: BinaryOpNode): Instruction {
 	switch (plan.expression.operator) {

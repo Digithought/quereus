@@ -1,11 +1,10 @@
-import { SqliterError } from '../../common/errors';
-import { StatusCode } from '../../common/types';
-import * as AST from '../../parser/ast';
-import type { PlanNode } from '../nodes/plan-node';
-import { type Scope, Ambiguous } from './scope';
+import { SqliterError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import * as AST from '../../parser/ast.js';
+import type { PlanNode } from '../nodes/plan-node.js';
+import { type Scope, Ambiguous } from './scope.js';
 
 /** Scope that contains no symbols.  */
-
 export class EmptyScope implements Scope {
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		return undefined;

@@ -7,7 +7,6 @@ import type { Database } from '../../core/database.js';
 import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
-import { IndexConstraintOp } from '../../common/constants.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import type { FilterInfo } from '../filter-info.js';
@@ -19,7 +18,6 @@ interface SchemaRowInternal {
 	type: 'table' | 'index' | 'view' | 'trigger' | 'function' | 'module';
 	name: string;
 	tbl_name: string;
-	rootpage: number;
 	sql: string | null;
 	_rowid_: bigint; // Internal rowid for iteration
 }
@@ -63,11 +61,30 @@ class SchemaTable extends VirtualTable {
 		} as TableSchema;
 	}
 
+	// This xBestIndex is for the TABLE INSTANCE, called during query planning.
+	xBestIndex(indexInfo: IndexInfo): number {
+		// For _schema, we always do a full scan. We will not process any constraints ourselves.
+		// SQLite will handle filtering after we return all rows via xQuery.
+		indexInfo.idxNum = 0; // Single plan: full scan by xQuery
+		indexInfo.estimatedCost = 1000.0; // Default cost for a scan
+		indexInfo.estimatedRows = BigInt(100); // Arbitrary estimate of total schema objects
+		indexInfo.orderByConsumed = false; // We don't handle ORDER BY
+		indexInfo.idxFlags = 0;
+
+		// Tell SQLite we are not using any constraints directly.
+		// SQLite will then apply them after xQuery returns all rows.
+		indexInfo.aConstraintUsage = indexInfo.aConstraint.map(() => ({
+			argvIndex: 0, // Not used by xQuery
+			omit: false    // SQLite should still evaluate the constraint
+		}));
+		indexInfo.idxStr = "_schema_full_scan_by_xQuery";
+		return StatusCode.OK;
+	}
+
 	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
 		throw new SqliterError("Cannot modify read-only table: _schema", StatusCode.READONLY);
 	}
 
-	// xBegin, xSync, xCommit, xRollback can be no-ops for a read-only schema table
 	async xBegin(): Promise<void> {}
 	async xSync(): Promise<void> {}
 	async xCommit(): Promise<void> {}
@@ -77,7 +94,6 @@ class SchemaTable extends VirtualTable {
 		throw new SqliterError("Cannot rename built-in table: _schema", StatusCode.ERROR);
 	}
 
-	// Savepoint methods can also be no-ops
 	async xSavepoint(iSavepoint: number): Promise<void> {}
 	async xRelease(iSavepoint: number): Promise<void> {}
 	async xRollbackTo(iSavepoint: number): Promise<void> {}
@@ -93,44 +109,32 @@ class SchemaTable extends VirtualTable {
 		const processSchemaInstance = (schemaInstance: Schema) => {
 			// Process Tables
 			for (const tableSchema of schemaInstance.getAllTables()) {
-				if (tableSchema.name.toLowerCase() === '_schema' && tableSchema.schemaName === 'main') {
-					continue;
-				}
 				let createSql: string | null = null;
 				try {
-					// Basic CREATE TABLE or CREATE VIRTUAL TABLE string construction
-					// This is a simplified representation for the _schema table.
 					const columnsStr = tableSchema.columns.map(c => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
-					if (tableSchema.vtabModuleName) {
-						const argsStr = tableSchema.vtabArgs?.join(', ') || '';
-						createSql = `CREATE VIRTUAL TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(${argsStr})`;
-					} else {
-						createSql = `CREATE TABLE "${tableSchema.name}" (${columnsStr})`;
-					}
+					const argsStr = tableSchema.vtabArgs?.join(', ') || '';
+					createSql = `CREATE TABLE "${tableSchema.name}" USING ${tableSchema.vtabModuleName}(${argsStr}) (${columnsStr})`;
 				} catch (e) {
-					createSql = null; // Or some error string
+					createSql = null;
 				}
 				generatedRows.push({
 					type: tableSchema.isView ? 'view' : 'table',
 					name: tableSchema.name,
 					tbl_name: tableSchema.name,
-					rootpage: 1, // Placeholder
 					sql: createSql,
 					_rowid_: rowidCounter++,
 				});
 			}
 			// Process Functions
-			for (const funcSchema of schemaInstance._getAllFunctions()) { // Assuming _getAllFunctions exists and is public for this context
+			for (const funcSchema of schemaInstance._getAllFunctions()) {
 				generatedRows.push({
 					type: 'function',
 					name: funcSchema.name,
-					tbl_name: funcSchema.name, // Typically same as name for functions in sqlite_schema
-					rootpage: 0, // Functions don't have root pages
+					tbl_name: funcSchema.name,
 					sql: stringifyCreateFunction(funcSchema),
 					_rowid_: rowidCounter++,
 				});
 			}
-			// TODO: Add Indexes, Views, Triggers, Modules if necessary for completeness
 		};
 
 		processSchemaInstance(schemaManager.getMainSchema());
@@ -140,61 +144,17 @@ class SchemaTable extends VirtualTable {
 
 	async *xQuery(filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
 		const allSchemaRows = this._generateInternalSchemaRows(this.db);
-		const { constraints, args } = filterInfo;
+		// No need for filterInfo.constraints or filterInfo.args as we are not filtering here.
+		// SQLite will do the filtering.
 
 		for (const internalRow of allSchemaRows) {
-			let matchesAllConstraints = true;
-			if (constraints && constraints.length > 0 && args && args.length > 0) {
-				for (const constraintItem of constraints) {
-					// FilterInfo from planner might pass all constraints from IndexInfo.aConstraint
-					// Need to use filterInfo.indexInfoOutput.aConstraintUsage to know which ones are active
-					const usage = filterInfo.indexInfoOutput?.aConstraintUsage?.find(u => u.argvIndex === constraintItem.argvIndex && u.argvIndex > 0);
-					if (!usage || usage.omit || !constraintItem.constraint.usable || constraintItem.argvIndex <= 0) {
-						continue;
-					}
-
-					const { constraint, argvIndex } = constraintItem;
-					const columnIndex = constraint.iColumn;
-					const op = constraint.op;
-					const valueToCompare = args[argvIndex - 1];
-
-					if (columnIndex < 0 || columnIndex >= SchemaTableModule.COLUMNS.length) {
-						matchesAllConstraints = false; break;
-					}
-					const columnName = SchemaTableModule.COLUMNS[columnIndex].name as keyof SchemaRowInternal;
-					const rowValue = internalRow[columnName];
-					const comparisonResult = compareSqlValues(rowValue, valueToCompare);
-					let currentConstraintMatch = false;
-					switch (op) {
-						case IndexConstraintOp.EQ: currentConstraintMatch = comparisonResult === 0; break;
-						case IndexConstraintOp.GT: currentConstraintMatch = comparisonResult > 0; break;
-						case IndexConstraintOp.LE: currentConstraintMatch = comparisonResult <= 0; break;
-						case IndexConstraintOp.LT: currentConstraintMatch = comparisonResult < 0; break;
-						case IndexConstraintOp.GE: currentConstraintMatch = comparisonResult >= 0; break;
-						case IndexConstraintOp.NE: currentConstraintMatch = comparisonResult !== 0; break;
-						case IndexConstraintOp.ISNULL: currentConstraintMatch = rowValue === null; break;
-						case IndexConstraintOp.ISNOTNULL: currentConstraintMatch = rowValue !== null; break;
-						case IndexConstraintOp.IS: currentConstraintMatch = (rowValue === null && valueToCompare === null) || comparisonResult === 0; break;
-						case IndexConstraintOp.ISNOT: currentConstraintMatch = !((rowValue === null && valueToCompare === null) || comparisonResult === 0); break;
-						default: matchesAllConstraints = false; break; // Should not happen if op is valid
-					}
-					if (!currentConstraintMatch || !matchesAllConstraints) {
-						matchesAllConstraints = false; break;
-					}
-				}
-			}
-
-			if (matchesAllConstraints) {
-				// Convert SchemaRowInternal to Row for yielding
-				const outputRow: Row = [
-					internalRow.type,
-					internalRow.name,
-					internalRow.tbl_name,
-					internalRow.rootpage,
-					internalRow.sql
-				];
-				yield [internalRow._rowid_, outputRow];
-			}
+			const outputRow: Row = [
+				internalRow.type,
+				internalRow.name,
+				internalRow.tbl_name,
+				internalRow.sql
+			];
+			yield [internalRow._rowid_, outputRow];
 		}
 	}
 }
@@ -207,7 +167,6 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 		{ name: 'type', type: SqlDataType.TEXT, collation: 'BINARY' },
 		{ name: 'name', type: SqlDataType.TEXT, collation: 'BINARY' },
 		{ name: 'tbl_name', type: SqlDataType.TEXT, collation: 'BINARY' },
-		{ name: 'rootpage', type: SqlDataType.INTEGER, collation: 'BINARY' },
 		{ name: 'sql', type: SqlDataType.TEXT, collation: 'BINARY' },
 	];
 	static readonly COLUMN_INDEX_MAP: Record<string, number> = Object.fromEntries(
@@ -225,26 +184,16 @@ export class SchemaTableModule implements VirtualTableModule<SchemaTable> {
 	}
 
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		// For _schema, we always do a full scan, but we can utilize constraints.
-		// This xBestIndex (on the module) is called for query planning.
-		indexInfo.idxNum = 0; // Using 0 to indicate a scan that will use filterInfo for xQuery
-		indexInfo.estimatedCost = 1000.0; // Default cost for a scan
-		indexInfo.estimatedRows = BigInt(100); // Arbitrary estimate
+		// This module-level xBestIndex is typically for CREATE VIRTUAL TABLE time argument parsing.
+		// _schema takes no arguments, so this is a simple pass-through indicating a full scan.
+		// The actual query planning details are deferred to the SchemaTable instance's xBestIndex.
+		indexInfo.idxNum = 0;
+		indexInfo.estimatedCost = 1000.0;
+		indexInfo.estimatedRows = BigInt(100);
 		indexInfo.orderByConsumed = false;
 		indexInfo.idxFlags = 0;
-
-		// Populate aConstraintUsage to inform SQLite which constraints can be handled by xQuery
-		let argvIndex = 1;
-		indexInfo.aConstraintUsage = indexInfo.aConstraint.map(constraint => {
-			if (constraint.usable) {
-				// Check if the column index is valid for our known columns
-				if (constraint.iColumn >= 0 && constraint.iColumn < SchemaTableModule.COLUMNS.length) {
-					return { argvIndex: argvIndex++, omit: false }; // We will handle it, SQLite doesn't need to omit
-				}
-			}
-			return { argvIndex: 0, omit: true }; // Not usable by us or invalid column
-		});
-		indexInfo.idxStr = "_schema_filtered_scan_by_xQuery"; // Indicate xQuery will handle filtering
+		indexInfo.aConstraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: true }));
+		indexInfo.idxStr = "_schema_default_module_scan";
 		return StatusCode.OK;
 	}
 
