@@ -21,8 +21,8 @@ const isValidIdentifier = (name: string): boolean => {
 	return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name);
 };
 
-// List of SQLite reserved keywords (might need updates for specific versions)
-const sqliteReservedKeywords = new Set([
+// List of reserved keywords (might need updates for specific versions)
+const reservedKeywords = new Set([
 	'ABORT', 'ACTION', 'ADD', 'AFTER', 'ALL', 'ALTER', 'ANALYZE', 'AND', 'AS', 'ASC', 'ATTACH', 'AUTOINCREMENT',
 	'BEFORE', 'BEGIN', 'BETWEEN', 'BY', 'CASCADE', 'CASE', 'CAST', 'CHECK', 'COLLATE', 'COLUMN', 'COMMIT', 'CONFLICT',
 	'CONSTRAINT', 'CREATE', 'CROSS', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'DATABASE', 'DEFAULT',
@@ -43,7 +43,7 @@ const sqliteReservedKeywords = new Set([
  * - Does not match the valid identifier pattern (starts with letter/_, contains letters/numbers/_).
  */
 function quoteIdentifierIfNeeded(name: string): string {
-	if (sqliteReservedKeywords.has(name.toUpperCase()) || !isValidIdentifier(name)) {
+	if (reservedKeywords.has(name.toUpperCase()) || !isValidIdentifier(name)) {
 		return `"${name.replace(/"/g, '""')}"`; // Escape internal quotes
 	}
 	return name;

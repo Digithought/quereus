@@ -1,4 +1,4 @@
-# Date and Time Handling in SQLiter
+# Date and Time Handling in Quereus
 
 ## SQL Date/Time Functions
 
@@ -6,11 +6,11 @@ The built-in SQL functions (`date`, `time`, `datetime`, `julianday`, `strftime`)
 
 ## Internal Implementation
 
-SQLiter internally utilizes the [Temporal API](https://tc39.es/proposal-temporal/docs/index.html) (via the [`temporal-polyfill`](https://github.com/fullcalendar/temporal-polyfill)) for all internal date and time operations and for implementing SQL date/time functions. Internal processing relies on `Temporal` objects like `Temporal.Instant`, `Temporal.ZonedDateTime`, `Temporal.PlainDate`, `Temporal.PlainTime`, and `Temporal.PlainDateTime`.  This provides a modern, robust, and unambiguous way to handle dates and times, avoiding the pitfalls of the legacy JavaScript `Date` object.
+Quereus internally utilizes the [Temporal API](https://tc39.es/proposal-temporal/docs/index.html) (via the [`temporal-polyfill`](https://github.com/fullcalendar/temporal-polyfill)) for all internal date and time operations and for implementing SQL date/time functions. Internal processing relies on `Temporal` objects like `Temporal.Instant`, `Temporal.ZonedDateTime`, `Temporal.PlainDate`, `Temporal.PlainTime`, and `Temporal.PlainDateTime`.  This provides a modern, robust, and unambiguous way to handle dates and times, avoiding the pitfalls of the legacy JavaScript `Date` object.
 
 ## Internal Representation
 
-SQLiter functions return dates/times formatted as ISO strings (e.g., `YYYY-MM-DD`) or numbers (e.g., Julian day, Unix epoch seconds).
+Quereus functions return dates/times formatted as ISO strings (e.g., `YYYY-MM-DD`) or numbers (e.g., Julian day, Unix epoch seconds).
 
 ### Input Parsing
 

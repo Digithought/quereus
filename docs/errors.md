@@ -1,6 +1,6 @@
-# Error Handling in SQLiter
+# Error Handling in Quereus
 
-SQLiter employs a structured approach to error handling to provide context and aid debugging. Errors are generally propagated as instances of `SqliteError` (or its subclasses) found in `src/common/errors.ts`.
+Quereus employs a structured approach to error handling to provide context and aid debugging. Errors are generally propagated as instances of `SqliteError` (or its subclasses) found in `src/common/errors.ts`.
 
 ## Error Propagation Flow
 

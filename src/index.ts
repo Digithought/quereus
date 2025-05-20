@@ -1,5 +1,5 @@
 /**
- * SQLiter - A TypeScript SQL Engine
+ * Quereus - A TypeScript SQL Engine
  *
  * This module provides a TypeScript implementation of a SQL database engine
  * with support for virtual tables and the full SQL query language.

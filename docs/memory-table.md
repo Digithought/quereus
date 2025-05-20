@@ -1,6 +1,6 @@
 # Memory Table Module Documentation
 
-The Memory Table Module provides virtual tables backed by memory for the SQLiter engine. These tables support standard SQL operations and can be used for high-performance in-memory data storage that requires SQL query capabilities.
+The Memory Table Module provides virtual tables backed by memory for the Quereus engine. These tables support standard SQL operations and can be used for high-performance in-memory data storage that requires SQL query capabilities.
 
 
 The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tree-backed in-memory table implementation suitable for various internal and user-facing scenarios.
@@ -25,7 +25,7 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
 *   **User-Defined In-Memory Tables:** Users can register the `MemoryTableModule` and create persistent (for the `Database` instance lifetime) or temporary in-memory tables using SQL:
 
     ```typescript
-    import { Database, MemoryTableModule } from 'sqliter'; // Or adjust path
+    import { Database, MemoryTableModule } from 'quereus'; // Or adjust path
 
     const db = new Database();
     // Register the module (can be done once)

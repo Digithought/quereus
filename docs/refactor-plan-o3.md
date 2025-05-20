@@ -23,7 +23,7 @@ a.  Break compilation into *pipeline stages*, each producing an immutable
     • PhysicalPlan → Bytecode program  
 
 b.  At the end of every stage, serialize the IR (“snapshot”) and attach it to
-   the Statement object or dump it under `DEBUG=sqliter:snap:*`.
+   the Statement object or dump it under `DEBUG=quereus:snap:*`.
    Keep a tiny schema-version number in each snapshot so future refactors can still read old artifacts.
 
 Benefits  
@@ -81,7 +81,7 @@ When a change is *expected* (e.g., new optimisation), you *update* the snapshots
 You already have `fast-check` for a few modules.  Extend it:
 
 • Generate random tables / data, random queries within a feature subset.  
-• Run against SQLiter and against an authoritative engine (SQLite via WASM, DuckDB in node).  
+• Run against Quereus and against an authoritative engine (SQLite via WASM, DuckDB in node).  
 • Any divergence = failing case auto-minimised by `fast-check`.  
 
 This catches whole-pipeline misbehaviours better than hand-written edge cases.

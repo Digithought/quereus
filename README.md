@@ -1,12 +1,12 @@
-# SQLiter - A TypeScript SQL Query Processor
+# Quereus - A TypeScript SQL Query Processor
 
-![SQLiter Logo](docs/cover-800.png)
+![Quereus Logo](docs/cover-800.png)
 
 **(Work In Progress)**
 
-SQLiter is a lightweight, TypeScript adaptation of the SQLite 3 query processor, specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism.  SQLiter has no persistent file storage, though one could be built as an add-on module.
+Quereus is a lightweight, query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism.  Quereus has no persistent file storage, though one could be built as a virtual table module.
 
-See [SQLite 3 Source](amalgamation/sqlite3.c) for reference.
+See [SQLite 3 Source](amalgamation/sqlite3.c) for C reference.
 
 ## Project Goals
 
@@ -20,7 +20,7 @@ See [SQLite 3 Source](amalgamation/sqlite3.c) for reference.
 
 ## Architecture Overview
 
-SQLiter follows a classic query processing pipeline, adapted for its specific goals:
+Quereus follows a classic query processing pipeline, adapted for its specific goals:
 
 1.  **SQL Input**: The process starts with a SQL query string.
 2.  **Parser (`src/parser`)**:
@@ -79,25 +79,25 @@ The project is organized into the following main directories:
 
 ## Logging
 
-SQLiter uses the [`debug`](https://github.com/debug-js/debug) library for internal logging. This allows for fine-grained control over log output based on namespaces, which correspond to the different modules of the system (e.g., `compiler`, `vdbe`, `vtab:memory`).
+Quereus uses the [`debug`](https://github.com/debug-js/debug) library for internal logging. This allows for fine-grained control over log output based on namespaces, which correspond to the different modules of the system (e.g., `compiler`, `vdbe`, `vtab:memory`).
 
 To enable logging during development or troubleshooting, set the `DEBUG` environment variable. Examples:
 
 ```bash
-# Enable all SQLiter logs
-DEBUG=sqliter:*
+# Enable all Quereus logs
+DEBUG=quereus:*
 
 # Enable only compiler and VDBE runtime logs
-DEBUG=sqliter:compiler,sqliter:vdbe:runtime
+DEBUG=quereus:compiler,quereus:vdbe:runtime
 
 # Enable all virtual table logs
-DEBUG=sqliter:vtab:*
+DEBUG=quereus:vtab:*
 
 # Enable VDBE runtime logs and any warnings/errors from other modules
-DEBUG=sqliter:vdbe:runtime,sqliter:*:warn,sqliter:*:error
+DEBUG=quereus:vdbe:runtime,quereus:*:warn,quereus:*:error
 
 # Enable everything EXCEPT verbose VDBE runtime logs
-DEBUG=*,-sqliter:vdbe:runtime
+DEBUG=*,-quereus:vdbe:runtime
 ```
 
 ### Developer Usage
@@ -132,7 +132,7 @@ To add logging within a module:
     }
     ```
 
-Using specific namespaces helps users of SQLiter enable precisely the logs they need when debugging.
+Using specific namespaces helps users of Quereus enable precisely the logs they need when debugging.
 
 ## Documentation
 
@@ -171,7 +171,7 @@ Using specific namespaces helps users of SQLiter enable precisely the logs they 
 
 ## Current Status
 
-SQLiter is functional for a significant subset of SQL focused on querying and manipulating virtual tables. Key implemented features include:
+Quereus is functional for a significant subset of SQL focused on querying and manipulating virtual tables. Key implemented features include:
 
 *   Parsing and execution of `SELECT`, `INSERT`, `UPDATE`, `DELETE` statements.
 *   Support for Common Table Expressions (CTEs), including basic recursive CTEs.
@@ -208,7 +208,7 @@ The tests are located in `test/*.spec.ts` and are driven by Mocha via aegir.
 yarn test
 ```
 
-SQLiter employs a multi-faceted testing strategy:
+Quereus employs a multi-faceted testing strategy:
 
 1.  **SQL Logic Tests (`test/logic/`)**:
     *   Inspired by SQLite's own testing methodology.

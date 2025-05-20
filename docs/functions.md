@@ -1,6 +1,6 @@
 # Built-in Functions Reference
 
-This document lists the built-in SQL functions available in SQLiter.
+This document lists the built-in SQL functions available in Quereus.
 
 ## Scalar Functions
 
@@ -68,7 +68,7 @@ These functions operate on single values and return a single value.
     *   **Description:** Returns the lowercase equivalent of string X.
     *   **Arguments:** `X` (TEXT).
     *   **Returns:** The lowercase TEXT string. Returns `NULL` if X is `NULL` or not a string.
-    *   **Example:** `lower('SQLite')` returns `'sqlite'`.
+    *   **Example:** `lower('Quereus')` returns `'quereus'`.
 
 *   `ltrim(X)`, `ltrim(X, Y)`
     *   **Description:** Removes leading characters from string X. If Y is omitted, removes leading whitespace. If Y is provided, removes any character present in string Y from the beginning of X.
@@ -352,7 +352,7 @@ These functions operate on JSON values, typically represented as TEXT strings in
 
 ## Window Functions (Limited Support)
 
-Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). SQLiter has **limited initial support** for window functions. The `OVER` clause syntax is parsed, but complex framing clauses (`ROWS BETWEEN ...`) might not be fully implemented or optimized.
+Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). Quereus has **limited initial support** for window functions. The `OVER` clause syntax is parsed, but complex framing clauses (`ROWS BETWEEN ...`) might not be fully implemented or optimized.
 
 *   `row_number()`: Assigns a unique sequential integer (starting from 1) to each row within its partition, based on the `ORDER BY` within the `OVER` clause.
 *   `rank()`: Assigns a rank to each row within its partition based on the `ORDER BY`. Rows with equal values receive the same rank. Gaps may appear in the ranking sequence (e.g., 1, 1, 3).

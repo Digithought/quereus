@@ -2,7 +2,7 @@ import { StatusCode } from './types.js';
 import type { Token } from '../parser/lexer.js';
 
 /**
- * Base class for SQLiter specific errors
+ * Base class for Quereus specific errors
  * Provides location information and status code support
  */
 export class SqliterError extends Error {

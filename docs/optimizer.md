@@ -2,7 +2,7 @@
 
 ## Overview
 
-The query optimizer in SQLiter is responsible for choosing an efficient execution plan for SQL queries, particularly focusing on join order selection and leveraging virtual table capabilities. The core logic resides in the `src/compiler/planner/` directory, primarily within the `QueryPlannerContext` class and related helpers.
+The query optimizer in Quereus is responsible for choosing an efficient execution plan for SQL queries, particularly focusing on join order selection and leveraging virtual table capabilities. The core logic resides in the `src/compiler/planner/` directory, primarily within the `QueryPlannerContext` class and related helpers.
 
 Its main responsibilities are:
 
@@ -78,7 +78,7 @@ A functional, cost-based query planner exists, focusing on Nested Loop Join (NLJ
 
 ## Runtime Optimization Plan
 
-Below is a "shopping list" of runtime-level optimisations that make a measurable difference on small JS/TS interpreters such as SQLiter's VDBE.  None of them change external behaviour; they just make the same byte-code run faster or allocate less.  They are grouped roughly from "quick wins" to "larger projects" and each comes with a short implementation plan so you can decide which ones are worth the effort.
+Below is a "shopping list" of runtime-level optimisations that make a measurable difference on small JS/TS interpreters such as Quereus's VDBE.  None of them change external behaviour; they just make the same byte-code run faster or allocate less.  They are grouped roughly from "quick wins" to "larger projects" and each comes with a short implementation plan so you can decide which ones are worth the effort.
 
 ────────────────────────────────────────────────────────────────────────
 1. Tighten the main dispatch loop

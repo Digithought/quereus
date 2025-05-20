@@ -1,4 +1,4 @@
-# SQLiter Runtime
+# Quereus Runtime
 
 ## Scheduler (`src/runtime/scheduler.ts`)
 

@@ -1,12 +1,12 @@
 # Window Function Processing Architecture
 
-This document outlines the architecture and execution flow for SQL window functions in SQLiter.
+This document outlines the architecture and execution flow for SQL window functions in Quereus.
 
 ## Overview
 
 Window functions perform calculations across a set of table rows that are somehow related to the current row. Unlike aggregate functions, they do not collapse rows; they return a value for *each* row based on the defined window.
 
-SQLiter implements window functions using a multi-pass approach involving an ephemeral sorter table:
+Quereus implements window functions using a multi-pass approach involving an ephemeral sorter table:
 
 1.  **Main Query Pass:** The main part of the `SELECT` query (FROM, WHERE, GROUP BY, HAVING) is executed, producing an intermediate result set.
 2.  **Sorter Population:** This intermediate result set is used to populate an ephemeral B-Tree table (the "window sorter"), managed internally by the compiler.

@@ -22,7 +22,7 @@ SELECT fullkey, value FROM json_tree('{"a": 1, "nested": {"b": 2}}', '$.nested')
 
 -- TVF with parameter
 -- TODO: Parameters not supported yet in compiler implementation for TVF args, but test when they are
--- sqlite3_bind_text(pStmt, 1, '["x", "y"]', -1, SQLITE_STATIC);
+-- bind_text(pStmt, 1, '["x", "y"]', -1, SQLITE_STATIC);
 -- SELECT value FROM json_each(?);
 -- → [{"value":"x"},{"value":"y"}]
 

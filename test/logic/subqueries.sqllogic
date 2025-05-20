@@ -51,7 +51,7 @@ SELECT id FROM outer_t WHERE id > (SELECT avg(outer_id) FROM inner_t WHERE outer
 SELECT id FROM outer_t WHERE outer_t.id = (SELECT i.outer_id FROM inner_t i WHERE i.val = 400 AND i.outer_id = outer_t.id);
 → [3]
 
--- Subquery in SELECT list returning multiple rows (Error expected or returns first row? Depends on strictness - SQLiter likely errors)
+-- Subquery in SELECT list returning multiple rows (Error expected or returns first row? Depends on strictness - Quereus likely errors)
 -- SELECT id, (SELECT val FROM inner_t WHERE inner_t.outer_id = outer_t.id) FROM outer_t;
 -- → Error expected: subquery must return only one column
 

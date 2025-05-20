@@ -13,7 +13,6 @@ export interface BaseModuleConfig {}
 
 /**
  * Interface defining the methods for a virtual table module implementation.
- * This is the TypeScript equivalent of the C sqlite3_module struct.
  * The module primarily acts as a factory for connection-specific VirtualTable instances.
  *
  * @template TTable The specific type of VirtualTable managed by this module.

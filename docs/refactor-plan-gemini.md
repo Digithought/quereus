@@ -1,7 +1,7 @@
 
 I understand your frustration. Debugging complex systems like query compilers and runtime engines can indeed feel like an endless cycle, especially when new features like a cost-based planner are introduced. It's a common challenge in developing sophisticated software.
 
-Based on the README and the code snippets, SQLiter has a solid architectural foundation and some excellent practices already in place, such as the detailed logging capabilities and the SQL Logic Tests that dump AST and VDBE bytecode on failures. These are valuable assets.
+Based on the README and the code snippets, Quereus has a solid architectural foundation and some excellent practices already in place, such as the detailed logging capabilities and the SQL Logic Tests that dump AST and VDBE bytecode on failures. These are valuable assets.
 
 To move towards a more robust and elegant codebase and break the break-fix cycle, let's consider some strategies and layers you can introduce:
 

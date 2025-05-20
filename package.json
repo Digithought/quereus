@@ -1,5 +1,5 @@
 {
-  "name": "@digithought/sqliter",
+  "name": "@digithought/quereus",
   "version": "0.1.0",
   "type": "module",
   "description": "Federated SQL query processor based on SQLite",

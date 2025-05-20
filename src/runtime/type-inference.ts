@@ -12,7 +12,7 @@ export function getLiteralSqlType(v: SqlValue): SqlDataType {
 	return SqlDataType.BLOB;
 }
 /**
- * Determines the column affinity based on SQLite rules.
+ * Determines the column affinity in a similar way to SQLite rules.
  * @see https://www.sqlite.org/datatype3.html#determination_of_column_affinity
  *
  * @param typeName The declared type name (case-insensitive)

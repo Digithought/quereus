@@ -8,7 +8,7 @@
         "RPAREN",
         "SAVEPOINT",
         "savepoints",
-        "sqliter",
+        "quereus",
         "Vdbe",
         "vtab"
     ]

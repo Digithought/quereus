@@ -1,10 +1,10 @@
 -- builtin_functions.sqllogic - Testing various built-in functions
 
 -- Scalar Functions
-SELECT lower('SQLiter'), upper('SQLiter'), length('SQLiter');
-→ [{"lower('SQLiter')":"sqliter","upper('SQLiter')":"SQLITER","length('SQLiter')":7}]
-SELECT substr('SQLiter', 2, 3), substring('SQLiter', 4);
-→ [{"substr('SQLiter', 2, 3)":"QLi","substring('SQLiter', 4)":"iter"}]
+SELECT lower('Quereus'), upper('Quereus'), length('Quereus');
+→ [{"lower('Quereus')":"quereus","upper('Quereus')":"SQLITER","length('Quereus')":7}]
+SELECT substr('Quereus', 2, 3), substring('Quereus', 4);
+→ [{"substr('Quereus', 2, 3)":"QLi","substring('Quereus', 4)":"iter"}]
 SELECT abs(-10), round(12.345, 1), round(12.345);
 → [{"abs(-10)":10,"round(12.345, 1)":12.3,"round(12.345)":12}]
 SELECT typeof(1), typeof(1.5), typeof('text'), typeof(x'01'), typeof(null), typeof(true);

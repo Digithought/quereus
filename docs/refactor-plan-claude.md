@@ -1,5 +1,5 @@
 
-Based on examining the codebase, here are key strategies to improve SQLiter's architecture and development process:
+Based on examining the codebase, here are key strategies to improve Quereus's architecture and development process:
 
 ## Architectural Improvements
 
