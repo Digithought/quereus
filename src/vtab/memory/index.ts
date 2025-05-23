@@ -123,122 +123,58 @@ export class MemoryIndex {
 		);
 	}
 
+	/** Adds a mapping from index key to primary key */
 	addEntry(indexKey: BTreeKeyForIndex, primaryKey: BTreeKeyForPrimary): void {
-		const existingEntry = this.data.get(indexKey);
-
-		if (!existingEntry) {
-			this.createNewIndexEntry(indexKey, primaryKey);
+		const path = this.data.find(indexKey);
+		if (path.on) {
+			// Entry exists, add to the existing set of primary keys
+			const existingEntry = this.data.at(path)!;
+			existingEntry.primaryKeys.add(primaryKey);
 		} else {
-			this.addToPrimaryKeysIfNotExists(existingEntry, indexKey, primaryKey);
-		}
-	}
-
-	private createNewIndexEntry(indexKey: BTreeKeyForIndex, primaryKey: BTreeKeyForPrimary): void {
-		const newEntry: MemoryIndexEntry = {
-			indexKey: indexKey,
-			primaryKeys: [primaryKey]
-		};
-		this.data.insert(newEntry);
-	}
-
-	private addToPrimaryKeysIfNotExists(
-		existingEntry: MemoryIndexEntry,
-		indexKey: BTreeKeyForIndex,
-		primaryKey: BTreeKeyForPrimary
-	): void {
-		const pkExists = existingEntry.primaryKeys.some(existingPk =>
-			this.comparePrimaryKeysGlobally(existingPk, primaryKey) === 0
-		);
-
-		if (!pkExists) {
-			const updatedEntry: MemoryIndexEntry = {
-				...existingEntry,
-				primaryKeys: [...existingEntry.primaryKeys, primaryKey]
+			// Create new entry with a Set containing the primary key
+			const newEntry: MemoryIndexEntry = {
+				indexKey,
+				primaryKeys: new Set([primaryKey])
 			};
-			this.data.insert(updatedEntry);
+			this.data.insert(newEntry);
 		}
 	}
 
-	removeEntry(indexKey: BTreeKeyForIndex, primaryKeyToRemove: BTreeKeyForPrimary): boolean {
-		const currentEntry = this.data.get(indexKey);
-		if (!currentEntry) return false;
+	/** Removes a mapping from index key to primary key */
+	removeEntry(indexKey: BTreeKeyForIndex, primaryKey: BTreeKeyForPrimary): void {
+		const path = this.data.find(indexKey);
+		if (path.on) {
+			const entry = this.data.at(path)!;
+			entry.primaryKeys.delete(primaryKey);
 
-		const filteredPrimaryKeys = this.filterOutPrimaryKey(currentEntry.primaryKeys, primaryKeyToRemove);
-
-		if (filteredPrimaryKeys.length === currentEntry.primaryKeys.length) {
-			return false; // No removal occurred
-		}
-
-		this.updateOrDeleteIndexEntry(indexKey, currentEntry, filteredPrimaryKeys);
-		return true;
-	}
-
-	private filterOutPrimaryKey(
-		primaryKeys: BTreeKeyForPrimary[],
-		primaryKeyToRemove: BTreeKeyForPrimary
-	): BTreeKeyForPrimary[] {
-		return primaryKeys.filter(pk =>
-			this.comparePrimaryKeysGlobally(pk, primaryKeyToRemove) !== 0
-		);
-	}
-
-	private updateOrDeleteIndexEntry(
-		indexKey: BTreeKeyForIndex,
-		currentEntry: MemoryIndexEntry,
-		newPrimaryKeys: BTreeKeyForPrimary[]
-	): void {
-		if (newPrimaryKeys.length === 0) {
-			this.data.deleteAt(this.data.find(indexKey));
-		} else {
-			const updatedEntry: MemoryIndexEntry = {
-				...currentEntry,
-				primaryKeys: newPrimaryKeys
-			};
-			this.data.insert(updatedEntry);
+			// If no primary keys remain, remove the entire entry
+			if (entry.primaryKeys.size === 0) {
+				this.data.deleteAt(path);
+			}
 		}
 	}
 
-	private comparePrimaryKeysGlobally(pkA: BTreeKeyForPrimary, pkB: BTreeKeyForPrimary): number {
-		if (Array.isArray(pkA) && Array.isArray(pkB)) {
-			return this.compareArrayPrimaryKeys(pkA, pkB);
-		} else if (!Array.isArray(pkA) && !Array.isArray(pkB)) {
-			return compareSqlValues(pkA as SqlValue, pkB as SqlValue);
-		}
-
-		// Mixed array/non-array case
-		return Array.isArray(pkA) ? 1 : -1;
+	/** Returns the primary keys for a given index key */
+	getPrimaryKeys(indexKey: BTreeKeyForIndex): BTreeKeyForPrimary[] {
+		const entry = this.data.get(indexKey);
+		return entry ? Array.from(entry.primaryKeys) : [];
 	}
 
-	private compareArrayPrimaryKeys(pkA: SqlValue[], pkB: SqlValue[]): number {
-		if (pkA.length !== pkB.length) {
-			return pkA.length - pkB.length;
-		}
-
-		for (let i = 0; i < pkA.length; i++) {
-			const comparison = compareSqlValues(pkA[i], pkB[i]);
-			if (comparison !== 0) return comparison;
-		}
-
-		return 0;
+	/** Gets the count of unique index values */
+	get size(): number {
+		return this.data.getCount();
 	}
 
+	/** Clears all entries from the index */
 	clear(): void {
 		const base = (this.data as any).baseTable as BTree<BTreeKeyForIndex, MemoryIndexEntry> | undefined;
 		this.data = this.createBTree(base);
 	}
 
-	/**
-	 * Detaches this index's Inheritree from its base, making it self-contained.
-	 */
-	public clearBase(): void {
+	/** Clears the base inheritance for this index (used during layer collapse) */
+	clearBase(): void {
 		if (typeof (this.data as any).clearBase === 'function') {
 			(this.data as any).clearBase();
-		} else {
-			logger.warn('Clear Base', this.name || 'unnamed', 'Inheritree instance does not have a clearBase method');
 		}
-	}
-
-	get size(): number {
-		return this.data.getCount();
 	}
 }

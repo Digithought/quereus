@@ -668,7 +668,8 @@ describe("Memory VTable Module", () => {
 			}
 
 			expect(rows).to.have.length(2);
-			expect(rows[1][0]).to.be.null;
+			expect(rows[0][0]).to.be.null;
+			expect(rows[1][0]).to.equal('a');
 		});
 
 		it("should handle empty table operations", async () => {

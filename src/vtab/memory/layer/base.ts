@@ -1,9 +1,8 @@
 import { BTree } from 'inheritree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { BTreeKeyForPrimary, BTreeKeyForIndex, DeletionMarker, MemoryIndexEntry } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
 import { MemoryIndex } from '../index.js';
-import { isDeletionMarker } from '../types.js';
 import { safeJsonStringify } from '../../../util/serialization.js';
 import type { Row, SqlValue } from '../../../common/types.js';
 import { type ColumnSchema } from '../../../schema/column.js';
@@ -25,8 +24,13 @@ export class BaseLayer implements Layer {
 		this.layerId = baseLayerCounter++;
 		this.tableSchema = schema;
 		this.initializePrimaryKeyFunctions();
+
+		// Use the same key extraction pattern as TransactionLayer for consistency
+		const btreeKeyFromValue = (value: Row): BTreeKeyForPrimary =>
+			this.primaryKeyFunctions.extractFromRow(value);
+
 		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(
-			this.primaryKeyFunctions.extractFromRow,
+			btreeKeyFromValue,
 			this.primaryKeyFunctions.compare
 		);
 		this.secondaryIndexes = new Map();
@@ -46,7 +50,7 @@ export class BaseLayer implements Layer {
 		this.primaryKeyFunctions = createPrimaryKeyFunctions(this.tableSchema);
 	}
 
-	private async rebuildAllSecondaryIndexes(): Promise<void> {
+	public async rebuildAllSecondaryIndexes(): Promise<void> {
 		this.clearExistingSecondaryIndexes();
 
 		if (!this.hasSecondaryIndexes()) {
@@ -87,8 +91,9 @@ export class BaseLayer implements Layer {
 
 		const iterator = this.primaryTree.ascending(firstPath);
 		for (const path of iterator) {
-			const currentRow = this.primaryTree.at(path);
-			if (currentRow) {
+			const currentValue = this.primaryTree.at(path);
+			if (currentValue) {
+				const currentRow = currentValue as Row;
 				this.addRowToSecondaryIndexes(currentRow, newIndexes);
 			}
 		}
@@ -138,7 +143,7 @@ export class BaseLayer implements Layer {
 
 	applyChange(
 		primaryKey: BTreeKeyForPrimary,
-		modification: Row | DeletionMarker,
+		modification: Row,
 		secondaryIndexChanges: Map<string, Array<{op: 'ADD' | 'DELETE', indexKey: BTreeKeyForIndex}>>
 	): void {
 		this.applySecondaryIndexChanges(primaryKey, secondaryIndexChanges);
@@ -169,23 +174,14 @@ export class BaseLayer implements Layer {
 		});
 	}
 
-	private applyPrimaryChange(primaryKey: BTreeKeyForPrimary, modification: Row | DeletionMarker): void {
-		const isDeleteOperation = isDeletionMarker(modification);
-
-		if (isDeleteOperation) {
-			const deleted = this.primaryTree.deleteAt(this.primaryTree.find(primaryKey));
-			if (!deleted) {
-				logger.warn('Apply Change', this.tableSchema.name, 'Attempted to delete non-existent primary key', {
-					primaryKey: safeJsonStringify(primaryKey)
-				});
-			}
-		} else {
-			const newRowData = modification as Row;
-			this.primaryTree.insert(newRowData);
-		}
+	private applyPrimaryChange(primaryKey: BTreeKeyForPrimary, modification: Row): void {
+		this.primaryTree.insert(modification);
 	}
 
-	has = (key: BTreeKeyForPrimary): boolean => this.primaryTree.get(key) !== undefined;
+	has = (key: BTreeKeyForPrimary): boolean => {
+		const value = this.primaryTree.get(key);
+		return value !== undefined;
+	};
 
 	async addColumnToBase(newColumnSchema: ColumnSchema, defaultValue: SqlValue): Promise<void> {
 		logger.operation('Add Column', this.tableSchema.name, {
@@ -194,13 +190,26 @@ export class BaseLayer implements Layer {
 		});
 
 		const oldPrimaryTree = this.primaryTree;
+
+		// First, reinitialize primary key functions with the updated schema (which already includes the new column)
+		this.initializePrimaryKeyFunctions();
+
+		// Create new primary tree with the updated schema and migrate data
 		this.recreatePrimaryTreeWithNewColumn(oldPrimaryTree, defaultValue);
+
 		await this.rebuildAllSecondaryIndexes();
 	}
 
-	private recreatePrimaryTreeWithNewColumn(oldTree: BTree<BTreeKeyForPrimary, Row>, defaultValue: SqlValue): void {
+	private recreatePrimaryTreeWithNewColumn(
+		oldTree: BTree<BTreeKeyForPrimary, Row>,
+		defaultValue: SqlValue
+	): void {
+		// Use the updated primary key functions for the new tree
+		const btreeKeyFromValue = (value: Row): BTreeKeyForPrimary =>
+			this.primaryKeyFunctions.extractFromRow(value);
+
 		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(
-			this.primaryKeyFunctions.extractFromRow,
+			btreeKeyFromValue,
 			this.primaryKeyFunctions.compare
 		);
 
@@ -209,8 +218,9 @@ export class BaseLayer implements Layer {
 
 		const iterator = oldTree.ascending(firstPath);
 		for (const path of iterator) {
-			const oldRow = oldTree.at(path);
-			if (oldRow) {
+			const oldValue = oldTree.at(path);
+			if (oldValue) {
+				const oldRow = oldValue as Row;
 				const newRow = [...oldRow, defaultValue];
 				this.primaryTree.insert(newRow);
 			}
@@ -228,8 +238,11 @@ export class BaseLayer implements Layer {
 	}
 
 	private recreatePrimaryTreeWithoutColumn(oldTree: BTree<BTreeKeyForPrimary, Row>, columnIndex: number): void {
+		const btreeKeyFromValue = (value: Row): BTreeKeyForPrimary =>
+			this.primaryKeyFunctions.extractFromRow(value);
+
 		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(
-			this.primaryKeyFunctions.extractFromRow,
+			btreeKeyFromValue,
 			this.primaryKeyFunctions.compare
 		);
 
@@ -238,8 +251,9 @@ export class BaseLayer implements Layer {
 
 		const iterator = oldTree.ascending(firstPath);
 		for (const path of iterator) {
-			const oldRow = oldTree.at(path);
-			if (oldRow) {
+			const oldValue = oldTree.at(path);
+			if (oldValue) {
+				const oldRow = oldValue as Row;
 				const newRow = oldRow.filter((_, idx) => idx !== columnIndex);
 				this.primaryTree.insert(newRow);
 			}
@@ -267,8 +281,9 @@ export class BaseLayer implements Layer {
 
 		const iterator = this.primaryTree.ascending(firstPath);
 		for (const path of iterator) {
-			const currentRow = this.primaryTree.at(path);
-			if (currentRow) {
+			const currentValue = this.primaryTree.at(path);
+			if (currentValue) {
+				const currentRow = currentValue as Row;
 				try {
 					const indexKey = newIndex.keyFromRow(currentRow);
 					const primaryKey = this.primaryKeyFunctions.extractFromRow(currentRow);

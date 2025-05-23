@@ -1,6 +1,6 @@
 import type { BTree } from 'inheritree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue, MemoryIndexEntry } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Row } from '../../../common/types.js';
 
 /**
@@ -22,7 +22,7 @@ export interface Layer {
 	 * @param indexName The name of the secondary index, or 'primary' for the primary key index.
 	 * @returns The BTree containing modifications/data for the index in this layer, or null if no modifications exist for that index in this layer.
 	 */
-	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, PrimaryModificationValue> | null;
+	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, Row> | null;
 
 	/**
 	 * Returns the table schema as it existed when this layer was created or relevant.

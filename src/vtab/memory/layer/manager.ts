@@ -1,6 +1,6 @@
 import type { Database } from '../../../core/database.js';
 import { type TableSchema, type IndexSchema, buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js';
-import { type BTreeKey, type BTreeKeyForPrimary, type PrimaryModificationValue, isDeletionMarker } from '../types.js';
+import { type BTreeKey, type BTreeKeyForPrimary } from '../types.js';
 import { StatusCode, type SqlValue, type Row } from '../../../common/types.js';
 import { BaseLayer } from './base.js';
 import { TransactionLayer } from './transaction.js';
@@ -118,7 +118,19 @@ export class MemoryTableManager {
 		const release = await Latches.acquire(lockKey);
 		logger.debugLog(`[Commit ${connection.connectionId}] Acquired lock for ${this._tableName}`);
 		try {
-			if (pendingLayer.getParent() !== this._currentCommittedLayer) {
+			// Walk up the parent chain to find if the current committed layer is an ancestor
+			// This handles savepoint chains properly
+			let currentParent: Layer | null = pendingLayer.getParent();
+			let foundCommittedLayer = false;
+			while (currentParent) {
+				if (currentParent === this._currentCommittedLayer) {
+					foundCommittedLayer = true;
+					break;
+				}
+				currentParent = currentParent.getParent();
+			}
+
+			if (!foundCommittedLayer) {
 				connection.pendingTransactionLayer = null;
 				connection.clearSavepoints();
 				logger.warn('Commit Transaction', this._tableName, 'Stale commit detected, rolling back', { connectionId: connection.connectionId });
@@ -223,11 +235,11 @@ export class MemoryTableManager {
 		if (!primaryTree) return null;
 
 		const result = primaryTree.get(primaryKey);
-		return (result === undefined || isDeletionMarker(result)) ? null : result as Row;
+		return result === undefined ? null : result as Row;
 	}
 
 	// Simplified for compatibility, though less relevant with inherited BTrees
-	lookupEffectiveValue(key: BTreeKeyForPrimary, indexName: string | 'primary', startLayer: Layer): PrimaryModificationValue | null {
+	lookupEffectiveValue(key: BTreeKeyForPrimary, indexName: string | 'primary', startLayer: Layer): Row | null {
 		if (indexName !== 'primary') {
 			logger.error('lookupEffectiveValue', this._tableName, 'Currently only supports primary index for MemoryTableManager');
 			return null;
@@ -247,10 +259,12 @@ export class MemoryTableManager {
 	): Promise<Row | undefined> {
 		this.validateMutationPermissions(operation);
 
-		const wasInTransaction = !!connection.pendingTransactionLayer;
+		const wasExplicitTransaction = connection.explicitTransaction;
 		this.ensureTransactionLayer(connection);
 
 		const targetLayer = connection.pendingTransactionLayer!;
+		logger.debugLog(`[Mutation] Connection ${connection.connectionId} ${operation} targeting layer ${targetLayer.getLayerId()}`);
+
 		const onConflict = this.extractConflictResolution(values);
 		this.cleanConflictResolutionFromValues(values);
 
@@ -272,8 +286,8 @@ export class MemoryTableManager {
 					throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
 			}
 
-			// Auto-commit if we weren't already in a transaction
-			if (!wasInTransaction && this.db.getAutocommit()) {
+			// Auto-commit if we weren't already in an explicit transaction
+			if (!wasExplicitTransaction && this.db.getAutocommit()) {
 				await this.commitTransaction(connection);
 			}
 
@@ -281,7 +295,7 @@ export class MemoryTableManager {
 		} catch (e) {
 			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {
 				// Auto-commit the transaction even when ignoring constraint errors
-				if (!wasInTransaction && this.db.getAutocommit()) {
+				if (!wasExplicitTransaction && this.db.getAutocommit()) {
 					await this.commitTransaction(connection);
 				}
 				return undefined;
@@ -676,8 +690,12 @@ export class MemoryTableManager {
 
 	private async ensureSchemaChangeSafety(): Promise<void> {
 		if (this._currentCommittedLayer !== this.baseLayer) {
-			logger.warn('Schema Change', this._tableName, 'Transaction layers exist. Attempting collapse...');
-			await this.tryCollapseLayers();
+			logger.warn('Schema Change', this._tableName, 'Transaction layers exist. Attempting to consolidate to base...');
+
+			// For schema changes, we need to consolidate all data into the base layer
+			// instead of just promoting layers
+			await this.consolidateToBaseLayer();
+
 			if (this._currentCommittedLayer !== this.baseLayer) {
 				throw new QuereusError(
 					`Cannot perform schema change on table ${this._tableName} while older transaction versions are in use by active connections. Commit/rollback active transactions and retry.`,
@@ -685,7 +703,74 @@ export class MemoryTableManager {
 				);
 			}
 		}
+
+		// After ensuring we're at the base layer, update all connections to read from the base layer
+		// This is necessary because connections might still be reading from promoted/collapsed layers
+		for (const connection of this.connections.values()) {
+			if (connection.readLayer !== this.baseLayer) {
+				logger.debugLog(`[Schema Safety] Updating connection ${connection.connectionId} to read from base layer`);
+				connection.readLayer = this.baseLayer;
+			}
+		}
+
 		logger.debugLog(`Schema change safety check passed for ${this._tableName}. Current committed layer is base.`);
+	}
+
+	/** Consolidates all transaction data into the base layer for schema changes */
+	private async consolidateToBaseLayer(): Promise<void> {
+		const lockKey = `MemoryTable.Consolidate:${this.schemaName}.${this._tableName}`;
+		const release = await Latches.acquire(lockKey);
+
+		try {
+			logger.debugLog(`[Consolidate] Acquired lock for ${this._tableName}`);
+
+			// If current committed layer is a transaction layer, we need to merge its data into the base
+			if (this._currentCommittedLayer instanceof TransactionLayer && this._currentCommittedLayer.isCommitted()) {
+				const transactionLayer = this._currentCommittedLayer as TransactionLayer;
+
+				logger.debugLog(`[Consolidate] Copying data from transaction layer ${transactionLayer.getLayerId()} to base layer for ${this._tableName}`);
+
+				// Copy all data from the transaction layer to the base layer
+				await this.copyTransactionDataToBase(transactionLayer);
+
+				// Force all connections to read from the base layer
+				for (const conn of this.connections.values()) {
+					if (conn.readLayer === transactionLayer) {
+						logger.debugLog(`[Consolidate] Updating connection ${conn.connectionId} from transaction layer to base layer`);
+						conn.readLayer = this.baseLayer;
+					}
+				}
+
+				// Now we can set the base layer as the current committed layer
+				this._currentCommittedLayer = this.baseLayer;
+				logger.debugLog(`[Consolidate] CurrentCommittedLayer set to base for ${this._tableName}`);
+			}
+		} finally {
+			release();
+			logger.debugLog(`[Consolidate] Released lock for ${this._tableName}`);
+		}
+	}
+
+	/** Copies all data from a transaction layer to the base layer */
+	private async copyTransactionDataToBase(transactionLayer: TransactionLayer): Promise<void> {
+		const primaryTree = transactionLayer.getModificationTree('primary');
+		if (!primaryTree) return;
+
+		// Iterate through all entries in the transaction layer's primary tree
+		const firstPath = primaryTree.first();
+		if (!firstPath) return;
+
+		const iterator = primaryTree.ascending(firstPath);
+		for (const path of iterator) {
+			const row = primaryTree.at(path);
+			if (row) {
+				// Insert the row into the base layer
+				this.baseLayer.primaryTree.insert(row as Row);
+			}
+		}
+
+		// Also need to rebuild secondary indexes in the base layer
+		await this.baseLayer.rebuildAllSecondaryIndexes();
 	}
 
 	// New method to abstract layer scanning
@@ -705,3 +790,4 @@ export class MemoryTableManager {
 		}
 	}
 }
+

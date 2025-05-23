@@ -76,6 +76,7 @@ export class MemoryTable extends VirtualTable {
 		logger.debugLog(`xQuery invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
 
 		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
+
 		// Delegate scanning to the manager, which handles layer recursion
 		yield* this.manager.scanLayer(startLayer, plan);
 	}

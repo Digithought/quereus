@@ -1,7 +1,6 @@
 import type { ScanPlan } from './scan-plan.js';
 import type { TransactionLayer } from './transaction.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
-import { isDeletionMarker } from '../types.js';
 import type { Row } from '../../../common/types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
@@ -64,7 +63,7 @@ export async function* scanTransactionLayer(
 		if (plan.equalityKey) {
 			// For equality scans, just get the specific value
 			const value = primaryTree.get(plan.equalityKey as BTreeKeyForPrimary);
-			if (value && !isDeletionMarker(value)) {
+			if (value) {
 				const row = value as Row;
 				const primaryKey = primaryKeyExtractorFromRow(row);
 				if (planAppliesToKey(primaryKey, false)) {
@@ -81,8 +80,8 @@ export async function* scanTransactionLayer(
 				const value = primaryTree.at(path);
 				if (!value) continue;
 
-				// Skip deletion markers
-				if (isDeletionMarker(value)) continue;
+				// With inheritree, deleted entries simply don't appear in iteration
+				// No need to check for deletion markers
 
 				const row = value as Row;
 				const primaryKey = primaryKeyExtractorFromRow(row);
@@ -112,7 +111,7 @@ export async function* scanTransactionLayer(
 				if (primaryTree) {
 					for (const pk of indexEntry.primaryKeys) {
 						const value = primaryTree.get(pk);
-						if (value && !isDeletionMarker(value)) {
+						if (value) {
 							const row = value as Row;
 							yield row;
 						}
@@ -138,7 +137,7 @@ export async function* scanTransactionLayer(
 					// For each primary key in this index entry, fetch the row
 					for (const pk of indexEntry.primaryKeys) {
 						const value = primaryTree.get(pk);
-						if (value && !isDeletionMarker(value)) {
+						if (value) {
 							const row = value as Row;
 							yield row;
 						}

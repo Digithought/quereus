@@ -33,12 +33,12 @@ export async function* scanBaseLayer(
 	};
 
 	if (plan.indexName === 'primary') {
-		const tree = layer.primaryTree; // BTree<BTreeKeyForPrimary, Row> from inheritree
+		const tree = layer.primaryTree; // BTree<BTreeKeyForPrimary, PrimaryModificationValue> from inheritree
 
 		if (isEqPlan && plan.equalityKey !== undefined) {
-			const row = tree.get(plan.equalityKey as BTreeKeyForPrimary);
-			if (row && planAppliesToKey(plan.equalityKey as BTreeKeyForPrimary, false)) {
-				yield row;
+			const value = tree.get(plan.equalityKey as BTreeKeyForPrimary);
+			if (value && planAppliesToKey(plan.equalityKey as BTreeKeyForPrimary, false)) {
+				yield value as Row;
 			}
 			return;
 		}
@@ -55,8 +55,10 @@ export async function* scanBaseLayer(
 
 			const iterator = isAscending ? tree.ascending(startPath) : tree.descending(startPath);
 			for (const path of iterator) {
-				const row = tree.at(path);
-				if (!row) continue;
+				const value = tree.at(path);
+				if (!value) continue;
+
+				const row = value as Row;
 				const primaryKey = keyFromEntry(row);
 				if (!planAppliesToKey(primaryKey, false)) continue;
 				yield row;
@@ -69,8 +71,10 @@ export async function* scanBaseLayer(
 
 			const iterator = isAscending ? tree.ascending(startPath) : tree.descending(startPath);
 			for (const path of iterator) {
-				const row = tree.at(path);
-				if (!row) continue;
+				const value = tree.at(path);
+				if (!value) continue;
+
+				const row = value as Row;
 				const primaryKey = keyFromEntry(row);
 				if (!planAppliesToKey(primaryKey, false)) continue;
 				yield row;
@@ -86,8 +90,10 @@ export async function* scanBaseLayer(
 			const indexEntry = indexTree.get(plan.equalityKey as BTreeKeyForIndex);
 			if (indexEntry && planAppliesToKey(indexEntry.indexKey, true)) {
 				for (const pk of indexEntry.primaryKeys) {
-					const row = layer.primaryTree.get(pk);
-					if (row) yield row;
+					const value = layer.primaryTree.get(pk);
+					if (value) {
+						yield value as Row;
+					}
 				}
 			}
 			return;
@@ -104,10 +110,9 @@ export async function* scanBaseLayer(
 			if (!indexEntry) continue;
 			if (!planAppliesToKey(indexEntry.indexKey, true)) continue;
 			for (const pk of indexEntry.primaryKeys) {
-				const row = layer.primaryTree.get(pk);
-				if (row) {
-					// TODO: Apply remaining ScanPlan constraints to this `row` (those not on the index key)
-					yield row;
+				const value = layer.primaryTree.get(pk);
+				if (value) {
+					yield value as Row;
 				}
 			}
 		}

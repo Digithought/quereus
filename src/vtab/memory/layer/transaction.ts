@@ -3,7 +3,7 @@ import type { TableSchema } from '../../../schema/table.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { MemoryIndex } from '../index.js';
 import type { SqlValue, Row } from '../../../common/types.js';
-import { isDeletionMarker, DELETED, type BTreeKeyForPrimary, type BTreeKeyForIndex, type DeletionMarker, type PrimaryModificationValue } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
 import type { Layer } from './interface.js';
 
 let transactionLayerCounter = 0;
@@ -19,7 +19,7 @@ export class TransactionLayer implements Layer {
 	private readonly tableSchemaAtCreation: TableSchema; // Schema when this layer was started
 
 	// Primary modifications BTree that inherits from parent
-	private primaryModifications: BTree<BTreeKeyForPrimary, PrimaryModificationValue>;
+	private primaryModifications: BTree<BTreeKeyForPrimary, Row>;
 
 	// Secondary index BTrees that inherit from parent's indexes
 	private secondaryIndexes: Map<string, MemoryIndex>;
@@ -41,10 +41,13 @@ export class TransactionLayer implements Layer {
 
 		// Initialize primary modifications BTree with parent's primary tree as base
 		const { primaryKeyExtractorFromRow, primaryKeyComparator } = this.getPkExtractorsAndComparators(this.tableSchemaAtCreation);
-		const btreeKeyFromValue = (value: PrimaryModificationValue): BTreeKeyForPrimary =>
-			isDeletionMarker(value) ? value._key_ : primaryKeyExtractorFromRow(value as Row);
+		const btreeKeyFromValue = (value: Row): BTreeKeyForPrimary => {
+			const result = primaryKeyExtractorFromRow(value);
+			return result;
+		};
 
 		const parentPrimaryTree = parent.getModificationTree('primary');
+
 		this.primaryModifications = new BTree(
 			btreeKeyFromValue,
 			primaryKeyComparator,
@@ -130,7 +133,7 @@ export class TransactionLayer implements Layer {
 		return { primaryKeyExtractorFromRow, primaryKeyComparator };
 	}
 
-	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, PrimaryModificationValue> | null {
+	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, Row> | null {
 		if (indexName === 'primary') return this.primaryModifications;
 		return null; // Secondary indexes are accessed via getSecondaryIndexTree
 	}
@@ -143,8 +146,7 @@ export class TransactionLayer implements Layer {
 	recordUpsert(primaryKey: BTreeKeyForPrimary, newRowData: Row, oldRowDataIfUpdate?: Row | null): void {
 		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
 
-		// Insert the new row into the primary modifications BTree
-		this.primaryModifications.insert(newRowData);
+		this.primaryModifications.upsert(newRowData);
 
 		// Update secondary indexes
 		const schema = this.getSchema();
@@ -178,9 +180,14 @@ export class TransactionLayer implements Layer {
 	recordDelete(primaryKey: BTreeKeyForPrimary, oldRowDataForIndexes: Row): void {
 		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
 
-		// Insert deletion marker into primary modifications BTree
-		const deletionMarker: DeletionMarker = { _marker_: DELETED, _key_: primaryKey };
-		this.primaryModifications.insert(deletionMarker);
+		// Find the existing entry
+		const existingPath = this.primaryModifications.find(primaryKey);
+		if (existingPath.on) {
+			// Entry exists (locally or inherited) - use deleteAt to remove it
+			this.primaryModifications.deleteAt(existingPath);
+		}
+		// If key doesn't exist, there's nothing to delete - no deletion marker needed
+		// Inheritree's copy-on-write semantics handle this properly
 
 		// Update secondary indexes to remove entries
 		const schema = this.getSchema();
