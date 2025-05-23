@@ -1,167 +1,250 @@
-import type { BTree, Path } from 'digitree';
-import type { LayerCursorInternal } from './cursor.js';
+import type { Path } from 'digitree';
 import type { ScanPlan } from './scan-plan.js';
 import type { TransactionLayer } from './transaction.js';
-import type { BTreeKey, ModificationKey, ModificationValue } from '../types.js';
-import { isDeletionMarker } from './interface.js';
-import type { TableSchema } from '../../../schema/table.js';
-import type { MemoryTableManager } from './manager.js';
-import type { RowIdRow } from '../../../common/types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue } from '../types.js';
+import { isDeletionMarker } from '../types.js';
+import type { Row } from '../../../common/types.js';
+import { IndexConstraintOp } from '../../../common/constants.js';
+import { compareSqlValues } from '../../../util/comparison.js';
+import { createLogger } from '../../../common/logger.js';
+import { QuereusError } from '../../../common/errors.js';
+import { MemoryIndex } from '../index.js';
 
-type MergeAction = { useMod: boolean; useParent: boolean; advanceMod: boolean; advanceParent: boolean; };
-type PotentialResult = { potentialKey: ModificationKey | null; potentialRow: RowIdRow | null; isDeletedHere: boolean; };
+const log = createLogger('vtab:memory:layer:tx-cursor');
+const warnLog = log.extend('warn');
 
-export class TransactionLayerCursorInternal implements LayerCursorInternal {
-	private readonly layer: TransactionLayer;
-	private readonly plan: ScanPlan;
-	private readonly parentCursor: LayerCursorInternal;
-	private readonly modificationTree: BTree<ModificationKey, ModificationValue> | null;
-	private readonly btreeKeyComparator: (a: BTreeKey, b: BTreeKey) => number;
-	private readonly modificationKeyComparator: (a: ModificationKey, b: ModificationKey) => number;
-	private readonly modKeyExtractor: ((value: ModificationValue) => ModificationKey) | null;
-	private readonly tableManager: MemoryTableManager;
+export async function* scanTransactionLayer(
+	layer: TransactionLayer,
+	plan: ScanPlan,
+	parentIterable: AsyncIterable<Row>
+): AsyncIterable<Row> {
+	const tableSchema = layer.getSchema();
+	const modPrimaryTree = layer.getModificationTree('primary');
+	const { primaryKeyComparator, primaryKeyExtractorFromRow } = layer.getPkExtractorsAndComparators(tableSchema);
 
-	private modBTreeIterator: IterableIterator<Path<ModificationKey, ModificationValue>> | null = null;
-	private currentModResultDone: boolean = true;
-	private currentModValue: ModificationValue | undefined = undefined;
-	private currentModKey: ModificationKey | null = null;
+	// General plan application check (can be for PK or IndexKey)
+	const planAppliesToKey = (key: BTreeKeyForPrimary | BTreeKeyForIndex, isIndexKey: boolean): boolean => {
+		if (!plan) return true;
+		let comparator = isIndexKey
+			? layer.getSchema().indexes && new MemoryIndex({name: plan.indexName!, columns: layer.getSchema().indexes!.find(i=>i.name === plan.indexName)!.columns}, tableSchema.columns).compareKeys
+			: primaryKeyComparator;
 
-	private parentResultDone: boolean = true;
-	private parentValueObject: RowIdRow | null = null;
-	private parentModKey: ModificationKey | null = null;
+		if (!comparator && plan.indexName !== 'primary') {
+			warnLog(`No comparator for index key for index ${plan.indexName}`);
+			return true; // Or false, depending on strictness if comparator missing
+		} else if (!comparator && plan.indexName === 'primary') {
+			throw new QuereusError("Primary key comparator missing in scanTransactionLayer");
+		}
 
-	private _currentKey: ModificationKey | null = null;
-	private _currentRowObject: RowIdRow | null = null;
-	private _isEof: boolean = true;
-	private readonly tableSchema: TableSchema;
+		if (plan.equalityKey) {
+			// Ensure types match before comparison if comparator is generic
+			return comparator!(key, plan.equalityKey as any) === 0;
+		}
 
-	constructor(layer: TransactionLayer, plan: ScanPlan, parentCursor: LayerCursorInternal, tableManager: MemoryTableManager) {
-		this.layer = layer;
-		this.plan = plan;
-		this.parentCursor = parentCursor;
-		this.tableManager = tableManager;
-		this.modificationTree = layer.getModificationTree(plan.indexName);
-		this.modKeyExtractor = this.modificationTree ? layer.getKeyExtractor(plan.indexName) : null;
-		this.btreeKeyComparator = layer.getKeyComparator(plan.indexName);
-		this.modificationKeyComparator = layer.getComparator(plan.indexName);
-		this.tableSchema = layer.getSchema();
-		this.initializeIterators();
-	}
+		// For range checks on composite keys, this still simplifies to first column.
+		// A full solution requires comparator to understand partial key comparisons or ScanPlan to be more detailed.
+		const keyForBoundComparison = Array.isArray(key) ? key[0] : key;
 
-	private async initializeIterators(): Promise<void> {
-		if (this.modificationTree) {
-			let modStartPath: Path<ModificationKey, ModificationValue> | null = null;
-			if (this.plan.equalityKey !== undefined) {
-				modStartPath = this.modificationTree.find(this.plan.equalityKey as any);
-			} else if (this.plan.lowerBound?.value !== undefined) {
-				modStartPath = this.modificationTree.find(this.plan.lowerBound.value as any);
-				// TODO: Adjust for GT if op is GT
-			} else {
-				modStartPath = this.plan.descending ? this.modificationTree.last() : this.modificationTree.first();
+		if (plan.lowerBound) {
+			const cmp = compareSqlValues(keyForBoundComparison, plan.lowerBound.value); // compareSqlValues is generic
+			if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
+		}
+		if (plan.upperBound) {
+			const cmp = compareSqlValues(keyForBoundComparison, plan.upperBound.value);
+			if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
+		}
+		return true;
+	};
+
+	if (plan.indexName !== 'primary') {
+		warnLog(`scanTransactionLayer for sec index '${plan.indexName}' has complex logic. Ordering might be approximate if TX modifies index keys extensively.`);
+		const secondaryIndexSchema = tableSchema.indexes?.find(i => i.name === plan.indexName);
+		if (!secondaryIndexSchema) throw new QuereusError(`Secondary index ${plan.indexName} not in schema.`);
+
+		const tempIndexForChanges = new MemoryIndex(secondaryIndexSchema, tableSchema.columns);
+		const secondaryIndexChanges = layer.getSecondaryIndexChanges().get(plan.indexName) || new Map();
+		const yieldedPks = new Set<string>(); // To avoid duplicates
+
+		// 1. Process rows from parent that might still be in the index view of this TX
+		const parentIterator = parentIterable[Symbol.asyncIterator]();
+		let parentOp = await parentIterator.next();
+		while(!parentOp.done) {
+			const rowFromParent = parentOp.value;
+			const pkFromParent = primaryKeyExtractorFromRow(rowFromParent);
+			const serializedPk = JSON.stringify(pkFromParent);
+
+			let effectiveRow = rowFromParent;
+			let deletedInTx = false;
+
+			const modValue = modPrimaryTree?.get(pkFromParent);
+			if (modValue) {
+				if (isDeletionMarker(modValue)) deletedInTx = true;
+				else effectiveRow = modValue as Row;
 			}
-			if (modStartPath) {
-				this.modBTreeIterator = this.plan.descending
-					? this.modificationTree.descending(modStartPath)
-					: this.modificationTree.ascending(modStartPath);
+
+			if (deletedInTx) { parentOp = await parentIterator.next(); continue; }
+
+			// Check if its membership in *this* secondary index was explicitly removed by this TX
+			let removedFromIndexByTx = false;
+			secondaryIndexChanges.forEach(change => {
+				if (primaryKeyComparator(change.pk, pkFromParent) === 0 && change.op === 'DELETE' &&
+					tempIndexForChanges.compareKeys(change.indexKey, tempIndexForChanges.keyFromRow(rowFromParent)) === 0) {
+					removedFromIndexByTx = true;
+				}
+			});
+			if (removedFromIndexByTx) { parentOp = await parentIterator.next(); continue; }
+
+			// Now, does the *effectiveRow* (potentially modified) still belong in the index scan?
+			const currentIndexKey = tempIndexForChanges.keyFromRow(effectiveRow);
+			if (planAppliesToKey(currentIndexKey, true)) {
+				if (planAppliesToKey(pkFromParent, false)) { // Check additional PK filters
+					yield effectiveRow;
+					yieldedPks.add(serializedPk);
+				}
+			}
+			parentOp = await parentIterator.next();
+		}
+
+		// 2. Process rows that were effectively ADDED to this index by this transaction
+		for (const change of secondaryIndexChanges.values()) {
+			if (change.op === 'ADD') {
+				const pkToAdd = change.pk;
+				const serializedPkToAdd = JSON.stringify(pkToAdd);
+				if (yieldedPks.has(serializedPkToAdd)) continue; // Already processed via parent path
+
+				if (planAppliesToKey(change.indexKey, true)) {
+					const modValue = modPrimaryTree?.get(pkToAdd);
+					let rowToAdd: Row | null = null;
+					if (modValue) {
+						if (!isDeletionMarker(modValue)) rowToAdd = modValue as Row;
+					} else {
+						// This implies an update changed an existing row (from parent) to match index,
+						// but the row itself wasn't otherwise modified in this TX at the PK level.
+						// We need to fetch it from parent.
+						// This requires ability to get specific row from parentIterable by PK, which is not straightforward.
+						// For now, assume if it's an ADD to index, the row data is in primary mods or is a new insert.
+						// If only index key changed for an existing row, it means it was an UPDATE.
+						// The `performMutation` would have recorded an UPSERT with old/new data.
+						// The primary tree mod should have the latest version.
+						warnLog(`Secondary index ADD for PK ${serializedPkToAdd} but PK not in primary mods. Data might be missing for yield.`);
+						// To be robust, one would need: manager.lookupEffectiveRow(pkToAdd, layer.getParent())
+						// But this is complex with async iterables. This indicates a potential gap.
+					}
+					if (rowToAdd && planAppliesToKey(pkToAdd, false)) {
+						yield rowToAdd;
+					}
+				}
 			}
 		}
-		await this.advanceMod();
-		await this.advanceParent();
-		await this.mergeNextState();
+		return;
 	}
 
-	private async advanceMod(): Promise<void> {
-		this.currentModValue = undefined; this.currentModKey = null; this.currentModResultDone = true;
-		if (this.modBTreeIterator) {
-			const result = this.modBTreeIterator.next();
-			if (!result.done && result.value && this.modificationTree && this.modKeyExtractor) {
-				this.currentModValue = this.modificationTree.at(result.value);
-				if (this.currentModValue) this.currentModKey = this.modKeyExtractor(this.currentModValue);
-				this.currentModResultDone = false;
-			}
-		}
-	}
+	// Primary Key Scan Logic (merge sort)
+	let modIterator: Iterator<Path<BTreeKeyForPrimary, PrimaryModificationValue>> | undefined;
+	let currentModPKey: BTreeKeyForPrimary | null = null;
+	let currentModValue: PrimaryModificationValue | undefined;
 
-	private async advanceParent(): Promise<void> {
-		this.parentValueObject = null; this.parentModKey = null; this.parentResultDone = true;
-		if (!this.parentCursor.isEof()) {
-			this.parentValueObject = this.parentCursor.getCurrentRowObject();
-			this.parentModKey = this.parentCursor.getCurrentModificationKey();
-			this.parentResultDone = false;
+	if (modPrimaryTree) {
+		const rangeOptions: any = { ascending: !plan.descending };
+		let useRange = false;
+		if (plan.equalityKey) {
+			// For EQ, we can simulate range or just do a get and then iterate if needed (though EQ usually means one)
+			// Or, if digitree range supports from=X, to=X, that's an EQ scan.
+			// Let's assume for now we treat EQ as a very tight range for the mod tree iterator start.
+			rangeOptions.from = plan.equalityKey as BTreeKeyForPrimary;
+			rangeOptions.to = plan.equalityKey as BTreeKeyForPrimary;
+			useRange = true;
 		} else {
-		    // Ensure if parentCursor was already EOF, we get its final state if it had one
-		    this.parentValueObject = this.parentCursor.getCurrentRowObject(); // Might be null
-		    this.parentModKey = this.parentCursor.getCurrentModificationKey(); // Might be null
-		}
-	}
-
-	private determineMergeAction(): MergeAction {
-		const action: MergeAction = { useMod: false, useParent: false, advanceMod: false, advanceParent: false };
-		if (this.currentModResultDone || !this.currentModKey) { action.useParent = true; action.advanceParent = true; }
-		else if (this.parentResultDone || !this.parentModKey) { action.useMod = true; action.advanceMod = true; }
-		else {
-			const cmp = this.modificationKeyComparator(this.currentModKey, this.parentModKey);
-			const effectiveCmp = this.plan.descending ? -cmp : cmp;
-			if (effectiveCmp === 0) { action.useMod = true; action.advanceMod = true; action.advanceParent = true; }
-			else if (effectiveCmp < 0) { action.useMod = true; action.advanceMod = true; }
-			else { action.useParent = true; action.advanceParent = true; }
-		}
-		return action;
-	}
-
-	private getPotentialResult(action: MergeAction): PotentialResult {
-		const result: PotentialResult = { potentialKey: null, potentialRow: null, isDeletedHere: false };
-		if (action.useMod && this.currentModValue) {
-			result.potentialKey = this.currentModKey;
-			if (isDeletionMarker(this.currentModValue)) { result.isDeletedHere = true; result.potentialRow = null; }
-			else { result.potentialRow = this.currentModValue as RowIdRow; }
-		} else if (action.useParent && this.parentValueObject) {
-			result.potentialKey = this.parentModKey;
-			result.potentialRow = this.parentValueObject;
-		}
-		return result;
-	}
-
-	private isEffectivelyDeleted(potential: PotentialResult): boolean {
-		if (potential.isDeletedHere) return true;
-		if (potential.potentialRow && this.layer.getDeletedRowids().has(potential.potentialRow[0])) return true;
-		return false;
-	}
-
-	private planApplies(key: ModificationKey): boolean {
-		return this.tableManager.planAppliesToKeyForLayer(this.plan, key, this.btreeKeyComparator, this.tableSchema);
-	}
-
-	private async mergeNextState(): Promise<void> {
-		this._isEof = false; // Assume not EOF until proven
-		while (true) {
-			this._currentKey = null; this._currentRowObject = null;
-			if ((this.currentModResultDone || !this.currentModKey) && (this.parentResultDone || !this.parentModKey)) {
-				this._isEof = true; return;
+			if (plan.lowerBound) {
+				rangeOptions.from = plan.lowerBound.value as BTreeKeyForPrimary;
+				if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
+				useRange = true;
 			}
-			const action = this.determineMergeAction();
-			const potential = this.getPotentialResult(action);
+			if (plan.upperBound) {
+				rangeOptions.to = plan.upperBound.value as BTreeKeyForPrimary;
+				if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
+				useRange = true;
+			}
+		}
 
-			if (potential.potentialKey && this.isEffectivelyDeleted(potential)) {
-				if (action.advanceMod) await this.advanceMod();
-				if (action.advanceParent) { await this.parentCursor.next(); await this.advanceParent(); }
-				continue;
+		if (useRange) {
+			modIterator = modPrimaryTree.range(rangeOptions);
+		} else {
+			// Full scan of modifications if no specific range defined by plan for mods
+			const startPath = plan.descending ? modPrimaryTree.last() : modPrimaryTree.first();
+			if (startPath) {
+				modIterator = plan.descending
+					? modPrimaryTree.descending(startPath)
+					: modPrimaryTree.ascending(startPath);
 			}
-			if (potential.potentialKey && this.planApplies(potential.potentialKey)) {
-				this._currentKey = potential.potentialKey;
-				this._currentRowObject = potential.potentialRow;
-				if (action.advanceMod) await this.advanceMod();
-				if (action.advanceParent) { await this.parentCursor.next(); await this.advanceParent(); }
-				return; // Found item
+		}
+
+		if (modIterator) {
+			const firstModResult = modIterator.next();
+			if (!firstModResult.done) {
+				const entry = modPrimaryTree.at(firstModResult.value);
+				if (entry !== undefined) {
+					currentModPKey = isDeletionMarker(entry) ? entry._key_ : primaryKeyExtractorFromRow(entry as Row);
+					currentModValue = entry;
+				}
 			}
-			// Item did not apply to plan, or was null, advance and retry
-			if (action.advanceMod) await this.advanceMod(); else if (action.advanceParent) { await this.parentCursor.next(); await this.advanceParent(); } else { this._isEof = true; return; /* Should not happen if determineMergeAction is correct*/ }
+		} else {
+			currentModPKey = null; // No relevant mods based on range
 		}
 	}
 
-	async next(): Promise<void> { if (!this._isEof) await this.mergeNextState(); }
-	getCurrentRowObject(): RowIdRow | null { return this._isEof ? null : this._currentRowObject; }
-	getCurrentModificationKey(): ModificationKey | null { return this._isEof ? null : this._currentKey; }
-	isEof(): boolean { return this._isEof; }
-	close(): void { this.modBTreeIterator = null; this.parentCursor.close(); this._isEof = true; }
+	const parentAsyncIterator = parentIterable[Symbol.asyncIterator]();
+	let parentResult = await parentAsyncIterator.next();
+	let parentPKey: BTreeKeyForPrimary | null = parentResult.done ? null : primaryKeyExtractorFromRow(parentResult.value);
+	let parentRow: Row | null = parentResult.done ? null : parentResult.value;
+
+	while (currentModPKey || parentPKey) {
+		let yieldRow: Row | null = null;
+		let advanceMod = false;
+		let advanceParent = false;
+
+		if (currentModPKey &&
+			(!parentPKey ||
+			 (plan.descending ? primaryKeyComparator(currentModPKey, parentPKey) >= 0
+							  : primaryKeyComparator(currentModPKey, parentPKey) <= 0)))
+		{ // Mod comes first or is equal, or parent is exhausted
+			if (!isDeletionMarker(currentModValue!)) {
+				if (planAppliesToKey(currentModPKey, false)) {
+					yieldRow = currentModValue as Row;
+				}
+			}
+			advanceMod = true;
+			if (parentPKey && primaryKeyComparator(currentModPKey, parentPKey) === 0) {
+				advanceParent = true; // Consumed corresponding parent item
+			}
+		} else if (parentPKey) { // Parent comes first and exists
+			if (planAppliesToKey(parentPKey, false)) {
+				yieldRow = parentRow;
+			}
+			advanceParent = true;
+		} else {
+			break; // Both exhausted
+		}
+
+		if (yieldRow) {
+			yield yieldRow;
+		}
+
+		if (advanceMod) {
+			currentModPKey = null; currentModValue = undefined;
+			const nextModResult = modIterator?.next();
+			if (nextModResult && !nextModResult.done && modPrimaryTree) {
+				const entry = modPrimaryTree.at(nextModResult.value);
+				if (entry !== undefined) {
+					currentModPKey = isDeletionMarker(entry) ? entry._key_ : primaryKeyExtractorFromRow(entry as Row);
+					currentModValue = entry;
+				}
+			}
+		}
+		if (advanceParent) {
+			parentResult = await parentAsyncIterator.next();
+			parentPKey = parentResult.done ? null : primaryKeyExtractorFromRow(parentResult.value);
+			parentRow = parentResult.done ? null : parentResult.value;
+		}
+	}
 }

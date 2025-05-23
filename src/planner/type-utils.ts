@@ -1,7 +1,9 @@
 import type { TableSchema } from '../schema/table.js';
 import type { ColumnSchema } from '../schema/column.js';
 import type { RelationType, ColumnDef, ScalarType, ColRef } from '../common/datatype.js';
-import { SqlDataType, type SqlValue } from '../common/types.js'; // Import SqlValue and ensure SqlDataType is not type-only
+import { SqlDataType, StatusCode, type DeepReadonly, type SqlValue } from '../common/types.js'; // Import SqlValue and ensure SqlDataType is not type-only
+import type { AstNode } from '../parser/ast.js';
+import { QuereusError } from '../common/errors.js';
 // Note: getAffinity from '../schema/column.js' is used by the ColumnSchema type from table.js itself if that's what we use.
 // If tableSchema.columns are of type from '../schema/column.js', then their affinity is already SqlDataType.
 
@@ -20,7 +22,6 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
 				nullable: !col.notNull,
 				isReadOnly: false,
 			},
-      hidden: col.hidden,
       generated: col.generated,
     };
   });
@@ -66,4 +67,28 @@ export function getParameterScalarType(value: SqlValue): ScalarType {
     nullable: true,	// No guarantees about the value, so it's nullable
     isReadOnly: true, // Parameters are read-only within the query execution context
   };
+}
+
+export function checkColumnsAssignable(source: DeepReadonly<ColumnDef[]>, target: DeepReadonly<ColumnDef[]>, astNode?: AstNode): void {
+	if (source.length !== target.length) {
+		throw new QuereusError(`Column count mismatch ${(astNode ? astNode.type + ' clause' : '')}.`, StatusCode.ERROR, undefined, astNode?.loc?.start.line, astNode?.loc?.start.column);
+	}
+}
+
+export function checkRelationsAssignable(source: RelationType, target: RelationType, astNode?: AstNode): void {
+	return checkColumnsAssignable(source.columns, target.columns, astNode);
+}
+
+export function columnSchemaToDef(colName: string, colDef: ColumnSchema): { name: string; type: { typeClass: "scalar"; affinity: SqlDataType; collationName: string; nullable: boolean; isReadOnly: false; }; generated: boolean; } {
+	return {
+		name: colName,
+		type: {
+			typeClass: 'scalar',
+			affinity: colDef.affinity,
+			collationName: colDef.collation,
+			nullable: !colDef.notNull,
+			isReadOnly: false,
+		},
+		generated: colDef.generated,
+	};
 }

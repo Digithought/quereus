@@ -17,15 +17,15 @@ describe.skip('Query Planner - Join Order', () => {
     it('should choose the cheaper table as the outer loop', () => {
         // 1. Setup Schemas
         const t1Cols: ColumnSchema[] = [
-            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 'data1', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 'data1', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
         ];
         const t1ColMap = new Map(t1Cols.map((c, i) => [c.name.toLowerCase(), i]));
 
         const t2Cols: ColumnSchema[] = [
-            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 't1_id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false }, // Foreign key
-            { name: 'data2', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 't1_id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }, // Foreign key
+            { name: 'data2', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
         ];
         const t2ColMap = new Map(t2Cols.map((c, i) => [c.name.toLowerCase(), i]));
 
@@ -39,8 +39,6 @@ describe.skip('Query Planner - Join Order', () => {
                 columnIndexMap: t1ColMap,
                 primaryKeyDefinition: [{ index: 0, desc: false }],
                 checkConstraints: [],
-                isWithoutRowid: false,
-                isStrict: false,
                 isTemporary: false,
                 isView: false
             },
@@ -57,8 +55,6 @@ describe.skip('Query Planner - Join Order', () => {
                 columnIndexMap: t2ColMap,
                 primaryKeyDefinition: [{ index: 0, desc: false }],
                 checkConstraints: [],
-                isWithoutRowid: false,
-                isStrict: false,
                 isTemporary: false,
                 isView: false
             },
@@ -139,15 +135,15 @@ describe.skip('Query Planner - Join Order', () => {
     it('should choose the other table as outer when costs are swapped', () => {
         // 1. Setup Schemas (same as previous test)
         const t1Cols: ColumnSchema[] = [
-            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 'data1', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 'data1', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
         ];
         const t1ColMap = new Map(t1Cols.map((c, i) => [c.name.toLowerCase(), i]));
 
         const t2Cols: ColumnSchema[] = [
-            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 't1_id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 'data2', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 't1_id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 'data2', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
         ];
         const t2ColMap = new Map(t2Cols.map((c, i) => [c.name.toLowerCase(), i]));
 
@@ -160,7 +156,7 @@ describe.skip('Query Planner - Join Order', () => {
                 columns: t1Cols,
                 columnIndexMap: t1ColMap,
                 primaryKeyDefinition: [{ index: 0, desc: false }],
-                checkConstraints: [], isWithoutRowid: false, isStrict: false, isTemporary: false, isView: false
+                checkConstraints: [], isTemporary: false, isView: false
             },
             bestIndexResult: { estimatedCost: 5000, estimatedRows: BigInt(500) }, // Expensive base
             constrainedBestIndexResult: { estimatedCost: 10, estimatedRows: BigInt(1) } // Cheap constrained
@@ -174,7 +170,7 @@ describe.skip('Query Planner - Join Order', () => {
                 columns: t2Cols,
                 columnIndexMap: t2ColMap,
                 primaryKeyDefinition: [{ index: 0, desc: false }],
-                checkConstraints: [], isWithoutRowid: false, isStrict: false, isTemporary: false, isView: false
+                checkConstraints: [], isTemporary: false, isView: false
             },
             bestIndexResult: { estimatedCost: 100, estimatedRows: BigInt(10) }, // Cheap base
             constrainedBestIndexResult: { estimatedCost: 100, estimatedRows: BigInt(1) } // Expensive constrained

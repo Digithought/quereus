@@ -207,7 +207,5 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 
 	parts.push(`(${definitions.join(', ')})`);
 
-	if (stmt.withoutRowid) parts.push('without rowid');
-
 	return parts.join(' ');
 }

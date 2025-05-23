@@ -19,8 +19,6 @@ export interface ColumnSchema {
 	defaultValue: Expression | null;
 	/** Declared collation sequence name (e.g., "BINARY", "NOCASE", "RTRIM") */
 	collation: string;
-	/** Is the column hidden (e.g., implicit rowid for non-WITHOUT ROWID vtabs)? */
-	hidden: boolean;
 	/** Is the column generated? */
 	generated: boolean;
 }
@@ -40,7 +38,6 @@ export function createDefaultColumnSchema(name: string): ColumnSchema {
 		pkOrder: 0,
 		defaultValue: null,
 		collation: 'BINARY', // SQLite's default
-		hidden: false,
 		generated: false,
 	};
 }

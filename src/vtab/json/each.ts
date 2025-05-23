@@ -1,16 +1,16 @@
 import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../index-info.js';
-import { type SqlValue, StatusCode, SqlDataType, type Row, type RowIdRow } from '../../common/types.js';
+import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
 import type { TableSchema } from '../../schema/table.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
-import type { IndexConstraint } from '../index-info.js';
 import { jsonStringify } from '../../util/serialization.js';
 import type { FilterInfo } from '../filter-info.js';
+import type { RowOp } from '../../parser/ast.js';
 
 /**
  * Configuration interface for JSON virtual tables
@@ -75,8 +75,6 @@ class JsonEachTable extends VirtualTable {
 			primaryKeyDefinition: [],
 			vtabModule: module as any,
 			vtabModuleName: 'json_each',
-			isWithoutRowid: false,
-			isStrict: false,
 			isView: false,
 			vtabAuxData: undefined,
 			vtabArgs: {},
@@ -101,7 +99,11 @@ class JsonEachTable extends VirtualTable {
 		return StatusCode.OK;
 	}
 
-	async xUpdate(): Promise<{ rowid?: bigint }> {
+	async xUpdate(
+		_operation: RowOp,
+		_values: Row | undefined,
+		_oldKeyValues?: Row
+	): Promise<Row | undefined> {
 		throw new QuereusError("json_each table is read-only", StatusCode.READONLY);
 	}
 
@@ -116,14 +118,13 @@ class JsonEachTable extends VirtualTable {
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
 
-	async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+	async* xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
 		const rootPath = this.rootPath;
 		let startNode = this.parsedJson;
 		if (rootPath) {
 			startNode = evaluateJsonPathBasic(startNode, rootPath);
 		}
 
-		// Directly use the iteration logic previously in JsonEachCursor._internalIteratorGenerator
 		const localStack: { value: any; parentPath: string; parentKey: string | number | null; parentId: number; }[] = [];
 		let localElementIdCounter = 0;
 
@@ -138,6 +139,7 @@ class JsonEachTable extends VirtualTable {
 
 		while (localStack.length > 0) {
 			const currentState = localStack[localStack.length - 1];
+			localStack.pop();
 			const currentValue = currentState.value;
 
 			const key = currentState.parentKey;
@@ -146,7 +148,6 @@ class JsonEachTable extends VirtualTable {
 			const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
 			const type = getJsonType(currentValue);
 			const atom = (type === 'object' || type === 'array') ? null : currentValue;
-
 			const valueForColumn = (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue;
 
 			const row: Row = [
@@ -160,8 +161,6 @@ class JsonEachTable extends VirtualTable {
 				path
 			];
 
-			localStack.pop(); // Pop the current state as it's now processed
-
 			if (Array.isArray(currentValue)) {
 				for (let i = currentValue.length - 1; i >= 0; i--) {
 					localStack.push({
@@ -172,7 +171,7 @@ class JsonEachTable extends VirtualTable {
 					});
 				}
 			} else if (typeof currentValue === 'object' && currentValue !== null) {
-				const keys = Object.keys(currentValue).sort().reverse(); // SQLite's json_each iterates in sorted key order
+				const keys = Object.keys(currentValue).sort().reverse();
 				for (const objKey of keys) {
 					localStack.push({
 						value: currentValue[objKey],
@@ -182,7 +181,7 @@ class JsonEachTable extends VirtualTable {
 					});
 				}
 			}
-			yield [BigInt(id), row];
+			yield row;
 		}
 	}
 }

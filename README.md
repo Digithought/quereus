@@ -2,84 +2,71 @@
 
 ![Quereus Logo](docs/cover-800.png)
 
-**(Work In Progress)**
+**(Work In Progress - Undergoing Major Refactoring: Titan Project)**
 
-Quereus is a lightweight, query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism.  Quereus has no persistent file storage, though one could be built as a virtual table module.
+Quereus is a lightweight, query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism. Quereus has no persistent file storage, though one could be built as a virtual table module.
 
 See [SQLite 3 Source](amalgamation/sqlite3.c) for C reference.
+See [Titan Project Overview](docs/titan.md) for details on the new architecture.
 
 ## Project Goals
 
-*   **Virtual Table Centric**: Provide a robust and flexible virtual table API as the primary means of interacting with data sources.
+*   **Virtual Table Centric**: Provide a robust and flexible virtual table API as the primary means of interacting with data sources. All tables are virtual tables.
 *   **In-Memory Focus**: Includes a comprehensive in-memory virtual table implementation (`MemoryTable`) with support for transactions and savepoints.
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
-*   **Async VTab Operations**: Assume virtual table data operations (reads/writes) can be long-running and asynchronous.
+*   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
 *   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native.
 *   **Minimal Dependencies**: Avoid heavy external dependencies where possible.
 *   **SQL Compatibility**: Support a rich subset of SQL, particularly DML (select, insert, update, delete) features useful for querying and manipulating data across virtual tables.
+*   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used (similar to SQLite's `WITHOUT ROWID` tables being the default and only mode).
+*   **Third Manifesto Friendly**: Embraces some of the principles of the [Third Manifesto](https://www.dcs.warwick.ac.uk/~hugh/TTM/DTATRM.pdf), such as allowing for empty keys. Utilizes algebraic planning.
 
-## Architecture Overview
+## Architecture Overview (Titan Project)
 
-Quereus follows a classic query processing pipeline, adapted for its specific goals:
+Quereus is transitioning to a new architecture ("Project Titan") based on partially immutable PlanNodes and an Instruction-based runtime. The old VDBE-based compiler is being phased out.
 
 1.  **SQL Input**: The process starts with a SQL query string.
 2.  **Parser (`src/parser`)**:
-    *   **Lexer (`lexer.ts`)**: Tokenizes the raw SQL string into a stream of tokens (keywords, identifiers, literals, operators).
-    *   **Parser (`parser.ts`)**: Consumes the token stream and builds an Abstract Syntax Tree (AST) representing the query's logical structure. AST definitions are in `ast.ts`.
-3.  **Compiler (`src/compiler`)**:
-    *   Traverses the AST.
-    *   Handles Common Table Expressions (CTEs) (`cte.ts`) and Subqueries (`subquery.ts`).
+    *   **Lexer (`lexer.ts`)**: Tokenizes the raw SQL string.
+    *   **Parser (`parser.ts`)**: Builds an Abstract Syntax Tree (AST).
+3.  **Planner (`src/planner`)**:
+    *   Traverses the AST to construct a tree of immutable `PlanNode` objects representing the logical query structure.
+    *   Handles Common Table Expressions (CTEs) and Subqueries by converting them into relational `PlanNode`s.
     *   Resolves table and function references using the Schema Manager.
-    *   Performs query planning via the virtual table `xBestIndex` method.
-    *   Manages compilation context including stack frames for subroutines.
-    *   Generates bytecode instructions for the Virtual Database Engine (VDBE).
-4.  **VDBE - Virtual Database Engine (`src/vdbe`)**:
-    *   A stack-based virtual machine that executes the compiled bytecode (`runtime.ts`).
-    *   Manages memory cells (registers) using activation frames.
-    *   Interacts with cursors for data access.
-    *   Executes opcodes defined in `instruction.ts`, using compiled program metadata from `program.ts`.
-    *   Invokes virtual table methods (`xFilter`, `xNext`, `xColumn`, `xUpdate`, etc.) via the module interface to interact with data.
+    *   Performs query planning, incorporating virtual table `xBestIndex` method and table schema statistics.
+4.  **Runtime (`src/runtime`)**:
+    *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: Translate `PlanNode`s into a graph of `Instruction` objects.
+    *   **Scheduler (`src/runtime/scheduler.ts`)**: Manages the execution flow of the `Instruction` graph.
+    *   **Instructions**: JavaScript functions that operate on `RuntimeValue`s (which can be `SqlValue` or `AsyncIterable<Row>`). Async parameters are awaited.
+    *   Invokes virtual table methods (e.g., `xQuery` which returns `AsyncIterable<Row>`, `xUpdate`) to interact with data.
     *   Calls User-Defined Functions (UDFs) and aggregate functions.
-    *   Handles basic aggregation and transaction/savepoint control.
-    *   Yields result rows back to the Statement object.
+    *   Handles transaction and savepoint control.
 5.  **Virtual Tables (`src/vtab`)**:
-    *   The core data interface. Modules implement the `VirtualTableModule` interface (`module.ts`), defining how to create, connect, query, and update table instances.
-    *   `table.ts` and `cursor.ts` provide base classes for table and cursor instances.
-    *   `indexInfo.ts` defines the structure used for query planning (`xBestIndex`).
-    *   Includes `MemoryTable` (`vtab/memory/table.ts`) backed by `digitree`, `JsonEach` (`json-each.ts`), and `JsonTree` (`json-tree.ts`) implementations.
-    *   The `MemoryTable` supports transactions and savepoints via internal buffering. See [Memory Tables](docs/memory-table.md) for details.
-6.  **Schema Management (`src/schema`)**:
-    *   The `SchemaManager` (`manager.ts`) orchestrates access to different database schemas ('main', 'temp').
-    *   Each `Schema` (`schema.ts`) holds definitions for tables (`table.ts`), columns (`column.ts`), and functions (`function.ts`).
-    *   Supports programmatic schema definition and JSON import/export (`json-schema.ts`).
-    *   Reflection virtual table (`schema-table.ts`) provides a built-in `_schema` table for introspection.
-7.  **User-Defined Functions (`src/func`)**:
-    *   Allows registering custom JavaScript functions to be called from SQL (`registration.ts`).
-    *   The `FunctionContext` (`context.ts`) provides the API for functions to set results, access user data, and manage auxiliary data.
-    *   A suite of built-in scalar, aggregate, date/time, and JSON functions are provided (`builtins/`).
-8.  **Core API (`src/core`)**:
-    *   `Database` (`database.ts`): The main entry point, managing connections, transactions, and module registration.
-    *   `Statement` (`statement.ts`): Represents a compiled SQL query, handling parameter binding, execution steps, and result retrieval.
+    *   The core data interface. Modules implement `VirtualTableModule`.
+    *   `MemoryTable` (`vtab/memory/table.ts`) is a key implementation using `digitree`.
+6.  **Schema Management (`src/schema`)**: Manages schemas, tables, columns, functions.
+7.  **User-Defined Functions (`src/func`)**: Support for custom JS functions in SQL.
+8.  **Core API (`src/core`)**: `Database`, `Statement` classes.
 
 ## Source File Layout
 
 The project is organized into the following main directories:
 
-*   `src/common`: Foundational types, constants, and error classes used across the project.
+*   `src/common`: Foundational types, constants, and error classes.
 *   `src/core`: High-level API classes (`Database`, `Statement`).
 *   `src/parser`: SQL lexing, parsing, and AST definitions.
-*   `src/compiler`: Translates AST to VDBE bytecode, including CTE and subquery handling.
-*   `src/vdbe`: Runtime bytecode execution engine.
-*   `src/schema`: Management of database schemas (tables, columns, functions).
-*   `src/vtab`: Virtual table interface definitions
-*   `src/vtab/*`: Vtab implementations including `memory`, `schema`, and `json`).
-*   `src/func`: User-defined function context, registration helpers, and built-in functions.
-*   `src/util`: General utility functions (e.g., value comparison, latches, DDL stringifier).
+*   `src/planner`: **(New)** Building and optimizing `PlanNode` trees from AST.
+*   `src/runtime`: **(New)** Emission, scheduling, and execution of runtime `Instruction`s.
+*   `src/schema`: Management of database schemas.
+*   `src/vtab`: Virtual table interface and implementations (including `memory`).
+*   `src/func`: User-defined functions.
+*   `src/util`: General utility functions.
 *   `docs`: Project documentation.
+*   `oldsrc`: **(Legacy)** Contains the previous VDBE-based compiler and runtime.
 
 ## Logging
 
-Quereus uses the [`debug`](https://github.com/debug-js/debug) library for internal logging. This allows for fine-grained control over log output based on namespaces, which correspond to the different modules of the system (e.g., `compiler`, `vdbe`, `vtab:memory`).
+Quereus uses the [`debug`](https://github.com/debug-js/debug) library for internal logging. This allows for fine-grained control over log output based on namespaces, which correspond to the different modules of the system (e.g., `planner`, `runtime`, `vtab:memory`).
 
 To enable logging during development or troubleshooting, set the `DEBUG` environment variable. Examples:
 
@@ -87,17 +74,14 @@ To enable logging during development or troubleshooting, set the `DEBUG` environ
 # Enable all Quereus logs
 DEBUG=quereus:*
 
-# Enable only compiler and VDBE runtime logs
-DEBUG=quereus:compiler,quereus:vdbe:runtime
-
 # Enable all virtual table logs
 DEBUG=quereus:vtab:*
 
 # Enable VDBE runtime logs and any warnings/errors from other modules
-DEBUG=quereus:vdbe:runtime,quereus:*:warn,quereus:*:error
+DEBUG=quereus:runtime,quereus:*:warn,quereus:*:error
 
-# Enable everything EXCEPT verbose VDBE runtime logs
-DEBUG=*,-quereus:vdbe:runtime
+# Enable everything EXCEPT verbose runtime logs
+DEBUG=*,-quereus:runtime
 ```
 
 ### Developer Usage
@@ -107,20 +91,17 @@ To add logging within a module:
 1.  **Import the logger factory:**
     ```typescript
     import { createLogger } from '../common/logger.js'; // Adjust path as needed
-    ```
 
-2.  **Create a namespaced logger:** Choose a relevant namespace for your module or submodule (e.g., `vtab:my-custom-vtab`, `compiler:optimizer`).
-    ```typescript
     const log = createLogger('my-module:sub-feature');
     ```
 
-3.  **Log messages:** Use the logger instance like `console.log`, utilizing format specifiers (`%s`, `%d`, `%j`, `%O`) for better performance and readability.
+2.  **Log messages:** Use the logger instance like `console.log`, utilizing format specifiers (`%s`, `%d`, `%j`, `%O`) for better performance and readability.
     ```typescript
     log('Processing item ID %d', itemId);
     log('Current state: %O', complexObject);
     ```
 
-4.  **(Optional) Create specialized loggers for levels:** You can use `.extend()` for specific levels like warnings or errors, which allows finer control via the `DEBUG` variable.
+3.  **(Optional) Create specialized loggers for levels:** You can use `.extend()` for specific levels like warnings or errors, which allows finer control via the `DEBUG` variable.
     ```typescript
     const warnLog = log.extend('warn');
     const errorLog = log.extend('error');
@@ -132,8 +113,6 @@ To add logging within a module:
     }
     ```
 
-Using specific namespaces helps users of Quereus enable precisely the logs they need when debugging.
-
 ## Documentation
 
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
@@ -141,64 +120,60 @@ Using specific namespaces helps users of Quereus enable precisely the logs they 
 * [Functions](docs/functions.md): Details on the built-in functions
 * [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
 * [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
-* [Runtime](docs/runtime.md): Details on the VDBE runtime and opcodes.
+* [Runtime](docs/runtime.md): Details on the runtime and opcodes.
 * [Error Handling](docs/error.md): Details on the error handling and status codes.
 * [TODO List](docs/todo.md): Planned features and improvements
+* [Project Titan Architecture](docs/titan.md): **(New Overview)**
+* [Window Function Architecture](docs/window-functions.md): **(Note: This describes the old VDBE approach and will need to be re-evaluated for Titan)**
 
 ## Key Design Decisions
 
-*   **Federated / VTab-Centric**: The architecture prioritizes virtual tables as the primary data source and sink. 
-    *   Tables can be created statically using `CREATE TABLE ... USING module(...)` syntax.
-    *   Table-valued functions (like `json_each`, `json_tree`) can be invoked dynamically in the `FROM` clause using standard function call syntax: `SELECT ... FROM my_function(arg1, arg2) [AS alias] ...`.
-    *   If `USING` is omitted in `CREATE TABLE`, it defaults to the configured default module (initially `memory` base on the `MemoryTable` module).
-*   **Async Core**: Core operations like `Statement.step()` and VDBE execution involving VTab interactions are asynchronous (`async`/`await`) to handle potentially long-running I/O from virtual tables.
-*   **Sync Callbacks**: VTab `xBestIndex` and `xColumn`, as well as UDFs, are expected to be synchronous for performance, losely following the SQLite C API design. `xCreate` and `xConnect` are also synchronous.
+*   **Federated / VTab-Centric**: All tables are virtual tables.
+*   **Async Core**: Core operations are asynchronous. Cursors are `AsyncIterable<Row>`.
+*   **Key-Based Addressing**: Rows are identified by their defined Primary Key. No separate implicit `rowid`.
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
 *   **Object-Based API**: Uses classes (`Database`, `Statement`) to represent resources with lifecycles, rather than handles.
-*   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Programmatic definition and JSON import/export are supported.
+*   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Emission of schema SQL export is supported.
 
 ## Major variations from SQLite
 
-*   Uses `CREATE TABLE ... USING module(...)` syntax for static virtual tables. Supports dynamic invocation of table-valued functions (e.g., `json_each(...)`) in the `FROM` clause.
-*   `PRAGMA default_vtab_module` can be used to set the default module for `CREATE TABLE` without `USING`.
-*   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions in `CREATE TABLE`.
-*   Interface enhancements: `eval()` async enumerable on `Database`; easy to use parameters as names or indexed
-*   Core execution stepping is asynchronous.
-*   Built-in functions tailored for JS environments (e.g., extensive JSON support).
+*   Uses `CREATE TABLE ... USING module(...)` syntax.
+*   `PRAGMA default_vtab_module` can be used.
+*   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions.
+*   Async core execution.
+*   **No Rowids / `WITHOUT ROWID` by Default**: All tables are addressed by their Primary Key, similar to SQLite's `WITHOUT ROWID` tables being the only mode. The `WITHOUT ROWID` clause is not used.
 *   No plans for:
-  *   Triggers - not well suited to federated environment
-  *   Persistent file storage - this could always be developed as an add-in VT module
+    *   Triggers
+    *   Persistent file storage (can be a VTab module)
 
 ## Current Status
 
-Quereus is functional for a significant subset of SQL focused on querying and manipulating virtual tables. Key implemented features include:
+Quereus is **actively undergoing a major architectural refactoring (Project Titan)** to a new planner and instruction-based runtime. The previous VDBE-based compiler and runtime (`oldsrc/`) are being replaced.
 
-*   Parsing and execution of `SELECT`, `INSERT`, `UPDATE`, `DELETE` statements.
-*   Support for Common Table Expressions (CTEs), including basic recursive CTEs.
-    *   Non-recursive CTEs are automatically materialized only if referenced more than once, otherwise they behave like views (materialized on first use).
-    *   Behavior can be overridden using `AS MATERIALIZED` or `AS NOT MATERIALIZED` hints.
-*   Support for various subquery types (scalar, comparison, `IN`, `EXISTS`), including correlated subqueries.
+**Features of the new Titan architecture (under development):**
+*   Core `PlanNode` to `Instruction` architecture established.
+*   Emitters for basic operations (scans, literals, parameters, simple binary ops, DML) are being implemented.
+*   Basic SQL query execution for `SELECT`, `INSERT`, `UPDATE`, `DELETE` on single tables is being built.
+*   See `docs/titan.md` for detailed status of the new architecture.
+
+**Previously supported features (in the old VDBE system, to be ported or re-implemented in Titan):**
+*   CTEs (recursive and non-recursive with materialization hints).
+*   Subqueries (scalar, comparison, `IN`, `EXISTS`, correlated).
 *   Joins (`INNER`, `LEFT`, `CROSS`).
-*   Basic Aggregation (`GROUP BY`, `HAVING` with functions like `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP_CONCAT`, `JSON_GROUP_ARRAY`, `JSON_GROUP_OBJECT`).
-*   Basic `ORDER BY` and `LIMIT`/`OFFSET` (with VDBE-level sorting via `MemoryTable` if needed).
-*   Transactions (`BEGIN`, `COMMIT`, `ROLLBACK`) and Savepoints (`SAVEPOINT`, `RELEASE`, `ROLLBACK TO`).
-*   Virtual Table implementations: `MemoryTable` (B+Tree based, supports transactions/savepoints and secondary indexes), `JsonEach`, `JsonTree`.
-*   Extensive built-in functions: scalar (string, math), date/time, and JSON manipulation/querying.
-*   `PRAGMA` support for setting default VTab module.
-*   Basic `CREATE TABLE`/`DROP TABLE` for managing VTabs.
-*   `CREATE INDEX`/`DROP INDEX` support for virtual tables that implement `xCreateIndex`/`xDropIndex` (like `MemoryTable`).
-*   Schema export/import via JSON.
-*   Basic read-only access to `_schema` for introspection.
-*   Row-level `CHECK` constraints with `ON (INSERT|UPDATE|DELETE)` clause and support for `NEW`/`OLD` row aliases.
+*   Aggregation (`GROUP BY`, `HAVING`).
+*   `ORDER BY`, `LIMIT`/`OFFSET`.
+*   Transactions and Savepoints (on VTabs that support them, like `MemoryTable`).
+*   `MemoryTable`, `JsonEach`, `JsonTree` VTabs.
+*   Extensive built-in functions.
+*   `PRAGMA`s.
+*   `CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX`.
+*   Row-level `CHECK` constraints.
 
-**Limitations & Missing Features:**
-
-*   **Constraints**: `FOREIGN KEY` constraints are parsed but not enforced. `DEFAULT` values are used, but complex default expressions might have limitations. (`NOT NULL` and `CHECK` constraints *are* enforced).
-*   **Advanced SQL**: Window functions, triggers, full `ALTER TABLE`, and views (parsing only) are not yet implemented.
-*   **Index Features**: Indices on expressions are not supported. Collation support in indices is basic.
-*   **Error Handling**: Error messages could be more detailed.
-*   **Optimization**: Query planning (`xBestIndex`) is basic; VDBE opcode optimization is minimal.
-*   **Testing**: While a comprehensive test framework is now in place (see below), more specific test cases are always needed.
+**Limitations & Missing Features (for the new Titan architecture):**
+*   Many SQL features are yet to be fully ported to the new planner/runtime (e.g., complex joins, full aggregation, window functions, advanced subqueries).
+*   Query optimization is currently minimal in the new planner.
+*   Constraint enforcement (beyond basic VTab interactions for DML) needs to be integrated into the new runtime.
+*   Comprehensive testing for the Titan architecture is ongoing.
 
 ## Testing
 
@@ -214,7 +189,7 @@ Quereus employs a multi-faceted testing strategy:
     *   Inspired by SQLite's own testing methodology.
     *   Uses simple text files (`*.sqllogic`) containing SQL statements and their expected JSON results (using `→` marker) or expected error messages (using `-- error:` directive).
     *   Driven by a Mocha test runner (`test/logic.spec.ts`) that executes the SQL against a fresh `Database` instance for each file.
-    *   **Diagnostics**: On unexpected failures, the test runner automatically dumps the parsed Abstract Syntax Tree (AST) and the compiled Virtual Database Engine (VDBE) bytecode, aiding in pinpointing the failure layer (Parser, Compiler, or Runtime).
+    *   **Diagnostics**: On unexpected failures, the test runner automatically dumps the parsed Abstract Syntax Tree (AST) and the planned `PlanNode` tree / generated `Instruction` graph, aiding in pinpointing the failure layer (Parser, Planner, or Runtime).
     *   Covers core functionality: basic CRUD, expressions, joins, aggregates, subqueries, CTEs, transactions, VTab planning basics, built-ins, and common error paths.
 
 2.  **Property-Based Tests (`test/property.spec.ts`)**:
@@ -242,6 +217,6 @@ This layered approach aims for broad coverage via the logic tests while using pr
 
 ## Future Work
 
-See the [TODO List](docs/todo.md) for a detailed breakdown.
+See the [TODO List](docs/todo.md) and [Project Titan](docs/titan.md) for a detailed breakdown.
 
 

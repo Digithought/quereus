@@ -4,7 +4,7 @@ import { IndexConstraintOp } from '../common/constants.js';
  * Information about a specific constraint in the WHERE clause
  */
 export interface IndexConstraint {
-	/** Column index constrained (-1 for rowid) */
+	/** Column index constrained (0 based) */
 	iColumn: number;
 	/** Constraint operator (EQ, GT, etc.) */
 	op: IndexConstraintOp;

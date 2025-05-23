@@ -1,9 +1,10 @@
 import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { SqlValue, Row, RowIdRow } from '../common/types.js'; // Added RowIdRow, removed VirtualTableCursor
+import type { Row } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
-import type { FilterInfo } from './filter-info.js'; // Import FilterInfo
+import type { FilterInfo } from './filter-info.js';
+import type { RowOp } from '../parser/ast.js';
 
 /**
  * Base class representing a virtual table instance.
@@ -43,19 +44,24 @@ export abstract class VirtualTable {
 	 * (Optional) Opens a direct data stream for this virtual table based on filter criteria.
 	 * This is an alternative to the cursor-based xOpen/filter/next model.
 	 * @param filterInfo Information from xBestIndex and query parameters.
-	 * @returns An AsyncIterable yielding RowIdRow tuples ([rowid, Row]).
+	 * @returns An AsyncIterable yielding Row tuples.
 	 * @throws QuereusError on failure
 	 */
-	xQuery?(filterInfo: FilterInfo): AsyncIterable<RowIdRow>;
+	xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation
-	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, often just the rowid
-	 * @param rowid For UPDATE/DELETE, the rowid of the row to modify. Null for INSERT
-	 * @returns Object with rowid property (for INSERT) or empty object
+	 * @param operation The operation to perform (insert, update, delete)
+	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, undefined
+	 * @param oldKeyValues For UPDATE/DELETE, the old key values of the row to modify. Undefined for INSERT
+	 * @returns new row for INSERT/UPDATE, undefined for DELETE
 	 * @throws QuereusError or ConstraintError on failure
 	 */
-	abstract xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }>;
+	abstract xUpdate(
+		operation: RowOp,
+		values: Row | undefined,
+		oldKeyValues?: Row
+	): Promise<Row | undefined>;
 
 	/**
 	 * Begins a transaction on this virtual table

@@ -3,11 +3,12 @@ import type { ExplainPlanModule } from './module.js';
 import type { Database } from '../../core/database.js';
 import type { TableSchema } from '../../schema/table.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode, type Row, type SqlValue, type RowIdRow } from '../../common/types.js';
+import { StatusCode, type Row, type SqlValue } from '../../common/types.js';
 import type { FilterInfo } from '../filter-info.js';
 import type { PlanNode } from '../../planner/nodes/plan-node.js';
 import { Scheduler } from '../../runtime/scheduler.js';
 import { emitPlanNode } from '../../runtime/emitters.js';
+import type { RowOp } from '../../parser/ast.js';
 
 /**
  * Represents an instance of the query_plan virtual table for a specific query.
@@ -40,15 +41,23 @@ export class ExplainPlanTable extends VirtualTable {
         // No resources to release for this table instance
     }
 
-    async xUpdate(/* values: SqlValue[], rowid: bigint | null */): Promise<{ rowid?: bigint; }> {
+    async xUpdate(
+      _operation: RowOp,
+      _values?: Row,
+      _oldKeyValues?: Row
+    ): Promise<Row | undefined> {
         throw new QuereusError("Cannot modify query plan table", StatusCode.READONLY);
     }
 
-    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
 			const program = emitPlanNode(this.plan);
 			const schedule = new Scheduler(program);
 			for (const instruction of schedule.instructions) {
-				// TODO: Implement this
+				// TODO: Implement this to yield rows representing plan steps
+        // For now, yields nothing, matching the old behavior of yielding no Row.
 			}
+      // To satisfy AsyncIterable<Row> if loop is empty or TODO not done:
+      if (false) yield [] as Row; // Make it type-check, but unreachable
+      return;
     }
 }

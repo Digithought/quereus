@@ -32,8 +32,6 @@ export type ColumnDef = {
 	type: ScalarType;
 	/** The optional default value for the column. */
 	default?: Expression;
-	/** If true, the column is hidden and not visible to the user.  Absent = false. */
-	hidden?: boolean;
 	/** If true, the column is generated, not stored.  Absent = false. */
 	generated?: boolean;
 }

@@ -53,7 +53,7 @@ export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema:
 	const params = new Map<string, string>();
 	idxStr?.split(';').forEach(part => { const [key, value] = part.split('=', 2); if (key && value !== undefined) params.set(key, value); });
 	const idxNameMatch = params.get('idx')?.match(/^(.*?)\\((\\d+)\\)$/);
-	if (idxNameMatch) indexName = idxNameMatch[1] === '_rowid_' || idxNameMatch[1] === '_primary_' ? 'primary' : idxNameMatch[1];
+	if (idxNameMatch) indexName = idxNameMatch[1] === '_primary_' ? 'primary' : idxNameMatch[1];
 	const planType = parseInt(params.get('plan') ?? '0', 10);
 	descending = params.get('ordCons') === 'DESC' || planType === 1 || planType === 4;
 	const argvMap = new Map<number, number>();

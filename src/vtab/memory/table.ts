@@ -1,9 +1,8 @@
-// src/vtab/memory/table.ts
 import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
-import type { SqlValue, Row, RowIdRow } from '../../common/types.js';
-import { type TableSchema, type IndexSchema } from '../../schema/table.js';
+import type { Row } from '../../common/types.js';
+import { type IndexSchema, type TableSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
 import { QuereusError } from '../../common/errors.js';
@@ -11,6 +10,8 @@ import { StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { FilterInfo } from '../filter-info.js';
 import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';
+import type { CreateIndexStmt as ASTCreateIndexStmt } from '../../parser/ast.js'; // For xCreateIndex
+import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js'; // Assuming this will be updated for renameColumn
 
 const log = createLogger('vtab:memory:table');
 const errorLog = log.extend('error');
@@ -52,7 +53,7 @@ export class MemoryTable extends VirtualTable {
 	/** Checks read-only status via the manager */
 	isReadOnly(): boolean {
 		// Access readOnly via a public method on the manager
-		return this.manager.isReadOnly();
+		return this.manager.isReadOnly;
 	}
 
 	/** Ensures the connection to the manager is established */
@@ -65,39 +66,33 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	// New xQuery method for direct async iteration
-	async* xQuery(filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+	async* xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const conn = this.ensureConnection();
-		const currentSchema = this.getSchema();
+		const currentSchema = this.manager.tableSchema;
 		if (!currentSchema) {
-			errorLog("MemoryTable.xQuery: Table schema is undefined. Cannot proceed.");
-			yield* []; return;
+			errorLog("MemoryTable.xQuery: Table schema is undefined.");
+			return;
 		}
 		const plan = buildScanPlanFromFilterInfo(filterInfo, currentSchema);
 		log('MemoryTable.xQuery invoked, plan: %O', plan);
 
-		const cursor = conn.createLayerCursor(plan);
-		try {
-			while (!cursor.isEof()) {
-				const rowObject = cursor.getCurrentRowObject(); // This is RowIdRow: [rowid, data_array]
-				if (rowObject) {
-					yield rowObject; // Yield [rowid, data_array] which is RowIdRow compatible
-				}
-				await cursor.next();
-			}
-		} finally {
-			// LayerCursorInternal might not have an async close, ensure it's handled if it does.
-			// For now, assuming close is synchronous as per LayerCursorInternal interface.
-			cursor.close();
-		}
+		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
+		// Delegate scanning to the manager, which handles layer recursion
+		yield* this.manager.scanLayer(startLayer, plan);
 	}
 
 	// Note: xBestIndex is handled by the MemoryTableModule, not the table instance.
 
 	/** Performs mutation through the connection's transaction layer */
-	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint; }> {
+	async xUpdate(
+		operation: 'insert' | 'update' | 'delete',
+		values: Row | undefined,
+		oldKeyValues?: Row
+	): Promise<Row | undefined> {
 		const conn = this.ensureConnection();
-		// Delegate mutation to the manager, passing the connection state
-		return this.manager.performMutation(conn, values, rowid);
+		// Delegate mutation to the manager.
+		// This assumes manager.performMutation will be updated to this signature and logic.
+		return this.manager.performMutation(conn, operation, values, oldKeyValues);
 	}
 
 	/** Begins a transaction for this connection */
@@ -155,8 +150,8 @@ export class MemoryTable extends VirtualTable {
 
 	/** Handles schema changes via the manager */
 	async xAlterSchema(changeInfo: SchemaChangeInfo): Promise<void> {
+		const originalManagerSchema = this.manager.tableSchema; // For potential error recovery
 		try {
-			// Delegate directly to the manager's schema modification methods
 			switch (changeInfo.type) {
 				case 'addColumn':
 					await this.manager.addColumn(changeInfo.columnDef);
@@ -165,21 +160,26 @@ export class MemoryTable extends VirtualTable {
 					await this.manager.dropColumn(changeInfo.columnName);
 					break;
 				case 'renameColumn':
-					await this.manager.renameColumn(changeInfo.oldName, changeInfo.newName);
+					if (!('newColumnDefAst' in changeInfo)) {
+						throw new QuereusError('SchemaChangeInfo for renameColumn missing newColumnDefAst', StatusCode.INTERNAL);
+					}
+					await this.manager.renameColumn(changeInfo.oldName, changeInfo.newColumnDefAst as ASTColumnDef);
 					break;
 				default: {
-					// This should not happen if types are correct
 					const exhaustiveCheck: never = changeInfo;
-					throw new QuereusError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
+					throw new QuereusError(`Unhandled schema change: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
 				}
 			}
-			// Update this instance's schema reference after alteration succeeds
-			this.tableSchema = this.manager.tableSchema;
+			this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 		} catch (e) {
-			errorLog(`Failed to apply schema change (%s) to %s: %O`, (changeInfo as any).type, this.tableName, e);
-			// Refresh schema reference in case of partial failure?
-			this.tableSchema = this.manager.tableSchema;
-			throw e; // Re-throw the error
+			errorLog(`Failed to apply schema change to ${this.tableName}: %O`, e);
+			// Manager DDL methods should handle reverting their own BaseLayer schema updates on error.
+			// Refresh local schema ref to ensure it's consistent with manager after potential error/revert.
+			this.tableSchema = originalManagerSchema;
+			// It might be safer for manager DDL to not alter its own this.tableSchema until baseLayer op succeeds.
+			// And if baseLayer op fails, manager DDL reverts baseLayer.tableSchema.
+			// Then here, we always sync from manager: this.tableSchema = this.manager.tableSchema;
+			throw e;
 		}
 	}
 
@@ -193,10 +193,9 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	// --- Index DDL methods delegate to the manager ---
-	async xCreateIndex(indexInfo: IndexSchema): Promise<void> {
-		await this.manager.createIndex(indexInfo);
-		// Update schema reference
-		this.tableSchema = this.manager.tableSchema;
+	async xCreateIndex(indexSchema: IndexSchema): Promise<void> {
+		await this.manager.createIndex(indexSchema);
+		this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 	}
 
 	async xDropIndex(indexName: string): Promise<void> {

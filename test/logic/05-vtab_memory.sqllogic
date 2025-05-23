@@ -45,10 +45,3 @@ SELECT name FROM mem_t WHERE id > 1 AND age = 30;
 → [{"name":"Alice"},{"name":"David"}] -- Filtered after scan
 
 DROP TABLE mem_t;
-
--- Test WITHOUT ROWID table (if supported by MemoryTable)
--- CREATE TABLE mem_nr (a TEXT PRIMARY KEY, b INTEGER) WITHOUT ROWID;
--- INSERT INTO mem_nr VALUES ('one', 1), ('two', 2);
--- SELECT b FROM mem_nr WHERE a = 'two';
--- → [{"b":2}]
--- DROP TABLE mem_nr;

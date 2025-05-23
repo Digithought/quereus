@@ -38,8 +38,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		// Create the MemoryTableManager instance
 		const manager = new MemoryTableManager(
 			db,
-			this,
-			tableSchema.vtabAuxData,
 			tableSchema.vtabModuleName,
 			tableSchema.schemaName,
 			tableSchema.name,
@@ -87,19 +85,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		};
 
 		// Gather available indexes
-		// 1. Create a pseudo-index for the primary key (or rowid)
-		let pkIndexSchema: IndexSchema | null = null;
-		if (tableInfo.primaryKeyDefinition.length > 0) {
-			// Explicit PRIMARY KEY constraint exists
-			pkIndexSchema = { name: '_primary_', columns: tableInfo.primaryKeyDefinition };
-		} else if (tableInfo.columns.length > 0 && tableInfo.columns[0].affinity === SqlDataType.INTEGER) {
-			// No explicit PK, but first column is INTEGER - treat it as implicit PK for planning
-			// If the schema already reflects it as PK, use its index
-			pkIndexSchema = { name: '_primary_', columns: [{ index: 0, desc: false }] }; // Assume index 0 is implicit PK
-		} else {
-			// No explicit PK and first column isn't INTEGER, use rowid
-			pkIndexSchema = { name: '_rowid_', columns: [{ index: -1, desc: false }] };
-		}
+		// 1. Create a pseudo-index for the primary key (note, could be empty column list = up to 1 row)
+		const pkIndexSchema = { name: '_primary_', columns: tableInfo.primaryKeyDefinition };
 
 		const availableIndexes: IndexSchema[] = [];
 		if (pkIndexSchema) availableIndexes.push(pkIndexSchema);
@@ -269,8 +256,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		// Finalize IndexInfo Output
 		if (bestPlan.indexId === -1) {
 			// Should not happen if full scan is always an option, but handle defensively
-			bestPlan.indexId = availableIndexes.findIndex(idx => idx.name === '_rowid_' || idx.name === '_primary_');
-			if (bestPlan.indexId === -1) bestPlan.indexId = 0; // Default to first index (primary/rowid)
+			bestPlan.indexId = availableIndexes.findIndex(idx => idx.name === '_primary_');
+			if (bestPlan.indexId === -1) bestPlan.indexId = 0; // Default to first index (primary)
 			bestPlan.planType = PLAN_TYPE_FULL_ASC;
 			bestPlan.cost = tableSize * 10.0;
 			bestPlan.rows = BigInt(tableSize);

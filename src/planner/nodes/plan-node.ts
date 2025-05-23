@@ -91,7 +91,6 @@ export interface ScalarPlanNode extends PlanNode {
 export interface ZeroAryRelationalNode extends RelationalPlanNode {
   // No specific 'inputs' property at this base level, concrete nodes will define sources.
   getRelations(): readonly [];
-	getChildren(): readonly [];
 }
 
 /** A relational plan node that operates on a single relational input. */

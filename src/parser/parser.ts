@@ -1343,7 +1343,6 @@ export class Parser {
 
 		const columns: AST.ColumnDef[] = [];
 		const constraints: AST.TableConstraint[] = [];
-		let withoutRowid = false;
 
 		if (this.check(TokenType.LPAREN)) {
 			this.consume(TokenType.LPAREN, "Expected '(' to start table definition.");
@@ -1357,10 +1356,6 @@ export class Parser {
 
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 
-			if (this.matchKeyword('WITHOUT')) {
-				this.consumeKeyword('ROWID', "Expected 'ROWID' after 'WITHOUT'.");
-				withoutRowid = true;
-			}
 		} else if (this.matchKeyword('AS')) {
 			throw new Error('CREATE TABLE AS SELECT is not supported.');
 		} else {
@@ -1373,7 +1368,6 @@ export class Parser {
 			ifNotExists,
 			columns,
 			constraints,
-			withoutRowid,
 			isTemporary,
 			moduleName,
 			moduleArgs,

@@ -1,13 +1,12 @@
 import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../index-info.js';
-import { StatusCode, SqlDataType, type SqlValue, type Row, type RowIdRow } from '../../common/types.js';
+import { StatusCode, SqlDataType, type SqlValue, type Row } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import type { Schema } from '../../schema/schema.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { TableSchema } from '../../schema/table.js';
-import { compareSqlValues } from '../../util/comparison.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import type { FilterInfo } from '../filter-info.js';
 
@@ -19,7 +18,6 @@ interface SchemaRowInternal {
 	name: string;
 	tbl_name: string;
 	sql: string | null;
-	_rowid_: bigint; // Internal rowid for iteration
 }
 
 /**
@@ -51,15 +49,13 @@ class SchemaTable extends VirtualTable {
 			indexes: [],
 			vtabModule: this.module,
 			vtabModuleName: '_schema',
-			isWithoutRowid: true,
-			isStrict: false,
 			isView: false,
 			vtabAuxData: undefined,
 			vtabArgs: {},
 			isTemporary: false,
 			subqueryAST: undefined,
 			isReadOnly: true,
-		} as TableSchema;
+		} satisfies TableSchema;
 	}
 
 	// This xBestIndex is for the TABLE INSTANCE, called during query planning.
@@ -82,7 +78,7 @@ class SchemaTable extends VirtualTable {
 		return StatusCode.OK;
 	}
 
-	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }> {
+	async xUpdate(): Promise<Row | undefined> {
 		throw new QuereusError("Cannot modify read-only table: _schema", StatusCode.READONLY);
 	}
 
@@ -105,7 +101,6 @@ class SchemaTable extends VirtualTable {
 	private _generateInternalSchemaRows(db: Database): SchemaRowInternal[] {
 		const schemaManager = db.schemaManager;
 		let generatedRows: SchemaRowInternal[] = [];
-		let rowidCounter = BigInt(0);
 
 		const processSchemaInstance = (schemaInstance: Schema) => {
 			// Process Tables
@@ -123,7 +118,6 @@ class SchemaTable extends VirtualTable {
 					name: tableSchema.name,
 					tbl_name: tableSchema.name,
 					sql: createSql,
-					_rowid_: rowidCounter++,
 				});
 			}
 			// Process Functions
@@ -133,7 +127,6 @@ class SchemaTable extends VirtualTable {
 					name: funcSchema.name,
 					tbl_name: funcSchema.name,
 					sql: stringifyCreateFunction(funcSchema),
-					_rowid_: rowidCounter++,
 				});
 			}
 		};
@@ -143,19 +136,18 @@ class SchemaTable extends VirtualTable {
 		return generatedRows;
 	}
 
-	async *xQuery(filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+	async *xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const allSchemaRows = this._generateInternalSchemaRows(this.db);
 		// No need for filterInfo.constraints or filterInfo.args as we are not filtering here.
 		// Quereus will do the filtering.
 
 		for (const row of allSchemaRows) {
-			const outputRow: Row = [
+			yield [
 				row.type,
 				row.name,
 				row.tbl_name,
 				row.sql
 			];
-			yield [row._rowid_, outputRow];
 		}
 	}
 }

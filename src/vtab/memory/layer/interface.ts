@@ -1,11 +1,7 @@
 import type { BTree } from 'digitree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { BTreeKey, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
-import { isDeletionMarker } from '../types.js';
-
-// Re-export these for backward compatibility
-export type { ModificationKey, ModificationValue, DeletionMarker };
-export { isDeletionMarker };
+import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue, MemoryIndexEntry } from '../types.js';
+import type { Row } from '../../../common/types.js';
 
 /**
  * Represents a snapshot or a set of changes in the MemoryTable MVCC model.
@@ -26,13 +22,7 @@ export interface Layer {
 	 * @param indexName The name of the secondary index, or 'primary' for the primary key index.
 	 * @returns The BTree containing modifications/data for the index in this layer, or null if no modifications exist for that index in this layer.
 	 */
-	getModificationTree(indexName: string | 'primary'): BTree<any, any> | null; // Keep flexible, specific layers/cursors handle types
-
-	/**
-	 * Returns the set of rowids explicitly deleted within this specific layer.
-	 * This is primarily relevant for TransactionLayer. BaseLayer returns an empty set.
-	 */
-	getDeletedRowids(): ReadonlySet<bigint>;
+	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, PrimaryModificationValue> | null;
 
 	/**
 	 * Returns the table schema as it existed when this layer was created or relevant.
@@ -45,5 +35,13 @@ export interface Layer {
 	isCommitted(): boolean;
 
 	/** Helper to get the specific BTree for a secondary index's underlying data (relevant for BaseLayer) */
-	getSecondaryIndexTree(indexName: string): BTree<[BTreeKey, bigint], [BTreeKey, bigint]> | null;
+	getSecondaryIndexTree?(indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null;
+
+	/**
+	 * This method provides PK extractor and comparator based on a given schema (usually its own)
+	 */
+	getPkExtractorsAndComparators(schema: TableSchema): {
+		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
+		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
+	};
 }

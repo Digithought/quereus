@@ -46,8 +46,7 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 			ctx.context.set(plan, () => row);
 
 			const asyncRowIterable = vtabInstance.xQuery(plan.filterInfo);
-			for await (const [_rowid, fetched] of asyncRowIterable) {
-				row = fetched;
+			for await (row of asyncRowIterable) {
 				yield row;
 			}
 

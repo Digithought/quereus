@@ -1,150 +1,119 @@
 import type { BTree, Path } from 'digitree';
-import type { LayerCursorInternal } from './cursor.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { BaseLayer } from './base.js';
-import type { BTreeKey, ModificationKey } from '../types.js';
+import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
-import type { RowIdRow, SqlValue } from '../../../common/types.js';
+import type { Row, SqlValue } from '../../../common/types.js';
 import { createLogger } from '../../../common/logger.js';
-import type { TableSchema } from '../../../schema/table.js';
 
 const log = createLogger('vtab:memory:layer:base-cursor');
-const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
+// const warnLog = log.extend('warn');
+// const errorLog = log.extend('error');
 
-export class BaseLayerCursorInternal implements LayerCursorInternal {
-	private readonly layer: BaseLayer;
-	private readonly plan: ScanPlan;
-	private readonly targetTree: BTree<BTreeKey, RowIdRow> | BTree<[BTreeKey, bigint], [BTreeKey, bigint]>;
-	private readonly keyComparator: (a: BTreeKey, b: BTreeKey) => number;
-	// keyExtractor was removed as unused
+// This will now be an async generator function rather than a class
+export async function* scanBaseLayer(
+	layer: BaseLayer,
+	plan: ScanPlan
+): AsyncIterable<Row> {
+	const { primaryKeyExtractorFromRow: keyFromEntry, primaryKeyComparator } = layer.getPkExtractorsAndComparators(layer.getSchema());
+	const isEqPlan = plan.equalityKey !== undefined;
 
-	private iterator: IterableIterator<Path<any, any>> | null = null;
-	private currentPath: Path<any, any> | null = null;
-	private _isEof: boolean = true;
-	private currentValue: RowIdRow | null = null; // Stores [rowid, data_array] | null
-	private currentModKey: ModificationKey | null = null;
-	private isEqPlanCursor: boolean = false;
-	private readonly tableSchema: TableSchema;
+	const planAppliesToKey = (key: BTreeKey, keyIsIndexKey: boolean): boolean => {
+		const comparator = keyIsIndexKey
+			? layer.secondaryIndexes.get(plan.indexName)?.compareKeys
+			: primaryKeyComparator;
+		if (!comparator) return true;
 
-	constructor(layer: BaseLayer, plan: ScanPlan) {
-		this.layer = layer;
-		this.plan = plan;
-		this.tableSchema = layer.getSchema();
-		this.isEqPlanCursor = plan.equalityKey !== undefined;
+		if (plan.equalityKey !== undefined) return comparator(key, plan.equalityKey) === 0;
 
-		if (plan.indexName === 'primary') {
-			this.targetTree = layer.primaryTree as BTree<BTreeKey, RowIdRow>;
-			this.keyComparator = layer.compareKeys;
-		} else {
-			const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
-			if (!secondaryIndex) {
-				throw new Error(`BaseLayerCursor: Secondary index '${plan.indexName}' not found.`);
-			}
-			this.targetTree = secondaryIndex.data;
-			this.keyComparator = secondaryIndex.compareKeys;
+		const keyForBoundComparison = Array.isArray(key) ? key[0] : key;
+		if (plan.lowerBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
+			const cmp = compareSqlValues(keyForBoundComparison, plan.lowerBound.value);
+			if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
 		}
-		this.initializeIterator();
-	}
-
-	private extractKeyValueAt(path: Path<any, any>): { itemKey: ModificationKey | null, itemValue: RowIdRow | null } {
-		let itemValue: RowIdRow | null = null;
-		let itemKey: ModificationKey | null = null;
-		if (this.plan.indexName === 'primary') {
-			const rowTuple = (this.targetTree as BTree<BTreeKey, RowIdRow>).at(path);
-			if (rowTuple) {
-				itemValue = rowTuple;
-				try { itemKey = this.layer.keyFromEntry(rowTuple); } catch (e) {
-					warnLog("Failed to extract primary key from value at path: %O", e);
-				}
-			}
-		} else {
-			const secondaryEntry = (this.targetTree as BTree<[BTreeKey, bigint], [BTreeKey, bigint]>).at(path);
-			if (secondaryEntry) {
-				itemKey = secondaryEntry;
-				const rowid = secondaryEntry[1];
-				const primaryKeyForRow = this.layer.rowidToKeyMap?.get(rowid) ?? (this.tableSchema.primaryKeyDefinition.length === 0 ? rowid : null);
-				if (primaryKeyForRow !== null) {
-					itemValue = this.layer.primaryTree.get(primaryKeyForRow) ?? null;
-				} else {
-					warnLog(`Could not find PK for rowid %s from secondary index %s.`, rowid, this.plan.indexName);
-				}
-			}
+		if (plan.upperBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
+			const cmp = compareSqlValues(keyForBoundComparison, plan.upperBound.value);
+			if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
 		}
-		return { itemKey, itemValue };
-	}
-
-	private initializeIterator(): void {
-		this.iterator = null; this.currentPath = null; this._isEof = true; this.currentValue = null; this.currentModKey = null;
-		if (this.plan.equalityKey !== undefined) {
-			try {
-				const path = this.targetTree.find(this.plan.equalityKey as any);
-				if (path.on) {
-					const { itemKey, itemValue } = this.extractKeyValueAt(path);
-					if (itemValue && itemKey && this.planAppliesToKey(this.plan, itemKey, this.keyComparator, this.tableSchema)) {
-						this.currentPath = path; this.currentModKey = itemKey; this.currentValue = itemValue; this._isEof = false;
-					} else { this._isEof = true; }
-				} else { this._isEof = true; }
-			} catch (e) { errorLog("EQ find error: %O", e); this._isEof = true; }
-		} else {
-			try {
-				let startPath: Path<any, any> | null = null;
-				if (this.plan.lowerBound?.value !== undefined) {
-					startPath = this.targetTree.find(this.plan.lowerBound.value as any);
-					if (this.plan.lowerBound.op === IndexConstraintOp.GT && startPath?.on) {
-						const tempIter = (this.targetTree as BTree<any,any>).ascending(startPath); tempIter.next(); const nextR = tempIter.next(); startPath = nextR.done ? null : nextR.value;
-					}
-				} else { startPath = this.plan.descending ? this.targetTree.last() : this.targetTree.first(); }
-				if (startPath) {
-					this.iterator = this.plan.descending ? (this.targetTree as BTree<any,any>).descending(startPath) : (this.targetTree as BTree<any,any>).ascending(startPath);
-					this.advanceIterator();
-				} else { this._isEof = true; }
-			} catch (e) { errorLog("Range/Full scan init error: %O", e); this._isEof = true; }
-		}
-	}
-
-	private advanceIterator(): void {
-		if (!this.iterator) { this._isEof = true; return; }
-		while (true) {
-			const result = this.iterator.next();
-			if (result.done) { this.currentPath = null; this.currentValue = null; this.currentModKey = null; this._isEof = true; return; }
-			this.currentPath = result.value;
-			const { itemKey, itemValue } = this.extractKeyValueAt(this.currentPath);
-			if (!itemKey) continue;
-			if (!this.planAppliesToKey(this.plan, itemKey, this.keyComparator, this.tableSchema)) {
-				this.currentPath = null; this.currentValue = null; this.currentModKey = null; this._isEof = true; return;
-			}
-			this.currentModKey = itemKey; this.currentValue = itemValue;
-			this._isEof = !itemValue; // EOF if actual row data is null (e.g. secondary index points to deleted/non-existent PK)
-			if (this.currentValue) return; // Found a valid row (with data)
-		}
-	}
-
-	private planAppliesToKey(plan: ScanPlan, key: ModificationKey, cmpFn: (a:BTreeKey,b:BTreeKey)=>number, _schema: TableSchema): boolean {
-		const keyForComp = plan.indexName === 'primary' ? key as BTreeKey : (key as [BTreeKey, bigint])[0];
-		if (plan.equalityKey !== undefined) return cmpFn(keyForComp, plan.equalityKey) === 0;
-		const firstColKey = this.extractFirstColumnFromKey(key, plan.indexName === 'primary');
-		if (firstColKey === null && (plan.lowerBound || plan.upperBound)) return false;
-		if (plan.lowerBound && firstColKey !== null) { const cmp = compareSqlValues(firstColKey, plan.lowerBound.value); if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false; }
-		if (plan.upperBound && firstColKey !== null) { const cmp = compareSqlValues(firstColKey, plan.upperBound.value); if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false; }
 		return true;
-	}
+	};
 
-	private extractFirstColumnFromKey(key: ModificationKey, isPrimary: boolean): SqlValue | null {
-		const bKey = isPrimary ? key as BTreeKey : (key as [BTreeKey, bigint])[0];
-		return Array.isArray(bKey) ? (bKey[0] as SqlValue) : bKey as SqlValue;
-	}
+	if (plan.indexName === 'primary') {
+		const tree = layer.primaryTree; // BTree<BTreeKeyForPrimary, Row>
 
-	async next(): Promise<void> {
-		if (this._isEof) return;
-		if (this.isEqPlanCursor) { this._isEof = true; this.currentPath = null; this.currentValue = null; this.currentModKey = null; return; }
-		if (!this.iterator) { this._isEof = true; return; }
-		this.advanceIterator();
-	}
+		if (isEqPlan && plan.equalityKey !== undefined) {
+			const row = tree.get(plan.equalityKey as BTreeKeyForPrimary);
+			if (row && planAppliesToKey(plan.equalityKey as BTreeKeyForPrimary, false)) {
+				yield row;
+			}
+			return;
+		}
 
-	getCurrentRowObject(): RowIdRow | null { return this._isEof ? null : this.currentValue; }
-	getCurrentModificationKey(): ModificationKey | null { return this._isEof ? null : this.currentModKey; }
-	isEof(): boolean { return this._isEof; }
-	close(): void { this.iterator = null; this.currentPath = null; this.currentValue = null; this.currentModKey = null; this._isEof = true; }
+		const rangeOptions: any = { ascending: !plan.descending };
+		if (plan.lowerBound) {
+			rangeOptions.from = plan.lowerBound.value as BTreeKeyForPrimary;
+			if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
+		}
+		if (plan.upperBound) {
+			rangeOptions.to = plan.upperBound.value as BTreeKeyForPrimary;
+			if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
+		}
+
+		const iterator = tree.range(rangeOptions);
+
+		for (const path of iterator) {
+			const row = tree.at(path);
+			if (!row) continue;
+			const primaryKey = keyFromEntry(row);
+			if (!planAppliesToKey(primaryKey, false)) continue;
+			yield row;
+		}
+	} else { // Secondary Index Scan
+		const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
+		if (!secondaryIndex) throw new Error(`Secondary index '${plan.indexName}' not found in BaseLayer.`);
+
+		const indexTree = secondaryIndex.data; // BTree<BTreeKeyForIndex, MemoryIndexEntry>
+
+		if (isEqPlan && plan.equalityKey !== undefined) {
+			const indexEntry = indexTree.get(plan.equalityKey as BTreeKeyForIndex);
+			if (indexEntry && planAppliesToKey(indexEntry.indexKey, true)) { // Check if the index key itself is valid by plan
+				for (const pk of indexEntry.primaryKeys) {
+					const row = layer.primaryTree.get(pk);
+					if (row) yield row;
+				}
+			}
+			return;
+		}
+
+		const rangeOptions: any = { ascending: !plan.descending };
+		if (plan.lowerBound) {
+			rangeOptions.from = plan.lowerBound.value as BTreeKeyForIndex;
+			if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
+		}
+		if (plan.upperBound) {
+			rangeOptions.to = plan.upperBound.value as BTreeKeyForIndex;
+			if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
+		}
+
+		const iterator = indexTree.range(rangeOptions);
+
+		for (const path of iterator) {
+			const indexEntry = indexTree.at(path);
+			if (!indexEntry) continue;
+			if (!planAppliesToKey(indexEntry.indexKey, true)) continue;
+			for (const pk of indexEntry.primaryKeys) {
+				const row = layer.primaryTree.get(pk);
+				if (row) {
+					// TODO: Apply remaining ScanPlan constraints to this `row` (those not on the index key)
+					yield row;
+				}
+			}
+		}
+	}
 }
+
+// LayerCursorInternal interface is removed as this file now exports an async generator.
+// If TransactionLayerCursorInternal needs a common interface with this for its parentCursor,
+// that interface would describe an AsyncIterable<Row> with perhaps getCurrentPrimaryKey() if still needed.
+// For now, let parentCursor in TransactionLayerCursorInternal be AsyncIterable<Row>.

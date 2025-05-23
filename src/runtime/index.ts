@@ -8,6 +8,9 @@ import { emitBlock } from "./emit/block.js";
 import { emitParameterReference } from './emit/parameter.js';
 import { emitCreateTable } from './emit/create-table.js';
 import { emitDropTable } from './emit/drop-table.js';
+import { emitInsert } from './emit/insert.js';
+import { emitUpdate } from './emit/update.js';
+import { emitDelete } from './emit/delete.js';
 
 registerEmitter(PlanNodeType.BinaryOp, emitBinaryOp as EmitterFunc);
 registerEmitter(PlanNodeType.Literal, emitLiteral as EmitterFunc);
@@ -17,3 +20,6 @@ registerEmitter(PlanNodeType.Batch, emitBlock as EmitterFunc);
 registerEmitter(PlanNodeType.ParameterReference, emitParameterReference as EmitterFunc);
 registerEmitter(PlanNodeType.CreateTable, emitCreateTable as EmitterFunc);
 registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
+registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);
+registerEmitter(PlanNodeType.Update, emitUpdate as EmitterFunc);
+registerEmitter(PlanNodeType.Delete, emitDelete as EmitterFunc);

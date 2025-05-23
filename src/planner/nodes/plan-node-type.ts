@@ -23,6 +23,11 @@ export enum PlanNodeType {
   CreateTable = 'CreateTable',
   DropTable = 'DropTable',
 
+  // DML Nodes (New)
+  Insert = 'Insert',
+  Update = 'Update',
+  Delete = 'Delete',
+
   // Scalar Nodes (ExpressionNode subtypes)
   Literal = 'Literal',
   ColumnReference = 'ColumnReference',

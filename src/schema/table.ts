@@ -36,8 +36,6 @@ export interface TableSchema {
 	vtabArgs?: Record<string, SqlValue>;
 	/** If virtual, the name the module was registered with */
 	vtabModuleName: string;
-	/** Whether the table is declared WITHOUT ROWID */
-	isWithoutRowid: boolean;
 	/** Whether the table is a temporary table */
 	isTemporary?: boolean;
 	/** Whether the table is a view */
@@ -54,6 +52,10 @@ export interface TableSchema {
 	readonly estimatedRows?: number;
 	/** Whether the table is read-only */
 	isReadOnly?: boolean;	// default false
+	/** Foreign key constraints (parsed but not yet enforced by engine) */
+	// foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
+	/** Unique constraints (beyond primary key) */
+	// uniqueConstraints?: ReadonlyArray<ConstraintSchema>;
 }
 
 /**
@@ -95,7 +97,6 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		pkOrder: 0,
 		defaultValue: null,
 		collation: 'BINARY',
-		hidden: false,
 		generated: false,
 	};
 
@@ -124,13 +125,9 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		}
 	}
 
-	// SQLite rule: If a column has type INTEGER PRIMARY KEY, it maps to rowid
-	// Also, PK implies NOT NULL unless it's INTEGER PRIMARY KEY
+	// PK implies NOT NULL
 	if (schema.primaryKey) {
-		const isIntegerPk = schema.affinity === SqlDataType.INTEGER && pkConstraint;
-		if (!isIntegerPk) {
-			schema.notNull = true;
-		}
+		schema.notNull = true;
 	}
 
 	// Assign a default pkOrder if it's a PK but order isn't specified elsewhere
@@ -200,12 +197,12 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		vtabAuxData: null,
 		vtabArgs: {},
 		vtabModuleName: 'memory',
-		isWithoutRowid: false,
 		isTemporary: false,
 		isView: false,
 		subqueryAST: undefined,
 		viewDefinition: undefined,
 		tableConstraints: [],
+		primaryKey: pkDef.map(def => columnSchemas[def.index].name),
 	});
 }
 
@@ -262,14 +259,12 @@ export interface PrimaryKeyColumnDefinition {
  * Helper to parse primary key from AST column and table constraints.
  * @param columns Parsed column definitions from AST.
  * @param constraints Parsed table constraints from AST.
- * @param withoutRowid Whether the table is a WITHOUT ROWID table.
  * @returns A ReadonlyArray defining the primary key columns (index and direction), or undefined.
  * @throws QuereusError if multiple primary keys are defined or PK column not found.
  */
 export function findPKDefinition(
 	columns: ReadonlyArray<ColumnSchema>,
 	constraints: ReadonlyArray<AST.TableConstraint> | undefined,
-	withoutRowid: boolean,
 ): ReadonlyArray<PrimaryKeyColumnDefinition> {
 	const columnPK = findColumnPKDefinition(columns);
 	const constraintPK = findConstraintPKDefinition(columns, constraints);
@@ -281,18 +276,14 @@ export function findPKDefinition(
 	let finalPkDef = constraintPK ?? columnPK;
 
 	if (!finalPkDef) {
-		if (withoutRowid) {
-			warnLog(`Table is WITHOUT ROWID but no PRIMARY KEY is explicitly defined. Defaulting to all non-generated columns as PRIMARY KEY.`);
-			finalPkDef = Object.freeze(
-				columns.map((col, index) => ({
-					index,
-					desc: false,
-					collation: col.collation || 'BINARY',
-				}))
-			);
-		} else {
-			finalPkDef = Object.freeze([{ index: -1, desc: false, collation: 'BINARY' }]);
-		}
+		warnLog(`No PRIMARY KEY is explicitly defined. Defaulting to all non-generated columns as PRIMARY KEY.`);
+		finalPkDef = Object.freeze(
+			columns.map((col, index) => ({
+				index,
+				desc: false,
+				collation: col.collation || 'BINARY',
+			}))
+		);
 	}
 
 	// Don't require NOT NULL, we want to be more flexible

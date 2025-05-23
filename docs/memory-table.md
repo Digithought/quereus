@@ -8,7 +8,7 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
 **Key Features:**
 
 *   **B+Tree Backend:** Uses the `digitree` library for efficient, sorted storage.
-*   **Flexible Primary Indexing:** Data is primarily indexed by either the implicit `rowid` (default) or by a user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
+*   **Flexible Primary Indexing:** Data is the user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
 *   **Secondary Index Support:** Allows creation of secondary indexes on one or more columns using `CREATE INDEX`. These are also backed by B+Trees for efficient lookups.
 *   **Query Planning:** Implements `xBestIndex` to provide basic query plans:
     *   Considers both primary and secondary indexes.
@@ -31,27 +31,22 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
     // Register the module (can be done once)
     db.registerVtabModule('memory', new MemoryTableModule());
 
-    // Create a table keyed by rowid (default)
+    // Create a table keyed by id
     await db.exec(`
-        CREATE VIRTUAL TABLE main.my_data USING memory(
-            -- Pass the schema definition as an argument
-            "CREATE TABLE x(
-                id INTEGER, -- Just a regular column
-                name TEXT,
-                value REAL
-            )"
+        CREATE TABLE main.my_data(
+            id INTEGER primary key, -- Just a regular column
+            name TEXT,
+            value REAL
         );
     `);
 
-    // Create a table keyed by a specific PRIMARY KEY
+    // Create a table keyed by a composite PRIMARY KEY
     await db.exec(`
-        CREATE VIRTUAL TABLE temp.keyed_data USING memory(
-            "CREATE TABLE y(
-                key_part1 TEXT,
-                key_part2 INTEGER,
-                data BLOB,
-                PRIMARY KEY (key_part1, key_part2) -- Composite key
-            )"
+        CREATE TABLE temp.keyed_data(
+            key_part1 TEXT,
+            key_part2 INTEGER,
+            data BLOB,
+            PRIMARY KEY (key_part1, key_part2) -- Composite key
         );
     `);
 
@@ -67,8 +62,6 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
 
     // Query using the primary key index
     const results = await db.prepare("SELECT * FROM keyed_data WHERE key_part1 = 'A'").all();
-    // Query using rowid
-    const row2 = await db.prepare("SELECT value FROM my_data WHERE rowid = 2").get();
 
     // Drop the secondary index
     await db.exec("DROP INDEX my_data_name_idx");
@@ -76,7 +69,7 @@ The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tre
 
 **Current Limitations:**
 
-*   **Constraint Enforcement:** Only the `UNIQUE` constraint on the primary BTree key (rowid or PRIMARY KEY) is currently enforced. Other constraints like `NOT NULL`, `CHECK`, `FOREIGN KEY` defined in the `CREATE TABLE` string are parsed but *not* enforced by `MemoryTable` itself during `INSERT` or `UPDATE`.
+*   **Constraint Enforcement:** Only the `UNIQUE` constraint on the primary BTree key is currently enforced. Other constraints like `NOT NULL`, `CHECK`, `FOREIGN KEY` defined in the `CREATE TABLE` string are parsed but *not* enforced by `MemoryTable` itself during `INSERT` or `UPDATE`.
 *   **Default Values:** `DEFAULT` clauses are not applied during `INSERT`.
 *   **Advanced Planning:** `xBestIndex` planning is basic. Cost estimation is heuristic. It only considers range scans on the *first* column of an index.
 *   **Index Features:** Indices on expressions are not supported. Collation support in indices is basic (inherits from column).

@@ -26,7 +26,6 @@ export interface GenericModuleCallOptions extends BaseModuleConfig {
 	moduleArgs?: readonly string[];
 	statementColumns?: readonly AST.ColumnDef[];
 	statementConstraints?: readonly AST.TableConstraint[];
-	withoutRowid?: boolean;
 	isTemporary?: boolean;
 }
 
@@ -266,7 +265,6 @@ export class SchemaManager {
 				pkOrder: 0,
 				defaultValue: null,
 				collation: col.collation ?? 'BINARY',
-				hidden: false,
 				generated: false,
 			}));
 
@@ -283,7 +281,6 @@ export class SchemaManager {
 				vtabAuxData: moduleInfo.auxData,
 				vtabArgs: {},
 				vtabModuleName: '_schema',
-				isWithoutRowid: false,
 				isView: false,
 			} satisfies TableSchema;
 		}
@@ -504,14 +501,9 @@ export class SchemaManager {
 
 		const astColumnsToProcess = stmt.columns || [];
 		const astConstraintsToProcess = stmt.constraints;
-		const astWithoutRowidFinal = !!stmt.withoutRowid;
-
-		if (astColumnsToProcess.length === 0 && astWithoutRowidFinal) {
-			throw new QuereusError(`Table '${tableName}' is WITHOUT ROWID and requires column definitions for the PRIMARY KEY.`, StatusCode.MISUSE);
-		}
 
 		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef));
-		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess, astWithoutRowidFinal);
+		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess);
 
 		const finalColumnSchemas = preliminaryColumnSchemas.map((col, idx) => {
 			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
@@ -523,7 +515,7 @@ export class SchemaManager {
 				...col,
 				primaryKey: isPkColumn,
 				pkOrder: pkOrder,
-				notNull: (astWithoutRowidFinal && isPkColumn) ? true : col.notNull,
+				notNull: isPkColumn ? true : col.notNull,
 			};
 		});
 
@@ -548,7 +540,6 @@ export class SchemaManager {
 			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
 			primaryKeyDefinition: pkDefinition,
 			checkConstraints: Object.freeze(checkConstraintsSchema.map(cc => ({name: cc.name, expr: cc.expr}))),
-			isWithoutRowid: astWithoutRowidFinal,
 			isTemporary: !!stmt.isTemporary,
 			isView: false,
 			vtabModuleName: moduleName,

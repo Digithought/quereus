@@ -1,22 +1,30 @@
-import type { RowIdRow, SqlValue } from '../../common/types.js';
+import type { SqlValue } from '../../common/types.js';
+import type { Row } from '../../common/types.js';
 
 /** Key type used in B-Trees (primary key or index key part) */
 export type BTreeKey = SqlValue | SqlValue[];
 
-/** Key used in modification trees (Primary Key or [Secondary Index Key, rowid]) */
-export type ModificationKey = BTreeKey | [BTreeKey, bigint];
+/** Alias for BTreeKey when explicitly referring to a primary key. */
+export type BTreeKeyForPrimary = BTreeKey;
 
-/** Represents a deleted entry in a modification tree */
+/** Alias for BTreeKey when explicitly referring to a key of a secondary index. */
+export type BTreeKeyForIndex = BTreeKey;
+
+/** Represents an entry in a MemoryIndex BTree, mapping an IndexKey to an array of PrimaryKeys */
+export interface MemoryIndexEntry {
+	indexKey: BTreeKeyForIndex;
+	primaryKeys: BTreeKeyForPrimary[];
+}
+
+/** Represents a deleted entry in a modification tree, keyed by its primary key. */
 export interface DeletionMarker {
 	_marker_: typeof DELETED;
-	_key_: ModificationKey; // The key of the deleted item
-	_rowid_: bigint;       // The rowid of the deleted item (now non-optional)
+	_key_: BTreeKeyForPrimary; // The primary key of the deleted item
 }
 
 /**
  * A unique symbol used within TransactionLayer modification trees
- * to explicitly mark a key (and thus the corresponding row) as deleted
- * within that specific layer.
+ * to explicitly mark a primary key as deleted within that specific layer.
  */
 export const DELETED = Symbol('_DELETED_');
 
@@ -25,8 +33,8 @@ export function isDeletionMarker(value: any): value is DeletionMarker {
 	return typeof value === 'object' && value !== null && '_marker_' in value && value._marker_ === DELETED;
 }
 
-/** Value stored in modification trees (either a full row tuple or a deletion marker) */
-export type ModificationValue = RowIdRow | DeletionMarker;
+/** Value stored in primary modification trees (either a full row or a deletion marker for that PK) */
+export type PrimaryModificationValue = Row | DeletionMarker;
 
 /**
  * Configuration options for MemoryTable creation

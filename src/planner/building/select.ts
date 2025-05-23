@@ -18,19 +18,19 @@ import { MultiScope } from '../scopes/multi.js';
  * effectively returning a TableScanNode for that table.
  *
  * @param stmt The AST.SelectStmt to plan.
- * @param context The parent planning context for this SELECT statement.
+ * @param ctx The parent planning context for this SELECT statement.
  * @returns A BatchNode representing the plan for the SELECT statement.
  * @throws {QuereusError} If the FROM clause is missing, empty, or contains more than one source.
  */
 export function buildSelectStmt(
+  ctx: PlanningContext,
   stmt: AST.SelectStmt,
-  context: PlanningContext,
 ): PlanNode {
 
   // Phase 1: Plan FROM clause and determine local input relations for the current select scope
   const fromTables = !stmt.from || stmt.from.length === 0
 		? [SingleRowNode.instance]
-		: stmt.from.map(from => buildFrom(from, context));
+		: stmt.from.map(from => buildFrom(from, ctx));
 
 	// TODO: Support multiple FROM sources (joins)
 	if (fromTables.length > 1) {
@@ -42,9 +42,9 @@ export function buildSelectStmt(
 
 	// Phase 2: Create the main scope for this SELECT statement.
   // This scope sees the parent scope and the relations planned from the FROM clause.
-  const selectScope = new MultiScope([context.scope, ...fromTables.map(ft => ft.scope)]);
+  const selectScope = new MultiScope([ctx.scope, ...fromTables.map(ft => ft.scope)]);
 	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
-	const selectContext: PlanningContext = {...context, scope: selectScope};
+	const selectContext: PlanningContext = {...ctx, scope: selectScope};
 
 	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
 

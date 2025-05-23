@@ -1,16 +1,16 @@
 import { VirtualTable } from '../table.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../module.js';
 import type { IndexInfo } from '../index-info.js';
-import { type SqlValue, StatusCode, SqlDataType, type Row, type RowIdRow } from '../../common/types.js';
+import { type SqlValue, StatusCode, SqlDataType, type Row } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
 import type { Database } from '../../core/database.js';
 import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from '../../func/builtins/json-helpers.js';
 import type { TableSchema } from '../../schema/table.js';
 import { createDefaultColumnSchema } from '../../schema/column.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
-import type { IndexConstraint } from '../index-info.js';
 import { jsonStringify } from '../../util/serialization.js';
 import type { FilterInfo } from '../filter-info.js';
+import type { RowOp } from '../../parser/ast.js';
 
 /**
  * Configuration interface for JSON virtual tables
@@ -74,8 +74,6 @@ class JsonTreeTable extends VirtualTable {
 			primaryKeyDefinition: [],
 			vtabModule: module as any,
 			vtabModuleName: 'json_tree',
-			isWithoutRowid: false,
-			isStrict: false,
 			isView: false,
 			vtabAuxData: undefined,
 			vtabArgs: {},
@@ -100,7 +98,11 @@ class JsonTreeTable extends VirtualTable {
 		return StatusCode.OK;
 	}
 
-	async xUpdate(): Promise<{ rowid?: bigint }> {
+	async xUpdate(
+		_operation: RowOp,
+		_values: Row | undefined,
+		_oldKeyValues?: Row
+	): Promise<Row | undefined> {
 		throw new QuereusError("json_tree table is read-only", StatusCode.READONLY);
 	}
 
@@ -115,7 +117,7 @@ class JsonTreeTable extends VirtualTable {
 	async xDisconnect(): Promise<void> { /* No-op */ }
 	async xDestroy(): Promise<void> { /* No-op */ }
 
-	async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+	async* xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
 		const rootPath = this.rootPath;
 		let startNode = this.parsedJson;
 		if (rootPath) {
@@ -160,7 +162,7 @@ class JsonTreeTable extends VirtualTable {
 					path
 				];
 				state.childrenPushed = true;
-				yield [BigInt(id), row];
+				yield row;
 
 				if (isContainer) {
 					const parentIdForRow = id;

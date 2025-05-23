@@ -204,7 +204,7 @@ with old_orders as (
 
 ### 2.5 CREATE TABLE Statement
 
-The create table statement defines a new table structure.
+The create table statement defines a new table structure.  Note that all tables are "without rowid" implicitly.
 
 **Syntax:**
 ```sql
@@ -212,7 +212,6 @@ create [temp | temporary] table [if not exists] table_name (
   column_definition [, column_definition...]
   [, table_constraint...]
 )
-[without rowid]
 [using module_name [(module_args...)]]
 ```
 
@@ -237,7 +236,7 @@ column_name [data_type] [column_constraint...]
 **Table Constraints:**
 ```sql
 [constraint name]
-{ primary key (column [asc | desc][,...]) [conflict_clause]
+{ primary key ([column [asc | desc][,...]]) [conflict_clause]
 | unique (column[,...]) [conflict_clause]
 | check (expr) [on {insert | update | delete}[,...]]
 | foreign key (column[,...]) references foreign_table [(column[,...])] [ref_actions] }
@@ -249,11 +248,11 @@ on conflict { rollback | abort | fail | ignore | replace }
 ```
 
 **Options:**
+- If an empty key column list is provided, the table may have 0 or 1 rows.
 - `temp/temporary`: Creates a temporary table
 - `if not exists`: Creates the table only if it doesn't already exist
 - `column_definition`: Defines a column with optional constraints
-- `table_constraint`: Defines a table-level constraint
-- `without rowid`: Creates a table without an implicit rowid column
+- `table_constraint`: Defines a table-level transition constraint
 - `using module_name`: Specifies a virtual table module
 
 **Examples:**
@@ -1491,9 +1490,7 @@ commit;
 try {
   await db.exec("begin");
   
-  await db.exec("insert into orders (customer_id, total) values (?, ?)", [42, 129.99]);
-  const orderIdResult = await db.eval("select last_insert_rowid() as id").next();
-  const orderId = orderIdResult.value.id;
+  const orderId = await db.get("insert into orders (customer_id, total) values (?, ?) returning (id)", [42, 129.99]);
   
   await db.exec("insert into order_items (order_id, product_id, quantity) values (?, ?, ?)",
     [orderId, 101, 2]);
@@ -1852,7 +1849,6 @@ delete_stmt        = "delete" "from" table_name [ where_clause ] ;
 /* CREATE TABLE statement */
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
                      table_name "(" column_def { "," ( column_def | table_constraint ) } ")"
-                     [ "without" "rowid" ]
                      [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ] ;
 
 column_def         = column_name [ type_name ] { column_constraint } ;

@@ -17,8 +17,8 @@ describe.skip('Query Planner - Base Access', () => {
     it('should handle simple WHERE clause with EQ constraint', () => {
         // 1. Setup: Define schema and mock the table
         const t1Cols: ColumnSchema[] = [
-            { name: 'id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 'name', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 'name', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
         ];
         const t1ColMap = new Map(t1Cols.map((c, i) => [c.name.toLowerCase(), i]));
 
@@ -30,8 +30,6 @@ describe.skip('Query Planner - Base Access', () => {
                 columnIndexMap: t1ColMap,
                 primaryKeyDefinition: [],
                 checkConstraints: [],
-                isWithoutRowid: false,
-                isStrict: false,
                 isTemporary: false,
                 isView: false,
             },
@@ -74,8 +72,8 @@ describe.skip('Query Planner - Base Access', () => {
     it('should handle ORDER BY consumed by index', () => {
         // 1. Setup: Define schema and mock the table
         const t1Cols: ColumnSchema[] = [
-            { name: 'id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
-            { name: 'name', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false, hidden: false },
+            { name: 'id', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+            { name: 'name', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
         ];
         const t1ColMap = new Map(t1Cols.map((c, i) => [c.name.toLowerCase(), i]));
 
@@ -87,8 +85,6 @@ describe.skip('Query Planner - Base Access', () => {
                 columnIndexMap: t1ColMap,
                 primaryKeyDefinition: [],
                 checkConstraints: [],
-                isWithoutRowid: false, // Important: ORDER BY rowid or PK requires this
-                isStrict: false,
                 isTemporary: false,
                 isView: false,
             },

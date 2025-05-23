@@ -12,54 +12,53 @@ export type Projection = { node: ScalarPlanNode, alias?: string };
  * It takes an input relation and outputs a new relation with specified columns/expressions.
  */
 export class ProjectNode extends PlanNode implements UnaryRelationalNode {
-  override readonly nodeType = PlanNodeType.Project;
+	override readonly nodeType = PlanNodeType.Project;
 
-  private outputTypeCache: Cached<RelationType>;
+	private outputTypeCache: Cached<RelationType>;
 
-  constructor(
-    scope: Scope,
-    public readonly source: RelationalPlanNode,
-    public readonly projections: ReadonlyArray<Projection>,
-    estimatedCostOverride?: number
-  ) {
-    super(scope, estimatedCostOverride);
+	constructor(
+		scope: Scope,
+		public readonly source: RelationalPlanNode,
+		public readonly projections: ReadonlyArray<Projection>,
+		estimatedCostOverride?: number
+	) {
+		super(scope, estimatedCostOverride);
 
 		this.outputTypeCache = new Cached(() => ({
-				typeClass: 'relation',
-				isReadOnly: this.source.getType().isReadOnly,
-				columns: this.projections.map((proj, index) => ({
-						name: proj.alias ?? expressionToString(proj.node.expression),
-						type: proj.node.getType(),
-						hidden: false,
-						generated: proj.node.nodeType !== PlanNodeType.ColumnReference,
-					})),
-				// TODO: Infer keys based on DISTINCT and projection's effect on input keys
-				keys: [],
-				// TODO: propagate row constraints that don't have projected off columns
-				rowConstraints: [],
-			} as RelationType));
-  }
+			typeClass: 'relation',
+			isReadOnly: this.source.getType().isReadOnly,
+			columns: this.projections.map((proj, index) => ({
+				name: proj.alias ?? expressionToString(proj.node.expression),
+				type: proj.node.getType(),
+				generated: proj.node.nodeType !== PlanNodeType.ColumnReference,
+			})),
+			// TODO: Infer keys based on DISTINCT and projection's effect on input keys
+			keys: [],
+			// TODO: propagate row constraints that don't have projected off columns
+			rowConstraints: [],
+		} as RelationType));
+	}
 
-  getType(): RelationType {
-    return this.outputTypeCache.value;
-  }
+	getType(): RelationType {
+		return this.outputTypeCache.value;
+	}
 
-  getChildren(): readonly ScalarPlanNode[] {
-    return this.projections.map(p => p.node);
-  }
+	getChildren(): readonly ScalarPlanNode[] {
+		return this.projections.map(p => p.node);
+	}
 
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.source];
 	}
 
-  get estimatedRows(): number | undefined {
-    return this.source.estimatedRows; // Projection doesn't change row count - use DistinctNode to handle DISTINCT
-  }
+	get estimatedRows(): number | undefined {
+		return this.source.estimatedRows; // Projection doesn't change row count - use DistinctNode to handle DISTINCT
+	}
 
-  override toString(): string {
-    const projectionStrings = this.projections.map(p =>
-      `${p.node.toString()}${p.alias ? ` as ${p.alias}` : ''}`
-    );
-    return `${this.nodeType} (${projectionStrings.join(', ')}) from (${this.source.toString()})`;
-  }
+	override toString(): string {
+		const projectionStrings = this.projections.map(p =>
+			`${p.node.toString()}${p.alias ? ` as ${p.alias}` : ''}`
+		);
+		return `${this.nodeType} (${projectionStrings.join(', ')}) from (${this.source.toString()})`;
+	}
 }

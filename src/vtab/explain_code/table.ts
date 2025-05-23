@@ -1,12 +1,12 @@
 import { VirtualTable } from '../table.js';
 import type { ExplainProgramModule } from './module.js';
 import type { Database } from '../../core/database.js';
-import { EXPLAIN_PROGRAM_SCHEMA } from './schema.js'; // Import schema
+import { EXPLAIN_PROGRAM_SCHEMA } from './schema.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode, type RowIdRow } from '../../common/types.js'; // Added RowIdRow
-import type { TableSchema } from '../../schema/table.js'; // Import TableSchema
-import type { Row, SqlValue } from '../../common/types.js';
-import type { FilterInfo } from '../filter-info.js'; // Added FilterInfo
+import { StatusCode, type Row } from '../../common/types.js';
+import type { TableSchema } from '../../schema/table.js';
+import type { FilterInfo } from '../filter-info.js';
+import type { RowOp } from '../../parser/ast.js';
 
 interface DummyProgram {
     instructions: any[]; // Can be empty
@@ -44,16 +44,18 @@ export class ExplainProgramTable extends VirtualTable {
     // Implement required abstract methods
     async xDisconnect(): Promise<void> {}
 
-    async xUpdate(): Promise<{ rowid?: bigint; }> {
+    async xUpdate(
+      _operation: RowOp,
+      _values?: Row,
+      _oldKeyValues?: Row
+    ): Promise<Row | undefined> {
         throw new QuereusError("Cannot modify explain_program table", StatusCode.READONLY);
     }
 
-    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<RowIdRow> {
+    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
         // Stubbed out: yield no rows.
-        // The original logic iterated this.program.instructions.
-        // For now, we make it a no-op.
-        if (false) { // Keep yield for type, but make it unreachable
-            yield [] as unknown as RowIdRow;
+        if (false) {
+            yield [] as Row; // Make it type-check, but unreachable
         }
         return;
     }

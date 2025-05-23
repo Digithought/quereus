@@ -5,10 +5,11 @@
         "backpatched",
         "digitree",
         "LPAREN",
+        "quereus",
+        "Rootward",
         "RPAREN",
         "SAVEPOINT",
         "savepoints",
-        "quereus",
         "Vdbe",
         "vtab"
     ]

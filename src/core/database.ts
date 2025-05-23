@@ -16,7 +16,6 @@ import { SchemaTableModule } from '../vtab/schema/table.js';
 import { ExplainPlanModule } from '../vtab/explain_plan/module.js';
 import { ExplainProgramModule } from '../vtab/explain_code/module.js';
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
-import { exportSchemaJson as exportSchemaJsonUtil, importSchemaJson as importSchemaJsonUtil } from '../schema/serialization.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
 import { buildBlock } from '../planner/building/block.js';
@@ -400,27 +399,6 @@ export class Database {
 			errorLog(`Failed to register function ${schema.name}/${schema.numArgs}: %O`, e);
 			if (e instanceof Error) throw e; else throw new Error(String(e));
 		}
-	}
-
-	/**
-	 * Exports the current database schema (tables and function signatures)
-	 * to a JSON string.
-	 * @returns A JSON string representing the schema.
-	 */
-	exportSchemaJson(): string {
-		return exportSchemaJsonUtil(this);
-	}
-
-	/**
-	 * Imports a database schema from a JSON string.
-	 * Clears existing non-core schemas (like attached) before importing.
-	 * Function implementations must be re-registered manually after import.
-	 * Virtual tables will need to be reconnected (potentially requires a separate step or lazy connect).
-	 * @param jsonString The JSON string representing the schema.
-	 * @throws Error on parsing errors or invalid schema format.
-	 */
-	importSchemaJson(jsonString: string): void {
-		importSchemaJsonUtil(this, jsonString);
 	}
 
 	/** Sets only the name of the default module. */

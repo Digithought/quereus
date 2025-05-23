@@ -4,14 +4,14 @@ import { SqlDataType } from '../../common/types.js';
 
 // Define the fixed schema for the vdbe_program function
 export const EXPLAIN_PROGRAM_COLUMNS: ReadonlyArray<ColumnSchema> = Object.freeze([
-    { name: 'addr',    affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'opcode',  affinity: SqlDataType.TEXT,    notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'p1',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'p2',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'p3',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'p4',      affinity: SqlDataType.TEXT,    notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'p5',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
-    { name: 'comment', affinity: SqlDataType.TEXT,    notNull: false, primaryKey: false, pkOrder: 0, hidden: false, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'addr',    affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'opcode',  affinity: SqlDataType.TEXT,    notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'p1',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'p2',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'p3',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'p4',      affinity: SqlDataType.TEXT,    notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'p5',      affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
+    { name: 'comment', affinity: SqlDataType.TEXT,    notNull: false, primaryKey: false, pkOrder: 0, collation: 'BINARY', generated: false, defaultValue: null },
 ]);
 
 export const EXPLAIN_PROGRAM_SCHEMA: TableSchema = Object.freeze({
@@ -28,6 +28,5 @@ export const EXPLAIN_PROGRAM_SCHEMA: TableSchema = Object.freeze({
     vtabArgs: {},
     isTemporary: true,
     isView: false,
-    isWithoutRowid: true, // Doesn't have a rowid
     subqueryAST: undefined,
-}) as TableSchema;
+} satisfies TableSchema);

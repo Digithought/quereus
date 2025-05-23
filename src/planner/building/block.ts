@@ -5,13 +5,16 @@ import { buildSelectStmt } from './select.js';
 import type { PlanningContext } from '../planning-context.js';
 import { buildCreateTableStmt } from './create-table.js';
 import { buildDropTableStmt } from './drop-table.js';
+import { buildInsertStmt } from './insert.js';
+import { buildUpdateStmt } from './update.js';
+import { buildDeleteStmt } from './delete.js';
 
 export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
 		switch (stmt.type) {
 			case 'select':
 				// buildSelectStmt returns a BatchNode, which is a PlanNode.
-				return buildSelectStmt(stmt as AST.SelectStmt, ctx);
+				return buildSelectStmt(ctx, stmt as AST.SelectStmt);
 			case 'createTable':
 				return buildCreateTableStmt(ctx, stmt as AST.CreateTableStmt);
 			case 'drop':
@@ -19,6 +22,12 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 					return buildDropTableStmt(ctx, stmt as AST.DropStmt);
 				}
 				break;
+			case 'insert':
+				return buildInsertStmt(ctx, stmt as AST.InsertStmt);
+			case 'update':
+				return buildUpdateStmt(ctx, stmt as AST.UpdateStmt);
+			case 'delete':
+				return buildDeleteStmt(ctx, stmt as AST.DeleteStmt);
 			default:
 				// Placeholder for other statement types
 				return undefined;

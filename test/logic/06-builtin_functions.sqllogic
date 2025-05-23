@@ -50,10 +50,10 @@ SELECT json_array_length('[1, 2, 3]');
 
 -- Aggregate JSON Functions (Need table context)
 PRAGMA default_vtab_module='memory';
-CREATE TABLE json_agg_t (grp TEXT, val);
-INSERT INTO json_agg_t VALUES ('A', 1), ('B', 'x'), ('A', 2), ('B', 'y');
+CREATE TABLE json_agg_t (id INT, grp TEXT, val);
+INSERT INTO json_agg_t VALUES (1, 'A', 1), (2, 'B', 'x'), (3, 'A', 2), (4, 'B', 'y');
 SELECT grp, json_group_array(val) FROM json_agg_t GROUP BY grp ORDER BY grp;
 → [{"grp":"A","json_group_array(val)":"[1,2]"},{"grp":"B","json_group_array(val)":"[\"x\",\"y\"]"}]
-SELECT grp, json_group_object(val, id) FROM (SELECT *, rowid as id FROM json_agg_t) GROUP BY grp ORDER BY grp;
+SELECT grp, json_group_object(val, id) FROM (SELECT *, id FROM json_agg_t) GROUP BY grp ORDER BY grp;
 → [{"grp":"A","json_group_object(val, id)":"{\"1\":1,\"2\":3}"},{"grp":"B","json_group_object(val, id)":"{\"x\":2,\"y\":4}"}]
 DROP TABLE json_agg_t;
