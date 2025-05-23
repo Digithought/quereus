@@ -43,26 +43,38 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Range or full scan options
-		const rangeOptions: any = { ascending: !plan.descending };
-		if (plan.lowerBound) {
-			rangeOptions.from = plan.lowerBound.value as BTreeKeyForPrimary;
-			if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
-		}
-		if (plan.upperBound) {
-			rangeOptions.to = plan.upperBound.value as BTreeKeyForPrimary;
-			if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
-		}
+		// Use BTree range iteration with proper Inheritree API
+		// For full table scan, we scan all keys in ascending order (unless plan.descending is true)
+		const isAscending = !plan.descending;
 
-		// Use BTree range iteration
-		const iterator = tree.range(rangeOptions);
+		// If no bounds specified, do a full scan
+		if (!plan.lowerBound && !plan.upperBound) {
+			// Full table scan - use ascending/descending iterators directly
+			const startPath = isAscending ? tree.first() : tree.last();
+			if (!startPath) return; // Empty tree
 
-		for (const path of iterator) {
-			const row = tree.at(path);
-			if (!row) continue;
-			const primaryKey = keyFromEntry(row);
-			if (!planAppliesToKey(primaryKey, false)) continue;
-			yield row;
+			const iterator = isAscending ? tree.ascending(startPath) : tree.descending(startPath);
+			for (const path of iterator) {
+				const row = tree.at(path);
+				if (!row) continue;
+				const primaryKey = keyFromEntry(row);
+				if (!planAppliesToKey(primaryKey, false)) continue;
+				yield row;
+			}
+		} else {
+			// Range scan - this would need the proper KeyRange API
+			// For now, fall back to full scan and filter
+			const startPath = isAscending ? tree.first() : tree.last();
+			if (!startPath) return; // Empty tree
+
+			const iterator = isAscending ? tree.ascending(startPath) : tree.descending(startPath);
+			for (const path of iterator) {
+				const row = tree.at(path);
+				if (!row) continue;
+				const primaryKey = keyFromEntry(row);
+				if (!planAppliesToKey(primaryKey, false)) continue;
+				yield row;
+			}
 		}
 	} else { // Secondary Index Scan
 		const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
@@ -81,19 +93,12 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Range or full scan on secondary index
-		const rangeOptions: any = { ascending: !plan.descending };
-		if (plan.lowerBound) {
-			rangeOptions.from = plan.lowerBound.value as BTreeKeyForIndex;
-			if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
-		}
-		if (plan.upperBound) {
-			rangeOptions.to = plan.upperBound.value as BTreeKeyForIndex;
-			if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
-		}
+		// Secondary index range scan - use direct iteration for now
+		const isAscending = !plan.descending;
+		const startPath = isAscending ? indexTree.first() : indexTree.last();
+		if (!startPath) return; // Empty tree
 
-		const iterator = indexTree.range(rangeOptions);
-
+		const iterator = isAscending ? indexTree.ascending(startPath) : indexTree.descending(startPath);
 		for (const path of iterator) {
 			const indexEntry = indexTree.at(path);
 			if (!indexEntry) continue;

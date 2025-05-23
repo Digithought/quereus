@@ -58,40 +58,39 @@ export async function* scanTransactionLayer(
 
 		const { primaryKeyExtractorFromRow } = layer.getPkExtractorsAndComparators(tableSchema);
 
-		// Set up range options for the scan
-		const rangeOptions: any = { ascending: !plan.descending };
+		// Use proper Inheritree API for iteration
+		const isAscending = !plan.descending;
 
 		if (plan.equalityKey) {
-			rangeOptions.from = plan.equalityKey as BTreeKeyForPrimary;
-			rangeOptions.to = plan.equalityKey as BTreeKeyForPrimary;
+			// For equality scans, just get the specific value
+			const value = primaryTree.get(plan.equalityKey as BTreeKeyForPrimary);
+			if (value && !isDeletionMarker(value)) {
+				const row = value as Row;
+				const primaryKey = primaryKeyExtractorFromRow(row);
+				if (planAppliesToKey(primaryKey, false)) {
+					yield row;
+				}
+			}
 		} else {
-			if (plan.lowerBound) {
-				rangeOptions.from = plan.lowerBound.value as BTreeKeyForPrimary;
-				if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
-			}
-			if (plan.upperBound) {
-				rangeOptions.to = plan.upperBound.value as BTreeKeyForPrimary;
-				if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
-			}
-		}
+			// For full scans or range scans, use ascending/descending iterators
+			const startPath = isAscending ? primaryTree.first() : primaryTree.last();
+			if (!startPath) return; // Empty tree
 
-		// Iterate over the inherited BTree - it automatically handles parent data
-		const iterator = primaryTree.range ? primaryTree.range(rangeOptions) :
-			(plan.descending ? primaryTree.descending(primaryTree.last()!) : primaryTree.ascending(primaryTree.first()!));
+			const iterator = isAscending ? primaryTree.ascending(startPath) : primaryTree.descending(startPath);
+			for (const path of iterator) {
+				const value = primaryTree.at(path);
+				if (!value) continue;
 
-		for (const path of iterator) {
-			const value = primaryTree.at(path);
-			if (!value) continue;
+				// Skip deletion markers
+				if (isDeletionMarker(value)) continue;
 
-			// Skip deletion markers
-			if (isDeletionMarker(value)) continue;
+				const row = value as Row;
+				const primaryKey = primaryKeyExtractorFromRow(row);
 
-			const row = value as Row;
-			const primaryKey = primaryKeyExtractorFromRow(row);
-
-			// Apply plan filters
-			if (planAppliesToKey(primaryKey, false)) {
-				yield row;
+				// Apply plan filters
+				if (planAppliesToKey(primaryKey, false)) {
+					yield row;
+				}
 			}
 		}
 	} else {
@@ -101,43 +100,48 @@ export async function* scanTransactionLayer(
 			throw new QuereusError(`Secondary index ${plan.indexName} not found in TransactionLayer.`);
 		}
 
-		// Set up range options for the secondary index scan
-		const rangeOptions: any = { ascending: !plan.descending };
+		// Use proper Inheritree API for secondary index iteration
+		const isAscending = !plan.descending;
 
 		if (plan.equalityKey) {
-			rangeOptions.from = plan.equalityKey as BTreeKeyForIndex;
-			rangeOptions.to = plan.equalityKey as BTreeKeyForIndex;
-		} else {
-			if (plan.lowerBound) {
-				rangeOptions.from = plan.lowerBound.value as BTreeKeyForIndex;
-				if (plan.lowerBound.op === IndexConstraintOp.GT) rangeOptions.fromExclusive = true;
-			}
-			if (plan.upperBound) {
-				rangeOptions.to = plan.upperBound.value as BTreeKeyForIndex;
-				if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
-			}
-		}
-
-		// Iterate over the inherited secondary index BTree
-		const iterator = secondaryTree.range ? secondaryTree.range(rangeOptions) :
-			(plan.descending ? secondaryTree.descending(secondaryTree.last()!) : secondaryTree.ascending(secondaryTree.first()!));
-
-		for (const path of iterator) {
-			const indexEntry = secondaryTree.at(path);
-			if (!indexEntry) continue;
-
-			// Apply plan filters to the index key
-			if (planAppliesToKey(indexEntry.indexKey, true)) {
+			// For equality scans on secondary index
+			const indexEntry = secondaryTree.get(plan.equalityKey as BTreeKeyForIndex);
+			if (indexEntry && planAppliesToKey(indexEntry.indexKey, true)) {
 				// Get the primary tree to fetch actual rows
 				const primaryTree = layer.getModificationTree('primary');
-				if (!primaryTree) continue;
+				if (primaryTree) {
+					for (const pk of indexEntry.primaryKeys) {
+						const value = primaryTree.get(pk);
+						if (value && !isDeletionMarker(value)) {
+							const row = value as Row;
+							yield row;
+						}
+					}
+				}
+			}
+		} else {
+			// For full scans or range scans on secondary index
+			const startPath = isAscending ? secondaryTree.first() : secondaryTree.last();
+			if (!startPath) return; // Empty tree
 
-				// For each primary key in this index entry, fetch the row
-				for (const pk of indexEntry.primaryKeys) {
-					const value = primaryTree.get(pk);
-					if (value && !isDeletionMarker(value)) {
-						const row = value as Row;
-						yield row;
+			const iterator = isAscending ? secondaryTree.ascending(startPath) : secondaryTree.descending(startPath);
+			for (const path of iterator) {
+				const indexEntry = secondaryTree.at(path);
+				if (!indexEntry) continue;
+
+				// Apply plan filters to the index key
+				if (planAppliesToKey(indexEntry.indexKey, true)) {
+					// Get the primary tree to fetch actual rows
+					const primaryTree = layer.getModificationTree('primary');
+					if (!primaryTree) continue;
+
+					// For each primary key in this index entry, fetch the row
+					for (const pk of indexEntry.primaryKeys) {
+						const value = primaryTree.get(pk);
+						if (value && !isDeletionMarker(value)) {
+							const row = value as Row;
+							yield row;
+						}
 					}
 				}
 			}

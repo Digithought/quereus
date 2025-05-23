@@ -45,6 +45,12 @@ function createSingleColumnPrimaryKeyFunctions(
 	const descMultiplier = columnDef.desc ? -1 : 1;
 
 	const extractFromRow = (row: Row): BTreeKeyForPrimary => {
+		if (!row || !Array.isArray(row)) {
+			throw new QuereusError(
+				`Primary key extraction requires a valid row array, got: ${typeof row}`,
+				StatusCode.INTERNAL
+			);
+		}
 		if (pkColIndex < 0 || pkColIndex >= row.length) {
 			throw new QuereusError(
 				`PK index ${pkColIndex} is out of bounds for row length ${row.length}`,
@@ -68,6 +74,12 @@ function createCompositeColumnPrimaryKeyFunctions(
 	pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>
 ): PrimaryKeyFunctions {
 	const extractFromRow = (row: Row): BTreeKeyForPrimary => {
+		if (!row || !Array.isArray(row)) {
+			throw new QuereusError(
+				`Primary key extraction requires a valid row array, got: ${typeof row}`,
+				StatusCode.INTERNAL
+			);
+		}
 		return pkDefinition.map(def => {
 			if (def.index < 0 || def.index >= row.length) {
 				throw new QuereusError(

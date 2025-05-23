@@ -35,8 +35,9 @@ export class MemoryTableConnection {
 			warnLog(`Connection %d: BEGIN called while already in a transaction.`, this.connectionId);
 			return;
 		}
-		// Directly create TransactionLayer, no getTransactionLayerConstructor() needed from manager
-		this.pendingTransactionLayer = new TransactionLayer(this.readLayer);
+		// Create TransactionLayer based on the manager's current committed layer
+		// This ensures the parent check in commitTransaction will pass
+		this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
 	}
 
 	/** Commits the current transaction */

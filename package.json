@@ -19,10 +19,14 @@
   },
   "scripts": {
     "clean": "aegir clean",
+    "doc": "npx typedoc -out docs src",
     "build": "aegir build --env node",
     "lint": "aegir lint",
-    "test": "aegir test",
+    "test:all": "aegir test",
     "test:node": "aegir test --target node",
+    "test": "node --loader=ts-node/esm node_modules/mocha/bin/mocha.js test/**/*.spec.ts --colors",
+    "test:single": "node --loader=ts-node/esm node_modules/mocha/bin/mocha.js",
+    "prepublish": "npm run build && npm run doc",
     "dep-check": "aegir dep-check"
   },
 	"aegir": {
@@ -31,16 +35,22 @@
 		}
 	},
   "devDependencies": {
-    "@eslint/js": "^9.26.0",
     "@types/chai": "^4.3.11",
     "@types/node": "^22.13.10",
     "aegir": "^45.1.4",
     "chai": "^4.3.10",
-    "eslint": "^9.26.0",
     "fast-check": "^4.1.1",
     "tsc-alias": "^1.8.15",
-    "typescript": "^5.8.3",
-    "typescript-eslint": "^8.32.0"
+
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "eslint": "^9.27.0",
+
+		"typedoc": "^0.28.4",
+
+		"ts-node": "^10.9.2",
+
+		"typescript": "^5.8.3"
   },
   "dependencies": {
     "debug": "^4.4.0",

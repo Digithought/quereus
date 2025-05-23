@@ -29,7 +29,7 @@ export class MemoryTableManager {
 	public get tableName() { return this._tableName; }
 
 	private baseLayer: BaseLayer;
-	private currentCommittedLayer: Layer;
+	private _currentCommittedLayer: Layer;
 	private connections: Map<number, MemoryTableConnection> = new Map();
 	public readonly isReadOnly: boolean;
 	public tableSchema: TableSchema;
@@ -54,7 +54,7 @@ export class MemoryTableManager {
 		this.initializePrimaryKeyFunctions();
 
 		this.baseLayer = new BaseLayer(this.tableSchema);
-		this.currentCommittedLayer = this.baseLayer;
+		this._currentCommittedLayer = this.baseLayer;
 	}
 
 	private initializePrimaryKeyFunctions(): void {
@@ -69,8 +69,12 @@ export class MemoryTableManager {
 		return this.primaryKeyFunctions.compare;
 	}
 
+	public get currentCommittedLayer(): Layer {
+		return this._currentCommittedLayer;
+	}
+
 	public connect(): MemoryTableConnection {
-		const connection = new MemoryTableConnection(this, this.currentCommittedLayer);
+		const connection = new MemoryTableConnection(this, this._currentCommittedLayer);
 		this.connections.set(connection.connectionId, connection);
 		return connection;
 	}
@@ -114,21 +118,22 @@ export class MemoryTableManager {
 		const release = await Latches.acquire(lockKey);
 		logger.debugLog(`[Commit ${connection.connectionId}] Acquired lock for ${this._tableName}`);
 		try {
-			if (pendingLayer.getParent() !== this.currentCommittedLayer) {
+			if (pendingLayer.getParent() !== this._currentCommittedLayer) {
 				connection.pendingTransactionLayer = null;
 				connection.clearSavepoints();
 				logger.warn('Commit Transaction', this._tableName, 'Stale commit detected, rolling back', { connectionId: connection.connectionId });
 				throw new QuereusError(`Commit failed: concurrent update on table ${this._tableName}. Retry.`, StatusCode.BUSY);
 			}
 			pendingLayer.markCommitted();
-			this.currentCommittedLayer = pendingLayer;
+			this._currentCommittedLayer = pendingLayer;
 			logger.debugLog(`[Commit ${connection.connectionId}] CurrentCommittedLayer set to ${pendingLayer.getLayerId()} for ${this._tableName}`);
 			connection.readLayer = pendingLayer;
 			connection.pendingTransactionLayer = null;
 			connection.clearSavepoints();
-			this.tryCollapseLayers().catch(err => {
-				logger.error('Commit Transaction', this._tableName, 'Background layer collapse error', err);
-			});
+			// Disable automatic layer collapse for now
+			// this.tryCollapseLayers().catch(err => {
+			// 	logger.error('Commit Transaction', this._tableName, 'Background layer collapse error', err);
+			// });
 		} finally {
 			release();
 			logger.debugLog(`[Commit ${connection.connectionId}] Released lock for ${this._tableName}`);
@@ -153,8 +158,8 @@ export class MemoryTableManager {
 			logger.debugLog(`[Collapse] Acquired lock for ${this._tableName}`);
 			let collapsedCount = 0;
 
-			while (this.currentCommittedLayer instanceof TransactionLayer && this.currentCommittedLayer.isCommitted()) {
-				const layerToPromote = this.currentCommittedLayer as TransactionLayer;
+			while (this._currentCommittedLayer instanceof TransactionLayer && this._currentCommittedLayer.isCommitted()) {
+				const layerToPromote = this._currentCommittedLayer as TransactionLayer;
 				const parentLayer = layerToPromote.getParent();
 				if (!parentLayer) {
 					logger.error('Collapse Layers', this._tableName, 'Committed TransactionLayer has no parent', { layerId: layerToPromote.getLayerId() });
@@ -180,7 +185,7 @@ export class MemoryTableManager {
 
 				// Update the current committed layer to point to the parent
 				// The transaction layer's BTrees are now independent and contain all the data
-				this.currentCommittedLayer = parentLayer;
+				this._currentCommittedLayer = parentLayer;
 				logger.debugLog(`[Collapse] CurrentCommittedLayer set to ${parentLayer.getLayerId()} for ${this._tableName}`);
 
 				// Update connections that were reading from the collapsed layer
@@ -199,7 +204,7 @@ export class MemoryTableManager {
 			if (collapsedCount > 0) {
 				logger.operation('Collapse Layers', this._tableName, { collapsedCount });
 			} else {
-				logger.debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: ${this.currentCommittedLayer.getLayerId()}`);
+				logger.debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: ${this._currentCommittedLayer.getLayerId()}`);
 			}
 		} catch (e: any) {
 			logger.error('Collapse Layers', this._tableName, e);
@@ -241,6 +246,8 @@ export class MemoryTableManager {
 		oldKeyValues?: Row
 	): Promise<Row | undefined> {
 		this.validateMutationPermissions(operation);
+
+		const wasInTransaction = !!connection.pendingTransactionLayer;
 		this.ensureTransactionLayer(connection);
 
 		const targetLayer = connection.pendingTransactionLayer!;
@@ -248,19 +255,35 @@ export class MemoryTableManager {
 		this.cleanConflictResolutionFromValues(values);
 
 		try {
+			let result: Row | undefined;
+
 			switch (operation) {
 				case 'insert':
-					return await this.performInsert(targetLayer, values, onConflict);
+					result = await this.performInsert(targetLayer, values, onConflict);
+					break;
 				case 'update':
-					return await this.performUpdate(targetLayer, values, oldKeyValues, onConflict);
+					result = await this.performUpdate(targetLayer, values, oldKeyValues, onConflict);
+					break;
 				case 'delete':
-					return await this.performDelete(targetLayer, oldKeyValues);
+					result = await this.performDelete(targetLayer, oldKeyValues);
+					break;
 				default:
 					const exhaustiveCheck: never = operation;
 					throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
 			}
+
+			// Auto-commit if we weren't already in a transaction
+			if (!wasInTransaction && this.db.getAutocommit()) {
+				await this.commitTransaction(connection);
+			}
+
+			return result;
 		} catch (e) {
 			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {
+				// Auto-commit the transaction even when ignoring constraint errors
+				if (!wasInTransaction && this.db.getAutocommit()) {
+					await this.commitTransaction(connection);
+				}
 				return undefined;
 			}
 			throw e;
@@ -268,7 +291,7 @@ export class MemoryTableManager {
 	}
 
 	private validateMutationPermissions(operation: 'insert' | 'update' | 'delete'): void {
-		if (this.isReadOnly && operation !== 'insert') {
+		if (this.isReadOnly) {
 			throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
 		}
 	}
@@ -643,7 +666,7 @@ export class MemoryTableManager {
 				if (connection.pendingTransactionLayer) connection.rollback();
 			}
 			this.connections.clear();
-			this.currentCommittedLayer = this.baseLayer;
+			this._currentCommittedLayer = this.baseLayer;
 			this.baseLayer = new BaseLayer(this.tableSchema);
 			logger.operation('Destroy', this._tableName, 'Manager destroyed and data cleared');
 		} finally {
@@ -652,10 +675,10 @@ export class MemoryTableManager {
 	}
 
 	private async ensureSchemaChangeSafety(): Promise<void> {
-		if (this.currentCommittedLayer !== this.baseLayer) {
+		if (this._currentCommittedLayer !== this.baseLayer) {
 			logger.warn('Schema Change', this._tableName, 'Transaction layers exist. Attempting collapse...');
 			await this.tryCollapseLayers();
-			if (this.currentCommittedLayer !== this.baseLayer) {
+			if (this._currentCommittedLayer !== this.baseLayer) {
 				throw new QuereusError(
 					`Cannot perform schema change on table ${this._tableName} while older transaction versions are in use by active connections. Commit/rollback active transactions and retry.`,
 					StatusCode.BUSY

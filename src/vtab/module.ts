@@ -103,4 +103,4 @@ export interface VirtualTableModule<
 export type SchemaChangeInfo =
 	| { type: 'addColumn'; columnDef: ColumnDef }
 	| { type: 'dropColumn'; columnName: string }
-	| { type: 'renameColumn'; oldName: string; newName: string };
+	| { type: 'renameColumn'; oldName: string; newName: string; newColumnDefAst?: ColumnDef };

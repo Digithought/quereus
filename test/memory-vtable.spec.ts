@@ -7,7 +7,7 @@ import type { ColumnSchema } from "../src/schema/column.js";
 import type { FilterInfo } from "../src/vtab/filter-info.js";
 import type { IndexInfo } from "../src/vtab/index-info.js";
 import { StatusCode, SqlDataType } from "../src/common/types.js";
-import { IndexConstraintOp } from "../src/common/constants.js";
+import { IndexConstraintOp, ConflictResolution } from "../src/common/constants.js";
 
 describe("Memory VTable Module", () => {
 	let db: Database;
@@ -234,7 +234,7 @@ describe("Memory VTable Module", () => {
 
 			// Simulate INSERT OR IGNORE by setting conflict resolution
 			const rowWithConflictRes = [1, 'other@example.com'];
-			(rowWithConflictRes as any)._onConflict = 'IGNORE';
+			(rowWithConflictRes as any)._onConflict = ConflictResolution.IGNORE;
 
 			const result = await table.xUpdate('insert', rowWithConflictRes);
 			expect(result).to.be.undefined; // IGNORE should return undefined
@@ -596,7 +596,12 @@ describe("Memory VTable Module", () => {
 			await table.xAlterSchema({
 				type: 'renameColumn',
 				oldName: 'name',
-				newName: 'full_name'
+				newName: 'full_name',
+				newColumnDefAst: {
+					name: 'full_name',
+					dataType: 'TEXT',
+					constraints: []
+				}
 			});
 
 			const schema = table.getSchema();
