@@ -53,7 +53,7 @@ export function emitUpdate(plan: UpdateNode): Instruction {
 	}
 
 	async function* runLogic(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentSqlValues: SqlValue[]): AsyncIterable<Row> {
-		const vtab = getVTable(ctx, plan.table.tableSchema);
+		const vtab = await getVTable(ctx, plan.table.tableSchema);
 		try {
 			for await (const row of sourceRowsIterable) {
 				for await (const returningRow of processAndUpdateRow(vtab, row, assignmentSqlValues)) {

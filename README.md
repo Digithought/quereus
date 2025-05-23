@@ -142,6 +142,7 @@ To add logging within a module:
 *   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions.
 *   Async core execution.
 *   **No Rowids / `WITHOUT ROWID` by Default**: All tables are addressed by their Primary Key, similar to SQLite's `WITHOUT ROWID` tables being the only mode. The `WITHOUT ROWID` clause is not used.
+*   **Implicit Primary Key Behavior**: When no explicit PRIMARY KEY is defined, Quereus includes all columns in the primary key. This differs from SQLite which uses the first INTEGER column or an implicit rowid. This design choice ensures predictable behavior and avoids potential confusion with SQLite's implicit rules.
 *   No plans for:
     *   Triggers
     *   Persistent file storage (can be a VTab module)

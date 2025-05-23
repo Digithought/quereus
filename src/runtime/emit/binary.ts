@@ -36,7 +36,7 @@ export function emitNumericOp(plan: BinaryOpNode): Instruction {
 		if (v1 !== null && v2 !== null) {
 			if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
 				try {
-					return inner(BigInt(v1 as any), BigInt(v2 as any)) ? 1 : 0;
+					return inner(BigInt(v1 as any), BigInt(v2 as any));
 				} catch {
 					return null;
 				}
@@ -49,7 +49,7 @@ export function emitNumericOp(plan: BinaryOpNode): Instruction {
 						if (!Number.isFinite(result)) {
 							return null;
 						}
-						return result ? 1 : 0;
+						return result;
 					} catch {
 						return null;
 					}

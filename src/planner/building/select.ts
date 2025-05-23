@@ -10,6 +10,8 @@ import { AliasedScope } from '../scopes/aliased.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import type { Scope } from '../scopes/scope.js';
 import { MultiScope } from '../scopes/multi.js';
+import { ProjectNode, type Projection } from '../nodes/project-node.js';
+import { buildExpression } from './expression.js';
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -41,36 +43,83 @@ export function buildSelectStmt(
 	}
 
 	// Phase 2: Create the main scope for this SELECT statement.
-  // This scope sees the parent scope and the relations planned from the FROM clause.
-  const selectScope = new MultiScope([ctx.scope, ...fromTables.map(ft => ft.scope)]);
+  // This scope sees the parent scope and the column scopes from the FROM clause.
+  const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
+  const selectScope = new MultiScope([ctx.scope, ...columnScopes]);
 	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
 	const selectContext: PlanningContext = {...ctx, scope: selectScope};
 
 	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
 
-	// TODO: Plan WHERE clause using currentExpressionPlanningContext, potentially creating a FilterNode
+	// TODO: Plan WHERE clause using selectContext, potentially creating a FilterNode
 
 	// TODO: inject a DistinctPlanNode if DISTINCT is present
 
-  //const projections: Projection[] = [];
-  // TODO: Populate projections based on stmt.columns using currentExpressionPlanningContext to resolve expressions to ScalarPlanNodes
-  // For SELECT *, create ColumnReferenceNodes for each column in filteredInput.getType().columns
-  // For other expressions, call a new planExpression(astExpr, currentExpressionPlanningContext) function that returns ScalarPlanNode.
-  // Example:
-  // stmt.columns.forEach(col => {
-		//   if (col.type === 'column' && col.expr) {
-  //      const scalarNode = planExpression(col.expr, currentExpressionPlanningContext);
-  //      projections.push({ node: scalarNode, alias: col.alias });
-  //   } else if (col.type === 'all') { /* handle star */ }
-  // });
-  //const projectNode = new ProjectNode(currentScope, filteredInput, projections);
+	// Build projections based on the SELECT list
+	const projections: Projection[] = [];
+
+	for (const column of stmt.columns) {
+		if (column.type === 'all') {
+			// Handle SELECT * or table.*
+			const inputColumns = input.getType().columns;
+
+			if (column.table) {
+				// Handle qualified SELECT table.*
+				// For now, we'll assume the table qualifier matches our single input table
+				// TODO: Handle qualified star with multiple tables/joins
+				const inputTableName = (input as any).source?.tableSchema?.name;
+				const tableMatches = column.table.toLowerCase() === inputTableName?.toLowerCase();
+				if (!tableMatches) {
+					throw new QuereusError(
+						`Table '${column.table}' not found in FROM clause for qualified SELECT *`,
+						StatusCode.ERROR
+					);
+				}
+			}
+
+			// Add a projection for each column in the input relation
+			inputColumns.forEach((columnDef, index) => {
+				// Create a ColumnReferenceNode for this column
+				const columnExpr: AST.ColumnExpr = {
+					type: 'column',
+					name: columnDef.name,
+					// Don't set table qualifier for SELECT * projections to avoid confusion
+				};
+
+				const columnRef = new ColumnReferenceNode(
+					selectScope,
+					columnExpr,
+					columnDef.type,
+					input,
+					index
+				);
+
+				projections.push({
+					node: columnRef,
+					alias: columnDef.name // Use the original column name as alias
+				});
+			});
+		} else if (column.type === 'column') {
+			// Handle specific expressions
+			const scalarNode = buildExpression(selectContext, column.expr);
+			projections.push({
+				node: scalarNode,
+				alias: column.alias // Use the specified alias, if any
+			});
+		}
+	}
+
+	// Create ProjectNode if we have projections, otherwise return input as-is
+	if (projections.length > 0) {
+		input = new ProjectNode(selectScope, input, projections);
+	}
 
 	return input;
 }
 
 export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext): RelationalPlanNode {
   let fromTable: RelationalPlanNode;
-  let fromScope: Scope;
+  let columnScope: Scope;
 
 	if (fromClause.type === 'table') {
 		fromTable = buildTableScan(fromClause, parentContext);
@@ -79,10 +128,16 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		fromTable.getType().columns.forEach((c, i) =>
 			tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));
+
 		if (fromClause.alias) {
-			const aliasScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
+			columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
 		} else {
+			columnScope = tableScope;
 		}
+
+		// For now, we'll store the column scope in a property that buildSelectStmt can use
+		// TODO: This is a temporary solution; we might need a better design
+		(fromTable as any).columnScope = columnScope;
 	} else {
 		throw new QuereusError(
 			`Unsupported FROM clause item type: ${fromClause.type}`,

@@ -1,8 +1,8 @@
-import { QuereusError } from '../common/errors';
-import { StatusCode } from '../common/types';
-import type { TableSchema } from '../schema/table';
-import type { VirtualTable } from '../vtab/table';
-import type { RuntimeContext } from './types';
+import { QuereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
+import type { TableSchema } from '../schema/table.js';
+import type { VirtualTable } from '../vtab/table.js';
+import type { RuntimeContext } from './types.js';
 import type { TableReferenceNode } from "../planner/nodes/reference.js";
 
 export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
@@ -12,7 +12,7 @@ export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
 /**
  * Helper to get the VirtualTable instance for a given TableReferenceNode.
  */
-export async function getVTable(ctx: RuntimeContext, tableSchema: TableSchema): VirtualTable {
+export async function getVTable(ctx: RuntimeContext, tableSchema: TableSchema): Promise<VirtualTable> {
 	// All tables are virtual, so vtabModuleName should always be present.
 	if (!tableSchema.vtabModuleName) {
 		throw new QuereusError(`Table schema for '${tableSchema.name}' is missing vtabModuleName.`, StatusCode.INTERNAL);

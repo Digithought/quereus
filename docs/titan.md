@@ -25,7 +25,7 @@ Mission: Migrate Quereus' compiler and runtime from fragile messes to a robust, 
 
 The new query processing architecture is built upon two primary pillars, designed for clarity, extensibility, and robust execution:
 
-1.  **Immutable `PlanNode`s**: These objects represent the logical structure of the query. They are constructed from the Abstract Syntax Tree (AST) and contain all necessary information for their part of the query, but do not directly generate executable code or hold mutable emission state. They form a tree that serves as the input for the runtime generation process.
+1.  **Partly Immutable `PlanNode`s**: These objects represent the logical structure of the query. They are constructed from the Abstract Syntax Tree (AST) and contain all necessary information for their part of the query, but do not directly generate executable code or hold mutable emission state. They form a tree that serves as the input for the runtime generation process.  They should be immutable in relation to the logical aspects of the query, but mutable in relation to the physical aspects of the query.  In other words, they should be mutable in the ways needed to optimize the physical execution of the query, but are constrained in terms logical aspects to avoid breaking the logical structure during optimization.
 2.  **`Instruction`-based Runtime**: The query execution is driven by a graph of `Instruction` objects, which are generated from the `PlanNode` tree. These instructions are managed and executed by a `Scheduler`.
 
 This separation allows for a modular system where the logical representation of a query is distinct from its physical execution details.

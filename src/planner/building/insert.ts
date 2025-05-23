@@ -21,7 +21,11 @@ export function buildInsertStmt(
 
 	let targetColumns: ColumnDef[] = [];
 	if (stmt.columns && stmt.columns.length > 0) {
+		// Explicit columns specified
 		targetColumns = stmt.columns.map((colName, index) => columnSchemaToDef(colName, tableReference.tableSchema.columns[index]));
+	} else {
+		// No explicit columns - default to all table columns in order
+		targetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
 	}
 
 	let sourceNode: RelationalPlanNode;
@@ -29,11 +33,10 @@ export function buildInsertStmt(
 		const rows = stmt.values.map(rowExprs =>
 			rowExprs.map(expr => buildExpression(ctx, expr) as PlanNode as ScalarPlanNode)
 		);
-		// TODO: checkColumnsAssignable from values
-		// For now just check that there are the right number of columns in each row
+		// Check that there are the right number of columns in each row
 		rows.forEach(row => {
 			if (row.length !== targetColumns.length) {
-				throw new QuereusError('Column count mismatch in VALUES clause.', StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+				throw new QuereusError(`Column count mismatch in VALUES clause. Expected ${targetColumns.length} columns, got ${row.length}.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
 		});
 		sourceNode = new ValuesNode(ctx.scope, rows);

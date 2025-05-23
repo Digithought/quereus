@@ -11,6 +11,9 @@ import { emitDropTable } from './emit/drop-table.js';
 import { emitInsert } from './emit/insert.js';
 import { emitUpdate } from './emit/update.js';
 import { emitDelete } from './emit/delete.js';
+import { emitProject } from './emit/project.js';
+import { emitColumnReference } from './emit/column-reference.js';
+import { emitValues } from './emit/values.js';
 
 registerEmitter(PlanNodeType.BinaryOp, emitBinaryOp as EmitterFunc);
 registerEmitter(PlanNodeType.Literal, emitLiteral as EmitterFunc);
@@ -23,3 +26,6 @@ registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
 registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);
 registerEmitter(PlanNodeType.Update, emitUpdate as EmitterFunc);
 registerEmitter(PlanNodeType.Delete, emitDelete as EmitterFunc);
+registerEmitter(PlanNodeType.Project, emitProject as EmitterFunc);
+registerEmitter(PlanNodeType.ColumnReference, emitColumnReference as EmitterFunc);
+registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);

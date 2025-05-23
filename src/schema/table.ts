@@ -276,12 +276,15 @@ export function findPKDefinition(
 	let finalPkDef = constraintPK ?? columnPK;
 
 	if (!finalPkDef) {
-		warnLog(`No PRIMARY KEY is explicitly defined. Defaulting to all non-generated columns as PRIMARY KEY.`);
+		// Quereus-specific behavior: Include all columns in the primary key when no explicit primary key is defined
+		// This differs from SQLite which would use the first INTEGER column or an implicit rowid
+		// This design choice ensures predictable behavior and avoids potential confusion with SQLite's implicit rules
+		warnLog(`No PRIMARY KEY explicitly defined. Including all columns in primary key.`);
 		finalPkDef = Object.freeze(
 			columns.map((col, index) => ({
 				index,
 				desc: false,
-				collation: col.collation || 'BINARY',
+				collation: col.collation || 'BINARY'
 			}))
 		);
 	}
