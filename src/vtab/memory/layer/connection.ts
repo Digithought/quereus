@@ -33,7 +33,6 @@ export class MemoryTableConnection {
 			// If there's already a pending transaction, commit it first if it's not explicit
 			if (!this.explicitTransaction) {
 				// This is likely an auto-created transaction from mutations, commit it silently
-				debugLog(`Connection %d: Auto-committing existing transaction before explicit BEGIN.`, this.connectionId);
 				// Note: We can't call commit() here as it's async, so we'll just discard it
 				// This is safe because auto-created transactions should be immediately committed anyway
 				this.pendingTransactionLayer = null;
@@ -58,12 +57,9 @@ export class MemoryTableConnection {
 			return;
 		}
 
-		debugLog(`Connection %d: Committing transaction layer %d`, this.connectionId, this.pendingTransactionLayer.getLayerId());
-
 		await this.tableManager.commitTransaction(this);
 		// commitTransaction handles updating connection state (readLayer, pendingTransactionLayer)
-		this.savepoints.clear(); // Clear savepoints on commit
-		this.explicitTransaction = false; // Clear explicit transaction flag
+		this.clearTransactionState();
 	}
 
 	/** Rolls back the current transaction */
@@ -78,12 +74,21 @@ export class MemoryTableConnection {
 
 		// Simply discard the pending layer
 		this.pendingTransactionLayer = null;
-		this.savepoints.clear(); // Clear savepoints on rollback
-		this.explicitTransaction = false; // Clear explicit transaction flag
+		this.clearTransactionState();
+	}
+
+	/** Helper method to clear transaction-related state */
+	private clearTransactionState(): void {
+		this.savepoints.clear();
+		this.explicitTransaction = false;
 	}
 
 	/** Creates a savepoint with the given identifier */
 	createSavepoint(savepointIndex: number): void {
+		if (savepointIndex < 0) {
+			throw new Error(`Invalid savepoint index: ${savepointIndex}. Must be non-negative.`);
+		}
+
 		if (!this.pendingTransactionLayer) {
 			// Quereus treats SAVEPOINT outside a transaction as an implicit BEGIN + SAVEPOINT
 			this.begin();
@@ -93,8 +98,6 @@ export class MemoryTableConnection {
 			throw new Error(`Failed to create transaction for savepoint ${savepointIndex}`);
 		}
 
-		debugLog(`Connection %d: Creating savepoint %d, current layer ID: %d`, this.connectionId, savepointIndex, this.pendingTransactionLayer.getLayerId());
-
 		// Create a snapshot of the current transaction state
 		const savepointLayer = this.createTransactionSnapshot(this.pendingTransactionLayer);
 
@@ -103,12 +106,13 @@ export class MemoryTableConnection {
 
 		// Continue using the current layer for future operations
 		// Future changes will only affect this layer, not the snapshot
-
-		debugLog(`Connection %d: Created savepoint at index %d, savepoint layer: %d (snapshot), current layer: %d`,
-			this.connectionId, savepointIndex, savepointLayer.getLayerId(), this.pendingTransactionLayer.getLayerId());
 	}
 
-	/** Creates a snapshot of a transaction layer by copying its effective data to a new independent layer */
+	/**
+	 * Creates a snapshot of a transaction layer by copying its effective data to a new independent layer.
+	 * This is necessary because BTree inheritance can cause shared mutable state issues.
+	 * The snapshot becomes immutable and independent of the source layer.
+	 */
 	private createTransactionSnapshot(sourceLayer: TransactionLayer): TransactionLayer {
 		// Create a new transaction layer based on the source layer's parent
 		// This ensures the snapshot is independent of the source layer
@@ -116,18 +120,32 @@ export class MemoryTableConnection {
 
 		// Copy all data from the source layer to the snapshot
 		const primaryTree = sourceLayer.getModificationTree('primary');
-		if (primaryTree) {
-			const firstPath = primaryTree.first();
-			if (firstPath) {
-				const iterator = primaryTree.ascending(firstPath);
-				for (const path of iterator) {
-					const row = primaryTree.at(path);
-					if (row) {
-						// Extract primary key and record the row in the snapshot
-						const { primaryKeyExtractorFromRow } = sourceLayer.getPkExtractorsAndComparators(sourceLayer.getSchema());
-						const primaryKey = primaryKeyExtractorFromRow(row as Row);
-						snapshotLayer.recordUpsert(primaryKey, row as Row, null);
-					}
+		if (!primaryTree) {
+			// Empty transaction layer - just return the empty snapshot
+			snapshotLayer.markCommitted();
+			return snapshotLayer;
+		}
+
+		const firstPath = primaryTree.first();
+		if (!firstPath) {
+			// No data in the tree - return the empty snapshot
+			snapshotLayer.markCommitted();
+			return snapshotLayer;
+		}
+
+		// Copy all rows from the source layer
+		const { primaryKeyExtractorFromRow } = sourceLayer.getPkExtractorsAndComparators(sourceLayer.getSchema());
+		const iterator = primaryTree.ascending(firstPath);
+
+		for (const path of iterator) {
+			const row = primaryTree.at(path);
+			if (row) {
+				try {
+					// Extract primary key and record the row in the snapshot
+					const primaryKey = primaryKeyExtractorFromRow(row as Row);
+					snapshotLayer.recordUpsert(primaryKey, row as Row, null);
+				} catch (error) {
+					warnLog(`Connection %d: Failed to copy row to savepoint snapshot: %o`, this.connectionId, error);
 				}
 			}
 		}
@@ -142,6 +160,11 @@ export class MemoryTableConnection {
 	releaseSavepoint(savepointIndex: number): void {
 		if (!this.pendingTransactionLayer) return; // No transaction, nothing to release
 
+		if (savepointIndex < 0) {
+			warnLog(`Connection %d: Invalid savepoint index %d for release.`, this.connectionId, savepointIndex);
+			return;
+		}
+
 		// Remove this savepoint and any with higher indices
 		for (const idx of Array.from(this.savepoints.keys())) {
 			if (idx >= savepointIndex) {
@@ -155,14 +178,16 @@ export class MemoryTableConnection {
 	rollbackToSavepoint(savepointIndex: number): void {
 		if (!this.pendingTransactionLayer) return; // No transaction, nothing to rollback to
 
+		if (savepointIndex < 0) {
+			warnLog(`Connection %d: Invalid savepoint index %d for rollback.`, this.connectionId, savepointIndex);
+			return;
+		}
+
 		const savepoint = this.savepoints.get(savepointIndex);
 		if (!savepoint) {
 			warnLog(`Connection %d: Savepoint %d not found for rollback.`, this.connectionId, savepointIndex);
 			return;
 		}
-
-		debugLog(`Connection %d: Rolling back from layer %d to savepoint %d (layer %d)`,
-			this.connectionId, this.pendingTransactionLayer.getLayerId(), savepointIndex, savepoint.getLayerId());
 
 		// Restore the transaction layer to the savepoint state
 		// Instead of creating a new layer, we directly set the pending layer to the savepoint
@@ -174,9 +199,6 @@ export class MemoryTableConnection {
 				this.savepoints.delete(idx);
 			}
 		}
-
-		debugLog(`Connection %d: Rolled back to savepoint %d, current layer: %d`,
-			this.connectionId, savepointIndex, this.pendingTransactionLayer.getLayerId());
 	}
 
 	public clearSavepoints(): void {

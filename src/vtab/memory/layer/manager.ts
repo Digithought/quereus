@@ -263,8 +263,6 @@ export class MemoryTableManager {
 		this.ensureTransactionLayer(connection);
 
 		const targetLayer = connection.pendingTransactionLayer!;
-		logger.debugLog(`[Mutation] Connection ${connection.connectionId} ${operation} targeting layer ${targetLayer.getLayerId()}`);
-
 		const onConflict = this.extractConflictResolution(values);
 		this.cleanConflictResolutionFromValues(values);
 
