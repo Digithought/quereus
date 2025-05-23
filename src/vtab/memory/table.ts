@@ -7,14 +7,13 @@ import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { createLogger } from '../../common/logger.js';
 import type { FilterInfo } from '../filter-info.js';
 import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';
-import type { CreateIndexStmt as ASTCreateIndexStmt } from '../../parser/ast.js'; // For xCreateIndex
 import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js'; // Assuming this will be updated for renameColumn
+import { createMemoryTableLoggers } from './utils/logging.js';
+import { safeJsonStringify } from '../../util/serialization.js';
 
-const log = createLogger('vtab:memory:table');
-const errorLog = log.extend('error');
+const logger = createMemoryTableLoggers('table');
 
 /**
  * Represents a connection-specific instance of an in-memory table using the layer-based MVCC model.
@@ -70,11 +69,11 @@ export class MemoryTable extends VirtualTable {
 		const conn = this.ensureConnection();
 		const currentSchema = this.manager.tableSchema;
 		if (!currentSchema) {
-			errorLog("MemoryTable.xQuery: Table schema is undefined.");
+			logger.error('xQuery', this.tableName, 'Table schema is undefined');
 			return;
 		}
 		const plan = buildScanPlanFromFilterInfo(filterInfo, currentSchema);
-		log('MemoryTable.xQuery invoked, plan: %O', plan);
+		logger.debugLog(`xQuery invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
 
 		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
 		// Delegate scanning to the manager, which handles layer recursion
@@ -125,6 +124,7 @@ export class MemoryTable extends VirtualTable {
 
 	/** Renames the underlying table via the manager */
 	async xRename(newName: string): Promise<void> {
+		logger.operation('Rename', this.tableName, { newName });
 		await this.manager.renameTable(newName);
 		// Update this instance's schema reference after rename
 		this.tableSchema = this.manager.tableSchema;
@@ -172,7 +172,7 @@ export class MemoryTable extends VirtualTable {
 			}
 			this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 		} catch (e) {
-			errorLog(`Failed to apply schema change to ${this.tableName}: %O`, e);
+			logger.error('Schema Change', this.tableName, e);
 			// Manager DDL methods should handle reverting their own BaseLayer schema updates on error.
 			// Refresh local schema ref to ensure it's consistent with manager after potential error/revert.
 			this.tableSchema = originalManagerSchema;
@@ -194,11 +194,13 @@ export class MemoryTable extends VirtualTable {
 
 	// --- Index DDL methods delegate to the manager ---
 	async xCreateIndex(indexSchema: IndexSchema): Promise<void> {
+		logger.operation('Create Index', this.tableName, { indexName: indexSchema.name });
 		await this.manager.createIndex(indexSchema);
 		this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 	}
 
 	async xDropIndex(indexName: string): Promise<void> {
+		logger.operation('Drop Index', this.tableName, { indexName });
 		await this.manager.dropIndex(indexName);
 		// Update schema reference
 		this.tableSchema = this.manager.tableSchema;

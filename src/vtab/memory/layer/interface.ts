@@ -1,6 +1,6 @@
 import type { BTree } from 'inheritree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue, MemoryIndexEntry } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue, MemoryIndexEntry } from '../types.js';
 import type { Row } from '../../../common/types.js';
 
 /**

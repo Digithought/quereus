@@ -1,10 +1,7 @@
 import type { Layer } from './interface.js';
 import { TransactionLayer } from './transaction.js'; // Changed to value import
 import type { MemoryTableManager } from './manager.js';
-import type { ScanPlan } from './scan-plan.js';
-import { BaseLayer } from './base.js'; // Changed to value import
 import { createLogger } from '../../../common/logger.js';
-import type { Row } from '../../../common/types.js';
 
 let connectionCounter = 0;
 const log = createLogger('vtab:memory:layer:connection');

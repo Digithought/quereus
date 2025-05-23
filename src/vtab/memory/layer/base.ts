@@ -4,150 +4,136 @@ import type { BTreeKeyForPrimary, BTreeKeyForIndex, DeletionMarker, MemoryIndexE
 import type { Layer } from './interface.js';
 import { MemoryIndex } from '../index.js';
 import { isDeletionMarker } from '../types.js';
-import { createLogger } from '../../../common/logger.js';
 import { safeJsonStringify } from '../../../util/serialization.js';
 import type { Row, SqlValue } from '../../../common/types.js';
-import { compareSqlValues } from '../../../util/comparison.js';
-import { StatusCode } from '../../../common/types.js';
-import { QuereusError } from '../../../common/errors.js';
 import { type ColumnSchema } from '../../../schema/column.js';
 import type { IndexSchema } from '../../../schema/table.js';
+import { createPrimaryKeyFunctions, type PrimaryKeyFunctions } from '../utils/primary-key.js';
+import { createMemoryTableLoggers } from '../utils/logging.js';
 
 let baseLayerCounter = 0;
-const log = createLogger('vtab:memory:layer:base');
-const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
-
-export function createBaseLayerPkFunctions(schema: TableSchema): {
-	keyFromEntry: (row: Row) => BTreeKeyForPrimary;
-	compareKeys: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
-} {
-	const pkDef = schema.primaryKeyDefinition ?? [];
-	if (pkDef.length === 0) {
-		throw new QuereusError(`Table schema '${schema.name}' must have a primaryKeyDefinition for key-based operations.`, StatusCode.INTERNAL);
-	}
-
-	let keyFromEntry: (row: Row) => BTreeKeyForPrimary;
-	let compareKeys: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
-
-	if (pkDef.length === 1) {
-		const colDef = pkDef[0];
-		const pkColIndex = colDef.index;
-		const collation = colDef.collation || 'BINARY';
-		const descMultiplier = colDef.desc ? -1 : 1;
-
-		keyFromEntry = (row: Row): BTreeKeyForPrimary => {
-			if (pkColIndex < 0 || pkColIndex >= row.length) throw new QuereusError(`PK index ${pkColIndex} OOB for row len ${row.length}`, StatusCode.INTERNAL);
-			return row[pkColIndex];
-		};
-		compareKeys = (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
-			return compareSqlValues(a as SqlValue, b as SqlValue, collation) * descMultiplier;
-		};
-	} else { // Composite PK
-		const pkColDefs = pkDef; // Array of PrimaryKeyColumnDefinition
-		keyFromEntry = (row: Row): BTreeKeyForPrimary => {
-			return pkColDefs.map(def => {
-				if (def.index < 0 || def.index >= row.length) throw new QuereusError(`PK index ${def.index} OOB for row len ${row.length}`, StatusCode.INTERNAL);
-				return row[def.index];
-			});
-		};
-		compareKeys = (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
-			const arrA = a as SqlValue[];
-			const arrB = b as SqlValue[];
-			for (let i = 0; i < pkColDefs.length; i++) {
-				if (i >= arrA.length || i >= arrB.length) return arrA.length - arrB.length;
-				const def = pkColDefs[i];
-				const cmp = compareSqlValues(arrA[i], arrB[i], def.collation || 'BINARY');
-				if (cmp !== 0) return def.desc ? -cmp : cmp;
-			}
-			return 0;
-		};
-	}
-	return { keyFromEntry, compareKeys };
-}
+const logger = createMemoryTableLoggers('layer:base');
 
 export class BaseLayer implements Layer {
 	private readonly layerId: number;
 	public tableSchema: TableSchema;
-	private _keyFromEntry!: (row: Row) => BTreeKeyForPrimary;
-	private _compareKeys!: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
+	private primaryKeyFunctions!: PrimaryKeyFunctions;
 	public primaryTree: BTree<BTreeKeyForPrimary, Row>;
 	public readonly secondaryIndexes: Map<string, MemoryIndex>;
 
 	constructor(schema: TableSchema) {
 		this.layerId = baseLayerCounter++;
 		this.tableSchema = schema;
-		this.reinitializePkFunctions();
-		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(this._keyFromEntry, this._compareKeys);
+		this.initializePrimaryKeyFunctions();
+		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(
+			this.primaryKeyFunctions.extractFromRow,
+			this.primaryKeyFunctions.compare
+		);
 		this.secondaryIndexes = new Map();
 		this.rebuildAllSecondaryIndexes();
 	}
 
 	public updateSchema(newSchema: TableSchema): void {
-		log(`BaseLayer for ${this.tableSchema.name}: Schema being updated to reflect ${newSchema.name}`);
+		logger.operation('Schema Update', this.tableSchema.name, {
+			from: this.tableSchema.name,
+			to: newSchema.name
+		});
 		this.tableSchema = newSchema;
-		this.reinitializePkFunctions();
+		this.initializePrimaryKeyFunctions();
 	}
 
-	private reinitializePkFunctions(): void {
-		if (!this.tableSchema.primaryKeyDefinition || this.tableSchema.primaryKeyDefinition.length === 0) {
-			throw new QuereusError(`Table '${this.tableSchema.name}' must have a primaryKeyDefinition.`, StatusCode.INTERNAL);
-		}
-		const pkFuncs = createBaseLayerPkFunctions(this.tableSchema);
-		this._keyFromEntry = pkFuncs.keyFromEntry;
-		this._compareKeys = pkFuncs.compareKeys;
+	private initializePrimaryKeyFunctions(): void {
+		this.primaryKeyFunctions = createPrimaryKeyFunctions(this.tableSchema);
 	}
 
 	private async rebuildAllSecondaryIndexes(): Promise<void> {
+		this.clearExistingSecondaryIndexes();
+
+		if (!this.hasSecondaryIndexes()) {
+			return;
+		}
+
+		const newIndexes = this.createSecondaryIndexes();
+		this.populateSecondaryIndexes(newIndexes);
+		this.replaceSecondaryIndexes(newIndexes);
+	}
+
+	private clearExistingSecondaryIndexes(): void {
 		this.secondaryIndexes.forEach(index => index.clear());
-		if (!this.tableSchema.indexes || this.tableSchema.indexes.length === 0) return;
+	}
 
-		const newSecondaryIndexes = new Map<string, MemoryIndex>();
-		for (const indexSchema of this.tableSchema.indexes) {
+	private hasSecondaryIndexes(): boolean {
+		return Boolean(this.tableSchema.indexes && this.tableSchema.indexes.length > 0);
+	}
+
+	private createSecondaryIndexes(): Map<string, MemoryIndex> {
+		const newIndexes = new Map<string, MemoryIndex>();
+
+		for (const indexSchema of this.tableSchema.indexes!) {
 			try {
-				newSecondaryIndexes.set(indexSchema.name, new MemoryIndex(indexSchema, this.tableSchema.columns));
+				const memoryIndex = new MemoryIndex(indexSchema, this.tableSchema.columns);
+				newIndexes.set(indexSchema.name, memoryIndex);
 			} catch (e: any) {
-				errorLog(`BaseLayer.rebuildAllSecondaryIndexes: Error creating index '${indexSchema.name}': ${e.message}`);
+				logger.error('Create Index', this.tableSchema.name, e, { indexName: indexSchema.name });
 			}
 		}
-		this.secondaryIndexes.clear();
-		newSecondaryIndexes.forEach((idx, name) => this.secondaryIndexes.set(name, idx));
 
+		return newIndexes;
+	}
+
+	private populateSecondaryIndexes(newIndexes: Map<string, MemoryIndex>): void {
 		const firstPath = this.primaryTree.first();
-		if (firstPath) {
-			const iterator = this.primaryTree.ascending(firstPath);
-			for (const path of iterator) {
-				const currentRow = this.primaryTree.at(path);
-				if (currentRow) {
-					const primaryKey = this._keyFromEntry(currentRow);
-					this.secondaryIndexes.forEach(index => {
-						try {
-							const indexKey = index.keyFromRow(currentRow);
-							index.addEntry(indexKey, primaryKey);
-						} catch (e: any) {
-							errorLog(`BaseLayer.rebuildAllSecondaryIndexes: Error re-indexing row for index '${index.name}': ${e.message}`);
-						}
-					});
-				}
+		if (!firstPath) return;
+
+		const iterator = this.primaryTree.ascending(firstPath);
+		for (const path of iterator) {
+			const currentRow = this.primaryTree.at(path);
+			if (currentRow) {
+				this.addRowToSecondaryIndexes(currentRow, newIndexes);
 			}
 		}
+	}
+
+	private addRowToSecondaryIndexes(row: Row, indexes: Map<string, MemoryIndex>): void {
+		const primaryKey = this.primaryKeyFunctions.extractFromRow(row);
+
+		indexes.forEach(index => {
+			try {
+				const indexKey = index.keyFromRow(row);
+				index.addEntry(indexKey, primaryKey);
+			} catch (e: any) {
+				logger.error('Re-index Row', this.tableSchema.name, e, { indexName: index.name });
+			}
+		});
+	}
+
+	private replaceSecondaryIndexes(newIndexes: Map<string, MemoryIndex>): void {
+		this.secondaryIndexes.clear();
+		newIndexes.forEach((idx, name) => this.secondaryIndexes.set(name, idx));
 	}
 
 	getLayerId = (): number => this.layerId;
 	getParent = (): Layer | null => null;
 	getSchema = (): TableSchema => this.tableSchema;
 	isCommitted = (): boolean => true;
-	getModificationTree = (indexName: string | 'primary'): BTree<BTreeKeyForPrimary, Row> | null => indexName === 'primary' ? this.primaryTree : null;
-	getSecondaryIndexTree = (indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null => this.secondaryIndexes.get(indexName)?.data ?? null;
+
+	getModificationTree = (indexName: string | 'primary'): BTree<BTreeKeyForPrimary, Row> | null =>
+		indexName === 'primary' ? this.primaryTree : null;
+
+	getSecondaryIndexTree = (indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null =>
+		this.secondaryIndexes.get(indexName)?.data ?? null;
 
 	public getPkExtractorsAndComparators(schema: TableSchema): {
 		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
 		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number
 	} {
 		if (schema !== this.tableSchema) {
-			warnLog("BaseLayer.getPkExtractorsAndComparators called with a schema different from its own.");
+			logger.warn('PK Extractors', this.tableSchema.name, 'Called with different schema');
 		}
-		return { primaryKeyExtractorFromRow: this._keyFromEntry, primaryKeyComparator: this._compareKeys };
+		return {
+			primaryKeyExtractorFromRow: this.primaryKeyFunctions.extractFromRow,
+			primaryKeyComparator: this.primaryKeyFunctions.compare
+		};
 	}
 
 	applyChange(
@@ -155,30 +141,46 @@ export class BaseLayer implements Layer {
 		modification: Row | DeletionMarker,
 		secondaryIndexChanges: Map<string, Array<{op: 'ADD' | 'DELETE', indexKey: BTreeKeyForIndex}>>
 	): void {
-		const isDeleteOperation = isDeletionMarker(modification);
-		const newRowData = isDeleteOperation ? null : (modification as Row);
+		this.applySecondaryIndexChanges(primaryKey, secondaryIndexChanges);
+		this.applyPrimaryChange(primaryKey, modification);
+	}
 
+	private applySecondaryIndexChanges(
+		primaryKey: BTreeKeyForPrimary,
+		secondaryIndexChanges: Map<string, Array<{op: 'ADD' | 'DELETE', indexKey: BTreeKeyForIndex}>>
+	): void {
 		secondaryIndexChanges.forEach((changes, indexName) => {
 			const memoryIndex = this.secondaryIndexes.get(indexName);
 			if (!memoryIndex) {
-				warnLog(`BaseLayer.applyChange: Secondary index '${indexName}' not found. PK: ${safeJsonStringify(primaryKey)}.`);
+				logger.warn('Apply Change', this.tableSchema.name, 'Secondary index not found', {
+					indexName,
+					primaryKey: safeJsonStringify(primaryKey)
+				});
 				return;
 			}
+
 			changes.forEach(change => {
 				if (change.op === 'DELETE') {
 					memoryIndex.removeEntry(change.indexKey, primaryKey);
-				} else { // ADD
+				} else {
 					memoryIndex.addEntry(change.indexKey, primaryKey);
 				}
 			});
 		});
+	}
+
+	private applyPrimaryChange(primaryKey: BTreeKeyForPrimary, modification: Row | DeletionMarker): void {
+		const isDeleteOperation = isDeletionMarker(modification);
 
 		if (isDeleteOperation) {
 			const deleted = this.primaryTree.deleteAt(this.primaryTree.find(primaryKey));
 			if (!deleted) {
-				warnLog(`BaseLayer.applyChange: Attempted to delete non-existent primary key ${safeJsonStringify(primaryKey)}.`);
+				logger.warn('Apply Change', this.tableSchema.name, 'Attempted to delete non-existent primary key', {
+					primaryKey: safeJsonStringify(primaryKey)
+				});
 			}
-		} else if (newRowData) {
+		} else {
+			const newRowData = modification as Row;
 			this.primaryTree.insert(newRowData);
 		}
 	}
@@ -186,75 +188,105 @@ export class BaseLayer implements Layer {
 	has = (key: BTreeKeyForPrimary): boolean => this.primaryTree.get(key) !== undefined;
 
 	async addColumnToBase(newColumnSchema: ColumnSchema, defaultValue: SqlValue): Promise<void> {
-		log(`BaseLayer for ${this.tableSchema.name}: Adding column '${newColumnSchema.name}'.`);
-		const oldPrimaryTree = this.primaryTree;
-		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(this._keyFromEntry, this._compareKeys);
+		logger.operation('Add Column', this.tableSchema.name, {
+			columnName: newColumnSchema.name,
+			defaultValue
+		});
 
-		const firstPath = oldPrimaryTree.first();
-		if (firstPath) {
-			const iterator = oldPrimaryTree.ascending(firstPath);
-			for (const path of iterator) {
-				const oldRow = oldPrimaryTree.at(path);
-				if (oldRow) {
-					const newRow = [...oldRow, defaultValue];
-					this.primaryTree.insert(newRow);
-				}
+		const oldPrimaryTree = this.primaryTree;
+		this.recreatePrimaryTreeWithNewColumn(oldPrimaryTree, defaultValue);
+		await this.rebuildAllSecondaryIndexes();
+	}
+
+	private recreatePrimaryTreeWithNewColumn(oldTree: BTree<BTreeKeyForPrimary, Row>, defaultValue: SqlValue): void {
+		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(
+			this.primaryKeyFunctions.extractFromRow,
+			this.primaryKeyFunctions.compare
+		);
+
+		const firstPath = oldTree.first();
+		if (!firstPath) return;
+
+		const iterator = oldTree.ascending(firstPath);
+		for (const path of iterator) {
+			const oldRow = oldTree.at(path);
+			if (oldRow) {
+				const newRow = [...oldRow, defaultValue];
+				this.primaryTree.insert(newRow);
 			}
 		}
-		await this.rebuildAllSecondaryIndexes();
 	}
 
 	async dropColumnFromBase(columnIndexInOldSchema: number): Promise<void> {
-		log(`BaseLayer for ${this.tableSchema.name}: Dropping column at old index ${columnIndexInOldSchema}.`);
-		const oldPrimaryTree = this.primaryTree;
-		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(this._keyFromEntry, this._compareKeys);
+		logger.operation('Drop Column', this.tableSchema.name, {
+			columnIndex: columnIndexInOldSchema
+		});
 
-		const firstPath = oldPrimaryTree.first();
-		if (firstPath) {
-			const iterator = oldPrimaryTree.ascending(firstPath);
-			for (const path of iterator) {
-				const oldRow = oldPrimaryTree.at(path);
-				if (oldRow) {
-					const newRow = oldRow.filter((_, idx) => idx !== columnIndexInOldSchema);
-					this.primaryTree.insert(newRow);
-				}
-			}
-		}
+		const oldPrimaryTree = this.primaryTree;
+		this.recreatePrimaryTreeWithoutColumn(oldPrimaryTree, columnIndexInOldSchema);
 		await this.rebuildAllSecondaryIndexes();
 	}
 
+	private recreatePrimaryTreeWithoutColumn(oldTree: BTree<BTreeKeyForPrimary, Row>, columnIndex: number): void {
+		this.primaryTree = new BTree<BTreeKeyForPrimary, Row>(
+			this.primaryKeyFunctions.extractFromRow,
+			this.primaryKeyFunctions.compare
+		);
+
+		const firstPath = oldTree.first();
+		if (!firstPath) return;
+
+		const iterator = oldTree.ascending(firstPath);
+		for (const path of iterator) {
+			const oldRow = oldTree.at(path);
+			if (oldRow) {
+				const newRow = oldRow.filter((_, idx) => idx !== columnIndex);
+				this.primaryTree.insert(newRow);
+			}
+		}
+	}
+
 	async handleColumnRename(): Promise<void> {
-		log(`BaseLayer for ${this.tableSchema.name}: Handling column rename. Rebuilding secondary indexes.`);
+		logger.operation('Handle Column Rename', this.tableSchema.name);
 		await this.rebuildAllSecondaryIndexes();
 	}
 
 	async addIndexToBase(indexSchema: IndexSchema): Promise<void> {
-		log(`BaseLayer for ${this.tableSchema.name}: Adding index '${indexSchema.name}'.`);
+		logger.operation('Add Index', this.tableSchema.name, {
+			indexName: indexSchema.name
+		});
+
 		const newMemoryIndex = new MemoryIndex(indexSchema, this.tableSchema.columns);
+		this.populateNewIndex(newMemoryIndex);
+		this.secondaryIndexes.set(indexSchema.name, newMemoryIndex);
+	}
+
+	private populateNewIndex(newIndex: MemoryIndex): void {
 		const firstPath = this.primaryTree.first();
-		if (firstPath) {
-			const iterator = this.primaryTree.ascending(firstPath);
-			for (const path of iterator) {
-				const currentRow = this.primaryTree.at(path);
-				if (currentRow) {
-					try {
-						const indexKey = newMemoryIndex.keyFromRow(currentRow);
-						const primaryKey = this._keyFromEntry(currentRow);
-						newMemoryIndex.addEntry(indexKey, primaryKey);
-					} catch (e: any) {
-						errorLog(`BaseLayer.addIndexToBase: Error populating index '${indexSchema.name}' for a row: ${e.message}`);
-					}
+		if (!firstPath) return;
+
+		const iterator = this.primaryTree.ascending(firstPath);
+		for (const path of iterator) {
+			const currentRow = this.primaryTree.at(path);
+			if (currentRow) {
+				try {
+					const indexKey = newIndex.keyFromRow(currentRow);
+					const primaryKey = this.primaryKeyFunctions.extractFromRow(currentRow);
+					newIndex.addEntry(indexKey, primaryKey);
+				} catch (e: any) {
+					logger.error('Populate Index', this.tableSchema.name, e, {
+						indexName: newIndex.name
+					});
 				}
 			}
 		}
-		this.secondaryIndexes.set(indexSchema.name, newMemoryIndex);
 	}
 
 	async dropIndexFromBase(indexName: string): Promise<void> {
 		if (this.secondaryIndexes.delete(indexName)) {
-			log(`BaseLayer for ${this.tableSchema.name}: Dropped index '${indexName}'.`);
+			logger.operation('Drop Index', this.tableSchema.name, { indexName });
 		} else {
-			warnLog(`BaseLayer.dropIndexFromBase: Attempted to drop non-existent index '${indexName}'.`);
+			logger.warn('Drop Index', this.tableSchema.name, 'Index not found', { indexName });
 		}
 	}
 }

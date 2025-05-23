@@ -1,17 +1,10 @@
-import type { BTree, Path } from 'inheritree';
 import type { ScanPlan } from './scan-plan.js';
 import type { BaseLayer } from './base.js';
 import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
-import type { Row, SqlValue } from '../../../common/types.js';
-import { createLogger } from '../../../common/logger.js';
+import type { Row } from '../../../common/types.js';
 
-const log = createLogger('vtab:memory:layer:base-cursor');
-// const warnLog = log.extend('warn');
-// const errorLog = log.extend('error');
-
-// This will now be an async generator function rather than a class
 export async function* scanBaseLayer(
 	layer: BaseLayer,
 	plan: ScanPlan

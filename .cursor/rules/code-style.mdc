@@ -5,16 +5,13 @@ alwaysApply: false
 ---
 # Code Style Conventions
 
-This project uses [.editorconfig](mdc:.editorconfig) to enforce consistent coding styles across editors and IDEs.
+Adhere to the single purpose principle within functions, and prefer a more expressive rather than imperative style.  `const` declarations are within the spirit of expressiveness, especially when clarifying the meaning of an expression, and of course for reuse.  Breaking sub-tasks into separate functions also makes for more self-documenting code.
 
-Generally favor expressive style over imperative.  E.g. map rather than loop, conditional expressions rather than if...
+Don't add superfluous comments.  Don't add comments regarding changes being made (e.g. No "// added this").
 
-Don't add superfluous comments, and be sure that comments are timeless (relative to all time, not just to changes being made).
+ES Modules, so always include `.js` on imports
 
-## General Conventions
-- UTF-8 encoding for all files
-- Insert final newline at end of files
-- Trim trailing whitespace (except in Markdown files)
+This project uses @.editorconfig to enforce consistent coding styles across editors and IDEs.  Summary:
 
 ## TypeScript Files
 - Tab indentation (2 spaces)
@@ -28,4 +25,3 @@ Don't add superfluous comments, and be sure that comments are timeless (relative
 
 ## Configuration
 The complete configuration is defined in [.editorconfig](mdc:.editorconfig).
-

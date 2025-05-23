@@ -8,12 +8,9 @@ import { IndexConstraintOp } from '../../common/constants.js';
 import type { IndexInfo } from '../index-info.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
-import { createLogger } from '../../common/logger.js';
-import { SqlDataType } from '../../common/types.js';
+import { createMemoryTableLoggers } from './utils/logging.js';
 
-const log = createLogger('vtab:memory:module');
-const debugLog = log.extend('debug');
-const warnLog = log.extend('warn');
+const logger = createMemoryTableLoggers('module');
 
 /**
  * A module that provides in-memory table functionality using digitree.
@@ -47,6 +44,10 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 		// Register the manager
 		this.tables.set(tableKey, manager);
+		logger.operation('Create Table', tableSchema.name, {
+			schema: tableSchema.schemaName,
+			readOnly: tableSchema.isReadOnly ?? false
+		});
 
 		// Create and return the MemoryTable instance
 		return new MemoryTable(db, this, manager);
@@ -63,6 +64,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			throw new QuereusError(`Memory table definition for '${tableName}' not found. Cannot connect.`, StatusCode.INTERNAL);
 		}
 
+		logger.operation('Connect Table', tableName, { schema: schemaName });
+
 		// Create a new MemoryTable instance connected to the existing manager
 		return new MemoryTable(db, this, existingManager);
 	}
@@ -71,236 +74,336 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 * Determines the best query plan for executing a query against a memory table
 	 */
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		// Constants for planning
-		const PLAN_TYPE_FULL_ASC = 0;
-		const PLAN_TYPE_FULL_DESC = 1;
-		const PLAN_TYPE_EQ = 2;
-		const PLAN_TYPE_RANGE_ASC = 3;
-		const PLAN_TYPE_RANGE_DESC = 4;
+		const planningContext = this.createPlanningContext(tableInfo, indexInfo);
+		const availableIndexes = this.gatherAvailableIndexes(tableInfo);
+		const bestPlan = this.findBestPlan(planningContext, availableIndexes, indexInfo);
+		this.populateIndexInfoOutput(indexInfo, bestPlan, availableIndexes);
 
-		const encodeIdxNum = (indexId: number, planType: number): number => {
-			// Shift index ID left by 3 bits, OR with plan type
-			// Max 8 plan types (0-7), leaves bits for index ID
-			return (indexId << 3) | planType;
+		logger.debugLog(`[xBestIndex] Selected plan for ${tableInfo.name}: ${bestPlan.planType} on index ${bestPlan.indexId} (cost: ${bestPlan.cost})`);
+
+		return StatusCode.OK;
+	}
+
+	private createPlanningContext(tableInfo: TableSchema, indexInfo: IndexInfo) {
+		return {
+			// Plan type constants
+			PLAN_TYPE_FULL_ASC: 0,
+			PLAN_TYPE_FULL_DESC: 1,
+			PLAN_TYPE_EQ: 2,
+			PLAN_TYPE_RANGE_ASC: 3,
+			PLAN_TYPE_RANGE_DESC: 4,
+
+			// Utility functions
+			encodeIdxNum: (indexId: number, planType: number): number => {
+				return (indexId << 3) | planType;
+			},
+
+			// Table size estimate for costing
+			tableSize: 1000,
 		};
+	}
 
-		// Gather available indexes
-		// 1. Create a pseudo-index for the primary key (note, could be empty column list = up to 1 row)
-		const pkIndexSchema = { name: '_primary_', columns: tableInfo.primaryKeyDefinition };
-
+	private gatherAvailableIndexes(tableInfo: TableSchema): IndexSchema[] {
 		const availableIndexes: IndexSchema[] = [];
-		if (pkIndexSchema) availableIndexes.push(pkIndexSchema);
+
+		// Add pseudo-index for primary key
+		const pkIndexSchema = {
+			name: '_primary_',
+			columns: tableInfo.primaryKeyDefinition
+		};
+		availableIndexes.push(pkIndexSchema);
+
+		// Add secondary indexes
 		availableIndexes.push(...(tableInfo.indexes ?? []));
 
-		// Initialize best plan search
-		const tableSize = 1000; // Placeholder estimate
-		let bestPlan = {
+		return availableIndexes;
+	}
+
+	private findBestPlan(context: any, availableIndexes: IndexSchema[], indexInfo: IndexInfo) {
+		let bestPlan = this.createInitialPlan(context);
+
+		for (const [indexId, index] of availableIndexes.entries()) {
+			const indexPlan = this.evaluateIndexPlan(context, index, indexId, indexInfo);
+			if (indexPlan.cost < bestPlan.cost) {
+				bestPlan = indexPlan;
+			}
+		}
+
+		return this.ensureFallbackPlan(bestPlan, context, availableIndexes);
+	}
+
+	private createInitialPlan(context: any) {
+		return {
 			indexId: -1,
-			planType: PLAN_TYPE_FULL_ASC,
-			cost: tableSize * 10.0, // Base cost for full scan
-			rows: BigInt(tableSize),
+			planType: context.PLAN_TYPE_FULL_ASC,
+			cost: context.tableSize * 10.0,
+			rows: BigInt(context.tableSize),
 			usedConstraintIndices: new Set<number>(),
 			orderByConsumed: false,
 			isDesc: false,
 		};
+	}
 
-		// Evaluate each index
-		availableIndexes.forEach((index, indexId) => {
-			let currentPlan = {
-				indexId: indexId,
-				planType: PLAN_TYPE_FULL_ASC,
-				cost: tableSize * 10.0,
-				rows: BigInt(tableSize),
-				usedConstraintIndices: new Set<number>(),
-				orderByConsumed: false,
-				isDesc: false,
-			};
-			const indexCols = index.columns;
-			const firstIndexColIdx = indexCols[0]?.index ?? -2;
+	private evaluateIndexPlan(context: any, index: IndexSchema, indexId: number, indexInfo: IndexInfo) {
+		let currentPlan = this.createInitialPlan(context);
+		currentPlan.indexId = indexId;
 
-			// 1. Check for Equality Plan (EQ)
-			const eqConstraintsMap = new Map<number, number>();
-			let canUseEqPlan = true;
-			const eqPlanUsedIndices = new Set<number>();
-			debugLog(`[xBestIndex EQ Check] Index: ${index.name} (${indexId})`);
-			for (let k = 0; k < indexCols.length; k++) {
-				const idxCol = indexCols[k].index;
-				let foundEq = false;
-				debugLog(`  - Checking Index Col ${k} (schema idx ${idxCol})`);
-				for (let i = 0; i < indexInfo.nConstraint; i++) {
-					const c = indexInfo.aConstraint[i];
-					debugLog(`    - Comparing with constraint ${i}: col=${c.iColumn}, op=${c.op}, usable=${c.usable}`);
-					if (c.iColumn === idxCol && c.op === IndexConstraintOp.EQ && c.usable) {
-						eqConstraintsMap.set(idxCol, i);
-						eqPlanUsedIndices.add(i);
-						foundEq = true;
-						debugLog(`      -> Found usable EQ constraint ${i}`);
-						break;
-					}
-				}
-				if (!foundEq) {
-					debugLog(`    - No usable EQ constraint found for index col ${k}. Cannot use EQ plan.`);
-					canUseEqPlan = false;
-					break; // Need equality on all index columns for this plan
-				}
-			}
-			// Update bestPlan directly if EQ is better than the initial full scan
-			if (canUseEqPlan && indexCols.length > 0) {
-				const planEqCost = Math.log2(tableSize + 1) + 1.0; // Lower cost for direct lookup
-				const planEqRows = BigInt(1);
-				debugLog(`  - EQ Plan viable for index ${index.name}. Cost: ${planEqCost} vs Best: ${bestPlan.cost}`);
-				// Compare against bestPlan found so far for *any* index
-				if (planEqCost < bestPlan.cost) {
-					debugLog(`    -> EQ Plan is new best plan.`);
-					bestPlan = { // Update overall best plan directly
-						indexId: indexId, // Use the current indexId
-						planType: PLAN_TYPE_EQ,
-						cost: planEqCost,
-						rows: planEqRows,
-						usedConstraintIndices: eqPlanUsedIndices,
-						orderByConsumed: true, // Equality scan implies order
-						isDesc: false // EQ plan is not inherently desc
-					};
-				}
-				// Also update currentPlan in case range/order checks improve it further
-				// Though unlikely for EQ plan
-				if (planEqCost < currentPlan.cost) {
-					currentPlan = {
-						...currentPlan,
-						planType: PLAN_TYPE_EQ,
-						cost: planEqCost,
-						rows: planEqRows,
-						usedConstraintIndices: eqPlanUsedIndices,
-						orderByConsumed: true
-					};
-				}
-			}
-
-			// 2. Check for Range Plan (RANGE_ASC/RANGE_DESC)
-			let lowerBoundConstraint: { index: number; op: IndexConstraintOp; } | null = null;
-			let upperBoundConstraint: { index: number; op: IndexConstraintOp; } | null = null;
-			for (let i = 0; i < indexInfo.nConstraint; i++) {
-				const c = indexInfo.aConstraint[i];
-				// Only consider bounds on the first column of the index
-				if (c.iColumn === firstIndexColIdx && c.usable) {
-					if (c.op === IndexConstraintOp.GT || c.op === IndexConstraintOp.GE) {
-						if (!lowerBoundConstraint || (c.op > lowerBoundConstraint.op)) {
-							lowerBoundConstraint = { index: i, op: c.op };
-						}
-					} else if (c.op === IndexConstraintOp.LT || c.op === IndexConstraintOp.LE) {
-						if (!upperBoundConstraint || (c.op < upperBoundConstraint.op)) {
-							upperBoundConstraint = { index: i, op: c.op };
-						}
-					}
-				}
-			}
-			if (lowerBoundConstraint || upperBoundConstraint) {
-				const planRangeRows = BigInt(Math.max(1, Math.floor(tableSize / 4)));
-				const planRangeCost = Math.log2(tableSize + 1) * 2.0 + Number(planRangeRows);
-				if (planRangeCost < currentPlan.cost) {
-					const usedIndices = new Set<number>();
-					if (lowerBoundConstraint) usedIndices.add(lowerBoundConstraint.index);
-					if (upperBoundConstraint) usedIndices.add(upperBoundConstraint.index);
-					currentPlan = {
-						...currentPlan,
-						planType: PLAN_TYPE_RANGE_ASC,
-						cost: planRangeCost,
-						rows: planRangeRows,
-						usedConstraintIndices: usedIndices,
-						orderByConsumed: false
-					};
-				}
-			}
-
-			// 3. Check ORDER BY Consumption
-			let canConsumeOrder = false;
-			let isOrderDesc = false;
-			if (indexInfo.nOrderBy > 0 && indexCols.length >= indexInfo.nOrderBy) {
-				isOrderDesc = indexInfo.aOrderBy[0].desc;
-				canConsumeOrder = true;
-				for(let k=0; k< indexInfo.nOrderBy; k++) {
-					const orderByCol = indexInfo.aOrderBy[k];
-					const indexCol = indexCols[k];
-					if (orderByCol.iColumn !== indexCol.index || orderByCol.desc !== isOrderDesc) {
-						canConsumeOrder = false;
-						break;
-					}
-				}
-			}
-
-			if (canConsumeOrder) {
-				const indexScanIsDesc = indexCols[0]?.desc ?? false;
-				const requiresDescScan = isOrderDesc !== indexScanIsDesc;
-				const basePlanType = currentPlan.planType;
-
-				if (basePlanType === PLAN_TYPE_FULL_ASC || basePlanType === PLAN_TYPE_RANGE_ASC) {
-					currentPlan.orderByConsumed = true;
-					currentPlan.isDesc = isOrderDesc;
-					if (basePlanType === PLAN_TYPE_FULL_ASC) {
-						currentPlan.planType = requiresDescScan ? PLAN_TYPE_FULL_DESC : PLAN_TYPE_FULL_ASC;
-					} else { // RANGE_ASC
-						currentPlan.planType = requiresDescScan ? PLAN_TYPE_RANGE_DESC : PLAN_TYPE_RANGE_ASC;
-					}
-					currentPlan.cost *= 0.9; // Prefer consuming order
-				}
-			}
-
-			// 4. Update Best Plan if Current is Better (final check for this index)
-			// This check is now potentially redundant if EQ already updated bestPlan,
-			// but keep it for range/order plans that might beat the initial bestPlan.
-			if (currentPlan.cost < bestPlan.cost) {
-				bestPlan = { ...currentPlan };
-			}
-		});
-
-		// Finalize IndexInfo Output
-		if (bestPlan.indexId === -1) {
-			// Should not happen if full scan is always an option, but handle defensively
-			bestPlan.indexId = availableIndexes.findIndex(idx => idx.name === '_primary_');
-			if (bestPlan.indexId === -1) bestPlan.indexId = 0; // Default to first index (primary)
-			bestPlan.planType = PLAN_TYPE_FULL_ASC;
-			bestPlan.cost = tableSize * 10.0;
-			bestPlan.rows = BigInt(tableSize);
-			bestPlan.usedConstraintIndices.clear(); // No constraints used for default full scan
-			bestPlan.orderByConsumed = false;
+		// Evaluate equality plan
+		const equalityPlan = this.evaluateEqualityPlan(context, index, indexId, indexInfo);
+		if (equalityPlan && equalityPlan.cost < currentPlan.cost) {
+			currentPlan = equalityPlan;
 		}
 
-		indexInfo.idxNum = encodeIdxNum(bestPlan.indexId, bestPlan.planType);
+		// Evaluate range plan
+		const rangePlan = this.evaluateRangePlan(context, index, indexId, indexInfo, currentPlan);
+		if (rangePlan && rangePlan.cost < currentPlan.cost) {
+			currentPlan = rangePlan;
+		}
+
+		// Check ORDER BY consumption
+		const orderOptimizedPlan = this.evaluateOrderByConsumption(context, index, indexInfo, currentPlan);
+		if (orderOptimizedPlan) {
+			currentPlan = orderOptimizedPlan;
+		}
+
+		return currentPlan;
+	}
+
+	private evaluateEqualityPlan(context: any, index: IndexSchema, indexId: number, indexInfo: IndexInfo) {
+		const indexCols = index.columns;
+		const eqConstraints = this.findEqualityConstraints(indexCols, indexInfo);
+
+		if (!this.canUseEqualityPlan(indexCols, eqConstraints)) {
+			logger.debugLog(`[xBestIndex] Cannot use EQ plan for index ${index.name} - missing constraints`);
+			return null;
+		}
+
+		const planEqCost = Math.log2(context.tableSize + 1) + 1.0;
+		const planEqRows = BigInt(1);
+
+		logger.debugLog(`[xBestIndex] EQ Plan viable for index ${index.name}. Cost: ${planEqCost}`);
+
+		return {
+			indexId: indexId,
+			planType: context.PLAN_TYPE_EQ,
+			cost: planEqCost,
+			rows: planEqRows,
+			usedConstraintIndices: new Set(eqConstraints.values()),
+			orderByConsumed: true,
+			isDesc: false
+		};
+	}
+
+	private findEqualityConstraints(indexCols: ReadonlyArray<any>, indexInfo: IndexInfo): Map<number, number> {
+		const eqConstraints = new Map<number, number>();
+
+		for (const [k, indexCol] of indexCols.entries()) {
+			const colIndex = indexCol.index;
+			let foundConstraint = false;
+
+			for (let i = 0; i < indexInfo.nConstraint; i++) {
+				const constraint = indexInfo.aConstraint[i];
+				if (constraint.iColumn === colIndex &&
+					constraint.op === IndexConstraintOp.EQ &&
+					constraint.usable) {
+					eqConstraints.set(colIndex, i);
+					foundConstraint = true;
+					logger.debugLog(`[xBestIndex] Found EQ constraint ${i} for column ${colIndex}`);
+					break;
+				}
+			}
+
+			if (!foundConstraint) {
+				logger.debugLog(`[xBestIndex] No EQ constraint for index column ${k} (schema idx ${colIndex})`);
+				return new Map(); // Can't use equality plan without all columns
+			}
+		}
+
+		return eqConstraints;
+	}
+
+	private canUseEqualityPlan(indexCols: ReadonlyArray<any>, eqConstraints: Map<number, number>): boolean {
+		return indexCols.length > 0 && eqConstraints.size === indexCols.length;
+	}
+
+	private evaluateRangePlan(context: any, index: IndexSchema, indexId: number, indexInfo: IndexInfo, currentPlan: any) {
+		const indexCols = index.columns;
+		const firstIndexColIdx = indexCols[0]?.index ?? -2;
+		const rangeBounds = this.findRangeBounds(firstIndexColIdx, indexInfo);
+
+		if (!rangeBounds.lowerBound && !rangeBounds.upperBound) {
+			return null;
+		}
+
+		const planRangeRows = BigInt(Math.max(1, Math.floor(context.tableSize / 4)));
+		const planRangeCost = Math.log2(context.tableSize + 1) * 2.0 + Number(planRangeRows);
+
+		if (planRangeCost >= currentPlan.cost) {
+			return null;
+		}
+
+		const usedIndices = new Set<number>();
+		if (rangeBounds.lowerBound) usedIndices.add(rangeBounds.lowerBound.index);
+		if (rangeBounds.upperBound) usedIndices.add(rangeBounds.upperBound.index);
+
+		return {
+			...currentPlan,
+			planType: context.PLAN_TYPE_RANGE_ASC,
+			cost: planRangeCost,
+			rows: planRangeRows,
+			usedConstraintIndices: usedIndices,
+			orderByConsumed: false
+		};
+	}
+
+	private findRangeBounds(firstColIndex: number, indexInfo: IndexInfo) {
+		let lowerBound: { index: number; op: IndexConstraintOp; } | null = null;
+		let upperBound: { index: number; op: IndexConstraintOp; } | null = null;
+
+		for (let i = 0; i < indexInfo.nConstraint; i++) {
+			const constraint = indexInfo.aConstraint[i];
+			if (constraint.iColumn === firstColIndex && constraint.usable) {
+				if (constraint.op === IndexConstraintOp.GT || constraint.op === IndexConstraintOp.GE) {
+					if (!lowerBound || constraint.op > lowerBound.op) {
+						lowerBound = { index: i, op: constraint.op };
+					}
+				} else if (constraint.op === IndexConstraintOp.LT || constraint.op === IndexConstraintOp.LE) {
+					if (!upperBound || constraint.op < upperBound.op) {
+						upperBound = { index: i, op: constraint.op };
+					}
+				}
+			}
+		}
+
+		return { lowerBound, upperBound };
+	}
+
+	private evaluateOrderByConsumption(context: any, index: IndexSchema, indexInfo: IndexInfo, currentPlan: any) {
+		if (indexInfo.nOrderBy === 0) {
+			return null;
+		}
+
+		const indexCols = index.columns;
+		const orderByConsumption = this.checkOrderByConsumption(indexCols, indexInfo);
+
+		if (!orderByConsumption.canConsume) {
+			return null;
+		}
+
+		const indexScanIsDesc = indexCols[0]?.desc ?? false;
+		const requiresDescScan = orderByConsumption.isDesc !== indexScanIsDesc;
+		const basePlanType = currentPlan.planType;
+
+		if (basePlanType === context.PLAN_TYPE_FULL_ASC || basePlanType === context.PLAN_TYPE_RANGE_ASC) {
+			return {
+				...currentPlan,
+				orderByConsumed: true,
+				isDesc: orderByConsumption.isDesc,
+				planType: this.adjustPlanTypeForOrder(context, basePlanType, requiresDescScan),
+				cost: currentPlan.cost * 0.9 // Prefer consuming order
+			};
+		}
+
+		return null;
+	}
+
+	private checkOrderByConsumption(indexCols: ReadonlyArray<any>, indexInfo: IndexInfo) {
+		if (indexInfo.nOrderBy === 0 || indexCols.length < indexInfo.nOrderBy) {
+			return { canConsume: false, isDesc: false };
+		}
+
+		const isOrderDesc = indexInfo.aOrderBy[0].desc;
+
+		for (let k = 0; k < indexInfo.nOrderBy; k++) {
+			const orderByCol = indexInfo.aOrderBy[k];
+			const indexCol = indexCols[k];
+
+			if (orderByCol.iColumn !== indexCol.index || orderByCol.desc !== isOrderDesc) {
+				return { canConsume: false, isDesc: false };
+			}
+		}
+
+		return { canConsume: true, isDesc: isOrderDesc };
+	}
+
+	private adjustPlanTypeForOrder(context: any, basePlanType: number, requiresDescScan: boolean) {
+		if (basePlanType === context.PLAN_TYPE_FULL_ASC) {
+			return requiresDescScan ? context.PLAN_TYPE_FULL_DESC : context.PLAN_TYPE_FULL_ASC;
+		} else { // RANGE_ASC
+			return requiresDescScan ? context.PLAN_TYPE_RANGE_DESC : context.PLAN_TYPE_RANGE_ASC;
+		}
+	}
+
+	private ensureFallbackPlan(bestPlan: any, context: any, availableIndexes: IndexSchema[]) {
+		if (bestPlan.indexId === -1) {
+			const primaryIndex = availableIndexes.findIndex(idx => idx.name === '_primary_');
+			bestPlan.indexId = primaryIndex >= 0 ? primaryIndex : 0;
+			bestPlan.planType = context.PLAN_TYPE_FULL_ASC;
+			bestPlan.cost = context.tableSize * 10.0;
+			bestPlan.rows = BigInt(context.tableSize);
+			bestPlan.usedConstraintIndices.clear();
+			bestPlan.orderByConsumed = false;
+		}
+		return bestPlan;
+	}
+
+	private populateIndexInfoOutput(indexInfo: IndexInfo, bestPlan: any, availableIndexes: IndexSchema[]) {
+		const context = this.createPlanningContext({} as TableSchema, indexInfo);
+
+		indexInfo.idxNum = context.encodeIdxNum(bestPlan.indexId, bestPlan.planType);
 		indexInfo.estimatedCost = bestPlan.cost;
 		indexInfo.estimatedRows = bestPlan.rows;
 		indexInfo.orderByConsumed = bestPlan.orderByConsumed;
-		indexInfo.idxFlags = (bestPlan.planType === PLAN_TYPE_EQ) ? 1 : 0; // SQLITE_INDEX_SCAN_UNIQUE
+		indexInfo.idxFlags = (bestPlan.planType === context.PLAN_TYPE_EQ) ? 1 : 0;
 
-		// Build constraint usage
-		const constraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({ argvIndex: 0, omit: false }));
+		this.buildConstraintUsage(indexInfo, bestPlan);
+		this.buildIndexString(indexInfo, bestPlan, availableIndexes);
+	}
+
+	private buildConstraintUsage(indexInfo: IndexInfo, bestPlan: any) {
+		const constraintUsage = Array.from({ length: indexInfo.nConstraint }, () => ({
+			argvIndex: 0,
+			omit: false
+		}));
+
 		let currentArg = 1;
-		bestPlan.usedConstraintIndices.forEach(constraintIndex => {
+		bestPlan.usedConstraintIndices.forEach((constraintIndex: number) => {
 			constraintUsage[constraintIndex].argvIndex = currentArg++;
-			// Omit EQ constraints if the plan is unique EQ
-			constraintUsage[constraintIndex].omit = (bestPlan.planType === PLAN_TYPE_EQ);
+			constraintUsage[constraintIndex].omit = (bestPlan.planType === 2); // PLAN_TYPE_EQ
 		});
-		indexInfo.aConstraintUsage = constraintUsage;
 
-		// Construct idxStr for debugging
+		indexInfo.aConstraintUsage = constraintUsage;
+	}
+
+	private buildIndexString(indexInfo: IndexInfo, bestPlan: any, availableIndexes: IndexSchema[]) {
 		const chosenIndex = availableIndexes[bestPlan.indexId];
 		const idxStrParts = [
 			`idx=${chosenIndex?.name ?? 'unknown'}(${bestPlan.indexId})`,
 			`plan=${bestPlan.planType}`
 		];
-		if (bestPlan.orderByConsumed) idxStrParts.push(`ordCons=${bestPlan.isDesc ? 'DESC' : 'ASC'}`);
+
+		if (bestPlan.orderByConsumed) {
+			idxStrParts.push(`ordCons=${bestPlan.isDesc ? 'DESC' : 'ASC'}`);
+		}
+
 		if (bestPlan.usedConstraintIndices.size > 0) {
-			// Create mapping from argvIndex to original constraint index
-			const argvMapping = constraintUsage
-				.map((usage, constraintIdx) => ({ argIdx: usage.argvIndex, constraintIdx }))
-				.filter(item => item.argIdx > 0)
-				.map(item => `[${item.argIdx},${item.constraintIdx}]`);
+			const argvMapping = this.createArgvMapping(indexInfo.aConstraintUsage);
 			if (argvMapping.length > 0) {
 				idxStrParts.push(`argvMap=[${argvMapping.join(',')}]`);
 			}
 		}
-		indexInfo.idxStr = idxStrParts.join(';');
 
-		return StatusCode.OK;
+		indexInfo.idxStr = idxStrParts.join(';');
+	}
+
+	private createArgvMapping(constraintUsage: any[]): string[] {
+		return constraintUsage
+			.map((usage, constraintIdx) => ({
+				argIdx: usage.argvIndex,
+				constraintIdx
+			}))
+			.filter(item => item.argIdx > 0)
+			.map(item => `[${item.argIdx},${item.constraintIdx}]`);
 	}
 
 	/**
@@ -314,6 +417,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			// This will call the manager's destroy method which handles cleaning up resources
 			await manager.destroy?.();
 			this.tables.delete(tableKey);
+			logger.operation('Destroy Table', tableName, { schema: schemaName });
 		}
 	}
 }

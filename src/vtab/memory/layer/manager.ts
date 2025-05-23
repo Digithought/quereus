@@ -1,8 +1,8 @@
 import type { Database } from '../../../core/database.js';
-import { type TableSchema, type IndexSchema, type PrimaryKeyColumnDefinition, buildColumnIndexMap, columnDefToSchema, type IndexColumnSchema } from '../../../schema/table.js';
-import { type BTreeKey, type BTreeKeyForPrimary, type BTreeKeyForIndex, type PrimaryModificationValue, isDeletionMarker } from '../types.js';
+import { type TableSchema, type IndexSchema, buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js';
+import { type BTreeKey, type BTreeKeyForPrimary, type PrimaryModificationValue, isDeletionMarker } from '../types.js';
 import { StatusCode, type SqlValue, type Row } from '../../../common/types.js';
-import { BaseLayer, createBaseLayerPkFunctions } from './base.js';
+import { BaseLayer } from './base.js';
 import { TransactionLayer } from './transaction.js';
 import type { Layer } from './interface.js';
 import { MemoryTableConnection } from './connection.js';
@@ -11,18 +11,15 @@ import { QuereusError, ConstraintError } from '../../../common/errors.js';
 import { ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
 import type { ColumnDef as ASTColumnDef } from '../../../parser/ast.js';
 import { compareSqlValues } from '../../../util/comparison.js';
-import { createLogger } from '../../../common/logger.js';
-import { safeJsonStringify } from '../../../util/serialization.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { ColumnSchema } from '../../../schema/column.js';
 import { scanBaseLayer } from './base-cursor.js';
 import { scanTransactionLayer } from './transaction-cursor.js';
+import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFunctions } from '../utils/primary-key.js';
+import { createMemoryTableLoggers } from '../utils/logging.js';
 
 let tableManagerCounter = 0;
-const log = createLogger('vtab:memory:layer:manager');
-const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
-const debugLog = log;
+const logger = createMemoryTableLoggers('layer:manager');
 
 export class MemoryTableManager {
 	public readonly managerId: number;
@@ -37,8 +34,7 @@ export class MemoryTableManager {
 	public readonly isReadOnly: boolean;
 	public tableSchema: TableSchema;
 
-	private primaryKeyFromRow!: (row: Row) => BTreeKeyForPrimary;
-	private comparePrimaryKeys!: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
+	private primaryKeyFunctions!: PrimaryKeyFunctions;
 
 	constructor(
 		db: Database,
@@ -55,19 +51,22 @@ export class MemoryTableManager {
 		this.tableSchema = initialSchema;
 		this.isReadOnly = readOnly;
 
-		this.reinitializePkFunctions();
+		this.initializePrimaryKeyFunctions();
 
 		this.baseLayer = new BaseLayer(this.tableSchema);
 		this.currentCommittedLayer = this.baseLayer;
 	}
 
-	private reinitializePkFunctions(): void {
-		if (!this.tableSchema.primaryKeyDefinition || this.tableSchema.primaryKeyDefinition.length === 0) {
-			throw new QuereusError(`Table '${this.tableSchema.name}' must have a primaryKeyDefinition.`, StatusCode.INTERNAL);
-		}
-		const pkFuncs = createBaseLayerPkFunctions(this.tableSchema);
-		this.primaryKeyFromRow = pkFuncs.keyFromEntry;
-		this.comparePrimaryKeys = pkFuncs.compareKeys;
+	private initializePrimaryKeyFunctions(): void {
+		this.primaryKeyFunctions = createPrimaryKeyFunctions(this.tableSchema);
+	}
+
+	private get primaryKeyFromRow() {
+		return this.primaryKeyFunctions.extractFromRow;
+	}
+
+	private get comparePrimaryKeys() {
+		return this.primaryKeyFunctions.compare;
 	}
 
 	public connect(): MemoryTableConnection {
@@ -81,20 +80,20 @@ export class MemoryTableManager {
 		if (connection) {
 			if (connection.pendingTransactionLayer) {
 				if (this.db.getAutocommit()) {
-					warnLog(`Conn %d disconnecting with pending TX in autocommit; committing.`, connectionId);
+					logger.warn('Disconnect', this._tableName, 'Auto-committing pending transaction', { connectionId });
 					try {
 						await this.commitTransaction(connection);
 					} catch (err: any) {
-						errorLog(`Implicit commit on disconnect for conn %d failed: %s`, connectionId, err.message);
+						logger.error('Disconnect', this._tableName, 'Implicit commit failed', { connectionId, error: err.message });
 					}
 				} else {
-					warnLog(`Conn %d disconnecting with pending TX (explicit TX active); rolling back.`, connectionId);
+					logger.warn('Disconnect', this._tableName, 'Rolling back pending transaction', { connectionId });
 					connection.rollback();
 				}
 			}
 			this.connections.delete(connectionId);
 			this.tryCollapseLayers().catch(err => {
-				errorLog(`Error during layer collapse after disconnect: %O`, err);
+				logger.error('Disconnect', this._tableName, 'Layer collapse failed', err);
 			});
 		}
 	}
@@ -113,26 +112,26 @@ export class MemoryTableManager {
 
 		const lockKey = `MemoryTable.Commit:${this.schemaName}.${this._tableName}`;
 		const release = await Latches.acquire(lockKey);
-		debugLog(`[Commit %d] Acquired lock for %s`, connection.connectionId, this._tableName);
+		logger.debugLog(`[Commit ${connection.connectionId}] Acquired lock for ${this._tableName}`);
 		try {
 			if (pendingLayer.getParent() !== this.currentCommittedLayer) {
 				connection.pendingTransactionLayer = null;
 				connection.clearSavepoints();
-				warnLog(`[Commit %d] Stale commit for %s. Rolling back.`, connection.connectionId, this._tableName);
+				logger.warn('Commit Transaction', this._tableName, 'Stale commit detected, rolling back', { connectionId: connection.connectionId });
 				throw new QuereusError(`Commit failed: concurrent update on table ${this._tableName}. Retry.`, StatusCode.BUSY);
 			}
 			pendingLayer.markCommitted();
 			this.currentCommittedLayer = pendingLayer;
-			debugLog(`[Commit %d] CurrentCommittedLayer set to %d for %s`, connection.connectionId, pendingLayer.getLayerId(), this._tableName);
+			logger.debugLog(`[Commit ${connection.connectionId}] CurrentCommittedLayer set to ${pendingLayer.getLayerId()} for ${this._tableName}`);
 			connection.readLayer = pendingLayer;
 			connection.pendingTransactionLayer = null;
 			connection.clearSavepoints();
 			this.tryCollapseLayers().catch(err => {
-				errorLog(`[Commit %d] Background layer collapse error: %O`, connection.connectionId, err);
+				logger.error('Commit Transaction', this._tableName, 'Background layer collapse error', err);
 			});
 		} finally {
 			release();
-			debugLog(`[Commit %d] Released lock for %s`, connection.connectionId, this._tableName);
+			logger.debugLog(`[Commit ${connection.connectionId}] Released lock for ${this._tableName}`);
 		}
 	}
 
@@ -148,17 +147,17 @@ export class MemoryTableManager {
 			]);
 			release = result.release;
 			if (!release) {
-				debugLog(`[Collapse] Lock busy for %s, skipping.`, this._tableName);
+				logger.debugLog(`[Collapse] Lock busy for ${this._tableName}, skipping.`);
 				return;
 			}
-			debugLog(`[Collapse] Acquired lock for %s`, this._tableName);
+			logger.debugLog(`[Collapse] Acquired lock for ${this._tableName}`);
 			let collapsedCount = 0;
 
 			while (this.currentCommittedLayer instanceof TransactionLayer && this.currentCommittedLayer.isCommitted()) {
 				const layerToPromote = this.currentCommittedLayer as TransactionLayer;
 				const parentLayer = layerToPromote.getParent();
 				if (!parentLayer) {
-					errorLog(`[Collapse] Committed TransactionLayer ${layerToPromote.getLayerId()} has no parent!`);
+					logger.error('Collapse Layers', this._tableName, 'Committed TransactionLayer has no parent', { layerId: layerToPromote.getLayerId() });
 					break;
 				}
 
@@ -167,13 +166,13 @@ export class MemoryTableManager {
 				for (const conn of this.connections.values()) {
 					if (conn.readLayer === parentLayer || conn.pendingTransactionLayer?.getParent() === parentLayer) {
 						parentInUse = true;
-						debugLog(`[Collapse] Parent layer %d in use by conn %d. Cannot collapse layer %d.`, parentLayer.getLayerId(), conn.connectionId, layerToPromote.getLayerId());
+						logger.debugLog(`[Collapse] Parent layer ${parentLayer.getLayerId()} in use by conn ${conn.connectionId}. Cannot collapse layer ${layerToPromote.getLayerId()}.`);
 						break;
 					}
 				}
 				if (parentInUse) break;
 
-				debugLog(`[Collapse] Promoting layer %d to become independent from parent %d for %s`, layerToPromote.getLayerId(), parentLayer.getLayerId(), this._tableName);
+				logger.debugLog(`[Collapse] Promoting layer ${layerToPromote.getLayerId()} to become independent from parent ${parentLayer.getLayerId()} for ${this._tableName}`);
 
 				// With inherited BTrees, "collapsing" means making the transaction layer independent
 				// by calling clearBase() on its BTrees, effectively making it the new base data
@@ -182,7 +181,7 @@ export class MemoryTableManager {
 				// Update the current committed layer to point to the parent
 				// The transaction layer's BTrees are now independent and contain all the data
 				this.currentCommittedLayer = parentLayer;
-				debugLog(`[Collapse] CurrentCommittedLayer set to %d for %s`, parentLayer.getLayerId(), this._tableName);
+				logger.debugLog(`[Collapse] CurrentCommittedLayer set to ${parentLayer.getLayerId()} for ${this._tableName}`);
 
 				// Update connections that were reading from the collapsed layer
 				for (const conn of this.connections.values()) {
@@ -190,7 +189,7 @@ export class MemoryTableManager {
 						// The layer is now independent, but connections can continue using it
 						// In practice, they might want to read from the current committed layer
 						// For now, leave them pointing to the promoted layer
-						debugLog(`[Collapse] Connection %d still reading from promoted layer %d`, conn.connectionId, layerToPromote.getLayerId());
+						logger.debugLog(`[Collapse] Connection ${conn.connectionId} still reading from promoted layer ${layerToPromote.getLayerId()}`);
 					}
 				}
 
@@ -198,16 +197,16 @@ export class MemoryTableManager {
 			}
 
 			if (collapsedCount > 0) {
-				debugLog(`[Collapse] Promoted %d layer(s) for %s. Current: %d`, collapsedCount, this._tableName, this.currentCommittedLayer.getLayerId());
+				logger.operation('Collapse Layers', this._tableName, { collapsedCount });
 			} else {
-				debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: %d`, this.currentCommittedLayer.getLayerId());
+				logger.debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: ${this.currentCommittedLayer.getLayerId()}`);
 			}
 		} catch (e: any) {
-			errorLog(`[Collapse] Error for %s: %s`, this._tableName, e.message);
+			logger.error('Collapse Layers', this._tableName, e);
 		} finally {
 			if (release) {
 				release();
-				debugLog(`[Collapse] Released lock for %s`, this._tableName);
+				logger.debugLog(`[Collapse] Released lock for ${this._tableName}`);
 			}
 		}
 	}
@@ -225,7 +224,7 @@ export class MemoryTableManager {
 	// Simplified for compatibility, though less relevant with inherited BTrees
 	lookupEffectiveValue(key: BTreeKeyForPrimary, indexName: string | 'primary', startLayer: Layer): PrimaryModificationValue | null {
 		if (indexName !== 'primary') {
-			errorLog("lookupEffectiveValue currently only supports 'primary' index for MemoryTableManager");
+			logger.error('lookupEffectiveValue', this._tableName, 'Currently only supports primary index for MemoryTableManager');
 			return null;
 		}
 		const primaryTree = startLayer.getModificationTree('primary');
@@ -241,87 +240,153 @@ export class MemoryTableManager {
 		values: Row | undefined,
 		oldKeyValues?: Row
 	): Promise<Row | undefined> {
+		this.validateMutationPermissions(operation);
+		this.ensureTransactionLayer(connection);
+
+		const targetLayer = connection.pendingTransactionLayer!;
+		const onConflict = this.extractConflictResolution(values);
+		this.cleanConflictResolutionFromValues(values);
+
+		try {
+			switch (operation) {
+				case 'insert':
+					return await this.performInsert(targetLayer, values, onConflict);
+				case 'update':
+					return await this.performUpdate(targetLayer, values, oldKeyValues, onConflict);
+				case 'delete':
+					return await this.performDelete(targetLayer, oldKeyValues);
+				default:
+					const exhaustiveCheck: never = operation;
+					throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
+			}
+		} catch (e) {
+			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {
+				return undefined;
+			}
+			throw e;
+		}
+	}
+
+	private validateMutationPermissions(operation: 'insert' | 'update' | 'delete'): void {
 		if (this.isReadOnly && operation !== 'insert') {
 			throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
 		}
-		if (!connection.pendingTransactionLayer) connection.begin();
-		const targetLayer = connection.pendingTransactionLayer!;
-		const schema = targetLayer.getSchema();
-		const onConflict = (values && (values as any)._onConflict)
-			? (values as any)._onConflict as ConflictResolution
-			: ConflictResolution.ABORT;
-		if (values && (values as any)._onConflict) delete (values as any)._onConflict;
-
-		let returnedRow: Row | undefined = undefined;
-
-		try {
-			if (operation === 'insert') {
-				if (!values) throw new QuereusError("INSERT requires values.", StatusCode.MISUSE);
-				const newRowData: Row = values;
-				const primaryKey = this.primaryKeyFromRow(newRowData);
-
-				// Check for existing value using inherited BTree lookup
-				const existingValue = this.lookupEffectiveRow(primaryKey, targetLayer);
-				if (existingValue !== null) {
-					if (onConflict === ConflictResolution.IGNORE) return undefined;
-					throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
-				}
-				targetLayer.recordUpsert(primaryKey, newRowData, null);
-				returnedRow = newRowData;
-			} else if (operation === 'update') {
-				if (!values || !oldKeyValues) throw new QuereusError("UPDATE requires new values and old key values.", StatusCode.MISUSE);
-				const newRowData: Row = values;
-				const targetPrimaryKey = this.buildBTreeKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
-
-				// Check if the target row exists using inherited BTree lookup
-				const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
-				if (!oldRowData) {
-					if (onConflict === ConflictResolution.IGNORE) return undefined;
-					warnLog(`UPDATE target PK [${oldKeyValues.join(',')}] not found for ${this._tableName}.`);
-					return undefined;
-				}
-
-				const newPrimaryKey = this.primaryKeyFromRow(newRowData);
-				if (this.comparePrimaryKeys(targetPrimaryKey, newPrimaryKey) !== 0) { // PK changed
-					const existingValueForNewPk = this.lookupEffectiveRow(newPrimaryKey, targetLayer);
-					if (existingValueForNewPk !== null) {
-						if (onConflict === ConflictResolution.IGNORE) return undefined;
-						throw new ConstraintError(`UNIQUE constraint failed on new PK for ${this._tableName}.`);
-					}
-					targetLayer.recordDelete(targetPrimaryKey, oldRowData);
-					targetLayer.recordUpsert(newPrimaryKey, newRowData, null);
-				} else {
-					targetLayer.recordUpsert(targetPrimaryKey, newRowData, oldRowData);
-				}
-				returnedRow = newRowData;
-			} else if (operation === 'delete') {
-				if (!oldKeyValues) throw new QuereusError("DELETE requires key values.", StatusCode.MISUSE);
-				const targetPrimaryKey = this.buildBTreeKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
-
-				// Check if the target row exists using inherited BTree lookup
-				const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
-				if (!oldRowData) return undefined;
-
-				targetLayer.recordDelete(targetPrimaryKey, oldRowData);
-				returnedRow = oldRowData;
-			} else {
-				const exhaustiveCheck: never = operation;
-				throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
-			}
-		} catch (e) {
-			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) return undefined;
-			throw e;
-		}
-		return returnedRow;
 	}
 
-	private buildBTreeKeyFromValues(keyValues: Row, pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>): BTreeKeyForPrimary {
-		if (pkDefinition.length === 0) throw new QuereusError("Cannot build BTreeKey: no PK def.", StatusCode.INTERNAL);
-		if (keyValues.length !== pkDefinition.length) throw new QuereusError(`Key value count mismatch. Expected ${pkDefinition.length}, got ${keyValues.length}.`, StatusCode.INTERNAL);
-		return pkDefinition.length === 1 ? keyValues[0] : keyValues;
+	private ensureTransactionLayer(connection: MemoryTableConnection): void {
+		if (!connection.pendingTransactionLayer) {
+			connection.begin();
+		}
+	}
+
+	private extractConflictResolution(values: Row | undefined): ConflictResolution {
+		return (values && (values as any)._onConflict)
+			? (values as any)._onConflict as ConflictResolution
+			: ConflictResolution.ABORT;
+	}
+
+	private cleanConflictResolutionFromValues(values: Row | undefined): void {
+		if (values && (values as any)._onConflict) {
+			delete (values as any)._onConflict;
+		}
+	}
+
+	private async performInsert(
+		targetLayer: TransactionLayer,
+		values: Row | undefined,
+		onConflict: ConflictResolution
+	): Promise<Row | undefined> {
+		if (!values) {
+			throw new QuereusError("INSERT requires values.", StatusCode.MISUSE);
+		}
+
+		const newRowData: Row = values;
+		const primaryKey = this.primaryKeyFromRow(newRowData);
+		const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
+
+		if (existingRow !== null) {
+			if (onConflict === ConflictResolution.IGNORE) return undefined;
+			throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
+		}
+
+		targetLayer.recordUpsert(primaryKey, newRowData, null);
+		return newRowData;
+	}
+
+	private async performUpdate(
+		targetLayer: TransactionLayer,
+		values: Row | undefined,
+		oldKeyValues: Row | undefined,
+		onConflict: ConflictResolution
+	): Promise<Row | undefined> {
+		if (!values || !oldKeyValues) {
+			throw new QuereusError("UPDATE requires new values and old key values.", StatusCode.MISUSE);
+		}
+
+		const newRowData: Row = values;
+		const schema = targetLayer.getSchema();
+		const targetPrimaryKey = buildPrimaryKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
+		const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
+
+		if (!oldRowData) {
+			if (onConflict === ConflictResolution.IGNORE) return undefined;
+			logger.warn('UPDATE', this._tableName, 'Target row not found', {
+				primaryKey: oldKeyValues.join(',')
+			});
+			return undefined;
+		}
+
+		const newPrimaryKey = this.primaryKeyFromRow(newRowData);
+		const isPrimaryKeyChanged = this.comparePrimaryKeys(targetPrimaryKey, newPrimaryKey) !== 0;
+
+		if (isPrimaryKeyChanged) {
+			return this.performUpdateWithPrimaryKeyChange(targetLayer, targetPrimaryKey, newPrimaryKey, oldRowData, newRowData, onConflict);
+		} else {
+			targetLayer.recordUpsert(targetPrimaryKey, newRowData, oldRowData);
+			return newRowData;
+		}
+	}
+
+	private performUpdateWithPrimaryKeyChange(
+		targetLayer: TransactionLayer,
+		oldPrimaryKey: BTreeKeyForPrimary,
+		newPrimaryKey: BTreeKeyForPrimary,
+		oldRowData: Row,
+		newRowData: Row,
+		onConflict: ConflictResolution
+	): Row | undefined {
+		const existingRowAtNewKey = this.lookupEffectiveRow(newPrimaryKey, targetLayer);
+
+		if (existingRowAtNewKey !== null) {
+			if (onConflict === ConflictResolution.IGNORE) return undefined;
+			throw new ConstraintError(`UNIQUE constraint failed on new PK for ${this._tableName}.`);
+		}
+
+		targetLayer.recordDelete(oldPrimaryKey, oldRowData);
+		targetLayer.recordUpsert(newPrimaryKey, newRowData, null);
+		return newRowData;
+	}
+
+	private async performDelete(
+		targetLayer: TransactionLayer,
+		oldKeyValues: Row | undefined
+	): Promise<Row | undefined> {
+		if (!oldKeyValues) {
+			throw new QuereusError("DELETE requires key values.", StatusCode.MISUSE);
+		}
+
+		const schema = targetLayer.getSchema();
+		const targetPrimaryKey = buildPrimaryKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
+		const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
+
+		if (!oldRowData) return undefined;
+
+		targetLayer.recordDelete(targetPrimaryKey, oldRowData);
+		return oldRowData;
 	}
 
 	public renameTable(newName: string): void {
+		logger.operation('Rename Table', this._tableName, { newName });
 		this._tableName = newName;
 	}
 
@@ -343,7 +408,7 @@ export class MemoryTableManager {
 				if (defaultConstraint.expr.type === 'literal') {
 					defaultValue = (defaultConstraint.expr as import('../../../parser/ast.js').LiteralExpr).value;
 				} else {
-					warnLog(`Default for new col '${newColumnSchema.name}' is expr; existing rows get NULL.`)
+					logger.warn('Add Column', this._tableName, 'Default for new col is expr; existing rows get NULL.', { columnName: newColumnSchema.name });
 				}
 			}
 			const notNullConstraint = columnDefAst.constraints.find(c => c.type === 'notNull');
@@ -359,13 +424,13 @@ export class MemoryTableManager {
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.addColumnToBase(newColumnSchema, defaultValue);
 			this.tableSchema = finalNewTableSchema;
-			this.reinitializePkFunctions();
-			log(`MemoryTable ${this._tableName}: Added column ${newColumnSchema.name}`);
+			this.initializePrimaryKeyFunctions();
+			logger.operation('Add Column', this._tableName, { columnName: newColumnSchema.name });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
 			this.tableSchema = originalManagerSchema;
-			this.reinitializePkFunctions();
-			errorLog(`Failed to add column ${columnDefAst.name}: ${e.message}`);
+			this.initializePrimaryKeyFunctions();
+			logger.error('Add Column', this._tableName, e);
 			throw e;
 		} finally {
 			release();
@@ -411,13 +476,13 @@ export class MemoryTableManager {
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.dropColumnFromBase(colIndex);
 			this.tableSchema = finalNewTableSchema;
-			this.reinitializePkFunctions();
-			log(`MemoryTable ${this._tableName}: Dropped column ${columnName}`);
+			this.initializePrimaryKeyFunctions();
+			logger.operation('Drop Column', this._tableName, { columnName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
 			this.tableSchema = originalManagerSchema;
-			this.reinitializePkFunctions();
-			errorLog(`Failed to drop column ${columnName}: ${e.message}`);
+			this.initializePrimaryKeyFunctions();
+			logger.error('Drop Column', this._tableName, e);
 			throw e;
 		} finally {
 			release();
@@ -460,13 +525,13 @@ export class MemoryTableManager {
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.handleColumnRename();
 			this.tableSchema = finalNewTableSchema;
-			this.reinitializePkFunctions();
-			log(`Renamed column ${oldName} to ${newColumnName} in ${this._tableName}`);
+			this.initializePrimaryKeyFunctions();
+			logger.operation('Rename Column', this._tableName, { oldName, newName: newColumnName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
 			this.tableSchema = originalManagerSchema;
-			this.reinitializePkFunctions();
-			errorLog(`Failed to rename column ${oldName} to ${newColumnDefAst.name}: ${e.message}`);
+			this.initializePrimaryKeyFunctions();
+			logger.error('Rename Column', this._tableName, e);
 			throw e;
 		} finally {
 			release();
@@ -486,7 +551,7 @@ export class MemoryTableManager {
 				if (!ifNotExistsFromAst) {
 					throw new QuereusError(`Index '${indexName}' already exists on table '${this._tableName}'.`, StatusCode.ERROR);
 				}
-				log(`Index '${indexName}' already exists, IF NOT EXISTS specified. Skipping creation.`);
+				logger.operation('Create Index', this._tableName, 'Index already exists, IF NOT EXISTS specified. Skipping creation.');
 				return;
 			}
 
@@ -505,11 +570,11 @@ export class MemoryTableManager {
 			await this.baseLayer.addIndexToBase(newIndexSchemaEntry);
 
 			this.tableSchema = finalNewTableSchema;
-			log(`MemoryTable ${this._tableName}: Created index ${indexName}`);
+			logger.operation('Create Index', this._tableName, { indexName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
 			this.tableSchema = originalManagerSchema;
-			errorLog(`Failed to create index ${newIndexSchemaEntry.name}: ${e.message}`);
+			logger.error('Create Index', this._tableName, e);
 			throw e;
 		} finally {
 			release();
@@ -527,7 +592,7 @@ export class MemoryTableManager {
 			const indexExists = this.tableSchema.indexes?.some(idx => idx.name.toLowerCase() === indexNameLower);
 			if (!indexExists) {
 				if (ifExists) {
-					log(`Index '${indexName}' not on table '${this._tableName}', IF EXISTS. Skipping.`);
+					logger.operation('Drop Index', this._tableName, 'Index not on table, IF EXISTS. Skipping.');
 					return;
 				}
 				throw new QuereusError(`Index '${indexName}' not on table '${this._tableName}'.`, StatusCode.ERROR);
@@ -539,11 +604,11 @@ export class MemoryTableManager {
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.dropIndexFromBase(indexName);
 			this.tableSchema = finalNewTableSchema;
-			log(`MemoryTable ${this._tableName}: Dropped index ${indexName}`);
+			logger.operation('Drop Index', this._tableName, { indexName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
 			this.tableSchema = originalManagerSchema;
-			errorLog(`Failed to drop index ${indexName}: ${e.message}`);
+			logger.error('Drop Index', this._tableName, e);
 			throw e;
 		} finally {
 			release();
@@ -580,7 +645,7 @@ export class MemoryTableManager {
 			this.connections.clear();
 			this.currentCommittedLayer = this.baseLayer;
 			this.baseLayer = new BaseLayer(this.tableSchema);
-			log(`MemoryTable %s manager destroyed and data cleared.`, this._tableName);
+			logger.operation('Destroy', this._tableName, 'Manager destroyed and data cleared');
 		} finally {
 			release();
 		}
@@ -588,7 +653,7 @@ export class MemoryTableManager {
 
 	private async ensureSchemaChangeSafety(): Promise<void> {
 		if (this.currentCommittedLayer !== this.baseLayer) {
-			warnLog(`Schema change on '%s' while transaction layers exist. Attempting collapse...`, this._tableName);
+			logger.warn('Schema Change', this._tableName, 'Transaction layers exist. Attempting collapse...');
 			await this.tryCollapseLayers();
 			if (this.currentCommittedLayer !== this.baseLayer) {
 				throw new QuereusError(
@@ -597,7 +662,7 @@ export class MemoryTableManager {
 				);
 			}
 		}
-		debugLog(`Schema change safety check passed for %s. Current committed layer is base.`, this._tableName);
+		logger.debugLog(`Schema change safety check passed for ${this._tableName}. Current committed layer is base.`);
 	}
 
 	// New method to abstract layer scanning

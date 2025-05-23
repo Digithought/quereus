@@ -1,7 +1,6 @@
-import type { Path } from 'inheritree';
 import type { ScanPlan } from './scan-plan.js';
 import type { TransactionLayer } from './transaction.js';
-import type { BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
 import { isDeletionMarker } from '../types.js';
 import type { Row } from '../../../common/types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
