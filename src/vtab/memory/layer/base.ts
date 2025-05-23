@@ -1,6 +1,6 @@
-import { BTree } from 'digitree';
+import { BTree } from 'inheritree';
 import type { TableSchema } from '../../../schema/table.js';
-import type { BTreeKeyForPrimary, BTreeKeyForIndex, DeletionMarker } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, DeletionMarker, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
 import { MemoryIndex } from '../index.js';
 import { isDeletionMarker } from '../types.js';
@@ -12,7 +12,6 @@ import { StatusCode } from '../../../common/types.js';
 import { QuereusError } from '../../../common/errors.js';
 import { type ColumnSchema } from '../../../schema/column.js';
 import type { IndexSchema } from '../../../schema/table.js';
-import type { MemoryIndexEntry } from '../types.js';
 
 let baseLayerCounter = 0;
 const log = createLogger('vtab:memory:layer:base');
@@ -175,10 +174,8 @@ export class BaseLayer implements Layer {
 		});
 
 		if (isDeleteOperation) {
-			const path = this.primaryTree.find(primaryKey);
-			if (path.on) {
-				this.primaryTree.deleteAt(path);
-			} else {
+			const deleted = this.primaryTree.deleteAt(this.primaryTree.find(primaryKey));
+			if (!deleted) {
 				warnLog(`BaseLayer.applyChange: Attempted to delete non-existent primary key ${safeJsonStringify(primaryKey)}.`);
 			}
 		} else if (newRowData) {

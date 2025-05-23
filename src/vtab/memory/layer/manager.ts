@@ -153,36 +153,54 @@ export class MemoryTableManager {
 			}
 			debugLog(`[Collapse] Acquired lock for %s`, this._tableName);
 			let collapsedCount = 0;
+
 			while (this.currentCommittedLayer instanceof TransactionLayer && this.currentCommittedLayer.isCommitted()) {
-				const layerToMerge = this.currentCommittedLayer as TransactionLayer;
-				const parentLayer = layerToMerge.getParent();
+				const layerToPromote = this.currentCommittedLayer as TransactionLayer;
+				const parentLayer = layerToPromote.getParent();
 				if (!parentLayer) {
-					errorLog(`[Collapse] Committed TransactionLayer ${layerToMerge.getLayerId()} has no parent!`);
+					errorLog(`[Collapse] Committed TransactionLayer ${layerToPromote.getLayerId()} has no parent!`);
 					break;
 				}
+
+				// Check if anyone is still using the parent layer
 				let parentInUse = false;
 				for (const conn of this.connections.values()) {
 					if (conn.readLayer === parentLayer || conn.pendingTransactionLayer?.getParent() === parentLayer) {
 						parentInUse = true;
-						debugLog(`[Collapse] Parent layer %d in use by conn %d. Cannot merge layer %d.`, parentLayer.getLayerId(), conn.connectionId, layerToMerge.getLayerId());
+						debugLog(`[Collapse] Parent layer %d in use by conn %d. Cannot collapse layer %d.`, parentLayer.getLayerId(), conn.connectionId, layerToPromote.getLayerId());
 						break;
 					}
 				}
 				if (parentInUse) break;
 
-				debugLog(`[Collapse] Merging layer %d into parent %d for %s`, layerToMerge.getLayerId(), parentLayer.getLayerId(), this._tableName);
-				this.applyLayerToBase(layerToMerge); // This calls baseLayer.applyChange
+				debugLog(`[Collapse] Promoting layer %d to become independent from parent %d for %s`, layerToPromote.getLayerId(), parentLayer.getLayerId(), this._tableName);
+
+				// With inherited BTrees, "collapsing" means making the transaction layer independent
+				// by calling clearBase() on its BTrees, effectively making it the new base data
+				layerToPromote.clearBase();
+
+				// Update the current committed layer to point to the parent
+				// The transaction layer's BTrees are now independent and contain all the data
 				this.currentCommittedLayer = parentLayer;
 				debugLog(`[Collapse] CurrentCommittedLayer set to %d for %s`, parentLayer.getLayerId(), this._tableName);
+
+				// Update connections that were reading from the collapsed layer
 				for (const conn of this.connections.values()) {
-					if (conn.readLayer === layerToMerge) conn.readLayer = parentLayer;
+					if (conn.readLayer === layerToPromote) {
+						// The layer is now independent, but connections can continue using it
+						// In practice, they might want to read from the current committed layer
+						// For now, leave them pointing to the promoted layer
+						debugLog(`[Collapse] Connection %d still reading from promoted layer %d`, conn.connectionId, layerToPromote.getLayerId());
+					}
 				}
+
 				collapsedCount++;
 			}
+
 			if (collapsedCount > 0) {
-				debugLog(`[Collapse] Merged %d layer(s) for %s. Current: %d`, collapsedCount, this._tableName, this.currentCommittedLayer.getLayerId());
+				debugLog(`[Collapse] Promoted %d layer(s) for %s. Current: %d`, collapsedCount, this._tableName, this.currentCommittedLayer.getLayerId());
 			} else {
-				debugLog(`[Collapse] No layers merged for ${this._tableName}. Current: %d`, this.currentCommittedLayer.getLayerId());
+				debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: %d`, this.currentCommittedLayer.getLayerId());
 			}
 		} catch (e: any) {
 			errorLog(`[Collapse] Error for %s: %s`, this._tableName, e.message);
@@ -194,75 +212,26 @@ export class MemoryTableManager {
 		}
 	}
 
-	private applyLayerToBase(layerToMerge: TransactionLayer): void {
-		if (!this.baseLayer) throw new Error("BaseLayer not initialized during applyLayerToBase.");
-
-		const primaryModTree = layerToMerge.getModificationTree('primary');
-		const allSecondaryIndexChangesFromTx = layerToMerge.getSecondaryIndexChanges();
-		const { primaryKeyExtractorFromRow } = layerToMerge.getPkExtractorsAndComparators(layerToMerge.getSchema());
-
-		if (primaryModTree) {
-			const firstPath = primaryModTree.first();
-			if (firstPath) {
-				const iterator = primaryModTree.ascending(firstPath);
-				for (const path of iterator) {
-					const modification = primaryModTree.at(path);
-					if (modification === undefined) { warnLog("[Collapse Apply] Undefined mod value from BTree path."); continue; }
-
-					const primaryKey = isDeletionMarker(modification) ? modification._key_ : primaryKeyExtractorFromRow(modification as Row);
-					const secondaryChangesForThisPK = new Map<string, Array<{op: 'ADD' | 'DELETE', indexKey: BTreeKeyForIndex}>>();
-
-					allSecondaryIndexChangesFromTx.forEach((pkSpecificChangesMap, indexName) => {
-						pkSpecificChangesMap.forEach((changeDetail) => {
-							if (this.comparePrimaryKeys(changeDetail.pk, primaryKey) === 0) {
-								if (!secondaryChangesForThisPK.has(indexName)) secondaryChangesForThisPK.set(indexName, []);
-								secondaryChangesForThisPK.get(indexName)!.push({ op: changeDetail.op, indexKey: changeDetail.indexKey });
-							}
-						});
-					});
-					try {
-						this.baseLayer.applyChange(primaryKey, modification, secondaryChangesForThisPK);
-					} catch (applyError: any) {
-						errorLog(`[Collapse Apply] Failed for PK ${safeJsonStringify(primaryKey)} for ${this._tableName}. Error: ${applyError.message}`);
-						throw applyError;
-					}
-				}
-			}
-		}
-	}
-
-	private lookupEffectiveValueInternal(
-		primaryKey: BTreeKeyForPrimary,
-		currentLayer: Layer | null
-	): PrimaryModificationValue | undefined {
-		if (!currentLayer) return undefined;
-		if (currentLayer instanceof TransactionLayer) {
-			const modTree = currentLayer.getModificationTree('primary');
-			if (modTree) {
-				const modValue = modTree.get(primaryKey);
-				if (modValue !== undefined) return modValue;
-			}
-			return this.lookupEffectiveValueInternal(primaryKey, currentLayer.getParent());
-		} else if (currentLayer instanceof BaseLayer) {
-			return currentLayer.primaryTree.get(primaryKey);
-		} else {
-			errorLog(`lookupEffectiveValueInternal: Unknown layer type: ${currentLayer}`);
-			return undefined;
-		}
-	}
-
+	// With inherited BTrees, lookupEffectiveRow is much simpler
 	public lookupEffectiveRow(primaryKey: BTreeKeyForPrimary, startLayer: Layer): Row | null {
-		const result = this.lookupEffectiveValueInternal(primaryKey, startLayer);
+		// With inherited BTrees, a simple get() will traverse the inheritance chain automatically
+		const primaryTree = startLayer.getModificationTree('primary');
+		if (!primaryTree) return null;
+
+		const result = primaryTree.get(primaryKey);
 		return (result === undefined || isDeletionMarker(result)) ? null : result as Row;
 	}
 
-	// Kept for potential internal use, though less relevant if only Row is needed externally.
+	// Simplified for compatibility, though less relevant with inherited BTrees
 	lookupEffectiveValue(key: BTreeKeyForPrimary, indexName: string | 'primary', startLayer: Layer): PrimaryModificationValue | null {
 		if (indexName !== 'primary') {
 			errorLog("lookupEffectiveValue currently only supports 'primary' index for MemoryTableManager");
 			return null;
 		}
-		const result = this.lookupEffectiveValueInternal(key, startLayer);
+		const primaryTree = startLayer.getModificationTree('primary');
+		if (!primaryTree) return null;
+
+		const result = primaryTree.get(key);
 		return result === undefined ? null : result;
 	}
 
@@ -271,8 +240,8 @@ export class MemoryTableManager {
 		operation: 'insert' | 'update' | 'delete',
 		values: Row | undefined,
 		oldKeyValues?: Row
-	): Promise<Row | undefined> { // Changed return for RETURNING
-		if (this.isReadOnly && operation !== 'insert') { // Allow insert to read-only for bootstrapping?
+	): Promise<Row | undefined> {
+		if (this.isReadOnly && operation !== 'insert') {
 			throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
 		}
 		if (!connection.pendingTransactionLayer) connection.begin();
@@ -289,29 +258,33 @@ export class MemoryTableManager {
 			if (operation === 'insert') {
 				if (!values) throw new QuereusError("INSERT requires values.", StatusCode.MISUSE);
 				const newRowData: Row = values;
-				const primaryKey = this.primaryKeyFromRow(newRowData); // Use manager's PK extractor
-				const existingValue = this.lookupEffectiveValueInternal(primaryKey, targetLayer);
-				if (existingValue !== undefined && !isDeletionMarker(existingValue)) {
+				const primaryKey = this.primaryKeyFromRow(newRowData);
+
+				// Check for existing value using inherited BTree lookup
+				const existingValue = this.lookupEffectiveRow(primaryKey, targetLayer);
+				if (existingValue !== null) {
 					if (onConflict === ConflictResolution.IGNORE) return undefined;
 					throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
 				}
 				targetLayer.recordUpsert(primaryKey, newRowData, null);
-				returnedRow = newRowData; // For RETURNING
+				returnedRow = newRowData;
 			} else if (operation === 'update') {
 				if (!values || !oldKeyValues) throw new QuereusError("UPDATE requires new values and old key values.", StatusCode.MISUSE);
 				const newRowData: Row = values;
 				const targetPrimaryKey = this.buildBTreeKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
-				const oldEffectiveValue = this.lookupEffectiveValueInternal(targetPrimaryKey, targetLayer.getParent());
-				if (!oldEffectiveValue || isDeletionMarker(oldEffectiveValue)) {
+
+				// Check if the target row exists using inherited BTree lookup
+				const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
+				if (!oldRowData) {
 					if (onConflict === ConflictResolution.IGNORE) return undefined;
 					warnLog(`UPDATE target PK [${oldKeyValues.join(',')}] not found for ${this._tableName}.`);
 					return undefined;
 				}
-				const oldRowData = oldEffectiveValue as Row;
+
 				const newPrimaryKey = this.primaryKeyFromRow(newRowData);
 				if (this.comparePrimaryKeys(targetPrimaryKey, newPrimaryKey) !== 0) { // PK changed
-					const existingValueForNewPk = this.lookupEffectiveValueInternal(newPrimaryKey, targetLayer);
-					if (existingValueForNewPk !== undefined && !isDeletionMarker(existingValueForNewPk)) {
+					const existingValueForNewPk = this.lookupEffectiveRow(newPrimaryKey, targetLayer);
+					if (existingValueForNewPk !== null) {
 						if (onConflict === ConflictResolution.IGNORE) return undefined;
 						throw new ConstraintError(`UNIQUE constraint failed on new PK for ${this._tableName}.`);
 					}
@@ -320,15 +293,17 @@ export class MemoryTableManager {
 				} else {
 					targetLayer.recordUpsert(targetPrimaryKey, newRowData, oldRowData);
 				}
-				returnedRow = newRowData; // For RETURNING
+				returnedRow = newRowData;
 			} else if (operation === 'delete') {
 				if (!oldKeyValues) throw new QuereusError("DELETE requires key values.", StatusCode.MISUSE);
 				const targetPrimaryKey = this.buildBTreeKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
-				const oldEffectiveValue = this.lookupEffectiveValueInternal(targetPrimaryKey, targetLayer.getParent());
-				if (!oldEffectiveValue || isDeletionMarker(oldEffectiveValue)) return undefined;
-				const oldRowData = oldEffectiveValue as Row;
+
+				// Check if the target row exists using inherited BTree lookup
+				const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
+				if (!oldRowData) return undefined;
+
 				targetLayer.recordDelete(targetPrimaryKey, oldRowData);
-				returnedRow = oldRowData; // For RETURNING
+				returnedRow = oldRowData;
 			} else {
 				const exhaustiveCheck: never = operation;
 				throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
@@ -337,7 +312,7 @@ export class MemoryTableManager {
 			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) return undefined;
 			throw e;
 		}
-		return returnedRow; // This supports RETURNING by providing the affected row
+		return returnedRow;
 	}
 
 	private buildBTreeKeyFromValues(keyValues: Row, pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>): BTreeKeyForPrimary {
@@ -350,7 +325,7 @@ export class MemoryTableManager {
 		this._tableName = newName;
 	}
 
-	// --- Schema Operations ---
+	// --- Schema Operations (simplified with inherited BTrees) ---
 	async addColumn(columnDefAst: ASTColumnDef): Promise<void> {
 		if (this.isReadOnly) throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
 		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this._tableName}`;
@@ -389,7 +364,7 @@ export class MemoryTableManager {
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
 			this.tableSchema = originalManagerSchema;
-			this.reinitializePkFunctions(); // Revert PK functions too
+			this.reinitializePkFunctions();
 			errorLog(`Failed to add column ${columnDefAst.name}: ${e.message}`);
 			throw e;
 		} finally {
@@ -414,7 +389,7 @@ export class MemoryTableManager {
 			const updatedColumnsSchema = this.tableSchema.columns.filter((_, idx) => idx !== colIndex);
 			const updatedPkDefinition = this.tableSchema.primaryKeyDefinition.map(def => ({
 				...def, index: def.index > colIndex ? def.index - 1 : def.index
-			})).filter(def => def.index !== colIndex); // Should be redundant due to PK check above, but safe
+			})).filter(def => def.index !== colIndex);
 			const updatedPrimaryKeyNames = updatedPkDefinition.map(def => updatedColumnsSchema[def.index]?.name).filter(Boolean) as string[];
 
 			const updatedIndexes = (this.tableSchema.indexes || []).map(idx => ({
@@ -515,12 +490,10 @@ export class MemoryTableManager {
 				return;
 			}
 
-			// Validate columns in newIndexSchemaEntry against current tableSchema
 			for (const iCol of newIndexSchemaEntry.columns) {
 				if (iCol.index < 0 || iCol.index >= this.tableSchema.columns.length) {
 					throw new QuereusError(`Column index ${iCol.index} for index '${indexName}' is out of bounds for table '${this._tableName}'.`, StatusCode.ERROR);
 				}
-				// Optionally check if iCol.name matches this.tableSchema.columns[iCol.index].name if name is stored and authoritative
 			}
 
 			const finalNewTableSchema: TableSchema = Object.freeze({
@@ -553,11 +526,15 @@ export class MemoryTableManager {
 			const indexNameLower = indexName.toLowerCase();
 			const indexExists = this.tableSchema.indexes?.some(idx => idx.name.toLowerCase() === indexNameLower);
 			if (!indexExists) {
-				if (ifExists) { log(`Index '${indexName}' not on table '${this._tableName}', IF EXISTS. Skipping.`); return; }
+				if (ifExists) {
+					log(`Index '${indexName}' not on table '${this._tableName}', IF EXISTS. Skipping.`);
+					return;
+				}
 				throw new QuereusError(`Index '${indexName}' not on table '${this._tableName}'.`, StatusCode.ERROR);
 			}
 			const finalNewTableSchema: TableSchema = Object.freeze({
-				...this.tableSchema, indexes: Object.freeze((this.tableSchema.indexes || []).filter(idx => idx.name.toLowerCase() !== indexNameLower))
+				...this.tableSchema,
+				indexes: Object.freeze((this.tableSchema.indexes || []).filter(idx => idx.name.toLowerCase() !== indexNameLower))
 			});
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.dropIndexFromBase(indexName);
@@ -568,7 +545,9 @@ export class MemoryTableManager {
 			this.tableSchema = originalManagerSchema;
 			errorLog(`Failed to drop index ${indexName}: ${e.message}`);
 			throw e;
-		} finally { release(); }
+		} finally {
+			release();
+		}
 	}
 
 	public planAppliesToKey(
@@ -599,8 +578,7 @@ export class MemoryTableManager {
 				if (connection.pendingTransactionLayer) connection.rollback();
 			}
 			this.connections.clear();
-			this.currentCommittedLayer = this.baseLayer; // Point to base
-			// Create a new, empty BaseLayer to effectively clear data
+			this.currentCommittedLayer = this.baseLayer;
 			this.baseLayer = new BaseLayer(this.tableSchema);
 			log(`MemoryTable %s manager destroyed and data cleared.`, this._tableName);
 		} finally {
@@ -609,11 +587,9 @@ export class MemoryTableManager {
 	}
 
 	private async ensureSchemaChangeSafety(): Promise<void> {
-		// Attempt to collapse layers to base. If successful, it's safe.
-		// If layers are in use and cannot be collapsed, throw an error.
 		if (this.currentCommittedLayer !== this.baseLayer) {
 			warnLog(`Schema change on '%s' while transaction layers exist. Attempting collapse...`, this._tableName);
-			await this.tryCollapseLayers(); // tryCollapseLayers should acquire its own lock
+			await this.tryCollapseLayers();
 			if (this.currentCommittedLayer !== this.baseLayer) {
 				throw new QuereusError(
 					`Cannot perform schema change on table ${this._tableName} while older transaction versions are in use by active connections. Commit/rollback active transactions and retry.`,
@@ -629,16 +605,14 @@ export class MemoryTableManager {
 		if (layer instanceof TransactionLayer) {
 			const parentLayer = layer.getParent();
 			if (!parentLayer) {
-				// This should ideally not happen if BaseLayer is always the ultimate parent.
 				throw new QuereusError("TransactionLayer encountered without a parent layer during scan.", StatusCode.INTERNAL);
 			}
-			// Recursively call scanLayer for the parent to build the iterable chain
-			const parentIterable = this.scanLayer(parentLayer, plan);
-			yield* scanTransactionLayer(layer, plan, parentIterable);
+			// With inherited BTrees, scanning is much simpler - we just scan the layer's BTrees directly
+			// The inheritance is handled automatically by the BTree
+			yield* scanTransactionLayer(layer, plan, this.scanLayer(parentLayer, plan));
 		} else if (layer instanceof BaseLayer) {
 			yield* scanBaseLayer(layer, plan);
 		} else {
-			// Should not happen if all layers are either TransactionLayer or BaseLayer
 			throw new QuereusError("Encountered an unknown layer type during scanLayer operation.", StatusCode.INTERNAL);
 		}
 	}

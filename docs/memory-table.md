@@ -1,75 +1,187 @@
 # Memory Table Module Documentation
 
-The Memory Table Module provides virtual tables backed by memory for the Quereus engine. These tables support standard SQL operations and can be used for high-performance in-memory data storage that requires SQL query capabilities.
+The Memory Table Module provides virtual tables backed by memory for the Quereus engine. These tables support standard SQL operations with full ACID transaction support and can be used for high-performance in-memory data storage that requires SQL query capabilities.
 
+## Architecture Overview
 
-The `MemoryTable` (`src/vtab/memory-table.ts`) provides a general-purpose, B+Tree-backed in-memory table implementation suitable for various internal and user-facing scenarios.
+The `MemoryTable` implementation (`src/vtab/memory/`) provides a sophisticated, layer-based MVCC (Multi-Version Concurrency Control) system using inherited BTrees with copy-on-write semantics.
 
-**Key Features:**
+### **Core Components:**
 
-*   **B+Tree Backend:** Uses the `digitree` library for efficient, sorted storage.
-*   **Flexible Primary Indexing:** Data is the user-defined single-column or composite `PRIMARY KEY` specified during table creation. The B+Tree automatically maintains the sort order based on this key.
-*   **Secondary Index Support:** Allows creation of secondary indexes on one or more columns using `CREATE INDEX`. These are also backed by B+Trees for efficient lookups.
-*   **Query Planning:** Implements `xBestIndex` to provide basic query plans:
-    *   Considers both primary and secondary indexes.
-    *   Full table scans (ascending or descending based on primary key).
-    *   Fast equality lookups (`WHERE indexed_col = ?`) on single or composite keys using the most appropriate index.
-    *   Range scans (`WHERE indexed_col > ?`, etc.) based on the *first* column of the chosen index.
-    *   Satisfies `ORDER BY` clauses that match the chosen index order.
-*   **CRUD Operations:** Supports `INSERT`, `UPDATE`, and `DELETE` via the `xUpdate` method, maintaining both primary and secondary indexes.
-*   **Transactions & Savepoints:** Supports transactional operations (`BEGIN`, `COMMIT`, `ROLLBACK`) and savepoints using internal buffering for inserts, updates, and deletes.
+*   **`MemoryTableModule`** (`src/vtab/memory/module.ts`): Factory for creating and managing memory table instances
+*   **`MemoryTable`** (`src/vtab/memory/table.ts`): Connection-specific table interface that delegates to the manager
+*   **`MemoryTableManager`** (`src/vtab/memory/layer/manager.ts`): Shared state manager handling schema, connections, and layer lifecycle
+*   **Layer System**: MVCC implementation with inherited BTrees
+    *   **`BaseLayer`** (`src/vtab/memory/layer/base.ts`): Root layer containing the canonical table data
+    *   **`TransactionLayer`** (`src/vtab/memory/layer/transaction.ts`): Transaction-specific modifications using inherited BTrees
+    *   **`MemoryTableConnection`** (`src/vtab/memory/layer/connection.ts`): Per-connection state with transaction and savepoint support
 
-**Usage Examples:**
+### **Inherited BTree Backend:**
 
-*   **Internal Engine Use (Ephemeral Tables):** The VDBE uses `MemoryTable` internally for operations requiring temporary storage, such as materializing subquery results or sorting data. The `Opcode.OpenEphemeral` and `Opcode.Sort` instructions leverage this.
-*   **User-Defined In-Memory Tables:** Users can register the `MemoryTableModule` and create persistent (for the `Database` instance lifetime) or temporary in-memory tables using SQL:
+*   **Backend Library:** Uses the `inheritree` library (fork of `digitree`) for efficient, sorted storage with copy-on-write inheritance
+*   **Inheritance Model:** Each `TransactionLayer` creates BTrees that inherit from their parent layer's BTrees, providing automatic data propagation without complex change tracking
+*   **Copy-on-Write:** Modifications in child layers only copy pages when necessary, sharing immutable pages with parent layers
+*   **Layer Promotion:** The `clearBase()` method allows transaction layers to become independent, supporting efficient layer collapse
 
-    ```typescript
-    import { Database, MemoryTableModule } from 'quereus'; // Or adjust path
+## **Key Features:**
 
-    const db = new Database();
-    // Register the module (can be done once)
-    db.registerVtabModule('memory', new MemoryTableModule());
+### **MVCC Transaction Support:**
+*   **Isolation:** Each connection sees a consistent snapshot of data throughout its transaction
+*   **Concurrency:** Multiple connections can read/write simultaneously with proper isolation
+*   **Savepoints:** Full support for nested savepoints within transactions (`SAVEPOINT`, `ROLLBACK TO`, `RELEASE`)
+*   **Layer Collapse:** Automatic promotion and cleanup of committed layers when safe
 
-    // Create a table keyed by id
-    await db.exec(`
-        CREATE TABLE main.my_data(
-            id INTEGER primary key, -- Just a regular column
-            name TEXT,
-            value REAL
-        );
-    `);
+### **Indexing and Query Planning:**
+*   **Unified Index Treatment:** Primary and secondary indexes are treated uniformly using inherited BTrees
+*   **Flexible Primary Indexing:** Data is organized by user-defined single-column or composite `PRIMARY KEY`
+*   **Secondary Index Support:** `CREATE INDEX` and `DROP INDEX` on single or multiple columns, all backed by inherited BTrees
+*   **Query Planning:** Implements `xBestIndex` for optimal query execution:
+    *   Index selection for equality and range queries
+    *   Full table scans (ascending/descending based on primary key)
+    *   Fast equality lookups (`WHERE indexed_col = ?`) on single or composite keys
+    *   Range scans (`WHERE indexed_col > ?`, etc.) on the first column of chosen index
+    *   `ORDER BY` satisfaction using index ordering
 
-    // Create a table keyed by a composite PRIMARY KEY
-    await db.exec(`
-        CREATE TABLE temp.keyed_data(
-            key_part1 TEXT,
-            key_part2 INTEGER,
-            data BLOB,
-            PRIMARY KEY (key_part1, key_part2) -- Composite key
-        );
-    `);
+### **Schema Evolution:**
+*   **Dynamic Schema Changes:** `ALTER TABLE` support for adding, dropping, and renaming columns
+*   **Index Management:** Runtime creation and deletion of secondary indexes
+*   **Schema Safety:** Operations ensure consistency across all active transactions
 
-    // Insert data
-    await db.exec("INSERT INTO my_data (id, name, value) VALUES (1, 'alpha', 1.23), (2, 'beta', 4.56)");
-    await db.exec("INSERT INTO keyed_data VALUES ('A', 10, x'0102'), ('B', 5, x'0304')");
+### **Performance Optimizations:**
+*   **Inherited Data Access:** Automatic traversal through layer inheritance without manual merging
+*   **Efficient Scanning:** Direct iteration over inherited BTrees eliminates complex merge logic
+*   **Memory Efficiency:** Copy-on-write semantics minimize memory usage for read-heavy workloads
 
-    // Create a secondary index
-    await db.exec("CREATE INDEX my_data_name_idx ON my_data (name)");
+## **Usage Examples:**
 
-    // Query using the secondary index
-    const resultByName = await db.prepare("SELECT * FROM my_data WHERE name = 'beta'").get();
+### **Basic Table Operations:**
 
-    // Query using the primary key index
-    const results = await db.prepare("SELECT * FROM keyed_data WHERE key_part1 = 'A'").all();
+```typescript
+import { Database, MemoryTableModule } from 'quereus';
 
-    // Drop the secondary index
-    await db.exec("DROP INDEX my_data_name_idx");
-    ```
+const db = new Database();
+// Register the module (typically done once)
+db.registerVtabModule('memory', new MemoryTableModule());
 
-**Current Limitations:**
+// Create a table with single-column primary key
+await db.exec(`
+    CREATE TABLE main.users(
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        email TEXT,
+        created_at TEXT
+    );
+`);
 
-*   **Constraint Enforcement:** Only the `UNIQUE` constraint on the primary BTree key is currently enforced. Other constraints like `NOT NULL`, `CHECK`, `FOREIGN KEY` defined in the `CREATE TABLE` string are parsed but *not* enforced by `MemoryTable` itself during `INSERT` or `UPDATE`.
-*   **Default Values:** `DEFAULT` clauses are not applied during `INSERT`.
-*   **Advanced Planning:** `xBestIndex` planning is basic. Cost estimation is heuristic. It only considers range scans on the *first* column of an index.
-*   **Index Features:** Indices on expressions are not supported. Collation support in indices is basic (inherits from column).
+// Create a table with composite primary key
+await db.exec(`
+    CREATE TABLE main.user_sessions(
+        user_id INTEGER,
+        session_id TEXT,
+        created_at TEXT,
+        expires_at TEXT,
+        PRIMARY KEY (user_id, session_id)
+    );
+`);
+```
+
+### **Secondary Indexes:**
+
+```typescript
+// Create secondary indexes for efficient querying
+await db.exec("CREATE INDEX users_email_idx ON users (email)");
+await db.exec("CREATE INDEX users_created_idx ON users (created_at DESC)");
+
+// Queries automatically use appropriate indexes
+const userByEmail = await db.prepare("SELECT * FROM users WHERE email = ?").get("john@example.com");
+const recentUsers = await db.prepare("SELECT * FROM users ORDER BY created_at DESC LIMIT 10").all();
+```
+
+### **Transaction and Savepoint Support:**
+
+```typescript
+// Explicit transaction with savepoints
+await db.exec("BEGIN");
+try {
+    await db.exec("INSERT INTO users (id, name, email) VALUES (1, 'John', 'john@example.com')");
+    
+    await db.exec("SAVEPOINT sp1");
+    await db.exec("INSERT INTO users (id, name, email) VALUES (2, 'Jane', 'jane@example.com')");
+    
+    // Rollback to savepoint, keeping John but removing Jane
+    await db.exec("ROLLBACK TO sp1");
+    
+    await db.exec("INSERT INTO users (id, name, email) VALUES (3, 'Bob', 'bob@example.com')");
+    await db.exec("COMMIT"); // Commits John and Bob
+} catch (error) {
+    await db.exec("ROLLBACK");
+}
+```
+
+### **Schema Evolution:**
+
+```typescript
+// Add new column with default value
+await db.exec("ALTER TABLE users ADD COLUMN age INTEGER DEFAULT 0");
+
+// Create index on new column
+await db.exec("CREATE INDEX users_age_idx ON users (age)");
+
+// Rename column (if supported by parser)
+await db.exec("ALTER TABLE users RENAME COLUMN created_at TO registration_date");
+```
+
+## **Implementation Details:**
+
+### **Layer Management:**
+*   **Connection Isolation:** Each connection maintains its own read layer and optional pending transaction layer
+*   **Automatic Promotion:** Committed transaction layers are automatically promoted when no longer referenced
+*   **Lock-Free Reads:** Read operations don't require locks, using the connection's current layer view
+*   **Efficient Writes:** Write operations use inherited BTrees to minimize data copying
+
+### **Index Consistency:**
+*   **Unified Updates:** Primary and secondary index updates are handled uniformly during mutations
+*   **Inheritance Propagation:** Index changes automatically propagate through layer inheritance
+*   **Schema Consistency:** Index definitions are maintained consistently across layer transitions
+
+### **Memory Management:**
+*   **Copy-on-Write Pages:** Only modified pages are copied, sharing immutable pages across layers
+*   **Automatic Cleanup:** Unused layers are automatically garbage collected when no longer referenced
+*   **Base Clearing:** The `clearBase()` operation makes layers independent, reducing memory overhead
+
+## **Current Limitations:**
+
+*   **Constraint Enforcement:** Only primary key `UNIQUE` constraints are fully enforced. Other constraints (`NOT NULL`, `CHECK`) are parsed but not enforced during DML operations within the memory table
+*   **Default Values:** `DEFAULT` clauses in column definitions are not automatically applied during `INSERT` operations
+*   **Advanced Query Planning:** Cost estimation is heuristic; range scans only consider the first column of composite indexes
+*   **Index Features:** Expression-based indexes and advanced collation support are not implemented
+
+## **Future Enhancements:**
+
+### **Near-Term Improvements:**
+*   **Enhanced Constraint Enforcement:** Full support for `NOT NULL`, `CHECK`, and `DEFAULT` constraints within memory table operations
+*   **Improved Query Planning:** Better cost estimation and multi-column range scan support in `xBestIndex`
+*   **Expression Indexes:** Support for indexes on computed expressions
+*   **Advanced Collations:** Enhanced collation support beyond basic `BINARY`, `NOCASE`, and `RTRIM`
+
+### **Medium-Term Features:**
+*   **Compression:** Page-level compression for reduced memory usage in inherited BTrees
+*   **Statistics Collection:** Automatic table/index statistics for improved cost estimation in `xBestIndex`
+*   **Index Optimization:** Support for covering indexes and index-only scans
+*   **Memory Monitoring:** Better tracking and reporting of memory usage across layers
+
+### **Long-Term Possibilities:**
+*   **Persistent Storage Integration:** Optional backing store for memory table durability
+*   **Advanced MVCC Features:** Read-committed isolation levels within memory table transactions
+*   **Partitioning:** Horizontal table partitioning for very large memory tables
+*   **Custom Index Types:** Support for specialized index types (hash, bitmap, etc.)
+
+## **Performance Characteristics:**
+
+*   **Read Performance:** O(log n) for indexed lookups, O(n) for full scans
+*   **Write Performance:** O(log n) for inserts/updates with copy-on-write overhead only for modified pages
+*   **Memory Usage:** Efficient sharing of immutable pages across transaction layers
+*   **Concurrency:** High read concurrency with minimal locking; writes are serialized per connection
+*   **Transaction Overhead:** Minimal overhead for read-only transactions; moderate overhead for write transactions due to layer management
+
+The inherited BTree architecture provides a robust foundation for high-performance in-memory SQL operations while maintaining full ACID compliance within the memory table module's scope.

@@ -1,23 +1,19 @@
-import { BTree } from 'digitree';
+import { BTree } from 'inheritree';
 import type { Row, SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
-import type { BTreeKeyForPrimary, BTreeKeyForIndex } from './types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from './types.js';
 import { createLogger } from '../../common/logger.js';
 import type { IndexColumnSchema as IndexColumnSpec } from '../../schema/table.js'; // Renamed for clarity
 import type { ColumnSchema } from '../../schema/column.js';
 
 const log = createLogger('vtab:memory:index');
 const errorLog = log.extend('error');
+const warnLog = log.extend('warn');
 
 /** Definition for creating a memory index (matches IndexSchema columns usually) */
 export interface IndexSpec {
 	name?: string;
 	columns: ReadonlyArray<IndexColumnSpec>;
-}
-
-interface MemoryIndexEntry {
-	indexKey: BTreeKeyForIndex;
-	primaryKeys: BTreeKeyForPrimary[];
 }
 
 /** Represents a secondary index within a MemoryTable */
@@ -28,7 +24,7 @@ export class MemoryIndex {
 	public readonly compareKeys: (a: BTreeKeyForIndex, b: BTreeKeyForIndex) => number;
 	public data: BTree<BTreeKeyForIndex, MemoryIndexEntry>;
 
-	constructor(spec: IndexSpec, allTableColumnsSchema: ReadonlyArray<ColumnSchema>) {
+	constructor(spec: IndexSpec, allTableColumnsSchema: ReadonlyArray<ColumnSchema>, baseInheritreeTable?: BTree<BTreeKeyForIndex, MemoryIndexEntry>) {
 		this.name = spec.name;
 		this.specColumns = Object.freeze(spec.columns.map(c => ({ ...c })));
 
@@ -72,7 +68,8 @@ export class MemoryIndex {
 
 		this.data = new BTree<BTreeKeyForIndex, MemoryIndexEntry>(
 			(entry: MemoryIndexEntry) => entry.indexKey,
-			this.compareKeys
+			this.compareKeys,
+			baseInheritreeTable
 		);
 	}
 
@@ -86,28 +83,30 @@ export class MemoryIndex {
 				this.comparePrimaryKeysGlobally(existingPk, primaryKey) === 0
 			);
 			if (!pkExists) {
-				entry.primaryKeys.push(primaryKey);
-				this.data.insert(entry);
+				const newPrimaryKeys = [...entry.primaryKeys, primaryKey];
+				const newEntry = { ...entry, primaryKeys: newPrimaryKeys };
+				this.data.insert(newEntry);
 			}
 		}
 	}
 
 	removeEntry(indexKey: BTreeKeyForIndex, primaryKeyToRemove: BTreeKeyForPrimary): boolean {
-		const path = this.data.find(indexKey);
-		if (path.on) {
-			const entry = this.data.at(path);
-			if (entry) {
-				const initialLength = entry.primaryKeys.length;
-				entry.primaryKeys = entry.primaryKeys.filter(pk =>
-					this.comparePrimaryKeysGlobally(pk, primaryKeyToRemove) !== 0
-				);
+		const currentEntry = this.data.get(indexKey);
 
-				if (entry.primaryKeys.length === 0) {
-					this.data.deleteAt(path);
-				} else if (entry.primaryKeys.length < initialLength) {
-					this.data.insert(entry);
+		if (currentEntry) {
+			const initialLength = currentEntry.primaryKeys.length;
+			const newPrimaryKeys = currentEntry.primaryKeys.filter(pk =>
+				this.comparePrimaryKeysGlobally(pk, primaryKeyToRemove) !== 0
+			);
+
+			if (newPrimaryKeys.length < initialLength) {
+				if (newPrimaryKeys.length === 0) {
+					this.data.deleteAt(this.data.find(indexKey));
+				} else {
+					const newEntry = { ...currentEntry, primaryKeys: newPrimaryKeys };
+					this.data.insert(newEntry);
 				}
-				return entry.primaryKeys.length < initialLength;
+				return true;
 			}
 		}
 		return false;
@@ -128,10 +127,23 @@ export class MemoryIndex {
 	}
 
 	clear(): void {
+		const base = (this.data as any).baseTable as BTree<BTreeKeyForIndex, MemoryIndexEntry> | undefined;
 		this.data = new BTree<BTreeKeyForIndex, MemoryIndexEntry>(
 			(entry: MemoryIndexEntry) => entry.indexKey,
-			this.compareKeys
+			this.compareKeys,
+			base
 		);
+	}
+
+	/**
+	 * Detaches this index's Inheritree from its base, making it self-contained.
+	 */
+	public clearBase(): void {
+		if (typeof (this.data as any).clearBase === 'function') {
+			(this.data as any).clearBase();
+		} else {
+			warnLog(`Inheritree instance for index ${this.name} does not have a clearBase method.`);
+		}
 	}
 
 	get size(): number {

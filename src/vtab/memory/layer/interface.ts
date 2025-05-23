@@ -1,4 +1,4 @@
-import type { BTree } from 'digitree';
+import type { BTree } from 'inheritree';
 import type { TableSchema } from '../../../schema/table.js';
 import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, PrimaryModificationValue, MemoryIndexEntry } from '../types.js';
 import type { Row } from '../../../common/types.js';
@@ -17,7 +17,7 @@ export interface Layer {
 	/**
 	 * Gets the BTree containing modifications specific to this layer for a given index.
 	 * For BaseLayer, this returns the main data BTree.
-	 * For TransactionLayer, this returns the delta BTree for that index.
+	 * For TransactionLayer, this returns the inherited BTree for that index.
 	 *
 	 * @param indexName The name of the secondary index, or 'primary' for the primary key index.
 	 * @returns The BTree containing modifications/data for the index in this layer, or null if no modifications exist for that index in this layer.
@@ -34,7 +34,7 @@ export interface Layer {
 	/** Indicates if this layer represents a committed transaction state */
 	isCommitted(): boolean;
 
-	/** Helper to get the specific BTree for a secondary index's underlying data (relevant for BaseLayer) */
+	/** Helper to get the specific BTree for a secondary index's underlying data */
 	getSecondaryIndexTree?(indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null;
 
 	/**

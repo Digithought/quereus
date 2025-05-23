@@ -1,4 +1,4 @@
-import type { BTree, Path } from 'digitree';
+import type { BTree, Path } from 'inheritree';
 import type { ScanPlan } from './scan-plan.js';
 import type { BaseLayer } from './base.js';
 import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
@@ -40,7 +40,7 @@ export async function* scanBaseLayer(
 	};
 
 	if (plan.indexName === 'primary') {
-		const tree = layer.primaryTree; // BTree<BTreeKeyForPrimary, Row>
+		const tree = layer.primaryTree; // BTree<BTreeKeyForPrimary, Row> from inheritree
 
 		if (isEqPlan && plan.equalityKey !== undefined) {
 			const row = tree.get(plan.equalityKey as BTreeKeyForPrimary);
@@ -50,6 +50,7 @@ export async function* scanBaseLayer(
 			return;
 		}
 
+		// Range or full scan options
 		const rangeOptions: any = { ascending: !plan.descending };
 		if (plan.lowerBound) {
 			rangeOptions.from = plan.lowerBound.value as BTreeKeyForPrimary;
@@ -60,6 +61,7 @@ export async function* scanBaseLayer(
 			if (plan.upperBound.op === IndexConstraintOp.LT) rangeOptions.toExclusive = true;
 		}
 
+		// Use BTree range iteration
 		const iterator = tree.range(rangeOptions);
 
 		for (const path of iterator) {
@@ -73,11 +75,11 @@ export async function* scanBaseLayer(
 		const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
 		if (!secondaryIndex) throw new Error(`Secondary index '${plan.indexName}' not found in BaseLayer.`);
 
-		const indexTree = secondaryIndex.data; // BTree<BTreeKeyForIndex, MemoryIndexEntry>
+		const indexTree = secondaryIndex.data; // BTree<BTreeKeyForIndex, MemoryIndexEntry> from inheritree
 
 		if (isEqPlan && plan.equalityKey !== undefined) {
 			const indexEntry = indexTree.get(plan.equalityKey as BTreeKeyForIndex);
-			if (indexEntry && planAppliesToKey(indexEntry.indexKey, true)) { // Check if the index key itself is valid by plan
+			if (indexEntry && planAppliesToKey(indexEntry.indexKey, true)) {
 				for (const pk of indexEntry.primaryKeys) {
 					const row = layer.primaryTree.get(pk);
 					if (row) yield row;
@@ -86,6 +88,7 @@ export async function* scanBaseLayer(
 			return;
 		}
 
+		// Range or full scan on secondary index
 		const rangeOptions: any = { ascending: !plan.descending };
 		if (plan.lowerBound) {
 			rangeOptions.from = plan.lowerBound.value as BTreeKeyForIndex;
