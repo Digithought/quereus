@@ -8,11 +8,11 @@ import { safeJsonStringify } from '../src/util/serialization.js';
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename); // This will be C:\...\dist\test when running compiled code
+const __dirname = path.dirname(__filename);
 
-// Adjust path to point to the source logic directory relative to the project root
-// Go up two levels from __dirname (dist/test -> project root) then down to test/logic
-const projectRoot = path.resolve(__dirname, '..', '..');
+// Determine project root - if we're in dist/test, go up two levels, otherwise just one
+const isInDist = __dirname.includes(path.join('dist', 'test'));
+const projectRoot = isInDist ? path.resolve(__dirname, '..', '..') : path.resolve(__dirname, '..');
 const logicTestDir = path.join(projectRoot, 'test', 'logic');
 
 describe('SQL Logic Tests', () => {

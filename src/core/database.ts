@@ -27,6 +27,7 @@ import type { PlanningContext } from '../planner/planning-context.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
+import { registerEmitters } from '../runtime/register.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -66,6 +67,8 @@ export class Database {
 
 		// Register built-in collations
 		this.registerDefaultCollations();
+
+		registerEmitters();
 	}
 
 	/** @internal Registers default built-in SQL functions */

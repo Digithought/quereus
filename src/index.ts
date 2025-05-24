@@ -39,4 +39,4 @@ export { FunctionContext } from './func/context.js';
 export { Latches } from './util/latches.js';
 
 // Initialize runtime emitters (this ensures they are registered)
-import './runtime/index.js';
+import './runtime/register.js';
