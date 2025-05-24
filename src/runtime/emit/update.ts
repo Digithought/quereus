@@ -9,7 +9,8 @@ export function emitUpdate(plan: UpdateNode): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source);
 	const assignmentValueInstructions = plan.assignments.map(assign => emitPlanNode(assign.value));
 	const tableSchema = plan.table.tableSchema;
-	const isReturning = plan.getType().typeClass === 'relation';
+	// UpdateNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
+	const isReturning = false;
 
 	// Pre-calculate assignment column indices
 	const assignmentTargetIndices = plan.assignments.map(assign => {
@@ -45,7 +46,7 @@ export function emitUpdate(plan: UpdateNode): Instruction {
 		});
 
 		(newCompleteRow as any)._onConflict = plan.onConflict || 'abort';
-		await vtab.xUpdate!('UPDATE', newCompleteRow, oldKeyValues);
+		await vtab.xUpdate!('update', newCompleteRow, oldKeyValues);
 
 		if (isReturning) {
 			yield newCompleteRow;

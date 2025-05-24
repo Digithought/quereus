@@ -10,7 +10,8 @@ import { isAsyncIterable } from '../utils.js';
 export function emitDelete(plan: DeleteNode): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source);
 	const tableSchema = plan.table.tableSchema;
-	const isReturning = plan.getType().typeClass === 'relation';
+	// DeleteNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
+	const isReturning = false;
 
 	// Pre-calculate primary key column indices from schema
 	const pkColumnIndicesInSchema = tableSchema.primaryKeyDefinition.map(pkColDef => pkColDef.index);

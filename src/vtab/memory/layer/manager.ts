@@ -102,6 +102,8 @@ export class MemoryTableManager {
 		}
 	}
 
+
+
 	public async commitTransaction(connection: MemoryTableConnection): Promise<void> {
 		if (this.isReadOnly) {
 			if (connection.pendingTransactionLayer && connection.pendingTransactionLayer.hasChanges()) {
@@ -142,10 +144,6 @@ export class MemoryTableManager {
 			connection.readLayer = pendingLayer;
 			connection.pendingTransactionLayer = null;
 			connection.clearSavepoints();
-			// Disable automatic layer collapse for now
-			// this.tryCollapseLayers().catch(err => {
-			// 	logger.error('Commit Transaction', this._tableName, 'Background layer collapse error', err);
-			// });
 		} finally {
 			release();
 			logger.debugLog(`[Commit ${connection.connectionId}] Released lock for ${this._tableName}`);
@@ -169,8 +167,14 @@ export class MemoryTableManager {
 			}
 			logger.debugLog(`[Collapse] Acquired lock for ${this._tableName}`);
 			let collapsedCount = 0;
+			const maxCollapseIterations = 10; // Prevent infinite loops
+			let iterations = 0;
 
-			while (this._currentCommittedLayer instanceof TransactionLayer && this._currentCommittedLayer.isCommitted()) {
+			// Continue collapsing layers as long as it's safe to do so
+			while (iterations < maxCollapseIterations &&
+			       this._currentCommittedLayer instanceof TransactionLayer &&
+			       this._currentCommittedLayer.isCommitted()) {
+
 				const layerToPromote = this._currentCommittedLayer as TransactionLayer;
 				const parentLayer = layerToPromote.getParent();
 				if (!parentLayer) {
@@ -178,16 +182,11 @@ export class MemoryTableManager {
 					break;
 				}
 
-				// Check if anyone is still using the parent layer
-				let parentInUse = false;
-				for (const conn of this.connections.values()) {
-					if (conn.readLayer === parentLayer || conn.pendingTransactionLayer?.getParent() === parentLayer) {
-						parentInUse = true;
-						logger.debugLog(`[Collapse] Parent layer ${parentLayer.getLayerId()} in use by conn ${conn.connectionId}. Cannot collapse layer ${layerToPromote.getLayerId()}.`);
-						break;
-					}
+				// Check if anyone is still using the parent layer or any of its ancestors
+				if (this.isLayerInUse(parentLayer)) {
+					logger.debugLog(`[Collapse] Parent layer ${parentLayer.getLayerId()} or its ancestors in use. Cannot collapse layer ${layerToPromote.getLayerId()}.`);
+					break;
 				}
-				if (parentInUse) break;
 
 				logger.debugLog(`[Collapse] Promoting layer ${layerToPromote.getLayerId()} to become independent from parent ${parentLayer.getLayerId()} for ${this._tableName}`);
 
@@ -195,26 +194,27 @@ export class MemoryTableManager {
 				// by calling clearBase() on its BTrees, effectively making it the new base data
 				layerToPromote.clearBase();
 
-				// Update the current committed layer to point to the parent
-				// The transaction layer's BTrees are now independent and contain all the data
-				this._currentCommittedLayer = parentLayer;
-				logger.debugLog(`[Collapse] CurrentCommittedLayer set to ${parentLayer.getLayerId()} for ${this._tableName}`);
-
-				// Update connections that were reading from the collapsed layer
+				// Update connections that were reading from the collapsed parent layer
 				for (const conn of this.connections.values()) {
-					if (conn.readLayer === layerToPromote) {
-						// The layer is now independent, but connections can continue using it
-						// In practice, they might want to read from the current committed layer
-						// For now, leave them pointing to the promoted layer
-						logger.debugLog(`[Collapse] Connection ${conn.connectionId} still reading from promoted layer ${layerToPromote.getLayerId()}`);
+					if (conn.readLayer === parentLayer) {
+						// Update connections to read from the now-independent transaction layer
+						conn.readLayer = layerToPromote;
+						logger.debugLog(`[Collapse] Connection ${conn.connectionId} updated to read from independent layer ${layerToPromote.getLayerId()}`);
 					}
 				}
 
 				collapsedCount++;
+				iterations++;
+
+				// The layer is now independent, but check if we can collapse further
+				// by examining if this layer can be promoted above its (now detached) parent
+				logger.debugLog(`[Collapse] Layer ${layerToPromote.getLayerId()} is now independent for ${this._tableName}`);
 			}
 
+			// Trigger garbage collection of unreferenced layers
 			if (collapsedCount > 0) {
-				logger.operation('Collapse Layers', this._tableName, { collapsedCount });
+				this.cleanupUnreferencedLayers();
+				logger.operation('Collapse Layers', this._tableName, { collapsedCount, iterations });
 			} else {
 				logger.debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: ${this._currentCommittedLayer.getLayerId()}`);
 			}
@@ -224,6 +224,60 @@ export class MemoryTableManager {
 			if (release) {
 				release();
 				logger.debugLog(`[Collapse] Released lock for ${this._tableName}`);
+			}
+		}
+	}
+
+	/**
+	 * Checks if a layer is currently in use by any connections.
+	 * This includes checking if any connection is reading from the layer,
+	 * has it as a pending transaction layer, or has it as a savepoint.
+	 */
+	private isLayerInUse(layer: Layer): boolean {
+		for (const conn of this.connections.values()) {
+			// Check if connection is reading from this layer
+			if (conn.readLayer === layer) {
+				return true;
+			}
+
+			// Check if connection has this layer as pending transaction
+			if (conn.pendingTransactionLayer === layer) {
+				return true;
+			}
+
+			// Check if connection has this layer in its parent chain
+			let currentLayer = conn.pendingTransactionLayer?.getParent();
+			while (currentLayer) {
+				if (currentLayer === layer) {
+					return true;
+				}
+				if (currentLayer instanceof TransactionLayer) {
+					currentLayer = currentLayer.getParent();
+				} else {
+					break;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Performs garbage collection of layers that are no longer referenced
+	 * by any connections or the current committed layer chain.
+	 */
+	private cleanupUnreferencedLayers(): void {
+		// For now, this is a no-op since JavaScript's garbage collector
+		// will handle cleanup of unreferenced objects automatically.
+		// In the future, we could implement more aggressive cleanup
+		// or tracking of layer references for memory monitoring.
+		logger.debugLog(`[Cleanup] Triggering garbage collection hint for ${this._tableName}`);
+
+		// Optional: Force garbage collection if available (Node.js with --expose-gc)
+		if (typeof global !== 'undefined' && global.gc) {
+			try {
+				global.gc();
+			} catch (e) {
+				// Ignore errors - gc() might not be available
 			}
 		}
 	}
@@ -337,6 +391,7 @@ export class MemoryTableManager {
 
 		const newRowData: Row = values;
 		const primaryKey = this.primaryKeyFromRow(newRowData);
+
 		const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
 
 		if (existingRow !== null) {
@@ -788,4 +843,3 @@ export class MemoryTableManager {
 		}
 	}
 }
-

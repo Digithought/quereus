@@ -1,5 +1,5 @@
 import type { Layer } from './interface.js';
-import { TransactionLayer } from './transaction.js'; // Changed to value import
+import { TransactionLayer } from './transaction.js';
 import type { MemoryTableManager } from './manager.js';
 import { createLogger } from '../../../common/logger.js';
 import type { Row } from '../../../common/types.js';
@@ -30,16 +30,16 @@ export class MemoryTableConnection {
 	/** Begins a transaction by creating a new pending layer */
 	begin(): void {
 		if (this.pendingTransactionLayer) {
-			// If there's already a pending transaction, commit it first if it's not explicit
+			// If there's already a pending transaction, handle based on type
 			if (!this.explicitTransaction) {
-				// This is likely an auto-created transaction from mutations, commit it silently
-				// Note: We can't call commit() here as it's async, so we'll just discard it
-				// This is safe because auto-created transactions should be immediately committed anyway
-				this.pendingTransactionLayer = null;
-				this.savepoints.clear();
+				// This is an auto-created transaction from mutations
+				// We need to preserve it but mark the new one as explicit
+				warnLog(`Connection %d: BEGIN called with auto-transaction pending. Converting to explicit.`, this.connectionId);
+				this.explicitTransaction = true;
+				return;
 			} else {
-				// Nested explicit transactions - treat as no-op for now
-				warnLog(`Connection %d: BEGIN called while already in a transaction.`, this.connectionId);
+				// Nested explicit transactions - SQL standard behavior is to treat as no-op
+				warnLog(`Connection %d: BEGIN called while already in explicit transaction. Treating as no-op.`, this.connectionId);
 				return;
 			}
 		}
@@ -48,6 +48,9 @@ export class MemoryTableConnection {
 		// This ensures the parent check in commitTransaction will pass
 		this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
 		this.explicitTransaction = true; // Mark as explicitly started
+
+		debugLog(`Connection %d: Started explicit transaction with layer %d`,
+			this.connectionId, this.pendingTransactionLayer.getLayerId());
 	}
 
 	/** Commits the current transaction */

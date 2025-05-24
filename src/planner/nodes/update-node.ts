@@ -15,7 +15,7 @@ export interface UpdateAssignment {
 /**
  * Represents an UPDATE statement in the logical query plan.
  */
-export class UpdateNode extends PlanNode implements RelationalPlanNode {
+export class UpdateNode extends VoidNode {
   override readonly nodeType = PlanNodeType.Update;
 
   constructor(

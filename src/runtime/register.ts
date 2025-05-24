@@ -14,6 +14,7 @@ import { emitDelete } from './emit/delete.js';
 import { emitProject } from './emit/project.js';
 import { emitColumnReference } from './emit/column-reference.js';
 import { emitValues } from './emit/values.js';
+import { emitFilter } from './emit/filter.js';
 
 let registered = false;
 
@@ -36,4 +37,5 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Project, emitProject as EmitterFunc);
 	registerEmitter(PlanNodeType.ColumnReference, emitColumnReference as EmitterFunc);
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
+	registerEmitter(PlanNodeType.Filter, emitFilter as EmitterFunc);
 }

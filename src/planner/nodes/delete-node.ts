@@ -8,7 +8,7 @@ import type { RelationType } from '../../common/datatype.js';
 /**
  * Represents a DELETE statement in the logical query plan.
  */
-export class DeleteNode extends PlanNode implements RelationalPlanNode {
+export class DeleteNode extends VoidNode {
   override readonly nodeType = PlanNodeType.Delete;
 
   constructor(

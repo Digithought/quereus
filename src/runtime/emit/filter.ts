@@ -1,4 +1,4 @@
-import type { ProjectNode } from '../../planner/nodes/project-node.js';
+import type { FilterNode } from '../../planner/nodes/filter.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
@@ -10,7 +10,7 @@ import type { ColumnReferenceNode, ParameterReferenceNode } from '../../planner/
 import { emitParameterReference } from './parameter.js';
 import { emitBinaryOp } from './binary.js';
 
-export function emitProject(plan: ProjectNode): Instruction {
+export function emitFilter(plan: FilterNode): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source);
 
 	async function* run(ctx: RuntimeContext, sourceRows: AsyncIterable<Row>): AsyncIterable<Row> {
@@ -19,14 +19,13 @@ export function emitProject(plan: ProjectNode): Instruction {
 			ctx.context.set(plan.source, () => sourceRow);
 
 			try {
-				// Evaluate each projection expression in the context of this row
-				const projectedRow: SqlValue[] = [];
-				for (const projection of plan.projections) {
-					const value = await evaluateScalarExpression(projection.node, ctx);
-					projectedRow.push(value);
-				}
+				// Evaluate the predicate expression in the context of this row
+				const predicateResult = await evaluateScalarExpression(plan.predicate, ctx);
 
-				yield projectedRow;
+				// Only yield the row if the predicate is truthy
+				if (isTruthy(predicateResult)) {
+					yield sourceRow;
+				}
 			} finally {
 				// Clean up context for this row
 				ctx.context.delete(plan.source);
@@ -88,8 +87,21 @@ async function evaluateScalarExpression(node: ScalarPlanNode, ctx: RuntimeContex
 
 		default:
 			throw new QuereusError(
-				`Unsupported scalar expression type in projection: ${node.nodeType}`,
+				`Unsupported scalar expression type in filter: ${node.nodeType}`,
 				StatusCode.UNSUPPORTED
 			);
 	}
+}
+
+/**
+ * Determines if a SqlValue is truthy for filter purposes.
+ * In SQL semantics:
+ * - NULL is falsy
+ * - 0 (number) is falsy
+ * - Empty string is falsy
+ * - false (boolean) is falsy
+ * - Everything else is truthy
+ */
+function isTruthy(value: SqlValue): boolean {
+	return (typeof value === 'string') ? value.length > 0 : !!value;
 }

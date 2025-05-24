@@ -4,6 +4,7 @@ import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
+import { compareSqlValues } from "../../util/comparison.js";
 
 export function emitBinaryOp(plan: BinaryOpNode): Instruction {
 	switch (plan.expression.operator) {
@@ -12,9 +13,16 @@ export function emitBinaryOp(plan: BinaryOpNode): Instruction {
 		case '*':
 		case '/':
 			return emitNumericOp(plan);
+		case '=':
+		case '!=':
+		case '<>':
+		case '<':
+		case '<=':
+		case '>':
+		case '>=':
+			return emitComparisonOp(plan);
 		// TODO: emitConcat
 		// TODO: emitBitwise
-		// TODO: emitComparison
 		// TODO: emitLogical
 		default:
 			throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
@@ -62,6 +70,26 @@ export function emitNumericOp(plan: BinaryOpNode): Instruction {
 	const left = emitPlanNode(plan.left);
 	const right = emitPlanNode(plan.right);
 
-	return { params: [left, right], run: run as InstructionRun }
+	return { params: [left, right], run: run as InstructionRun };
+}
+
+export function emitComparisonOp(plan: BinaryOpNode): Instruction {
+	let run: (...args: any[]) => any;	// Be permissive rather than cast all of the overloads
+	switch (plan.expression.operator) {
+		case '=': run = (ctx, v1: SqlValue, v2: SqlValue) => compareSqlValues(v1, v2) === 0 ? 1 : 0; break;
+		case '!=':
+		case '<>': run = (ctx, v1: SqlValue, v2: SqlValue) => compareSqlValues(v1, v2) !== 0 ? 1 : 0; break;
+		case '<': run = (ctx, v1: SqlValue, v2: SqlValue) => compareSqlValues(v1, v2) < 0 ? 1 : 0; break;
+		case '<=': run = (ctx, v1: SqlValue, v2: SqlValue) => compareSqlValues(v1, v2) <= 0 ? 1 : 0; break;
+		case '>': run = (ctx, v1: SqlValue, v2: SqlValue) => compareSqlValues(v1, v2) > 0 ? 1 : 0; break;
+		case '>=': run = (ctx, v1: SqlValue, v2: SqlValue) => compareSqlValues(v1, v2) >= 0 ? 1 : 0; break;
+		default:
+			throw new QuereusError(`Unsupported comparison operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+	}
+
+	const left = emitPlanNode(plan.left);
+	const right = emitPlanNode(plan.right);
+
+	return { params: [left, right], run: run as InstructionRun };
 }
 

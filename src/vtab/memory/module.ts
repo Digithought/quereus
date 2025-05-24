@@ -405,7 +405,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			.filter(item => item.argIdx > 0)
 			.map(item => `[${item.argIdx},${item.constraintIdx}]`);
 	}
-
 	/**
 	 * Destroys a memory table and frees associated resources
 	 */

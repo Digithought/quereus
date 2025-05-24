@@ -8,7 +8,8 @@ import { getVTable } from '../utils.js';
 export function emitInsert(plan: InsertNode): Instruction {
   const sourceInstruction = emitPlanNode(plan.source);
   const tableSchema = plan.table.tableSchema;
-	const isReturning = plan.getType().typeClass === 'relation';
+	// InsertNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
+	const isReturning = false;
 
   // Compute targetColumnIndices at emit time
   const targetColumnIndices: number[] = [];
@@ -51,7 +52,7 @@ export function emitInsert(plan: InsertNode): Instruction {
     });
 
     (valuesForXUpdate as any)._onConflict = plan.onConflict || 'abort';
-    await vtab.xUpdate!('INSERT', valuesForXUpdate.slice(1), null);
+    await vtab.xUpdate!('insert', valuesForXUpdate.slice(1), null);
 
     if (isReturning) {
       yield valuesForXUpdate.slice(1); // Yield the data part of the inserted row
@@ -60,6 +61,7 @@ export function emitInsert(plan: InsertNode): Instruction {
 
   async function* runLogic(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
     const vtab = await getVTable(ctx, tableSchema);
+
     try {
 			for await (const row of sourceValue) {
 				for await (const returningRow of processAndYieldIfNeeded(vtab, row)) {

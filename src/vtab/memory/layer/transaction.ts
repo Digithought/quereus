@@ -6,7 +6,7 @@ import type { SqlValue, Row } from '../../../common/types.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
 import type { Layer } from './interface.js';
 
-let transactionLayerCounter = 0;
+let transactionLayerCounter = 1000;
 
 /**
  * Represents a set of modifications (inserts, updates, deletes) applied

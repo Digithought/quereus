@@ -8,6 +8,7 @@ import type { ColumnDef, RelationType } from '../../common/datatype.js';
 
 /**
  * Represents an INSERT statement in the logical query plan.
+ * RelationalPlanNode because this node may be a return value of a SELECT node.
  */
 export class InsertNode extends PlanNode implements RelationalPlanNode {
   override readonly nodeType = PlanNodeType.Insert;
