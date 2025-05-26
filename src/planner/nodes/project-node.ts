@@ -3,7 +3,7 @@ import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Scala
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { expressionToString } from '../../util/ddl-stringify.js';
+import { expressionToString } from '../../util/ast-stringify.js';
 
 export type Projection = { node: ScalarPlanNode, alias?: string };
 

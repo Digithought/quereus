@@ -124,7 +124,7 @@ Thinking ahead to a tree-walk emission model, each PlanNode would need to encaps
         *   `FunctionCallNode`: Function name, list of argument `ExpressionNode`s, distinct qualifier.
         *   `CastNode`: Expression to cast (`ExpressionNode`), target type.
         *   `CollateNode`: Expression (`ExpressionNode`), collation name.
-        *   `SubqueryNode`: Represents a scalar subquery, IN subquery, or EXISTS subquery. Contains the PlanNode for the subquery itself.
+        *   `SubqueryNode`: Specific InNode, etc. represents a scalar subquery, IN subquery, or EXISTS subquery. Contains the PlanNode for the subquery itself.
         *   `CaseExprNode`: List of WHEN/THEN pairs (`ExpressionNode`s), optional ELSE `ExpressionNode`.
 
 **Relational Algebra Influence:**
@@ -225,6 +225,10 @@ Project Titan is actively under development, with significant portions of Phase 
     *   This area is well-developed.
     *   Implemented Scopes: `GlobalScope` (for tables and functions from `SchemaManager`), `ParameterScope` (for `?`, `:name`, `:idx` parameters), `RegisteredScope` (used in `buildFrom` to make table columns available), `MultiScope` (combining scopes, e.g., parent + FROM clause), `AliasedScope`, `EmptyScope`.
     *   Resolution functions (`resolveTable`, `resolveColumn`, `resolveParameter`, `resolveFunction`) are used to find schema objects and parameters. `resolveColumn` is available but full integration into `buildSelectStmt` (e.g., for arbitrary expressions in projections) is pending.
+
+TODO:
+- Introduce emission context, so that emitters can lookup schema at compile time rather than runtime.  Maybe we can version the schema catalog as well to invalidate plans.   
+
 
 **Phase II: SQL Feature Completion & Robustness - Current Status: Early Stages**
 

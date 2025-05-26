@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/database.js';
 import { ParseError, QuereusError } from '../src/common/errors.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
+import { CollectingInstructionTracer } from '../src/runtime/types.js';
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -14,6 +15,115 @@ const __dirname = path.dirname(__filename);
 const isInDist = __dirname.includes(path.join('dist', 'test'));
 const projectRoot = isInDist ? path.resolve(__dirname, '..', '..') : path.resolve(__dirname, '..');
 const logicTestDir = path.join(projectRoot, 'test', 'logic');
+
+/**
+ * Generates comprehensive diagnostic information for failed tests
+ */
+function generateDiagnostics(db: Database, sqlBlock: string, error: Error): string {
+	const diagnostics = ['\n=== FAILURE DIAGNOSTICS ==='];
+
+	try {
+		// Try to get the plan for the failing SQL
+		const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
+		const lastStatement = statements[statements.length - 1];
+
+		if (lastStatement) {
+			diagnostics.push('\n1. QUERY PLAN:');
+			try {
+				const plan = db.getDebugPlan(lastStatement);
+				diagnostics.push(plan);
+			} catch (planError: any) {
+				diagnostics.push(`Plan generation failed: ${planError.message || planError}`);
+			}
+
+			diagnostics.push('\n2. INSTRUCTION PROGRAM:');
+			try {
+				const stmt = db.prepare(lastStatement);
+				const program = stmt.getDebugProgram();
+				diagnostics.push(program);
+				stmt.finalize().catch(() => {}); // Silent cleanup
+			} catch (programError: any) {
+				diagnostics.push(`Program generation failed: ${programError.message || programError}`);
+			}
+		}
+
+		diagnostics.push('\n3. ERROR DETAILS:');
+		diagnostics.push(`Error Type: ${error.constructor.name}`);
+		diagnostics.push(`Error Message: ${error.message}`);
+		if (error.stack) {
+			diagnostics.push(`Stack Trace:\n${error.stack}`);
+		}
+
+	} catch (diagError: any) {
+		diagnostics.push(`\nDiagnostic generation failed: ${diagError.message || diagError}`);
+	}
+
+	diagnostics.push('=== END DIAGNOSTICS ===\n');
+	return diagnostics.join('\n');
+}
+
+/**
+ * Executes a query with tracing and returns results plus trace information
+ */
+async function executeWithTracing(db: Database, sql: string, params?: any[]): Promise<{
+	results: Record<string, any>[],
+	traceEvents: any[]
+}> {
+	const tracer = new CollectingInstructionTracer();
+	const results: Record<string, any>[] = [];
+
+	try {
+		const stmt = db.prepare(sql);
+		if (params) {
+			stmt.bindAll(params);
+		}
+
+		for await (const row of stmt.iterateRowsWithTrace(undefined, tracer)) {
+			// Convert row array to object using column names
+			const columnNames = stmt.getColumnNames();
+			const rowObject = row.reduce((obj, val, idx) => {
+				obj[columnNames[idx] || `col_${idx}`] = val;
+				return obj;
+			}, {} as Record<string, any>);
+			results.push(rowObject);
+		}
+
+		await stmt.finalize();
+	} catch (error: any) {
+		// Re-throw with trace information attached
+		const errorMsg = error.message || String(error);
+		const enhancedError = new Error(`${errorMsg}\n\nEXECUTION TRACE:\n${formatTraceEvents(tracer.getTraceEvents())}`);
+		enhancedError.stack = error.stack;
+		throw enhancedError;
+	}
+
+	return {
+		results,
+		traceEvents: tracer.getTraceEvents()
+	};
+}
+
+/**
+ * Formats trace events for readable output
+ */
+function formatTraceEvents(events: any[]): string {
+	if (events.length === 0) return 'No trace events captured.';
+
+	const lines = ['Instruction Execution Trace:'];
+	for (const event of events) {
+		const note = event.note ? ` (${event.note})` : '';
+		const timestamp = new Date(event.timestamp).toISOString();
+
+		if (event.type === 'input') {
+			lines.push(`[${event.instructionIndex}] INPUT${note} at ${timestamp}: ${safeJsonStringify(event.args)}`);
+		} else if (event.type === 'output') {
+			lines.push(`[${event.instructionIndex}] OUTPUT${note} at ${timestamp}: ${safeJsonStringify(event.result)}`);
+		} else if (event.type === 'error') {
+			lines.push(`[${event.instructionIndex}] ERROR${note} at ${timestamp}: ${event.error}`);
+		}
+	}
+	return lines.join('\n');
+}
 
 describe('SQL Logic Tests', () => {
 	const files = fs.readdirSync(logicTestDir)
@@ -102,13 +212,16 @@ describe('SQL Logic Tests', () => {
 								}
 
 								const lastStatement = statements[statements.length - 1];
-								const actualResult: Record<string, any>[] = [];
-								console.log(`  -> Executing final statement (eval): ${lastStatement}`);
+								console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
+
+								let executionResult: { results: Record<string, any>[], traceEvents: any[] };
 								if (lastStatement) {
-									for await (const row of db.eval(lastStatement)) {
-										actualResult.push(row);
-									}
+									executionResult = await executeWithTracing(db, lastStatement);
+								} else {
+									executionResult = { results: [], traceEvents: [] };
 								}
+
+								const actualResult = executionResult.results;
 
 								let expectedResult: any;
 								try {
@@ -118,10 +231,20 @@ describe('SQL Logic Tests', () => {
 								}
 
 								if (actualResult.length !== expectedResult.length) {
-									throw new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}. Block:\n${sqlBlock}`);
+									const diagnostics = generateDiagnostics(db, sqlBlock,
+										new Error(`Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}`));
+									const traceInfo = `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}`;
+									throw new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}. Block:\n${sqlBlock}${diagnostics}${traceInfo}`);
 								}
 								for (let i = 0; i < actualResult.length; i++) {
-									expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
+									try {
+										expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
+									} catch (matchError: any) {
+										const error = matchError instanceof Error ? matchError : new Error(String(matchError));
+										const diagnostics = generateDiagnostics(db, sqlBlock, error);
+										const traceInfo = `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}`;
+										throw new Error(`${error.message}${diagnostics}${traceInfo}`);
+									}
 								}
 								console.log("   -> Results match!");
 
@@ -129,7 +252,9 @@ describe('SQL Logic Tests', () => {
 								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
 								try {
 									await db.exec(sqlBlock);
-									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
+									const diagnostics = generateDiagnostics(db, sqlBlock,
+										new Error(`Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully`));
+									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}${diagnostics}`);
 								} catch (actualError: any) {
 									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
 										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
@@ -144,10 +269,8 @@ describe('SQL Logic Tests', () => {
 								);
 								console.log(`   -> Caught expected error: ${error.message}`);
 							} else {
-								let diagnosticInfo = '';
-								// TODO: Add Query Plan diagnostics once db.getPlanInfo is re-implemented for the new runtime
-								// VDBE dump is removed as it's for the old runtime.
-								throw new Error(`[${file}:${lineNumber}] Failed executing SQL block: ${sqlBlock} - Unexpected Error: ${error.message}${diagnosticInfo}`);
+								const diagnostics = generateDiagnostics(db, sqlBlock, error);
+								throw new Error(`[${file}:${lineNumber}] Failed executing SQL block: ${sqlBlock} - Unexpected Error: ${error.message}${diagnostics}`);
 							}
 						}
 
@@ -171,7 +294,8 @@ describe('SQL Logic Tests', () => {
 					} catch (error: any) {
 						// If the final block was actually expected to error, this catch is wrong.
 						// The loop structure assumes errors/results are declared *before* the SQL.
-						throw new Error(`[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}`);
+						const diagnostics = generateDiagnostics(db, finalSql, error);
+						throw new Error(`[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}${diagnostics}`);
 					}
 				}
 			});

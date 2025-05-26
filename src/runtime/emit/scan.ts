@@ -66,5 +66,9 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 		}
 	}
 
-	return { params: [], run };
+	return {
+		params: [],
+		run,
+		note: `scan(${plan.source.tableSchema.name})`
+	};
 }

@@ -85,5 +85,9 @@ export function emitInsert(plan: InsertNode): Instruction {
     }
   }
 
-  return { params: [sourceInstruction], run: run as InstructionRun };
+  return {
+    params: [sourceInstruction],
+    run: run as InstructionRun,
+    note: `insert(${plan.table.tableSchema.name}, ${plan.targetColumns.length || tableSchema.columns.length} cols)`
+  };
 }

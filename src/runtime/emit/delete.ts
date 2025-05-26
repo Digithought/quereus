@@ -59,5 +59,9 @@ export function emitDelete(plan: DeleteNode): Instruction {
 		}
 	}
 
-	return { params: [sourceInstruction], run: run as InstructionRun };
+	return {
+		params: [sourceInstruction],
+		run: run as InstructionRun,
+		note: `delete(${plan.table.tableSchema.name})`
+	};
 }

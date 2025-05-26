@@ -12,6 +12,8 @@ import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
 import { Cached } from '../util/cached.js';
 import { isAsyncIterable } from '../runtime/utils.js';
+import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
+import type { InstructionTracer } from '../runtime/types.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
@@ -336,4 +338,69 @@ export class Statement {
 		this.validateStatement("get AST for");
 		return this.astBatch[this.astBatchIndex];
 	}
+
+	/**
+	 * Gets a detailed JSON representation of the query plan for debugging.
+	 * @returns JSON string containing the detailed plan tree.
+	 */
+	getDebugPlan(): string {
+		this.validateStatement("get debug plan for");
+		const plan = this.compile();
+		return serializePlanTree(plan);
+	}
+
+	/**
+	 * Gets a human-readable instruction program for debugging.
+	 * @returns String representation of the instruction program.
+	 */
+	getDebugProgram(): string {
+		this.validateStatement("get debug program for");
+		const plan = this.compile();
+		const rootInstruction = emitPlanNode(plan);
+		const scheduler = new Scheduler(rootInstruction);
+
+		return generateInstructionProgram(scheduler.instructions, scheduler.destinations);
+	}
+
+	/**
+	 * Executes with runtime instruction tracing enabled.
+	 * @param params Optional parameters to bind.
+	 * @param tracer Optional custom tracer for collecting trace data.
+	 */
+	async *iterateRowsWithTrace(params?: SqlParameters | SqlValue[], tracer?: InstructionTracer): AsyncIterable<Row> {
+		this.validateStatement("iterate rows with trace for");
+		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
+		if (params) this.bindAll(params);
+		this.busy = true;
+
+		try {
+			const blockPlanNode = this.compile();
+			if (!blockPlanNode.statements.length) return;
+
+			const rootInstruction = emitPlanNode(blockPlanNode);
+			const scheduler = new Scheduler(rootInstruction);
+			const runtimeCtx: RuntimeContext = {
+				db: this.db,
+				stmt: this,
+				params: this.boundArgs,
+				context: new Map(),
+				tracer: tracer
+			};
+
+			const blockResults = await scheduler.run(runtimeCtx);
+			if (blockResults && blockResults.length) {
+				const lastStatementOutput = blockResults[blockResults.length - 1];
+				if (isAsyncIterable(lastStatementOutput)) {
+					yield* lastStatementOutput;
+				}
+			}
+		} catch (e: any) {
+			errorLog('Runtime execution failed in iterateRowsWithTrace for current statement: %O', e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
+		} finally {
+			this.busy = false;
+		}
+	}
 }
+

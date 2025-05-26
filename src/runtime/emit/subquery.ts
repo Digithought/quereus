@@ -1,17 +1,25 @@
-import type { SqlValue } from "../../common/types.js";
-import type { InNode } from "../../planner/nodes/subquery.js";
-import { emitPlanNode } from "../emitters.js";
-import type { RuntimeContext } from "../types.js";
+import type { Instruction, RuntimeContext } from '../types.js';
+import type { InNode } from '../../planner/nodes/subquery.js';
+import { emitPlanNode, emitCall } from '../emitters.js';
+import type { SqlValue, Row } from '../../common/types.js';
+import { compareSqlValues } from '../../util/comparison.js';
 
-export function emitIn(plan: InNode) {
-	async function run(ctx: RuntimeContext, condition: SqlValue, input: AsyncIterable<SqlValue[]>): Promise<SqlValue> {
+export function emitIn(plan: InNode): Instruction {
+	async function run(ctx: RuntimeContext, input: AsyncIterable<Row>, condition: SqlValue): Promise<SqlValue> {
 		for await (const row of input) {
-			if (plan.comparator(row[0], condition) === 0) {
-				return true;
+			if (row.length > 0 && compareSqlValues(row[0], condition) === 0) {
+				return 1; // true in SQL
 			}
 		}
-		return false;
+		return 0; // false in SQL
 	}
 
-	return { params: [ emitPlanNode(plan.condition), emitPlanNode(plan.source) ], run };
+	const sourceInstruction = emitPlanNode(plan.source);
+	const conditionExpr = emitPlanNode(plan.condition);
+
+	return {
+		params: [sourceInstruction, conditionExpr],
+		run: run as any,
+		note: `IN (${plan.source.nodeType})`
+	};
 }

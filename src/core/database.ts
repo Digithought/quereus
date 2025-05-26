@@ -28,6 +28,8 @@ import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 import { registerEmitters } from '../runtime/register.js';
+import { serializePlanTree } from '../planner/debug.js';
+import type { DebugOptions } from '../planner/planning-context.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -527,6 +529,35 @@ export class Database {
 		return this._buildPlan([ast as AST.Statement]);
 	}
 
+	/**
+	 * Gets a detailed JSON representation of the query plan for debugging.
+	 * @param sql The SQL statement to plan.
+	 * @returns JSON string containing the detailed plan tree.
+	 */
+	getDebugPlan(sql: string): string {
+		this.checkOpen();
+		const plan = this.getPlan(sql);
+		return serializePlanTree(plan);
+	}
+
+	/**
+	 * Prepares a statement with debug options enabled.
+	 * @param sql The SQL statement to prepare.
+	 * @param debug Debug options to enable.
+	 * @returns A Statement with debug capabilities.
+	 */
+	prepareDebug(sql: string, debug: DebugOptions): Statement {
+		this.checkOpen();
+		log('Preparing SQL with debug options: %s', sql);
+
+		const stmt = new Statement(this, sql);
+		// Set debug options on the statement
+		(stmt as any)._debugOptions = debug;
+
+		this.statements.add(stmt);
+		return stmt;
+	}
+
 	/** @internal */
 	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
 		// Delegate to SchemaManager
@@ -576,3 +607,4 @@ export class Database {
 		}
 	}
 }
+

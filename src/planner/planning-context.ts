@@ -4,6 +4,20 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { Scope } from './scopes/scope.js';
 
 /**
+ * Debug options for query planning and execution.
+ */
+export interface DebugOptions {
+  /** Enable runtime instruction tracing (logs inputs/outputs) */
+  traceInstructions?: boolean;
+  /** Enable detailed plan tree output */
+  showPlan?: boolean;
+  /** Enable instruction program output */
+  showProgram?: boolean;
+  /** Custom debug context for additional logging */
+  debugContext?: Record<string, any>;
+}
+
+/**
  * Provides contextual information necessary during the query planning phase.
  * This object is passed to various planning functions to give them access to
  * the database schema, current symbol resolution scope, and other relevant details.
@@ -30,4 +44,9 @@ export interface PlanningContext {
 	 * The current parameters for the statement, as discovered by references.
 	 */
 	readonly parameters: SqlParameters;
+
+  /**
+   * Debug options controlling tracing and diagnostics output.
+   */
+  readonly debug?: DebugOptions;
 }

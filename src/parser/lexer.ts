@@ -144,7 +144,7 @@ export interface Token {
 }
 
 // Reserved keywords mapping
-const KEYWORDS: Record<string, TokenType> = {
+export const KEYWORDS: Record<string, TokenType> = {
 	'select': TokenType.SELECT,
 	'from': TokenType.FROM,
 	'where': TokenType.WHERE,

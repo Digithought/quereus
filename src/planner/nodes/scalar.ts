@@ -1,11 +1,78 @@
 import type { ScalarType } from "../../common/datatype.js";
-import { PlanNode, type ScalarPlanNode } from "./plan-node.js";
+import { PlanNode, type ScalarPlanNode, type UnaryScalarNode } from "./plan-node.js";
 import type * as AST from "../../parser/ast.js";
 import type { Scope } from "../scopes/scope.js";
 import { SqlDataType } from "../../common/types.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import { Cached } from "../../util/cached.js";
 import { getLiteralSqlType } from "../../common/type-inference.js";
+
+export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
+	readonly nodeType = PlanNodeType.UnaryOp;
+	private cachedType: Cached<ScalarType>;
+
+	constructor(
+		public readonly scope: Scope,
+		public readonly expression: AST.UnaryExpr,
+		public readonly operand: ScalarPlanNode,
+	) {
+		super(scope);
+		this.cachedType = new Cached(this.generateType);
+	}
+
+	getType(): ScalarType {
+		return this.cachedType.value;
+	}
+
+	generateType = (): ScalarType => {
+		const operandType = this.operand.getType();
+
+		let datatype: SqlDataType | undefined;
+		let affinity: SqlDataType = operandType.affinity;
+		let nullable = operandType.nullable;
+
+		switch (this.expression.operator) {
+			case 'NOT':
+			case 'IS NULL':
+			case 'IS NOT NULL':
+				datatype = SqlDataType.INTEGER;
+				affinity = SqlDataType.INTEGER;
+				nullable = false; // Boolean results are never null
+				break;
+			case '-':
+			case '+':
+				// Numeric unary operators preserve type but may change nullability
+				datatype = operandType.datatype;
+				break;
+			case '~':
+				// Bitwise NOT - results in integer
+				datatype = SqlDataType.INTEGER;
+				affinity = SqlDataType.INTEGER;
+				break;
+		}
+
+		return {
+			typeClass: 'scalar',
+			affinity,
+			nullable,
+			isReadOnly: operandType.isReadOnly,
+			datatype,
+			collationName: operandType.collationName,
+		};
+	}
+
+	getChildren(): readonly [ScalarPlanNode] {
+		return [this.operand];
+	}
+
+	getRelations(): readonly [] {
+		return [];
+	}
+
+	override toString(): string {
+		return `${super.toString()} (${this.expression.operator} ${this.operand.toString()})`;
+	}
+}
 
 export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 	readonly nodeType = PlanNodeType.BinaryOp;

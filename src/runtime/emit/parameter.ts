@@ -50,5 +50,9 @@ export function emitParameterReference(plan: ParameterReferenceNode): Instructio
 		}
 	}
 
-	return { params: [], run };
+	return {
+		params: [],
+		run,
+		note: `param(${typeof plan.nameOrIndex === 'string' ? plan.nameOrIndex : '#' + plan.nameOrIndex})`
+	};
 }
