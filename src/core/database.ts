@@ -377,7 +377,7 @@ export class Database {
 		const flags = options.flags ?? FunctionFlags.UTF8;
 
 		const schema = createAggregateFunction(
-			{ name, numArgs: options.numArgs, flags, initialState: options.initialState },
+			{ name, numArgs: options.numArgs, flags, initialValue: options.initialState },
 			stepFunc,
 			finalFunc
 		);

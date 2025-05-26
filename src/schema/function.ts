@@ -1,11 +1,39 @@
-import type { QuereusContext } from '../func/context';
 import type { SqlValue } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 
 /**
+ * Type for a scalar function implementation.
+ */
+export type ScalarFunctionImpl = (...args: SqlValue[]) => SqlValue | Promise<SqlValue>;
+
+/**
+ * Type for a table-valued function implementation.
+ */
+export type TableValuedFunctionImpl = (...args: SqlValue[]) => AsyncIterable<import('../common/types.js').Row> | Promise<AsyncIterable<import('../common/types.js').Row>>;
+
+/**
+ * Type for aggregate step function.
+ */
+export type AggregateStepImpl<T = any> = (accumulator: T, ...args: SqlValue[]) => T;
+
+/**
+ * Type for aggregate finalizer function.
+ */
+export type AggregateFinalizerImpl<T = any> = (accumulator: T) => SqlValue;
+
+/**
+ * Column information for table-valued functions.
+ */
+export interface TVFColumnInfo {
+	name: string;
+	type: SqlDataType;
+	nullable?: boolean;
+}
+
+/**
  * Represents the registered definition of a user-defined function
- * (scalar, aggregate, or window).
+ * (scalar, aggregate, table-valued, or window).
  */
 export interface FunctionSchema {
 	/** Function name (lowercase for consistent lookup) */
@@ -16,20 +44,34 @@ export interface FunctionSchema {
 	flags: FunctionFlags;
 	/** User data pointer passed during registration */
 	userData?: unknown;
-	/** Callback for scalar functions */
-	xFunc?: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => void;
-	/** Callback for aggregate step function */
-	xStep?: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => void;
-	/** Callback for aggregate final function */
-	xFinal?: (context: QuereusContext) => void;
-	/** Callback for window function value */
-	xValue?: (context: QuereusContext) => void;
-	/** Callback for window function inverse step */
-	xInverse?: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => void;
-	/** Destructor for user data (if provided during registration) */
-	xDestroy?: (userData: unknown) => void;
-	/** Recommended affinity for the function's return value (optional) */
+	/** Recommended affinity for the function's return value (optional, for scalar functions) */
 	affinity?: SqlDataType;
+
+	// Function type and implementation
+	/** Function type */
+	type: 'scalar' | 'aggregate' | 'table-valued' | 'window';
+
+	// Scalar function
+	/** Direct scalar function implementation */
+	scalarImpl?: ScalarFunctionImpl;
+
+	// Table-valued function
+	/** Table-valued function implementation */
+	tableValuedImpl?: TableValuedFunctionImpl;
+	/** Column definitions for table-valued functions */
+	columns?: TVFColumnInfo[];
+
+	// Aggregate function
+	/** Aggregate step function */
+	aggregateStepImpl?: AggregateStepImpl;
+	/** Aggregate finalizer function */
+	aggregateFinalizerImpl?: AggregateFinalizerImpl;
+	/** Initial accumulator value for aggregates */
+	initialValue?: any;
+
+	// Window function (for future use)
+	/** Window function implementation */
+	windowImpl?: (...args: any[]) => any;
 }
 
 /**

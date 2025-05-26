@@ -3,7 +3,6 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import { emitCall, emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type RuntimeValue, type SqlValue } from '../../common/types.js';
-import { FunctionContext } from '../../func/context.js';
 import type { FunctionSchema } from '../../schema/function.js';
 
 export function emitScalarFunctionCall(plan: ScalarFunctionCallNode): Instruction {
@@ -22,26 +21,26 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode): Instructio
 			if (!found) {
 				throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
 			}
+			if (found.type !== 'scalar') {
+				throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
+			}
 			resolvedFunctionSchema = found;
 		}
 
-		if (!resolvedFunctionSchema.xFunc) {
-			throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
+		// Validate argument count
+		if (resolvedFunctionSchema.numArgs >= 0 && args.length !== resolvedFunctionSchema.numArgs) {
+			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${resolvedFunctionSchema.numArgs}`, StatusCode.ERROR);
 		}
 
-		// Create function context and call the function
-		const funcCtx = new FunctionContext(ctx.db, resolvedFunctionSchema.userData);
+		// Use the direct implementation
+		if (!resolvedFunctionSchema.scalarImpl) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} has no implementation`, StatusCode.ERROR);
+		}
 
 		try {
-			resolvedFunctionSchema.xFunc(funcCtx, args);
-
-			// Get the result from the context
-			const error = funcCtx._getError();
-			if (error) {
-				throw error;
-			}
-
-			return funcCtx._getResult();
+			const result = resolvedFunctionSchema.scalarImpl(...args);
+			// Handle both sync and async results
+			return result instanceof Promise ? await result : result;
 		} catch (error: any) {
 			throw new QuereusError(`Function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
 		}

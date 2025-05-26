@@ -181,11 +181,15 @@ export class Statement {
 				context: new Map(),
 			};
 
-			const blockResults = await scheduler.run(runtimeCtx);
-			if (blockResults && blockResults.length) {
-				const lastStatementOutput = blockResults[blockResults.length - 1];
-				if (isAsyncIterable(lastStatementOutput)) {
-					yield* lastStatementOutput;
+			const results = await scheduler.run(runtimeCtx);
+			if (results) {
+				if (Array.isArray(results) && results.length) {
+					const lastStatementOutput = results[results.length - 1];
+					if (isAsyncIterable(lastStatementOutput)) {
+						yield* lastStatementOutput as AsyncIterable<Row>;
+					}
+				} else if (isAsyncIterable(results)) {
+					yield* results as AsyncIterable<Row>;
 				}
 			}
 		} catch (e: any) {
@@ -387,11 +391,15 @@ export class Statement {
 				tracer: tracer
 			};
 
-			const blockResults = await scheduler.run(runtimeCtx);
-			if (blockResults && blockResults.length) {
-				const lastStatementOutput = blockResults[blockResults.length - 1];
-				if (isAsyncIterable(lastStatementOutput)) {
-					yield* lastStatementOutput;
+			const results = await scheduler.run(runtimeCtx);
+			if (results) {
+				if (Array.isArray(results) && results.length) {
+					const lastStatementOutput = results[results.length - 1];
+					if (isAsyncIterable(lastStatementOutput)) {
+						yield* lastStatementOutput as AsyncIterable<Row>;
+					}
+				} else if (isAsyncIterable(results)) {
+					yield* results as AsyncIterable<Row>;
 				}
 			}
 		} catch (e: any) {

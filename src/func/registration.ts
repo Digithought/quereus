@@ -1,19 +1,12 @@
 import { createLogger } from '../common/logger.js';
-import type { FunctionSchema } from '../schema/function.js';
+import type { FunctionSchema, TVFColumnInfo } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
-import type { QuereusContext } from './context.js';
-import { type SqlValue, StatusCode } from '../common/types.js';
+import { type SqlValue, SqlDataType } from '../common/types.js';
 
 const log = createLogger('func:registration');
-const warnLog = log.extend('warn');
 
 /**
- * Supported argument type specifications for function argument coercion
- */
-type ExpectedArgType = 'string' | 'number' | 'bigint' | 'boolean' | 'blob' | 'any';
-
-/**
- * Configuration options for scalar SQL functions
+ * Configuration options for scalar functions
  */
 interface ScalarFuncOptions {
 	/** Function name as it will be called in SQL */
@@ -22,12 +15,30 @@ interface ScalarFuncOptions {
 	numArgs: number;
 	/** Function behavior flags */
 	flags?: FunctionFlags;
-	/** Optional type specifications for arguments */
-	argTypes?: ExpectedArgType[];
+	/** Whether the function is deterministic (affects caching) */
+	deterministic?: boolean;
+	/** Return type affinity hint */
+	affinity?: SqlDataType;
 }
 
 /**
- * Configuration options for aggregate SQL functions
+ * Configuration options for table-valued functions
+ */
+interface TableValuedFuncOptions {
+	/** Function name as it will be called in SQL */
+	name: string;
+	/** Number of arguments, or -1 for variable number */
+	numArgs: number;
+	/** Function behavior flags */
+	flags?: FunctionFlags;
+	/** Whether the function is deterministic (affects caching) */
+	deterministic?: boolean;
+	/** Column definitions for the table-valued function */
+	columns?: TVFColumnInfo[];
+}
+
+/**
+ * Configuration options for aggregate functions
  */
 interface AggregateFuncOptions {
 	/** Function name as it will be called in SQL */
@@ -36,169 +47,86 @@ interface AggregateFuncOptions {
 	numArgs: number;
 	/** Function behavior flags */
 	flags?: FunctionFlags;
-	/** Initial state for the accumulator */
-	initialState?: any;
-	/** Optional type specifications for arguments */
-	argTypes?: ExpectedArgType[];
+	/** Initial accumulator value */
+	initialValue?: any;
 }
 
 /**
- * Coerces a SQL value to the specified JavaScript type
- *
- * @param value The SQL value to coerce
- * @param expectedType The desired JavaScript type
- * @returns The coerced value or null if coercion failed
+ * Type for a scalar function implementation.
+ * Takes SQL values and returns a SQL value directly.
  */
-function coerceArg(value: SqlValue, expectedType: ExpectedArgType | undefined): any {
-	if (value === null || expectedType === undefined || expectedType === 'any') {
-		return value;
-	}
-
-	try {
-		switch (expectedType) {
-			case 'string':
-				return value instanceof Uint8Array ? '' : String(value);
-			case 'number':
-				if (typeof value === 'boolean') return value ? 1 : 0;
-				const num = Number(value);
-				return isNaN(num) ? null : num;
-			case 'bigint':
-				return BigInt(value as any);
-			case 'boolean':
-				if (typeof value === 'number') return value !== 0;
-				if (typeof value === 'bigint') return value !== 0n;
-				if (typeof value === 'string') {
-					const lowerVal = value.trim().toLowerCase();
-					if (lowerVal === 'true') return true;
-					if (lowerVal === 'false') return false;
-					const numVal = Number(value);
-					return !isNaN(numVal) && numVal !== 0;
-				}
-				return Boolean(value);
-			case 'blob':
-				return value instanceof Uint8Array ? value : null;
-		}
-	} catch (e) {
-		warnLog('Coercion failed for value %s to type %s: %O', value, expectedType, e);
-		return null;
-	}
-	return value;
-}
+export type ScalarFunc = (...args: SqlValue[]) => SqlValue | Promise<SqlValue>;
 
 /**
- * Creates a function schema for a scalar SQL function from a JavaScript implementation
+ * Type for a table-valued function implementation.
+ * Takes SQL values and returns an async iterable of rows.
+ */
+export type TableValuedFunc = (...args: SqlValue[]) => AsyncIterable<import('../common/types.js').Row> | Promise<AsyncIterable<import('../common/types.js').Row>>;
+
+/**
+ * Type for aggregate reducer functions.
+ */
+export type AggregateReducer<T = any> = (accumulator: T, ...args: SqlValue[]) => T;
+
+/**
+ * Type for aggregate finalizer functions.
+ */
+export type AggregateFinalizer<T = any> = (accumulator: T) => SqlValue;
+
+/**
+ * Creates a function schema for a scalar SQL function.
+ * This is the primary way to register scalar functions in Quereus.
  *
  * @param options Configuration options for the function
  * @param jsFunc The JavaScript implementation function
  * @returns A FunctionSchema ready for registration
  */
-export function createScalarFunction(options: ScalarFuncOptions, jsFunc: (...args: any[]) => SqlValue): FunctionSchema {
-	const schema: FunctionSchema = {
+export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarFunc): FunctionSchema {
+	return {
 		name: options.name,
 		numArgs: options.numArgs,
-		flags: options.flags ?? (FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC),
-		xFunc: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => {
-			try {
-				if (options.numArgs >= 0 && args.length !== options.numArgs) {
-					throw new Error(`Function ${options.name} called with ${args.length} arguments, expected ${options.numArgs}`);
-				}
-
-				const coercedArgs = args.map((arg, i) => coerceArg(arg, options.argTypes?.[i]));
-				const result = jsFunc(...coercedArgs);
-
-				if (result === null || result === undefined) {
-					context.resultNull();
-				} else if (typeof result === 'string') {
-					context.resultText(result);
-				} else if (typeof result === 'number') {
-					if (Number.isInteger(result)) {
-						context.resultInt64(BigInt(result));
-					} else {
-						context.resultDouble(result);
-					}
-				} else if (typeof result === 'bigint') {
-					context.resultInt64(result);
-				} else if (result instanceof Uint8Array) {
-					context.resultBlob(result);
-				} else if (typeof result === 'boolean') {
-					context.resultInt(result ? 1 : 0);
-				} else {
-					context.resultNull();
-				}
-			} catch (e) {
-				const message = e instanceof Error ? e.message : String(e);
-				context.resultError(`Error in function ${options.name}: ${message}`, StatusCode.ERROR);
-			}
-		},
+		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
+		affinity: options.affinity,
+		type: 'scalar',
+		scalarImpl: jsFunc
 	};
-	return schema;
 }
 
 /**
- * Creates a function schema for an aggregate SQL function from JavaScript step and final functions
+ * Creates a function schema for a table-valued function.
+ * Table-valued functions return AsyncIterable<Row> and can be used in FROM clauses.
  *
  * @param options Configuration options for the function
- * @param stepFunc Function called for each row to update the accumulator
- * @param finalFunc Function called after all rows to produce the final result
+ * @param jsFunc The JavaScript implementation function
  * @returns A FunctionSchema ready for registration
  */
-export function createAggregateFunction(
+export function createTableValuedFunction(options: TableValuedFuncOptions, jsFunc: TableValuedFunc): FunctionSchema {
+	return {
+		name: options.name,
+		numArgs: options.numArgs,
+		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
+		type: 'table-valued',
+		tableValuedImpl: jsFunc,
+		columns: options.columns
+	};
+}
+
+/**
+ * Creates an aggregate function using a functional reducer pattern.
+ * This is more functional and easier to reason about than the step/final approach.
+ */
+export function createAggregateFunction<T = any>(
 	options: AggregateFuncOptions,
-	stepFunc: (acc: any, ...args: any[]) => any,
-	finalFunc: (acc: any) => SqlValue
+	reducer: AggregateReducer<T>,
+	finalizer: AggregateFinalizer<T> = (acc) => acc as any
 ): FunctionSchema {
-	const schema: FunctionSchema = {
+	return {
 		name: options.name,
 		numArgs: options.numArgs,
 		flags: options.flags ?? FunctionFlags.UTF8,
-		xStep: (context: QuereusContext, args: ReadonlyArray<SqlValue>) => {
-			if (options.numArgs >= 0 && args.length !== options.numArgs) {
-				throw new Error(`Aggregate ${options.name} step called with ${args.length} arguments, expected ${options.numArgs}`);
-			}
-
-			let accumulator = context.getAggregateContext<any>();
-			if (accumulator === undefined) {
-				accumulator = options.initialState ?? null;
-			}
-
-			const coercedArgs = args.map((arg, i) => coerceArg(arg, options.argTypes?.[i]));
-			const newAccumulator = stepFunc(accumulator, ...coercedArgs);
-			context.setAggregateContext(newAccumulator);
-		},
-		xFinal: (context: QuereusContext) => {
-			try {
-				let accumulator = context.getAggregateContext<any>();
-				if (accumulator === undefined) {
-					accumulator = options.initialState ?? null;
-				}
-				const result = finalFunc(accumulator);
-
-				if (result === null || result === undefined) {
-					context.resultNull();
-				} else if (typeof result === 'string') {
-					context.resultText(result);
-				} else if (typeof result === 'number') {
-					if (Number.isSafeInteger(result)) {
-						context.resultInt(result);
-					} else if (Number.isInteger(result)) {
-						context.resultInt64(BigInt(result));
-					} else {
-						context.resultDouble(result);
-					}
-				} else if (typeof result === 'bigint') {
-					context.resultInt64(result);
-				} else if (result instanceof Uint8Array) {
-					context.resultBlob(result);
-				} else if (typeof result === 'boolean') {
-					context.resultInt(result ? 1 : 0);
-				} else {
-					context.resultNull();
-				}
-			} catch (e) {
-				const message = e instanceof Error ? e.message : String(e);
-				context.resultError(`Error in aggregate function ${options.name} xFinal: ${message}`, StatusCode.ERROR);
-			}
-		},
+		type: 'aggregate',
+		aggregateStepImpl: reducer,
+		aggregateFinalizerImpl: finalizer,
+		initialValue: options.initialValue
 	};
-	return schema;
 }

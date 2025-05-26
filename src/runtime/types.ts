@@ -33,6 +33,15 @@ export interface InstructionTraceEvent {
 	args?: RuntimeValue[];
 	result?: OutputValue;
 	error?: string;
+	/** Information about sub-programs if this instruction has any */
+	subPrograms?: SubProgramInfo[];
+}
+
+/** Information about a sub-program for tracing purposes */
+export interface SubProgramInfo {
+	programIndex: number;
+	instructionCount: number;
+	rootNote?: string;
 }
 
 /** * Interface for tracing instruction execution. */
@@ -45,19 +54,26 @@ export interface InstructionTracer {
 	traceError(instructionIndex: number, instruction: Instruction, error: Error): void;
 	/** Gets collected trace events (if supported by the tracer) */
 	getTraceEvents?(): InstructionTraceEvent[];
+	/** Gets information about all sub-programs encountered during tracing */
+	getSubPrograms?(): Map<number, { scheduler: Scheduler; parentInstructionIndex: number }>;
 }
 
 /** * Tracer that collects execution events for later analysis. */
 export class CollectingInstructionTracer implements InstructionTracer {
 	private events: InstructionTraceEvent[] = [];
+	private subPrograms = new Map<number, { scheduler: Scheduler; parentInstructionIndex: number }>();
+	private nextSubProgramId = 0;
 
 	traceInput(instructionIndex: number, instruction: Instruction, args: RuntimeValue[]): void {
+		const subPrograms = this.collectSubProgramInfo(instructionIndex, instruction);
+
 		this.events.push({
 			instructionIndex,
 			note: instruction.note,
 			type: 'input',
 			timestamp: Date.now(),
-			args: this.cloneArgs(args)
+			args: this.cloneArgs(args),
+			subPrograms
 		});
 	}
 
@@ -85,8 +101,31 @@ export class CollectingInstructionTracer implements InstructionTracer {
 		return [...this.events];
 	}
 
+	getSubPrograms(): Map<number, { scheduler: Scheduler; parentInstructionIndex: number }> {
+		return new Map(this.subPrograms);
+	}
+
 	clear(): void {
 		this.events = [];
+		this.subPrograms.clear();
+		this.nextSubProgramId = 0;
+	}
+
+	private collectSubProgramInfo(instructionIndex: number, instruction: Instruction): SubProgramInfo[] | undefined {
+		if (!instruction.programs || instruction.programs.length === 0) {
+			return undefined;
+		}
+
+		return instruction.programs.map(scheduler => {
+			const programId = this.nextSubProgramId++;
+			this.subPrograms.set(programId, { scheduler, parentInstructionIndex: instructionIndex });
+
+			return {
+				programIndex: programId,
+				instructionCount: scheduler.instructions.length,
+				rootNote: scheduler.instructions[scheduler.instructions.length - 1]?.note
+			};
+		});
 	}
 
 	private cloneArgs(args: RuntimeValue[]): RuntimeValue[] {

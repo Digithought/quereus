@@ -28,6 +28,17 @@ export interface InstructionDebugInfo {
   paramCount: number;
   paramIndices: number[];
   destination: number | null;
+  subPrograms?: SubProgramDebugInfo[];
+}
+
+/**
+ * Information about a sub-program for debugging purposes.
+ */
+export interface SubProgramDebugInfo {
+  programIndex: number;
+  instructionCount: number;
+  rootNote?: string;
+  instructions: InstructionDebugInfo[];
 }
 
 /**
@@ -160,15 +171,48 @@ export function generateInstructionProgram(
   lines.push('=== INSTRUCTION PROGRAM ===');
   lines.push('');
 
+  const subProgramMap = new Map<number, { scheduler: any; parentIndex: number }>();
+  let nextSubProgramId = 0;
+
   for (let i = 0; i < instructions.length; i++) {
     const instruction = instructions[i];
     const dest = destinations[i];
     const note = instruction.note ? ` ; ${instruction.note}` : '';
     const destStr = dest !== null ? ` -> [${dest}]` : ' -> [RESULT]';
 
+    let subProgramInfo = '';
+    if (instruction.programs && instruction.programs.length > 0) {
+      const programIds: number[] = [];
+      for (const program of instruction.programs) {
+        const programId = nextSubProgramId++;
+        subProgramMap.set(programId, { scheduler: program, parentIndex: i });
+        programIds.push(programId);
+      }
+      subProgramInfo = ` SUB-PROGRAMS: [${programIds.join(', ')}]`;
+    }
+
     lines.push(`[${i.toString().padStart(3)}] PARAMS: [${instruction.params.map((_, idx) =>
       instructions.findIndex(inst => inst === instruction.params[idx])
-    ).join(', ')}]${destStr}${note}`);
+    ).join(', ')}]${destStr}${note}${subProgramInfo}`);
+  }
+
+  // Add sub-program listings
+  if (subProgramMap.size > 0) {
+    lines.push('');
+    lines.push('=== SUB-PROGRAMS ===');
+
+    for (const [programId, { scheduler, parentIndex }] of subProgramMap) {
+      lines.push('');
+      lines.push(`--- SUB-PROGRAM ${programId} (called by instruction ${parentIndex}) ---`);
+      const subProgram = generateInstructionProgram(scheduler.instructions, scheduler.destinations);
+      // Remove the header and footer from sub-program and indent
+      const subLines = subProgram.split('\n').slice(2, -2);
+      for (const line of subLines) {
+        if (line.trim()) {
+          lines.push(`  ${line}`);
+        }
+      }
+    }
   }
 
   lines.push('');
@@ -183,13 +227,88 @@ export function getInstructionDebugInfo(
   instructions: readonly Instruction[],
   destinations: readonly (number | null)[]
 ): InstructionDebugInfo[] {
-  return instructions.map((instruction, index) => ({
-    index,
-    note: instruction.note,
-    paramCount: instruction.params.length,
-    paramIndices: instruction.params.map(param =>
-      instructions.findIndex(inst => inst === param)
-    ),
-    destination: destinations[index]
-  }));
+  let nextSubProgramId = 0;
+
+  return instructions.map((instruction, index) => {
+    let subPrograms: SubProgramDebugInfo[] | undefined;
+
+    if (instruction.programs && instruction.programs.length > 0) {
+      subPrograms = instruction.programs.map(scheduler => {
+        const programId = nextSubProgramId++;
+        const subInstructions = getInstructionDebugInfo(scheduler.instructions, scheduler.destinations);
+
+        return {
+          programIndex: programId,
+          instructionCount: scheduler.instructions.length,
+          rootNote: scheduler.instructions[scheduler.instructions.length - 1]?.note,
+          instructions: subInstructions
+        };
+      });
+    }
+
+    return {
+      index,
+      note: instruction.note,
+      paramCount: instruction.params.length,
+      paramIndices: instruction.params.map(param =>
+        instructions.findIndex(inst => inst === param)
+      ),
+      destination: destinations[index],
+      subPrograms
+    };
+  });
+}
+
+/**
+ * Generates a comprehensive trace report that includes sub-program execution details.
+ */
+export function generateTraceReport(
+  tracer: import('../runtime/types.js').InstructionTracer
+): string {
+  const events = tracer.getTraceEvents?.() || [];
+  const subPrograms = tracer.getSubPrograms?.() || new Map();
+
+  const lines: string[] = [];
+  lines.push('=== EXECUTION TRACE ===');
+  lines.push('');
+
+  for (const event of events) {
+    const timestamp = new Date(event.timestamp).toISOString();
+    const typeStr = event.type.toUpperCase().padEnd(6);
+    const note = event.note ? ` (${event.note})` : '';
+
+    lines.push(`[${event.instructionIndex.toString().padStart(3)}] ${typeStr} ${timestamp}${note}`);
+
+    if (event.type === 'input' && event.subPrograms) {
+      for (const subProgram of event.subPrograms) {
+        lines.push(`     └─ SUB-PROGRAM ${subProgram.programIndex}: ${subProgram.instructionCount} instructions${subProgram.rootNote ? ` (${subProgram.rootNote})` : ''}`);
+      }
+    }
+
+    if (event.type === 'error') {
+      lines.push(`     ERROR: ${event.error}`);
+    }
+  }
+
+  if (subPrograms.size > 0) {
+    lines.push('');
+    lines.push('=== SUB-PROGRAM DETAILS ===');
+
+    for (const [programId, { scheduler, parentInstructionIndex }] of subPrograms) {
+      lines.push('');
+      lines.push(`--- SUB-PROGRAM ${programId} (parent instruction: ${parentInstructionIndex}) ---`);
+      const programListing = generateInstructionProgram(scheduler.instructions, scheduler.destinations);
+      // Remove header/footer and indent
+      const programLines = programListing.split('\n').slice(2, -2);
+      for (const line of programLines) {
+        if (line.trim()) {
+          lines.push(`  ${line}`);
+        }
+      }
+    }
+  }
+
+  lines.push('');
+  lines.push('=== END TRACE ===');
+  return lines.join('\n');
 }

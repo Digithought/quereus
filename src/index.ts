@@ -32,8 +32,16 @@ export type { TableSchema, IndexSchema as TableIndexSchema } from './schema/tabl
 export type { ColumnSchema } from './schema/column.js';
 export type { FunctionSchema } from './schema/function.js';
 
-// Function API
-export { FunctionContext } from './func/context.js';
+// Function registration utilities
+export {
+	createScalarFunction,
+	createTableValuedFunction,
+	createAggregateFunction,
+	type ScalarFunc,
+	type TableValuedFunc,
+	type AggregateReducer,
+	type AggregateFinalizer
+} from './func/registration.js';
 
 // Utility functions
 export { Latches } from './util/latches.js';

@@ -151,12 +151,6 @@ export class Schema {
 	 */
 	addFunction(func: FunctionSchema): void {
 		const key = getFunctionKey(func.name, func.numArgs);
-		const existing = this.functions.get(key);
-		if (existing?.xDestroy && existing.userData !== func.userData) {
-			try { existing.xDestroy(existing.userData); } catch (e) {
-				errorLog(`Destructor failed for function %s in schema '%s': %O`, key, this.name, e);
-			}
-		}
 		this.functions.set(key, func);
 		log(`Added/Updated function '%s' in schema '%s'`, `${func.name}/${func.numArgs}`, this.name);
 	}
@@ -193,11 +187,6 @@ export class Schema {
 		const key = getFunctionKey(name, numArgs);
 		const func = this.functions.get(key);
 		if (func) {
-			if (func.xDestroy && func.userData) {
-				try { func.xDestroy(func.userData); } catch (e) {
-					errorLog(`Destructor failed for function %s in schema '%s': %O`, key, this.name, e);
-				}
-			}
 			log(`Removed function '%s' from schema '%s'`, `${name}/${numArgs}`, this.name);
 			return this.functions.delete(key);
 		}
@@ -208,13 +197,6 @@ export class Schema {
 	 * Clears all functions, calling destructors if needed
 	 */
 	clearFunctions(): void {
-		this.functions.forEach(func => {
-			if (func.xDestroy && func.userData) {
-				try { func.xDestroy(func.userData); } catch (e) {
-					errorLog(`Destructor failed for function %s in schema '%s': %O`, `${func.name}/${func.numArgs}`, this.name, e);
-				}
-			}
-		});
 		this.functions.clear();
 	}
 }
