@@ -2,8 +2,9 @@ import type { ColumnReferenceNode } from '../../planner/nodes/reference.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitColumnReference(plan: ColumnReferenceNode): Instruction {
+export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext): SqlValue {
 		const rowGetter = ctx.context.get(plan.relationalNode);
 		if (!rowGetter) {

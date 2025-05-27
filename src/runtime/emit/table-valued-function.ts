@@ -3,6 +3,7 @@ import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import type { EmissionContext } from '../emission-context.js';
 
 /**
  * Represents a table-valued function call in a plan node.
@@ -14,33 +15,28 @@ export interface TableValuedFunctionCallNode {
 	operands: any[]; // ScalarPlanNode[]
 }
 
-export function emitTableValuedFunctionCall(plan: TableValuedFunctionCallNode): Instruction {
-	const operandExprs = plan.operands.map(operand => emitPlanNode(operand));
+export function emitTableValuedFunctionCall(plan: TableValuedFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.functionName.toLowerCase();
 	const numArgs = plan.operands.length;
 
-	let resolvedFunctionSchema: FunctionSchema | null = null;
+	// Look up the function during emission and record the dependency
+	const functionSchema = ctx.findFunction(functionName, numArgs);
+	if (!functionSchema) {
+		throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
+	}
+	if (functionSchema.type !== 'table-valued' || !functionSchema.tableValuedImpl) {
+		throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function`, StatusCode.ERROR);
+	}
 
-	async function* run(ctx: RuntimeContext, ...args: Array<SqlValue>): AsyncIterable<Row> {
-		// Resolve function on first call and cache it
-		if (!resolvedFunctionSchema) {
-			const found = ctx.db._findFunction(functionName, numArgs);
-			if (!found) {
-				throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
-			}
-			if (found.type !== 'table-valued' || !found.tableValuedImpl) {
-				throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function`, StatusCode.ERROR);
-			}
-			resolvedFunctionSchema = found;
-		}
+	async function* run(runtimeCtx: RuntimeContext, ...args: Array<SqlValue>): AsyncIterable<Row> {
 
 		// Validate argument count
-		if (resolvedFunctionSchema.numArgs >= 0 && args.length !== resolvedFunctionSchema.numArgs) {
-			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${resolvedFunctionSchema.numArgs}`, StatusCode.ERROR);
+		if (functionSchema!.numArgs >= 0 && args.length !== functionSchema!.numArgs) {
+			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${functionSchema!.numArgs}`, StatusCode.ERROR);
 		}
 
 		try {
-			const result = resolvedFunctionSchema.tableValuedImpl!(...args);
+			const result = functionSchema!.tableValuedImpl!(...args);
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
 
@@ -51,6 +47,8 @@ export function emitTableValuedFunctionCall(plan: TableValuedFunctionCallNode): 
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
 		}
 	}
+
+	const operandExprs = plan.operands.map(operand => emitPlanNode(operand, ctx));
 
 	return {
 		params: [...operandExprs],

@@ -17,13 +17,10 @@ export type Row = SqlValue[];
  * Represents a value that can be expected as an input in the runtime environment.
  * This type can be a scalar value, or an async iterable of rows (cursor).
  */
-export type RuntimeValue = OutputValue | ((ctx: any) => OutputValue);
+export type RuntimeValue = SqlValue | Row | AsyncIterable<Row> | ((ctx: RuntimeContext) => OutputValue)
 
-/**
- * Represents a value that can be output from the runtime, or an intermediate thereof.
- * This type can be a scalar value, a promise of a scalar value, an async iterable of rows (cursor), or an array of OutputValue (results).
- */
-export type OutputValue = SqlValue | Row | AsyncIterable<Row> | ((ctx: RuntimeContext) => OutputValue | Promise<OutputValue>);
+/** Represents a value that can be output from an instruction or program. */
+export type OutputValue = RuntimeValue | Promise<RuntimeValue>;
 
 export type SqlParameters = Record<string, SqlValue> | SqlValue[];
 

@@ -1,7 +1,7 @@
-import type { Row } from "../../common/types";
-import type { SqlValue } from "../../common/types";
-import { SqlDataType } from "../../common/types";
-import { createTableValuedFunction } from "../registration";
+import type { Row } from "../../common/types.js";
+import type { SqlValue } from "../../common/types.js";
+import { SqlDataType } from "../../common/types.js";
+import { createTableValuedFunction } from "../registration.js";
 
 // Generate a sequence of numbers (table-valued function)
 export const generateSeriesFunc = createTableValuedFunction(

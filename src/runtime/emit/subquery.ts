@@ -3,8 +3,9 @@ import type { InNode } from '../../planner/nodes/subquery.js';
 import { emitPlanNode, emitCall } from '../emitters.js';
 import type { SqlValue, Row } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitIn(plan: InNode): Instruction {
+export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 	async function run(ctx: RuntimeContext, input: AsyncIterable<Row>, condition: SqlValue): Promise<SqlValue> {
 		for await (const row of input) {
 			if (row.length > 0 && compareSqlValues(row[0], condition) === 0) {
@@ -14,8 +15,8 @@ export function emitIn(plan: InNode): Instruction {
 		return 0; // false in SQL
 	}
 
-	const sourceInstruction = emitPlanNode(plan.source);
-	const conditionExpr = emitPlanNode(plan.condition);
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
+	const conditionExpr = emitPlanNode(plan.condition, ctx);
 
 	return {
 		params: [sourceInstruction, conditionExpr],

@@ -4,9 +4,9 @@ import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import { getVTable } from '../utils.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitInsert(plan: InsertNode): Instruction {
-  const sourceInstruction = emitPlanNode(plan.source);
+export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
   const tableSchema = plan.table.tableSchema;
 	// InsertNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
 	const isReturning = false;
@@ -85,7 +85,9 @@ export function emitInsert(plan: InsertNode): Instruction {
     }
   }
 
-  return {
+  const sourceInstruction = emitPlanNode(plan.source, ctx);
+
+	return {
     params: [sourceInstruction],
     run: run as InstructionRun,
     note: `insert(${plan.table.tableSchema.name}, ${plan.targetColumns.length || tableSchema.columns.length} cols)`

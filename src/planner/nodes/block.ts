@@ -5,7 +5,7 @@ import type { Scope } from '../scopes/scope.js';
 import type { SqlParameters } from '../../common/types.js';
 
 export class BlockNode extends PlanNode {
-  override readonly nodeType = PlanNodeType.Batch;
+  override readonly nodeType = PlanNodeType.Block;
 
   constructor(
     scope: Scope,

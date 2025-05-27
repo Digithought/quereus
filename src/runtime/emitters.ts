@@ -5,10 +5,11 @@ import type { Instruction, InstructionRun, RuntimeContext } from "./types.js";
 import { StatusCode, type OutputValue, type RuntimeValue } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 import { Scheduler } from "./scheduler.js";
+import type { EmissionContext } from "./emission-context.js";
 
 const log = createLogger('emitters');
 
-export type EmitterFunc = (plan: PlanNode) => Instruction;
+export type EmitterFunc = (plan: PlanNode, ctx: EmissionContext) => Instruction;
 
 const emitters: Map<PlanNodeType, EmitterFunc> = new Map();
 
@@ -17,12 +18,12 @@ export function registerEmitter(nodeType: PlanNodeType, emitter: EmitterFunc): v
 	log(`Registered emitter for ${nodeType}`);
 }
 
-export function emitPlanNode(plan: PlanNode): Instruction {
+export function emitPlanNode(plan: PlanNode, ctx: EmissionContext): Instruction {
 	const emitter = emitters.get(plan.nodeType);
 	if (!emitter) {
 		throw new QuereusError(`No emitter registered for plan node type: ${plan.nodeType}`, StatusCode.INTERNAL);
 	}
-	return emitter(plan);
+	return emitter(plan, ctx);
 }
 
 /**
@@ -33,7 +34,7 @@ export function emitPlanNode(plan: PlanNode): Instruction {
 export function emitCall(root: Instruction): Instruction {
 	const program = new Scheduler(root);
 
-	function run(ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue | Promise<OutputValue> {
+	function run(ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue {
 		return (ctx: RuntimeContext) => program.run(ctx);
 	}
 
@@ -43,4 +44,13 @@ export function emitCall(root: Instruction): Instruction {
 		note: `callback(${root.note})`,
 		programs: [program]
 	};
+}
+
+/**
+ * Helper function to emit a plan node and wrap it as a callable instruction.
+ * This is useful for emitters that need to create sub-instructions.
+ */
+export function emitCallFromPlan(plan: PlanNode, emissionCtx: EmissionContext): Instruction {
+	const instruction = emitPlanNode(plan, emissionCtx);
+	return emitCall(instruction);
 }

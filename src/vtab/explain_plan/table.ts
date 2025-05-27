@@ -9,6 +9,7 @@ import type { PlanNode } from '../../planner/nodes/plan-node.js';
 import { Scheduler } from '../../runtime/scheduler.js';
 import { emitPlanNode } from '../../runtime/emitters.js';
 import type { RowOp } from '../../parser/ast.js';
+import { EmissionContext } from '../../runtime/emission-context.js';
 
 /**
  * Represents an instance of the query_plan virtual table for a specific query.
@@ -50,7 +51,8 @@ export class ExplainPlanTable extends VirtualTable {
     }
 
     async* xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
-			const program = emitPlanNode(this.plan);
+			const emissionContext = new EmissionContext(this.db);
+			const program = emitPlanNode(this.plan, emissionContext);
 			const schedule = new Scheduler(program);
 			for (const instruction of schedule.instructions) {
 				// TODO: Implement this to yield rows representing plan steps

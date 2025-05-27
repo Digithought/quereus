@@ -5,15 +5,16 @@ import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
 import { compareSqlValues } from "../../util/comparison.js";
+import type { EmissionContext } from "../emission-context.js";
 
-export function emitBinaryOp(plan: BinaryOpNode): Instruction {
+export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	switch (plan.expression.operator) {
 		case '+':
 		case '-':
 		case '*':
 		case '/':
 		case '%':
-			return emitNumericOp(plan);
+			return emitNumericOp(plan, ctx);
 		case '=':
 		case '!=':
 		case '<>':
@@ -21,19 +22,19 @@ export function emitBinaryOp(plan: BinaryOpNode): Instruction {
 		case '<=':
 		case '>':
 		case '>=':
-			return emitComparisonOp(plan);
+			return emitComparisonOp(plan, ctx);
 		case '||':
-			return emitConcatOp(plan);
+			return emitConcatOp(plan, ctx);
 		case 'AND':
 		case 'OR':
-			return emitLogicalOp(plan);
+			return emitLogicalOp(plan, ctx);
 		// TODO: emitBitwise
 		default:
 			throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
 }
 
-export function emitNumericOp(plan: BinaryOpNode): Instruction {
+export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	let inner: (v1: any, v2: any) => any;
 	switch (plan.expression.operator) {
 		case '+': inner = (v1, v2) => v1 + v2; break;
@@ -71,8 +72,8 @@ export function emitNumericOp(plan: BinaryOpNode): Instruction {
 		return null;
 	}
 
-	const leftExpr = emitPlanNode(plan.left);
-	const rightExpr = emitPlanNode(plan.right);
+	const leftExpr = emitPlanNode(plan.left, ctx);
+	const rightExpr = emitPlanNode(plan.right, ctx);
 
 	return {
 		params: [leftExpr, rightExpr],
@@ -81,23 +82,47 @@ export function emitNumericOp(plan: BinaryOpNode): Instruction {
 	};
 }
 
-export function emitComparisonOp(plan: BinaryOpNode): Instruction {
-	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
-		switch (plan.expression.operator) {
-			case '=': return compareSqlValues(v1, v2) === 0 ? 1 : 0;
-			case '!=':
-			case '<>': return compareSqlValues(v1, v2) !== 0 ? 1 : 0;
-			case '<': return compareSqlValues(v1, v2) < 0 ? 1 : 0;
-			case '<=': return compareSqlValues(v1, v2) <= 0 ? 1 : 0;
-			case '>': return compareSqlValues(v1, v2) > 0 ? 1 : 0;
-			case '>=': return compareSqlValues(v1, v2) >= 0 ? 1 : 0;
-			default:
-				throw new QuereusError(`Unsupported comparison operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
-		}
+export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
+	let run: (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue) => SqlValue;
+
+	switch (plan.expression.operator) {
+		case '=':
+			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				return compareSqlValues(v1, v2) === 0 ? 1 : 0;
+			};
+			break;
+		case '!=':
+		case '<>':
+			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				return compareSqlValues(v1, v2) !== 0 ? 1 : 0;
+			};
+			break;
+		case '<':
+			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				return compareSqlValues(v1, v2) < 0 ? 1 : 0;
+			};
+			break;
+		case '<=':
+			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				return compareSqlValues(v1, v2) <= 0 ? 1 : 0;
+			};
+			break;
+		case '>':
+			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				return compareSqlValues(v1, v2) > 0 ? 1 : 0;
+			};
+			break;
+		case '>=':
+			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				return compareSqlValues(v1, v2) >= 0 ? 1 : 0;
+			};
+			break;
+		default:
+			throw new QuereusError(`Unsupported comparison operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
 
-	const leftExpr = emitPlanNode(plan.left);
-	const rightExpr = emitPlanNode(plan.right);
+	const leftExpr = emitPlanNode(plan.left, ctx);
+	const rightExpr = emitPlanNode(plan.right, ctx);
 
 	return {
 		params: [leftExpr, rightExpr],
@@ -106,7 +131,7 @@ export function emitComparisonOp(plan: BinaryOpNode): Instruction {
 	};
 }
 
-export function emitConcatOp(plan: BinaryOpNode): Instruction {
+export function emitConcatOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
 		// SQL concatenation: NULL || anything -> NULL
 		if (v1 === null || v2 === null) return null;
@@ -117,8 +142,8 @@ export function emitConcatOp(plan: BinaryOpNode): Instruction {
 		return s1 + s2;
 	}
 
-	const leftExpr = emitPlanNode(plan.left);
-	const rightExpr = emitPlanNode(plan.right);
+	const leftExpr = emitPlanNode(plan.left, ctx);
+	const rightExpr = emitPlanNode(plan.right, ctx);
 
 	return {
 		params: [leftExpr, rightExpr],
@@ -127,7 +152,7 @@ export function emitConcatOp(plan: BinaryOpNode): Instruction {
 	};
 }
 
-export function emitLogicalOp(plan: BinaryOpNode): Instruction {
+export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
 		// SQL three-valued logic
 		switch (plan.expression.operator) {
@@ -156,8 +181,8 @@ export function emitLogicalOp(plan: BinaryOpNode): Instruction {
 		}
 	}
 
-	const leftExpr = emitPlanNode(plan.left);
-	const rightExpr = emitPlanNode(plan.right);
+	const leftExpr = emitPlanNode(plan.left, ctx);
+	const rightExpr = emitPlanNode(plan.right, ctx);
 
 	return {
 		params: [leftExpr, rightExpr],

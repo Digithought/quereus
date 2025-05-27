@@ -4,10 +4,9 @@ import { emitPlanNode, emitCall } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import { getVTable } from '../utils.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitUpdate(plan: UpdateNode): Instruction {
-	const sourceInstruction = emitPlanNode(plan.source);
-	const assignmentValueExprs = plan.assignments.map(assign => emitPlanNode(assign.value));
+export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 	// UpdateNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
 	const isReturning = false;
@@ -76,6 +75,9 @@ export function emitUpdate(plan: UpdateNode): Instruction {
 			return undefined;
 		}
 	}
+
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
+	const assignmentValueExprs = plan.assignments.map(assign => emitPlanNode(assign.value, ctx));
 
 	return {
 		params: [sourceInstruction, ...assignmentValueExprs],

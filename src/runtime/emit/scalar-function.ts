@@ -1,50 +1,43 @@
 import type { ScalarFunctionCallNode } from '../../planner/nodes/function.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import { emitCall, emitPlanNode } from '../emitters.js';
+import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode, type RuntimeValue, type SqlValue } from '../../common/types.js';
-import type { FunctionSchema } from '../../schema/function.js';
+import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitScalarFunctionCall(plan: ScalarFunctionCallNode): Instruction {
-	const operandExprs = plan.operands.map(operand => emitPlanNode(operand));
+export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.expression.name.toLowerCase();
 	const numArgs = plan.operands.length;
 
-	// TODO: Introduce emitter context, and look up the function outside of the run function
+	// Look up the function during emission and record the dependency
+	const functionSchema = ctx.findFunction(functionName, numArgs);
+	if (!functionSchema) {
+		throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
+	}
+	if (functionSchema.type !== 'scalar') {
+		throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
+	}
 
-	let resolvedFunctionSchema: FunctionSchema | null = null;
-
-	async function run(ctx: RuntimeContext, ...args: Array<SqlValue>): Promise<SqlValue> {
-		// Resolve function on first call and cache it
-		if (!resolvedFunctionSchema) {
-			const found = ctx.db._findFunction(functionName, numArgs);
-			if (!found) {
-				throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
-			}
-			if (found.type !== 'scalar') {
-				throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
-			}
-			resolvedFunctionSchema = found;
-		}
+	function run(runtimeCtx: RuntimeContext, ...args: Array<SqlValue>): OutputValue {
 
 		// Validate argument count
-		if (resolvedFunctionSchema.numArgs >= 0 && args.length !== resolvedFunctionSchema.numArgs) {
-			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${resolvedFunctionSchema.numArgs}`, StatusCode.ERROR);
+		if (functionSchema!.numArgs >= 0 && args.length !== functionSchema!.numArgs) {
+			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${functionSchema!.numArgs}`, StatusCode.ERROR);
 		}
 
 		// Use the direct implementation
-		if (!resolvedFunctionSchema.scalarImpl) {
-			throw new QuereusError(`Function ${functionName}/${numArgs} has no implementation`, StatusCode.ERROR);
+		if (!functionSchema!.scalarImpl) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} has no scalar implementation`, StatusCode.ERROR);
 		}
 
 		try {
-			const result = resolvedFunctionSchema.scalarImpl(...args);
-			// Handle both sync and async results
-			return result instanceof Promise ? await result : result;
+			return functionSchema!.scalarImpl(...args);
 		} catch (error: any) {
-			throw new QuereusError(`Function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
+			throw new QuereusError(`Function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error, plan.expression.loc?.start.line, plan.expression.loc?.start.column);
 		}
 	}
+
+	const operandExprs = plan.operands.map(operand => emitPlanNode(operand, ctx));
 
 	return {
 		params: [...operandExprs],

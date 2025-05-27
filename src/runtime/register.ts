@@ -14,7 +14,7 @@ import { emitUpdate } from './emit/update.js';
 import { emitDelete } from './emit/delete.js';
 import { emitProject } from './emit/project.js';
 import { emitColumnReference } from './emit/column-reference.js';
-import { emitValues } from './emit/values.js';
+import { emitValues, emitSingleRow } from './emit/values.js';
 import { emitFilter } from './emit/filter.js';
 import { emitScalarFunctionCall } from './emit/scalar-function.js';
 
@@ -30,7 +30,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Literal, emitLiteral as EmitterFunc);
 	registerEmitter(PlanNodeType.TableScan, emitTableScan as EmitterFunc);
 	registerEmitter(PlanNodeType.In, emitIn as EmitterFunc);
-	registerEmitter(PlanNodeType.Batch, emitBlock as EmitterFunc);
+	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);
 	registerEmitter(PlanNodeType.ParameterReference, emitParameterReference as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateTable, emitCreateTable as EmitterFunc);
 	registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
@@ -40,6 +40,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Project, emitProject as EmitterFunc);
 	registerEmitter(PlanNodeType.ColumnReference, emitColumnReference as EmitterFunc);
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
+	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);
 	registerEmitter(PlanNodeType.Filter, emitFilter as EmitterFunc);
 	registerEmitter(PlanNodeType.ScalarFunctionCall, emitScalarFunctionCall as EmitterFunc);
 }

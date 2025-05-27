@@ -3,8 +3,9 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { SqlValue } from '../../common/types.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitParameterReference(plan: ParameterReferenceNode): Instruction {
+export function emitParameterReference(plan: ParameterReferenceNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext): SqlValue {
 		const identifier = plan.nameOrIndex; // This comes from the ParameterReferenceNode instance
 

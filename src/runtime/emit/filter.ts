@@ -1,9 +1,11 @@
 import type { FilterNode } from '../../planner/nodes/filter.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import { emitPlanNode, emitCall } from '../emitters.js';
+import { emitPlanNode, emitCall, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
+import type { EmissionContext } from '../emission-context.js';
+import { isTruthy } from '../../util/comparison.js';
 
-export function emitFilter(plan: FilterNode): Instruction {
+export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction {
 	async function* run(ctx: RuntimeContext, sourceRows: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => SqlValue): AsyncIterable<Row> {
 		for await (const sourceRow of sourceRows) {
 			// Set up context for this row - the source relation should be available for column references
@@ -19,26 +21,12 @@ export function emitFilter(plan: FilterNode): Instruction {
 		}
 	}
 
-	const sourceInstruction = emitPlanNode(plan.source);
-	const predicateFunc = emitCall(emitPlanNode(plan.predicate));
-
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
+	const predicateFunc = emitCallFromPlan(plan.predicate, ctx);
 
 	return {
 		params: [sourceInstruction, predicateFunc],
 		run: run as any,
 		note: `filter(predicate)`
 	};
-}
-
-/**
- * Determines if a SqlValue is truthy for filter purposes.
- * In SQL semantics:
- * - NULL is falsy
- * - 0 (number) is falsy
- * - Empty string is falsy
- * - false (boolean) is falsy
- * - Everything else is truthy
- */
-function isTruthy(value: SqlValue): boolean {
-	return (typeof value === 'string') ? value.length > 0 : !!value;
 }

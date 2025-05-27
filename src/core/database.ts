@@ -30,6 +30,7 @@ import type { PlanNode } from '../planner/nodes/plan-node.js';
 import { registerEmitters } from '../runtime/register.js';
 import { serializePlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
+import { EmissionContext } from '../runtime/emission-context.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -166,7 +167,8 @@ export class Database {
 					// TODO: Optimizer/planner
 					const optimizedPlan = plan;
 
-					const rootInstruction = emitPlanNode(optimizedPlan);
+					const emissionContext = new EmissionContext(this);
+					const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
 
 					const scheduler = new Scheduler(rootInstruction);
 

@@ -4,10 +4,10 @@ import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { UnaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
+import type { EmissionContext } from "../emission-context.js";
+import { isTruthy } from "../../util/comparison.js";
 
-export function emitUnaryOp(plan: UnaryOpNode): Instruction {
-	const operandExpr = emitPlanNode(plan.operand);
-
+export function emitUnaryOp(plan: UnaryOpNode, ctx: EmissionContext): Instruction {
 	// Select the operation function at emit time
 	let run: (ctx: RuntimeContext, operand: SqlValue) => SqlValue;
 	let note: string;
@@ -17,7 +17,7 @@ export function emitUnaryOp(plan: UnaryOpNode): Instruction {
 			run = (ctx: RuntimeContext, operand: SqlValue) => {
 				// SQL NOT: NULL -> NULL, 0 -> 1, anything else -> 0
 				if (operand === null) return null;
-				return operand ? 0 : 1;
+				return isTruthy(operand) ? 0 : 1;
 			};
 			note = 'NOT';
 			break;
@@ -74,6 +74,8 @@ export function emitUnaryOp(plan: UnaryOpNode): Instruction {
 		default:
 			throw new QuereusError(`Unsupported unary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
+
+	const operandExpr = emitPlanNode(plan.operand, ctx);
 
 	return {
 		params: [operandExpr],

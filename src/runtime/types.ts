@@ -3,6 +3,7 @@ import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
 import type { PlanNode } from "../planner/nodes/plan-node.js";
 import type { Scheduler } from "./scheduler.js";
+import type { EmissionContext } from "./emission-context.js";
 
 export type RuntimeContext = {
 	db: Database;
@@ -13,7 +14,7 @@ export type RuntimeContext = {
 	tracer?: InstructionTracer;
 };
 
-export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue | Promise<OutputValue>;
+export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue;
 
 export type Instruction = {
 	params: Instruction[];

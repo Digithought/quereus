@@ -6,9 +6,9 @@ import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import { getVTable } from '../utils.js';
 import type { TableSchema } from '../../schema/table.js';
 import { isAsyncIterable } from '../utils.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitDelete(plan: DeleteNode): Instruction {
-	const sourceInstruction = emitPlanNode(plan.source);
+export function emitDelete(plan: DeleteNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 	// DeleteNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
 	const isReturning = false;
@@ -58,6 +58,8 @@ export function emitDelete(plan: DeleteNode): Instruction {
 			return undefined;
 		}
 	}
+
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	return {
 		params: [sourceInstruction],

@@ -3,6 +3,7 @@ export enum PlanNodeType {
   TableScan = 'TableScan',
   TableSeek = 'TableSeek',
   Values = 'Values',
+  SingleRow = 'SingleRow',
 
   // Relational Nodes (Unary)
   Filter = 'Filter',
@@ -10,7 +11,7 @@ export enum PlanNodeType {
   Sort = 'Sort',
   Aggregate = 'Aggregate',
   LimitOffset = 'LimitOffset',
-  Batch = 'Batch',
+  Block = 'Block',
 	TableFunctionCall = 'TableFunctionCall',
   TableReference = 'TableReference',
 	TableFunctionReference = 'TableFunctionReference',

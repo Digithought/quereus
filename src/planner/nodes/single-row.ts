@@ -9,7 +9,7 @@ import type { Scope } from '../scopes/scope.js';
  * Used as a source for SELECT statements without a FROM clause.
  */
 export class SingleRowNode extends PlanNode implements ZeroAryRelationalNode {
-  override readonly nodeType = PlanNodeType.Values; // Using Values for now, can make a dedicated type
+  override readonly nodeType = PlanNodeType.SingleRow;
 
   private static readonly singleInstance = new SingleRowNode(EmptyScope.instance); // HACK: null scope for singleton
 

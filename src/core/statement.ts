@@ -14,6 +14,7 @@ import { Cached } from '../util/cached.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
 import type { InstructionTracer } from '../runtime/types.js';
+import { EmissionContext } from '../runtime/emission-context.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
@@ -172,7 +173,8 @@ export class Statement {
 			const blockPlanNode = this.compile();
 			if (!blockPlanNode.statements.length) return;
 
-			const rootInstruction = emitPlanNode(blockPlanNode);
+			const emissionContext = new EmissionContext(this.db);
+			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
 			const scheduler = new Scheduler(rootInstruction);
 			const runtimeCtx: RuntimeContext = {
 				db: this.db,
@@ -360,7 +362,8 @@ export class Statement {
 	getDebugProgram(): string {
 		this.validateStatement("get debug program for");
 		const plan = this.compile();
-		const rootInstruction = emitPlanNode(plan);
+		const emissionContext = new EmissionContext(this.db);
+		const rootInstruction = emitPlanNode(plan, emissionContext);
 		const scheduler = new Scheduler(rootInstruction);
 
 		return generateInstructionProgram(scheduler.instructions, scheduler.destinations);
@@ -381,7 +384,8 @@ export class Statement {
 			const blockPlanNode = this.compile();
 			if (!blockPlanNode.statements.length) return;
 
-			const rootInstruction = emitPlanNode(blockPlanNode);
+			const emissionContext = new EmissionContext(this.db);
+			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
 			const scheduler = new Scheduler(rootInstruction);
 			const runtimeCtx: RuntimeContext = {
 				db: this.db,

@@ -1,11 +1,12 @@
 import type { ValuesNode } from '../../planner/nodes/values-node.js';
 import type { SingleRowNode } from '../../planner/nodes/single-row.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import { emitCall, emitPlanNode } from '../emitters.js';
+import { emitPlanNode } from '../emitters.js';
 import { type SqlValue, type Row, StatusCode } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
+import type { EmissionContext } from '../emission-context.js';
 
-export function emitSingleRow(plan: SingleRowNode): Instruction {
+export function emitSingleRow(plan: SingleRowNode, ctx: EmissionContext): Instruction {
 	async function* run(ctx: RuntimeContext): AsyncIterable<Row> {
 		yield []; // Yield one empty row
 	}
@@ -17,7 +18,7 @@ export function emitSingleRow(plan: SingleRowNode): Instruction {
 	};
 }
 
-export function emitValues(plan: ValuesNode): Instruction {
+export function emitValues(plan: ValuesNode, ctx: EmissionContext): Instruction {
 	const nCols = plan.getType().columns.length;
 
 	async function* run(ctx: RuntimeContext, ...values: Array<SqlValue>): AsyncIterable<Row> {
@@ -32,7 +33,7 @@ export function emitValues(plan: ValuesNode): Instruction {
 		if (row.length !== nCols) {
 			throw new QuereusError('All rows must have the same number of columns', StatusCode.SYNTAX, undefined, row[0]?.expression.loc?.start.line, row.at(-1)?.expression.loc?.start.column);
 		}
-		return row.map(expr => emitPlanNode(expr));
+		return row.map(expr => emitPlanNode(expr, ctx));
 	});
 
 	return {

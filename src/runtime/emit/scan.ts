@@ -4,16 +4,19 @@ import { QuereusError } from "../../common/errors.js";
 import type { VirtualTable } from "../../vtab/table.js";
 import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
+import type { EmissionContext } from "../emission-context.js";
 
-export function emitTableScan(plan: TableScanNode): Instruction {
+export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
+	const tableSchema = plan.source.tableSchema;
 
-	async function* run(ctx: RuntimeContext): AsyncIterable<Row> {
-		const tableSchema = plan.source.tableSchema;
-		const moduleInfo = ctx.db._getVtabModule(tableSchema.vtabModuleName);
-		if (!moduleInfo) {
-			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
-		}
-		const module = moduleInfo.module;
+	// Look up the virtual table module during emission and record the dependency
+	const moduleInfo = ctx.getVtabModule(tableSchema.vtabModuleName);
+	if (!moduleInfo) {
+		throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
+	}
+
+	async function* run(runtimeCtx: RuntimeContext): AsyncIterable<Row> {
+		const module = moduleInfo!.module;
 		if (typeof module.xConnect !== 'function') {
 			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
 		}
@@ -22,8 +25,8 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 		try {
 			const options: BaseModuleConfig = {}; // TODO: Populate options from plan.source.tableSchema.vtabArgs or similar if needed
 			vtabInstance = module.xConnect(
-				ctx.db,
-				moduleInfo.auxData,
+				runtimeCtx.db,
+				moduleInfo!.auxData,
 				tableSchema.vtabModuleName,
 				tableSchema.schemaName,
 				tableSchema.name,
@@ -43,7 +46,7 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 		try {
 			// Put cursor row into context
 			let row: Row;
-			ctx.context.set(plan, () => row);
+			runtimeCtx.context.set(plan, () => row);
 
 			const asyncRowIterable = vtabInstance.xQuery(plan.filterInfo);
 			for await (row of asyncRowIterable) {
@@ -51,7 +54,7 @@ export function emitTableScan(plan: TableScanNode): Instruction {
 			}
 
 			// Remove cursor row from context
-			ctx.context.delete(plan);
+			runtimeCtx.context.delete(plan);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
 			throw new QuereusError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);

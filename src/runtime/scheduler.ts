@@ -32,7 +32,7 @@ export class Scheduler {
 		}
 	}
 
-	run(ctx: RuntimeContext): OutputValue | Promise<OutputValue> {
+	run(ctx: RuntimeContext): OutputValue {
 		if (!ctx.tracer) {
 			return this.runOptimized(ctx);
 		} else {
@@ -40,11 +40,11 @@ export class Scheduler {
 		}
 	}
 
-	private runOptimized(ctx: RuntimeContext): OutputValue | Promise<OutputValue> {
+	private runOptimized(ctx: RuntimeContext): OutputValue {
 		// Argument lists for each instruction.
-		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as (OutputValue | Promise<OutputValue>)[] | undefined);
+		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as OutputValue[] | undefined);
 		// Running output
-		let output: OutputValue | Promise<OutputValue> | undefined;
+		let output: OutputValue | undefined;
 
 		// Run synchronously until we hit a promise
 		for (let i = 0; i < this.instructions.length; ++i) {
@@ -70,14 +70,14 @@ export class Scheduler {
 
 	private async runAsync(
 		ctx: RuntimeContext,
-		instrArgs: ((OutputValue | Promise<OutputValue>)[] | undefined)[],
+		instrArgs: (OutputValue[] | undefined)[],
 		startIndex: number,
-		pendingOutput: Promise<OutputValue>
-	): Promise<OutputValue> {
+		pendingOutput: OutputValue
+	): Promise<RuntimeValue> {
 		// Instruction indexes that have promise arguments
 		const hasPromise: boolean[] = [];
 
-		let output: OutputValue | Promise<OutputValue> | undefined = pendingOutput;
+		let output: OutputValue | undefined = pendingOutput;
 
 		// Store the output from the transition instruction
 		const transitionDestination = this.destinations[startIndex];
@@ -112,11 +112,11 @@ export class Scheduler {
 		return output as OutputValue;
 	}
 
-	private runWithTracing(ctx: RuntimeContext): OutputValue | Promise<OutputValue> {
+	private runWithTracing(ctx: RuntimeContext): OutputValue {
 		// Argument lists for each instruction.
-		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as (OutputValue | Promise<OutputValue>)[] | undefined);
+		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as OutputValue[] | undefined);
 		// Running output
-		let output: OutputValue | Promise<OutputValue> | undefined;
+		let output: OutputValue | undefined;
 
 		// Run synchronously until we hit a promise
 		for (let i = 0; i < this.instructions.length; ++i) {
@@ -133,7 +133,7 @@ export class Scheduler {
 
 				// If the instruction returned a promise, switch to async mode for rest of instructions
 				if (output instanceof Promise) {
-					return this.runAsync(ctx, instrArgs, i, output);
+					return this.runAsyncWithTracing(ctx, instrArgs, i, output);
 				}
 
 				// Trace output - handle promises properly
@@ -158,16 +158,16 @@ export class Scheduler {
 
 	private async runAsyncWithTracing(
 		ctx: RuntimeContext,
-		instrArgs: ((OutputValue | Promise<OutputValue>)[] | undefined)[],
+		instrArgs: (OutputValue[] | undefined)[],
 		startIndex: number,
-		pendingOutput: Promise<OutputValue>
-	): Promise<OutputValue> {
+		pendingOutput: OutputValue
+	): Promise<RuntimeValue> {
 		ctx.tracer!.traceOutput(startIndex, this.instructions[startIndex], await pendingOutput);
 
 		// Instruction indexes that have promise arguments
 		const hasPromise: boolean[] = [];
 
-		let output: OutputValue | Promise<OutputValue> | undefined = pendingOutput;
+		let output: OutputValue | undefined = pendingOutput;
 
 		// Store the output from the transition instruction
 		const transitionDestination = this.destinations[startIndex];

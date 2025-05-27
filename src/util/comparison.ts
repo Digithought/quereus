@@ -201,6 +201,19 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
 	}
 }
 
+/**
+ * Determines if a SqlValue is truthy for filter purposes.
+ * In SQL semantics:
+ * - NULL is falsy
+ * - 0 (number) is falsy
+ * - Empty string is falsy
+ * - false (boolean) is falsy
+ * - Everything else is truthy
+ */
+export function isTruthy(value: SqlValue): boolean {
+	return (typeof value === 'string') ? value.length > 0 : !!value;
+}
+
 // TODO: The main remaining task for comparison is implementing SQLite's
 // type affinity rules (which affect how values are treated BEFORE comparison)
 // and handling different TEXT collations.
