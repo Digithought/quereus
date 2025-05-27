@@ -96,8 +96,8 @@ export function expressionToString(expr: AST.Expression): string {
 			if ((typeof expr.value === 'number' || typeof expr.value === 'bigint') && expr.lexeme && expr.lexeme !== String(expr.value)) {
 				return expr.lexeme;
 			}
-			// Otherwise, format based on type
-			if (expr.value === null) return 'null';
+			// Prefer original lexeme for NULL if available
+			if (expr.value === null) return expr.lexeme || 'null';
 			if (typeof expr.value === 'string') return `'${expr.value.replace(/'/g, "''")}'`; // Escape single quotes
 			if (typeof expr.value === 'number') return expr.value.toString();
 			if (expr.value instanceof Uint8Array) {
@@ -136,6 +136,10 @@ export function expressionToString(expr: AST.Expression): string {
 			const exprStr = expr.expr.type === 'binary'
 				? `(${expressionToString(expr.expr)})`
 				: expressionToString(expr.expr);
+			// Handle postfix operators like IS NULL, IS NOT NULL
+			if (expr.operator === 'IS NULL' || expr.operator === 'IS NOT NULL') {
+				return `${exprStr} ${expr.operator}`;
+			}
 			return `${expr.operator} ${exprStr}`;
 
 		case 'function':

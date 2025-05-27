@@ -36,13 +36,13 @@ SELECT 1 XOR 1, 1 XOR 0, 0 XOR 1, 0 XOR 0;
 SELECT NULL XOR 1, NULL XOR 0, 1 XOR NULL, 0 XOR NULL, NULL XOR NULL;
 → [{"NULL XOR 1":null,"NULL XOR 0":null,"1 XOR NULL":null,"0 XOR NULL":null,"NULL XOR NULL":null}]
 SELECT (i > 1) XOR (n < 0) FROM expr_t WHERE i = 2; -- TRUE XOR TRUE -> FALSE
-→ [{"i > 1) XOR (n < 0)":0}]
+→ [{"i > 1 XOR n < 0":0}]
 SELECT (i > 1) XOR (t = 'hello') FROM expr_t WHERE i = 1; -- FALSE XOR TRUE -> TRUE
-→ [{"i > 1) XOR (t = 'hello')":1}]
-SELECT (i > 1) XOR (n IS NULL) FROM expr_t WHERE i = 1; -- FALSE XOR FALSE -> FALSE
-→ [{"i > 1) XOR (n IS NULL)":0}]
-SELECT (i > 1) XOR (t IS NULL) FROM expr_t WHERE i = 3; -- FALSE XOR NULL -> NULL
-→ [{"i > 1) XOR (t IS NULL)":0}]
+→ [{"i > 1 XOR t = 'hello'":1}]
+SELECT (i > 1) XOR n IS NULL FROM expr_t WHERE i = 1; -- FALSE XOR FALSE -> FALSE
+→ [{"i > 1 XOR n IS NULL":0}]
+SELECT (i > 1) XOR t IS NULL FROM expr_t WHERE i = 3; -- FALSE XOR NULL -> NULL
+→ [{"i > 1 XOR t IS NULL":0}]
 
 -- NULL Handling
 SELECT t IS NULL, t IS NOT NULL, n + NULL FROM expr_t WHERE i = 3;

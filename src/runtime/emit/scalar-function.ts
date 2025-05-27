@@ -19,8 +19,8 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 		throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
 	}
 
-	// Capture the function key for runtime retrieval
-	const functionKey = `function:${functionName}/${numArgs}`;
+	// Capture the function key for runtime retrieval using the actual function's numArgs
+	const functionKey = `function:${functionName}/${functionSchema.numArgs}`;
 
 	function run(runtimeCtx: RuntimeContext, ...args: Array<SqlValue>): OutputValue {
 		// Use the captured function schema instead of doing a fresh lookup

@@ -16,6 +16,7 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 		case '%':
 			return emitNumericOp(plan, ctx);
 		case '=':
+		case '==':
 		case '!=':
 		case '<>':
 		case '<':
@@ -27,6 +28,7 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 			return emitConcatOp(plan, ctx);
 		case 'AND':
 		case 'OR':
+		case 'XOR':
 			return emitLogicalOp(plan, ctx);
 		// TODO: emitBitwise
 		default:
@@ -87,33 +89,46 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 	switch (plan.expression.operator) {
 		case '=':
+		case '==':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				// SQL comparison: NULL = anything -> NULL
+				if (v1 === null || v2 === null) return null;
 				return compareSqlValues(v1, v2) === 0 ? 1 : 0;
 			};
 			break;
 		case '!=':
 		case '<>':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				// SQL comparison: NULL != anything -> NULL
+				if (v1 === null || v2 === null) return null;
 				return compareSqlValues(v1, v2) !== 0 ? 1 : 0;
 			};
 			break;
 		case '<':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				// SQL comparison: NULL < anything -> NULL
+				if (v1 === null || v2 === null) return null;
 				return compareSqlValues(v1, v2) < 0 ? 1 : 0;
 			};
 			break;
 		case '<=':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				// SQL comparison: NULL <= anything -> NULL
+				if (v1 === null || v2 === null) return null;
 				return compareSqlValues(v1, v2) <= 0 ? 1 : 0;
 			};
 			break;
 		case '>':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				// SQL comparison: NULL > anything -> NULL
+				if (v1 === null || v2 === null) return null;
 				return compareSqlValues(v1, v2) > 0 ? 1 : 0;
 			};
 			break;
 		case '>=':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
+				// SQL comparison: NULL >= anything -> NULL
+				if (v1 === null || v2 === null) return null;
 				return compareSqlValues(v1, v2) >= 0 ? 1 : 0;
 			};
 			break;
@@ -175,6 +190,18 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 				}
 				if (v1) return 1;
 				return v2 === null ? null : (v2 ? 1 : 0);
+
+			case 'XOR':
+				// NULL XOR x -> NULL
+				// x XOR NULL -> NULL
+				// 0 XOR 0 -> 0
+				// 0 XOR 1 -> 1
+				// 1 XOR 0 -> 1
+				// 1 XOR 1 -> 0
+				if (v1 === null || v2 === null) return null;
+				const b1 = v1 ? 1 : 0;
+				const b2 = v2 ? 1 : 0;
+				return b1 !== b2 ? 1 : 0;
 
 			default:
 				throw new QuereusError(`Unsupported logical operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);

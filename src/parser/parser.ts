@@ -739,12 +739,12 @@ export class Parser {
 	 * Parse logical AND expression
 	 */
 	private logicalAnd(): AST.Expression {
-		let expr = this.equality();
+		let expr = this.isNull();
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		while (this.match(TokenType.AND)) {
 			const operator = 'AND';
-			const right = this.equality();
+			const right = this.isNull();
 			const endToken = this.previous(); // End token is end of right expr
 			expr = {
 				type: 'binary',
@@ -759,33 +759,10 @@ export class Parser {
 	}
 
 	/**
-	 * Parse equality expression
+	 * Parse IS NULL / IS NOT NULL expressions
 	 */
-	private equality(): AST.Expression {
-		let expr = this.comparison();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.EQUAL, TokenType.EQUAL_EQUAL, TokenType.NOT_EQUAL)) {
-			const operator = this.previous().type === TokenType.NOT_EQUAL ? '!=' : '=';
-			const right = this.comparison();
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
-		}
-
-		return expr;
-	}
-
-	/**
-	 * Parse comparison expression
-	 */
-	private comparison(): AST.Expression {
-		let expr = this.term();
+	private isNull(): AST.Expression {
+		let expr = this.equality();
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		if (this.match(TokenType.IS)) {
@@ -806,6 +783,44 @@ export class Parser {
 			if (isNot) this.current--; // Backtrack NOT
 			this.current--; // Backtrack IS
 		}
+
+		return expr;
+	}
+
+	/**
+	 * Parse equality expression
+	 */
+	private equality(): AST.Expression {
+		let expr = this.comparison();
+		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
+
+		while (this.match(TokenType.EQUAL, TokenType.EQUAL_EQUAL, TokenType.NOT_EQUAL)) {
+			let operator: string;
+			switch (this.previous().type) {
+				case TokenType.NOT_EQUAL: operator = '!='; break;
+				case TokenType.EQUAL_EQUAL: operator = '=='; break;
+				default: operator = '='; break;
+			}
+			const right = this.comparison();
+			const endToken = this.previous(); // End token is end of right expr
+			expr = {
+				type: 'binary',
+				operator,
+				left: expr,
+				right,
+				loc: _createLoc(startToken, endToken),
+			};
+		}
+
+		return expr;
+	}
+
+	/**
+	 * Parse comparison expression
+	 */
+	private comparison(): AST.Expression {
+		let expr = this.term();
+		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		while (this.match(
 			TokenType.LESS, TokenType.LESS_EQUAL,
@@ -963,6 +978,7 @@ export class Parser {
 
 			if (token.type === TokenType.NULL) {
 				value = null;
+				lexeme = token.lexeme; // Store original case (NULL vs null)
 			} else if (token.type === TokenType.FLOAT) {
 				// For FLOAT, parse the literal (which is the original string)
 				value = parseFloat(token.literal as string);
