@@ -190,7 +190,12 @@ Quereus employs a multi-faceted testing strategy:
     *   Inspired by SQLite's own testing methodology.
     *   Uses simple text files (`*.sqllogic`) containing SQL statements and their expected JSON results (using `→` marker) or expected error messages (using `-- error:` directive).
     *   Driven by a Mocha test runner (`test/logic.spec.ts`) that executes the SQL against a fresh `Database` instance for each file.
-    *   **Diagnostics**: On unexpected failures, the test runner automatically dumps the parsed Abstract Syntax Tree (AST) and the planned `PlanNode` tree / generated `Instruction` graph, aiding in pinpointing the failure layer (Parser, Planner, or Runtime).
+    *   **Configurable Diagnostics**: On unexpected failures, the test runner provides clean error messages by default with optional detailed diagnostics controlled by environment variables:
+        *   `QUEREUS_TEST_SHOW_PLAN=true` - Include query plan in diagnostics
+        *   `QUEREUS_TEST_SHOW_PROGRAM=true` - Include instruction program in diagnostics
+        *   `QUEREUS_TEST_SHOW_STACK=true` - Include full stack trace in diagnostics
+        *   `QUEREUS_TEST_SHOW_TRACE=true` - Include execution trace in diagnostics
+    *   This helps pinpoint failures at the Parser, Planner, or Runtime layer while keeping output manageable.
     *   Covers core functionality: basic CRUD, expressions, joins, aggregates, subqueries, CTEs, transactions, VTab planning basics, built-ins, and common error paths.
 
 2.  **Property-Based Tests (`test/property.spec.ts`)**:

@@ -16,27 +16,55 @@ const isInDist = __dirname.includes(path.join('dist', 'test'));
 const projectRoot = isInDist ? path.resolve(__dirname, '..', '..') : path.resolve(__dirname, '..');
 const logicTestDir = path.join(projectRoot, 'test', 'logic');
 
+// Diagnostic configuration from environment variables
+const DIAG_CONFIG = {
+	showPlan: process.env.QUEREUS_TEST_SHOW_PLAN === 'true',
+	showProgram: process.env.QUEREUS_TEST_SHOW_PROGRAM === 'true',
+	showStack: process.env.QUEREUS_TEST_SHOW_STACK === 'true',
+	showTrace: process.env.QUEREUS_TEST_SHOW_TRACE === 'true'
+};
+
 /**
- * Generates comprehensive diagnostic information for failed tests
+ * Generates configurable diagnostic information for failed tests.
+ *
+ * Environment variables to control output:
+ * - QUEREUS_TEST_SHOW_PLAN=true     : Include query plan in diagnostics
+ * - QUEREUS_TEST_SHOW_PROGRAM=true  : Include instruction program in diagnostics
+ * - QUEREUS_TEST_SHOW_STACK=true    : Include full stack trace in diagnostics
+ * - QUEREUS_TEST_SHOW_TRACE=true    : Include execution trace in diagnostics
  */
 function generateDiagnostics(db: Database, sqlBlock: string, error: Error): string {
 	const diagnostics = ['\n=== FAILURE DIAGNOSTICS ==='];
 
+	// Always show basic error info
+	diagnostics.push(`\nError: ${error.message}`);
+
+	// Show configuration hint if no diagnostics are enabled
+	const anyDiagEnabled = Object.values(DIAG_CONFIG).some(v => v);
+	if (!anyDiagEnabled) {
+		diagnostics.push('\nFor more detailed diagnostics, set environment variables:');
+		diagnostics.push('  QUEREUS_TEST_SHOW_PLAN=true     - Show query plan');
+		diagnostics.push('  QUEREUS_TEST_SHOW_PROGRAM=true  - Show instruction program');
+		diagnostics.push('  QUEREUS_TEST_SHOW_STACK=true    - Show full stack trace');
+		diagnostics.push('  QUEREUS_TEST_SHOW_TRACE=true    - Show execution trace');
+	}
+
 	try {
-		// Try to get the plan for the failing SQL
 		const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
 		const lastStatement = statements[statements.length - 1];
 
-		if (lastStatement) {
-			diagnostics.push('\n1. QUERY PLAN:');
+		if (lastStatement && DIAG_CONFIG.showPlan) {
+			diagnostics.push('\nQUERY PLAN:');
 			try {
 				const plan = db.getDebugPlan(lastStatement);
 				diagnostics.push(plan);
 			} catch (planError: any) {
 				diagnostics.push(`Plan generation failed: ${planError.message || planError}`);
 			}
+		}
 
-			diagnostics.push('\n2. INSTRUCTION PROGRAM:');
+		if (lastStatement && DIAG_CONFIG.showProgram) {
+			diagnostics.push('\nINSTRUCTION PROGRAM:');
 			try {
 				const stmt = db.prepare(lastStatement);
 				const program = stmt.getDebugProgram();
@@ -47,11 +75,9 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
 			}
 		}
 
-		diagnostics.push('\n3. ERROR DETAILS:');
-		diagnostics.push(`Error Type: ${error.constructor.name}`);
-		diagnostics.push(`Error Message: ${error.message}`);
-		if (error.stack) {
-			diagnostics.push(`Stack Trace:\n${error.stack}`);
+		if (DIAG_CONFIG.showStack && error.stack) {
+			diagnostics.push('\nSTACK TRACE:');
+			diagnostics.push(error.stack);
 		}
 
 	} catch (diagError: any) {
@@ -90,9 +116,12 @@ async function executeWithTracing(db: Database, sql: string, params?: any[]): Pr
 
 		await stmt.finalize();
 	} catch (error: any) {
-		// Re-throw with trace information attached
-		const errorMsg = error.message || String(error);
-		const enhancedError = new Error(`${errorMsg}\n\nEXECUTION TRACE:\n${formatTraceEvents(tracer.getTraceEvents())}`);
+		// Re-throw with optional trace information
+		let errorMsg = error.message || String(error);
+		if (DIAG_CONFIG.showTrace) {
+			errorMsg += `\n\nEXECUTION TRACE:\n${formatTraceEvents(tracer.getTraceEvents())}`;
+		}
+		const enhancedError = new Error(errorMsg);
 		enhancedError.stack = error.stack;
 		throw enhancedError;
 	}
@@ -233,7 +262,7 @@ describe('SQL Logic Tests', () => {
 								if (actualResult.length !== expectedResult.length) {
 									const diagnostics = generateDiagnostics(db, sqlBlock,
 										new Error(`Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}`));
-									const traceInfo = `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}`;
+									const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
 									throw new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}. Block:\n${sqlBlock}${diagnostics}${traceInfo}`);
 								}
 								for (let i = 0; i < actualResult.length; i++) {
@@ -242,7 +271,7 @@ describe('SQL Logic Tests', () => {
 									} catch (matchError: any) {
 										const error = matchError instanceof Error ? matchError : new Error(String(matchError));
 										const diagnostics = generateDiagnostics(db, sqlBlock, error);
-										const traceInfo = `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}`;
+										const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
 										throw new Error(`${error.message}${diagnostics}${traceInfo}`);
 									}
 								}
