@@ -47,7 +47,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression): Sca
       return new BinaryOpNode(ctx.scope, expr, left, right);
     case 'function':
       const funcResolution = resolveFunction(ctx.scope, expr);
-      if (!funcResolution || funcResolution === Ambiguous || funcResolution.nodeType !== PlanNodeType.TableFunctionReference) {
+      if (!funcResolution || funcResolution === Ambiguous) {
         throw new QuereusError(`Function not found/ambiguous: ${expr.name}/${expr.args.length}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
       const args = expr.args.map(arg => buildExpression(ctx, arg));

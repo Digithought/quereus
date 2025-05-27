@@ -1,5 +1,33 @@
 # Quereus Runtime
 
+## Emission Context (`src/runtime/emission-context.ts`)
+
+The `EmissionContext` provides schema lookups during query plan emission and captures schema dependencies for runtime consistency. This ensures that queries maintain a consistent view of the schema from emission time, preventing obscure runtime errors when schema objects are modified after planning.
+
+### Key Components
+
+1. **Schema Dependency Tracking:** Records dependencies on tables, functions, virtual table modules, and collations during emission.
+2. **Schema Snapshot:** Captures actual schema object references at emission time for runtime use.
+3. **Validation:** Provides early error detection when schema objects are removed after planning.
+
+### Usage Pattern
+
+```typescript
+// During emission
+const table = emissionContext.findTable('users');
+const func = emissionContext.findFunction('custom_func', 2);
+
+// At runtime - uses captured objects
+const capturedTable = emissionContext.getCapturedSchemaObject('table:main:users');
+```
+
+### Benefits
+
+- **Predictable Behavior:** Queries see consistent schema view from emission time
+- **Clean Error Messages:** Schema validation provides clear error context
+- **No Complex Invalidation:** Avoids plan caching complexity for embedded systems
+- **Minimal Overhead:** Just holds references to already-looked-up objects
+
 ## Scheduler (`src/runtime/scheduler.ts`)
 
 The `Scheduler` is responsible for executing a potentially complex tree of `Instruction` objects efficiently. It handles the dependencies between instructions and manages the flow of data, including asynchronous results (`Promise<SqlValue>`).

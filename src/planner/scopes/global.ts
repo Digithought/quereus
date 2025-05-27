@@ -15,8 +15,10 @@ export class GlobalScope extends BaseScope {
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		if (symbolKey.endsWith(')')) {// Function: [schema.]name(nArgs)
-			const [name, nArgs] = symbolKey.split('(');
-			const func = this.manager.findFunction(name, parseInt(nArgs.substring(1, nArgs.length - 1)));
+			const [name, nArgsWithParen] = symbolKey.split('(');
+			const nArgsStr = nArgsWithParen.substring(0, nArgsWithParen.length - 1); // Remove the closing ')'
+			const nArgs = parseInt(nArgsStr);
+			const func = this.manager.findFunction(name, nArgs);
 			if (!func) {
 				return undefined;
 			}

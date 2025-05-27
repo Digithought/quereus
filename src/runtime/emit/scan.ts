@@ -5,6 +5,7 @@ import type { VirtualTable } from "../../vtab/table.js";
 import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
+import { createValidatedInstruction } from "../emitters.js";
 
 export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.source.tableSchema;
@@ -15,8 +16,17 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 		throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' not found`, StatusCode.ERROR);
 	}
 
+	// Capture the module info key for runtime retrieval
+	const moduleKey = `vtab_module:${tableSchema.vtabModuleName}`;
+
 	async function* run(runtimeCtx: RuntimeContext): AsyncIterable<Row> {
-		const module = moduleInfo!.module;
+		// Use the captured module info instead of doing a fresh lookup
+		const capturedModuleInfo = ctx.getCapturedSchemaObject<{ module: any, auxData?: unknown }>(moduleKey);
+		if (!capturedModuleInfo) {
+			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' was not captured during emission`, StatusCode.INTERNAL);
+		}
+
+		const module = capturedModuleInfo.module;
 		if (typeof module.xConnect !== 'function') {
 			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
 		}
@@ -26,7 +36,7 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 			const options: BaseModuleConfig = {}; // TODO: Populate options from plan.source.tableSchema.vtabArgs or similar if needed
 			vtabInstance = module.xConnect(
 				runtimeCtx.db,
-				moduleInfo!.auxData,
+				capturedModuleInfo.auxData,
 				tableSchema.vtabModuleName,
 				tableSchema.schemaName,
 				tableSchema.name,
@@ -69,9 +79,10 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 		}
 	}
 
-	return {
-		params: [],
+	return createValidatedInstruction(
+		[],
 		run,
-		note: `scan(${plan.source.tableSchema.name})`
-	};
+		ctx,
+		`scan(${plan.source.tableSchema.name})`
+	);
 }

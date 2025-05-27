@@ -91,10 +91,12 @@ export class DependencyTracker {
 /**
  * Context provided to emitters during plan emission.
  * Allows schema lookups and tracks dependencies for plan invalidation.
+ * Also captures schema object references for runtime use.
  */
 export class EmissionContext {
 	private readonly schemaManager: SchemaManager;
 	private readonly dependencyTracker = new DependencyTracker();
+	private readonly schemaSnapshot = new Map<string, any>();
 
 	constructor(public readonly db: Database) {
 		this.db = db;
@@ -103,10 +105,13 @@ export class EmissionContext {
 
 	/**
 	 * Looks up a table schema and records the dependency.
+	 * Also captures the table reference for runtime use.
 	 */
 	findTable(tableName: string, schemaName?: string): TableSchema | undefined {
 		const table = this.schemaManager.findTable(tableName, schemaName);
 		if (table) {
+			const key = `table:${table.schemaName}:${table.name}`;
+			this.schemaSnapshot.set(key, table);
 			this.dependencyTracker.addDependency({
 				type: 'table',
 				schemaName: table.schemaName,
@@ -119,10 +124,13 @@ export class EmissionContext {
 
 	/**
 	 * Looks up a function schema and records the dependency.
+	 * Also captures the function reference for runtime use.
 	 */
 	findFunction(funcName: string, numArgs: number): FunctionSchema | undefined {
 		const func = this.schemaManager.findFunction(funcName, numArgs);
 		if (func) {
+			const key = `function:${func.name}/${func.numArgs}`;
+			this.schemaSnapshot.set(key, func);
 			this.dependencyTracker.addDependency({
 				type: 'function',
 				objectName: `${func.name}/${func.numArgs}`
@@ -134,10 +142,13 @@ export class EmissionContext {
 
 	/**
 	 * Looks up a virtual table module and records the dependency.
+	 * Also captures the module reference for runtime use.
 	 */
 	getVtabModule(moduleName: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
 		const moduleInfo = this.schemaManager.getModule(moduleName);
 		if (moduleInfo) {
+			const key = `vtab_module:${moduleName}`;
+			this.schemaSnapshot.set(key, moduleInfo);
 			this.dependencyTracker.addDependency({
 				type: 'vtab_module',
 				objectName: moduleName
@@ -149,10 +160,13 @@ export class EmissionContext {
 
 	/**
 	 * Looks up a collation and records the dependency.
+	 * Also captures the collation reference for runtime use.
 	 */
 	getCollation(collationName: string): import('../util/comparison.js').CollationFunction | undefined {
 		const collation = this.db._getCollation(collationName);
 		if (collation) {
+			const key = `collation:${collationName}`;
+			this.schemaSnapshot.set(key, collation);
 			this.dependencyTracker.addDependency({
 				type: 'collation',
 				objectName: collationName
@@ -198,108 +212,98 @@ export class EmissionContext {
 	getSchemaManager(): SchemaManager {
 		return this.schemaManager;
 	}
-}
 
-/**
- * Manages plan caching and invalidation based on schema dependencies.
- */
-export class PlanCache {
-	private cache = new Map<string, CachedPlan>();
-	private schemaVersion = 0;
-
-	constructor() {
-		log('Plan cache initialized');
+	/**
+	 * Retrieves a captured schema object by its key.
+	 * This allows runtime instructions to use the schema objects that were
+	 * captured at emission time, providing consistency even if the schema changes.
+	 */
+	getCapturedSchemaObject<T = any>(key: string): T | undefined {
+		return this.schemaSnapshot.get(key) as T | undefined;
 	}
 
 	/**
-	 * Stores a plan in the cache with its dependencies.
+	 * Validates that all captured schema objects still exist in the current schema.
+	 * This can be called at the start of query execution to provide early error detection.
+	 * Only validates objects that were actually captured during emission.
 	 */
-	store(key: string, plan: any, dependencies: SchemaDependency[]): void {
-		this.cache.set(key, {
-			plan,
-			dependencies,
-			schemaVersion: this.schemaVersion,
-			createdAt: Date.now()
-		});
-		log('Cached plan with key: %s, dependencies: %d', key, dependencies.length);
-	}
+	validateCapturedSchemaObjects(): void {
+		for (const [key, capturedObject] of this.schemaSnapshot.entries()) {
+			const [type, ...nameParts] = key.split(':');
 
-	/**
-	 * Retrieves a plan from the cache if it's still valid.
-	 */
-	get(key: string): any | undefined {
-		const cached = this.cache.get(key);
-		if (!cached) {
-			return undefined;
-		}
-
-		// Check if the plan is still valid based on schema version
-		if (cached.schemaVersion < this.schemaVersion) {
-			this.cache.delete(key);
-			log('Invalidated cached plan due to schema version mismatch: %s', key);
-			return undefined;
-		}
-
-		log('Retrieved cached plan: %s', key);
-		return cached.plan;
-	}
-
-	/**
-	 * Invalidates plans that depend on the given schema object.
-	 */
-	invalidate(dependency: SchemaDependency): number {
-		let invalidatedCount = 0;
-		const dependencyTracker = new DependencyTracker();
-		dependencyTracker.addDependency(dependency);
-
-		for (const [key, cached] of this.cache.entries()) {
-			// Check if any of the cached plan's dependencies match the invalidation dependency
-			for (const cachedDep of cached.dependencies) {
-				const cachedTracker = new DependencyTracker();
-				cachedTracker.addDependency(cachedDep);
-				if (cachedTracker.dependsOn(dependency)) {
-					this.cache.delete(key);
-					invalidatedCount++;
-					log('Invalidated cached plan due to dependency change: %s', key);
+			switch (type) {
+				case 'table': {
+					const [schemaName, tableName] = nameParts;
+					const currentTable = this.schemaManager.findTable(tableName, schemaName);
+					if (!currentTable) {
+						throw new QuereusError(
+							`Table ${schemaName}.${tableName} was dropped after query was planned`,
+							StatusCode.ERROR
+						);
+					}
+					// Optionally check if it's the same object reference
+					if (currentTable !== capturedObject) {
+						log('Warning: Table %s.%s schema changed after query was planned', schemaName, tableName);
+					}
 					break;
 				}
+				case 'function': {
+					const funcKey = nameParts.join(':'); // Rejoin in case function name had colons
+					const [funcName, numArgsStr] = funcKey.split('/');
+					const numArgs = parseInt(numArgsStr);
+					const currentFunc = this.schemaManager.findFunction(funcName, numArgs);
+					if (!currentFunc) {
+						throw new QuereusError(
+							`Function ${funcName}/${numArgs} was removed after query was planned`,
+							StatusCode.ERROR
+						);
+					}
+					if (currentFunc !== capturedObject) {
+						log('Warning: Function %s/%d changed after query was planned', funcName, numArgs);
+					}
+					break;
+				}
+				case 'vtab_module': {
+					const moduleName = nameParts.join(':');
+					const currentModule = this.schemaManager.getModule(moduleName);
+					if (!currentModule) {
+						throw new QuereusError(
+							`Virtual table module ${moduleName} was unregistered after query was planned`,
+							StatusCode.ERROR
+						);
+					}
+					if (currentModule !== capturedObject) {
+						log('Warning: Virtual table module %s changed after query was planned', moduleName);
+					}
+					break;
+				}
+				case 'collation': {
+					const collationName = nameParts.join(':');
+					const currentCollation = this.db._getCollation(collationName);
+					if (!currentCollation) {
+						throw new QuereusError(
+							`Collation ${collationName} was removed after query was planned`,
+							StatusCode.ERROR
+						);
+					}
+					if (currentCollation !== capturedObject) {
+						log('Warning: Collation %s changed after query was planned', collationName);
+					}
+					break;
+				}
+				default:
+					log('Warning: Unknown schema object type in validation: %s', type);
 			}
 		}
-
-		return invalidatedCount;
 	}
 
 	/**
-	 * Increments the global schema version, effectively invalidating all cached plans.
+	 * Gets the number of schema objects captured during emission.
+	 * Useful for debugging and testing.
 	 */
-	invalidateAll(): void {
-		this.schemaVersion++;
-		this.cache.clear();
-		log('Invalidated all cached plans (schema version: %d)', this.schemaVersion);
-	}
-
-	/**
-	 * Gets cache statistics.
-	 */
-	getStats(): { size: number; schemaVersion: number } {
-		return {
-			size: this.cache.size,
-			schemaVersion: this.schemaVersion
-		};
-	}
-
-	/**
-	 * Clears the entire cache.
-	 */
-	clear(): void {
-		this.cache.clear();
-		log('Plan cache cleared');
+	getCapturedObjectCount(): number {
+		return this.schemaSnapshot.size;
 	}
 }
 
-interface CachedPlan {
-	plan: any;
-	dependencies: SchemaDependency[];
-	schemaVersion: number;
-	createdAt: number;
-}
+

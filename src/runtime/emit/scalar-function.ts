@@ -1,9 +1,10 @@
 import type { ScalarFunctionCallNode } from '../../planner/nodes/function.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import { emitPlanNode } from '../emitters.js';
+import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
+import type { FunctionSchema } from '../../schema/function.js';
 
 export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.expression.name.toLowerCase();
@@ -18,20 +19,28 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 		throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
 	}
 
+	// Capture the function key for runtime retrieval
+	const functionKey = `function:${functionName}/${numArgs}`;
+
 	function run(runtimeCtx: RuntimeContext, ...args: Array<SqlValue>): OutputValue {
+		// Use the captured function schema instead of doing a fresh lookup
+		const capturedFunction = ctx.getCapturedSchemaObject<FunctionSchema>(functionKey);
+		if (!capturedFunction) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} was not captured during emission`, StatusCode.INTERNAL);
+		}
 
 		// Validate argument count
-		if (functionSchema!.numArgs >= 0 && args.length !== functionSchema!.numArgs) {
-			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${functionSchema!.numArgs}`, StatusCode.ERROR);
+		if (capturedFunction.numArgs >= 0 && args.length !== capturedFunction.numArgs) {
+			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${capturedFunction.numArgs}`, StatusCode.ERROR);
 		}
 
 		// Use the direct implementation
-		if (!functionSchema!.scalarImpl) {
+		if (!capturedFunction.scalarImpl) {
 			throw new QuereusError(`Function ${functionName}/${numArgs} has no scalar implementation`, StatusCode.ERROR);
 		}
 
 		try {
-			return functionSchema!.scalarImpl(...args);
+			return capturedFunction.scalarImpl(...args);
 		} catch (error: any) {
 			throw new QuereusError(`Function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error, plan.expression.loc?.start.line, plan.expression.loc?.start.column);
 		}
@@ -39,9 +48,10 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 
 	const operandExprs = plan.operands.map(operand => emitPlanNode(operand, ctx));
 
-	return {
-		params: [...operandExprs],
-		run: run as any,
-		note: `${plan.expression.name}(${plan.operands.length})`
-	};
+	return createValidatedInstruction(
+		[...operandExprs],
+		run as any,
+		ctx,
+		`${plan.expression.name}(${plan.operands.length})`
+	);
 }

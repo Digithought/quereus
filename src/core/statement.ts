@@ -32,6 +32,7 @@ export class Statement {
 	private busy = false;
 	private boundArgs: Record<number | string, SqlValue> = {};
 	private plan: BlockNode | null = null;
+	private emissionContext: EmissionContext | null = null;
 	private needsCompile = true;
 	private columnDefCache = new Cached<DeepReadonly<ColumnDef>[]>(() => this.getColumnDefs());
 
@@ -76,6 +77,7 @@ export class Statement {
 		if (this.astBatchIndex < this.astBatch.length - 1) {
 			this.astBatchIndex++;
 			this.plan = null;
+			this.emissionContext = null;
 			this.needsCompile = true;
 			this.columnDefCache.clear();
 			return true;
@@ -115,6 +117,14 @@ export class Statement {
 		if (!plan) throw new QuereusError("Planning resulted in no plan for current statement", StatusCode.INTERNAL);
 		this.plan = plan;
 		return plan;
+	}
+
+	/** @internal Gets or creates the emission context for this statement */
+	private getEmissionContext(): EmissionContext {
+		if (!this.emissionContext) {
+			this.emissionContext = new EmissionContext(this.db);
+		}
+		return this.emissionContext;
 	}
 
 	/**
@@ -173,7 +183,7 @@ export class Statement {
 			const blockPlanNode = this.compile();
 			if (!blockPlanNode.statements.length) return;
 
-			const emissionContext = new EmissionContext(this.db);
+			const emissionContext = this.getEmissionContext();
 			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
 			const scheduler = new Scheduler(rootInstruction);
 			const runtimeCtx: RuntimeContext = {
@@ -226,6 +236,7 @@ export class Statement {
 		this.validateStatement("clear bindings for");
 		if (this.busy) throw new MisuseError("Statement busy, reset first");
 		this.boundArgs = {};
+		this.emissionContext = null;
 		this.needsCompile = true;
 		return this;
 	}
@@ -239,6 +250,7 @@ export class Statement {
 		this.busy = false;
 		this.boundArgs = {};
 		this.plan = null;
+		this.emissionContext = null;
 		this.columnDefCache.clear();
 		this.astBatchIndex = -1;
 		this.db._statementFinalized(this);
@@ -362,7 +374,7 @@ export class Statement {
 	getDebugProgram(): string {
 		this.validateStatement("get debug program for");
 		const plan = this.compile();
-		const emissionContext = new EmissionContext(this.db);
+		const emissionContext = this.getEmissionContext();
 		const rootInstruction = emitPlanNode(plan, emissionContext);
 		const scheduler = new Scheduler(rootInstruction);
 
@@ -384,7 +396,7 @@ export class Statement {
 			const blockPlanNode = this.compile();
 			if (!blockPlanNode.statements.length) return;
 
-			const emissionContext = new EmissionContext(this.db);
+			const emissionContext = this.getEmissionContext();
 			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
 			const scheduler = new Scheduler(rootInstruction);
 			const runtimeCtx: RuntimeContext = {

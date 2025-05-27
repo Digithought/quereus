@@ -23,6 +23,8 @@ export type Instruction = {
 	note?: string;
 	/** Optional sub-programs used to execute this instruction - this is here for tracing purposes */
 	programs?: Scheduler[];
+	/** Optional emission context for schema validation */
+	emissionContext?: EmissionContext;
 };
 
 /** * Trace event for instruction execution. */

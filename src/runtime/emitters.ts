@@ -54,3 +54,34 @@ export function emitCallFromPlan(plan: PlanNode, emissionCtx: EmissionContext): 
 	const instruction = emitPlanNode(plan, emissionCtx);
 	return emitCall(instruction);
 }
+
+/**
+ * Creates an instruction that validates its schema dependencies before execution.
+ * This should be used for instructions that captured schema objects during emission.
+ */
+export function createValidatedInstruction(
+	params: Instruction[],
+	run: InstructionRun,
+	emissionCtx: EmissionContext,
+	note?: string
+): Instruction {
+	// Only add validation if we actually captured schema objects
+	if (emissionCtx.getCapturedObjectCount() === 0) {
+		return { params, run, note };
+	}
+
+	// Wrap the run function to validate schema before execution
+	const validatedRun: InstructionRun = (ctx: RuntimeContext, ...args: any[]) => {
+		// Validate schema objects are still available
+		emissionCtx.validateCapturedSchemaObjects();
+		// If validation passes, run the original instruction
+		return run(ctx, ...args);
+	};
+
+	return {
+		params,
+		run: validatedRun,
+		note: note ? `validated(${note})` : 'validated',
+		emissionContext: emissionCtx
+	};
+}

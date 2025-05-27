@@ -1,5 +1,5 @@
 import type { Instruction, RuntimeContext } from '../types.js';
-import { emitPlanNode } from '../emitters.js';
+import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { FunctionSchema } from '../../schema/function.js';
@@ -28,15 +28,23 @@ export function emitTableValuedFunctionCall(plan: TableValuedFunctionCallNode, c
 		throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function`, StatusCode.ERROR);
 	}
 
+	// Capture the function key for runtime retrieval
+	const functionKey = `function:${functionName}/${numArgs}`;
+
 	async function* run(runtimeCtx: RuntimeContext, ...args: Array<SqlValue>): AsyncIterable<Row> {
+		// Use the captured function schema instead of doing a fresh lookup
+		const capturedFunction = ctx.getCapturedSchemaObject<FunctionSchema>(functionKey);
+		if (!capturedFunction) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} was not captured during emission`, StatusCode.INTERNAL);
+		}
 
 		// Validate argument count
-		if (functionSchema!.numArgs >= 0 && args.length !== functionSchema!.numArgs) {
-			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${functionSchema!.numArgs}`, StatusCode.ERROR);
+		if (capturedFunction.numArgs >= 0 && args.length !== capturedFunction.numArgs) {
+			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${capturedFunction.numArgs}`, StatusCode.ERROR);
 		}
 
 		try {
-			const result = functionSchema!.tableValuedImpl!(...args);
+			const result = capturedFunction.tableValuedImpl!(...args);
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
 
@@ -50,9 +58,10 @@ export function emitTableValuedFunctionCall(plan: TableValuedFunctionCallNode, c
 
 	const operandExprs = plan.operands.map(operand => emitPlanNode(operand, ctx));
 
-	return {
-		params: [...operandExprs],
-		run: run as any,
-		note: `TVF:${plan.functionName}(${plan.operands.length})`
-	};
+	return createValidatedInstruction(
+		[...operandExprs],
+		run as any,
+		ctx,
+		`TVF:${plan.functionName}(${plan.operands.length})`
+	);
 }
