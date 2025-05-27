@@ -6,12 +6,12 @@ import type { EmissionContext } from '../emission-context.js';
 import { isTruthy } from '../../util/comparison.js';
 
 export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction {
-	async function* run(ctx: RuntimeContext, sourceRows: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => SqlValue): AsyncIterable<Row> {
+	async function* run(ctx: RuntimeContext, sourceRows: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => SqlValue | Promise<SqlValue>): AsyncIterable<Row> {
 		for await (const sourceRow of sourceRows) {
 			// Set up context for this row - the source relation should be available for column references
 			ctx.context.set(plan.source, () => sourceRow);
 			try {
-				if (isTruthy(predicate(ctx))) {
+				if (isTruthy(await predicate(ctx))) {
 					yield sourceRow;
 				}
 			} finally {

@@ -45,8 +45,8 @@ SELECT (i > 1) XOR t IS NULL FROM expr_t WHERE i = 3; -- FALSE XOR NULL -> NULL
 → [{"i > 1 XOR t IS NULL":0}]
 
 -- NULL Handling
-SELECT t IS NULL, t IS NOT NULL, n + NULL FROM expr_t WHERE i = 3;
-→ [{"t IS NULL":1,"t IS NOT NULL":0,"n + NULL":null}]
+SELECT t is null, t IS NOT NULL, n + NULL FROM expr_t WHERE i = 3;
+→ [{"t is null":1,"t IS NOT NULL":0,"n + NULL":null}]
 SELECT coalesce(t, 'default') FROM expr_t ORDER BY i;
 → [{"coalesce(t, 'default')":"hello"},{"coalesce(t, 'default')":"world"},{"coalesce(t, 'default')":"default"}]
 SELECT nullif(i, 2) FROM expr_t ORDER BY i;
@@ -54,7 +54,7 @@ SELECT nullif(i, 2) FROM expr_t ORDER BY i;
 
 -- CASE expressions
 SELECT CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM expr_t ORDER BY i;
-→ [{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"one"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"two"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"other"}]
+→ [{"CASE I WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"one"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"two"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"other"}]
 SELECT CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END FROM expr_t ORDER BY i;
 → [{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"pos"},{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"neg"},{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"zero"}]
 

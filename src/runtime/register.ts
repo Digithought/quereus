@@ -1,5 +1,5 @@
 import { PlanNodeType } from "../planner/nodes/plan-node-type.js";
-import { registerEmitter, type EmitterFunc } from "./emitters.js";
+import { emitPlanNode, registerEmitter, type EmitterFunc } from "./emitters.js";
 import { emitBinaryOp } from "./emit/binary.js";
 import { emitUnaryOp } from "./emit/unary.js";
 import { emitLiteral } from "./emit/literal.js";
@@ -19,6 +19,9 @@ import { emitFilter } from './emit/filter.js';
 import { emitScalarFunctionCall } from './emit/scalar-function.js';
 import { emitLimitOffset } from './emit/limit-offset.js';
 import { emitAggregate } from './emit/aggregate.js';
+import { emitCaseExpr } from './emit/case.js';
+import { emitCast } from './emit/cast.js';
+import { emitCollate } from "./emit/collate.js";
 
 let registered = false;
 
@@ -47,4 +50,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.ScalarFunctionCall, emitScalarFunctionCall as EmitterFunc);
 	registerEmitter(PlanNodeType.LimitOffset, emitLimitOffset as EmitterFunc);
 	registerEmitter(PlanNodeType.Aggregate, emitAggregate as EmitterFunc);
+	registerEmitter(PlanNodeType.CaseExpr, emitCaseExpr as EmitterFunc);
+	registerEmitter(PlanNodeType.Cast, emitCast as EmitterFunc);
+	registerEmitter(PlanNodeType.Collate, emitCollate as EmitterFunc);
 }

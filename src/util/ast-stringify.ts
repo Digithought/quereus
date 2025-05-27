@@ -169,17 +169,18 @@ export function expressionToString(expr: AST.Expression): string {
 			return `${expressionToString(expr.expr)} collate ${expr.collation}`;
 
 		case 'case':
-			let caseStr = 'case';
+			// TODO: preserve and emit with original case
+			let caseStr = 'CASE';
 			if (expr.baseExpr) {
 				caseStr += ` ${expressionToString(expr.baseExpr)}`;
 			}
 			for (const clause of expr.whenThenClauses) {
-				caseStr += ` when ${expressionToString(clause.when)} then ${expressionToString(clause.then)}`;
+				caseStr += ` WHEN ${expressionToString(clause.when)} THEN ${expressionToString(clause.then)}`;
 			}
 			if (expr.elseExpr) {
-				caseStr += ` else ${expressionToString(expr.elseExpr)}`;
+				caseStr += ` ELSE ${expressionToString(expr.elseExpr)}`;
 			}
-			caseStr += ' end';
+			caseStr += ' END';
 			return caseStr;
 
 		case 'windowFunction':

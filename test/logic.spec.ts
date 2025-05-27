@@ -260,10 +260,10 @@ describe('SQL Logic Tests', () => {
 								}
 
 								if (actualResult.length !== expectedResult.length) {
-									const diagnostics = generateDiagnostics(db, sqlBlock,
-										new Error(`Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}`));
+									const baseError = new Error(`Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}`);
+									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
 									const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
-									throw new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}. Block:\n${sqlBlock}${diagnostics}${traceInfo}`);
+									throw new Error(`[${file}:${lineNumber}] Block:\n${sqlBlock}${diagnostics}${traceInfo}`);
 								}
 								for (let i = 0; i < actualResult.length; i++) {
 									try {

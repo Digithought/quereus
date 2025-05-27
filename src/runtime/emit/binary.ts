@@ -87,13 +87,25 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	let run: (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue) => SqlValue;
 
+	// Determine collation to use for comparison
+	const leftType = plan.left.getType();
+	const rightType = plan.right.getType();
+	let collationName = 'BINARY';
+
+	// Use collation from either operand (right side takes precedence for COLLATE expressions)
+	if (rightType.collationName) {
+		collationName = rightType.collationName;
+	} else if (leftType.collationName) {
+		collationName = leftType.collationName;
+	}
+
 	switch (plan.expression.operator) {
 		case '=':
 		case '==':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL = anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2) === 0 ? 1 : 0;
+				return compareSqlValues(v1, v2, collationName) === 0 ? 1 : 0;
 			};
 			break;
 		case '!=':
@@ -101,35 +113,35 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL != anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2) !== 0 ? 1 : 0;
+				return compareSqlValues(v1, v2, collationName) !== 0 ? 1 : 0;
 			};
 			break;
 		case '<':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL < anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2) < 0 ? 1 : 0;
+				return compareSqlValues(v1, v2, collationName) < 0 ? 1 : 0;
 			};
 			break;
 		case '<=':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL <= anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2) <= 0 ? 1 : 0;
+				return compareSqlValues(v1, v2, collationName) <= 0 ? 1 : 0;
 			};
 			break;
 		case '>':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL > anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2) > 0 ? 1 : 0;
+				return compareSqlValues(v1, v2, collationName) > 0 ? 1 : 0;
 			};
 			break;
 		case '>=':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL >= anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2) >= 0 ? 1 : 0;
+				return compareSqlValues(v1, v2, collationName) >= 0 ? 1 : 0;
 			};
 			break;
 		default:
@@ -142,7 +154,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 	return {
 		params: [leftExpr, rightExpr],
 		run: run as InstructionRun,
-		note: `${plan.expression.operator}(compare)`
+		note: `${plan.expression.operator}(compare${collationName !== 'BINARY' ? ` ${collationName}` : ''})`
 	};
 }
 

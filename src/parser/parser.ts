@@ -2006,16 +2006,32 @@ export class Parser {
 	private peekKeyword(keyword: string): boolean {
 		if (this.isAtEnd()) return false;
 		const token = this.peek();
-		// Check if the token is an IDENTIFIER and its lexeme matches the keyword (case-insensitive)
-		if (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keyword.toUpperCase()) {
+
+		// The keyword lookup string should be uppercase to match TokenType enum keys (e.g., TokenType.SELECT)
+		const keywordKey = keyword.toUpperCase();
+		const expectedTokenType = TokenType[keywordKey as keyof typeof TokenType];
+
+		// If the keyword doesn't correspond to a known TokenType, it can't be matched this way.
+		if (expectedTokenType === undefined) {
+			return false;
+		}
+
+		// Check if the current token's type is the expected specific keyword TokenType.
+		// This assumes the lexer has already correctly typed true keywords.
+		if (token.type === expectedTokenType) {
 			return true;
 		}
-		// Check if the token type itself matches a keyword TokenType (e.g., TokenType.SELECT)
-		// This requires that your TokenType enum has entries like SELECT, TABLE, etc.
-		const keywordTokenType = TokenType[keyword.toUpperCase() as keyof typeof TokenType];
-		if (keywordTokenType !== undefined && token.type === keywordTokenType) {
+
+		// Fallback: if the token is a generic IDENTIFIER, check if its lexeme matches the keyword.
+		// This handles cases where a keyword might not have its own TokenType but is reserved.
+		// For Quereus, most keywords DO have their own TokenType.
+		if (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keywordKey) {
+			// This path might indicate that the keyword was not specifically recognized by the lexer
+			// or is a "soft keyword" that can also be an identifier.
+			// For keywords like 'COLLATE', 'SELECT', etc., we expect them to be lexed with their specific TokenType.
 			return true;
 		}
+
 		return false;
 	}
 

@@ -35,7 +35,7 @@ export function emitCall(root: Instruction): Instruction {
 	const program = new Scheduler(root);
 
 	function run(ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue {
-		return (ctx: RuntimeContext) => program.run(ctx);
+		return (innerCtx: RuntimeContext) => program.run(innerCtx);
 	}
 
 	return {

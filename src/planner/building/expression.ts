@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
-import { LiteralNode, BinaryOpNode, UnaryOpNode } from '../nodes/scalar.js';
+import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, CollateNode } from '../nodes/scalar.js';
 import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
@@ -46,6 +46,26 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
           throw new QuereusError("IN (SELECT ...) not fully implemented in buildExpression yet", StatusCode.UNSUPPORTED);
       }
       return new BinaryOpNode(ctx.scope, expr, left, right);
+    case 'case':
+      // Build base expression if present
+      const baseExpr = expr.baseExpr ? buildExpression(ctx, expr.baseExpr, allowAggregates) : undefined;
+
+      // Build WHEN/THEN clauses
+      const whenThenClauses = expr.whenThenClauses.map(clause => ({
+        when: buildExpression(ctx, clause.when, allowAggregates),
+        then: buildExpression(ctx, clause.then, allowAggregates)
+      }));
+
+      // Build ELSE expression if present
+      const elseExpr = expr.elseExpr ? buildExpression(ctx, expr.elseExpr, allowAggregates) : undefined;
+
+      return new CaseExprNode(ctx.scope, expr, baseExpr, whenThenClauses, elseExpr);
+    case 'cast':
+      const castOperand = buildExpression(ctx, expr.expr, allowAggregates);
+      return new CastNode(ctx.scope, expr, castOperand);
+    case 'collate':
+      const collateOperand = buildExpression(ctx, expr.expr, allowAggregates);
+      return new CollateNode(ctx.scope, expr, collateOperand);
     case 'function':
       const funcResolution = resolveFunction(ctx.scope, expr);
       if (!funcResolution || funcResolution === Ambiguous) {
