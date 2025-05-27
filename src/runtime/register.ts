@@ -17,6 +17,8 @@ import { emitColumnReference } from './emit/column-reference.js';
 import { emitValues, emitSingleRow } from './emit/values.js';
 import { emitFilter } from './emit/filter.js';
 import { emitScalarFunctionCall } from './emit/scalar-function.js';
+import { emitLimitOffset } from './emit/limit-offset.js';
+import { emitAggregate } from './emit/aggregate.js';
 
 let registered = false;
 
@@ -43,4 +45,6 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);
 	registerEmitter(PlanNodeType.Filter, emitFilter as EmitterFunc);
 	registerEmitter(PlanNodeType.ScalarFunctionCall, emitScalarFunctionCall as EmitterFunc);
+	registerEmitter(PlanNodeType.LimitOffset, emitLimitOffset as EmitterFunc);
+	registerEmitter(PlanNodeType.Aggregate, emitAggregate as EmitterFunc);
 }

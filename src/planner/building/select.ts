@@ -1,5 +1,5 @@
 import type * as AST from '../../parser/ast.js';
-import type { PlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
+import type { PlanNode, RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
@@ -12,6 +12,46 @@ import type { Scope } from '../scopes/scope.js';
 import { MultiScope } from '../scopes/multi.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js';
+import { FilterNode } from '../nodes/filter.js';
+import { LimitOffsetNode } from '../nodes/limit-offset.js';
+import { LiteralNode } from '../nodes/scalar.js';
+import { AggregateNode } from '../nodes/aggregate-node.js';
+import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
+
+/**
+ * Checks if an expression contains aggregate functions
+ */
+function isAggregateExpression(node: ScalarPlanNode): boolean {
+	if (node instanceof AggregateFunctionCallNode) {
+		return true;
+	}
+
+	// Recursively check children (only scalar children)
+	for (const child of node.getChildren()) {
+		// Check if child is a scalar node and recursively check it
+		if ('expression' in child && isAggregateExpression(child as ScalarPlanNode)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Gets a default alias for an expression
+ */
+function getDefaultAlias(expr: AST.Expression): string {
+	switch (expr.type) {
+		case 'function':
+			return `${expr.name}(${expr.args.length === 0 ? '*' : '...'})`;
+		case 'column':
+			return expr.name;
+		case 'literal':
+			return String(expr.value);
+		default:
+			return 'expr';
+	}
+}
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -51,12 +91,20 @@ export function buildSelectStmt(
 
 	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
 
-	// TODO: Plan WHERE clause using selectContext, potentially creating a FilterNode
+	// Plan WHERE clause using selectContext, potentially creating a FilterNode
+	if (stmt.where) {
+		const whereExpression = buildExpression(selectContext, stmt.where);
+		input = new FilterNode(selectScope, input, whereExpression);
+	}
+
+	// TODO: Plan GROUP BY and HAVING clauses, creating AggregateNode
 
 	// TODO: inject a DistinctPlanNode if DISTINCT is present
 
 	// Build projections based on the SELECT list
 	const projections: Projection[] = [];
+	const aggregates: { expression: ScalarPlanNode; alias: string }[] = [];
+	let hasAggregates = false;
 
 	for (const column of stmt.columns) {
 		if (column.type === 'all') {
@@ -100,18 +148,57 @@ export function buildSelectStmt(
 				});
 			});
 		} else if (column.type === 'column') {
-			// Handle specific expressions
-			const scalarNode = buildExpression(selectContext, column.expr);
-			projections.push({
-				node: scalarNode,
-				alias: column.alias // Use the specified alias, if any
-			});
+			// Handle specific expressions - allow aggregates in SELECT list
+			const scalarNode = buildExpression(selectContext, column.expr, true);
+
+			// Check if this expression contains aggregate functions
+			if (isAggregateExpression(scalarNode)) {
+				hasAggregates = true;
+				aggregates.push({
+					expression: scalarNode,
+					alias: column.alias || getDefaultAlias(column.expr)
+				});
+			} else {
+				projections.push({
+					node: scalarNode,
+					alias: column.alias // Use the specified alias, if any
+				});
+			}
 		}
 	}
 
-	// Create ProjectNode if we have projections, otherwise return input as-is
-	if (projections.length > 0) {
-		input = new ProjectNode(selectScope, input, projections);
+	// Check if we have GROUP BY clause
+	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
+
+	// If we have aggregates or GROUP BY, create an AggregateNode
+	if (hasAggregates || hasGroupBy) {
+		// Build GROUP BY expressions
+		const groupByExpressions = stmt.groupBy ? stmt.groupBy.map(expr => buildExpression(selectContext, expr, false)) : [];
+
+		// If we have non-aggregate projections with aggregates, that's an error (unless they're in GROUP BY)
+		if (projections.length > 0 && hasAggregates && !hasGroupBy) {
+			throw new QuereusError(
+				'Cannot mix aggregate and non-aggregate columns in SELECT list without GROUP BY',
+				StatusCode.ERROR
+			);
+		}
+
+		input = new AggregateNode(selectScope, input, groupByExpressions, aggregates);
+	} else {
+		// Create ProjectNode if we have projections, otherwise return input as-is
+		if (projections.length > 0) {
+			input = new ProjectNode(selectScope, input, projections);
+		}
+	}
+
+	// TODO: Plan ORDER BY clause, creating SortNode
+
+	// Plan LIMIT and OFFSET clauses
+	if (stmt.limit || stmt.offset) {
+		const literalNull = new LiteralNode(selectScope, { type: 'literal', value: null });
+		const limitExpression = stmt.limit ? buildExpression(selectContext, stmt.limit) : literalNull;
+		const offsetExpression = stmt.offset ? buildExpression(selectContext, stmt.offset) : literalNull;
+		input = new LimitOffsetNode(selectScope, input, limitExpression, offsetExpression);
 	}
 
 	return input;

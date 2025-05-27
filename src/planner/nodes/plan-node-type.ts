@@ -37,6 +37,7 @@ export enum PlanNodeType {
   UnaryOp = 'UnaryOp',
   BinaryOp = 'BinaryOp',
   ScalarFunctionCall = 'ScalarFunctionCall',
+  AggregateFunctionCall = 'AggregateFunctionCall',
   Cast = 'Cast',
   Collate = 'Collate',
   In = 'In',

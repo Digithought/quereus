@@ -67,7 +67,6 @@ export interface FunctionExpr extends AstNode {
 	type: 'function';
 	name: string;
 	args: Expression[];
-	isAggregate?: boolean;
 }
 
 // Window function expression

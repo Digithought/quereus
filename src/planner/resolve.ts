@@ -56,10 +56,10 @@ export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): Paramete
 }
 
 export function resolveFunction(scope: Scope, exp: AST.FunctionExpr): FunctionReferenceNode | typeof Ambiguous | undefined {
-	const symbolKey = exp.name + '(' + exp.args.length + ')';
+	const symbolKey = exp.name.toLowerCase() + '/' + exp.args.length;
 	const result = scope.resolveSymbol(symbolKey, exp);
 	if (result === Ambiguous || result instanceof FunctionReferenceNode) {
 		return result;
 	}
-	throw new QuereusError(`${symbolKey} isn't a function`, StatusCode.ERROR);
+	throw new QuereusError(`Function not found/ambiguous: ${exp.name}/${exp.args.length}`, StatusCode.ERROR);
 }

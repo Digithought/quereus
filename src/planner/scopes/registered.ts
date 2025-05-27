@@ -19,7 +19,7 @@ export class RegisteredScope implements Scope {
 	constructor(
 		/** The parent scope, if any. The root scope of a query has no parent. */
 		public readonly parent?: Scope,
-	) {}
+	) { }
 
 	/**
 	 * Registers a symbol (like a table alias, CTE name, or parameter) with a factory function
@@ -42,9 +42,22 @@ export class RegisteredScope implements Scope {
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		const directFactory = this.registeredSymbols.get(symbolKey.toLowerCase());
-		const result = directFactory
-			? directFactory(expression, this)
-			: this.parent?.resolveSymbol(symbolKey, expression);
+		if (directFactory) {
+			const result = directFactory(expression, this);
+			if (result) {
+				this.addReference(result);
+			}
+			return result;
+		}
+
+		// Don't delegate function resolution (symbolKey contains '/') to parent
+		// Functions should only be resolved in the global scope
+		if (symbolKey.includes('/')) {
+			return undefined;
+		}
+
+		// Delegate other symbols (columns, parameters, etc.) to parent
+		const result = this.parent?.resolveSymbol(symbolKey, expression);
 		if (result && result !== Ambiguous) {
 			this.addReference(result);
 		}
