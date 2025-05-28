@@ -23,6 +23,7 @@ import { emitCaseExpr } from './emit/case.js';
 import { emitCast } from './emit/cast.js';
 import { emitCollate } from "./emit/collate.js";
 import { emitTableValuedFunctionCall } from './emit/table-valued-function.js';
+import { emitTransaction } from './emit/transaction.js';
 
 let registered = false;
 
@@ -55,4 +56,5 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Cast, emitCast as EmitterFunc);
 	registerEmitter(PlanNodeType.Collate, emitCollate as EmitterFunc);
 	registerEmitter(PlanNodeType.TableFunctionCall, emitTableValuedFunctionCall as EmitterFunc);
+	registerEmitter(PlanNodeType.Transaction, emitTransaction as EmitterFunc);
 }

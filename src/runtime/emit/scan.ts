@@ -6,6 +6,8 @@ import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
 import { createValidatedInstruction } from "../emitters.js";
+import { registerActiveVTab, unregisterActiveVTab } from "./transaction.js";
+import { disconnectVTable } from "../utils.js";
 
 export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.source.tableSchema;
@@ -53,6 +55,9 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 			throw new QuereusError(`Virtual table '${tableSchema.name}' does not support xQuery.`, StatusCode.UNSUPPORTED);
 		}
 
+		// Register the VirtualTable instance for transaction operations
+		registerActiveVTab(runtimeCtx, vtabInstance);
+
 		try {
 			// Put cursor row into context
 			let row: Row;
@@ -69,13 +74,8 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 			const message = e instanceof Error ? e.message : String(e);
 			throw new QuereusError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		} finally {
-			// Ensure xDisconnect is called if the vtabInstance was successfully created.
-			if (vtabInstance && typeof vtabInstance.xDisconnect === 'function') {
-				await vtabInstance.xDisconnect().catch(disconnectError => {
-					// Log disconnect error, but don't let it hide the original query error if one occurred.
-					console.error(`Error during xDisconnect for table '${tableSchema.name}': ${disconnectError}`);
-				});
-			}
+			// Properly disconnect and unregister the VirtualTable instance
+			await disconnectVTable(runtimeCtx, vtabInstance);
 		}
 	}
 

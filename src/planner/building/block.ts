@@ -8,6 +8,7 @@ import { buildDropTableStmt } from './drop-table.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
+import { buildBeginStmt, buildCommitStmt, buildRollbackStmt, buildSavepointStmt, buildReleaseStmt } from './transaction.js';
 
 export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
@@ -28,9 +29,19 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildUpdateStmt(ctx, stmt as AST.UpdateStmt);
 			case 'delete':
 				return buildDeleteStmt(ctx, stmt as AST.DeleteStmt);
+			case 'begin':
+				return buildBeginStmt(ctx, stmt as AST.BeginStmt);
+			case 'commit':
+				return buildCommitStmt(ctx, stmt as AST.CommitStmt);
+			case 'rollback':
+				return buildRollbackStmt(ctx, stmt as AST.RollbackStmt);
+			case 'savepoint':
+				return buildSavepointStmt(ctx, stmt as AST.SavepointStmt);
+			case 'release':
+				return buildReleaseStmt(ctx, stmt as AST.ReleaseStmt);
 			default:
-				// Placeholder for other statement types
-				return undefined;
+				// Throw an exception for unsupported statement types
+				throw new Error(`Unsupported statement type: ${stmt.type}`);
 		}
 	}).filter(p => p !== undefined) as PlanNode[]; // Ensure we only have valid PlanNodes and cast
 

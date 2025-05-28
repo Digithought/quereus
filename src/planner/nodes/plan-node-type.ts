@@ -29,6 +29,9 @@ export enum PlanNodeType {
   Update = 'Update',
   Delete = 'Delete',
 
+  // Transaction Nodes
+  Transaction = 'Transaction',
+
   // Scalar Nodes (ExpressionNode subtypes)
   Literal = 'Literal',
   ColumnReference = 'ColumnReference',

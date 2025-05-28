@@ -3,7 +3,7 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
-import { getVTable } from '../utils.js';
+import { getVTable, disconnectVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
@@ -69,7 +69,7 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
 				}
 			}
     } finally {
-      await vtab.xDisconnect().catch((e: any) => console.error(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
+      await disconnectVTable(ctx, vtab);
     }
   }
 
