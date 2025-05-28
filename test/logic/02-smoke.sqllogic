@@ -7,7 +7,7 @@ PRAGMA default_vtab_module='memory';
 
 -- Create a table
 CREATE TABLE t1(a INTEGER PRIMARY KEY, b TEXT);
---SELECT name FROM _schema WHERE type = 'table' AND name = 't1';
+--SELECT name FROM schema() WHERE type = 'table' AND name = 't1';
 --→ [{"name":"t1"}]
 
 -- Insert some rows
@@ -43,7 +43,7 @@ DROP TABLE t1;
 -- No expected output for DROP
 
 -- Block 2: Verify table is gone
-SELECT name FROM _schema WHERE type = 'table' AND name = 't1';
+SELECT name FROM schema() WHERE type = 'table' AND name = 't1';
 → []
 
 -- Test NULL handling

@@ -437,3 +437,39 @@ These table-valued functions provide introspection and debugging capabilities fo
     *   **Example:** `SELECT operation, duration_ms, rows_processed FROM execution_trace('SELECT * FROM large_table WHERE condition');`
 
 **Note:** These diagnostic functions are primarily intended for development, debugging, and performance analysis. The `stack_trace` and `execution_trace` functions are non-deterministic and may have performance overhead.
+
+### Schema Introspection Functions
+
+*   `schema()`
+    *   **Description:** Returns information about all schema objects (tables, views, functions) in the database.
+    *   **Arguments:** None.
+    *   **Returns:** A table with columns:
+        *   `type` (TEXT) - Type of object ('table', 'view', 'function', 'module')
+        *   `name` (TEXT) - Name of the object
+        *   `tbl_name` (TEXT) - Table name (same as name for most objects)
+        *   `sql` (TEXT, nullable) - SQL definition of the object
+    *   **Example:** `SELECT type, name FROM schema() WHERE type = 'table';`
+
+*   `table_info(table_name)`
+    *   **Description:** Returns detailed information about the columns of a specific table.
+    *   **Arguments:** `table_name` (TEXT - name of the table to inspect).
+    *   **Returns:** A table with columns:
+        *   `cid` (INTEGER) - Column index (0-based)
+        *   `name` (TEXT) - Column name
+        *   `type` (TEXT) - Column data type
+        *   `notnull` (INTEGER) - 1 if column is NOT NULL, 0 otherwise
+        *   `dflt_value` (TEXT, nullable) - Default value for the column
+        *   `pk` (INTEGER) - 1 if column is part of primary key, 0 otherwise
+    *   **Example:** `SELECT name, type, notnull FROM table_info('users');`
+
+*   `function_info()`
+    *   **Description:** Returns information about all registered functions in the database.
+    *   **Arguments:** None.
+    *   **Returns:** A table with columns:
+        *   `name` (TEXT) - Function name
+        *   `num_args` (INTEGER) - Number of arguments (-1 for variable arguments)
+        *   `type` (TEXT) - Function type ('scalar', 'aggregate', 'table-valued')
+        *   `deterministic` (INTEGER) - 1 if function is deterministic, 0 otherwise
+        *   `flags` (INTEGER) - Internal function flags
+        *   `signature` (TEXT) - Function signature for display
+    *   **Example:** `SELECT name, type, num_args FROM function_info() WHERE type = 'scalar';`

@@ -9,7 +9,7 @@ import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
 import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, type RowOpMask } from './table.js';
 import type { ViewSchema } from './view.js';
-import { SchemaTableModule } from '../vtab/schema/table.js';
+
 import { SqlDataType } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
@@ -249,41 +249,7 @@ export class SchemaManager {
 	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
 		const lowerTableName = tableName.toLowerCase();
 
-		// Handle _schema dynamically
-		if (lowerTableName === '_schema') {
-			const moduleInfo = this.getModule('_schema');
-			if (!moduleInfo || !moduleInfo.module) {
-				errorLog("_schema module not registered or module structure invalid!");
-				return undefined;
-			}
 
-			const columns: ColumnSchema[] = SchemaTableModule.COLUMNS.map((col: { name: string; type: SqlDataType; collation?: string }) => ({
-				name: col.name,
-				affinity: col.type,
-				notNull: false,
-				primaryKey: false,
-				pkOrder: 0,
-				defaultValue: null,
-				collation: col.collation ?? 'BINARY',
-				generated: false,
-			}));
-
-			const columnIndexMap = new Map<string, number>(Object.entries(SchemaTableModule.COLUMN_INDEX_MAP));
-
-			return {
-				name: '_schema',
-				schemaName: 'main',
-				columns: Object.freeze(columns),
-				columnIndexMap: Object.freeze(columnIndexMap),
-				primaryKeyDefinition: [{ index: 0 }, { index: 1 }],
-				checkConstraints: Object.freeze([] as ReadonlyArray<{ name?: string, expr: AST.Expression }>),
-				vtabModule: moduleInfo.module,
-				vtabAuxData: moduleInfo.auxData,
-				vtabArgs: {},
-				vtabModuleName: '_schema',
-				isView: false,
-			} satisfies TableSchema;
-		}
 
 		if (dbName) {
 			// Search specific schema

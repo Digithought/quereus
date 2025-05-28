@@ -12,7 +12,7 @@ import { FunctionFlags } from '../common/constants.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import { JsonEachModule } from '../vtab/json/each.js';
 import { JsonTreeModule } from '../vtab/json/tree.js';
-import { SchemaTableModule } from '../vtab/schema/table.js';
+
 
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { Parser, ParseError } from '../parser/parser.js';
@@ -63,7 +63,7 @@ export class Database {
 		this.schemaManager.registerModule('memory', new MemoryTableModule());
 		this.schemaManager.registerModule('json_each', new JsonEachModule());
 		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
-		this.schemaManager.registerModule('_schema', new SchemaTableModule());
+
 
 
 		// Register built-in collations

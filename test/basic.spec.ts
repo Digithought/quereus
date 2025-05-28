@@ -14,10 +14,10 @@ describe(`Basic query`, () => {
 
 	it(`should execute a basic query`, async () => {
 		const resultRows: Record<string, any>[] = [];
-		for await (const row of db.eval(`select * from _schema`)) {
+		for await (const row of db.eval(`select * from schema()`)) {
 			resultRows.push(row);
 		}
-		// Update expectations based on what _schema actually returns.
+		// Update expectations based on what schema() actually returns.
 		// For example, it might return more than one row.
 		// This is a placeholder assertion.
 		expect(resultRows.length).to.be.greaterThan(0);
@@ -29,7 +29,7 @@ describe(`Basic query`, () => {
 		await db.exec('create table t (a text, b integer);');
 
 		const resultRows: Record<string, any>[] = [];
-		for await (const row of db.eval(`select * from _schema`)) {
+		for await (const row of db.eval(`select * from schema()`)) {
 			resultRows.push(row);
 		}
 		expect(resultRows.length).to.be.greaterThan(0);
