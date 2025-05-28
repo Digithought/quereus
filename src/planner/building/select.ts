@@ -235,7 +235,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));
 
 		if (fromClause.alias) {
-			columnScope = new AliasedScope(functionScope, fromClause.name.name.toLowerCase(), fromClause.alias.toLowerCase());
+			// For table-valued functions, use empty string as parent name since columns are registered without qualifier
+			columnScope = new AliasedScope(functionScope, '', fromClause.alias.toLowerCase());
 		} else {
 			columnScope = functionScope;
 		}
