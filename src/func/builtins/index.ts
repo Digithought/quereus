@@ -17,6 +17,7 @@ import { jsonValidFunc, jsonTypeFunc, jsonExtractFunc, jsonQuoteFunc, jsonArrayF
 	jsonArrayLengthFunc, jsonPatchFunc,
 	jsonGroupArrayFunc, jsonGroupObjectFunc } from './json.js';
 import { generateSeriesFunc } from './generation.js';
+import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc } from './explain.js';
 
 // Additional useful functions integrated from examples
 
@@ -98,15 +99,17 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	jsonGroupObjectFunc,
 	// Generation functions
 	generateSeriesFunc,
+	// Explain functions
+	queryPlanFunc,
+	schedulerProgramFunc,
+	stackTraceFunc,
+	executionTraceFunc,
 ];
 
 // Export registration utilities for easy access
 export {
 	createScalarFunction,
 	createTableValuedFunction,
+	createIntegratedTableValuedFunction as createDatabaseAwareTableValuedFunction,
 	createAggregateFunction,
-	type ScalarFunc,
-	type TableValuedFunc,
-	type AggregateReducer,
-	type AggregateFinalizer
 } from '../registration.js';

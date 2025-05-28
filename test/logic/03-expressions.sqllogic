@@ -24,29 +24,29 @@ SELECT i > 1, n <= 10.5, t == 'world' FROM expr_t WHERE i = 2;
 
 -- Logical Operators
 SELECT i > 1 AND n < 0 FROM expr_t WHERE i = 2;
-→ [{"i > 1 AND n < 0":1}]
+→ [{"i > 1 and n < 0":1}]
 SELECT i = 1 OR t = 'world' FROM expr_t ORDER BY i;
-→ [{"i = 1 OR t = 'world'":1},{"i = 1 OR t = 'world'":1},{"i = 1 OR t = 'world'":null}]
+→ [{"i = 1 or t = 'world'":1},{"i = 1 or t = 'world'":1},{"i = 1 or t = 'world'":null}]
 SELECT NOT (n = 0) FROM expr_t WHERE i = 3;
-→ [{"NOT (n = 0)":0}]
+→ [{"not (n = 0)":0}]
 
 -- XOR Operator (3VL)
 SELECT 1 XOR 1, 1 XOR 0, 0 XOR 1, 0 XOR 0;
-→ [{"1 XOR 1":0,"1 XOR 0":1,"0 XOR 1":1,"0 XOR 0":0}]
+→ [{"1 xor 1":0,"1 xor 0":1,"0 xor 1":1,"0 xor 0":0}]
 SELECT NULL XOR 1, NULL XOR 0, 1 XOR NULL, 0 XOR NULL, NULL XOR NULL;
-→ [{"NULL XOR 1":null,"NULL XOR 0":null,"1 XOR NULL":null,"0 XOR NULL":null,"NULL XOR NULL":null}]
+→ [{"null xor 1":null,"null xor 0":null,"1 xor null":null,"0 xor null":null,"null xor null":null}]
 SELECT (i > 1) XOR (n < 0) FROM expr_t WHERE i = 2; -- TRUE XOR TRUE -> FALSE
-→ [{"i > 1 XOR n < 0":0}]
+→ [{"i > 1 xor n < 0":0}]
 SELECT (i > 1) XOR (t = 'hello') FROM expr_t WHERE i = 1; -- FALSE XOR TRUE -> TRUE
-→ [{"i > 1 XOR t = 'hello'":1}]
+→ [{"i > 1 xor t = 'hello'":1}]
 SELECT (i > 1) XOR n IS NULL FROM expr_t WHERE i = 1; -- FALSE XOR FALSE -> FALSE
-→ [{"i > 1 XOR n IS NULL":0}]
+→ [{"i > 1 xor n is null":0}]
 SELECT (i > 1) XOR t IS NULL FROM expr_t WHERE i = 3; -- FALSE XOR NULL -> NULL
-→ [{"i > 1 XOR t IS NULL":0}]
+→ [{"i > 1 xor t is null":0}]
 
 -- NULL Handling
 SELECT t is null, t IS NOT NULL, n + NULL FROM expr_t WHERE i = 3;
-→ [{"t is null":1,"t IS NOT NULL":0,"n + NULL":null}]
+→ [{"t is null":1,"t is not null":0,"n + null":null}]
 SELECT coalesce(t, 'default') FROM expr_t ORDER BY i;
 → [{"coalesce(t, 'default')":"hello"},{"coalesce(t, 'default')":"world"},{"coalesce(t, 'default')":"default"}]
 SELECT nullif(i, 2) FROM expr_t ORDER BY i;
@@ -54,15 +54,15 @@ SELECT nullif(i, 2) FROM expr_t ORDER BY i;
 
 -- CASE expressions
 SELECT CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM expr_t ORDER BY i;
-→ [{"CASE I WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"one"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"two"},{"CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END":"other"}]
+→ [{"case i when 1 then 'one' when 2 then 'two' else 'other' end":"one"},{"case i when 1 then 'one' when 2 then 'two' else 'other' end":"two"},{"case i when 1 then 'one' when 2 then 'two' else 'other' end":"other"}]
 SELECT CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END FROM expr_t ORDER BY i;
-→ [{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"pos"},{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"neg"},{"CASE WHEN n > 0 THEN 'pos' WHEN n < 0 THEN 'neg' ELSE 'zero' END":"zero"}]
+→ [{"case when n > 0 then 'pos' when n < 0 then 'neg' else 'zero' end":"pos"},{"case when n > 0 then 'pos' when n < 0 then 'neg' else 'zero' end":"neg"},{"case when n > 0 then 'pos' when n < 0 then 'neg' else 'zero' end":"zero"}]
 
 -- CAST expressions
 SELECT cast(i as TEXT), cast(n as INTEGER), cast(t as REAL) FROM expr_t WHERE i = 1;
-→ [{"cast(i as TEXT)":"1","cast(n as INTEGER)":10,"cast(t as REAL)":0}]
+→ [{"cast(i as text)":"1","cast(n as integer)":10,"cast(t as real)":0}]
 SELECT cast('123' as INTEGER), cast('12.3' as REAL), cast(123 as TEXT);
-→ [{"cast('123' as INTEGER)":123,"cast('12.3' as REAL)":12.3,"cast(123 as TEXT)":"123"}]
+→ [{"cast('123' as integer)":123,"cast('12.3' as real)":12.3,"cast(123 as text)":"123"}]
 
 -- COLLATE (basic syntax check, assumes default collation)
 SELECT t FROM expr_t WHERE t = 'HELLO' COLLATE NOCASE ORDER BY i;
@@ -74,9 +74,11 @@ SELECT typeof(1 + 2), typeof(1.5 + 2), typeof('a' || 'b');
 → [{"typeof(1 + 2)":"integer","typeof(1.5 + 2)":"real","typeof('a' || 'b')":"text"}]
 
 -- Check query plan using the new TVF
-SELECT detail FROM query_plan('SELECT i + 1, n * 2 FROM expr_t WHERE i = 1');
-→ [{"detail":"SCAN TABLE expr_t USING PRIMARY KEY"}]
+SELECT detail FROM query_plan('SELECT 1 + 1');
+→ [{"detail":"BLOCK operation"},{"detail":"PROJECT 1 columns"},{"detail":"SINGLEROW operation"},{"detail":"BINARYOP operation"},{"detail":"LITERAL operation"},{"detail":"LITERAL operation"}]
 
--- Check VDBE program dump TVF (basic execution check)
-SELECT opcode, p1, p2, p3 FROM vdbe_program('SELECT 1 + 1');
--- No specific output check, just ensure it runs.
+-- Check scheduler program dump TVF (basic execution check)
+SELECT instruction_id, description FROM scheduler_program('SELECT 1');
+-- Intentional error to diagnose diagnostics output
+→ [{"instruction_id":"single_row","description":"single_row"},{"instruction_id":"callback(literal(1))","description":"callback(literal(1))"},{"instruction_id":"literal(1)","description":"literal(1)"},{"instruction_id":"project(1 cols)","description":"project(1 cols)"},{"instruction_id":"block(1 stmts)","description":"block(1 stmts)"}]
+

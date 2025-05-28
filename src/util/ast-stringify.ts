@@ -97,7 +97,7 @@ export function expressionToString(expr: AST.Expression): string {
 				return expr.lexeme;
 			}
 			// Prefer original lexeme for NULL if available
-			if (expr.value === null) return expr.lexeme || 'null';
+			if (expr.value === null) return expr.lexeme?.toLowerCase() || 'null';
 			if (typeof expr.value === 'string') return `'${expr.value.replace(/'/g, "''")}'`; // Escape single quotes
 			if (typeof expr.value === 'number') return expr.value.toString();
 			if (expr.value instanceof Uint8Array) {
@@ -130,7 +130,7 @@ export function expressionToString(expr: AST.Expression): string {
 			const rightStr = needsParens(expr.right, expr.operator, 'right')
 				? `(${expressionToString(expr.right)})`
 				: expressionToString(expr.right);
-			return `${leftStr} ${expr.operator} ${rightStr}`;
+			return `${leftStr} ${expr.operator.toLowerCase()} ${rightStr}`;
 
 		case 'unary':
 			const exprStr = expr.expr.type === 'binary'
@@ -138,9 +138,9 @@ export function expressionToString(expr: AST.Expression): string {
 				: expressionToString(expr.expr);
 			// Handle postfix operators like IS NULL, IS NOT NULL
 			if (expr.operator === 'IS NULL' || expr.operator === 'IS NOT NULL') {
-				return `${exprStr} ${expr.operator}`;
+				return `${exprStr} ${expr.operator.toLowerCase()}`;
 			}
-			return `${expr.operator} ${exprStr}`;
+			return `${expr.operator.toLowerCase()} ${exprStr}`;
 
 		case 'function':
 			if (expr.name.toLowerCase() === 'count' && expr.args.length === 0) {
@@ -150,7 +150,7 @@ export function expressionToString(expr: AST.Expression): string {
 			return `${expr.name}(${argsStr})`;
 
 		case 'cast':
-			return `cast(${expressionToString(expr.expr)} as ${expr.targetType})`;
+			return `cast(${expressionToString(expr.expr)} as ${expr.targetType.toLowerCase()})`;
 
 		case 'parameter':
 			if (expr.index !== undefined) {
@@ -166,21 +166,21 @@ export function expressionToString(expr: AST.Expression): string {
 			return `(${selectToString(expr.query)})`;
 
 		case 'collate':
-			return `${expressionToString(expr.expr)} collate ${expr.collation}`;
+			return `${expressionToString(expr.expr)} collate ${expr.collation.toLowerCase()}`;
 
 		case 'case':
 			// TODO: preserve and emit with original case
-			let caseStr = 'CASE';
+			let caseStr = 'case';
 			if (expr.baseExpr) {
 				caseStr += ` ${expressionToString(expr.baseExpr)}`;
 			}
 			for (const clause of expr.whenThenClauses) {
-				caseStr += ` WHEN ${expressionToString(clause.when)} THEN ${expressionToString(clause.then)}`;
+				caseStr += ` when ${expressionToString(clause.when)} then ${expressionToString(clause.then)}`;
 			}
 			if (expr.elseExpr) {
-				caseStr += ` ELSE ${expressionToString(expr.elseExpr)}`;
+				caseStr += ` else ${expressionToString(expr.elseExpr)}`;
 			}
-			caseStr += ' END';
+			caseStr += ' end';
 			return caseStr;
 
 		case 'windowFunction':

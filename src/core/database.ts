@@ -13,8 +13,7 @@ import { MemoryTableModule } from '../vtab/memory/module.js';
 import { JsonEachModule } from '../vtab/json/each.js';
 import { JsonTreeModule } from '../vtab/json/tree.js';
 import { SchemaTableModule } from '../vtab/schema/table.js';
-import { ExplainPlanModule } from '../vtab/explain_plan/module.js';
-import { ExplainProgramModule } from '../vtab/explain_code/module.js';
+
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
@@ -65,8 +64,7 @@ export class Database {
 		this.schemaManager.registerModule('json_each', new JsonEachModule());
 		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
 		this.schemaManager.registerModule('_schema', new SchemaTableModule());
-		this.schemaManager.registerModule('explain_plan', new ExplainPlanModule());
-		this.schemaManager.registerModule('explain_program', new ExplainProgramModule());
+
 
 		// Register built-in collations
 		this.registerDefaultCollations();

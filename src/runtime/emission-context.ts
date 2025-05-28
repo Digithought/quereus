@@ -6,6 +6,7 @@ import type { VirtualTableModule } from '../vtab/module.js';
 import { createLogger } from '../common/logger.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
+import type { CollationFunction } from '../util/comparison.js';
 
 const log = createLogger('runtime:emission-context');
 
@@ -162,7 +163,7 @@ export class EmissionContext {
 	 * Looks up a collation and records the dependency.
 	 * Also captures the collation reference for runtime use.
 	 */
-	getCollation(collationName: string): import('../util/comparison.js').CollationFunction | undefined {
+	getCollation(collationName: string): CollationFunction | undefined {
 		const collation = this.db._getCollation(collationName);
 		if (collation) {
 			const key = `collation:${collationName}`;

@@ -2,6 +2,22 @@
 
 This document lists the built-in SQL functions available in Quereus.
 
+## Table-Valued Functions
+
+Table-valued functions (TVFs) can be used in the `FROM` clause of a `SELECT` statement to generate rows dynamically. They are called like regular functions but return a table result that can be queried like any other table.
+
+**Syntax:** `SELECT columns FROM function_name(arguments) [AS alias]`
+
+**Example:** `SELECT * FROM generate_series(1, 10);`
+
+### Generation Functions
+
+*   `generate_series(start, stop)`, `generate_series(start, stop, step)`
+    *   **Description:** Generates a series of integer values from `start` to `stop` (inclusive) with an optional `step` increment.
+    *   **Arguments:** `start` (INTEGER), `stop` (INTEGER), `step` (INTEGER, optional, defaults to 1).
+    *   **Returns:** A table with a single column `value` containing the generated integers.
+    *   **Example:** `SELECT * FROM generate_series(1, 5);` returns rows with values 1, 2, 3, 4, 5. `SELECT * FROM generate_series(0, 10, 2);` returns 0, 2, 4, 6, 8, 10.
+
 ## Scalar Functions
 
 These functions operate on single values and return a single value.
@@ -363,3 +379,61 @@ Window functions perform calculations across a set of table rows related to the 
 *   `last_value(expr)`: Returns the value of `expr` from the last row in the current window frame.
 
 *Note: The standard aggregate functions (`sum`, `avg`, `count`, `min`, `max`) can also be used as window functions when an `OVER` clause is provided (e.g., `SUM(salary) OVER (PARTITION BY department ORDER BY hire_date)`).*
+
+## Diagnostic Functions (Table-Valued)
+
+These table-valued functions provide introspection and debugging capabilities for SQL queries and execution.
+
+*   `query_plan(sql)`
+    *   **Description:** Returns the query execution plan for the given SQL statement as a table with detailed information about each operation.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to analyze).
+    *   **Returns:** A table with columns:
+        *   `id` (INTEGER) - Unique identifier for the plan node
+        *   `parent_id` (INTEGER, nullable) - ID of the parent node in the plan tree
+        *   `subquery_level` (INTEGER) - Nesting level for subqueries (0 for main query)
+        *   `op` (TEXT) - Operation type (e.g., 'SCAN', 'FILTER', 'PROJECT')
+        *   `detail` (TEXT) - Detailed description of the operation
+        *   `object_name` (TEXT, nullable) - Name of table, index, or other object involved
+        *   `alias` (TEXT, nullable) - Alias used in the query
+        *   `est_cost` (REAL, nullable) - Estimated cost of the operation
+        *   `est_rows` (INTEGER, nullable) - Estimated number of rows produced
+    *   **Example:** `SELECT * FROM query_plan('SELECT name FROM users WHERE age > 25');`
+
+*   `scheduler_program(sql)`
+    *   **Description:** Returns the compiled scheduler program (instruction sequence) for the given SQL statement, showing the actual execution plan used by the Quereus runtime.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to compile).
+    *   **Returns:** A table with columns:
+        *   `addr` (INTEGER) - Instruction address/position in the program
+        *   `instruction_id` (TEXT) - Unique identifier for the instruction
+        *   `dependencies` (TEXT, nullable) - JSON array of instruction addresses this instruction depends on
+        *   `description` (TEXT) - Human-readable description of the instruction
+        *   `estimated_cost` (REAL, nullable) - Estimated cost of the instruction
+        *   `is_subprogram` (INTEGER) - 1 if this is part of a sub-program, 0 for main program
+        *   `parent_addr` (INTEGER, nullable) - Address of parent instruction for sub-programs
+    *   **Example:** `SELECT addr, instruction_id, description FROM scheduler_program('SELECT 1 + 1');`
+
+*   `stack_trace(sql)`
+    *   **Description:** Returns the execution stack trace when running the given SQL statement, useful for debugging complex queries.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to trace).
+    *   **Returns:** A table with columns:
+        *   `frame_id` (INTEGER) - Stack frame identifier (0 = top of stack)
+        *   `function_name` (TEXT, nullable) - Name of the function being executed
+        *   `instruction_addr` (INTEGER, nullable) - Current instruction address
+        *   `source_location` (TEXT, nullable) - Source code location (file:line)
+        *   `local_vars` (TEXT, nullable) - JSON representation of local variables
+    *   **Example:** `SELECT frame_id, function_name, source_location FROM stack_trace('SELECT complex_function(x) FROM table');`
+
+*   `execution_trace(sql)`
+    *   **Description:** Returns a detailed execution trace with timing and resource usage information for performance analysis.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to trace).
+    *   **Returns:** A table with columns:
+        *   `step_id` (INTEGER) - Sequential step identifier
+        *   `timestamp_ms` (REAL) - Timestamp when the step started (milliseconds since epoch)
+        *   `operation` (TEXT) - Type of operation (e.g., 'PARSE', 'PLAN', 'EXECUTE')
+        *   `duration_ms` (REAL, nullable) - Duration of the operation in milliseconds
+        *   `rows_processed` (INTEGER, nullable) - Number of rows processed in this step
+        *   `memory_used` (INTEGER, nullable) - Memory usage in bytes
+        *   `details` (TEXT, nullable) - JSON representation of additional details
+    *   **Example:** `SELECT operation, duration_ms, rows_processed FROM execution_trace('SELECT * FROM large_table WHERE condition');`
+
+**Note:** These diagnostic functions are primarily intended for development, debugging, and performance analysis. The `stack_trace` and `execution_trace` functions are non-deterministic and may have performance overhead.

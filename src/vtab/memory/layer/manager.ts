@@ -9,7 +9,7 @@ import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js';
 import { QuereusError, ConstraintError } from '../../../common/errors.js';
 import { ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
-import type { ColumnDef as ASTColumnDef } from '../../../parser/ast.js';
+import type { ColumnDef as ASTColumnDef, LiteralExpr } from '../../../parser/ast.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { ColumnSchema } from '../../../schema/column.js';
@@ -496,7 +496,7 @@ export class MemoryTableManager {
 			const defaultConstraint = columnDefAst.constraints.find(c => c.type === 'default');
 			if (defaultConstraint && defaultConstraint.expr) {
 				if (defaultConstraint.expr.type === 'literal') {
-					defaultValue = (defaultConstraint.expr as import('../../../parser/ast.js').LiteralExpr).value;
+					defaultValue = (defaultConstraint.expr as LiteralExpr).value;
 				} else {
 					logger.warn('Add Column', this._tableName, 'Default for new col is expr; existing rows get NULL.', { columnName: newColumnSchema.name });
 				}

@@ -36,12 +36,15 @@ export type { FunctionSchema } from './schema/function.js';
 export {
 	createScalarFunction,
 	createTableValuedFunction,
-	createAggregateFunction,
-	type ScalarFunc,
-	type TableValuedFunc,
-	type AggregateReducer,
-	type AggregateFinalizer
+	createAggregateFunction
 } from './func/registration.js';
+
+export type {
+	ScalarFunc,
+	TableValuedFunc,
+	AggregateReducer,
+	AggregateFinalizer
+} from './schema/function.js';
 
 // Utility functions
 export { Latches } from './util/latches.js';

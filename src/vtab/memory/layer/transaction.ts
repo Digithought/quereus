@@ -3,7 +3,7 @@ import type { TableSchema } from '../../../schema/table.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { MemoryIndex } from '../index.js';
 import type { SqlValue, Row } from '../../../common/types.js';
-import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
 
 let transactionLayerCounter = 1000;
@@ -138,7 +138,7 @@ export class TransactionLayer implements Layer {
 		return null; // Secondary indexes are accessed via getSecondaryIndexTree
 	}
 
-	getSecondaryIndexTree(indexName: string): BTree<BTreeKeyForIndex, import('../types.js').MemoryIndexEntry> | null {
+	getSecondaryIndexTree(indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null {
 		return this.secondaryIndexes.get(indexName)?.data ?? null;
 	}
 

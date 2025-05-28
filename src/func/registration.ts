@@ -1,7 +1,7 @@
 import { createLogger } from '../common/logger.js';
-import type { FunctionSchema, TVFColumnInfo } from '../schema/function.js';
+import type { AggregateFinalizer, AggregateReducer, FunctionSchema, IntegratedTableValuedFunc, ScalarFunc, TableValuedFunc, TVFColumnInfo } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
-import { type SqlValue, SqlDataType } from '../common/types.js';
+import { SqlDataType } from '../common/types.js';
 
 const log = createLogger('func:registration');
 
@@ -52,28 +52,6 @@ interface AggregateFuncOptions {
 }
 
 /**
- * Type for a scalar function implementation.
- * Takes SQL values and returns a SQL value directly.
- */
-export type ScalarFunc = (...args: SqlValue[]) => SqlValue | Promise<SqlValue>;
-
-/**
- * Type for a table-valued function implementation.
- * Takes SQL values and returns an async iterable of rows.
- */
-export type TableValuedFunc = (...args: SqlValue[]) => AsyncIterable<import('../common/types.js').Row> | Promise<AsyncIterable<import('../common/types.js').Row>>;
-
-/**
- * Type for aggregate reducer functions.
- */
-export type AggregateReducer<T = any> = (accumulator: T, ...args: SqlValue[]) => T;
-
-/**
- * Type for aggregate finalizer functions.
- */
-export type AggregateFinalizer<T = any> = (accumulator: T) => SqlValue;
-
-/**
  * Creates a function schema for a scalar SQL function.
  * This is the primary way to register scalar functions in Quereus.
  *
@@ -108,6 +86,27 @@ export function createTableValuedFunction(options: TableValuedFuncOptions, jsFun
 		type: 'table-valued',
 		tableValuedImpl: jsFunc,
 		columns: options.columns
+	};
+}
+
+/**
+ * Creates a function schema for a database-aware table-valued function.
+ * These functions receive the database instance as their first parameter.
+ *
+ * @param options Configuration options for the function
+ * @param jsFunc The JavaScript implementation function that takes (db, ...args)
+ * @returns A FunctionSchema ready for registration
+ */
+export function createIntegratedTableValuedFunction(options: TableValuedFuncOptions, jsFunc: IntegratedTableValuedFunc): FunctionSchema {
+	return {
+		name: options.name,
+		numArgs: options.numArgs,
+		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
+		type: 'table-valued',
+		tableValuedImpl: jsFunc as any, // We'll handle the database injection in the emitter
+		columns: options.columns,
+		// Mark this as database-aware so the emitter knows to inject the database
+		isIntegrated: true
 	};
 }
 

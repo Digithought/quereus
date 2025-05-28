@@ -17,6 +17,7 @@ import { LimitOffsetNode } from '../nodes/limit-offset.js';
 import { LiteralNode } from '../nodes/scalar.js';
 import { AggregateNode } from '../nodes/aggregate-node.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
+import { buildTableFunctionCall } from './table-function.js';
 
 /**
  * Checks if an expression contains aggregate functions
@@ -224,6 +225,22 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 		// For now, we'll store the column scope in a property that buildSelectStmt can use
 		// TODO: This is a temporary solution; we might need a better design
+		(fromTable as any).columnScope = columnScope;
+	} else if (fromClause.type === 'functionSource') {
+		fromTable = buildTableFunctionCall(fromClause, parentContext);
+
+		const functionScope = new RegisteredScope(parentContext.scope);
+		fromTable.getType().columns.forEach((c, i) =>
+			functionScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));
+
+		if (fromClause.alias) {
+			columnScope = new AliasedScope(functionScope, fromClause.name.name.toLowerCase(), fromClause.alias.toLowerCase());
+		} else {
+			columnScope = functionScope;
+		}
+
+		// Store the column scope for buildSelectStmt
 		(fromTable as any).columnScope = columnScope;
 	} else {
 		throw new QuereusError(

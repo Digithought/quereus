@@ -1,7 +1,7 @@
 import type { PlanNode } from './nodes/plan-node.js';
 import { safeJsonStringify } from '../util/serialization.js';
 import { astToString } from '../util/ast-stringify.js';
-import type { Instruction } from '../runtime/types.js';
+import type { Instruction, InstructionTracer } from '../runtime/types.js';
 import type * as AST from '../parser/ast.js';
 
 /**
@@ -263,7 +263,7 @@ export function getInstructionDebugInfo(
  * Generates a comprehensive trace report that includes sub-program execution details.
  */
 export function generateTraceReport(
-  tracer: import('../runtime/types.js').InstructionTracer
+  tracer: InstructionTracer
 ): string {
   const events = tracer.getTraceEvents?.() || [];
   const subPrograms = tracer.getSubPrograms?.() || new Map();

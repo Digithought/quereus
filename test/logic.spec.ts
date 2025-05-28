@@ -36,9 +36,6 @@ const DIAG_CONFIG = {
 function generateDiagnostics(db: Database, sqlBlock: string, error: Error): string {
 	const diagnostics = ['\n=== FAILURE DIAGNOSTICS ==='];
 
-	// Always show basic error info
-	diagnostics.push(`\nError: ${error.message}`);
-
 	// Show configuration hint if no diagnostics are enabled
 	const anyDiagEnabled = Object.values(DIAG_CONFIG).some(v => v);
 	if (!anyDiagEnabled) {
@@ -260,10 +257,10 @@ describe('SQL Logic Tests', () => {
 								}
 
 								if (actualResult.length !== expectedResult.length) {
-									const baseError = new Error(`Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}`);
+									const baseError = new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}\nBlock:\n${sqlBlock}`);
 									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
 									const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
-									throw new Error(`[${file}:${lineNumber}] Block:\n${sqlBlock}${diagnostics}${traceInfo}`);
+									throw new Error(`${baseError.message}${diagnostics}${traceInfo}`);
 								}
 								for (let i = 0; i < actualResult.length; i++) {
 									try {
@@ -281,9 +278,9 @@ describe('SQL Logic Tests', () => {
 								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
 								try {
 									await db.exec(sqlBlock);
-									const diagnostics = generateDiagnostics(db, sqlBlock,
-										new Error(`Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully`));
-									throw new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}${diagnostics}`);
+									const baseError = new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
+									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
+									throw new Error(`${baseError.message}${diagnostics}`);
 								} catch (actualError: any) {
 									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
 										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
@@ -298,8 +295,15 @@ describe('SQL Logic Tests', () => {
 								);
 								console.log(`   -> Caught expected error: ${error.message}`);
 							} else {
-								const diagnostics = generateDiagnostics(db, sqlBlock, error);
-								throw new Error(`[${file}:${lineNumber}] Failed executing SQL block: ${sqlBlock} - Unexpected Error: ${error.message}${diagnostics}`);
+								// Check if error already contains diagnostics to avoid duplication
+								if (error.message.includes('=== FAILURE DIAGNOSTICS ===')) {
+									// Error already has diagnostics, just re-throw
+									throw error;
+								} else {
+									// Add diagnostics to the error
+									const diagnostics = generateDiagnostics(db, sqlBlock, error);
+									throw new Error(`[${file}:${lineNumber}] Failed executing SQL block: ${sqlBlock} - Unexpected Error: ${error.message}${diagnostics}`);
+								}
 							}
 						}
 
@@ -323,8 +327,9 @@ describe('SQL Logic Tests', () => {
 					} catch (error: any) {
 						// If the final block was actually expected to error, this catch is wrong.
 						// The loop structure assumes errors/results are declared *before* the SQL.
-						const diagnostics = generateDiagnostics(db, finalSql, error);
-						throw new Error(`[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}${diagnostics}`);
+						const baseError = new Error(`[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}`);
+						const diagnostics = generateDiagnostics(db, finalSql, baseError);
+						throw new Error(`${baseError.message}${diagnostics}`);
 					}
 				}
 			});
