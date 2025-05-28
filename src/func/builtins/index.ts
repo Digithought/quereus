@@ -19,6 +19,7 @@ import { jsonValidFunc, jsonTypeFunc, jsonExtractFunc, jsonQuoteFunc, jsonArrayF
 import { generateSeriesFunc } from './generation.js';
 import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc } from './explain.js';
 import { schemaFunc, tableInfoFunc, functionInfoFunc } from './schema.js';
+import { jsonEachFunc, jsonTreeFunc } from './json-tvf.js';
 
 // Additional useful functions integrated from examples
 
@@ -109,6 +110,9 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	schemaFunc,
 	tableInfoFunc,
 	functionInfoFunc,
+	// JSON table-valued functions
+	jsonEachFunc,
+	jsonTreeFunc,
 ];
 
 // Export registration utilities for easy access

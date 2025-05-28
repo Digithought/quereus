@@ -10,8 +10,6 @@ import { BUILTIN_FUNCTIONS } from '../func/builtins/index.js';
 import { createScalarFunction, createAggregateFunction } from '../func/registration.js';
 import { FunctionFlags } from '../common/constants.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
-import { JsonEachModule } from '../vtab/json/each.js';
-import { JsonTreeModule } from '../vtab/json/tree.js';
 
 
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
@@ -61,8 +59,6 @@ export class Database {
 		// this.schemaManager.setDefaultVTabArgs([]); // Already [] by default in SchemaManager
 
 		this.schemaManager.registerModule('memory', new MemoryTableModule());
-		this.schemaManager.registerModule('json_each', new JsonEachModule());
-		this.schemaManager.registerModule('json_tree', new JsonTreeModule());
 
 
 

@@ -56,10 +56,19 @@ export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): Paramete
 }
 
 export function resolveFunction(scope: Scope, exp: AST.FunctionExpr): FunctionReferenceNode | typeof Ambiguous | undefined {
+	// First try exact argument count
 	const symbolKey = exp.name.toLowerCase() + '/' + exp.args.length;
-	const result = scope.resolveSymbol(symbolKey, exp);
+	let result = scope.resolveSymbol(symbolKey, exp);
 	if (result === Ambiguous || result instanceof FunctionReferenceNode) {
 		return result;
 	}
+
+	// If exact match not found, try variable argument function (numArgs = -1)
+	const varArgSymbolKey = exp.name.toLowerCase() + '/-1';
+	result = scope.resolveSymbol(varArgSymbolKey, exp);
+	if (result === Ambiguous || result instanceof FunctionReferenceNode) {
+		return result;
+	}
+
 	throw new QuereusError(`Function not found/ambiguous: ${exp.name}/${exp.args.length}`, StatusCode.ERROR);
 }

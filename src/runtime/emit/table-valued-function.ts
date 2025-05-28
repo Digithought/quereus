@@ -11,7 +11,11 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 	const numArgs = plan.operands.length;
 
 	// Look up the function during emission and record the dependency
-	const functionSchema = ctx.findFunction(functionName, numArgs);
+	// First try exact argument count, then try variable argument function
+	let functionSchema = ctx.findFunction(functionName, numArgs);
+	if (!functionSchema) {
+		functionSchema = ctx.findFunction(functionName, -1); // Try variable argument function
+	}
 	if (!functionSchema) {
 		throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
 	}
@@ -19,8 +23,8 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 		throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function`, StatusCode.ERROR);
 	}
 
-	// Capture the function key for runtime retrieval
-	const functionKey = `function:${functionName}/${numArgs}`;
+	// Capture the function key for runtime retrieval (use the actual function's numArgs)
+	const functionKey = `function:${functionName}/${functionSchema.numArgs}`;
 
 	async function* runIntegrated(innerCtx: RuntimeContext, ...args: Array<SqlValue>): AsyncIterable<Row> {
 		// Use the captured function schema instead of doing a fresh lookup
@@ -48,7 +52,17 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 		// Use the captured function schema instead of doing a fresh lookup
 		const capturedFunction = ctx.getCapturedSchemaObject<FunctionSchema>(functionKey);
 		if (!capturedFunction) {
-			throw new QuereusError(`Function ${functionName}/${numArgs} was not captured during emission`, StatusCode.INTERNAL);
+			throw new QuereusError(`Function ${functionName}/${functionSchema!.numArgs} was not captured during emission`, StatusCode.INTERNAL);
+		}
+
+		// Validate argument count for variable argument functions
+		if (capturedFunction.numArgs === -1) {
+			// Special validation for known variable argument functions
+			if (functionName === 'json_each' || functionName === 'json_tree') {
+				if (args.length < 1 || args.length > 2) {
+					throw new QuereusError(`${functionName} requires 1 or 2 arguments (jsonSource, [rootPath])`, StatusCode.ERROR);
+				}
+			}
 		}
 
 		try {
@@ -67,10 +81,11 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 	}
 
 	const operandExprs = plan.operands.map(operand => emitPlanNode(operand, ctx));
+	const runFunction = functionSchema.isIntegrated ? runIntegrated : run;
 
 	return createValidatedInstruction(
 		[...operandExprs],
-		(functionSchema.isIntegrated ? runIntegrated : run) as InstructionRun,
+		runFunction as InstructionRun,
 		ctx,
 		`TVF:${plan.functionName}(${plan.operands.length})`
 	);

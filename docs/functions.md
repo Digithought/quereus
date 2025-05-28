@@ -18,6 +18,28 @@ Table-valued functions (TVFs) can be used in the `FROM` clause of a `SELECT` sta
     *   **Returns:** A table with a single column `value` containing the generated integers.
     *   **Example:** `SELECT * FROM generate_series(1, 5);` returns rows with values 1, 2, 3, 4, 5. `SELECT * FROM generate_series(0, 10, 2);` returns 0, 2, 4, 6, 8, 10.
 
+### JSON Processing Functions
+
+*   `json_each(json)`, `json_each(json, path)`
+    *   **Description:** Returns a table with one row for each element in the JSON array or object at the specified path. If no path is provided, processes the root JSON value.
+    *   **Arguments:** `json` (TEXT - valid JSON string), `path` (TEXT, optional - JSON path like '$.data').
+    *   **Returns:** A table with columns:
+        *   `key` (TEXT, nullable) - Array index (for arrays) or property name (for objects)
+        *   `value` (TEXT, nullable) - The JSON value as text
+        *   `type` (TEXT) - JSON type: 'null', 'true', 'false', 'integer', 'real', 'text', 'array', 'object'
+        *   `atom` (TEXT, nullable) - For scalar values, the actual value; null for arrays/objects
+        *   `id` (INTEGER) - Unique identifier for this element
+        *   `parent` (INTEGER, nullable) - ID of the parent element
+        *   `fullkey` (TEXT) - Full JSON path to this element
+        *   `path` (TEXT) - JSON path to the parent element
+    *   **Example:** `SELECT key, value FROM json_each('[10, 20, {"a": 30}]');` returns rows for each array element.
+
+*   `json_tree(json)`, `json_tree(json, path)`
+    *   **Description:** Similar to `json_each`, but returns a hierarchical tree view where parent elements are returned before their children.
+    *   **Arguments:** `json` (TEXT - valid JSON string), `path` (TEXT, optional - JSON path like '$.nested').
+    *   **Returns:** Same columns as `json_each`, but in tree traversal order.
+    *   **Example:** `SELECT fullkey, type FROM json_tree('{"a": [1, 2]}');` returns the object first, then the array, then each array element.
+
 ## Scalar Functions
 
 These functions operate on single values and return a single value.

@@ -232,8 +232,11 @@ describe('SQL Logic Tests', () => {
 								const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
 								if (statements.length > 1) {
 									for (let i = 0; i < statements.length - 1; i++) {
-										console.log(`  -> Executing setup statement: ${statements[i]}`);
-										await db.exec(statements[i]); // exec is for side-effects
+										const statement = statements[i].trim();
+										if (statement.length > 0) {
+											console.log(`  -> Executing setup statement: ${statement}`);
+											await db.exec(statement); // exec is for side-effects
+										}
 									}
 								}
 

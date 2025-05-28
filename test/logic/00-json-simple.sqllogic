@@ -1,0 +1,7 @@
+-- Simple JSON TVF test
+
+-- Test if json_each function exists
+SELECT name FROM function_info() WHERE name = 'json_each';
+
+-- Test json_each with simple array
+SELECT key, value FROM json_each('[1, 2]');
