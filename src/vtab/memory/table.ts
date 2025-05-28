@@ -13,7 +13,7 @@ import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js'; // Assumin
 import { createMemoryTableLoggers } from './utils/logging.js';
 import { safeJsonStringify } from '../../util/serialization.js';
 import type { VirtualTableConnection } from '../connection.js';
-import { MemoryVirtualTableConnection } from './vtab-connection.js';
+import { MemoryVirtualTableConnection } from './connection.js';
 
 const logger = createMemoryTableLoggers('table');
 

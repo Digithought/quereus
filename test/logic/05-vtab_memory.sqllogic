@@ -35,13 +35,13 @@ SELECT name FROM mem_t WHERE city = 'New York' ORDER BY age;
 BEGIN;
 INSERT INTO mem_t VALUES (5, 'Eve', 28, 'London');
 SELECT count(*) FROM mem_t WHERE city = 'London';
-→ [2]
+→ [{ "count(*)": 2 }]
 ROLLBACK;
 SELECT count(*) FROM mem_t WHERE city = 'London';
-→ [1]
+→ [{ "count(*)": 1 }]
 
 -- Test multiple constraints - PK likely preferred
 SELECT name FROM mem_t WHERE id > 1 AND age = 30;
-→ [{"name":"Alice"},{"name":"David"}] -- Filtered after scan
+→ [{"name":"David"}]
 
 DROP TABLE mem_t;

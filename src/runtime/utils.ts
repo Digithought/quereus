@@ -3,10 +3,9 @@ import { StatusCode } from '../common/types.js';
 import type { TableSchema } from '../schema/table.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { RuntimeContext } from './types.js';
-import type { TableReferenceNode } from "../planner/nodes/reference.js";
 import type { VirtualTableConnection } from '../vtab/connection.js';
 import { createLogger } from '../common/logger.js';
-import type { MemoryVirtualTableConnection } from '../vtab/memory/vtab-connection.js';
+import type { MemoryVirtualTableConnection } from '../vtab/memory/connection.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
 
 const log = createLogger('runtime:utils');

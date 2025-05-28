@@ -25,6 +25,7 @@ import { emitCollate } from "./emit/collate.js";
 import { emitTableValuedFunctionCall } from './emit/table-valued-function.js';
 import { emitTransaction } from './emit/transaction.js';
 import { emitPragma } from './emit/pragma.js';
+import { emitSort } from './emit/sort.js';
 
 let registered = false;
 
@@ -59,4 +60,5 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.TableFunctionCall, emitTableValuedFunctionCall as EmitterFunc);
 	registerEmitter(PlanNodeType.Transaction, emitTransaction as EmitterFunc);
 	registerEmitter(PlanNodeType.Pragma, emitPragma as EmitterFunc);
+	registerEmitter(PlanNodeType.Sort, emitSort as EmitterFunc);
 }

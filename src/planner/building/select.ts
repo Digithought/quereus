@@ -18,6 +18,7 @@ import { LiteralNode } from '../nodes/scalar.js';
 import { AggregateNode } from '../nodes/aggregate-node.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { buildTableFunctionCall } from './table-function.js';
+import { SortNode, type SortKey } from '../nodes/sort.js';
 
 /**
  * Checks if an expression contains aggregate functions
@@ -192,7 +193,19 @@ export function buildSelectStmt(
 		}
 	}
 
-	// TODO: Plan ORDER BY clause, creating SortNode
+	// Plan ORDER BY clause, creating SortNode
+	if (stmt.orderBy && stmt.orderBy.length > 0) {
+		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
+			const expression = buildExpression(selectContext, orderByClause.expr);
+			return {
+				expression,
+				direction: orderByClause.direction,
+				nulls: orderByClause.nulls
+			};
+		});
+
+		input = new SortNode(selectScope, input, sortKeys);
+	}
 
 	// Plan LIMIT and OFFSET clauses
 	if (stmt.limit || stmt.offset) {
