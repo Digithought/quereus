@@ -112,7 +112,7 @@ function simpleLike(pattern: string, text: string): boolean {
 
 export const likeFunc = createScalarFunction(
 	{ name: 'like', numArgs: 2, deterministic: true },
-	(text: SqlValue, pattern: SqlValue): SqlValue => {
+	(pattern: SqlValue, text: SqlValue): SqlValue => {
 		if (text === null || pattern === null) return null;
 		return simpleLike(String(pattern), String(text)) ? 1 : 0;
 	}

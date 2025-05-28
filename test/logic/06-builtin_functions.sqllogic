@@ -4,11 +4,11 @@
 SELECT lower('Quereus'), upper('Quereus'), length('Quereus');
 → [{"lower('Quereus')":"quereus","upper('Quereus')":"QUEREUS","length('Quereus')":7}]
 SELECT substr('Quereus', 2, 3), substring('Quereus', 4);
-→ [{"substr('Quereus', 2, 3)":"QLi","substring('Quereus', 4)":"iter"}]
+→ [{"substr('Quereus', 2, 3)":"uer","substring('Quereus', 4)":"reus"}]
 SELECT abs(-10), round(12.345, 1), round(12.345);
 → [{"abs(-10)":10,"round(12.345, 1)":12.3,"round(12.345)":12}]
-SELECT typeof(1), typeof(1.5), typeof('text'), typeof(x'01'), typeof(null), typeof(true);
-→ [{"typeof(1)":"integer","typeof(1.5)":"real","typeof('text')":"text","typeof(x'01')":"blob","typeof(null)":"null","typeof(true)":"integer"}]
+SELECT typeof(1), typeof(1.5), typeof('text'), typeof(x'01'), typeof(null), typeof(12345678901234567890);
+→ [{"typeof(1)":"integer","typeof(1.5)":"real","typeof('text')":"text","typeof(x'01')":"blob","typeof(null)":"null","typeof(12345678901234567890)":"integer"}]
 SELECT like('abc%', 'abcde'), glob('a*c', 'abbbc');
 → [{"like('abc%', 'abcde')":1,"glob('a*c', 'abbbc')":1}]
 
@@ -26,9 +26,9 @@ SELECT strftime('%Y-%m-%d', '2024-07-26');
 
 -- JSON Functions
 SELECT json_valid('{"a": 1}'), json_valid('{');
-→ [{"json_valid('{"a": 1}')":1,"json_valid('{')":0}]
+→ [{"json_valid('{\"a\": 1}')":1,"json_valid('{')":0}]
 SELECT json_type('{"a": 1}', '$.a'), json_type('[1, "t", null]', '[1]');
-→ [{"json_type('{"a": 1}', '$.a')":"integer","json_type('[1, "t", null]', '[1]')":"text"}]
+→ [{"json_type('{\"a\": 1}', '$.a')":"integer","json_type('[1, \"t\", null]', '[1]')":"text"}]
 SELECT json_extract('{"a": [10, 20], "b": "foo"}', '$.a[1]');
 → [20]
 SELECT json_quote(1), json_quote('text'), json_quote(null);

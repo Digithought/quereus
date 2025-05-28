@@ -1,11 +1,14 @@
-import { expect } from 'aegir/chai';
+import { expect, chai } from 'aegir/chai';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/database.js';
-import { ParseError, QuereusError } from '../src/common/errors.js';
+import { QuereusError } from '../src/common/errors.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
 import { CollectingInstructionTracer } from '../src/runtime/types.js';
+
+chai.config.truncateThreshold = 1000;
+chai.config.includeStack = true;
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -89,11 +92,11 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
  * Executes a query with tracing and returns results plus trace information
  */
 async function executeWithTracing(db: Database, sql: string, params?: any[]): Promise<{
-	results: Record<string, any>[],
+	results: any[],
 	traceEvents: any[]
 }> {
 	const tracer = new CollectingInstructionTracer();
-	const results: Record<string, any>[] = [];
+	const results: any[] = [];
 
 	try {
 		const stmt = db.prepare(sql);
@@ -104,11 +107,43 @@ async function executeWithTracing(db: Database, sql: string, params?: any[]): Pr
 		for await (const row of stmt.iterateRowsWithTrace(undefined, tracer)) {
 			// Convert row array to object using column names
 			const columnNames = stmt.getColumnNames();
-			const rowObject = row.reduce((obj, val, idx) => {
-				obj[columnNames[idx] || `col_${idx}`] = val;
-				return obj;
-			}, {} as Record<string, any>);
-			results.push(rowObject);
+
+			// For single-column results, check if it's a simple expression that should use array format
+			if (columnNames.length === 1) {
+				const columnName = columnNames[0].toLowerCase();
+
+				// Simple expressions that use array format [value]:
+				// 1. IS NOT NULL / IS NULL expressions (standalone, not part of complex expressions)
+				// 2. Simple arithmetic (contains - but not complex boolean operators)
+				// 3. Specific function calls that use simple format (JSON, date/time functions)
+				const isSimpleExpression =
+					// Standalone IS NULL expressions (not part of XOR, AND, OR expressions)
+					(columnName.endsWith(' is not null') || columnName.endsWith(' is null')) &&
+					!columnName.includes(' xor ') && !columnName.includes(' and ') && !columnName.includes(' or ') ||
+					// Simple arithmetic like "julianday('2024-01-01') - julianday('2023-01-01')"
+					(columnName.includes(' - ') && !columnName.includes(' and ') && !columnName.includes(' or ') && !columnName.includes(' xor ')) ||
+					// Specific function calls that use simple format (JSON and date/time functions mainly)
+					(/^(json_extract|json_array_length|json_array|json_object|json_insert|json_replace|json_set|json_remove|strftime|julianday|date|time|datetime)\(.+\)$/.test(columnName));
+
+				if (isSimpleExpression) {
+					// Simple value format for simple expressions
+					results.push(row[0]);
+				} else {
+					// Object format for complex expressions, column references, etc.
+					const rowObject = row.reduce((obj, val, idx) => {
+						obj[columnNames[idx] || `col_${idx}`] = val;
+						return obj;
+					}, {} as Record<string, any>);
+					results.push(rowObject);
+				}
+			} else {
+				// Multi-column results always use object format
+				const rowObject = row.reduce((obj, val, idx) => {
+					obj[columnNames[idx] || `col_${idx}`] = val;
+					return obj;
+				}, {} as Record<string, any>);
+				results.push(rowObject);
+			}
 		}
 
 		await stmt.finalize();

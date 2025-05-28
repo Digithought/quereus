@@ -139,8 +139,10 @@ export function expressionToString(expr: AST.Expression): string {
 			// Handle postfix operators like IS NULL, IS NOT NULL
 			if (expr.operator === 'IS NULL' || expr.operator === 'IS NOT NULL') {
 				return `${exprStr} ${expr.operator.toLowerCase()}`;
+			} else if (expr.operator === 'NOT') {
+				return `${expr.operator.toLowerCase()} ${exprStr}`;
 			}
-			return `${expr.operator.toLowerCase()} ${exprStr}`;
+			return `${expr.operator.toLowerCase()}${exprStr}`;
 
 		case 'function':
 			if (expr.name.toLowerCase() === 'count' && expr.args.length === 0) {
