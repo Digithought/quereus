@@ -5,6 +5,7 @@ import type { PlanNode } from "../planner/nodes/plan-node.js";
 import type { Scheduler } from "./scheduler.js";
 import type { EmissionContext } from "./emission-context.js";
 import type { VirtualTable } from "../vtab/table.js";
+import type { VirtualTableConnection } from "../vtab/connection.js";
 
 export type RuntimeContext = {
 	db: Database;
@@ -13,8 +14,8 @@ export type RuntimeContext = {
 	context: Map<PlanNode, () => SqlValue | Row>;
 	/** Debug tracer for instruction execution, if enabled */
 	tracer?: InstructionTracer;
-	/** Set of active VirtualTable instances for transaction operations */
-	activeVTabs?: Set<VirtualTable>;
+	/** Active connection for the current transaction context */
+	activeConnection?: VirtualTableConnection;
 };
 
 export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue;

@@ -5,6 +5,7 @@ import type { Row } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
 import type { RowOp } from '../parser/ast.js';
+import type { VirtualTableConnection } from './connection.js';
 
 /**
  * Base class representing a virtual table instance.
@@ -62,6 +63,20 @@ export abstract class VirtualTable {
 		values: Row | undefined,
 		oldKeyValues?: Row
 	): Promise<Row | undefined>;
+
+	/**
+	 * (Optional) Creates a new connection for transaction support.
+	 * If implemented, this enables proper transaction isolation for this table.
+	 * @returns A new VirtualTableConnection instance
+	 */
+	createConnection?(): VirtualTableConnection | Promise<VirtualTableConnection>;
+
+	/**
+	 * (Optional) Gets the current connection for this table instance.
+	 * Used when the table maintains a single connection internally.
+	 * @returns The current VirtualTableConnection instance, if any
+	 */
+	getConnection?(): VirtualTableConnection | undefined;
 
 	/**
 	 * Begins a transaction on this virtual table

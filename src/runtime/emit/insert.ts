@@ -3,7 +3,7 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
-import { getVTable, disconnectVTable } from '../utils.js';
+import { getVTableConnection, getVTable, disconnectVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
@@ -60,6 +60,10 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
   }
 
   async function* runLogic(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
+    // Get or create a connection for this table to ensure transaction consistency
+    const connection = await getVTableConnection(ctx, tableSchema);
+
+    // Create a VirtualTable instance for the actual operations
     const vtab = await getVTable(ctx, tableSchema);
 
     try {

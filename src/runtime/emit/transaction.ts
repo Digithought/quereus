@@ -2,7 +2,20 @@ import type { EmissionContext } from '../emission-context.js';
 import type { TransactionNode } from '../../planner/nodes/transaction-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { SqlValue } from '../../common/types.js';
-import type { VirtualTable } from '../../vtab/table.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('runtime:emit:transaction');
+
+// Simple hash function to convert savepoint names to indices
+function hashSavepointName(name: string): number {
+	let hash = 0;
+	for (let i = 0; i < name.length; i++) {
+		const char = name.charCodeAt(i);
+		hash = ((hash << 5) - hash) + char;
+		hash = hash & hash; // Convert to 32-bit integer
+	}
+	return Math.abs(hash);
+}
 
 export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): Instruction {
 	// Select the operation function at emit time
@@ -12,18 +25,16 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 	switch (plan.operation) {
 		case 'begin':
 			run = async (rctx: RuntimeContext) => {
-				// Call xBegin on all active virtual tables
-				const activeVTabs = rctx.activeVTabs || new Set();
-				console.log(`BEGIN: Found ${activeVTabs.size} active VirtualTable instances`);
-				for (const vtab of activeVTabs) {
-					if (vtab.xBegin) {
-						try {
-							console.log(`Calling xBegin on table: ${vtab.tableName}`);
-							await vtab.xBegin();
-						} catch (error) {
-							console.warn(`Failed to call xBegin on table ${vtab.tableName}:`, error);
-							// Continue with other tables rather than failing completely
-						}
+				const connections = rctx.db.getAllConnections();
+				log(`BEGIN: Found ${connections.length} active connections`);
+
+				for (const connection of connections) {
+					try {
+						await connection.begin();
+						log(`BEGIN: Successfully called on connection ${connection.connectionId}`);
+					} catch (error) {
+						log(`BEGIN: Error on connection ${connection.connectionId}: %O`, error);
+						throw error;
 					}
 				}
 				return null;
@@ -33,18 +44,16 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 
 		case 'commit':
 			run = async (rctx: RuntimeContext) => {
-				// Call xCommit on all active virtual tables
-				const activeVTabs = rctx.activeVTabs || new Set();
-				console.log(`COMMIT: Found ${activeVTabs.size} active VirtualTable instances`);
-				for (const vtab of activeVTabs) {
-					if (vtab.xCommit) {
-						try {
-							console.log(`Calling xCommit on table: ${vtab.tableName}`);
-							await vtab.xCommit();
-						} catch (error) {
-							console.warn(`Failed to call xCommit on table ${vtab.tableName}:`, error);
-							// Continue with other tables rather than failing completely
-						}
+				const connections = rctx.db.getAllConnections();
+				log(`COMMIT: Found ${connections.length} active connections`);
+
+				for (const connection of connections) {
+					try {
+						await connection.commit();
+						log(`COMMIT: Successfully called on connection ${connection.connectionId}`);
+					} catch (error) {
+						log(`COMMIT: Error on connection ${connection.connectionId}: %O`, error);
+						throw error;
 					}
 				}
 				return null;
@@ -54,41 +63,35 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 
 		case 'rollback':
 			if (plan.savepoint) {
-				const savepoint = plan.savepoint; // Capture for closure
+				const savepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
 				run = async (rctx: RuntimeContext) => {
-					// Rollback to savepoint on all active virtual tables
-					const activeVTabs = rctx.activeVTabs || new Set();
-					console.log(`ROLLBACK TO SAVEPOINT: Found ${activeVTabs.size} active VirtualTable instances`);
-					for (const vtab of activeVTabs) {
-						if (vtab.xRollbackTo) {
-							try {
-								console.log(`Calling xRollbackTo on table: ${vtab.tableName}`);
-								// Convert savepoint name to index (simple hash for now)
-								const savepointIndex = hashSavepointName(savepoint);
-								await vtab.xRollbackTo(savepointIndex);
-							} catch (error) {
-								console.warn(`Failed to call xRollbackTo on table ${vtab.tableName}:`, error);
-								// Continue with other tables rather than failing completely
-							}
+					const connections = rctx.db.getAllConnections();
+					log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Found ${connections.length} active connections`);
+
+					for (const connection of connections) {
+						try {
+							await connection.rollbackToSavepoint(savepointIndex);
+							log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Successfully called on connection ${connection.connectionId}`);
+						} catch (error) {
+							log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Error on connection ${connection.connectionId}: %O`, error);
+							throw error;
 						}
 					}
 					return null;
 				};
-				note = `ROLLBACK TO SAVEPOINT ${savepoint}`;
+				note = `ROLLBACK TO SAVEPOINT ${plan.savepoint}`;
 			} else {
 				run = async (rctx: RuntimeContext) => {
-					// Full rollback on all active virtual tables
-					const activeVTabs = rctx.activeVTabs || new Set();
-					console.log(`ROLLBACK: Found ${activeVTabs.size} active VirtualTable instances`);
-					for (const vtab of activeVTabs) {
-						if (vtab.xRollback) {
-							try {
-								console.log(`Calling xRollback on table: ${vtab.tableName}`);
-								await vtab.xRollback();
-							} catch (error) {
-								console.warn(`Failed to call xRollback on table ${vtab.tableName}:`, error);
-								// Continue with other tables rather than failing completely
-							}
+					const connections = rctx.db.getAllConnections();
+					log(`ROLLBACK: Found ${connections.length} active connections`);
+
+					for (const connection of connections) {
+						try {
+							await connection.rollback();
+							log(`ROLLBACK: Successfully called on connection ${connection.connectionId}`);
+						} catch (error) {
+							log(`ROLLBACK: Error on connection ${connection.connectionId}: %O`, error);
+							throw error;
 						}
 					}
 					return null;
@@ -101,54 +104,46 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 			if (!plan.savepoint) {
 				throw new Error('Savepoint name is required for SAVEPOINT operation');
 			}
-			const savepointName = plan.savepoint; // Capture for closure
+			const savepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
 			run = async (rctx: RuntimeContext) => {
-				// Create savepoint on all active virtual tables
-				const activeVTabs = rctx.activeVTabs || new Set();
-				console.log(`SAVEPOINT: Found ${activeVTabs.size} active VirtualTable instances`);
-				for (const vtab of activeVTabs) {
-					if (vtab.xSavepoint) {
-						try {
-							console.log(`Calling xSavepoint on table: ${vtab.tableName}`);
-							// Convert savepoint name to index (simple hash for now)
-							const savepointIndex = hashSavepointName(savepointName);
-							await vtab.xSavepoint(savepointIndex);
-						} catch (error) {
-							console.warn(`Failed to call xSavepoint on table ${vtab.tableName}:`, error);
-							// Continue with other tables rather than failing completely
-						}
+				const connections = rctx.db.getAllConnections();
+				log(`SAVEPOINT ${savepointIndex}: Found ${connections.length} active connections`);
+
+				for (const connection of connections) {
+					try {
+						await connection.createSavepoint(savepointIndex);
+						log(`SAVEPOINT ${savepointIndex}: Successfully called on connection ${connection.connectionId}`);
+					} catch (error) {
+						log(`SAVEPOINT ${savepointIndex}: Error on connection ${connection.connectionId}: %O`, error);
+						throw error;
 					}
 				}
 				return null;
 			};
-			note = `SAVEPOINT ${savepointName}`;
+			note = `SAVEPOINT ${plan.savepoint}`;
 			break;
 
 		case 'release':
 			if (!plan.savepoint) {
 				throw new Error('Savepoint name is required for RELEASE operation');
 			}
-			const releaseSavepoint = plan.savepoint; // Capture for closure
+			const releaseSavepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
 			run = async (rctx: RuntimeContext) => {
-				// Release savepoint on all active virtual tables
-				const activeVTabs = rctx.activeVTabs || new Set();
-				console.log(`RELEASE SAVEPOINT: Found ${activeVTabs.size} active VirtualTable instances`);
-				for (const vtab of activeVTabs) {
-					if (vtab.xRelease) {
-						try {
-							console.log(`Calling xRelease on table: ${vtab.tableName}`);
-							// Convert savepoint name to index (simple hash for now)
-							const savepointIndex = hashSavepointName(releaseSavepoint);
-							await vtab.xRelease(savepointIndex);
-						} catch (error) {
-							console.warn(`Failed to call xRelease on table ${vtab.tableName}:`, error);
-							// Continue with other tables rather than failing completely
-						}
+				const connections = rctx.db.getAllConnections();
+				log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Found ${connections.length} active connections`);
+
+				for (const connection of connections) {
+					try {
+						await connection.releaseSavepoint(releaseSavepointIndex);
+						log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Successfully called on connection ${connection.connectionId}`);
+					} catch (error) {
+						log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Error on connection ${connection.connectionId}: %O`, error);
+						throw error;
 					}
 				}
 				return null;
 			};
-			note = `RELEASE SAVEPOINT ${releaseSavepoint}`;
+			note = `RELEASE SAVEPOINT ${plan.savepoint}`;
 			break;
 
 		default:
@@ -160,32 +155,4 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 		run: run as InstructionRun,
 		note
 	};
-}
-
-// Helper function to register a VirtualTable instance as active
-export function registerActiveVTab(rctx: RuntimeContext, vtab: VirtualTable): void {
-	if (!rctx.activeVTabs) {
-		rctx.activeVTabs = new Set();
-	}
-	console.log(`Registering VirtualTable: ${vtab.tableName} (total: ${rctx.activeVTabs.size + 1})`);
-	rctx.activeVTabs.add(vtab);
-}
-
-// Helper function to unregister a VirtualTable instance
-export function unregisterActiveVTab(rctx: RuntimeContext, vtab: VirtualTable): void {
-	if (rctx.activeVTabs) {
-		const wasPresent = rctx.activeVTabs.delete(vtab);
-		console.log(`Unregistering VirtualTable: ${vtab.tableName} (was present: ${wasPresent}, remaining: ${rctx.activeVTabs.size})`);
-	}
-}
-
-// Simple hash function to convert savepoint names to indices
-function hashSavepointName(name: string): number {
-	let hash = 0;
-	for (let i = 0; i < name.length; i++) {
-		const char = name.charCodeAt(i);
-		hash = ((hash << 5) - hash) + char;
-		hash = hash & hash; // Convert to 32-bit integer
-	}
-	return Math.abs(hash);
 }

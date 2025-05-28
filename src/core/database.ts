@@ -10,7 +10,7 @@ import { BUILTIN_FUNCTIONS } from '../func/builtins/index.js';
 import { createScalarFunction, createAggregateFunction } from '../func/registration.js';
 import { FunctionFlags } from '../common/constants.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
-
+import type { VirtualTableConnection } from '../vtab/connection.js';
 
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { Parser, ParseError } from '../parser/parser.js';
@@ -44,6 +44,7 @@ export class Database {
 	private statements = new Set<Statement>();
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
+	private activeConnections = new Map<string, VirtualTableConnection>();
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -275,6 +276,9 @@ export class Database {
 
 		log("Closing database...");
 		this.isOpen = false;
+
+		// Disconnect all active connections first
+		await this.disconnectAllConnections();
 
 		// Finalize all prepared statements
 		const finalizePromises = Array.from(this.statements).map(stmt => stmt.finalize());
@@ -582,6 +586,74 @@ export class Database {
 		const ctx = { db: this, schemaManager: this.schemaManager, parameters: params ?? {}, scope: parameterScope } as PlanningContext;
 
 		return buildBlock(ctx, statements);
+	}
+
+	/**
+	 * @internal Registers an active VirtualTable connection for transaction management.
+	 * @param connection The connection to register
+	 */
+	registerConnection(connection: VirtualTableConnection): void {
+		this.activeConnections.set(connection.connectionId, connection);
+		debugLog(`Registered connection ${connection.connectionId} for table ${connection.tableName}`);
+	}
+
+	/**
+	 * @internal Unregisters an active VirtualTable connection.
+	 * @param connectionId The ID of the connection to unregister
+	 */
+	unregisterConnection(connectionId: string): void {
+		const connection = this.activeConnections.get(connectionId);
+		if (connection) {
+			this.activeConnections.delete(connectionId);
+			debugLog(`Unregistered connection ${connectionId} for table ${connection.tableName}`);
+		}
+	}
+
+	/**
+	 * @internal Gets an active connection by ID.
+	 * @param connectionId The connection ID to look up
+	 * @returns The connection if found, undefined otherwise
+	 */
+	getConnection(connectionId: string): VirtualTableConnection | undefined {
+		return this.activeConnections.get(connectionId);
+	}
+
+	/**
+	 * @internal Gets all active connections for a specific table.
+	 * @param tableName The name of the table
+	 * @returns Array of connections for the table
+	 */
+	getConnectionsForTable(tableName: string): VirtualTableConnection[] {
+		return Array.from(this.activeConnections.values())
+			.filter(conn => conn.tableName === tableName);
+	}
+
+	/**
+	 * @internal Gets all active connections.
+	 * @returns Array of all active connections
+	 */
+	getAllConnections(): VirtualTableConnection[] {
+		return Array.from(this.activeConnections.values());
+	}
+
+	/**
+	 * Disconnects and removes all active connections.
+	 * Called during database close.
+	 */
+	private async disconnectAllConnections(): Promise<void> {
+		const connections = Array.from(this.activeConnections.values());
+		debugLog(`Disconnecting ${connections.length} active connections`);
+
+		const disconnectPromises = connections.map(async (conn) => {
+			try {
+				await conn.disconnect();
+			} catch (error) {
+				errorLog(`Error disconnecting connection ${conn.connectionId}: %O`, error);
+			}
+		});
+
+		await Promise.allSettled(disconnectPromises);
+		this.activeConnections.clear();
 	}
 
 	private checkOpen(): void {

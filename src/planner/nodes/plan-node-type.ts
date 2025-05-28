@@ -32,6 +32,9 @@ export enum PlanNodeType {
   // Transaction Nodes
   Transaction = 'Transaction',
 
+  // Pragma Nodes
+  Pragma = 'Pragma',
+
   // Scalar Nodes (ExpressionNode subtypes)
   Literal = 'Literal',
   ColumnReference = 'ColumnReference',

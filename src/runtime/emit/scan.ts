@@ -6,8 +6,7 @@ import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
 import { createValidatedInstruction } from "../emitters.js";
-import { registerActiveVTab, unregisterActiveVTab } from "./transaction.js";
-import { disconnectVTable } from "../utils.js";
+import { getVTableConnection, disconnectVTable } from "../utils.js";
 
 export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.source.tableSchema;
@@ -22,6 +21,9 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 	const moduleKey = `vtab_module:${tableSchema.vtabModuleName}`;
 
 	async function* run(runtimeCtx: RuntimeContext): AsyncIterable<Row> {
+		// Get or create a connection for this table
+		const connection = await getVTableConnection(runtimeCtx, tableSchema);
+
 		// Use the captured module info instead of doing a fresh lookup
 		const capturedModuleInfo = ctx.getCapturedSchemaObject<{ module: any, auxData?: unknown }>(moduleKey);
 		if (!capturedModuleInfo) {
@@ -55,9 +57,6 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 			throw new QuereusError(`Virtual table '${tableSchema.name}' does not support xQuery.`, StatusCode.UNSUPPORTED);
 		}
 
-		// Register the VirtualTable instance for transaction operations
-		registerActiveVTab(runtimeCtx, vtabInstance);
-
 		try {
 			// Put cursor row into context
 			let row: Row;
@@ -74,7 +73,7 @@ export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instru
 			const message = e instanceof Error ? e.message : String(e);
 			throw new QuereusError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		} finally {
-			// Properly disconnect and unregister the VirtualTable instance
+			// Properly disconnect the VirtualTable instance
 			await disconnectVTable(runtimeCtx, vtabInstance);
 		}
 	}

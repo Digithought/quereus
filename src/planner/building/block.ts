@@ -9,6 +9,7 @@ import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
 import { buildBeginStmt, buildCommitStmt, buildRollbackStmt, buildSavepointStmt, buildReleaseStmt } from './transaction.js';
+import { buildPragmaStmt } from './pragma.js';
 
 export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
@@ -39,6 +40,8 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildSavepointStmt(ctx, stmt as AST.SavepointStmt);
 			case 'release':
 				return buildReleaseStmt(ctx, stmt as AST.ReleaseStmt);
+			case 'pragma':
+				return buildPragmaStmt(ctx, stmt as AST.PragmaStmt);
 			default:
 				// Throw an exception for unsupported statement types
 				throw new Error(`Unsupported statement type: ${stmt.type}`);

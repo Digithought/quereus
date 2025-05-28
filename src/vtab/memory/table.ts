@@ -12,6 +12,8 @@ import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';
 import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js'; // Assuming this will be updated for renameColumn
 import { createMemoryTableLoggers } from './utils/logging.js';
 import { safeJsonStringify } from '../../util/serialization.js';
+import type { VirtualTableConnection } from '../connection.js';
+import { MemoryVirtualTableConnection } from './vtab-connection.js';
 
 const logger = createMemoryTableLoggers('table');
 
@@ -58,15 +60,45 @@ export class MemoryTable extends VirtualTable {
 	/** Ensures the connection to the manager is established */
 	private ensureConnection(): MemoryTableConnection {
 		if (!this.connection) {
-			// Establish connection state with the manager upon first use
-			this.connection = this.manager.connect();
+			// Check if there's already an active connection for this table in the database
+			const existingConnections = this.db.getConnectionsForTable(this.tableName);
+			if (existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection) {
+				const memoryVirtualConnection = existingConnections[0] as MemoryVirtualTableConnection;
+				this.connection = memoryVirtualConnection.getMemoryConnection();
+				logger.debugLog(`ensureConnection: Reused existing connection ${this.connection.connectionId} for table ${this.tableName}`);
+			} else {
+				// Establish connection state with the manager upon first use
+				this.connection = this.manager.connect();
+				logger.debugLog(`ensureConnection: Created new connection ${this.connection.connectionId} for table ${this.tableName}`);
+			}
 		}
 		return this.connection;
+	}
+
+	/** Sets an existing connection for this table instance (for transaction reuse) */
+	setConnection(memoryConnection: MemoryTableConnection): void {
+		logger.debugLog(`Setting connection ${memoryConnection.connectionId} for table ${this.tableName}`);
+		this.connection = memoryConnection;
+	}
+
+	/** Creates a new VirtualTableConnection for transaction support */
+	createConnection(): VirtualTableConnection {
+		const memoryConnection = this.manager.connect();
+		return new MemoryVirtualTableConnection(this.tableName, memoryConnection);
+	}
+
+	/** Gets the current connection if this table maintains one internally */
+	getConnection(): VirtualTableConnection | undefined {
+		if (!this.connection) {
+			return undefined;
+		}
+		return new MemoryVirtualTableConnection(this.tableName, this.connection);
 	}
 
 	// New xQuery method for direct async iteration
 	async* xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const conn = this.ensureConnection();
+		logger.debugLog(`xQuery using connection ${conn.connectionId} (pending: ${conn.pendingTransactionLayer?.getLayerId()}, read: ${conn.readLayer.getLayerId()})`);
 		const currentSchema = this.manager.tableSchema;
 		if (!currentSchema) {
 			logger.error('xQuery', this.tableName, 'Table schema is undefined');
@@ -76,6 +108,7 @@ export class MemoryTable extends VirtualTable {
 		logger.debugLog(`xQuery invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
 
 		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
+		logger.debugLog(`xQuery reading from layer ${startLayer.getLayerId()}`);
 
 		// Delegate scanning to the manager, which handles layer recursion
 		yield* this.manager.scanLayer(startLayer, plan);
