@@ -810,16 +810,10 @@ export class MemoryTableManager {
 		if (!primaryTree) return;
 
 		// Iterate through all entries in the transaction layer's primary tree
-		const firstPath = primaryTree.first();
-		if (!firstPath) return;
-
-		const iterator = primaryTree.ascending(firstPath);
-		for (const path of iterator) {
-			const row = primaryTree.at(path);
-			if (row) {
-				// Insert the row into the base layer
-				this.baseLayer.primaryTree.insert(row as Row);
-			}
+		for (const path of primaryTree.ascending(primaryTree.first())) {
+			const row = primaryTree.at(path)!;
+			// Insert the row into the base layer
+			this.baseLayer.primaryTree.insert(row);
 		}
 
 		// Also need to rebuild secondary indexes in the base layer

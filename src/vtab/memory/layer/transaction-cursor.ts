@@ -6,7 +6,7 @@ import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { createLogger } from '../../../common/logger.js';
 import { QuereusError } from '../../../common/errors.js';
-import { createMutationSafeIterator } from './mutation-safe-iterator.js';
+import { safeIterate } from './safe-iterate.js';
 
 const log = createLogger('vtab:memory:layer:tx-cursor');
 
@@ -72,16 +72,14 @@ export async function* scanTransactionLayer(
 				}
 			}
 		} else {
-			// Use mutation-safe iterator for full scans or range scans
-			const keyExtractor = (value: Row) => primaryKeyExtractorFromRow(value);
-			const { primaryKeyComparator } = layer.getPkExtractorsAndComparators(tableSchema);
+			// Determine start key for range scans
+			let startKey: { value: BTreeKeyForPrimary } | undefined;
+			if (plan.lowerBound) {
+				startKey = { value: plan.lowerBound.value as BTreeKeyForPrimary };
+			}
 
-			for await (const value of createMutationSafeIterator(
-				primaryTree,
-				isAscending,
-				keyExtractor,
-				primaryKeyComparator
-			)) {
+			// Use mutation-safe iterator for full scans or range scans with range support
+			for await (const value of safeIterate(primaryTree, isAscending, startKey)) {
 				// With inheritree, deleted entries simply don't appear in iteration
 				// No need to check for deletion markers
 
@@ -91,6 +89,15 @@ export async function* scanTransactionLayer(
 				// Apply plan filters
 				if (planAppliesToKey(primaryKey, false)) {
 					yield row;
+				} else {
+					// Early termination for ascending scans past upper bound
+					if (isAscending && plan.upperBound) {
+						const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
+						const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+						if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+							break;
+						}
+					}
 				}
 			}
 		}
@@ -121,16 +128,14 @@ export async function* scanTransactionLayer(
 				}
 			}
 		} else {
-			// Use mutation-safe iterator for full scans or range scans on secondary index
-			const indexKeyExtractor = (entry: any) => entry.indexKey;
-			const indexKeyComparator = (a: any, b: any) => compareSqlValues(a, b); // Simplified
+			// Determine start key for range scans on secondary index
+			let startKey: { value: BTreeKeyForIndex } | undefined;
+			if (plan.lowerBound) {
+				startKey = { value: plan.lowerBound.value as BTreeKeyForIndex };
+			}
 
-			for await (const indexEntry of createMutationSafeIterator(
-				secondaryTree,
-				isAscending,
-				indexKeyExtractor,
-				indexKeyComparator
-			)) {
+			// Use mutation-safe iterator for full scans or range scans on secondary index with range support
+			for await (const indexEntry of safeIterate(secondaryTree, isAscending, startKey)) {
 				// Apply plan filters to the index key
 				if (planAppliesToKey(indexEntry.indexKey, true)) {
 					// Get the primary tree to fetch actual rows
@@ -143,6 +148,15 @@ export async function* scanTransactionLayer(
 						if (value) {
 							const row = value as Row;
 							yield row;
+						}
+					}
+				} else {
+					// Early termination for ascending scans past upper bound
+					if (isAscending && plan.upperBound) {
+						const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
+						const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+						if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+							break;
 						}
 					}
 				}

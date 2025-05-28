@@ -86,16 +86,9 @@ export class BaseLayer implements Layer {
 	}
 
 	private populateSecondaryIndexes(newIndexes: Map<string, MemoryIndex>): void {
-		const firstPath = this.primaryTree.first();
-		if (!firstPath) return;
-
-		const iterator = this.primaryTree.ascending(firstPath);
-		for (const path of iterator) {
-			const currentValue = this.primaryTree.at(path);
-			if (currentValue) {
-				const currentRow = currentValue as Row;
-				this.addRowToSecondaryIndexes(currentRow, newIndexes);
-			}
+		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
+			const row = this.primaryTree.at(path)!;
+			this.addRowToSecondaryIndexes(row, newIndexes);
 		}
 	}
 
@@ -213,17 +206,10 @@ export class BaseLayer implements Layer {
 			this.primaryKeyFunctions.compare
 		);
 
-		const firstPath = oldTree.first();
-		if (!firstPath) return;
-
-		const iterator = oldTree.ascending(firstPath);
-		for (const path of iterator) {
-			const oldValue = oldTree.at(path);
-			if (oldValue) {
-				const oldRow = oldValue as Row;
-				const newRow = [...oldRow, defaultValue];
-				this.primaryTree.insert(newRow);
-			}
+		for (const path of oldTree.ascending(oldTree.first())) {
+			const oldRow = oldTree.at(path)!;
+			const newRow = [...oldRow, defaultValue];
+			this.primaryTree.insert(newRow);
 		}
 	}
 
@@ -246,17 +232,10 @@ export class BaseLayer implements Layer {
 			this.primaryKeyFunctions.compare
 		);
 
-		const firstPath = oldTree.first();
-		if (!firstPath) return;
-
-		const iterator = oldTree.ascending(firstPath);
-		for (const path of iterator) {
-			const oldValue = oldTree.at(path);
-			if (oldValue) {
-				const oldRow = oldValue as Row;
-				const newRow = oldRow.filter((_, idx) => idx !== columnIndex);
-				this.primaryTree.insert(newRow);
-			}
+		for (const path of oldTree.ascending(oldTree.first())) {
+			const oldRow = oldTree.at(path)!;
+			const newRow = oldRow.filter((_, idx) => idx !== columnIndex);
+			this.primaryTree.insert(newRow);
 		}
 	}
 
@@ -276,24 +255,11 @@ export class BaseLayer implements Layer {
 	}
 
 	private populateNewIndex(newIndex: MemoryIndex): void {
-		const firstPath = this.primaryTree.first();
-		if (!firstPath) return;
-
-		const iterator = this.primaryTree.ascending(firstPath);
-		for (const path of iterator) {
-			const currentValue = this.primaryTree.at(path);
-			if (currentValue) {
-				const currentRow = currentValue as Row;
-				try {
-					const indexKey = newIndex.keyFromRow(currentRow);
-					const primaryKey = this.primaryKeyFunctions.extractFromRow(currentRow);
-					newIndex.addEntry(indexKey, primaryKey);
-				} catch (e: any) {
-					logger.error('Populate Index', this.tableSchema.name, e, {
-						indexName: newIndex.name
-					});
-				}
-			}
+		for (const path of this.primaryTree.ascending(this.primaryTree.first())) {
+			const currentRow = this.primaryTree.at(path)!;
+			const indexKey = newIndex.keyFromRow(currentRow);
+			const primaryKey = this.primaryKeyFunctions.extractFromRow(currentRow);
+			newIndex.addEntry(indexKey, primaryKey);
 		}
 	}
 

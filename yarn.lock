@@ -5895,10 +5895,10 @@ inflight@^1.0.4:
     once "^1.3.0"
     wrappy "1"
 
-inheritree@^0.3.1:
-  version "0.3.1"
-  resolved "https://registry.yarnpkg.com/inheritree/-/inheritree-0.3.1.tgz#be1e8e365285c894b78a63ef9a502c6cb2a15723"
-  integrity sha512-oqChO04+zzQTzgdT/a3r5KUaFo3vEKDUeV4zDZ4TW7Wg5WL2lCkrHDfbRXJSLG+h5cawwMe6KOXVI2EB5+Y+sQ==
+inheritree@^0.3.2:
+  version "0.3.2"
+  resolved "https://registry.yarnpkg.com/inheritree/-/inheritree-0.3.2.tgz#7b23f9715afa9f96658b9c82060b227b9217c3d4"
+  integrity sha512-EsPOa1beSxkFHn1lcTD4Tx80ELmv+1YkCX9wzz1QDTmvQAX1lWbCKF8iN7/fQXVd/7oP4L1Fo56Ip4N+/zaZwA==
 
 inherits@2, inherits@^2.0.1, inherits@^2.0.3, inherits@^2.0.4, inherits@~2.0.3, inherits@~2.0.4:
   version "2.0.4"

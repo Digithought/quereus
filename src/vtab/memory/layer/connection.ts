@@ -134,7 +134,7 @@ export class MemoryTableConnection {
 		}
 
 		const firstPath = primaryTree.first();
-		if (!firstPath) {
+		if (!firstPath.on) {
 			// No data in the tree - return the empty snapshot
 			snapshotLayer.markCommitted();
 			return snapshotLayer;
@@ -142,18 +142,14 @@ export class MemoryTableConnection {
 
 		// Copy all rows from the source layer
 		const { primaryKeyExtractorFromRow } = sourceLayer.getPkExtractorsAndComparators(sourceLayer.getSchema());
-		const iterator = primaryTree.ascending(firstPath);
-
-		for (const path of iterator) {
-			const row = primaryTree.at(path);
-			if (row) {
-				try {
-					// Extract primary key and record the row in the snapshot
-					const primaryKey = primaryKeyExtractorFromRow(row as Row);
-					snapshotLayer.recordUpsert(primaryKey, row as Row, null);
-				} catch (error) {
-					warnLog(`Connection %d: Failed to copy row to savepoint snapshot: %o`, this.connectionId, error);
-				}
+		for (const path of primaryTree.ascending(firstPath)) {
+			const row = primaryTree.at(path)!;
+			try {
+				// Extract primary key and record the row in the snapshot
+				const primaryKey = primaryKeyExtractorFromRow(row as Row);
+				snapshotLayer.recordUpsert(primaryKey, row as Row, null);
+			} catch (error) {
+				warnLog(`Connection %d: Failed to copy row to savepoint snapshot: %o`, this.connectionId, error);
 			}
 		}
 

@@ -4,7 +4,7 @@ import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry }
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import type { Row } from '../../../common/types.js';
-import { createMutationSafeIterator } from './mutation-safe-iterator.js';
+import { safeIterate } from './safe-iterate.js';
 
 export async function* scanBaseLayer(
 	layer: BaseLayer,
@@ -44,22 +44,27 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Use mutation-safe iterator for BTree iteration
-		const isAscending = !plan.descending;
+		// Determine start key for range scans
+		let startKey: { value: BTreeKeyForPrimary } | undefined;
+		if (plan.lowerBound) {
+			startKey = { value: plan.lowerBound.value as BTreeKeyForPrimary };
+		}
 
-		// Create mutation-safe iterator with proper key extraction and comparison
-		const keyExtractor = (value: Row) => keyFromEntry(value);
-		const keyComparator = primaryKeyComparator;
-
-		for await (const value of createMutationSafeIterator(
-			tree,
-			isAscending,
-			keyExtractor,
-			keyComparator
-		)) {
+		// Create mutation-safe iterator with range support
+		for await (const value of safeIterate(tree, !plan.descending, startKey)) {
 			const row = value as Row;
 			const primaryKey = keyFromEntry(row);
-			if (!planAppliesToKey(primaryKey, false)) continue;
+			if (!planAppliesToKey(primaryKey, false)) {
+				// If we're doing an ascending scan and we've passed the upper bound, we can break early
+				if (!plan.descending && plan.upperBound) {
+					const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
+					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+						break;
+					}
+				}
+				continue;
+			}
 			yield row;
 		}
 	} else { // Secondary Index Scan
@@ -81,20 +86,27 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Use mutation-safe iterator for secondary index iteration
+		// Use mutation-safe iterator for secondary index iteration with range support
 		const isAscending = !plan.descending;
 
-		// Create mutation-safe iterator for secondary index
-		const indexKeyExtractor = (entry: MemoryIndexEntry) => entry.indexKey;
-		const indexKeyComparator = secondaryIndex.compareKeys;
+		// Determine start key for range scans on secondary index
+		let startKey: { value: BTreeKeyForIndex } | undefined;
+		if (plan.lowerBound) {
+			startKey = { value: plan.lowerBound.value as BTreeKeyForIndex };
+		}
 
-		for await (const indexEntry of createMutationSafeIterator(
-			indexTree,
-			isAscending,
-			indexKeyExtractor,
-			indexKeyComparator
-		)) {
-			if (!planAppliesToKey(indexEntry.indexKey, true)) continue;
+		for await (const indexEntry of safeIterate(indexTree, isAscending, startKey)) {
+			if (!planAppliesToKey(indexEntry.indexKey, true)) {
+				// Early termination for ascending scans past upper bound
+				if (isAscending && plan.upperBound) {
+					const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
+					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+						break;
+					}
+				}
+				continue;
+			}
 			for (const pk of indexEntry.primaryKeys) {
 				const value = layer.primaryTree.get(pk);
 				if (value) {

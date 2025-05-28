@@ -19,7 +19,7 @@
   },
   "scripts": {
     "clean": "aegir clean",
-    "doc": "npx typedoc -out docs src",
+    "doc": "npx typedoc -out doc src",
     "build": "aegir build --env node",
     "lint": "aegir lint",
     "test:all": "aegir test",
@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "debug": "^4.4.0",
-    "inheritree": "^0.3.1",
+    "inheritree": "^0.3.2",
     "fast-json-patch": "^3.1.1",
     "temporal-polyfill": "^0.3.0",
     "uint8arrays": "^5.1.0"
