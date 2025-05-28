@@ -1,62 +1,230 @@
 # Quereus Runtime
 
-## Emission Context (`src/runtime/emission-context.ts`)
+The Quereus runtime executes query plans through a three-phase process: **Planning** (AST → Plan Nodes), **Emission** (Plan Nodes → Instructions), and **Execution** (Instructions → Results).
 
-The `EmissionContext` provides schema lookups during query plan emission and captures schema dependencies for runtime consistency. This ensures that queries maintain a consistent view of the schema from emission time, preventing obscure runtime errors when schema objects are modified after planning.
+## Value Types
 
-### Key Components
+### SqlValue
+Core SQL data types that can be stored and manipulated:
+```typescript
+type SqlValue = string | number | bigint | boolean | Uint8Array | null;
+```
 
-1. **Schema Dependency Tracking:** Records dependencies on tables, functions, virtual table modules, and collations during emission.
-2. **Schema Snapshot:** Captures actual schema object references at emission time for runtime use.
-3. **Validation:** Provides early error detection when schema objects are removed after planning.
+### RuntimeValue  
+Input types that instructions can receive as arguments:
+```typescript
+type RuntimeValue = SqlValue | Row | AsyncIterable<Row> | ((ctx: RuntimeContext) => OutputValue);
+```
 
-### Usage Pattern
+### OutputValue
+Output types that instructions can produce:
+```typescript
+type OutputValue = RuntimeValue | Promise<RuntimeValue>;
+```
+
+### TypeClasses
+The runtime uses TypeScript's structural typing for type safety. Key classes and interfaces:
+- `PlanNode`: Base class for all plan nodes
+- `VoidNode`: Plan nodes that don't produce output (DDL, DML)
+- `RelationalNode`: Plan nodes that produce rows
+- `ExpressionNode`: Plan nodes that produce scalar values
+
+## Adding a New Plan Node
+
+### 1. Create the Node Interface (`src/planner/nodes/`)
+
+```typescript
+// src/planner/nodes/my-operation-node.ts
+import { RelationalNode } from './plan-node.js';
+import { PlanNodeType } from './plan-node-type.js';
+
+export interface MyOperationNode extends RelationalNode {
+	nodeType: PlanNodeType.MyOperation;
+	inputNode: RelationalNode;
+	operationParam: string;
+}
+
+export class MyOperationPlanNode extends RelationalNode implements MyOperationNode {
+	readonly nodeType = PlanNodeType.MyOperation;
+
+	constructor(
+		scope: Scope,
+		public readonly inputNode: RelationalNode,
+		public readonly operationParam: string
+	) {
+		super(scope, inputNode.cost + 10); // Add operation cost
+	}
+}
+```
+
+### 2. Add to PlanNodeType Enum
+
+```typescript
+// src/planner/nodes/plan-node-type.ts
+export enum PlanNodeType {
+	// ... existing types
+	MyOperation = 'MyOperation',
+}
+```
+
+### 3. Create the Builder (`src/planner/building/`)
+
+```typescript
+// src/planner/building/my-operation.ts
+import type { PlanningContext } from '../planning-context.js';
+import * as AST from '../../parser/ast.js';
+import { MyOperationPlanNode } from '../nodes/my-operation-node.js';
+import { buildSelectStmt } from './select.js';
+
+export function buildMyOperationStmt(ctx: PlanningContext, stmt: AST.MyOperationStmt): MyOperationPlanNode {
+	// Build child nodes
+	const inputNode = buildSelectStmt(ctx, stmt.inputQuery);
+	
+	// Validate parameters
+	if (!stmt.operationParam) {
+		throw new QuereusError('Operation parameter required', StatusCode.ERROR);
+	}
+
+	return new MyOperationPlanNode(ctx.scope, inputNode, stmt.operationParam);
+}
+```
+
+### 4. Register in some other builder
+
+```typescript
+// src/planner/building/block.ts
+import { buildMyOperationStmt } from './my-operation.js';
+
+export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
+	const plannedStatements = statements.map((stmt) => {
+		switch (stmt.type) {
+			// ... existing cases
+			case 'myOperation':
+				return buildMyOperationStmt(ctx, stmt as AST.MyOperationStmt);
+		}
+	});
+}
+```
+
+## Creating an Emitter
+
+### 1. Create the Emitter (`src/runtime/emit/`)
+
+```typescript
+// src/runtime/emit/my-operation.ts
+import type { MyOperationNode } from '../../planner/nodes/my-operation-node.js';
+import type { Instruction, RuntimeContext } from '../types.js';
+import type { EmissionContext } from '../emission-context.js';
+import { emitPlanNode } from '../emitters.js';
+
+export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): Instruction {
+  // Do non-runtime work here to make run faster.    Can select from different run functions to avoid runtime work.
+
+	// Optimal run function patterns:
+	
+	// For async generators (row-producing operations):
+	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
+		for await (const row of inputRows) {
+			// Process each row
+			const processedRow = processRow(row, plan.operationParam);
+			yield processedRow;
+		}
+	}
+
+	// For scalar operations:
+	// function run(rctx: RuntimeContext, inputValue: SqlValue): SqlValue {
+	//     return processValue(inputValue, plan.operationParam);
+	// }
+
+	// For void operations (DDL/DML) - async example:
+	// async function run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): Promise<void> {
+	//     for await (const row of inputRows) {
+	//         await performSideEffect(row);
+	//     }
+	//     return void;
+	// }
+
+	// Emit child instructions
+	const inputInstruction = emitPlanNode(plan.inputNode, ctx);
+
+	return {
+		params: [inputInstruction],
+		run,
+		note: `myOperation(${plan.operationParam})`
+	};
+}
+```
+
+### 2. Register the Emitter
+
+```typescript
+// src/runtime/register.ts
+import { emitMyOperation } from './emit/my-operation.js';
+
+export function registerEmitters() {
+	// ... existing registrations
+	registerEmitter(PlanNodeType.MyOperation, emitMyOperation as EmitterFunc);
+}
+```
+
+## Scheduler Execution Model
+
+The Scheduler executes instructions in dependency order:
+
+1. **Flattening**: Converts instruction tree to linear array
+2. **Dependency Resolution**: Ensures instructions execute after their dependencies
+3. **Async Handling**: Uses `Promise.all()` for concurrent dependency resolution
+4. **Memory Management**: Clears instruction arguments after execution
+
+### Key Points for Emitter Authors
+
+- **Return Types**: Match your function signature to expected output type
+- **Async Iterables**: Use `async function*` for row-producing operations
+- **Error Handling**: Throw `QuereusError` with appropriate `StatusCode`
+- **Resource Cleanup**: Handle cleanup in `finally` blocks if needed
+
+## Emission Context
+
+Provides schema lookups and dependency tracking during emission:
 
 ```typescript
 // During emission
-const table = emissionContext.findTable('users');
-const func = emissionContext.findFunction('custom_func', 2);
+const tableSchema = ctx.findTable('users');
+const moduleInfo = ctx.getVtabModule('memory');
 
-// At runtime - uses captured objects
-const capturedTable = emissionContext.getCapturedSchemaObject('table:main:users');
+// Capture dependencies for runtime
+const moduleKey = `vtab_module:${tableSchema.vtabModuleName}`;
+// Runtime retrieval
+const capturedModule = ctx.getCapturedSchemaObject(moduleKey);
 ```
 
-### Benefits
+## Common Patterns
 
-- **Predictable Behavior:** Queries see consistent schema view from emission time
-- **Clean Error Messages:** Schema validation provides clear error context
-- **No Complex Invalidation:** Avoids plan caching complexity for embedded systems
-- **Minimal Overhead:** Just holds references to already-looked-up objects
+### Row Processing
+```typescript
+async function* run(rctx: RuntimeContext, input: AsyncIterable<Row>): AsyncIterable<Row> {
+	for await (const row of input) {
+		// Process row
+		yield transformedRow;
+	}
+}
+```
 
-## Scheduler (`src/runtime/scheduler.ts`)
+### Scalar Functions
+```typescript
+function run(rctx: RuntimeContext, ...args: SqlValue[]): SqlValue {
+	// Compute result
+	return result;
+}
+```
 
-The `Scheduler` is responsible for executing a potentially complex tree of `Instruction` objects efficiently. It handles the dependencies between instructions and manages the flow of data, including asynchronous results (`Promise<SqlValue>`).
-
-### Construction
-
-1.  **Input:** The `Scheduler` is constructed with a single `root` `Instruction`, which represents the final operation in a query plan (e.g., yielding a result row).
-2.  **Tree Traversal:** The constructor performs a post-order traversal of the instruction tree starting from the `root`.
-3.  **Flattening:** As it traverses, it flattens the tree structure into a linear array (`this.instructions`). The order ensures that an instruction's parameters (child nodes in the original tree) appear *before* the instruction itself in the flat list. The `root` instruction will always be the *last* element in this array.
-4.  **Dependency Mapping:** It also builds a `destinations` array. This array maps the output of each instruction (by its index in the flattened list) to the input argument (parameter) of the instruction that consumes it. If an instruction's output is not used by another instruction (e.g., the final `root` instruction), its destination is `null`.
-
-### Execution (`run` method)
-
-The `async run(ctx: RuntimeContext)` method executes the flattened instruction list:
-
-1.  **Single Pass:** It iterates through the `instructions` array from index 0 up to `length - 1`.
-2.  **Argument Preparation:** For each instruction `i`, it retrieves the arguments prepared for it (`instrArgs[i]`). These arguments are the outputs of previously executed instructions, routed via the `destinations` map.
-3.  **Asynchronous Handling:**
-    *   It maintains a `hasPromise` flag for each instruction's argument list.
-    *   If `hasPromise[i]` is true, it means at least one argument for instruction `i` is a `Promise`.
-    *   It uses `await Promise.all(args)` to wait for *all* promise arguments to resolve *before* executing the instruction. This allows dependencies to be resolved concurrently when possible, maximizing efficiency. The resolved values are then passed to the instruction.
-4.  **Execution:** It calls `this.instructions[i].run(ctx, ...args)` with the prepared (and potentially awaited) arguments.
-5.  **Output Routing:** The `output` of `instructions[i]` is then placed into the argument list (`instrArgs`) for the `destination` instruction, as determined by the `destinations` map. If the `output` is a `Promise`, the corresponding `hasPromise` flag for the destination instruction is set.
-6.  **Memory Management:** To minimize peak memory usage, the argument list for instruction `i` (`instrArgs[i]`) is cleared (`undefined`) after its execution.
-7.  **Final Result:** After the loop completes, the `output` variable holds the result of the final instruction in the list (which corresponds to the original `root`), and this value is returned.
-
-### Assumptions and Guarantees
-
-*   **Execution Order:** The Scheduler guarantees that an instruction will only execute *after* all the instructions that produce its direct inputs have completed. This sequential dependency is strictly maintained.
-*   **Promise Resolution:** While the *resolution* of multiple `Promise` arguments for a single instruction may happen concurrently via `Promise.all`, the instruction itself is only executed *after* all those promises have resolved. The user defining instructions does not need to worry about the exact timing of concurrent promise resolutions, only that the dependencies are met before execution proceeds.
-*   **`AsyncIterable`:** The type `RuntimeValue` includes `AsyncIterable<Row>`. The current scheduler implementation passes these values through directly as outputs/inputs. Instructions that receive or produce `AsyncIterable` need to be designed to handle them appropriately (e.g., an instruction consuming rows might iterate the async iterable).
+### Side Effects (DDL/DML)
+```typescript
+async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<undefined> {
+	for await (const row of input) {
+		await performMutation(row);
+	}
+	return undefined;
+}
+```
 
