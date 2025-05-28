@@ -1,7 +1,7 @@
-import type { SqlValue } from '../../common/types';
-import * as AST from '../../parser/ast';
-import { VoidNode } from './plan-node';
-import { PlanNodeType } from './plan-node-type';
+import type { SqlValue } from '../../common/types.js';
+import * as AST from '../../parser/ast.js';
+import { VoidNode } from './plan-node.js';
+import { PlanNodeType } from './plan-node-type.js';
 
 export class PragmaPlanNode extends VoidNode {
 	readonly nodeType = PlanNodeType.Pragma;
