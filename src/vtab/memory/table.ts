@@ -69,7 +69,12 @@ export class MemoryTable extends VirtualTable {
 			} else {
 				// Establish connection state with the manager upon first use
 				this.connection = this.manager.connect();
-				logger.debugLog(`ensureConnection: Created new connection ${this.connection.connectionId} for table ${this.tableName}`);
+
+				// Create a VirtualTableConnection wrapper and register it with the database
+				const vtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
+				this.db.registerConnection(vtabConnection);
+
+				logger.debugLog(`ensureConnection: Created and registered new connection ${this.connection.connectionId} for table ${this.tableName}`);
 			}
 		}
 		return this.connection;

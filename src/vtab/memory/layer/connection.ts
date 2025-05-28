@@ -73,11 +73,15 @@ export class MemoryTableConnection {
 		}
 
 		// Reset readLayer to the current committed layer
+		// Important: We need to ensure we're reading from a clean state
 		this.readLayer = this.tableManager.currentCommittedLayer;
 
 		// Simply discard the pending layer
 		this.pendingTransactionLayer = null;
 		this.clearTransactionState();
+
+		debugLog(`Connection %d: Rolled back transaction, readLayer reset to ${this.readLayer.getLayerId()}`,
+			this.connectionId);
 	}
 
 	/** Helper method to clear transaction-related state */

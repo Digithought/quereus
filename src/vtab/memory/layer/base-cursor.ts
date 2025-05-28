@@ -4,6 +4,7 @@ import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry }
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import type { Row } from '../../../common/types.js';
+import { createMutationSafeIterator } from './mutation-safe-iterator.js';
 
 export async function* scanBaseLayer(
 	layer: BaseLayer,
@@ -43,42 +44,23 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Use BTree range iteration with proper Inheritree API
-		// For full table scan, we scan all keys in ascending order (unless plan.descending is true)
+		// Use mutation-safe iterator for BTree iteration
 		const isAscending = !plan.descending;
 
-		// If no bounds specified, do a full scan
-		if (!plan.lowerBound && !plan.upperBound) {
-			// Full table scan - use ascending/descending iterators directly
-			const startPath = isAscending ? tree.first() : tree.last();
-			if (!startPath) return; // Empty tree
+		// Create mutation-safe iterator with proper key extraction and comparison
+		const keyExtractor = (value: Row) => keyFromEntry(value);
+		const keyComparator = primaryKeyComparator;
 
-			const iterator = isAscending ? tree.ascending(startPath) : tree.descending(startPath);
-			for (const path of iterator) {
-				const value = tree.at(path);
-				if (!value) continue;
-
-				const row = value as Row;
-				const primaryKey = keyFromEntry(row);
-				if (!planAppliesToKey(primaryKey, false)) continue;
-				yield row;
-			}
-		} else {
-			// Range scan - this would need the proper KeyRange API
-			// For now, fall back to full scan and filter
-			const startPath = isAscending ? tree.first() : tree.last();
-			if (!startPath) return; // Empty tree
-
-			const iterator = isAscending ? tree.ascending(startPath) : tree.descending(startPath);
-			for (const path of iterator) {
-				const value = tree.at(path);
-				if (!value) continue;
-
-				const row = value as Row;
-				const primaryKey = keyFromEntry(row);
-				if (!planAppliesToKey(primaryKey, false)) continue;
-				yield row;
-			}
+		for await (const value of createMutationSafeIterator(
+			tree,
+			isAscending,
+			keyExtractor,
+			keyComparator
+		)) {
+			const row = value as Row;
+			const primaryKey = keyFromEntry(row);
+			if (!planAppliesToKey(primaryKey, false)) continue;
+			yield row;
 		}
 	} else { // Secondary Index Scan
 		const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
@@ -99,15 +81,19 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Secondary index range scan - use direct iteration for now
+		// Use mutation-safe iterator for secondary index iteration
 		const isAscending = !plan.descending;
-		const startPath = isAscending ? indexTree.first() : indexTree.last();
-		if (!startPath) return; // Empty tree
 
-		const iterator = isAscending ? indexTree.ascending(startPath) : indexTree.descending(startPath);
-		for (const path of iterator) {
-			const indexEntry = indexTree.at(path);
-			if (!indexEntry) continue;
+		// Create mutation-safe iterator for secondary index
+		const indexKeyExtractor = (entry: MemoryIndexEntry) => entry.indexKey;
+		const indexKeyComparator = secondaryIndex.compareKeys;
+
+		for await (const indexEntry of createMutationSafeIterator(
+			indexTree,
+			isAscending,
+			indexKeyExtractor,
+			indexKeyComparator
+		)) {
 			if (!planAppliesToKey(indexEntry.indexKey, true)) continue;
 			for (const pk of indexEntry.primaryKeys) {
 				const value = layer.primaryTree.get(pk);

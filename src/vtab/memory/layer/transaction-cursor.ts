@@ -6,6 +6,7 @@ import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { createLogger } from '../../../common/logger.js';
 import { QuereusError } from '../../../common/errors.js';
+import { createMutationSafeIterator } from './mutation-safe-iterator.js';
 
 const log = createLogger('vtab:memory:layer:tx-cursor');
 
@@ -71,15 +72,16 @@ export async function* scanTransactionLayer(
 				}
 			}
 		} else {
-			// For full scans or range scans, use ascending/descending iterators
-			const startPath = isAscending ? primaryTree.first() : primaryTree.last();
-			if (!startPath) return; // Empty tree
+			// Use mutation-safe iterator for full scans or range scans
+			const keyExtractor = (value: Row) => primaryKeyExtractorFromRow(value);
+			const { primaryKeyComparator } = layer.getPkExtractorsAndComparators(tableSchema);
 
-			const iterator = isAscending ? primaryTree.ascending(startPath) : primaryTree.descending(startPath);
-			for (const path of iterator) {
-				const value = primaryTree.at(path);
-				if (!value) continue;
-
+			for await (const value of createMutationSafeIterator(
+				primaryTree,
+				isAscending,
+				keyExtractor,
+				primaryKeyComparator
+			)) {
 				// With inheritree, deleted entries simply don't appear in iteration
 				// No need to check for deletion markers
 
@@ -119,15 +121,16 @@ export async function* scanTransactionLayer(
 				}
 			}
 		} else {
-			// For full scans or range scans on secondary index
-			const startPath = isAscending ? secondaryTree.first() : secondaryTree.last();
-			if (!startPath) return; // Empty tree
+			// Use mutation-safe iterator for full scans or range scans on secondary index
+			const indexKeyExtractor = (entry: any) => entry.indexKey;
+			const indexKeyComparator = (a: any, b: any) => compareSqlValues(a, b); // Simplified
 
-			const iterator = isAscending ? secondaryTree.ascending(startPath) : secondaryTree.descending(startPath);
-			for (const path of iterator) {
-				const indexEntry = secondaryTree.at(path);
-				if (!indexEntry) continue;
-
+			for await (const indexEntry of createMutationSafeIterator(
+				secondaryTree,
+				isAscending,
+				indexKeyExtractor,
+				indexKeyComparator
+			)) {
 				// Apply plan filters to the index key
 				if (planAppliesToKey(indexEntry.indexKey, true)) {
 					// Get the primary tree to fetch actual rows
