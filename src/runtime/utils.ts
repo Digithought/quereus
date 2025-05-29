@@ -9,6 +9,7 @@ import type { MemoryVirtualTableConnection } from '../vtab/memory/connection.js'
 import type { MemoryTable } from '../vtab/memory/table.js';
 
 const log = createLogger('runtime:utils');
+const errorLog = log.extend('error');
 
 export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
 	return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
@@ -102,7 +103,7 @@ export async function disconnectVTable(ctx: RuntimeContext, vtab: VirtualTable):
 	// Disconnect the VirtualTable instance
 	if (typeof vtab.xDisconnect === 'function') {
 		await vtab.xDisconnect().catch((e: any) => {
-			console.error(`Error during xDisconnect for table '${vtab.tableName}': ${e}`);
+			errorLog(`Error during xDisconnect for table '${vtab.tableName}': ${e}`);
 		});
 	}
 }

@@ -5,6 +5,10 @@ import { MemoryIndex } from '../index.js';
 import type { SqlValue, Row } from '../../../common/types.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
+import { createLogger } from '../../../common/logger.js';
+
+const log = createLogger('vtab:memory:layer:transaction');
+const warnLog = log.extend('warn');
 
 let transactionLayerCounter = 1000;
 
@@ -105,7 +109,7 @@ export class TransactionLayer implements Layer {
 		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number
 	} {
 		if (schema !== this.tableSchemaAtCreation) {
-			console.warn("TransactionLayer.getPkExtractorsAndComparators called with a schema different from its creation schema. Using creation schema.");
+			warnLog("TransactionLayer.getPkExtractorsAndComparators called with a schema different from its creation schema. Using creation schema.");
 		}
 
 		const pkDef = this.tableSchemaAtCreation.primaryKeyDefinition ?? [];

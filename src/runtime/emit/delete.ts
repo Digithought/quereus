@@ -4,10 +4,11 @@ import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import { getVTable } from '../utils.js';
-import type { TableSchema } from '../../schema/table.js';
-import { isAsyncIterable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
+import { createLogger } from '../../common/logger.js';
 
+const log = createLogger('runtime:emit:delete');
+const errorLog = log.extend('error');
 export function emitDelete(plan: DeleteNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 	// DeleteNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
@@ -44,7 +45,7 @@ export function emitDelete(plan: DeleteNode, ctx: EmissionContext): Instruction 
 				}
 			}
 		} finally {
-			await vtab.xDisconnect().catch((e: any) => console.error(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
+			await vtab.xDisconnect().catch((e: any) => errorLog(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
 		}
 	}
 

@@ -1,6 +1,10 @@
 /**
  * Utility functions for safe serialization, particularly handling BigInt and Uint8Arrays.
  */
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('util:serialization');
+const errorLog = log.extend('error');
 
 export function jsonStringify(obj: any, space?: string | number): string {
   return JSON.stringify(
@@ -35,7 +39,7 @@ export function safeJsonStringify(obj: any, space?: string | number): string {
     return jsonStringify(obj, space);
   } catch (e) {
     // Fallback in case of unexpected stringify errors
-    console.error("safeJsonStringify failed:", e);
+    errorLog("safeJsonStringify failed:", e);
     return `[Unserializable Object: ${e instanceof Error ? e.message : String(e)}]`;
   }
 }

@@ -5,6 +5,10 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import { getVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('runtime:emit:update');
+const errorLog = log.extend('error');
 
 export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
@@ -61,7 +65,7 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 				}
 			}
 		} finally {
-			await vtab.xDisconnect().catch((e: any) => console.error(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
+			await vtab.xDisconnect().catch((e: any) => errorLog(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
 		}
 	}
 
