@@ -190,6 +190,29 @@ export function buildSelectStmt(
 	// Check if we have GROUP BY clause
 	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
 
+	// Special handling for ORDER BY with aggregates but no GROUP BY
+	// In this case, if ORDER BY references columns not in the SELECT list,
+	// it should order the input rows before aggregation
+	let preAggregateSort = false;
+	if (hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0) {
+		// Check if ORDER BY references columns that are not in the aggregate expressions
+		// For now, we'll apply the sort before aggregation if we have any ORDER BY
+		// This handles cases like: SELECT group_concat(val, '|') FROM t ORDER BY val
+		preAggregateSort = true;
+
+		// Apply ORDER BY before aggregation
+		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
+			const expression = buildExpression(selectContext, orderByClause.expr);
+			return {
+				expression,
+				direction: orderByClause.direction,
+				nulls: orderByClause.nulls
+			};
+		});
+
+		input = new SortNode(selectScope, input, sortKeys);
+	}
+
 	// If we have aggregates or GROUP BY, create an AggregateNode
 	if (hasAggregates || hasGroupBy) {
 		// Build GROUP BY expressions
@@ -255,8 +278,8 @@ export function buildSelectStmt(
 		}
 	}
 
-	// Plan ORDER BY clause, creating SortNode
-	if (stmt.orderBy && stmt.orderBy.length > 0) {
+	// Plan ORDER BY clause, creating SortNode (only if not already applied before aggregation)
+	if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
 			const expression = buildExpression(selectContext, orderByClause.expr);
 			return {
