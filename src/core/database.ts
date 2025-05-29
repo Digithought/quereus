@@ -28,6 +28,7 @@ import { registerEmitters } from '../runtime/register.js';
 import { serializePlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
 import { EmissionContext } from '../runtime/emission-context.js';
+import { Optimizer } from '../planner/optimizer.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -45,6 +46,7 @@ export class Database {
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
 	private activeConnections = new Map<string, VirtualTableConnection>();
+	public readonly optimizer: Optimizer;
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -67,6 +69,9 @@ export class Database {
 		this.registerDefaultCollations();
 
 		registerEmitters();
+
+		// After schema manager initialization
+		this.optimizer = new Optimizer();
 	}
 
 	/** @internal Registers default built-in SQL functions */
@@ -159,8 +164,7 @@ export class Database {
 
 					if (plan.statements.length === 0) continue; // No-op for this AST
 
-					// TODO: Optimizer/planner
-					const optimizedPlan = plan;
+					const optimizedPlan = this.optimizer.optimize(plan) as BlockNode;
 
 					const emissionContext = new EmissionContext(this);
 					const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
@@ -526,7 +530,11 @@ export class Database {
 			ast = sqlOrAst;
 		}
 
-		return this._buildPlan([ast as AST.Statement]);
+		const plan = this._buildPlan([ast as AST.Statement]);
+
+		if (plan.statements.length === 0) return plan; // No-op for this AST
+
+		return this.optimizer.optimize(plan) as BlockNode;
 	}
 
 	/**

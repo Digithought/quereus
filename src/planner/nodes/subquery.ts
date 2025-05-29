@@ -8,7 +8,7 @@ import { compareSqlValues } from "../../util/comparison.js";
 import type { Expression } from "../../parser/ast.js";
 
 export class InNode extends PlanNode implements ScalarPlanNode {
-	readonly nodeType = PlanNodeType.In;
+	override readonly nodeType = PlanNodeType.In;
 
 	public readonly comparator: CompareFn;
 

@@ -228,3 +228,53 @@ async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<und
 }
 ```
 
+## Optimiser Architecture
+
+Titan now treats every plan node built by the *builder* as **logical** (has `physical` traits attached).
+The *optimiser* then walks the tree and rewrites or retags each node so that, after optimisation, **every** node in the tree is "physical" and assumes there is a registered runtime emitter for each.
+
+Key points:
+
+1. Single hierarchy, dual class
+   •  One `PlanNode` type tree – no duplicated logical/physical subclasses.
+   •  Each instance carries `physical` to state its phase.
+
+2. Transformation rules
+   •  Rules are registered per `PlanNodeType` (see `optimizer.ts`).
+   •  Each rule can
+     –   return *null* (not applicable),
+     –   return a **replacement node** (often physical), or
+     –   do a deeper rewrite (e.g. `Aggregate → Sort ▸ StreamAggregate`).
+   •  Children are recursively optimised **before** a rule is applied so replacements always see optimised inputs.
+
+3. PhysicalProperties
+   •  Added to every physical node to advertise traits (current: `ordering`, `estimatedRows`, `uniqueKeys`).
+   •  Traits are derived top-down (required) and bottom-up (provided) so later rules can query them.
+
+4. End-to-end flow
+   ```
+   AST
+      ↓  (builder)  logical nodes
+   LogicalPlan  (all physical = undefined)
+      ↓  (optimizer.applyRules())
+   PhysicalPlan (all physical = defined)
+      ↓  (emitter registry)
+   Instruction graph
+      ↓
+   Scheduler runtime
+   ```
+
+5. Example rule (already implemented):
+   ```
+   Aggregate (logical)
+     ├─ source
+     └─ groupBy …
+   ────────────────────────────▶
+   Sort (physical, ordering = groupBy)
+     └─ StreamAggregate (physical)
+         └─ source (optimised)
+   ```
+   A `HashAggregate` rule can be added next; cost comparison will then pick the cheaper of the two.
+
+This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms.
+

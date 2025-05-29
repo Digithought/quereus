@@ -8,52 +8,66 @@ export function emitLimitOffset(plan: LimitOffsetNode, ctx: EmissionContext): In
 	async function* run(
 		ctx: RuntimeContext,
 		sourceRows: AsyncIterable<Row>,
-		limitValue: SqlValue,
-		offsetValue: SqlValue
+		...args: Array<(ctx: RuntimeContext) => SqlValue | Promise<SqlValue>>
 	): AsyncIterable<Row> {
+		// Determine which args we have
+		let limitFn: ((ctx: RuntimeContext) => SqlValue | Promise<SqlValue>) | undefined;
+		let offsetFn: ((ctx: RuntimeContext) => SqlValue | Promise<SqlValue>) | undefined;
 
-		// Convert to numbers, handling null/undefined
-		const limit = limitValue !== null ? Number(limitValue) : Infinity;
-		const offset = offsetValue !== null ? Number(offsetValue) : 0;
+		let argIndex = 0;
+		if (plan.limit) {
+			limitFn = args[argIndex++];
+		}
+		if (plan.offset) {
+			offsetFn = args[argIndex++];
+		}
+
+		// Evaluate limit and offset
+		const limitValue = limitFn ? await limitFn(ctx) : null;
+		const offsetValue = offsetFn ? await offsetFn(ctx) : null;
+
+		// Convert to numbers, with defaults
+		let limit = limitValue !== null ? Number(limitValue) : Infinity;
+		let offset = offsetValue !== null ? Number(offsetValue) : 0;
 
 		// Validate values
-		if (isNaN(limit) || limit < 0) {
-			throw new Error(`Invalid LIMIT value: ${limitValue}`);
+		if (limit < 0 || !Number.isFinite(limit)) {
+			limit = 0; // No rows if limit is negative or invalid
 		}
-		if (isNaN(offset) || offset < 0) {
-			throw new Error(`Invalid OFFSET value: ${offsetValue}`);
+		if (offset < 0 || !Number.isFinite(offset)) {
+			offset = 0; // No offset if negative or invalid
 		}
 
-		let rowCount = 0;
-		let yieldedCount = 0;
+		// Skip offset rows
+		let skipped = 0;
+		let emitted = 0;
 
 		for await (const row of sourceRows) {
-			// Skip rows for OFFSET
-			if (rowCount < offset) {
-				rowCount++;
+			if (skipped < offset) {
+				skipped++;
 				continue;
 			}
 
-			// Stop if we've yielded enough rows for LIMIT
-			if (yieldedCount >= limit) {
+			if (emitted >= limit) {
 				break;
 			}
 
 			yield row;
-			rowCount++;
-			yieldedCount++;
+			emitted++;
 		}
 	}
 
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
+	const limitInstruction = plan.limit ? emitCallFromPlan(plan.limit, ctx) : undefined;
+	const offsetInstruction = plan.offset ? emitCallFromPlan(plan.offset, ctx) : undefined;
 
-	// Add limit and offset functions if they exist, otherwise literal nulls
-	const limit = emitPlanNode(plan.limit, ctx);
-	const offset = emitPlanNode(plan.offset, ctx);
+	const params: Instruction[] = [sourceInstruction];
+	if (limitInstruction) params.push(limitInstruction);
+	if (offsetInstruction) params.push(offsetInstruction);
 
 	return {
-		params: [sourceInstruction, limit, offset],
+		params,
 		run: run as any,
-		note: `limit_offset`
+		note: `limit_offset(${plan.limit ? 'LIMIT' : ''}${plan.limit && plan.offset ? ',' : ''}${plan.offset ? 'OFFSET' : ''})`
 	};
 }

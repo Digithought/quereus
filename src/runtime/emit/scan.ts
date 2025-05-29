@@ -8,7 +8,7 @@ import type { EmissionContext } from "../emission-context.js";
 import { createValidatedInstruction } from "../emitters.js";
 import { getVTableConnection, disconnectVTable } from "../utils.js";
 
-export function emitTableScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
+export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.source.tableSchema;
 
 	// Look up the virtual table module during emission and record the dependency

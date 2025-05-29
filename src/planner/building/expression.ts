@@ -82,10 +82,16 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
         // Build arguments for aggregate function
         const args = expr.args.map(arg => buildExpression(ctx, arg, false)); // Aggregates can't contain other aggregates
 
-        // TODO: Fix function return type resolution
-        const resolvedReturnType: ScalarType = { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true };
-
-        return new AggregateFunctionCallNode(ctx.scope, expr, functionSchema, resolvedReturnType, args);
+        return new AggregateFunctionCallNode(
+          ctx.scope,
+          expr,
+          expr.name,
+          functionSchema,
+          args,
+          false, // isDistinct - TODO: parse from expr
+          undefined, // orderBy - TODO: parse from expr
+          undefined  // filter - TODO: parse from expr
+        );
       } else {
         // Regular scalar function
         const args = expr.args.map(arg => buildExpression(ctx, arg, allowAggregates));

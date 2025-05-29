@@ -4,6 +4,18 @@ import type { BaseType, RelationType, ScalarType } from '../../common/datatype.j
 import type { Expression } from '../../parser/ast.js';
 
 /**
+ * Physical properties that execution nodes can provide or require
+ */
+export interface PhysicalProperties {
+  /** Ordering of rows. Each element is a column index, negative for DESC */
+  ordering?: { column: number; desc: boolean }[];
+  /** Estimated number of rows */
+  estimatedRows?: number;
+  /** Whether rows are unique on certain columns */
+  uniqueKeys?: number[][];
+}
+
+/**
  * Base class for all nodes in the logical query plan.
  * PlanNodes are immutable once constructed.
  */
@@ -11,6 +23,9 @@ export abstract class PlanNode {
   private static nextId = 0;
   readonly id: string;
   abstract readonly nodeType: PlanNodeType;
+
+  /** Present if the node is a physical plan node */
+  physical?: PhysicalProperties;
 
   constructor(
 		/** The scope in which this node is planned.  Note that this captures references made through it, so you can tell if a node has dependencies. */

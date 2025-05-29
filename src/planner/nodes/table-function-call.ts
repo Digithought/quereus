@@ -3,7 +3,6 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from './plan-n
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import type { FunctionSchema } from '../../schema/function.js';
-import type * as AST from '../../parser/ast.js';
 
 /**
  * Represents a table-valued function call in the FROM clause.

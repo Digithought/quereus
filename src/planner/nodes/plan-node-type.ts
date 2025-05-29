@@ -1,52 +1,65 @@
 export enum PlanNodeType {
-  // Relational Nodes (Zero-ary / Leaf)
+  // Logical Nodes (from builder)
+  Block = 'Block',
+  TableReference = 'TableReference',
   TableScan = 'TableScan',
   TableSeek = 'TableSeek',
-  Values = 'Values',
-  SingleRow = 'SingleRow',
-
-  // Relational Nodes (Unary)
   Filter = 'Filter',
   Project = 'Project',
-  Sort = 'Sort',
+  Distinct = 'Distinct',
   Aggregate = 'Aggregate',
+  Sort = 'Sort',
   LimitOffset = 'LimitOffset',
-  Block = 'Block',
-	TableFunctionCall = 'TableFunctionCall',
-  TableReference = 'TableReference',
-	TableFunctionReference = 'TableFunctionReference',
-
-  // Relational Nodes (Binary)
   Join = 'Join',
-  // SetOperation (UNION, INTERSECT, EXCEPT) // To be added as needed
+  SetOperation = 'SetOperation',
+  CTE = 'CTE',
+  In = 'In',
+  Exists = 'Exists',
 
-  // DDL Nodes
-  CreateTable = 'CreateTable',
-  DropTable = 'DropTable',
-
-  // DML Nodes (New)
+  // DML/DDL Nodes
   Insert = 'Insert',
   Update = 'Update',
   Delete = 'Delete',
+  CreateTable = 'CreateTable',
+  DropTable = 'DropTable',
+  CreateIndex = 'CreateIndex',
+  DropIndex = 'DropIndex',
+  AlterTable = 'AlterTable',
 
-  // Transaction Nodes
-  Transaction = 'Transaction',
+  // Physical Nodes (from optimizer)
+  SeqScan = 'SeqScan',              // Physical sequential scan
+  IndexScan = 'IndexScan',          // Physical index scan
+  IndexSeek = 'IndexSeek',          // Physical index seek
+  StreamAggregate = 'StreamAggregate',  // Physical ordered aggregate
+  HashAggregate = 'HashAggregate',      // Physical hash aggregate
+  NestedLoopJoin = 'NestedLoopJoin',
+  HashJoin = 'HashJoin',
+  MergeJoin = 'MergeJoin',
+  Materialize = 'Materialize',      // Materialize intermediate results
 
-  // Pragma Nodes
-  Pragma = 'Pragma',
-
-  // Scalar Nodes (ExpressionNode subtypes)
+  // Scalar expression nodes
   Literal = 'Literal',
   ColumnReference = 'ColumnReference',
   ParameterReference = 'ParameterReference',
-
   UnaryOp = 'UnaryOp',
   BinaryOp = 'BinaryOp',
-  ScalarFunctionCall = 'ScalarFunctionCall',
-  AggregateFunctionCall = 'AggregateFunctionCall',
+  CaseExpr = 'CaseExpr',
   Cast = 'Cast',
   Collate = 'Collate',
-  In = 'In',
-  Exists = 'Exists',
-  CaseExpr = 'CaseExpr',
+  ScalarFunctionCall = 'ScalarFunctionCall',
+  Between = 'Between',
+  IsNull = 'IsNull',
+  TableFunctionReference = 'TableFunctionReference',
+
+  // Special relational nodes
+  Values = 'Values',
+  SingleRow = 'SingleRow',  // For SELECT without FROM
+  TableFunctionCall = 'TableFunctionCall',
+
+  // Transaction control
+  Transaction = 'Transaction',
+  Savepoint = 'Savepoint',
+
+  // Utility
+  Pragma = 'Pragma',
 }

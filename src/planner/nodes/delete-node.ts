@@ -1,4 +1,3 @@
-import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
 import { PlanNode, type RelationalPlanNode, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';

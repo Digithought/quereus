@@ -12,7 +12,7 @@ export interface TransactionNode extends VoidNode {
 }
 
 export class TransactionPlanNode extends VoidNode implements TransactionNode {
-	readonly nodeType = PlanNodeType.Transaction;
+	override readonly nodeType = PlanNodeType.Transaction;
 
 	constructor(
 		scope: Scope,

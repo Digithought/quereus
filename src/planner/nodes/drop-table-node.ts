@@ -1,8 +1,8 @@
-import type { BaseType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type * as AST from '../../parser/ast.js';
+
 /**
  * Represents a DROP TABLE statement in the logical query plan.
  */

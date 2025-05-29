@@ -24,7 +24,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 
 	getType(): RelationType {
-		return this.typeCache.value;;
+		return this.typeCache.value;
 	}
 
 	getChildren(): readonly [] {
@@ -44,7 +44,62 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 }
 
-/** Handles column references into a parent relation - FROM, JOIN, CTE, etc. */
+export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelationalNode {
+	override readonly nodeType = PlanNodeType.TableFunctionReference;
+
+	constructor(
+		scope: Scope,
+		public readonly functionSchema: FunctionSchema,
+		estimatedCostOverride?: number
+	) {
+		super(scope, estimatedCostOverride ?? 1);
+	}
+
+	getType(): RelationType {
+		if (this.functionSchema.type === 'table-valued') {
+			// Create a RelationType from the columns
+			const columns = (this.functionSchema.columns || []).map(col => ({
+				name: col.name,
+				type: {
+					typeClass: 'scalar' as const,
+					affinity: col.type,
+					nullable: col.nullable ?? true,
+					isReadOnly: true
+				}
+			}));
+
+			return {
+				typeClass: 'relation',
+				columns,
+				keys: [], // Table functions don't have keys
+				rowConstraints: [],
+				isReadOnly: true
+			};
+		}
+		throw new Error(`Function ${this.functionSchema.name} is not a table-valued function`);
+	}
+
+	getChildren(): readonly [] {
+		return [];
+	}
+
+	getRelations(): readonly [] {
+		return [];
+	}
+
+	get estimatedRows(): number | undefined {
+		return 100; // Default estimate for table functions
+	}
+
+	override toString(): string {
+		return `${super.toString()} (${this.functionSchema.name})`;
+	}
+}
+
+/**
+ * Represents a reference to a column from a relational node.
+ * Includes the context for locating the actual value at runtime.
+ */
 export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	override readonly nodeType = PlanNodeType.ColumnReference;
 
@@ -75,7 +130,10 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	}
 }
 
-/** Handles parameter references in the query - ? or :paramName or :1, :2, etc. */
+/**
+ * Represents a reference to a parameter (placeholder in a prepared statement).
+ * The actual value will be provided at execution time.
+ */
 export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	override readonly nodeType = PlanNodeType.ParameterReference;
 

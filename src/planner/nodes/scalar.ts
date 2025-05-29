@@ -1,11 +1,10 @@
 import type { ScalarType } from "../../common/datatype.js";
-import { PlanNode, type ScalarPlanNode, type UnaryScalarNode, type NaryScalarNode } from "./plan-node.js";
+import { SqlDataType } from "../../common/types.js";
+import { PlanNode, type ScalarPlanNode, type UnaryScalarNode, type NaryScalarNode, type ZeroAryScalarNode, type BinaryScalarNode } from "./plan-node.js";
 import type * as AST from "../../parser/ast.js";
 import type { Scope } from "../scopes/scope.js";
-import { SqlDataType } from "../../common/types.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import { Cached } from "../../util/cached.js";
-import { getLiteralSqlType } from "../../common/type-inference.js";
 
 export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	readonly nodeType = PlanNodeType.UnaryOp;
@@ -18,10 +17,6 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	) {
 		super(scope);
 		this.cachedType = new Cached(this.generateType);
-	}
-
-	getType(): ScalarType {
-		return this.cachedType.value;
 	}
 
 	generateType = (): ScalarType => {
@@ -61,6 +56,10 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 		};
 	}
 
+	getType(): ScalarType {
+		return this.cachedType.value;
+	}
+
 	getChildren(): readonly [ScalarPlanNode] {
 		return [this.operand];
 	}
@@ -74,7 +73,7 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	}
 }
 
-export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
+export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 	readonly nodeType = PlanNodeType.BinaryOp;
 	private cachedType: Cached<ScalarType>;
 
@@ -87,11 +86,6 @@ export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 		super(scope);
 
 		this.cachedType = new Cached(this.generateType);
-	}
-
-	// Required by PlanNode
-	getType(): ScalarType {
-		return this.cachedType.value;
 	}
 
 	generateType = (): ScalarType => {
@@ -137,6 +131,10 @@ export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 		};
 	}
 
+	getType(): ScalarType {
+		return this.cachedType.value;
+	}
+
 	getChildren(): readonly [ScalarPlanNode, ScalarPlanNode] {
 		return [this.left, this.right];
 	}
@@ -144,28 +142,79 @@ export class BinaryOpNode extends PlanNode implements ScalarPlanNode {
 	getRelations(): readonly [] {
 		return [];
 	}
+
+	override toString(): string {
+		return `${super.toString()} (${this.expression.operator} ${this.left.toString()} ${this.right.toString()})`;
+	}
 }
 
-export class LiteralNode extends PlanNode implements ScalarPlanNode {
+export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
 	readonly nodeType = PlanNodeType.Literal;
 
 	constructor(
 		public readonly scope: Scope,
 		public readonly expression: AST.LiteralExpr,
 	) {
-		super(scope);
+		super(scope, 0.001); // Minimal cost
 	}
 
 	getType(): ScalarType {
-		const sqlType = getLiteralSqlType(this.expression.value);
-		return {
-			typeClass: 'scalar',
-			affinity: sqlType === SqlDataType.NULL ? SqlDataType.TEXT : sqlType,
-			nullable: sqlType === SqlDataType.NULL,
-			isReadOnly: true,
-			datatype: sqlType,
-			collationName: undefined,
+		const value = this.expression.value;
+		if (value === null) {
+			return {
+				typeClass: 'scalar',
+				affinity: SqlDataType.NULL,
+				nullable: true,
+				isReadOnly: true,
+				datatype: SqlDataType.NULL,
+			};
 		}
+		if (typeof value === 'number') {
+			return {
+				typeClass: 'scalar',
+				affinity: SqlDataType.REAL,
+				nullable: false,
+				isReadOnly: true,
+				datatype: SqlDataType.REAL,
+			};
+		}
+		if (typeof value === 'bigint') {
+			return {
+				typeClass: 'scalar',
+				affinity: SqlDataType.INTEGER,
+				nullable: false,
+				isReadOnly: true,
+				datatype: SqlDataType.INTEGER,
+			};
+		}
+		if (typeof value === 'string') {
+			return {
+				typeClass: 'scalar',
+				affinity: SqlDataType.TEXT,
+				nullable: false,
+				isReadOnly: true,
+				datatype: SqlDataType.TEXT,
+			};
+		}
+		if (typeof value === 'boolean') {
+			return {
+				typeClass: 'scalar',
+				affinity: SqlDataType.INTEGER,
+				nullable: false,
+				isReadOnly: true,
+				datatype: SqlDataType.INTEGER,
+			};
+		}
+		if (value instanceof Uint8Array) {
+			return {
+				typeClass: 'scalar',
+				affinity: SqlDataType.BLOB,
+				nullable: false,
+				isReadOnly: true,
+				datatype: SqlDataType.BLOB,
+			};
+		}
+		throw new Error(`Unknown literal type ${typeof value}`);
 	}
 
 	getChildren(): readonly [] {
@@ -192,7 +241,7 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 		public readonly whenThenClauses: { when: ScalarPlanNode; then: ScalarPlanNode }[],
 		public readonly elseExpr: ScalarPlanNode | undefined,
 	) {
-		super(scope);
+		super(scope, 0.02 * whenThenClauses.length);
 		this.cachedType = new Cached(this.generateType);
 	}
 
@@ -311,7 +360,7 @@ export class CastNode extends PlanNode implements UnaryScalarNode {
 		public readonly expression: AST.CastExpr,
 		public readonly operand: ScalarPlanNode,
 	) {
-		super(scope);
+		super(scope, 0.02); // Slightly higher cost for type conversion
 		this.cachedType = new Cached(this.generateType);
 	}
 
@@ -409,7 +458,7 @@ export class CollateNode extends PlanNode implements UnaryScalarNode {
 		public readonly expression: AST.CollateExpr,
 		public readonly operand: ScalarPlanNode,
 	) {
-		super(scope);
+		super(scope, 0); // No runtime cost - collation is metadata
 		this.cachedType = new Cached(this.generateType);
 	}
 

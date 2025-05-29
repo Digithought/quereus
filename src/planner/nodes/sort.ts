@@ -19,6 +19,7 @@ export interface SortKey {
  * Represents a sort operation (ORDER BY clause).
  * It takes an input relation and sort keys,
  * and outputs rows sorted according to the keys.
+ * This is a physical operation that materializes and sorts rows.
  */
 export class SortNode extends PlanNode implements UnaryRelationalNode {
 	override readonly nodeType = PlanNodeType.Sort;

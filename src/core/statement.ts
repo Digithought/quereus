@@ -106,6 +106,7 @@ export class Statement {
 		try {
 			const currentAst = this.getAstStatement();
 			plan = this.db._buildPlan([currentAst], this.boundArgs);
+			plan = this.db.optimizer.optimize(plan) as BlockNode;
 			this.needsCompile = false;
 			log("Planning complete for current statement.");
 		} catch (e) {

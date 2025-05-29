@@ -4,7 +4,7 @@ import { VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 
 export class PragmaPlanNode extends VoidNode {
-	readonly nodeType = PlanNodeType.Pragma;
+	override readonly nodeType = PlanNodeType.Pragma;
 
 	constructor(
 		scope: any,
