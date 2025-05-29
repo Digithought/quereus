@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type UnaryRelationalNode } from './plan-node.js';
+import { PlanNode, type UnaryRelationalNode, type PhysicalProperties } from './plan-node.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
@@ -40,6 +40,19 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
 
 	get estimatedRows(): number | undefined {
 		return Number(this.filterInfo.indexInfoOutput.estimatedRows);
+	}
+
+	getPhysical(): PhysicalProperties {
+		const tableType = this.source.getType();
+
+		return {
+			estimatedRows: this.estimatedRows,
+			// Table scans preserve the logical keys from the table schema
+			uniqueKeys: tableType.keys.map(key => key.map(colRef => colRef.index)),
+			readonly: true,
+			deterministic: true,
+			constant: false // Table scans are never constant
+		};
 	}
 
 	override toString(): string {

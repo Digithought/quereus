@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -56,6 +56,24 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 	get estimatedRows(): number | undefined {
 		// Sort doesn't change the number of rows
 		return this.source.estimatedRows;
+	}
+
+	getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+		const sourcePhysical = childrenPhysical[0]; // Source is first relation
+
+		return {
+			estimatedRows: this.estimatedRows,
+			// Sort establishes ordering based on sort keys
+			ordering: this.sortKeys.map((key, idx) => ({
+				column: idx, // This would need to map to actual column indices
+				desc: key.direction === 'desc'
+			})),
+			// Preserve unique keys from source
+			uniqueKeys: sourcePhysical?.uniqueKeys,
+			readonly: sourcePhysical?.readonly ?? true,
+			deterministic: sourcePhysical?.deterministic ?? true,
+			constant: sourcePhysical?.constant ?? false
+		};
 	}
 
 	override toString(): string {

@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -26,11 +26,22 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
   }
 
   getType(): RelationType {
+    // Helper function to extract a meaningful name from a GROUP BY expression
+    const getGroupByColumnName = (expr: ScalarPlanNode, index: number): string => {
+      // If it's a column reference, use the column name
+      if (expr.nodeType === PlanNodeType.ColumnReference) {
+        const colRef = expr as any; // ColumnReferenceNode
+        return colRef.expression.name;
+      }
+      // Otherwise, use a generic name
+      return `group_${index}`;
+    };
+
     // Same output type as logical aggregate
     const columns = [
       // Group by columns come first
       ...this.groupBy.map((expr, index) => ({
-        name: `group_${index}`,
+        name: getGroupByColumnName(expr, index),
         type: expr.getType(),
         isReadOnly: true
       })),
@@ -71,6 +82,25 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       // No GROUP BY means single output row
       return 1;
     }
+  }
+
+  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+    const sourcePhysical = childrenPhysical[0]; // Source is first relation
+
+    return {
+      estimatedRows: this.estimatedRows,
+      // Stream aggregate preserves ordering on GROUP BY columns
+      ordering: this.groupBy.length > 0 ?
+        this.groupBy.map((_, idx) => ({ column: idx, desc: false })) :
+        undefined,
+      // Aggregation creates unique keys on GROUP BY columns
+      uniqueKeys: this.groupBy.length > 0 ?
+        [this.groupBy.map((_, idx) => idx)] :
+        [[]], // Single row if no GROUP BY
+      readonly: true,
+      deterministic: sourcePhysical?.deterministic ?? true,
+      constant: this.groupBy.length === 0 && (sourcePhysical?.constant ?? false)
+    };
   }
 
   override toString(): string {

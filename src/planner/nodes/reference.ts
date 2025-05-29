@@ -98,17 +98,18 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 
 /**
  * Represents a reference to a column from a relational node.
- * Includes the context for locating the actual value at runtime.
+ * Uses attribute IDs for stable references across plan transformations.
  */
 export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	override readonly nodeType = PlanNodeType.ColumnReference;
+	override readonly physical: undefined = undefined; // Never physical
 
 	constructor(
 		scope: Scope,
 		public readonly expression: AST.ColumnExpr, // Original AST expression for this reference
 		public readonly columnType: ScalarType,
-		public relationalNode: RelationalPlanNode, // Reference to the table/alias node providing this column
-		public columnIndex: number, // Index of the column in the sourceTableReference's targetNode schema
+		public readonly attributeId: number, // Stable attribute ID instead of node reference
+		public readonly columnIndex: number, // Position in the row (for runtime efficiency)
 	) {
 		super(scope, 0);
 	}
@@ -126,7 +127,7 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.expression.alias ?? (this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name} from ${this.relationalNode})`;
+		return `${super.toString()} (${this.expression.alias ?? (this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name} attr#${this.attributeId})`;
 	}
 }
 

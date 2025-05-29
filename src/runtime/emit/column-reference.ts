@@ -6,31 +6,29 @@ import type { EmissionContext } from '../emission-context.js';
 
 export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext): SqlValue {
-		const rowGetter = ctx.context.get(plan.relationalNode);
-		if (!rowGetter) {
-			throw new QuereusError(
-				`No row context found for column ${plan.expression.name}. The column reference must be evaluated within the context of its source relation.`,
-				StatusCode.INTERNAL
-			);
+		// For now, try to find any row context (for backward compatibility during transition)
+		// In a full implementation, we'd have a mapping from attribute IDs to row contexts
+		const contexts = Array.from(ctx.context.keys());
+		const rowContext = contexts.find(key => typeof key === 'object');
+		if (rowContext) {
+			const rowGetter = ctx.context.get(rowContext);
+			if (rowGetter) {
+				const row = rowGetter();
+				if (Array.isArray(row) && plan.columnIndex < row.length) {
+					return row[plan.columnIndex];
+				}
+			}
 		}
 
-		const row = rowGetter();
-		if (!Array.isArray(row)) {
-			throw new QuereusError(
-				`Expected row array for column ${plan.expression.name}, got ${typeof row}`,
-				StatusCode.INTERNAL
-			);
-		}
-
-		if (plan.columnIndex >= row.length) {
-			throw new QuereusError(
-				`Column index ${plan.columnIndex} out of bounds for row with ${row.length} columns`,
-				StatusCode.RANGE
-			);
-		}
-
-		return row[plan.columnIndex];
+		throw new QuereusError(
+			`No row context found for column ${plan.expression.name} (attr#${plan.attributeId}). The column reference must be evaluated within the context of its source relation.`,
+			StatusCode.INTERNAL
+		);
 	}
 
-	return { params: [], run };
+	return {
+		params: [],
+		run,
+		note: `column(${plan.expression.name})`
+	};
 }

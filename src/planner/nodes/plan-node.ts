@@ -9,10 +9,45 @@ import type { Expression } from '../../parser/ast.js';
 export interface PhysicalProperties {
   /** Ordering of rows. Each element is a column index, negative for DESC */
   ordering?: { column: number; desc: boolean }[];
-  /** Estimated number of rows */
+
+  /** Estimated number of rows this node will produce */
   estimatedRows?: number;
-  /** Whether rows are unique on certain columns */
+
+  /**
+   * Column sets that are guaranteed unique in the output.
+   * Unlike logical keys which are schema-defined, these are derived from
+   * the operation (e.g., DISTINCT creates a unique key on all columns)
+   */
   uniqueKeys?: number[][];
+
+  /** Whether this node's output is read-only (cannot be mutated) */
+  readonly?: boolean;
+
+  /**
+   * Whether this node is deterministic - same inputs always produce same outputs.
+   * Non-deterministic examples: random(), now(), sequence generators
+   */
+  deterministic?: boolean;
+
+  /**
+   * Whether this node produces a constant result (independent of input rows).
+   * Examples: literal values, deterministic functions of constants
+   */
+  constant?: boolean;
+}
+
+/**
+ * Represents a column with a unique identifier that persists across plan transformations
+ */
+export interface Attribute {
+  /** Globally unique identifier for this column */
+  id: number;
+  /** Human-readable name (may not be unique) */
+  name: string;
+  /** Data type information */
+  type: ScalarType;
+  /** Source relation that originally produced this column */
+  sourceRelation?: string;
 }
 
 /**
@@ -21,6 +56,8 @@ export interface PhysicalProperties {
  */
 export abstract class PlanNode {
   private static nextId = 0;
+  private static nextAttributeId = 0;
+
   readonly id: string;
   abstract readonly nodeType: PlanNodeType;
 
@@ -41,6 +78,18 @@ export abstract class PlanNode {
   abstract getChildren(): readonly PlanNode[];
 	abstract getRelations(): readonly RelationalPlanNode[];
 
+  /**
+   * Compute physical properties for this node based on its children.
+   * Called by the optimizer when converting logical to physical nodes.
+   * @param childrenPhysical Physical properties of optimized children
+   */
+  getPhysical?(childrenPhysical: PhysicalProperties[]): PhysicalProperties;
+
+  /**
+   * Get the attributes (columns) produced by this relational node
+   */
+  getAttributes?(): Attribute[];
+
 	getTotalCost(): number {
 		return (this.estimatedCost + this.getChildren().reduce((acc, child) => acc + child.getTotalCost(), 0))
 			* (this.getRelations().reduce((acc, relation) => acc + relation.getTotalCost(), 0) || 1);
@@ -55,6 +104,11 @@ export abstract class PlanNode {
 	toString(): string {
 		return `${this.nodeType} [${this.id}]`;
 	}
+
+  /** Helper to generate unique attribute IDs */
+  public static nextAttrId(): number {
+    return PlanNode.nextAttributeId++;
+  }
 }
 
 export type PlanNodeVisitor = (node: PlanNode) => void;

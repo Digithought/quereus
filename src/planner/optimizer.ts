@@ -38,19 +38,29 @@ export class Optimizer {
 			return this.optimizeChildren(node);
 		}
 
+		// First optimize all children
+		const optimizedNode = this.optimizeChildren(node);
+
 		// Try to apply rules for this node type
-		const rules = this.rules.get(node.nodeType) || [];
+		const rules = this.rules.get(optimizedNode.nodeType) || [];
 		for (const rule of rules) {
-			const result = rule(node, this);
+			const result = rule(optimizedNode, this);
 			if (result) {
-				log(`Applied rule for ${node.nodeType}, transformed to ${result.nodeType}`);
-				// Recursively optimize the result
-				return this.optimizeNode(result);
+				log(`Applied rule for ${optimizedNode.nodeType}, transformed to ${result.nodeType}`);
+				// Mark as physical and compute properties
+				this.markPhysical(result);
+				return result;
 			}
 		}
 
-		// No rule applied, optimize children and keep as-is
-		return this.optimizeChildren(node);
+		// No rule applied - if node supports direct physical conversion, do it
+		if (this.canBePhysical(optimizedNode)) {
+			this.markPhysical(optimizedNode);
+			return optimizedNode;
+		}
+
+		// Otherwise, this is an error - all nodes must become physical
+		throw new Error(`No rule to make ${optimizedNode.nodeType} physical`);
 	}
 
 	private optimizeChildren(node: PlanNode): PlanNode {
@@ -162,5 +172,73 @@ export class Optimizer {
 			};
 			return newSort;
 		});
+	}
+
+	/**
+	 * Mark a node as physical and compute its properties
+	 */
+	private markPhysical(node: PlanNode): void {
+		if (node.physical) return; // Already physical
+
+		// Collect physical properties from children (both scalar and relational)
+		const childrenPhysical: PhysicalProperties[] = [];
+
+		// Add properties from scalar children
+		for (const child of node.getChildren()) {
+			if (child instanceof PlanNode && child.physical) {
+				childrenPhysical.push(child.physical);
+			}
+		}
+
+		// Add properties from relational children
+		for (const relation of node.getRelations()) {
+			if (relation.physical) {
+				childrenPhysical.push(relation.physical);
+			}
+		}
+
+		// Let the node compute its own physical properties if it can
+		if (node.getPhysical) {
+			node.physical = node.getPhysical(childrenPhysical);
+		} else {
+			// Basic defaults
+			node.physical = {
+				deterministic: true,
+				readonly: true
+			};
+		}
+
+		// Optimizer can override/adjust properties here
+		// For example, propagate constant flag up the tree
+		if (childrenPhysical.length > 0 && childrenPhysical.every(p => p.constant)) {
+			node.physical.constant = true;
+		}
+	}
+
+	/**
+	 * Check if a node type can be directly marked as physical without transformation
+	 */
+	private canBePhysical(node: PlanNode): boolean {
+		// List node types that are already physical in nature
+		const directPhysicalTypes = [
+			PlanNodeType.Block,
+			PlanNodeType.TableScan,
+			PlanNodeType.Filter,
+			PlanNodeType.Project,
+			PlanNodeType.Sort,
+			PlanNodeType.LimitOffset,
+			// DDL operations
+			PlanNodeType.CreateTable,
+			PlanNodeType.DropTable,
+			// DML operations
+			PlanNodeType.Insert,
+			PlanNodeType.Update,
+			PlanNodeType.Delete,
+			// Other operations
+			PlanNodeType.Pragma,
+			PlanNodeType.Transaction,
+			// Add more as needed
+		];
+		return directPhysicalTypes.includes(node.nodeType);
 	}
 }

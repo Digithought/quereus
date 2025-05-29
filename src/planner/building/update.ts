@@ -3,7 +3,7 @@ import type { PlanningContext } from '../planning-context.js';
 import { UpdateNode, type UpdateAssignment } from '../nodes/update-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
-import { type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -24,7 +24,7 @@ export function buildUpdateStmt(
   const tableScope = new RegisteredScope(ctx.scope);
   sourceNode.getType().columns.forEach((c, i) =>
     tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-      new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, sourceNode, i)));
+      new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
 
   // Create a new planning context with the updated scope for WHERE clause resolution
   const updateCtx = { ...ctx, scope: tableScope };

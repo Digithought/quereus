@@ -24,7 +24,7 @@ export function buildDeleteStmt(
   const tableScope = new RegisteredScope(ctx.scope);
   sourceNode.getType().columns.forEach((c, i) =>
     tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-      new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, sourceNode, i)));
+      new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
 
   // Create a new planning context with the updated scope for WHERE clause resolution
   const deleteCtx = { ...ctx, scope: tableScope };

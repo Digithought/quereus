@@ -228,53 +228,48 @@ async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<und
 }
 ```
 
-## Optimiser Architecture
+## Optimiser Architecture (Titan Phase-I)
 
-Titan now treats every plan node built by the *builder* as **logical** (has `physical` traits attached).
-The *optimiser* then walks the tree and rewrites or retags each node so that, after optimisation, **every** node in the tree is "physical" and assumes there is a registered runtime emitter for each.
+Titan uses a single plan node hierarchy with a logical→physical transformation pass.
+Every plan node built by the *builder* starts as **logical** (no `physical` property).
+The *optimiser* then walks the tree and transforms or marks each node so that, after optimisation, **every** node in the tree has a `physical` property and therefore has a registered runtime emitter.
 
-Key points:
+### Key Design Points
 
-1. Single hierarchy, dual class
+1. **Single hierarchy, dual phase**
    •  One `PlanNode` type tree – no duplicated logical/physical subclasses.
-   •  Each instance carries `physical` to state its phase.
+   •  Each instance carries optional `physical: PhysicalProperties` to indicate its phase.
 
-2. Transformation rules
+2. **Physical Properties**
+   •  `PhysicalProperties` captures execution characteristics: ordering, row estimates, unique keys, determinism, etc.
+   •  Nodes can implement `getPhysical(childrenPhysical)` to compute their properties based on children.
+   •  The optimizer calls this during the logical→physical transformation.
+
+3. **Transformation rules**
    •  Rules are registered per `PlanNodeType` (see `optimizer.ts`).
-   •  Each rule can
+   •  Each rule can:
      –   return *null* (not applicable),
-     –   return a **replacement node** (often physical), or
-     –   do a deeper rewrite (e.g. `Aggregate → Sort ▸ StreamAggregate`).
-   •  Children are recursively optimised **before** a rule is applied so replacements always see optimised inputs.
+     –   return a **replacement node** (often a different physical algorithm), or
+     –   do a deeper rewrite (e.g. `Aggregate → Sort + StreamAggregate`).
 
-3. PhysicalProperties
-   •  Added to every physical node to advertise traits (current: `ordering`, `estimatedRows`, `uniqueKeys`).
-   •  Traits are derived top-down (required) and bottom-up (provided) so later rules can query them.
+4. **Column references via attributes**
+   •  `ColumnReferenceNode` uses stable `attributeId` instead of node references.
+   •  Relational nodes implement `getAttributes()` to define their output columns.
+   •  This enables robust column tracking across plan transformations.
 
-4. End-to-end flow
-   ```
-   AST
-      ↓  (builder)  logical nodes
-   LogicalPlan  (all physical = undefined)
-      ↓  (optimizer.applyRules())
-   PhysicalPlan (all physical = defined)
-      ↓  (emitter registry)
-   Instruction graph
-      ↓
-   Scheduler runtime
-   ```
+### Example Transformations
 
-5. Example rule (already implemented):
-   ```
-   Aggregate (logical)
-     ├─ source
-     └─ groupBy …
-   ────────────────────────────▶
-   Sort (physical, ordering = groupBy)
-     └─ StreamAggregate (physical)
-         └─ source (optimised)
-   ```
-   A `HashAggregate` rule can be added next; cost comparison will then pick the cheaper of the two.
+- `AggregateNode` (logical) → `SortNode + StreamAggregateNode` (physical)
+- `TableScanNode` → `TableScanNode` (marked physical with properties)
+- Nodes that cannot be physical (like `AggregateNode`) have `override readonly physical: undefined`
+
+### Physical Properties Inference
+
+The optimizer automatically:
+- Collects properties from all children (scalar + relational)
+- Calls node's `getPhysical()` if available
+- Applies inference rules (e.g., constant propagation)
+- Ensures every node becomes physical or fails with clear error
 
 This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms.
 

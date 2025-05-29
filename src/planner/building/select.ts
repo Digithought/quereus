@@ -1,5 +1,5 @@
 import type * as AST from '../../parser/ast.js';
-import type { PlanNode, RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
@@ -45,7 +45,25 @@ function isAggregateExpression(node: ScalarPlanNode): boolean {
 function getDefaultAlias(expr: AST.Expression): string {
 	switch (expr.type) {
 		case 'function':
-			return `${expr.name}(${expr.args.length === 0 ? '*' : '...'})`;
+			if (expr.args.length === 0) {
+				// Special case for count() which should be displayed as count(*)
+				if (expr.name.toLowerCase() === 'count') {
+					return 'count(*)';
+				}
+				return `${expr.name}()`;
+			} else {
+				// Try to generate meaningful argument names
+				const argNames = expr.args.map(arg => {
+					if (arg.type === 'column') {
+						return arg.name;
+					} else if (arg.type === 'literal') {
+						return String(arg.value);
+					} else {
+						return '...';
+					}
+				}).join(', ');
+				return `${expr.name}(${argNames})`;
+			}
 		case 'column':
 			return expr.name;
 		case 'literal':
@@ -140,7 +158,7 @@ export function buildSelectStmt(
 					selectScope,
 					columnExpr,
 					columnDef.type,
-					input,
+					PlanNode.nextAttrId(), // Generate unique attribute ID
 					index
 				);
 
@@ -228,7 +246,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		const tableScope = new RegisteredScope(parentContext.scope);
 		fromTable.getType().columns.forEach((c, i) =>
 			tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
 
 		if (fromClause.alias) {
 			columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
@@ -245,7 +263,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		const functionScope = new RegisteredScope(parentContext.scope);
 		fromTable.getType().columns.forEach((c, i) =>
 			functionScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, fromTable, i)));
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
 
 		if (fromClause.alias) {
 			// For table-valued functions, use empty string as parent name since columns are registered without qualifier

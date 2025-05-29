@@ -58,7 +58,19 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		// Handle the case with no GROUP BY - aggregate everything into a single group
 		if (plan.groupBy.length === 0) {
 			// Initialize accumulators for each aggregate
-			const accumulators: any[] = aggregateSchemas.map(schema => schema.initialValue);
+			const accumulators: any[] = aggregateSchemas.map(schema => {
+				// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
+				const initialValue = schema.initialValue;
+				if (typeof initialValue === 'function') {
+					return initialValue();
+				} else if (Array.isArray(initialValue)) {
+					return [...initialValue];
+				} else if (initialValue && typeof initialValue === 'object') {
+					return { ...initialValue };
+				} else {
+					return initialValue;
+				}
+			});
 
 			// Process all rows
 			for await (const row of sourceRows) {
@@ -132,9 +144,11 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					}
 
 					const groupKey = createGroupKey(groupValues);
+					console.log('Processing row with group key:', groupKey, 'values:', groupValues, 'row:', row);
 
 					// Check if we've moved to a new group
 					if (currentGroupKey !== null && currentGroupKey !== groupKey) {
+						console.log('Group changed from', currentGroupKey, 'to', groupKey, 'yielding results for previous group');
 						// Yield the previous group's results
 						const resultRow: SqlValue[] = [];
 
@@ -155,15 +169,41 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							resultRow.push(finalValue);
 						}
 
+						console.log('Yielding result row:', resultRow);
 						yield resultRow;
 
 						// Reset for new group
-						currentAccumulators = aggregateSchemas.map(schema => schema.initialValue);
+						currentAccumulators = aggregateSchemas.map(schema => {
+							// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
+							const initialValue = schema.initialValue;
+							if (typeof initialValue === 'function') {
+								return initialValue();
+							} else if (Array.isArray(initialValue)) {
+								return [...initialValue];
+							} else if (initialValue && typeof initialValue === 'object') {
+								return { ...initialValue };
+							} else {
+								return initialValue;
+							}
+						});
+						console.log('Reset accumulators for new group');
 					}
 
 					// Initialize if first group
 					if (currentGroupKey === null) {
-						currentAccumulators = aggregateSchemas.map(schema => schema.initialValue);
+						currentAccumulators = aggregateSchemas.map(schema => {
+							// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
+							const initialValue = schema.initialValue;
+							if (typeof initialValue === 'function') {
+								return initialValue();
+							} else if (Array.isArray(initialValue)) {
+								return [...initialValue];
+							} else if (initialValue && typeof initialValue === 'object') {
+								return { ...initialValue };
+							} else {
+								return initialValue;
+							}
+						});
 					}
 
 					// Update current group
@@ -188,10 +228,14 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							}
 						}
 
+						console.log('Accumulating value for group', currentGroupKey, ':', argValues, 'current accumulator:', currentAccumulators[i]);
+
 						// Call the step function
 						if (schema.aggregateStepImpl) {
 							currentAccumulators[i] = schema.aggregateStepImpl(currentAccumulators[i], ...argValues);
 						}
+
+						console.log('Updated accumulator:', currentAccumulators[i]);
 					}
 				} finally {
 					// Clean up context for this row
