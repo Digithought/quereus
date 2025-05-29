@@ -534,11 +534,21 @@ export class Parser {
 	}
 
 	/**
-	 * Parse a single table source, which can now be a table name or a table-valued function call
+	 * Parse a single table source, which can now be a table name, table-valued function call, or subquery
 	 */
-	private tableSource(): AST.TableSource | AST.FunctionSource {
+	private tableSource(): AST.FromClause {
 		const startToken = this.peek();
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
+
+		// Check for subquery: ( SELECT ...
+		if (this.check(TokenType.LPAREN)) {
+			// Look ahead to see if this is a subquery
+			const lookahead = this.current + 1;
+			if (lookahead < this.tokens.length &&
+				this.tokens[lookahead].type === TokenType.SELECT) {
+				return this.subquerySource(startToken);
+			}
+		}
 
 		// Check for function call syntax: IDENTIFIER (
 		if (this.checkIdentifierLike(contextualKeywords) && this.checkNext(1, TokenType.LPAREN)) {
@@ -548,6 +558,45 @@ export class Parser {
 		else {
 			return this.standardTableSource(startToken);
 		}
+	}
+
+	/** Parses a subquery source: (SELECT ...) AS alias */
+	private subquerySource(startToken: Token): AST.SubquerySource {
+		this.consume(TokenType.LPAREN, "Expected '(' before subquery.");
+
+		// Consume the SELECT token and pass it as startToken to selectStatement
+		const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in subquery.");
+		const subquery = this.selectStatement(selectToken);
+
+		this.consume(TokenType.RPAREN, "Expected ')' after subquery.");
+
+		// Parse optional alias for subquery
+		let alias: string;
+		if (this.match(TokenType.AS)) {
+			if (!this.checkIdentifierLike([])) {
+				throw this.error(this.peek(), "Expected alias after 'AS'.");
+			}
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+		} else if (this.checkIdentifierLike([]) &&
+			!this.checkNext(1, TokenType.DOT) &&
+			!this.checkNext(1, TokenType.COMMA) &&
+			!this.isJoinToken() &&
+			!this.isEndOfClause()) {
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+		} else {
+			// Generate a default alias if none provided
+			alias = `subquery_${startToken.startOffset}`;
+		}
+
+		const endToken = this.previous();
+		return {
+			type: 'subquerySource',
+			subquery,
+			alias,
+			loc: _createLoc(startToken, endToken),
+		};
 	}
 
 	/** Parses a standard table source (schema.table or table) */

@@ -274,6 +274,20 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 		// Store the column scope for buildSelectStmt
 		(fromTable as any).columnScope = columnScope;
+	} else if (fromClause.type === 'subquerySource') {
+		// Build the subquery as a relational plan node
+		fromTable = buildSelectStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
+
+		const subqueryScope = new RegisteredScope(parentContext.scope);
+		fromTable.getType().columns.forEach((c, i) =>
+			subqueryScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
+
+		// Subqueries always have an alias (required by parser)
+		columnScope = new AliasedScope(subqueryScope, '', fromClause.alias.toLowerCase());
+
+		// Store the column scope for buildSelectStmt
+		(fromTable as any).columnScope = columnScope;
 	} else {
 		throw new QuereusError(
 			`Unsupported FROM clause item type: ${fromClause.type}`,
