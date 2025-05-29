@@ -2,6 +2,7 @@ import type { SqlParameters } from '../common/types.js';
 import type { Database } from '../core/database.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { Scope } from './scopes/scope.js';
+import type { ScalarPlanNode } from './nodes/plan-node.js';
 
 /**
  * Debug options for query planning and execution.
@@ -49,4 +50,15 @@ export interface PlanningContext {
    * Debug options controlling tracing and diagnostics output.
    */
   readonly debug?: DebugOptions;
+
+  /**
+   * Aggregates from the SELECT list (used when building HAVING expressions).
+   * This allows buildExpression to recognize when an aggregate function in HAVING
+   * refers to an already-computed aggregate from SELECT.
+   */
+  readonly aggregates?: Array<{
+    expression: ScalarPlanNode;
+    alias: string;
+    columnIndex: number;
+  }>;
 }

@@ -18,7 +18,7 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 - `06-builtin_functions.sqllogic` - Built-in scalar and aggregate functions
 
 ### ⚠️ Partially Working (07)
-- `07-aggregates.sqllogic` - GROUP BY works, HAVING and DISTINCT aggregates not yet implemented
+- `07-aggregates.sqllogic` - partly implemented
 
 ### 🚧 Features To Be Implemented (Tests Will Fail Until Implemented)
 - `joins.sqllogic` - JOIN operations (INNER, LEFT, CROSS, multiple JOINs)
@@ -44,33 +44,23 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 yarn test
 ```
 
-For diagnostics on test failures:
+For diagnostics on test failures run the SET env commands separately - for some reason, they won't be recognized when run together with &&:
 ```bash
-QUEREUS_TEST_SHOW_PLAN=true yarn test      # Show query plan
-QUEREUS_TEST_SHOW_PROGRAM=true yarn test   # Show instruction program  
-QUEREUS_TEST_SHOW_TRACE=true yarn test     # Show execution trace
+set QUEREUS_TEST_SHOW_PLAN=true # First, set the env variable
+yarn test      # Show query plan
+
+set QUEREUS_TEST_SHOW_PROGRAM=true
+yarn test   # Show instruction program  
+
+set QUEREUS_TEST_SHOW_TRACE=true
+yarn test     # Show execution trace
 ```
+
+You can also turn on log viewing by setting `DEBUG=quereus:...`
 
 ## Development Workflow
 
 1. **Run tests** to see current failures
-2. **Pick a failing test** that represents a feature you want to implement
-3. **Implement the feature** in the Titan architecture
+3. **Implement or fix the feature** in the Titan architecture
 4. **Re-run tests** to verify the feature works correctly
-5. **Move to the next failing test**
-
-This approach ensures comprehensive coverage and provides clear implementation goals.
-
-## Feature Implementation Priority
-
-Based on test organization and dependencies:
-
-1. **Aggregation completeness** (HAVING, DISTINCT) - `07-aggregates.sqllogic`
-2. **Basic JOINs** - `joins.sqllogic` 
-3. **Subqueries** - `subqueries.sqllogic`
-4. **DISTINCT operations** - `10-distinct_datatypes.sqllogic`
-5. **Set operations** - `09-set_operations.sqllogic`
-6. **Views** - `08-views.sqllogic`
-7. **CTEs** - `cte.sqllogic`
-8. **Constraint enforcement** - `constraints.sqllogic`
-9. **Window functions** - `join_padding_order.sqllogic`
+5. **Move to the next failing test** - update this readme at milestones

@@ -5,6 +5,7 @@ import { BlockNode } from './nodes/block.js';
 import { AggregateNode } from './nodes/aggregate-node.js';
 import { StreamAggregateNode } from './nodes/stream-aggregate.js';
 import { SortNode } from './nodes/sort.js';
+import { FilterNode } from './nodes/filter.js';
 import type { Scope } from './scopes/scope.js';
 
 const log = createLogger('optimizer');
@@ -85,6 +86,12 @@ export class Optimizer {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
 			return new SortNode(node.scope, optimizedSource, node.sortKeys);
+		}
+
+		if (node instanceof FilterNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new FilterNode(node.scope, optimizedSource, node.predicate);
 		}
 
 		// For other nodes, return as-is for now

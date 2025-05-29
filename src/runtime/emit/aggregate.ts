@@ -4,6 +4,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
 
 /**
  * Creates a group key from an array of values that can be used as a Map key
@@ -30,7 +31,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		const aggregateArgFunctions: Array<Array<(ctx: RuntimeContext) => SqlValue | Promise<SqlValue>>> = [];
 
 		for (const agg of plan.aggregates) {
-			const funcNode = agg.expression as any;
+			const funcNode = agg.expression;
+			if (!(funcNode instanceof AggregateFunctionCallNode)) {
+				throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+			}
 			const args = funcNode.args || [];
 			const aggregateArgs = groupByAndAggregateArgs.slice(aggregateArgOffset, aggregateArgOffset + args.length);
 			aggregateArgFunctions.push(aggregateArgs);
@@ -40,11 +44,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		// Get the function schemas for each aggregate
 		const aggregateSchemas: FunctionSchema[] = [];
 		for (const agg of plan.aggregates) {
-			// Extract function name and args from the aggregate expression
-			// For now, assume it's a ScalarFunctionCallNode
-			const funcNode = agg.expression as any;
-			if (funcNode.nodeType !== 'ScalarFunctionCall') {
-				throw new Error(`Unsupported aggregate expression type: ${funcNode.nodeType}`);
+			const funcNode = agg.expression;
+			if (!(funcNode instanceof AggregateFunctionCallNode)) {
+				throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
 			}
 
 			const funcSchema = funcNode.functionSchema;
@@ -84,7 +86,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 						// Evaluate the aggregate arguments in the context of the current row
 						const argValues: SqlValue[] = [];
-						const funcNode = plan.aggregates[i].expression as any;
+						const funcNode = plan.aggregates[i].expression;
+						if (!(funcNode instanceof AggregateFunctionCallNode)) {
+							throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+						}
 						const args = funcNode.args || [];
 						const argFunctions = aggregateArgFunctions[i];
 
@@ -212,7 +217,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 						// Evaluate the aggregate arguments in the context of the current row
 						const argValues: SqlValue[] = [];
-						const funcNode = plan.aggregates[i].expression as any;
+						const funcNode = plan.aggregates[i].expression;
+						if (!(funcNode instanceof AggregateFunctionCallNode)) {
+							throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+						}
 						const args = funcNode.args || [];
 						const argFunctions = aggregateArgFunctions[i];
 
@@ -269,7 +277,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	// Emit aggregate argument expressions
 	const aggregateArgInstructions: Instruction[] = [];
 	for (const agg of plan.aggregates) {
-		const funcNode = agg.expression as any;
+		const funcNode = agg.expression;
+		if (!(funcNode instanceof AggregateFunctionCallNode)) {
+			throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+		}
 		const args = funcNode.args || [];
 		for (const arg of args) {
 			aggregateArgInstructions.push(emitCallFromPlan(arg, ctx));

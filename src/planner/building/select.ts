@@ -204,6 +204,50 @@ export function buildSelectStmt(
 		}
 
 		input = new AggregateNode(selectScope, input, groupByExpressions, aggregates);
+
+		// Handle HAVING clause
+		if (stmt.having) {
+			// Create a scope that includes the aggregate output columns
+			const havingScope = new RegisteredScope(selectScope);
+
+			// Register GROUP BY columns
+			groupByExpressions.forEach((expr, index) => {
+				// Try to get a meaningful name for the GROUP BY column
+				let columnName: string;
+				if ((expr as any).expression?.type === 'column') {
+					columnName = (expr as any).expression.name;
+				} else {
+					columnName = `group_${index}`;
+				}
+
+				havingScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, expr.getType(), PlanNode.nextAttrId(), index));
+			});
+
+			// Register aggregate columns by their aliases
+			aggregates.forEach((agg, index) => {
+				const columnIndex = groupByExpressions.length + index;
+				havingScope.registerSymbol(agg.alias.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), PlanNode.nextAttrId(), columnIndex));
+			});
+
+			// Build HAVING expression with the aggregate scope
+			// We need to use a special context that knows about the aggregates
+			const havingContext: PlanningContext = {
+				...selectContext,
+				scope: havingScope,
+				// Add the aggregates to the context so buildExpression can check them
+				aggregates: aggregates.map((agg, index) => ({
+					expression: agg.expression,
+					alias: agg.alias,
+					columnIndex: groupByExpressions.length + index
+				}))
+			};
+			const havingExpression = buildExpression(havingContext, stmt.having, true);
+
+			// Wrap the AggregateNode with a FilterNode for HAVING
+			input = new FilterNode(havingScope, input, havingExpression);
+		}
 	} else {
 		// Create ProjectNode if we have projections, otherwise return input as-is
 		if (projections.length > 0) {

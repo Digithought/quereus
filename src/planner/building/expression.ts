@@ -3,7 +3,9 @@ import type { PlanningContext } from '../planning-context.js';
 import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, CollateNode } from '../nodes/scalar.js';
 import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
+import { ColumnReferenceNode } from '../nodes/reference.js';
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, SqlDataType } from '../../common/types.js';
@@ -67,6 +69,54 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
       const collateOperand = buildExpression(ctx, expr.expr, allowAggregates);
       return new CollateNode(ctx.scope, expr, collateOperand);
     case 'function':
+      // In HAVING context, check if this function matches an existing aggregate
+      if (ctx.aggregates && ctx.aggregates.length > 0) {
+        // Try to find a matching aggregate
+        for (const agg of ctx.aggregates) {
+          if (agg.expression instanceof AggregateFunctionCallNode) {
+            const aggFuncNode = agg.expression as AggregateFunctionCallNode;
+            // Check if function name matches and argument count matches
+            if (aggFuncNode.functionName.toLowerCase() === expr.name.toLowerCase() &&
+                aggFuncNode.args.length === expr.args.length) {
+              // Check if arguments match
+              let argsMatch = true;
+              for (let i = 0; i < expr.args.length; i++) {
+                const exprArg = expr.args[i];
+                const aggArg = aggFuncNode.args[i];
+                // Simple check: if both are column references, check names match
+                if (exprArg.type === 'column' && (aggArg as any).expression?.type === 'column') {
+                  if (exprArg.name.toLowerCase() !== (aggArg as any).expression.name.toLowerCase()) {
+                    argsMatch = false;
+                    break;
+                  }
+                } else if (exprArg.type === 'literal' && (aggArg as any).expression?.type === 'literal') {
+                  if (exprArg.value !== (aggArg as any).expression.value) {
+                    argsMatch = false;
+                    break;
+                  }
+                }
+                // For other cases, we'd need more sophisticated comparison
+              }
+
+              if (argsMatch) {
+                // Found matching aggregate - return a column reference to it
+                const columnExpr: AST.ColumnExpr = {
+                  type: 'column',
+                  name: agg.alias
+                };
+                return new ColumnReferenceNode(
+                  ctx.scope,
+                  columnExpr,
+                  agg.expression.getType(),
+                  PlanNode.nextAttrId(),
+                  agg.columnIndex
+                );
+              }
+            }
+          }
+        }
+      }
+
       const funcResolution = resolveFunction(ctx.scope, expr);
       if (!funcResolution || funcResolution === Ambiguous) {
         throw new QuereusError(`Function not found/ambiguous: ${expr.name}/${expr.args.length}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
