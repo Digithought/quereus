@@ -435,12 +435,14 @@ export const jsonGroupArrayFunc = createAggregateFunction(
 export const jsonGroupObjectFunc = createAggregateFunction(
 	{ name: 'json_group_object', numArgs: 2, initialValue: {} },
 	(acc: Record<string, any>, name: SqlValue, value: SqlValue): Record<string, any> => {
-		if (typeof name !== 'string' || name === null) {
-			return acc; // Skip if name is not a non-NULL string
+		if (name === null || name === undefined) {
+			return acc; // Skip if name is NULL/undefined
 		}
+		// Convert the name to a string key - SQLite converts non-string keys to strings
+		const stringKey = String(name);
 		// SQLite's json_group_object includes NULL values associated with keys
 		const preparedValue = prepareJsonValue(value);
-		acc[name] = preparedValue;
+		acc[stringKey] = preparedValue;
 		return acc;
 	},
 	(acc: Record<string, any>): SqlValue => {
