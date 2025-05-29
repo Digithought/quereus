@@ -27,7 +27,7 @@ SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING total > 40 ORDER BY
 
 -- HAVING without GROUP BY
 SELECT sum(val) FROM agg_t HAVING sum(val) > 100;
-→ [150]
+→ [{"sum(val)":150}]
 
 -- Aggregate with empty input
 CREATE TABLE empty_agg(x);
@@ -37,15 +37,15 @@ DROP TABLE empty_agg;
 
 -- group_concat
 SELECT group_concat(val) FROM agg_t WHERE grp = 'a';
-→ ["10,30"]
+→ [{"group_concat(val)":"10,30"}]
 SELECT group_concat(val, '|') FROM agg_t WHERE grp = 'b' ORDER BY val;
-→ ["20|40"]
+→ [{"group_concat(val, '|')":"20|40"}]
 
 -- DISTINCT aggregates (Example: COUNT)
 SELECT count(distinct grp) FROM agg_t;
-→ [3]
+→ [{"count(distinct grp)":3}]
 INSERT INTO agg_t VALUES ('c', 50);
 SELECT count(distinct val) FROM agg_t WHERE grp = 'c';
-→ [1]
+→ [{"count(distinct val)":1}]
 
 DROP TABLE agg_t;

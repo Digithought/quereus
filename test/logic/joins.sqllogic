@@ -23,7 +23,7 @@ SELECT l.id, l.val_l, r.id, r.val_r FROM t_left l LEFT JOIN t_right r ON l.id = 
 
 -- CROSS JOIN
 SELECT count(*) FROM t_left CROSS JOIN t_right;
-→ [9]
+→ [{"count(*)":9}]
 SELECT l.id, r.id FROM t_left l CROSS JOIN t_right r ORDER BY l.id, r.id LIMIT 2;
 → [{"id":1,"id:1":10},{"id":1,"id:1":20}]
 
@@ -31,12 +31,12 @@ SELECT l.id, r.id FROM t_left l CROSS JOIN t_right r ORDER BY l.id, r.id LIMIT 2
 SELECT l.id, r.val_r FROM t_left l JOIN t_right r ON l.id = r.left_id WHERE r.id = 10;
 → [{"id":1,"val_r":"R1"}]
 
--- Multiple JOINs (Conceptual: requires a third table setup)
--- CREATE TABLE t_extra (id INTEGER PRIMARY KEY, right_id INTEGER, val_e TEXT);
--- INSERT INTO t_extra VALUES (100, 10, 'E1'), (200, 20, 'E2');
--- SELECT l.id, r.id, e.id FROM t_left l JOIN t_right r ON l.id = r.left_id JOIN t_extra e ON r.id = e.right_id ORDER BY l.id;
--- → [{"id":1,"id:1":10,"id:2":100},{"id":2,"id:1":20,"id:2":200}]
--- DROP TABLE t_extra;
+-- Multiple JOINs (requires a third table setup)
+CREATE TABLE t_extra (id INTEGER PRIMARY KEY, right_id INTEGER, val_e TEXT);
+INSERT INTO t_extra VALUES (100, 10, 'E1'), (200, 20, 'E2');
+SELECT l.id, r.id, e.id FROM t_left l JOIN t_right r ON l.id = r.left_id JOIN t_extra e ON r.id = e.right_id ORDER BY l.id;
+→ [{"id":1,"id:1":10,"id:2":100},{"id":2,"id:1":20,"id:2":200}]
+DROP TABLE t_extra;
 
 DROP TABLE t_left;
 DROP TABLE t_right;
