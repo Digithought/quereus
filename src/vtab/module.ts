@@ -1,7 +1,6 @@
 import type { Database } from '../core/database.js'; // Assuming Database class exists
 import type { VirtualTable } from './table.js';
-import type { VirtualTableCursor } from './cursor.js';
-import type { IndexInfo } from './indexInfo.js';
+import type { IndexInfo } from './index-info.js';
 import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema } from '../schema/table.js'; // Add import for TableSchema
 
@@ -9,21 +8,19 @@ import type { TableSchema } from '../schema/table.js'; // Add import for TableSc
  * Base interface for module-specific configuration passed to xCreate/xConnect.
  * Modules should define their own interface extending this if they need options.
  */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface, @typescript-eslint/no-empty-object-type
 export interface BaseModuleConfig {}
 
 /**
  * Interface defining the methods for a virtual table module implementation.
- * This is the TypeScript equivalent of the C sqlite3_module struct.
  * The module primarily acts as a factory for connection-specific VirtualTable instances.
  *
  * @template TTable The specific type of VirtualTable managed by this module.
- * @template TCursor The specific type of VirtualTableCursor used by this module.
  * @template TConfig The type defining module-specific configuration options.
  */
 export interface VirtualTableModule<
 	TTable extends VirtualTable,
-	TCursor extends VirtualTableCursor<TTable>,
-	TConfig extends BaseModuleConfig = BaseModuleConfig // Add generic config type
+	TConfig extends BaseModuleConfig = BaseModuleConfig
 > {
 
 	/**
@@ -31,21 +28,13 @@ export interface VirtualTableModule<
 	 * Called by CREATE VIRTUAL TABLE to define schema and initialize storage.
 	 *
 	 * @param db The database connection
-	 * @param pAux Client data passed during module registration
-	 * @param moduleName The name the module was registered with
-	 * @param schemaName The name of the database schema (e.g., 'main', 'temp')
-	 * @param tableName The name of the virtual table being created
-	 * @param options Module-specific configuration options from the USING clause
+	 * @param tableSchema The schema definition for the table being created
 	 * @returns The new VirtualTable instance
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xCreate(
 		db: Database,
-		pAux: unknown,
-		moduleName: string,
-		schemaName: string,
-		tableName: string,
-		options: TConfig
+		tableSchema: TableSchema,
 	): TTable;
 
 	/**
@@ -59,7 +48,7 @@ export interface VirtualTableModule<
 	 * @param tableName The name of the virtual table to connect to
 	 * @param options Module-specific configuration options from the original CREATE VIRTUAL TABLE
 	 * @returns The connection-specific VirtualTable instance
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xConnect(
 		db: Database,
@@ -90,7 +79,7 @@ export interface VirtualTableModule<
 	 * @param moduleName The name the module was registered with
 	 * @param schemaName The name of the database schema
 	 * @param tableName The name of the virtual table being destroyed
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	xDestroy(
 		db: Database,
@@ -114,4 +103,4 @@ export interface VirtualTableModule<
 export type SchemaChangeInfo =
 	| { type: 'addColumn'; columnDef: ColumnDef }
 	| { type: 'dropColumn'; columnName: string }
-	| { type: 'renameColumn'; oldName: string; newName: string };
+	| { type: 'renameColumn'; oldName: string; newName: string; newColumnDefAst?: ColumnDef };

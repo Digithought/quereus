@@ -19,37 +19,8 @@ export interface ColumnSchema {
 	defaultValue: Expression | null;
 	/** Declared collation sequence name (e.g., "BINARY", "NOCASE", "RTRIM") */
 	collation: string;
-	/** Is the column hidden (e.g., implicit rowid for non-WITHOUT ROWID vtabs)? */
-	hidden: boolean;
 	/** Is the column generated? */
 	generated: boolean;
-}
-
-/**
- * Determines the column affinity based on SQLite rules.
- * @see https://www.sqlite.org/datatype3.html#determination_of_column_affinity
- *
- * @param typeName The declared type name (case-insensitive)
- * @returns The determined SqlDataType affinity
- */
-export function getAffinity(typeName: string | undefined): SqlDataType {
-	if (!typeName) {
-		return SqlDataType.BLOB;
-	}
-	const typeUpper = typeName.toUpperCase();
-	if (typeUpper.includes('INT')) {
-		return SqlDataType.INTEGER;
-	}
-	if (typeUpper.includes('CHAR') || typeUpper.includes('CLOB') || typeUpper.includes('TEXT')) {
-		return SqlDataType.TEXT;
-	}
-	if (typeUpper.includes('BLOB')) {
-		return SqlDataType.BLOB;
-	}
-	if (typeUpper.includes('REAL') || typeUpper.includes('FLOA') || typeUpper.includes('DOUB')) {
-		return SqlDataType.REAL;
-	}
-	return SqlDataType.NUMERIC; // Default catch-all
 }
 
 /**
@@ -67,7 +38,6 @@ export function createDefaultColumnSchema(name: string): ColumnSchema {
 		pkOrder: 0,
 		defaultValue: null,
 		collation: 'BINARY', // SQLite's default
-		hidden: false,
 		generated: false,
 	};
 }

@@ -1,9 +1,11 @@
 import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { VirtualTableCursor } from './cursor.js';
-import type { SqlValue } from '../common/types.js';
+import type { Row } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
+import type { FilterInfo } from './filter-info.js';
+import type { RowOp } from '../parser/ast.js';
+import type { VirtualTableConnection } from './connection.js';
 
 /**
  * Base class representing a virtual table instance.
@@ -35,25 +37,46 @@ export abstract class VirtualTable {
 	/**
 	 * Disconnects from this virtual table connection instance
 	 * Called when the database connection closes or the statement is finalized
-	 * @throws SqliteError on failure
+	 * @throws QuereusError on failure
 	 */
 	abstract xDisconnect(): Promise<void>;
 
 	/**
-	 * Creates a new cursor for scanning this virtual table
-	 * @returns A new cursor instance for this table
-	 * @throws SqliteError on failure
+	 * (Optional) Opens a direct data stream for this virtual table based on filter criteria.
+	 * This is an alternative to the cursor-based xOpen/filter/next model.
+	 * @param filterInfo Information from xBestIndex and query parameters.
+	 * @returns An AsyncIterable yielding Row tuples.
+	 * @throws QuereusError on failure
 	 */
-	abstract xOpen(): Promise<VirtualTableCursor<this>>;
+	xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation
-	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, often just the rowid
-	 * @param rowid For UPDATE/DELETE, the rowid of the row to modify. Null for INSERT
-	 * @returns Object with rowid property (for INSERT) or empty object
-	 * @throws SqliteError or ConstraintError on failure
+	 * @param operation The operation to perform (insert, update, delete)
+	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, undefined
+	 * @param oldKeyValues For UPDATE/DELETE, the old key values of the row to modify. Undefined for INSERT
+	 * @returns new row for INSERT/UPDATE, undefined for DELETE
+	 * @throws QuereusError or ConstraintError on failure
 	 */
-	abstract xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint }>;
+	abstract xUpdate(
+		operation: RowOp,
+		values: Row | undefined,
+		oldKeyValues?: Row
+	): Promise<Row | undefined>;
+
+	/**
+	 * (Optional) Creates a new connection for transaction support.
+	 * If implemented, this enables proper transaction isolation for this table.
+	 * @returns A new VirtualTableConnection instance
+	 */
+	createConnection?(): VirtualTableConnection | Promise<VirtualTableConnection>;
+
+	/**
+	 * (Optional) Gets the current connection for this table instance.
+	 * Used when the table maintains a single connection internally.
+	 * @returns The current VirtualTableConnection instance, if any
+	 */
+	getConnection?(): VirtualTableConnection | undefined;
 
 	/**
 	 * Begins a transaction on this virtual table
@@ -100,16 +123,9 @@ export abstract class VirtualTable {
 	xRollbackTo?(savepointIndex: number): Promise<void>;
 
 	/**
-	 * Checks if the given name would conflict with this table's shadow names
-	 * @param name The name to check
-	 * @returns true if there's a conflict
-	 */
-	xShadowName?(name: string): boolean;
-
-	/**
 	 * Modifies the schema of this virtual table
 	 * @param changeInfo Object describing the schema modification
-	 * @throws SqliteError or ConstraintError on failure
+	 * @throws QuereusError or ConstraintError on failure
 	 */
 	xAlterSchema?(changeInfo: SchemaChangeInfo): Promise<void>;
 

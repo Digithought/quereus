@@ -1,19 +1,21 @@
-// src/vtab/memory/table.ts
 import { VirtualTable } from '../table.js';
-import type { VirtualTableCursor } from '../cursor.js';
 import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
-import type { SqlValue } from '../../common/types.js';
-import { type TableSchema, type IndexSchema } from '../../schema/table.js';
+import type { Row } from '../../common/types.js';
+import { type IndexSchema, type TableSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
-import { MemoryTableCursor } from './cursor.js';
-import { SqliteError } from '../../common/errors.js';
-import { StatusCode } from '../../common/constants.js';
-import { createLogger } from '../../common/logger.js';
+import { QuereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
+import type { FilterInfo } from '../filter-info.js';
+import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';
+import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js'; // Assuming this will be updated for renameColumn
+import { createMemoryTableLoggers } from './utils/logging.js';
+import { safeJsonStringify } from '../../util/serialization.js';
+import type { VirtualTableConnection } from '../connection.js';
+import { MemoryVirtualTableConnection } from './connection.js';
 
-const log = createLogger('vtab:memory:table');
-const errorLog = log.extend('error');
+const logger = createMemoryTableLoggers('table');
 
 /**
  * Represents a connection-specific instance of an in-memory table using the layer-based MVCC model.
@@ -32,7 +34,7 @@ export class MemoryTable extends VirtualTable {
 	 */
 	constructor(
 		db: Database,
-		module: VirtualTableModule<any, any, any>,
+		module: VirtualTableModule<any, any>,
 		manager: MemoryTableManager // Pass the shared manager instance
 	) {
 		// Use manager's schema and name for the base class constructor
@@ -52,34 +54,83 @@ export class MemoryTable extends VirtualTable {
 	/** Checks read-only status via the manager */
 	isReadOnly(): boolean {
 		// Access readOnly via a public method on the manager
-		return this.manager.isReadOnly();
+		return this.manager.isReadOnly;
 	}
 
 	/** Ensures the connection to the manager is established */
 	private ensureConnection(): MemoryTableConnection {
 		if (!this.connection) {
-			// Establish connection state with the manager upon first use
-			this.connection = this.manager.connect();
+			// Check if there's already an active connection for this table in the database
+			const existingConnections = this.db.getConnectionsForTable(this.tableName);
+			if (existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection) {
+				const memoryVirtualConnection = existingConnections[0] as MemoryVirtualTableConnection;
+				this.connection = memoryVirtualConnection.getMemoryConnection();
+				logger.debugLog(`ensureConnection: Reused existing connection ${this.connection.connectionId} for table ${this.tableName}`);
+			} else {
+				// Establish connection state with the manager upon first use
+				this.connection = this.manager.connect();
+
+				// Create a VirtualTableConnection wrapper and register it with the database
+				const vtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
+				this.db.registerConnection(vtabConnection);
+
+				logger.debugLog(`ensureConnection: Created and registered new connection ${this.connection.connectionId} for table ${this.tableName}`);
+			}
 		}
 		return this.connection;
 	}
 
-	/**
-	 * Opens a cursor for this connection's view of the table.
-	 */
-	async xOpen(): Promise<VirtualTableCursor<this>> {
+	/** Sets an existing connection for this table instance (for transaction reuse) */
+	setConnection(memoryConnection: MemoryTableConnection): void {
+		logger.debugLog(`Setting connection ${memoryConnection.connectionId} for table ${this.tableName}`);
+		this.connection = memoryConnection;
+	}
+
+	/** Creates a new VirtualTableConnection for transaction support */
+	createConnection(): VirtualTableConnection {
+		const memoryConnection = this.manager.connect();
+		return new MemoryVirtualTableConnection(this.tableName, memoryConnection);
+	}
+
+	/** Gets the current connection if this table maintains one internally */
+	getConnection(): VirtualTableConnection | undefined {
+		if (!this.connection) {
+			return undefined;
+		}
+		return new MemoryVirtualTableConnection(this.tableName, this.connection);
+	}
+
+	// New xQuery method for direct async iteration
+	async* xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const conn = this.ensureConnection();
-		// Create a new cursor instance associated with *this* table instance (connection)
-		return new MemoryTableCursor(this, conn) as unknown as VirtualTableCursor<this>;
+		logger.debugLog(`xQuery using connection ${conn.connectionId} (pending: ${conn.pendingTransactionLayer?.getLayerId()}, read: ${conn.readLayer.getLayerId()})`);
+		const currentSchema = this.manager.tableSchema;
+		if (!currentSchema) {
+			logger.error('xQuery', this.tableName, 'Table schema is undefined');
+			return;
+		}
+		const plan = buildScanPlanFromFilterInfo(filterInfo, currentSchema);
+		logger.debugLog(`xQuery invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
+
+		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
+		logger.debugLog(`xQuery reading from layer ${startLayer.getLayerId()}`);
+
+		// Delegate scanning to the manager, which handles layer recursion
+		yield* this.manager.scanLayer(startLayer, plan);
 	}
 
 	// Note: xBestIndex is handled by the MemoryTableModule, not the table instance.
 
 	/** Performs mutation through the connection's transaction layer */
-	async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint; }> {
+	async xUpdate(
+		operation: 'insert' | 'update' | 'delete',
+		values: Row | undefined,
+		oldKeyValues?: Row
+	): Promise<Row | undefined> {
 		const conn = this.ensureConnection();
-		// Delegate mutation to the manager, passing the connection state
-		return this.manager.performMutation(conn, values, rowid);
+		// Delegate mutation to the manager.
+		// This assumes manager.performMutation will be updated to this signature and logic.
+		return this.manager.performMutation(conn, operation, values, oldKeyValues);
 	}
 
 	/** Begins a transaction for this connection */
@@ -112,6 +163,7 @@ export class MemoryTable extends VirtualTable {
 
 	/** Renames the underlying table via the manager */
 	async xRename(newName: string): Promise<void> {
+		logger.operation('Rename', this.tableName, { newName });
 		await this.manager.renameTable(newName);
 		// Update this instance's schema reference after rename
 		this.tableSchema = this.manager.tableSchema;
@@ -137,8 +189,8 @@ export class MemoryTable extends VirtualTable {
 
 	/** Handles schema changes via the manager */
 	async xAlterSchema(changeInfo: SchemaChangeInfo): Promise<void> {
+		const originalManagerSchema = this.manager.tableSchema; // For potential error recovery
 		try {
-			// Delegate directly to the manager's schema modification methods
 			switch (changeInfo.type) {
 				case 'addColumn':
 					await this.manager.addColumn(changeInfo.columnDef);
@@ -147,21 +199,26 @@ export class MemoryTable extends VirtualTable {
 					await this.manager.dropColumn(changeInfo.columnName);
 					break;
 				case 'renameColumn':
-					await this.manager.renameColumn(changeInfo.oldName, changeInfo.newName);
+					if (!('newColumnDefAst' in changeInfo)) {
+						throw new QuereusError('SchemaChangeInfo for renameColumn missing newColumnDefAst', StatusCode.INTERNAL);
+					}
+					await this.manager.renameColumn(changeInfo.oldName, changeInfo.newColumnDefAst as ASTColumnDef);
 					break;
 				default: {
-					// This should not happen if types are correct
 					const exhaustiveCheck: never = changeInfo;
-					throw new SqliteError(`Unhandled schema change type: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
+					throw new QuereusError(`Unhandled schema change: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
 				}
 			}
-			// Update this instance's schema reference after alteration succeeds
-			this.tableSchema = this.manager.tableSchema;
+			this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 		} catch (e) {
-			errorLog(`Failed to apply schema change (%s) to %s: %O`, (changeInfo as any).type, this.tableName, e);
-			// Refresh schema reference in case of partial failure?
-			this.tableSchema = this.manager.tableSchema;
-			throw e; // Re-throw the error
+			logger.error('Schema Change', this.tableName, e);
+			// Manager DDL methods should handle reverting their own BaseLayer schema updates on error.
+			// Refresh local schema ref to ensure it's consistent with manager after potential error/revert.
+			this.tableSchema = originalManagerSchema;
+			// It might be safer for manager DDL to not alter its own this.tableSchema until baseLayer op succeeds.
+			// And if baseLayer op fails, manager DDL reverts baseLayer.tableSchema.
+			// Then here, we always sync from manager: this.tableSchema = this.manager.tableSchema;
+			throw e;
 		}
 	}
 
@@ -175,18 +232,22 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	// --- Index DDL methods delegate to the manager ---
-	async xCreateIndex(indexInfo: IndexSchema): Promise<void> {
-		await this.manager.createIndex(indexInfo);
-		// Update schema reference
-		this.tableSchema = this.manager.tableSchema;
+	async xCreateIndex(indexSchema: IndexSchema): Promise<void> {
+		logger.operation('Create Index', this.tableName, { indexName: indexSchema.name });
+		await this.manager.createIndex(indexSchema);
+		this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 	}
 
 	async xDropIndex(indexName: string): Promise<void> {
+		logger.operation('Drop Index', this.tableName, { indexName });
 		await this.manager.dropIndex(indexName);
 		// Update schema reference
 		this.tableSchema = this.manager.tableSchema;
 	}
 	// --- End Index DDL methods ---
 }
+
+// Helper function (moved from MemoryTableCursor and adapted)
+// function buildScanPlanInternal(filterInfo: FilterInfo, tableSchema: TableSchema): ScanPlan { ... MOVED ... }
 
 

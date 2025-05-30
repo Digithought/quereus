@@ -1,6 +1,3 @@
-// Re-export from types for potentially wider use
-export { StatusCode, SqlDataType } from './types.js';
-
 // Constants for function flags (matching C API where sensible)
 export enum FunctionFlags {
 	UTF8 = 1,
@@ -43,12 +40,15 @@ export enum IndexConstraintOp {
 	FUNCTION = 150, // Base for function-based constraints
 }
 
-// Constants for Conflict Resolution (matching C API)
+/**
+ * Defines how to resolve a constraint conflict.
+ * These correspond to SQLite's ON CONFLICT clauses.
+ */
 export enum ConflictResolution {
 	ROLLBACK = 1,
-	ABORT = 4, // Note: Also a status code
+	ABORT = 2,    // Default
 	FAIL = 3,
-	IGNORE = 2, // Note: Also used elsewhere
+	IGNORE = 4,
 	REPLACE = 5,
 }
 

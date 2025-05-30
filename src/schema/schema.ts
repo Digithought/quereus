@@ -3,40 +3,12 @@ import type { FunctionSchema } from './function.js';
 import { getFunctionKey } from './function.js';
 import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
-import { SqliteError } from '../common/errors.js';
-import { StatusCode } from '../common/constants.js';
+import { QuereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:schema');
 const errorLog = log.extend('error');
-
-/**
- * Determines the affinity of a column based on its declared type name.
- * Follows SQLite affinity rules: https://www.sqlite.org/datatype3.html#type_affinity
- *
- * @param typeName The declared type name (case-insensitive)
- * @returns The determined affinity
- */
-export function getAffinityForType(typeName: string | undefined | null): SqlDataType {
-	if (!typeName) {
-		return SqlDataType.BLOB;
-	}
-	const type = typeName.toUpperCase();
-
-	if (type.includes('INT')) {
-		return SqlDataType.INTEGER;
-	}
-	if (type.includes('TEXT') || type.includes('CHAR') || type.includes('CLOB')) {
-		return SqlDataType.TEXT;
-	}
-	if (type.includes('BLOB')) {
-		return SqlDataType.BLOB;
-	}
-	if (type.includes('REAL') || type.includes('FLOA') || type.includes('DOUB')) {
-		return SqlDataType.REAL;
-	}
-	return SqlDataType.NUMERIC;
-}
 
 /**
  * Represents a single database schema (e.g., "main", "temp").
@@ -71,12 +43,12 @@ export class Schema {
 	 * Adds or replaces a table definition in the schema
 	 *
 	 * @param table The table schema object
-	 * @throws SqliteError if a view with the same name exists
+	 * @throws QuereusError if a view with the same name exists
 	 */
 	addTable(table: TableSchema): void {
 		// Ensure no view conflict
 		if (this.views.has(table.name.toLowerCase())) {
-			throw new SqliteError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
+			throw new QuereusError(`Schema '${this.name}': Cannot add table '${table.name}', a view with the same name already exists.`);
 		}
 		this.tables.set(table.name.toLowerCase(), table);
 	}
@@ -123,7 +95,7 @@ export class Schema {
 			throw new Error(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
 		}
 		if (this.tables.has(view.name.toLowerCase())) {
-			throw new SqliteError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
+			throw new QuereusError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);
 		}
 		this.views.set(view.name.toLowerCase(), view);
 		log(`Added/Updated view '%s' in schema '%s'`, view.name, this.name);
@@ -179,12 +151,6 @@ export class Schema {
 	 */
 	addFunction(func: FunctionSchema): void {
 		const key = getFunctionKey(func.name, func.numArgs);
-		const existing = this.functions.get(key);
-		if (existing?.xDestroy && existing.userData !== func.userData) {
-			try { existing.xDestroy(existing.userData); } catch (e) {
-				errorLog(`Destructor failed for function %s in schema '%s': %O`, key, this.name, e);
-			}
-		}
 		this.functions.set(key, func);
 		log(`Added/Updated function '%s' in schema '%s'`, `${func.name}/${func.numArgs}`, this.name);
 	}
@@ -221,11 +187,6 @@ export class Schema {
 		const key = getFunctionKey(name, numArgs);
 		const func = this.functions.get(key);
 		if (func) {
-			if (func.xDestroy && func.userData) {
-				try { func.xDestroy(func.userData); } catch (e) {
-					errorLog(`Destructor failed for function %s in schema '%s': %O`, key, this.name, e);
-				}
-			}
 			log(`Removed function '%s' from schema '%s'`, `${name}/${numArgs}`, this.name);
 			return this.functions.delete(key);
 		}
@@ -236,13 +197,6 @@ export class Schema {
 	 * Clears all functions, calling destructors if needed
 	 */
 	clearFunctions(): void {
-		this.functions.forEach(func => {
-			if (func.xDestroy && func.userData) {
-				try { func.xDestroy(func.userData); } catch (e) {
-					errorLog(`Destructor failed for function %s in schema '%s': %O`, `${func.name}/${func.numArgs}`, this.name, e);
-				}
-			}
-		});
 		this.functions.clear();
 	}
 }

@@ -172,19 +172,19 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
 	const valB = typeof b === 'boolean' ? (b ? 1 : 0) : b;
 
 	switch (classA) {
-		case StorageClass.NUMERIC:
+		case StorageClass.NUMERIC: {
 			return (valA as number | bigint) < (valB as number | bigint) ? -1 :
 			       (valA as number | bigint) > (valB as number | bigint) ? 1 : 0;
-
-		case StorageClass.TEXT:
+		}
+		case StorageClass.TEXT: {
             const collationFunc = collations.get(collationName.toUpperCase());
             if (!collationFunc) {
                 warnLog(`Unknown collation requested: %s. Falling back to BINARY.`, collationName);
                 return BINARY_COLLATION(valA as string, valB as string);
             }
             return collationFunc(valA as string, valB as string);
-
-		case StorageClass.BLOB:
+		}
+		case StorageClass.BLOB: {
 			const blobA = valA as Uint8Array;
 			const blobB = valB as Uint8Array;
 			const len = Math.min(blobA.length, blobB.length);
@@ -194,10 +194,24 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
 				}
 			}
 			return blobA.length < blobB.length ? -1 : blobA.length > blobB.length ? 1 : 0;
-
-		default:
+		}
+		default: {
 			return 0;
+		}
 	}
+}
+
+/**
+ * Determines if a SqlValue is truthy for filter purposes.
+ * In SQL semantics:
+ * - NULL is falsy
+ * - 0 (number) is falsy
+ * - Empty string is falsy
+ * - false (boolean) is falsy
+ * - Everything else is truthy
+ */
+export function isTruthy(value: SqlValue): boolean {
+	return (typeof value === 'string') ? value.length > 0 : !!value;
 }
 
 // TODO: The main remaining task for comparison is implementing SQLite's

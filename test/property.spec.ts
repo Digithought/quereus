@@ -3,6 +3,7 @@ import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js'; // Adjust path as needed
 import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
 import { safeJsonStringify } from '../src/util/serialization.js';
+import type { SqlParameters, SqlValue } from '../src/common/types.js'; // Import SqlParameters
 
 describe('Property-Based Tests', () => {
 	let db: Database;
@@ -83,7 +84,7 @@ describe('Property-Based Tests', () => {
 				try {
 					// Check A = B using eval and taking the first row
 					let eqResult: Record<string, any> | undefined;
-					for await (const row of db.eval('SELECT ? = ? as result', [valA, valB])) {
+					for await (const row of db.eval('SELECT ? = ? as result', [valA, valB])) { // Cast
 						eqResult = row;
 						break; // Only need the first (and only) row
 					}
@@ -92,7 +93,7 @@ describe('Property-Based Tests', () => {
 					} else {
 						// Check A < B using eval and taking the first row
 						let ltResult: Record<string, any> | undefined;
-						for await (const row of db.eval('SELECT ? < ? as result', [valA, valB])) {
+						for await (const row of db.eval('SELECT ? < ? as result', [valA, valB])) { // Cast
 							ltResult = row;
 							break; // Only need the first row
 						}
@@ -115,34 +116,34 @@ describe('Property-Based Tests', () => {
 
 	// --- 3. JSON Roundtrip ---
 	describe('JSON Roundtrip', () => {
-		const jsonValueArbitrary = fc.jsonValue(); // Generates JSON-compatible values: null, boolean, number, string, array, object
+		const jsonValueArbitrary = fc.jsonValue();
 
 		it('should preserve JSON values through json() and json_extract()', async () => {
 			await fc.assert(fc.asyncProperty(jsonValueArbitrary, async (originalValue) => {
-				let retrievedValueJson: string | null = null;
 				let retrievedValueParsed: any;
-
 				try {
-					// Insert the value as JSON text using json() or just pass it directly if json() isn't strictly needed for insertion
-					// We'll query using json_extract which expects the first arg to be JSON text
-					// Use json_quote to ensure the value is stored as valid JSON text
-					// Use double quotes for JS string to allow single quotes for SQL path '$'
-					// Cast originalValue to any for the binding, as json_quote handles objects/arrays
-					const queryResult = await db.eval("SELECT json_extract(json_quote(?), '$') as result", [originalValue as any]).next();
-					if (!queryResult.done && queryResult.value) {
-						// json_extract returns the *value* itself, not necessarily JSON text
-						retrievedValueParsed = queryResult.value.result;
-					} else {
-						throw new Error('json_extract query returned no result.');
+					let resultRow: Record<string, any> | undefined;
+					for await (const row of db.eval("SELECT json_extract(json_quote(?), '$') as result", [originalValue as SqlValue])) {
+						resultRow = row;
+						break; // We only expect one row from this SELECT
 					}
 
+					if (resultRow) {
+						retrievedValueParsed = resultRow.result;
+					} else {
+						// This case should ideally not be hit if originalValue is valid for json_quote
+						// and json_extract can process it. If it is, it might indicate an issue
+						// with how null/empty results are handled by db.eval or the underlying functions.
+						// For certain inputs like trying to json_quote a function or symbol (which fc.jsonValue should not produce),
+						// an error might occur during SQL execution, caught by the outer catch block.
+						// If the query legitimately returns no rows (e.g. SELECT FROM empty_table), this branch would be hit.
+						// But SELECT json_extract(...) should always return one row.
+						throw new Error('json_extract query returned no result row unexpectedly.');
+					}
 				} catch (e: any) {
-					// If the query itself fails, discard the run
-					fc.pre(false);
+					fc.pre(false); // Discard this run if SQL execution fails
 					throw new Error(`JSON roundtrip query failed for value ${safeJsonStringify(originalValue)}: ${e.message}`);
 				}
-
-				// Need deep comparison for objects and arrays
 				expect(retrievedValueParsed).to.deep.equal(originalValue,
 					`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved: ${safeJsonStringify(retrievedValueParsed)}`
 				);

@@ -4,11 +4,14 @@
         "Backpatch",
         "backpatched",
         "digitree",
+        "inheritree",
         "LPAREN",
+        "quereus",
+        "rctx",
+        "Rootward",
         "RPAREN",
         "SAVEPOINT",
         "savepoints",
-        "sqliter",
         "Vdbe",
         "vtab"
     ]

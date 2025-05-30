@@ -1,15 +1,15 @@
-# SQLiter Usage Guide
+# Quereus Usage Guide
 
-SQLiter provides a lightweight, TypeScript-native SQL interface inspired by SQLite with a focus on virtual tables that can be backed by any data source. This document explains how to use SQLiter effectively in your applications.
+Quereus provides a lightweight, TypeScript-native SQL interface inspired by SQLite with a focus on virtual tables that can be backed by any data source. This document explains how to use Quereus effectively in your applications.
 
 ## Basic Usage
 
 ### Creating a Database
 
 ```typescript
-import { Database } from 'sqliter';
+import { Database } from 'quereus';
 // Make sure to import other necessary types if using them directly
-// import { type SqlValue, StatusCode, SqliteError, MisuseError } from 'sqliter';
+// import { type SqlValue, StatusCode, QuereusError, MisuseError } from 'quereus';
 
 // Create an in-memory database
 const db = new Database();
@@ -50,7 +50,7 @@ try {
 
 ### Querying Data
 
-SQLiter provides several ways to query data, depending on your needs.
+Quereus provides several ways to query data, depending on your needs.
 
 #### Iterating Over Results (`db.eval`)
 
@@ -76,7 +76,7 @@ try {
   }
 } catch (e) {
   console.error("Query failed:", e);
-  // Handle errors (e.g., SqliteError, MisuseError)
+  // Handle errors (e.g., QuereusError, MisuseError)
 }
 ```
 
@@ -199,7 +199,7 @@ Closes the database connection and finalizes all open statements.
 
 ## Statement API Reference
 
-SQLiter provides both high-level and low-level APIs for working with prepared statements.
+Quereus provides both high-level and low-level APIs for working with prepared statements.
 
 ### High-Level API
 
@@ -286,7 +286,7 @@ Releases all resources associated with the statement. The statement cannot be us
 
 ## Virtual Tables
 
-One of SQLiter's key features is its support for virtual tables, which allow you to expose any data source as a SQL table.
+One of Quereus's key features is its support for virtual tables, which allow you to expose any data source as a SQL table.
 
 ### Creating virtual tables
 
@@ -340,7 +340,7 @@ See the [Memory Table documentation](./memory-table.md) for more details on the 
 
 ## User-Defined Functions
 
-SQLiter allows you to define custom SQL functions:
+Quereus allows you to define custom SQL functions:
 
 ```typescript
 // Register a scalar function
@@ -357,14 +357,14 @@ const result = await db.prepare("select reverse(name) from users").all();
 
 ## Error Handling
 
-SQLiter throws specific error types that you can catch and handle:
+Quereus throws specific error types that you can catch and handle:
 
 ```typescript
 try {
   await db.exec("insert into nonexistent_table values (1)");
 } catch (err) {
-  if (err instanceof SqliteError) {
-    console.error(`SQLite error (code ${err.code}): ${err.message}`);
+  if (err instanceof QuereusError) {
+    console.error(`Quereus error (code ${err.code}): ${err.message}`);
   } else if (err instanceof MisuseError) {
     console.error(`API misuse: ${err.message}`);
   } else {

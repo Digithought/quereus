@@ -1,6 +1,6 @@
 ## Project TODO List & Future Work
 
-This list outlines the remaining major features and refinements needed to make SQLiter a more complete and robust VTab-centric SQL query processor.
+This list outlines the remaining major features and refinements needed to make Quereus a more complete and robust VTab-centric SQL query processor.
 
 **I. Parser & Compiler:**
 

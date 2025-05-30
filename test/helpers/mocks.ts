@@ -1,9 +1,10 @@
 // Placeholder for mock VTab modules and helpers
 import type { Database } from '../../src/core/database.js';
-import type { TableSchema } from '../../src/schema/table.js';
-import { type VirtualTableModule, VirtualTable } from '../../src/index.js';
-import type { IndexInfo, IndexConstraint } from '../../src/vtab/indexInfo.js';
-import { StatusCode, type SqlValue } from '../../src/common/types.js';
+import { type TableSchema, buildColumnIndexMap } from '../../src/schema/table.js';
+import { VirtualTable, type FilterInfo, type IndexInfo } from '../../src/index.js';
+import type { VirtualTableModule } from '../../src/vtab/module.js';
+import { StatusCode, type Row } from '../../src/common/types.js';
+import type { RowOp } from '../../src/parser/ast.js';
 
 // Define BestIndexResult based on IndexInfo fields used
 interface BestIndexResult {
@@ -28,8 +29,17 @@ class MockVirtualTable extends VirtualTable {
     async xOpen(): Promise<any> { // Return type any to avoid cursor complexity
         throw new Error('MockVirtualTable.xOpen should not be called in planner tests');
     }
-    async xUpdate(values: SqlValue[], rowid: bigint | null): Promise<{ rowid?: bigint | undefined; }> {
-        return {};
+    async xUpdate(
+        _operation: RowOp,
+        _values: Row | undefined,
+        _oldKeyValues?: Row
+    ): Promise<Row | undefined> {
+        return undefined;
+    }
+
+    async* xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
+        if (false) yield [] as Row; // To make it a valid async generator
+        return;
     }
 }
 // --- End Mock VirtualTable ---
@@ -48,7 +58,7 @@ export class MockVtabModule implements VirtualTableModule<any, any> {
     xDisconnect = () => { return StatusCode.OK; };
     xDestroy = async () => { /* No-op */ };
 
-    xCreate = (db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: any) => {
+    xCreate = (db: Database, tableSchema: TableSchema) => {
         return StatusCode.OK;
     };
 
@@ -93,15 +103,18 @@ export function mockTable(db: Database, options: MockTableOptions): MockVtabModu
 
     const fullSchema: TableSchema = {
         ...options.schema,
-        vtabModule: module,
-        vtabModuleName: options.schema.name,
+        vtabModule: module as any, // Cast to any if VirtualTableModule generic types cause issues here
+        vtabModuleName: options.schema.name, // Assuming schema name is used as module name for mock
         isTemporary: options.schema.isTemporary ?? false,
         isView: options.schema.isView ?? false,
-        isStrict: options.schema.isStrict ?? false,
-        isWithoutRowid: options.schema.isWithoutRowid ?? true,
         schemaName: options.schema.schemaName ?? 'main',
         primaryKeyDefinition: options.schema.primaryKeyDefinition ?? [],
         checkConstraints: options.schema.checkConstraints ?? [],
+        columns: options.schema.columns || [],
+        columnIndexMap: options.schema.columnIndexMap || buildColumnIndexMap(options.schema.columns || []),
+        vtabArgs: options.schema.vtabArgs || {},
+        indexes: options.schema.indexes || [],
+        isReadOnly: options.schema.isReadOnly ?? false,
     };
 
     try {

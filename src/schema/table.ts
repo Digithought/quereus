@@ -1,11 +1,16 @@
 import type { ColumnSchema } from './column.js';
 import type { VirtualTableModule } from '../vtab/module.js';
+import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast.js';
-import { getAffinity } from './column.js';
-import { SqlDataType } from '../common/types.js';
+import { getAffinity } from '../common/type-inference.js';
+import { SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
-import { MemoryTableModule } from '../vtab/memory/module.js';
+import { QuereusError } from '../common/errors.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('schema:table');
+const warnLog = log.extend('warn');
 
 /**
  * Represents the schema definition of a table (real or virtual).
@@ -20,7 +25,7 @@ export interface TableSchema {
 	/** Map from column name (lowercase) to column index */
 	columnIndexMap: ReadonlyMap<string, number>;
 	/** Definition of the primary key, including order and direction */
-	primaryKeyDefinition: ReadonlyArray<{ index: number; desc: boolean }>;
+	primaryKeyDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>;
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<{ name?: string, expr: Expression }>;
 	/** Reference to the registered module */
@@ -28,15 +33,11 @@ export interface TableSchema {
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
-	vtabArgs?: ReadonlyArray<string>;
+	vtabArgs?: Record<string, SqlValue>;
 	/** If virtual, the name the module was registered with */
-	vtabModuleName?: string;
-	/** Whether the table is declared WITHOUT ROWID */
-	isWithoutRowid: boolean;
+	vtabModuleName: string;
 	/** Whether the table is a temporary table */
 	isTemporary?: boolean;
-	/** Whether the table is a strict table */
-	isStrict: boolean;
 	/** Whether the table is a view */
 	isView: boolean;
 	/** Whether the table is a subquery source */
@@ -48,7 +49,13 @@ export interface TableSchema {
 	/** Definitions of secondary indexes (relevant for planning) */
 	indexes?: ReadonlyArray<IndexSchema>;
 	/** Estimated number of rows in the table (for query planning) */
-	readonly estimatedRows?: bigint;
+	readonly estimatedRows?: number;
+	/** Whether the table is read-only */
+	isReadOnly?: boolean;	// default false
+	/** Foreign key constraints (parsed but not yet enforced by engine) */
+	// foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
+	/** Unique constraints (beyond primary key) */
+	// uniqueConstraints?: ReadonlyArray<ConstraintSchema>;
 }
 
 /**
@@ -66,27 +73,12 @@ export function buildColumnIndexMap(columns: ReadonlyArray<ColumnSchema>): Map<s
 }
 
 /**
- * Extracts primary key information from column definitions
- *
- * @param columns Array of column schemas
- * @returns Array of objects with index and direction for primary key columns
- */
-export function findPrimaryKeyDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<{ index: number; desc: boolean }> {
-	const pkCols = columns
-		.map((col, index) => ({ ...col, index }))
-		.filter(col => col.primaryKey)
-		.sort((a, b) => a.pkOrder - b.pkOrder);
-
-	return Object.freeze(pkCols.map(col => ({ index: col.index, desc: false })));
-}
-
-/**
  * Extracts just the column indices from a primary key definition
  *
  * @param pkDef Primary key definition array
  * @returns Array of column indices that form the primary key
  */
-export function getPrimaryKeyIndices(pkDef: ReadonlyArray<{ index: number; desc: boolean }>): ReadonlyArray<number> {
+export function getPrimaryKeyIndices(pkDef: ReadonlyArray<PrimaryKeyColumnDefinition>): ReadonlyArray<number> {
 	return Object.freeze(pkDef.map(def => def.index));
 }
 
@@ -105,7 +97,6 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		pkOrder: 0,
 		defaultValue: null,
 		collation: 'BINARY',
-		hidden: false,
 		generated: false,
 	};
 
@@ -134,13 +125,9 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		}
 	}
 
-	// SQLite rule: If a column has type INTEGER PRIMARY KEY, it maps to rowid
-	// Also, PK implies NOT NULL unless it's INTEGER PRIMARY KEY
+	// PK implies NOT NULL
 	if (schema.primaryKey) {
-		const isIntegerPk = schema.affinity === SqlDataType.INTEGER && pkConstraint;
-		if (!isIntegerPk) {
-			schema.notNull = true;
-		}
+		schema.notNull = true;
 	}
 
 	// Assign a default pkOrder if it's a PK but order isn't specified elsewhere
@@ -158,7 +145,7 @@ export interface IndexColumnSchema {
 	/** Column index in TableSchema.columns */
 	index: number;
 	/** Whether the index should sort in descending order */
-	desc: boolean;
+	desc?: boolean;	// default false
 	/** Optional collation sequence for the column */
 	collation?: string;
 }
@@ -181,7 +168,7 @@ export interface IndexSchema {
  * @param pkColNames Optional array of primary key column names
  * @returns A frozen TableSchema object
  */
-export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): TableSchema {
+export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): Readonly<TableSchema> {
 	const columnSchemas = columns.map(c => columnDefToSchema({
 		name: c.name,
 		dataType: c.type,
@@ -208,16 +195,15 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		indexes: [],
 		vtabModule: defaultMemoryModule,
 		vtabAuxData: null,
-		vtabArgs: [],
+		vtabArgs: {},
 		vtabModuleName: 'memory',
-		isWithoutRowid: false,
 		isTemporary: false,
-		isStrict: false,
 		isView: false,
 		subqueryAST: undefined,
 		viewDefinition: undefined,
 		tableConstraints: [],
-	}) as TableSchema;
+		primaryKey: pkDef.map(def => columnSchemas[def.index].name),
+	});
 }
 
 /** Bitmask for row operations */
@@ -261,3 +247,111 @@ export interface RowConstraintSchema {
 	/** Bitmask of operations the constraint applies to */
 	operations: RowOpMask;
 }
+
+export interface PrimaryKeyColumnDefinition {
+	index: number;
+	desc?: boolean;	// default false
+	autoIncrement?: boolean;
+	collation?: string;
+}
+
+/**
+ * Helper to parse primary key from AST column and table constraints.
+ * @param columns Parsed column definitions from AST.
+ * @param constraints Parsed table constraints from AST.
+ * @returns A ReadonlyArray defining the primary key columns (index and direction), or undefined.
+ * @throws QuereusError if multiple primary keys are defined or PK column not found.
+ */
+export function findPKDefinition(
+	columns: ReadonlyArray<ColumnSchema>,
+	constraints: ReadonlyArray<AST.TableConstraint> | undefined,
+): ReadonlyArray<PrimaryKeyColumnDefinition> {
+	const columnPK = findColumnPKDefinition(columns);
+	const constraintPK = findConstraintPKDefinition(columns, constraints);
+
+	if (constraintPK && columnPK) {
+		throw new QuereusError("Cannot define both table-level and column-level PRIMARY KEYs", StatusCode.CONSTRAINT);
+	}
+
+	let finalPkDef = constraintPK ?? columnPK;
+
+	if (!finalPkDef) {
+		// Quereus-specific behavior: Include all columns in the primary key when no explicit primary key is defined
+		// This differs from SQLite which would use the first INTEGER column or an implicit rowid
+		// This design choice ensures predictable behavior and avoids potential confusion with SQLite's implicit rules
+		warnLog(`No PRIMARY KEY explicitly defined. Including all columns in primary key.`);
+		finalPkDef = Object.freeze(
+			columns.map((col, index) => ({
+				index,
+				desc: false,
+				collation: col.collation || 'BINARY'
+			}))
+		);
+	}
+
+	// Don't require NOT NULL, we want to be more flexible
+
+	return finalPkDef as ReadonlyArray<PrimaryKeyColumnDefinition>;
+}
+
+function findConstraintPKDefinition(
+	columns: readonly ColumnSchema[],
+	constraints: readonly TableConstraint[] | undefined
+): PrimaryKeyColumnDefinition[] | undefined {
+	const colMap = buildColumnIndexMap(columns);
+	let constraintPKs: PrimaryKeyColumnDefinition[] | undefined;
+
+	if (constraints) {
+		for (const constraint of constraints) {
+			if (constraint.type === 'primaryKey') {
+				if (constraintPKs) {
+					throw new QuereusError("Multiple table-level PRIMARY KEY constraints defined", StatusCode.CONSTRAINT);
+				}
+				if (!constraint.columns || constraint.columns.length === 0) {
+					// An empty column list is fine; means table can have 0-1 rows
+					constraintPKs = [];
+				} else {
+					constraintPKs = constraint.columns.map(colInfo => {
+						const colIndex = colMap.get(colInfo.name.toLowerCase());
+						if (colIndex === undefined) {
+							throw new QuereusError(`PRIMARY KEY column '${colInfo.name}' not found in table definition`, StatusCode.ERROR);
+						}
+						return {
+							index: colIndex,
+							desc: colInfo.direction === 'desc',
+							collation: columns[colIndex].collation || 'BINARY'
+						};
+					});
+				}
+			}
+		}
+	}
+	return constraintPKs;
+}
+
+function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<PrimaryKeyColumnDefinition> | undefined {
+	const pkCols = columns
+		.map((col, index) => ({ ...col, originalIndex: index }))
+		.filter(col => col.primaryKey)
+		.sort((a, b) => a.pkOrder - b.pkOrder);
+
+	if (pkCols.length > 1 && pkCols.some(col => col.pkOrder === 0)) {
+		warnLog("Multiple column-level PRIMARY KEYs defined without explicit pkOrder; consider a table-level PRIMARY KEY for composite keys.");
+	}
+
+	if (pkCols.length > 1) {
+		warnLog('Multiple columns defined as PRIMARY KEY at column level. Forming a composite key.');
+	}
+
+	if (pkCols.length === 0) {
+		return undefined;
+	}
+
+	return Object.freeze(pkCols.map(col => ({
+		index: col.originalIndex,
+		desc: col.affinity === SqlDataType.INTEGER && (col as any).autoIncrement ? false : (col as any).pkDirection === 'desc',
+		autoIncrement: col.affinity === SqlDataType.INTEGER && !!((col as any).autoIncrement),
+		collation: col.collation || 'BINARY'
+	})));
+}
+

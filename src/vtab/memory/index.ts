@@ -1,154 +1,180 @@
-import { BTree } from 'digitree';
-import type { SqlValue } from '../../common/types.js';
+import { BTree } from 'inheritree';
+import type { Row, SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
-import type { MemoryTableRow, BTreeKey } from './types.js';
-import { createLogger } from '../../common/logger.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from './types.js';
+import type { IndexColumnSchema as IndexColumnSpec } from '../../schema/table.js'; // Renamed for clarity
+import type { ColumnSchema } from '../../schema/column.js';
+import { createMemoryTableLoggers } from './utils/logging.js';
 
-const log = createLogger('vtab:memory:index');
-const errorLog = log.extend('error');
+const logger = createMemoryTableLoggers('index');
 
-/** Definition for creating a memory index */
+/** Definition for creating a memory index (matches IndexSchema columns usually) */
 export interface IndexSpec {
 	name?: string;
-	columns: ReadonlyArray<{ index: number; desc: boolean; collation?: string }>;
-	// unique?: boolean; // Future extension
+	columns: ReadonlyArray<IndexColumnSpec>;
+}
+
+/** Functions for extracting and comparing index keys */
+interface IndexKeyFunctions {
+	keyFromRow: (row: Row) => BTreeKeyForIndex;
+	compareKeys: (a: BTreeKeyForIndex, b: BTreeKeyForIndex) => number;
 }
 
 /** Represents a secondary index within a MemoryTable */
 export class MemoryIndex {
 	public readonly name: string | undefined;
-	public readonly columns: ReadonlyArray<number>;
-	public readonly directions: ReadonlyArray<boolean>;
-	public readonly collations: ReadonlyArray<string>;
-	public readonly keyFromRow: (row: MemoryTableRow) => BTreeKey;
-	public readonly compareKeys: (a: BTreeKey, b: BTreeKey) => number;
-	// The BTree stores [key, rowid] pairs as its value type.
-	// The BTree's key is extracted from this pair (the first element).
-	public data: BTree<[BTreeKey, bigint], [BTreeKey, bigint]>;
+	public readonly specColumns: ReadonlyArray<IndexColumnSpec>;
+	public readonly keyFromRow: (row: Row) => BTreeKeyForIndex;
+	public readonly compareKeys: (a: BTreeKeyForIndex, b: BTreeKeyForIndex) => number;
+	public data: BTree<BTreeKeyForIndex, MemoryIndexEntry>;
 
-	constructor(spec: IndexSpec, allTableColumns: ReadonlyArray<{ name: string }>) {
+	constructor(spec: IndexSpec, allTableColumnsSchema: ReadonlyArray<ColumnSchema>, baseInheritreeTable?: BTree<BTreeKeyForIndex, MemoryIndexEntry>) {
 		this.name = spec.name;
-		this.columns = Object.freeze(spec.columns.map(c => c.index));
-		this.directions = Object.freeze(spec.columns.map(c => c.desc));
-		this.collations = Object.freeze(spec.columns.map(c => c.collation ?? 'BINARY'));
+		this.specColumns = Object.freeze(spec.columns.map(c => ({ ...c })));
 
-		// Validate column indices
-		if (this.columns.some(idx => idx < 0 || idx >= allTableColumns.length)) {
-			throw new Error(`Invalid column index specified in index definition '${this.name ?? '(unnamed)'}'`);
+		this.validateColumnIndexes(allTableColumnsSchema);
+
+		const keyFunctions = this.createIndexKeyFunctions();
+		this.keyFromRow = keyFunctions.keyFromRow;
+		this.compareKeys = keyFunctions.compareKeys;
+
+		this.data = this.createBTree(baseInheritreeTable);
+	}
+
+	private validateColumnIndexes(allTableColumnsSchema: ReadonlyArray<ColumnSchema>): void {
+		const hasInvalidIndex = this.specColumns.some(sc =>
+			sc.index < 0 || sc.index >= allTableColumnsSchema.length
+		);
+
+		if (hasInvalidIndex) {
+			throw new Error(`Invalid column index in index '${this.name ?? '(unnamed)'}'.`);
 		}
+	}
 
-		const indexColumnNames = this.columns.map(idx => allTableColumns[idx].name);
-
-		// --- Key Generation and Comparison Logic ---
-		if (this.columns.length === 1) {
-			// Single column index
-			const colName = indexColumnNames[0];
-			const isDesc = this.directions[0];
-			const collation = this.collations[0];
-			this.keyFromRow = (row) => row[colName] as BTreeKey;
-			this.compareKeys = (a: BTreeKey, b: BTreeKey): number => {
-				const cmp = compareSqlValues(a as SqlValue, b as SqlValue, collation);
-				return isDesc ? -cmp : cmp;
-			};
+	private createIndexKeyFunctions(): IndexKeyFunctions {
+		if (this.specColumns.length === 1) {
+			return this.createSingleColumnKeyFunctions();
 		} else {
-			// Composite key index
-			this.keyFromRow = (row) => indexColumnNames.map(name => row[name]);
-			this.compareKeys = (a: BTreeKey, b: BTreeKey): number => {
-				const arrA = a as SqlValue[];
-				const arrB = b as SqlValue[];
-				const len = Math.min(arrA.length, arrB.length);
-				for (let i = 0; i < len; i++) {
-					const dirMultiplier = this.directions[i] ? -1 : 1;
-					const collation = this.collations[i];
-					const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
-					if (cmp !== 0) return cmp;
+			return this.createCompositeColumnKeyFunctions();
+		}
+	}
+
+	private createSingleColumnKeyFunctions(): IndexKeyFunctions {
+		const specCol = this.specColumns[0];
+		const colSchemaIndex = specCol.index;
+		const collation = specCol.collation || 'BINARY';
+		const descMultiplier = specCol.desc ? -1 : 1;
+
+		const keyFromRow = (row: Row): BTreeKeyForIndex => {
+			this.validateRowLength(row, colSchemaIndex);
+			return row[colSchemaIndex];
+		};
+
+		const compareKeys = (a: BTreeKeyForIndex, b: BTreeKeyForIndex): number => {
+			return compareSqlValues(a as SqlValue, b as SqlValue, collation) * descMultiplier;
+		};
+
+		return { keyFromRow, compareKeys };
+	}
+
+	private createCompositeColumnKeyFunctions(): IndexKeyFunctions {
+		const localSpecColumns = this.specColumns;
+
+		const keyFromRow = (row: Row): BTreeKeyForIndex => {
+			return localSpecColumns.map(sc => {
+				this.validateRowLength(row, sc.index);
+				return row[sc.index];
+			});
+		};
+
+		const compareKeys = (a: BTreeKeyForIndex, b: BTreeKeyForIndex): number => {
+			const arrA = a as SqlValue[];
+			const arrB = b as SqlValue[];
+
+			for (let i = 0; i < localSpecColumns.length; i++) {
+				if (i >= arrA.length || i >= arrB.length) {
+					return arrA.length - arrB.length;
 				}
-				// If keys are identical up to shared length, consider shorter key less
-				return arrA.length - arrB.length;
+
+				const specCol = localSpecColumns[i];
+				const comparison = compareSqlValues(arrA[i], arrB[i], specCol.collation || 'BINARY');
+
+				if (comparison !== 0) {
+					return specCol.desc ? -comparison : comparison;
+				}
+			}
+			return 0;
+		};
+
+		return { keyFromRow, compareKeys };
+	}
+
+	private validateRowLength(row: Row, columnIndex: number): void {
+		if (columnIndex < 0 || columnIndex >= row.length) {
+			throw new Error(`Index key col index ${columnIndex} OOB for row len ${row.length}`);
+		}
+	}
+
+	private createBTree(baseInheritreeTable?: BTree<BTreeKeyForIndex, MemoryIndexEntry>): BTree<BTreeKeyForIndex, MemoryIndexEntry> {
+		return new BTree<BTreeKeyForIndex, MemoryIndexEntry>(
+			(entry: MemoryIndexEntry) => entry.indexKey,
+			this.compareKeys,
+			baseInheritreeTable
+		);
+	}
+
+	/** Adds a mapping from index key to primary key */
+	addEntry(indexKey: BTreeKeyForIndex, primaryKey: BTreeKeyForPrimary): void {
+		const path = this.data.find(indexKey);
+		if (path.on) {
+			// Entry exists, add to the existing set of primary keys
+			const existingEntry = this.data.at(path)!;
+			existingEntry.primaryKeys.add(primaryKey);
+		} else {
+			// Create new entry with a Set containing the primary key
+			const newEntry: MemoryIndexEntry = {
+				indexKey,
+				primaryKeys: new Set([primaryKey])
 			};
-		}
-
-		// Initialize the BTree for the index.
-		// It stores [key, rowid] pairs. The BTree's internal key is the first element (the actual index key).
-		const originalCompareKeys = this.compareKeys;
-		this.data = new BTree<[BTreeKey, bigint], [BTreeKey, bigint]>(
-			// The key extractor MUST return the value type ([BTreeKey, bigint])
-			(value: [BTreeKey, bigint]) => value, // Return the whole pair
-			// The comparator receives the full value pair, but compares based on the key part (a[0], b[0])
-			(a: [BTreeKey, bigint], b: [BTreeKey, bigint]) => originalCompareKeys(a[0], b[0])
-		);
-	}
-
-	/**
-	 * Helper to insert a row's index entry.
-	 * Assumes the row itself is stored elsewhere (primary tree).
-	 */
-	addEntry(row: MemoryTableRow): void {
-		const key = this.keyFromRow(row);
-		const rowid = row._rowid_;
-		// TODO: Add UNIQUE constraint check here if spec.unique is true (future)
-		try {
-			// Store [key, rowid] pair; BTree uses key extractor/comparator defined in constructor
-			this.data.insert([key, rowid]);
-		} catch (e) {
-			// BTree might throw if key comparison function is inconsistent, etc.
-			errorLog(`Error adding entry to index '%s' for rowid %s: %O`, this.name ?? '(unnamed)', rowid, e);
-			throw new Error(`Failed to add entry to index '${this.name ?? '(unnamed)'}'.`);
+			this.data.insert(newEntry);
 		}
 	}
 
-	/** Helper to remove a row's index entry */
-	removeEntry(row: MemoryTableRow): boolean {
-		const key = this.keyFromRow(row);
-		const rowid = row._rowid_;
-		// We need to find the BTree entry where entry[0] matches key and entry[1] matches rowid.
-		// BTree.find uses the key extractor and comparator.
-		// The comparator works on the key part (value[0]), so find needs a value whose key part matches.
-		// We can pass a partial value [key, arbitrary_rowid] for the find operation.
-		const path = this.data.find([key, BigInt(0)]); // Find using a value with the target key
-		if (!path.on) return false; // Key not found
+	/** Removes a mapping from index key to primary key */
+	removeEntry(indexKey: BTreeKeyForIndex, primaryKey: BTreeKeyForPrimary): void {
+		const path = this.data.find(indexKey);
+		if (path.on) {
+			const entry = this.data.at(path)!;
+			entry.primaryKeys.delete(primaryKey);
 
-		// Iterate starting from the found path to handle potential duplicate keys.
-		const iter = this.data.ascending(path);
-		for (const currentPath of iter) {
-			const entry = this.data.at(currentPath);
-			if (!entry) continue; // Should not happen
-
-			// Compare keys first - stop if we move past the target key
-			// The BTree's comparator (originalCompareKeys) works on the extracted key (entry[0])
-			if (this.compareKeys(entry[0], key) !== 0) {
-				break; // Moved past our key, target not found
-			}
-
-			// Check if the rowid matches
-			if (entry[1] === rowid) {
-				try {
-					this.data.deleteAt(currentPath);
-					return true; // Successfully deleted
-				} catch (e) {
-					// Use namespaced error logger
-					errorLog(`Error removing entry from index '%s' for rowid %s: %O`, this.name ?? '(unnamed)', rowid, e);
-					return false; // Deletion failed
-				}
+			// If no primary keys remain, remove the entire entry
+			if (entry.primaryKeys.size === 0) {
+				this.data.deleteAt(path);
 			}
 		}
-		return false; // Key found, but specific rowid pair was not
 	}
 
-	/** Clears all entries from the index BTree */
-	clear(): void {
-		// Re-create the BTree to clear it
-		const originalCompareKeys = this.compareKeys;
-		// Make sure the type matches the property definition
-		this.data = new BTree<[BTreeKey, bigint], [BTreeKey, bigint]>(
-			(value: [BTreeKey, bigint]) => value, // Return the whole pair
-			// Comparator receives full value, compares key part
-			(a: [BTreeKey, bigint], b: [BTreeKey, bigint]) => originalCompareKeys(a[0], b[0])
-		);
+	/** Returns the primary keys for a given index key */
+	getPrimaryKeys(indexKey: BTreeKeyForIndex): BTreeKeyForPrimary[] {
+		const entry = this.data.get(indexKey);
+		return entry ? Array.from(entry.primaryKeys) : [];
 	}
 
-	/** Get current size */
+	/** Gets the count of unique index values */
 	get size(): number {
 		return this.data.getCount();
+	}
+
+	/** Clears all entries from the index */
+	clear(): void {
+		const base = (this.data as any).baseTable as BTree<BTreeKeyForIndex, MemoryIndexEntry> | undefined;
+		this.data = this.createBTree(base);
+	}
+
+	/** Clears the base inheritance for this index (used during layer collapse) */
+	clearBase(): void {
+		if (typeof (this.data as any).clearBase === 'function') {
+			(this.data as any).clearBase();
+		}
 	}
 }

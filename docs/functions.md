@@ -1,6 +1,44 @@
 # Built-in Functions Reference
 
-This document lists the built-in SQL functions available in SQLiter.
+This document lists the built-in SQL functions available in Quereus.
+
+## Table-Valued Functions
+
+Table-valued functions (TVFs) can be used in the `FROM` clause of a `SELECT` statement to generate rows dynamically. They are called like regular functions but return a table result that can be queried like any other table.
+
+**Syntax:** `SELECT columns FROM function_name(arguments) [AS alias]`
+
+**Example:** `SELECT * FROM generate_series(1, 10);`
+
+### Generation Functions
+
+*   `generate_series(start, stop)`, `generate_series(start, stop, step)`
+    *   **Description:** Generates a series of integer values from `start` to `stop` (inclusive) with an optional `step` increment.
+    *   **Arguments:** `start` (INTEGER), `stop` (INTEGER), `step` (INTEGER, optional, defaults to 1).
+    *   **Returns:** A table with a single column `value` containing the generated integers.
+    *   **Example:** `SELECT * FROM generate_series(1, 5);` returns rows with values 1, 2, 3, 4, 5. `SELECT * FROM generate_series(0, 10, 2);` returns 0, 2, 4, 6, 8, 10.
+
+### JSON Processing Functions
+
+*   `json_each(json)`, `json_each(json, path)`
+    *   **Description:** Returns a table with one row for each element in the JSON array or object at the specified path. If no path is provided, processes the root JSON value.
+    *   **Arguments:** `json` (TEXT - valid JSON string), `path` (TEXT, optional - JSON path like '$.data').
+    *   **Returns:** A table with columns:
+        *   `key` (TEXT, nullable) - Array index (for arrays) or property name (for objects)
+        *   `value` (TEXT, nullable) - The JSON value as text
+        *   `type` (TEXT) - JSON type: 'null', 'true', 'false', 'integer', 'real', 'text', 'array', 'object'
+        *   `atom` (TEXT, nullable) - For scalar values, the actual value; null for arrays/objects
+        *   `id` (INTEGER) - Unique identifier for this element
+        *   `parent` (INTEGER, nullable) - ID of the parent element
+        *   `fullkey` (TEXT) - Full JSON path to this element
+        *   `path` (TEXT) - JSON path to the parent element
+    *   **Example:** `SELECT key, value FROM json_each('[10, 20, {"a": 30}]');` returns rows for each array element.
+
+*   `json_tree(json)`, `json_tree(json, path)`
+    *   **Description:** Similar to `json_each`, but returns a hierarchical tree view where parent elements are returned before their children.
+    *   **Arguments:** `json` (TEXT - valid JSON string), `path` (TEXT, optional - JSON path like '$.nested').
+    *   **Returns:** Same columns as `json_each`, but in tree traversal order.
+    *   **Example:** `SELECT fullkey, type FROM json_tree('{"a": [1, 2]}');` returns the object first, then the array, then each array element.
 
 ## Scalar Functions
 
@@ -48,7 +86,7 @@ These functions operate on single values and return a single value.
     *   **Description:** Returns the 1-based index of the first occurrence of string Y within string X. Case-sensitive.
     *   **Arguments:** `X` (TEXT), `Y` (TEXT).
     *   **Returns:** An INTEGER representing the starting position (1-based). Returns `0` if Y is not found within X, or if either argument is `NULL`, or if Y is an empty string.
-    *   **Example:** `instr('SQLite', 'Lite')` returns `4`, `instr('banana', 'a')` returns `2`, `instr('apple', 'z')` returns `0`.
+    *   **Example:** `instr('Quereus', 'reus')` returns `4`, `instr('banana', 'a')` returns `2`, `instr('apple', 'z')` returns `0`.
 
 *   `length(X)`
     *   **Description:** Returns the length of string X in characters or the size of blob X in bytes.
@@ -68,7 +106,7 @@ These functions operate on single values and return a single value.
     *   **Description:** Returns the lowercase equivalent of string X.
     *   **Arguments:** `X` (TEXT).
     *   **Returns:** The lowercase TEXT string. Returns `NULL` if X is `NULL` or not a string.
-    *   **Example:** `lower('SQLite')` returns `'sqlite'`.
+    *   **Example:** `lower('Quereus')` returns `'quereus'`.
 
 *   `ltrim(X)`, `ltrim(X, Y)`
     *   **Description:** Removes leading characters from string X. If Y is omitted, removes leading whitespace. If Y is provided, removes any character present in string Y from the beginning of X.
@@ -352,7 +390,7 @@ These functions operate on JSON values, typically represented as TEXT strings in
 
 ## Window Functions (Limited Support)
 
-Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). SQLiter has **limited initial support** for window functions. The `OVER` clause syntax is parsed, but complex framing clauses (`ROWS BETWEEN ...`) might not be fully implemented or optimized.
+Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). Quereus has **limited initial support** for window functions. The `OVER` clause syntax is parsed, but complex framing clauses (`ROWS BETWEEN ...`) might not be fully implemented or optimized.
 
 *   `row_number()`: Assigns a unique sequential integer (starting from 1) to each row within its partition, based on the `ORDER BY` within the `OVER` clause.
 *   `rank()`: Assigns a rank to each row within its partition based on the `ORDER BY`. Rows with equal values receive the same rank. Gaps may appear in the ranking sequence (e.g., 1, 1, 3).
@@ -363,3 +401,97 @@ Window functions perform calculations across a set of table rows related to the 
 *   `last_value(expr)`: Returns the value of `expr` from the last row in the current window frame.
 
 *Note: The standard aggregate functions (`sum`, `avg`, `count`, `min`, `max`) can also be used as window functions when an `OVER` clause is provided (e.g., `SUM(salary) OVER (PARTITION BY department ORDER BY hire_date)`).*
+
+## Diagnostic Functions (Table-Valued)
+
+These table-valued functions provide introspection and debugging capabilities for SQL queries and execution.
+
+*   `query_plan(sql)`
+    *   **Description:** Returns the query execution plan for the given SQL statement as a table with detailed information about each operation.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to analyze).
+    *   **Returns:** A table with columns:
+        *   `id` (INTEGER) - Unique identifier for the plan node
+        *   `parent_id` (INTEGER, nullable) - ID of the parent node in the plan tree
+        *   `subquery_level` (INTEGER) - Nesting level for subqueries (0 for main query)
+        *   `op` (TEXT) - Operation type (e.g., 'SCAN', 'FILTER', 'PROJECT')
+        *   `detail` (TEXT) - Detailed description of the operation
+        *   `object_name` (TEXT, nullable) - Name of table, index, or other object involved
+        *   `alias` (TEXT, nullable) - Alias used in the query
+        *   `est_cost` (REAL, nullable) - Estimated cost of the operation
+        *   `est_rows` (INTEGER, nullable) - Estimated number of rows produced
+    *   **Example:** `SELECT * FROM query_plan('SELECT name FROM users WHERE age > 25');`
+
+*   `scheduler_program(sql)`
+    *   **Description:** Returns the compiled scheduler program (instruction sequence) for the given SQL statement, showing the actual execution plan used by the Quereus runtime.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to compile).
+    *   **Returns:** A table with columns:
+        *   `addr` (INTEGER) - Instruction address/position in the program
+        *   `instruction_id` (TEXT) - Unique identifier for the instruction
+        *   `dependencies` (TEXT, nullable) - JSON array of instruction addresses this instruction depends on
+        *   `description` (TEXT) - Human-readable description of the instruction
+        *   `estimated_cost` (REAL, nullable) - Estimated cost of the instruction
+        *   `is_subprogram` (INTEGER) - 1 if this is part of a sub-program, 0 for main program
+        *   `parent_addr` (INTEGER, nullable) - Address of parent instruction for sub-programs
+    *   **Example:** `SELECT addr, instruction_id, description FROM scheduler_program('SELECT 1 + 1');`
+
+*   `stack_trace(sql)`
+    *   **Description:** Returns the execution stack trace when running the given SQL statement, useful for debugging complex queries.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to trace).
+    *   **Returns:** A table with columns:
+        *   `frame_id` (INTEGER) - Stack frame identifier (0 = top of stack)
+        *   `function_name` (TEXT, nullable) - Name of the function being executed
+        *   `instruction_addr` (INTEGER, nullable) - Current instruction address
+        *   `source_location` (TEXT, nullable) - Source code location (file:line)
+        *   `local_vars` (TEXT, nullable) - JSON representation of local variables
+    *   **Example:** `SELECT frame_id, function_name, source_location FROM stack_trace('SELECT complex_function(x) FROM table');`
+
+*   `execution_trace(sql)`
+    *   **Description:** Returns a detailed execution trace with timing and resource usage information for performance analysis.
+    *   **Arguments:** `sql` (TEXT - the SQL statement to trace).
+    *   **Returns:** A table with columns:
+        *   `step_id` (INTEGER) - Sequential step identifier
+        *   `timestamp_ms` (REAL) - Timestamp when the step started (milliseconds since epoch)
+        *   `operation` (TEXT) - Type of operation (e.g., 'PARSE', 'PLAN', 'EXECUTE')
+        *   `duration_ms` (REAL, nullable) - Duration of the operation in milliseconds
+        *   `rows_processed` (INTEGER, nullable) - Number of rows processed in this step
+        *   `memory_used` (INTEGER, nullable) - Memory usage in bytes
+        *   `details` (TEXT, nullable) - JSON representation of additional details
+    *   **Example:** `SELECT operation, duration_ms, rows_processed FROM execution_trace('SELECT * FROM large_table WHERE condition');`
+
+**Note:** These diagnostic functions are primarily intended for development, debugging, and performance analysis. The `stack_trace` and `execution_trace` functions are non-deterministic and may have performance overhead.
+
+### Schema Introspection Functions
+
+*   `schema()`
+    *   **Description:** Returns information about all schema objects (tables, views, functions) in the database.
+    *   **Arguments:** None.
+    *   **Returns:** A table with columns:
+        *   `type` (TEXT) - Type of object ('table', 'view', 'function', 'module')
+        *   `name` (TEXT) - Name of the object
+        *   `tbl_name` (TEXT) - Table name (same as name for most objects)
+        *   `sql` (TEXT, nullable) - SQL definition of the object
+    *   **Example:** `SELECT type, name FROM schema() WHERE type = 'table';`
+
+*   `table_info(table_name)`
+    *   **Description:** Returns detailed information about the columns of a specific table.
+    *   **Arguments:** `table_name` (TEXT - name of the table to inspect).
+    *   **Returns:** A table with columns:
+        *   `cid` (INTEGER) - Column index (0-based)
+        *   `name` (TEXT) - Column name
+        *   `type` (TEXT) - Column data type
+        *   `notnull` (INTEGER) - 1 if column is NOT NULL, 0 otherwise
+        *   `dflt_value` (TEXT, nullable) - Default value for the column
+        *   `pk` (INTEGER) - 1 if column is part of primary key, 0 otherwise
+    *   **Example:** `SELECT name, type, notnull FROM table_info('users');`
+
+*   `function_info()`
+    *   **Description:** Returns information about all registered functions in the database.
+    *   **Arguments:** None.
+    *   **Returns:** A table with columns:
+        *   `name` (TEXT) - Function name
+        *   `num_args` (INTEGER) - Number of arguments (-1 for variable arguments)
+        *   `type` (TEXT) - Function type ('scalar', 'aggregate', 'table-valued')
+        *   `deterministic` (INTEGER) - 1 if function is deterministic, 0 otherwise
+        *   `flags` (INTEGER) - Internal function flags
+        *   `signature` (TEXT) - Function signature for display
+    *   **Example:** `SELECT name, type, num_args FROM function_info() WHERE type = 'scalar';`

@@ -1,8 +1,8 @@
-# SQLiter SQL Reference Guide
+# Quereus SQL Reference Guide
 
 ## 1. Introduction
 
-SQLiter is a lightweight, TypeScript-native SQL engine inspired by SQLite, with a focus on in-memory data processing and extensibility via the virtual table (VTab) interface. It supports a rich subset of SQL for querying, manipulating, and joining data from virtual tables, with async operations and modern JavaScript/TypeScript idioms. SQLiter is designed for use in Node.js, browsers, and other JS environments, and does not provide persistent file storage by default.
+Quereus is a lightweight, TypeScript-native SQL engine inspired by SQLite, with a focus on in-memory data processing and extensibility via the virtual table (VTab) interface. It supports a rich subset of SQL for querying, manipulating, and joining data from virtual tables, with async operations and modern JavaScript/TypeScript idioms. Quereus is designed for use in Node.js, browsers, and other JS environments, and does not provide persistent file storage by default.
 
 Key features:
 - **Virtual Table Centric:** All data access is via virtual tables, which can be backed by memory, JSON, or custom sources.
@@ -50,24 +50,24 @@ select id, name, age from users where age > 21;
 
 -- Select with join
 select u.name, o.product 
-from users as u
-inner join orders as o on u.id = o.userId
-where o.status = 'shipped';
+  from users as u
+  inner join orders as o on u.id = o.userId
+  where o.status = 'shipped';
 
 -- Group by with aggregates
 select department, count(*) as employeeCount, avg(salary) as avgSalary
-from employees
-group by department
-having count(*) > 5
-order by avgSalary desc;
+  from employees
+  group by department
+  having count(*) > 5
+  order by avgSalary desc;
 
 -- With CTE and union
 with active_users as (
   select * from users where status = 'active'
 )
-select name, email from active_users where age < 30
-union all
-select name, email from premium_users where subscriptionStatus = 'paid';
+  select name, email from active_users where age < 30
+  union all
+  select name, email from premium_users where subscriptionStatus = 'paid';
 ```
 
 ### 2.2 INSERT Statement
@@ -77,8 +77,8 @@ The insert statement adds new rows to a table.
 **Syntax:**
 ```sql
 [ with [recursive] with_clause[,...] ]
-insert into table_name [(column [, column...])]
-{ values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
+  insert into table_name [(column [, column...])]
+  { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
 ```
 
 **Options:**
@@ -95,23 +95,23 @@ insert into users (name, email, age) values ('John', 'john@example.com', 35);
 
 -- Multiple rows insert
 insert into products (name, price, category) 
-values 
-  ('Keyboard', 49.99, 'Electronics'),
-  ('Mouse', 29.99, 'Electronics'),
-  ('Headphones', 99.99, 'Audio');
+  values 
+    ('Keyboard', 49.99, 'Electronics'),
+    ('Mouse', 29.99, 'Electronics'),
+    ('Headphones', 99.99, 'Audio');
 
 -- Insert from select
 insert into active_users (id, name, email)
-select id, name, email from users where last_login > date('now', '-30 days');
+  select id, name, email from users where last_login > date('now', '-30 days');
 
 -- With CTE
 with recent_orders as (
   select * from orders where order_date > date('now', '-7 days')
 )
-insert into order_summary (order_id, customer, total)
-select id, customer_name, sum(price * quantity) 
-from recent_orders
-group by id, customer_name;
+  insert into order_summary (order_id, customer, total)
+    select id, customer_name, sum(price * quantity) 
+    from recent_orders
+    group by id, customer_name;
 ```
 
 ### 2.3 UPDATE Statement
@@ -121,9 +121,9 @@ The update statement modifies existing rows in a table.
 **Syntax:**
 ```sql
 [ with [recursive] with_clause[,...] ]
-update table_name
-set column = expr [, column = expr...]
-[ where condition ]
+  update table_name
+    set column = expr [, column = expr...]
+    [ where condition ]
 ```
 
 **Options:**
@@ -139,19 +139,19 @@ update users set status = 'inactive' where last_login < date('now', '-90 days');
 
 -- Multi-column update
 update products 
-set price = price * 1.1, 
-    updated_at = datetime('now')
-where category = 'Electronics';
+  set price = price * 1.1, 
+      updated_at = datetime('now')
+  where category = 'Electronics';
 
 -- Update with expression
 update orders
-set 
-  total = (select sum(price * quantity) from order_items where order_id = orders.id),
-  status = case 
-    when paid = 1 then 'completed' 
-    else 'pending' 
-  end
-where order_date > date('now', '-30 days');
+  set 
+    total = (select sum(price * quantity) from order_items where order_id = orders.id),
+    status = case 
+      when paid = 1 then 'completed' 
+      else 'pending' 
+    end
+  where order_date > date('now', '-30 days');
 
 -- With CTE
 with discounted_items as (
@@ -159,10 +159,10 @@ with discounted_items as (
   from products
   where category = 'Clearance'
 )
-update products
-set price = di.sale_price
-from discounted_items as di
-where products.id = di.product_id;
+  update products
+    set price = di.sale_price
+    from discounted_items as di
+    where products.id = di.product_id;
 ```
 
 ### 2.4 DELETE Statement
@@ -188,23 +188,23 @@ delete from users where status = 'deactivated';
 
 -- Delete with subquery
 delete from products
-where id in (
-  select product_id 
-  from inventory 
-  where stock = 0 and last_updated < date('now', '-180 days')
-);
+  where id in (
+    select product_id 
+    from inventory 
+    where stock = 0 and last_updated < date('now', '-180 days')
+  );
 
 -- With CTE
 with old_orders as (
   select id from orders where order_date < date('now', '-365 days')
 )
-delete from order_items
-where order_id in (select id from old_orders);
+  delete from order_items
+  where order_id in (select id from old_orders);
 ```
 
 ### 2.5 CREATE TABLE Statement
 
-The create table statement defines a new table structure.
+The create table statement defines a new table structure.  Note that all tables are "without rowid" implicitly.
 
 **Syntax:**
 ```sql
@@ -212,7 +212,6 @@ create [temp | temporary] table [if not exists] table_name (
   column_definition [, column_definition...]
   [, table_constraint...]
 )
-[without rowid]
 [using module_name [(module_args...)]]
 ```
 
@@ -237,7 +236,7 @@ column_name [data_type] [column_constraint...]
 **Table Constraints:**
 ```sql
 [constraint name]
-{ primary key (column [asc | desc][,...]) [conflict_clause]
+{ primary key ([column [asc | desc][,...]]) [conflict_clause]
 | unique (column[,...]) [conflict_clause]
 | check (expr) [on {insert | update | delete}[,...]]
 | foreign key (column[,...]) references foreign_table [(column[,...])] [ref_actions] }
@@ -249,11 +248,11 @@ on conflict { rollback | abort | fail | ignore | replace }
 ```
 
 **Options:**
+- If an empty key column list is provided, the table may have 0 or 1 rows.
 - `temp/temporary`: Creates a temporary table
 - `if not exists`: Creates the table only if it doesn't already exist
 - `column_definition`: Defines a column with optional constraints
-- `table_constraint`: Defines a table-level constraint
-- `without rowid`: Creates a table without an implicit rowid column
+- `table_constraint`: Defines a table-level transition constraint
 - `using module_name`: Specifies a virtual table module
 
 **Examples:**
@@ -759,7 +758,7 @@ select * from products where category = :category and price <= :max_price;
 
 ## 5. Functions
 
-SQLiter provides a rich set of built-in functions for data manipulation, calculation, and transformation. These functions follow SQL standards with some SQLiter-specific extensions.
+Quereus provides a rich set of built-in functions for data manipulation, calculation, and transformation. These functions follow SQL standards with some Quereus-specific extensions.
 
 ### 5.1 Scalar Functions
 
@@ -782,14 +781,14 @@ Scalar functions operate on single values and return a single value per row.
 select 
   lower('HELLO') as lowercase,
   upper('world') as uppercase,
-  length('SQLiter') as str_length,
+  length('Quereus') as str_length,
   substr('abcdef', 2, 3) as substring,
   trim('  test  ') as trimmed,
-  replace('hello world', 'world', 'SQLiter') as replaced;
+  replace('hello world', 'world', 'Quereus') as replaced;
 
 -- Result:
 -- lowercase | uppercase | str_length | substring | trimmed | replaced
--- 'hello'   | 'WORLD'   | 7          | 'bcd'     | 'test'  | 'hello SQLiter'
+-- 'hello'   | 'WORLD'   | 7          | 'bcd'     | 'test'  | 'hello Quereus'
 ```
 
 #### Numeric Functions
@@ -879,7 +878,7 @@ group by department;
 
 ### 5.3 JSON Functions
 
-SQLiter provides comprehensive functions for working with JSON data.
+Quereus provides comprehensive functions for working with JSON data.
 
 - `json_extract(json, path, ...)`: Extracts values from JSON
 - `json_object(key, value, ...)`: Creates a JSON object
@@ -912,7 +911,7 @@ group by department;
 
 ### 5.4 Date and Time Functions
 
-SQLiter includes functions for manipulating dates and times.
+Quereus includes functions for manipulating dates and times.
 
 - `date(timestring[, modifier...])`: Returns the date as 'YYYY-MM-DD'
 - `time(timestring[, modifier...])`: Returns the time as 'HH:MM:SS'
@@ -998,7 +997,7 @@ from daily_metrics;
 
 ## 6. Virtual Tables
 
-Virtual tables are SQLiter's primary mechanism for accessing and manipulating data. They provide a table interface to various data sources through specialized modules.
+Virtual tables are Quereus's primary mechanism for accessing and manipulating data. They provide a table interface to various data sources through specialized modules.
 
 ### 6.1 Creating Virtual Tables
 
@@ -1029,7 +1028,7 @@ using memory('create table x(key text primary key, value blob, expires integer)'
 
 ### 6.2 Built-in Virtual Table Modules
 
-SQLiter comes with several built-in virtual table modules:
+Quereus comes with several built-in virtual table modules:
 
 #### 6.2.1 Memory Table Module
 
@@ -1066,7 +1065,7 @@ select * from products where category = 'Electronics';
 
 #### 6.2.2 JSON Table Modules
 
-SQLiter provides two modules for working with JSON data:
+Quereus provides two modules for working with JSON data:
 
 **json_each**: Expands a JSON array into rows
 ```sql
@@ -1097,11 +1096,11 @@ where path like '$.users[%].name';
 
 #### 6.2.3 Schema Table Module
 
-The `sqlite_schema` module provides access to schema information:
+The `_schema` module provides access to schema information:
 
 ```sql
 -- Query schema information
-select * from sqlite_schema;
+select * from _schema;
 -- Returns information about tables, indexes, and views
 ```
 
@@ -1295,7 +1294,7 @@ create table audit_records (
 
 The foreign key constraint links tables together and ensures referential integrity.
 
-**Note:** In SQLiter, foreign key constraints are parsed but not enforced. This is a known limitation.
+**Note:** In Quereus, foreign key constraints are parsed but not enforced. This is a known limitation.
 
 **Syntax - Column Constraint:**
 ```sql
@@ -1485,15 +1484,13 @@ commit;
 3. **Transaction Size**: Keep transactions as short as possible to reduce lock contention.
 4. **Savepoints**: Use savepoints for partial rollback instead of entire transaction rollback.
 
-**JavaScript Example with SQLiter:**
+**JavaScript Example with Quereus:**
 ```javascript
 // Using explicit transactions in JavaScript
 try {
   await db.exec("begin");
   
-  await db.exec("insert into orders (customer_id, total) values (?, ?)", [42, 129.99]);
-  const orderIdResult = await db.eval("select last_insert_rowid() as id").next();
-  const orderId = orderIdResult.value.id;
+  const orderId = await db.get("insert into orders (customer_id, total) values (?, ?) returning (id)", [42, 129.99]);
   
   await db.exec("insert into order_items (order_id, product_id, quantity) values (?, ?, ?)",
     [orderId, 101, 2]);
@@ -1510,7 +1507,7 @@ try {
 
 ## 9. PRAGMA Statements
 
-PRAGMA statements are special commands that control the behavior of the SQLiter database engine.
+PRAGMA statements are special commands that control the behavior of the Quereus database engine.
 
 ### 9.1 Basic Syntax
 
@@ -1562,7 +1559,7 @@ create table simple_cache (
 
 ### 9.4 Transactions Control PRAGMAs
 
-These PRAGMAs are parsed but may not affect behavior in the same way as SQLite due to SQLiter's virtual table-centric architecture.
+These PRAGMAs are parsed but may not affect behavior in the same way as SQLite due to Quereus's virtual table-centric architecture.
 
 ```sql
 pragma journal_mode = 'memory';
@@ -1571,13 +1568,13 @@ pragma synchronous = 'off';
 
 ## 10. Error Handling
 
-SQLiter provides structured error handling through the `SqliteError` class hierarchy. Understanding these errors helps in debugging and creating robust applications.
+Quereus provides structured error handling through the `QuereusError` class hierarchy. Understanding these errors helps in debugging and creating robust applications.
 
 ### 10.1 Error Types
 
-#### 10.1.1 SqliteError
+#### 10.1.1 QuereusError
 
-The base error class for all SQLiter errors. Contains:
+The base error class for all Quereus errors. Contains:
 - `message`: Description of the error
 - `code`: A `StatusCode` value indicating the error type
 - `cause`: Optional underlying error
@@ -1654,7 +1651,7 @@ insert into users (email) values ('existing@example.com');
 #### Schema Errors
 
 ```sql
--- Reference to non-existent table (will cause SqliteError)
+-- Reference to non-existent table (will cause QuereusError)
 select * from nonexistent_table;
 ```
 
@@ -1665,9 +1662,9 @@ select * from nonexistent_table;
 select 'text' + 42 from users;
 ```
 
-## 11. SQLiter vs. SQLite
+## 11. Quereus vs. SQLite
 
-SQLiter implements a subset of SQLite functionality with some differences in behavior and focus. Understanding these differences is important when porting applications from SQLite or creating new applications with SQLiter.
+Quereus implements a subset of SQLite functionality with some differences in behavior and focus. Understanding these differences is important when porting applications from SQLite or creating new applications with Quereus.
 
 ### 11.1 Key Similarities
 
@@ -1681,7 +1678,7 @@ SQLiter implements a subset of SQLite functionality with some differences in beh
 
 #### 11.2.1 Architecture
 
-**SQLiter:**
+**Quereus:**
 - All tables are virtual tables
 - No built-in file storage
 - In-memory focused with `memory` module as primary storage
@@ -1694,7 +1691,7 @@ SQLiter implements a subset of SQLite functionality with some differences in beh
 
 #### 11.2.2 Feature Support
 
-| Feature | SQLiter | SQLite |
+| Feature | Quereus | SQLite |
 |---------|---------|--------|
 | **File Storage** | No built-in support; VTab modules could implement | Primary feature |
 | **Virtual Tables** | Central to design; all tables are virtual | Additional feature |
@@ -1709,16 +1706,16 @@ SQLiter implements a subset of SQLite functionality with some differences in beh
 
 #### 11.2.3 Syntax Extensions
 
-SQLiter provides some syntax extensions:
+Quereus provides some syntax extensions:
 
 ```sql
--- SQLiter: CREATE TABLE with USING clause for virtual tables
+-- Quereus: CREATE TABLE with USING clause for virtual tables
 create table users (id integer primary key, name text) using memory;
 
--- SQLiter: PRIMARY KEY with ASC/DESC qualifier
+-- Quereus: PRIMARY KEY with ASC/DESC qualifier
 create table logs (timestamp integer primary key desc, event text);
 
--- SQLiter: CHECK constraints with operation specificity
+-- Quereus: CHECK constraints with operation specificity
 create table products (
   price real check (price >= 0) on insert,
   stock integer check (stock >= 0) on update
@@ -1727,22 +1724,22 @@ create table products (
 
 #### 11.2.4 Performance Characteristics
 
-- **SQLiter**: JavaScript-based with optimization for in-memory operations
+- **Quereus**: JavaScript-based with optimization for in-memory operations
 - **SQLite**: C-based with focus on disk I/O efficiency
 
 ### 11.3 Migration Considerations
 
-When migrating from SQLite to SQLiter:
+When migrating from SQLite to Quereus:
 
 1. **Storage Strategy**: Determine how to handle persistence (custom VTab, export/import, etc.)
-2. **Async Handling**: Convert synchronous SQLite code to async/await with SQLiter
+2. **Async Handling**: Convert synchronous SQLite code to async/await with Quereus
 3. **Feature Check**: Review use of triggers, advanced views, enforced foreign keys
-4. **Transaction Model**: Similar, but understand SQLiter's virtual table transaction model
+4. **Transaction Model**: Similar, but understand Quereus's virtual table transaction model
 5. **Custom Functions**: Port custom SQL functions to JavaScript
 
 ### 11.4 Future Roadmap
 
-SQLiter is actively developed with plans to add:
+Quereus is actively developed with plans to add:
 - Improved window function support
 - Enhanced recursive CTE capabilities
 - More query planning enhancements
@@ -1752,7 +1749,7 @@ See [todo.md] for the current development plans.
 
 ## 12. EBNF Grammar
 
-Below is a formal Extended Backus-Naur Form (EBNF) grammar for SQLiter's SQL dialect, based on the parser implementation.
+Below is a formal Extended Backus-Naur Form (EBNF) grammar for Quereus's SQL dialect, based on the parser implementation.
 
 ### 12.1 Notation
 
@@ -1852,7 +1849,6 @@ delete_stmt        = "delete" "from" table_name [ where_clause ] ;
 /* CREATE TABLE statement */
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
                      table_name "(" column_def { "," ( column_def | table_constraint ) } ")"
-                     [ "without" "rowid" ]
                      [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ] ;
 
 column_def         = column_name [ type_name ] { column_constraint } ;
@@ -2023,4 +2019,4 @@ binary_operator    = "||" | "*" | "/" | "%" | "+" | "-" | "<<" | ">>" | "&" | "|
                    | "and" | "or" ;
 ```
 
-This grammar defines the syntax of SQL statements supported by SQLiter. While it captures most of the language features, some specialized constructs and edge cases may not be fully represented. For the definitive reference, always consult the SQLiter parser implementation.
+This grammar defines the syntax of SQL statements supported by Quereus. While it captures most of the language features, some specialized constructs and edge cases may not be fully represented. For the definitive reference, always consult the Quereus parser implementation.

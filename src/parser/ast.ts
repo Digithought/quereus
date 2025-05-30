@@ -29,15 +29,13 @@ export interface LiteralExpr extends AstNode {
 	type: 'literal';
 	value: SqlValue;
 	lexeme?: string; // Optional: Original text representation, e.g., for numbers like '2.0'
-	dataType?: string; // Optional type hint
 }
 
-// Identifier expression (table name, column name, etc.)
+// Identifier expression (table name or pragma name)
 export interface IdentifierExpr extends AstNode {
 	type: 'identifier';
 	name: string;
 	schema?: string; // Optional schema qualifier
-	table?: string;  // Optional table qualifier
 }
 
 // Column reference expression
@@ -69,7 +67,7 @@ export interface FunctionExpr extends AstNode {
 	type: 'function';
 	name: string;
 	args: Expression[];
-	isAggregate?: boolean;
+	distinct?: boolean; // For DISTINCT in aggregate functions like COUNT(DISTINCT col)
 }
 
 // Window function expression
@@ -197,10 +195,9 @@ export interface CreateTableStmt extends AstNode {
 	ifNotExists: boolean;
 	columns: ColumnDef[];
 	constraints: TableConstraint[];
-	withoutRowid?: boolean;
 	isTemporary?: boolean;
 	moduleName?: string;   // Optional module name from USING clause
-	moduleArgs?: string[]; // Optional module arguments from USING clause
+	moduleArgs?: Record<string, SqlValue>; // Optional module arguments from USING clause
 }
 
 // CREATE INDEX statement
@@ -267,10 +264,16 @@ export interface ReleaseStmt extends AstNode {
 
 // --- Supporting Types ---
 
+export type ResultColumnExpr = {
+	type: 'column',
+	expr: Expression,
+	alias?: string
+}
+
 // Result column in SELECT
 export type ResultColumn =
 	| { type: 'all', table?: string }
-	| { type: 'column', expr: Expression, alias?: string };
+	| ResultColumnExpr;
 
 // FROM clause item (table, join, function call, or subquery)
 export type FromClause = TableSource | JoinClause | FunctionSource | SubquerySource;

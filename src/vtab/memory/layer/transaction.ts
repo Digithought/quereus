@@ -1,41 +1,83 @@
-import { BTree } from 'digitree';
-import type { TableSchema, IndexSchema } from '../../../schema/table.js';
-import type { MemoryTableRow, BTreeKey, ModificationKey, ModificationValue, DeletionMarker } from '../types.js';
-import { compareSqlValues } from '../../../util/comparison.js'; // Corrected path
-import { MemoryIndex } from '../index.js'; // Needed for key extraction/comparison logic
-import type { SqlValue } from '../../../common/types.js'; // Corrected path
-import { isDeletionMarker, DELETED } from '../types.js'; // Import from types.ts
-import type { Layer } from './interface.js'; // Corrected path
+import { BTree } from 'inheritree';
+import type { TableSchema } from '../../../schema/table.js';
+import { compareSqlValues } from '../../../util/comparison.js';
+import { MemoryIndex } from '../index.js';
+import type { SqlValue, Row } from '../../../common/types.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
+import type { Layer } from './interface.js';
+import { createLogger } from '../../../common/logger.js';
+import { createPrimaryKeyFunctions } from '../utils/primary-key.js';
 
-let transactionLayerCounter = 0;
+const log = createLogger('vtab:memory:layer:transaction');
+const warnLog = log.extend('warn');
+
+let transactionLayerCounter = 1000;
 
 /**
  * Represents a set of modifications (inserts, updates, deletes) applied
- * on top of a parent Layer (either BaseLayer or another TransactionLayer).
- * These layers are immutable once created for a transaction. Commit marks
- * them as eligible for merging.
+ * on top of a parent Layer using inherited BTrees with copy-on-write semantics.
+ * These layers are immutable once committed.
  */
 export class TransactionLayer implements Layer {
 	private readonly layerId: number;
 	public readonly parentLayer: Layer;
 	private readonly tableSchemaAtCreation: TableSchema; // Schema when this layer was started
-	// Stores modifications keyed by index-specific keys.
-	// 'primary' maps primary keys -> MemoryTableRow | DELETED
-	// indexName maps [indexKey, rowid] -> MemoryTableRow | DELETED (value needed for filtering?)
-	// Alternatively, secondary mods could just store rowids? Let's start with MemoryTableRow | DELETED for simplicity.
-	private modifications: Map<string | 'primary', BTree<ModificationKey, ModificationValue>>;
-	private deletedRowidsInLayer: Set<bigint>; // Rowids explicitly deleted *in this layer*
+
+	// Primary modifications BTree that inherits from parent
+	private primaryModifications: BTree<BTreeKeyForPrimary, Row>;
+
+	// Secondary index BTrees that inherit from parent's indexes
+	private secondaryIndexes: Map<string, MemoryIndex>;
+
 	private _isCommitted: boolean = false;
 
 	// Cache for BTree funcs to avoid recalculation
-	private btreeFuncsCache: Map<string | 'primary', { keyExtractor: (value: ModificationValue) => ModificationKey; comparator: (a: ModificationKey, b: ModificationKey) => number; }> = new Map();
+	private btreeFuncsCacheForKeyExtraction: Map<string | 'primary', {
+		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
+		indexKeyExtractorFromRow?: (row: Row) => BTreeKeyForIndex;
+		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
+		indexKeyComparator?: (a: BTreeKeyForIndex, b: BTreeKeyForIndex) => number;
+	}> = new Map();
 
 	constructor(parent: Layer) {
 		this.layerId = transactionLayerCounter++;
 		this.parentLayer = parent;
-		this.tableSchemaAtCreation = parent.getSchema(); // Inherit schema from parent at creation
-		this.modifications = new Map();
-		this.deletedRowidsInLayer = new Set();
+		this.tableSchemaAtCreation = parent.getSchema(); // Schema is fixed at creation
+
+		// Initialize primary modifications BTree with parent's primary tree as base
+		const { primaryKeyExtractorFromRow, primaryKeyComparator } = this.getPkExtractorsAndComparators(this.tableSchemaAtCreation);
+		const btreeKeyFromValue = (value: Row): BTreeKeyForPrimary => {
+			const result = primaryKeyExtractorFromRow(value);
+			return result;
+		};
+
+		const parentPrimaryTree = parent.getModificationTree('primary');
+
+		this.primaryModifications = new BTree(
+			btreeKeyFromValue,
+			primaryKeyComparator,
+			parentPrimaryTree || undefined // Use parent's primary tree as base
+		);
+
+		// Initialize secondary indexes that inherit from parent's secondary indexes
+		this.secondaryIndexes = new Map();
+		this.initializeSecondaryIndexes();
+	}
+
+	private initializeSecondaryIndexes(): void {
+		const schema = this.tableSchemaAtCreation;
+		if (!schema.indexes) return;
+
+		for (const indexSchema of schema.indexes) {
+			const parentSecondaryTree = this.parentLayer.getSecondaryIndexTree?.(indexSchema.name);
+			// Create MemoryIndex with inherited BTree
+			const memoryIndex = new MemoryIndex(
+				indexSchema,
+				schema.columns,
+				parentSecondaryTree || undefined // Use parent's secondary index tree as base
+			);
+			this.secondaryIndexes.set(indexSchema.name, memoryIndex);
+		}
 	}
 
 	getLayerId(): number {
@@ -59,203 +101,129 @@ export class TransactionLayer implements Layer {
 	markCommitted(): void {
 		if (!this._isCommitted) {
 			this._isCommitted = true;
-			// Freezing removed as digitree might not support it
-			// this.modifications.forEach(tree => tree.freeze?.());
-			Object.freeze(this.deletedRowidsInLayer); // Keep freezing the set
+			// With inherited BTrees, we don't need to freeze complex change tracking structures
 		}
 	}
 
-	/** Gets or creates the modification BTree for a given index */
-	private getOrCreateModificationTree(indexName: string | 'primary'): BTree<ModificationKey, ModificationValue> {
-		let tree = this.modifications.get(indexName);
-		if (!tree) {
-			const { keyExtractor, comparator } = this.getBTreeFuncs(indexName);
-			tree = new BTree<ModificationKey, ModificationValue>(keyExtractor, comparator);
-			this.modifications.set(indexName, tree);
-		}
-		return tree;
-	}
-
-	/** Returns the BTree functions (key extractor, comparator) for a given index name */
-	public getBTreeFuncs(indexName: string | 'primary'): {
-		keyExtractor: (value: ModificationValue) => ModificationKey;
-		comparator: (a: ModificationKey, b: ModificationKey) => number;
+	public getPkExtractorsAndComparators(schema: TableSchema): {
+		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
+		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number
 	} {
-		// Check cache first
-		const cachedFuncs = this.btreeFuncsCache.get(indexName);
-		if (cachedFuncs) {
-			return cachedFuncs;
+		if (schema !== this.tableSchemaAtCreation) {
+			warnLog("TransactionLayer.getPkExtractorsAndComparators called with a schema different from its creation schema. Using creation schema.");
 		}
 
-		const schema = this.getSchema();
-		let funcs: {
-			keyExtractor: (value: ModificationValue) => ModificationKey;
-			comparator: (a: ModificationKey, b: ModificationKey) => number;
+		// Use the centralized primary key functions instead of duplicating the logic
+		// This ensures consistent handling of empty primary key definitions
+		const pkFunctions = createPrimaryKeyFunctions(this.tableSchemaAtCreation);
+		return {
+			primaryKeyExtractorFromRow: pkFunctions.extractFromRow,
+			primaryKeyComparator: pkFunctions.compare
 		};
-
-		if (indexName === 'primary') {
-			const pkDef = schema.primaryKeyDefinition ?? [];
-			const columns = schema.columns.map(c => ({ name: c.name }));
-
-			if (pkDef.length === 0) { // Rowid key
-				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as bigint : value._rowid_; // Check marker
-				const comparator = (a: ModificationKey, b: ModificationKey): number =>
-					compareSqlValues(a as bigint, b as bigint);
-				funcs = { keyExtractor, comparator };
-			} else if (pkDef.length === 1) { // Single column PK
-				const { index: pkIndex, desc: isDesc } = pkDef[0];
-				const pkColName = columns[pkIndex]?.name;
-				const pkCollation = schema.columns[pkIndex]?.collation ?? 'BINARY';
-				if (!pkColName) throw new Error("Invalid PK schema in TransactionLayer");
-				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as BTreeKey : value[pkColName] as BTreeKey; // Check marker
-				const comparator = (a: ModificationKey, b: ModificationKey): number => {
-					const cmp = compareSqlValues(a as SqlValue, b as SqlValue, pkCollation);
-					return isDesc ? -cmp : cmp;
-				};
-				funcs = { keyExtractor, comparator };
-			} else { // Composite PK
-				const pkCols = pkDef.map(def => ({
-					name: columns[def.index]?.name,
-					desc: def.desc,
-					collation: schema.columns[def.index]?.collation || 'BINARY'
-				}));
-				if (pkCols.some(c => !c.name)) throw new Error("Invalid composite PK schema in TransactionLayer");
-				const pkColNames = pkCols.map(c => c.name!);
-				const keyExtractor = (value: ModificationValue): ModificationKey =>
-					isDeletionMarker(value) ? value._key_ as SqlValue[] : pkColNames.map(name => value[name]); // Check marker
-				const comparator = (a: ModificationKey, b: ModificationKey): number => {
-					const arrA = a as SqlValue[]; const arrB = b as SqlValue[];
-					const len = Math.min(arrA.length, arrB.length);
-					for (let i = 0; i < len; i++) {
-						const dirMultiplier = pkCols[i].desc ? -1 : 1;
-						const collation = pkCols[i].collation;
-						const cmp = compareSqlValues(arrA[i], arrB[i], collation) * dirMultiplier;
-						if (cmp !== 0) return cmp;
-					}
-					return arrA.length - arrB.length;
-				};
-				funcs = { keyExtractor, comparator };
-			}
-		} else {
-			// Secondary Index: Key is [IndexKey, rowid]
-			const indexSchema = schema.indexes?.find(idx => idx.name === indexName);
-			if (!indexSchema) throw new Error(`Secondary index ${indexName} not found in schema for TransactionLayer`);
-
-			const tempIndex = new MemoryIndex({ name: indexSchema.name, columns: indexSchema.columns }, schema.columns.map(c => ({ name: c.name })));
-
-			// Key for the modification BTree is [IndexKey, rowid]
-			const keyExtractor = (value: ModificationValue): ModificationKey => {
-				if (isDeletionMarker(value)) {
-					return value._key_ as [BTreeKey, bigint]; // Deletion marker stores the composite key
-				} else {
-					const indexKey = tempIndex.keyFromRow(value);
-					const rowid = value._rowid_;
-					return [indexKey, rowid];
-				}
-			};
-			// Comparator for [IndexKey, rowid] pairs
-			const comparator = (a: ModificationKey, b: ModificationKey): number => {
-				const [keyA, rowidA] = a as [BTreeKey, bigint];
-				const [keyB, rowidB] = b as [BTreeKey, bigint];
-				const keyCmp = tempIndex.compareKeys(keyA, keyB);
-				if (keyCmp !== 0) return keyCmp;
-				return compareSqlValues(rowidA, rowidB);
-			};
-			funcs = { keyExtractor, comparator };
-		}
-
-		// Store in cache and return
-		this.btreeFuncsCache.set(indexName, funcs);
-		return funcs;
 	}
 
-	/** Gets the appropriate key comparator for the modification tree of a given index */
-	public getComparator(indexName: string | 'primary'): (a: ModificationKey, b: ModificationKey) => number {
-		// Retrieve or create the tree to ensure its comparator is initialized
-		const tree = this.getOrCreateModificationTree(indexName);
-		// The BTree's comparator operates on the *entry type* (ModificationValue).
-		// We need to return a comparator that works on the *key type* (ModificationKey).
-		// We can leverage the getBTreeFuncs helper which already defines the key comparator.
-		return this.getBTreeFuncs(indexName).comparator;
+	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, Row> | null {
+		if (indexName === 'primary') return this.primaryModifications;
+		return null; // Secondary indexes are accessed via getSecondaryIndexTree
 	}
 
-	/**
-	 * Gets the key comparator for a specific index.
-	 * This is needed for the TransactionLayerCursorInternal.
-	 */
-	public getKeyComparator(indexName: string | 'primary'): (a: BTreeKey, b: BTreeKey) => number {
-		// This wraps the modKey comparator to work with BTreeKey inputs
-		const modComparator = this.getComparator(indexName);
-
-		if (indexName === 'primary') {
-			// For primary, ModificationKey is BTreeKey directly
-			return modComparator as (a: BTreeKey, b: BTreeKey) => number;
-		} else {
-			// For secondary, we need to extract the first part of the ModificationKey
-			// and compare only that part
-			return (a: BTreeKey, b: BTreeKey): number => {
-				// Create dummy ModificationKeys from BTreeKeys for comparison
-				// The comparator should only look at the key part anyway
-				const dummyA: [BTreeKey, bigint] = [a, BigInt(0)];
-				const dummyB: [BTreeKey, bigint] = [b, BigInt(0)];
-				return modComparator(dummyA, dummyB);
-			};
-		}
-	}
-
-	/** Gets the appropriate key extractor for the modification tree of a given index */
-	public getKeyExtractor(indexName: string | 'primary'): (value: ModificationValue) => ModificationKey {
-		// Retrieve or create the tree to ensure its extractor is initialized
-		const tree = this.getOrCreateModificationTree(indexName);
-		// Similar to comparator, leverage getBTreeFuncs.
-		return this.getBTreeFuncs(indexName).keyExtractor;
-	}
-
-	getModificationTree(indexName: string | 'primary'): BTree<ModificationKey, ModificationValue> | null {
-		return this.modifications.get(indexName) ?? null;
-	}
-
-	getSecondaryIndexTree(indexName: string): BTree<[BTreeKey, bigint], [BTreeKey, bigint]> | null {
-		// Transaction layers store modifications, not full index trees. Cursors handle merging.
-		return null; // Return null as this layer doesn't hold the full index data
-	}
-
-	getDeletedRowids(): ReadonlySet<bigint> {
-		return this.deletedRowidsInLayer;
+	getSecondaryIndexTree(indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null {
+		return this.secondaryIndexes.get(indexName)?.data ?? null;
 	}
 
 	/** Records an insert or update in this transaction layer */
-	recordUpsert(row: MemoryTableRow, affectedIndexes: ReadonlyArray<string | 'primary'>): void {
+	recordUpsert(primaryKey: BTreeKeyForPrimary, newRowData: Row, oldRowDataIfUpdate?: Row | null): void {
 		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
 
-		// If this row was previously deleted in *this* layer, remove the delete marker.
-		this.deletedRowidsInLayer.delete(row._rowid_);
+		this.primaryModifications.upsert(newRowData);
 
-		for (const indexName of affectedIndexes) {
-			const tree = this.getOrCreateModificationTree(indexName);
-			// BTree.insert takes the value; the key is extracted by the tree's keyExtractor
-			tree.insert(row);
+		// Update secondary indexes
+		const schema = this.getSchema();
+		if (schema.indexes) {
+			for (const indexSchema of schema.indexes) {
+				const memoryIndex = this.secondaryIndexes.get(indexSchema.name);
+				if (!memoryIndex) continue;
+
+				if (oldRowDataIfUpdate) { // UPDATE
+					const oldIndexKey = memoryIndex.keyFromRow(oldRowDataIfUpdate);
+					const newIndexKey = memoryIndex.keyFromRow(newRowData);
+
+					// If index key changed, remove old and add new
+					if (memoryIndex.compareKeys(oldIndexKey, newIndexKey) !== 0) {
+						memoryIndex.removeEntry(oldIndexKey, primaryKey);
+						memoryIndex.addEntry(newIndexKey, primaryKey);
+					} else {
+						// Index key is same, but we might need to update the entry
+						// With inherited BTrees, the existing entry will be copied on write
+						memoryIndex.addEntry(newIndexKey, primaryKey);
+					}
+				} else { // INSERT
+					const newIndexKey = memoryIndex.keyFromRow(newRowData);
+					memoryIndex.addEntry(newIndexKey, primaryKey);
+				}
+			}
 		}
 	}
 
 	/** Records a delete in this transaction layer */
-	recordDelete(rowid: bigint, primaryKey: BTreeKey, indexKeys: Map<string, [BTreeKey, bigint]>): void {
+	recordDelete(primaryKey: BTreeKeyForPrimary, oldRowDataForIndexes: Row): void {
 		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
 
-		this.deletedRowidsInLayer.add(rowid);
+		// Find the existing entry
+		const existingPath = this.primaryModifications.find(primaryKey);
+		if (existingPath.on) {
+			// Entry exists (locally or inherited) - use deleteAt to remove it
+			this.primaryModifications.deleteAt(existingPath);
+		}
+		// If key doesn't exist, there's nothing to delete - no deletion marker needed
+		// Inheritree's copy-on-write semantics handle this properly
 
-		// Create and store deletion marker for the primary index
-		const primaryTree = this.getOrCreateModificationTree('primary');
-		const primaryDeletionMarker: DeletionMarker = { _marker_: DELETED, _key_: primaryKey, _rowid_: rowid };
-		primaryTree.insert(primaryDeletionMarker);
+		// Update secondary indexes to remove entries
+		const schema = this.getSchema();
+		if (schema.indexes) {
+			for (const indexSchema of schema.indexes) {
+				const memoryIndex = this.secondaryIndexes.get(indexSchema.name);
+				if (!memoryIndex) continue;
 
-		// Create and store deletion markers for relevant secondary indexes
-		for (const [indexName, indexModKey] of indexKeys.entries()) {
-			const secondaryTree = this.getOrCreateModificationTree(indexName);
-			const secondaryDeletionMarker: DeletionMarker = { _marker_: DELETED, _key_: indexModKey, _rowid_: rowid };
-			secondaryTree.insert(secondaryDeletionMarker);
+				const oldIndexKey = memoryIndex.keyFromRow(oldRowDataForIndexes);
+				memoryIndex.removeEntry(oldIndexKey, primaryKey);
+			}
+		}
+	}
+
+	public hasChanges(): boolean {
+		// Check if primary modifications BTree has any entries beyond its base
+		if (this.primaryModifications.getCount() > 0) {
+			// Note: getCount() might include inherited entries, so we need a better way
+			// to check if this layer has modifications. This depends on inheritree's API.
+			// For now, assume any count > 0 means changes (might need refinement)
+			return true;
+		}
+
+		// Check secondary indexes for changes
+		for (const memoryIndex of this.secondaryIndexes.values()) {
+			if (memoryIndex.size > 0) {
+				// Same caveat as above - this might include inherited entries
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Detaches this layer's BTrees from their base, making them self-contained.
+	 * This should be called when the layer becomes the new effective base.
+	 */
+	public clearBase(): void {
+		// Clear base for primary modifications
+		if (typeof (this.primaryModifications as any).clearBase === 'function') {
+			(this.primaryModifications as any).clearBase();
+		}
+
+		// Clear base for secondary indexes
+		for (const memoryIndex of this.secondaryIndexes.values()) {
+			memoryIndex.clearBase();
 		}
 	}
 }

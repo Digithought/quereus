@@ -2,6 +2,19 @@
 
 PRAGMA default_vtab_module='memory';
 
+-- Basic table creation (without constraint enforcement)
+CREATE TABLE t_basic (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    value INTEGER
+);
+
+INSERT INTO t_basic VALUES (1, 'test', 100);
+SELECT * FROM t_basic;
+→ [{"id":1,"name":"test","value":100}]
+
+DROP TABLE t_basic;
+
 -- === NOT NULL Constraints ===
 
 CREATE TABLE t_notnull (
@@ -13,11 +26,11 @@ CREATE TABLE t_notnull (
 -- Insert valid row
 INSERT INTO t_notnull (id, req, opt) VALUES (1, 'required', 'optional');
 SELECT req, opt FROM t_notnull WHERE id = 1;
-→ ["required","optional"]
+→ [{"req":"required","opt":"optional"}]
 
 -- Insert omitting NOT NULL column (no default)
 INSERT INTO t_notnull (id, opt) VALUES (2, 'no_req');
--- error: NOT NULL constraint failed: t_notnull.req (no default)
+-- error: NOT NULL constraint failed: t_notnull.req
 
 -- Insert explicit NULL into NOT NULL column
 INSERT INTO t_notnull (id, req) VALUES (3, NULL);
@@ -26,7 +39,7 @@ INSERT INTO t_notnull (id, req) VALUES (3, NULL);
 -- Update optional to NULL (allowed)
 UPDATE t_notnull SET opt = NULL WHERE id = 1;
 SELECT opt FROM t_notnull WHERE id = 1;
-→ [null]
+→ [{"opt":null}]
 
 -- Update required to NULL (fail)
 UPDATE t_notnull SET req = NULL WHERE id = 1;
@@ -34,7 +47,7 @@ UPDATE t_notnull SET req = NULL WHERE id = 1;
 
 -- Verify state after failed update
 SELECT req FROM t_notnull WHERE id = 1;
-→ ["required"]
+→ [{"req":"required"}]
 
 DROP TABLE t_notnull;
 
@@ -49,7 +62,7 @@ CREATE TABLE t_check (
 -- Insert valid
 INSERT INTO t_check VALUES (1, 10, 100.5);
 SELECT pos, bal FROM t_check WHERE id = 1;
-→ [10,100.5]
+→ [{"pos":10,"bal":100.5}]
 
 -- Insert invalid pos
 INSERT INTO t_check VALUES (2, -5, 50);
@@ -62,7 +75,7 @@ INSERT INTO t_check VALUES (3, 5, -0.01);
 -- Update valid to valid
 UPDATE t_check SET pos = 20, bal = 99.9 WHERE id = 1;
 SELECT pos, bal FROM t_check WHERE id = 1;
-→ [20,99.9]
+→ [{"pos":20,"bal":99.9}]
 
 -- Update valid to invalid pos
 UPDATE t_check SET pos = 0 WHERE id = 1;
@@ -74,7 +87,7 @@ UPDATE t_check SET bal = -10 WHERE id = 1;
 
 -- Verify state after failed updates
 SELECT pos, bal FROM t_check WHERE id = 1;
-→ [20,99.9]
+→ [{"pos":20,"bal":99.9}]
 
 DROP TABLE t_check;
 
@@ -91,7 +104,7 @@ CREATE TABLE t_check_on (
 -- Insert valid (status check applies)
 INSERT INTO t_check_on (id, status, val) VALUES (1, 'active', 100);
 SELECT status, val FROM t_check_on WHERE id = 1;
-→ ["active",100]
+→ [{"status":"active","val":100}]
 
 -- Insert invalid status
 INSERT INTO t_check_on (id, status, val) VALUES (2, 'pending', 200);
@@ -100,12 +113,12 @@ INSERT INTO t_check_on (id, status, val) VALUES (2, 'pending', 200);
 -- Update status (check does NOT apply on UPDATE)
 UPDATE t_check_on SET status = 'archived' WHERE id = 1;
 SELECT status FROM t_check_on WHERE id = 1;
-→ ["archived"]
+→ [{"status":"archived"}]
 
 -- Update val valid (positive_val check applies)
 UPDATE t_check_on SET val = 50 WHERE id = 1;
 SELECT val FROM t_check_on WHERE id = 1;
-→ [50]
+→ [{"val":50}]
 
 -- Update val invalid (positive_val check applies)
 UPDATE t_check_on SET val = -1 WHERE id = 1;
@@ -113,7 +126,7 @@ UPDATE t_check_on SET val = -1 WHERE id = 1;
 
 -- Verify state after failed update
 SELECT val FROM t_check_on WHERE id = 1;
-→ [50]
+→ [{"val":50}]
 
 -- Attempt DELETE (no_delete check applies)
 DELETE FROM t_check_on WHERE id = 1;
@@ -121,7 +134,7 @@ DELETE FROM t_check_on WHERE id = 1;
 
 -- Verify state after failed delete
 SELECT count(*) FROM t_check_on WHERE id = 1;
-→ [1]
+→ [{"count(*)":1}]
 
 DROP TABLE t_check_on;
 
@@ -136,12 +149,12 @@ CREATE TABLE t_check_alias (
 
 INSERT INTO t_check_alias (id, payload) VALUES (10, 'initial data');
 SELECT version FROM t_check_alias WHERE id = 10;
-→ [1]
+→ [{"version":1}]
 
 -- Valid update (increasing version)
 UPDATE t_check_alias SET version = 2, payload = 'updated data' WHERE id = 10;
 SELECT version, payload FROM t_check_alias WHERE id = 10;
-→ [2,"updated data"]
+→ [{"version":2,"payload":"updated data"}]
 
 -- Invalid update (same version)
 UPDATE t_check_alias SET version = 2, payload = 'no change' WHERE id = 10;
@@ -153,7 +166,7 @@ UPDATE t_check_alias SET version = 1, payload = 'revert?' WHERE id = 10;
 
 -- Verify state after failed updates
 SELECT version, payload FROM t_check_alias WHERE id = 10;
-→ [2,"updated data"]
+→ [{"version":2,"payload":"updated data"}]
 
 DROP TABLE t_check_alias;
 
@@ -173,13 +186,12 @@ INSERT INTO products VALUES ('A1', 10.0), ('B2', 20.0);
 INSERT INTO inventory VALUES ('W1', 'A1', 50), ('W2', 'A1', 30), ('W1', 'B2', 100);
 
 SELECT sku, sum(qty) FROM inventory GROUP BY sku ORDER BY sku;
-→ ["A1",80]
-→ ["B2",100]
+→ [{"sku":"A1","sum(qty)":80},{"sku":"B2","sum(qty)":100}]
 
 -- Valid update (decreasing stock is allowed by enough_stock on update)
 UPDATE inventory SET qty = 25 WHERE loc = 'W1' AND sku = 'A1';
 SELECT qty FROM inventory WHERE loc = 'W1' AND sku = 'A1';
-→ [25]
+→ [{"qty":25}]
 
 -- Invalid update (cannot set negative simple check)
 UPDATE inventory SET qty = -5 WHERE loc = 'W1' AND sku = 'A1';
@@ -192,12 +204,12 @@ DELETE FROM inventory WHERE loc = 'W1' AND sku = 'A1';
 -- Set quantity to 0
 UPDATE inventory SET qty = 0 WHERE loc = 'W1' AND sku = 'A1';
 SELECT qty FROM inventory WHERE loc = 'W1' AND sku = 'A1';
-→ [0]
+→ [{"qty":0}]
 
 -- Now delete should work
 DELETE FROM inventory WHERE loc = 'W1' AND sku = 'A1';
 SELECT count(*) FROM inventory WHERE loc = 'W1' AND sku = 'A1';
-→ [0]
+→ [{"count(*)":0}]
 
 DROP TABLE inventory;
 DROP TABLE products;

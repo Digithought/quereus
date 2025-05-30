@@ -1,531 +1,431 @@
 import { createLogger } from '../common/logger.js';
-import { type SqlValue, StatusCode } from '../common/types.js';
-import { MisuseError, SqliteError } from '../common/errors.js';
+import { type SqlValue, StatusCode, type Row, type SqlParameters, type DeepReadonly } from '../common/types.js';
+import { MisuseError, QuereusError } from '../common/errors.js';
 import type { Database } from './database.js';
-import { SqlDataType } from '../common/constants.js';
+import { isRelationType, type ColumnDef, type ScalarType } from '../common/datatype.js';
 import { Parser, ParseError } from '../parser/parser.js';
-import { Compiler } from '../compiler/compiler.js';
-import { type VdbeProgram } from '../vdbe/program.js';
-import { VdbeRuntime } from '../vdbe/runtime.js';
-import type { MemoryCell } from '../vdbe/handler-types.js';
+import type { Statement as ASTStatement } from '../parser/ast.js';
+import { buildBlock } from '../planner/building/block.js';
+import type { BlockNode } from '../planner/nodes/block.js';
+import { emitPlanNode } from '../runtime/emitters.js';
+import { Scheduler } from '../runtime/scheduler.js';
+import type { RuntimeContext } from '../runtime/types.js';
+import { Cached } from '../util/cached.js';
+import { isAsyncIterable } from '../runtime/utils.js';
+import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
+import type { InstructionTracer } from '../runtime/types.js';
+import { EmissionContext } from '../runtime/emission-context.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
+const warnLog = log.extend('warn');
 
 /**
  * Represents a prepared SQL statement.
  */
 export class Statement {
 	public readonly db: Database;
-	public readonly sql: string;
+	public readonly originalSql: string;
+	public readonly astBatch: ASTStatement[];
+	private astBatchIndex: number = -1;
 	private finalized = false;
-	private busy = false; // True if step has been called but not reset/finalized/done
-	private boundParameters: Map<number | string, SqlValue> = new Map();
-	private columnNames: string[] = []; // Populated after first successful step
-	private currentRowInternal: MemoryCell[] | null = null; // Store raw MemoryCells from VDBE
-	private vdbeProgram: VdbeProgram | null = null;
-	private vdbe: VdbeRuntime | null = null;
+	private busy = false;
+	private boundArgs: Record<number | string, SqlValue> = {};
+	private plan: BlockNode | null = null;
+	private emissionContext: EmissionContext | null = null;
 	private needsCompile = true;
-	private onceExecutedPCs: Set<number> = new Set(); // Track executed Once opcodes
+	private columnDefCache = new Cached<DeepReadonly<ColumnDef>[]>(() => this.getColumnDefs());
 
 	/**
-	 * @internal - Use db.prepare()
-	 * Pass program directly only when creating transient statements inside db.exec()
+	 * @internal - Use db.prepare().
+	 * The `sqlOrAstBatch` can be a single SQL string (parsed internally) or a pre-parsed batch.
+	 * `initialAstIndex` is for internal use when db.prepare might create one Statement per AST in a batch.
 	 */
-	constructor(db: Database, sql: string, program?: VdbeProgram) {
+	constructor(db: Database, sqlOrAstBatch: string | ASTStatement[], initialAstIndex: number = 0) {
 		this.db = db;
-		this.sql = sql;
-		if (program) {
-			this.vdbeProgram = program;
+		if (typeof sqlOrAstBatch === 'string') {
+			this.originalSql = sqlOrAstBatch;
+			const parser = new Parser();
+			try {
+				this.astBatch = parser.parseAll(this.originalSql);
+			} catch (e) {
+				if (e instanceof ParseError) throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+				throw e;
+			}
+		} else {
+			this.astBatch = sqlOrAstBatch;
+			// Try to reconstruct originalSql if possible, or set a generic name
+			this.originalSql = this.astBatch.map(s => s.toString()).join('; '); // TODO: replace with better AST stringification
+		}
+
+		if (this.astBatch.length === 0 && initialAstIndex === 0) {
+			// No statements to run, effectively. nextStatement will return false.
+			this.astBatchIndex = -1;
 			this.needsCompile = false;
+		} else if (initialAstIndex >= 0 && initialAstIndex < this.astBatch.length) {
+			this.astBatchIndex = initialAstIndex;
+			this.needsCompile = true; // Start by needing to compile the first indicated statement
+		} else {
+			throw new MisuseError("Initial AST index out of bounds for provided batch.");
 		}
 	}
 
-	/** @internal */
-	public compile(): VdbeProgram {
-		if (this.vdbeProgram && !this.needsCompile) { return this.vdbeProgram; }
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		log("Compiling statement...");
-		this.vdbeProgram = null;
+	/** Advances to the next statement in the batch. Returns false if no more statements. */
+	public nextStatement(): boolean {
+		this.validateStatement("advance from");
+		if (this.busy) throw new MisuseError("Statement busy, reset or complete current iteration first.");
+		if (this.astBatchIndex < this.astBatch.length - 1) {
+			this.astBatchIndex++;
+			this.plan = null;
+			this.emissionContext = null;
+			this.needsCompile = true;
+			this.columnDefCache.clear();
+			return true;
+		} else {
+			return false;
+		}
+	}
 
+	/** Returns the SQL fragment for the current statement, if available. */
+	public getBlockSql(): string {
+		if (this.astBatchIndex < 0 || this.astBatchIndex >= this.astBatch.length) {
+			return "";
+		}
+		return this.getAstStatement().toString();	// TODO: replace with better AST stringification
+	}
+
+	/** @internal Plans the current AST statement */
+	public compile(): BlockNode {
+		if (this.plan && !this.needsCompile) return this.plan;
+
+		this.validateStatement("compile/plan");
+		this.columnDefCache.clear();
+
+		log("Planning current statement (new runtime): %s", this.getBlockSql().substring(0,100));
+		let plan: BlockNode | undefined;
 		try {
-			const parser = new Parser();
-			const ast = parser.parse(this.sql);
-
-			const compiler = new Compiler(this.db);
-			this.vdbeProgram = compiler.compile(ast, this.sql);
-
+			const currentAst = this.getAstStatement();
+			plan = this.db._buildPlan([currentAst], this.boundArgs);
+			plan = this.db.optimizer.optimize(plan) as BlockNode;
 			this.needsCompile = false;
-			log("Compilation complete.");
+			log("Planning complete for current statement.");
 		} catch (e) {
-			errorLog("Compilation failed: %O", e);
-			// Convert errors to SqliteError if they aren't already
-			if (e instanceof SqliteError) {
-				throw e;
-			} else if (e instanceof ParseError) {
-				throw new SqliteError(`Parse error: ${e.message}`, StatusCode.ERROR);
-			} else if (e instanceof Error) {
-				throw new SqliteError(`Compilation error: ${e.message}`, StatusCode.INTERNAL);
-			} else {
-				throw new SqliteError("Unknown compilation error", StatusCode.INTERNAL);
-			}
+			errorLog("Planning failed for current statement: %O", e);
+			if (e instanceof QuereusError) throw e;
+			if (e instanceof Error) throw new QuereusError(`Planning error: ${e.message}`, StatusCode.INTERNAL, e);
+			throw new QuereusError("Unknown planning error", StatusCode.INTERNAL);
 		}
+		if (!plan) throw new QuereusError("Planning resulted in no plan for current statement", StatusCode.INTERNAL);
+		this.plan = plan;
+		return plan;
+	}
 
-		if (!this.vdbeProgram) {
-			throw new SqliteError("Compilation resulted in no program", StatusCode.INTERNAL);
+	/** @internal Gets or creates the emission context for this statement */
+	private getEmissionContext(): EmissionContext {
+		if (!this.emissionContext) {
+			this.emissionContext = new EmissionContext(this.db);
 		}
-
-		return this.vdbeProgram;
+		return this.emissionContext;
 	}
 
 	/**
-	 * Binds a value to a parameter index (1-based) or name.
-	 * Implementation for both overloads.
+	 * Binds a user-provided argument value to a declared parameter name/index for the current statement.
 	 */
 	bind(key: number | string, value: SqlValue): this {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.busy) throw new MisuseError("Statement busy");
+		this.validateStatement("bind argument for");
+		if (this.busy) throw new MisuseError("Statement busy, reset first");
 		if (typeof key === 'number') {
-			if (key < 1) throw new RangeError(`Parameter index ${key} out of range (must be >= 1)`);
-			this.boundParameters.set(key, value);
+			if (key < 1) throw new RangeError(`Argument index ${key} out of range (must be >= 1)`);
+			this.boundArgs[key] = value;
 		} else if (typeof key === 'string') {
-			this.boundParameters.set(key, value);
+			this.boundArgs[key] = value;
 		} else {
-			throw new MisuseError("Invalid parameter key type");
-		}
-		// If VDBE exists, potentially apply binding immediately
-		if (this.vdbe) {
-			this.vdbe.clearAppliedBindings(); // Mark bindings as needing re-application
-			this.vdbe.applyBindings(this.boundParameters);
+			throw new MisuseError("Invalid argument key type");
 		}
 		return this;
 	}
 
 	/**
-	 * Binds multiple parameters from an array or object.
-	 * @param params An array of values (for positional ?) or an object (for named :name, $name).
-	 * @returns This statement instance for chaining.
+	 * Binds all user-provided argument values for the current statement.
 	 */
-	bindAll(params: SqlValue[] | Record<string, SqlValue>): this {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.busy) throw new MisuseError("Statement busy");
-
-		if (Array.isArray(params)) {
-			// Bind by position (1-based index)
-			for (let i = 0; i < params.length; i++) {
-				this.bind(i + 1, params[i]);
-			}
-		} else if (typeof params === 'object' && params !== null) {
-			// Bind by name
-			for (const key in params) {
-				if (Object.prototype.hasOwnProperty.call(params, key)) {
-					this.bind(key, params[key]);
-				}
-			}
+	bindAll(args: SqlParameters | SqlValue[]): this {
+		this.validateStatement("bind all parameters for");
+		if (this.busy) throw new MisuseError("Statement busy, reset first");
+		this.boundArgs = {};
+		if (Array.isArray(args)) {
+			args = { ...args };
+		}
+		if (typeof args === 'object' && args !== null) {
+			Object.assign(this.boundArgs, args);
 		} else {
 			throw new MisuseError("Invalid parameters type for bindAll. Use array or object.");
 		}
-
 		return this;
 	}
 
-	/**
-	 * Returns the status code from the VDBE execution (ROW, DONE, or error code).
-	 * @throws MisuseError if the statement is finalized.
-	 */
-	async step(): Promise<StatusCode> {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		this.compile(); // Ensures vdbeProgram is available
+	/** Checks if the current statement, when executed, is expected to produce rows. */
+	public isQuery(): boolean {
+		this.validateStatement("check if query");
+		const blockPlan = this.compile();
+		if (!blockPlan || blockPlan.statements.length === 0) return false;
+		const lastStatementInBlock = blockPlan.statements[blockPlan.statements.length - 1];
+		const relationType = lastStatementInBlock.getType();
+		return isRelationType(relationType);
+	}
 
-		// Initialize VDBE if this is the first step
-		if (!this.vdbe && this.vdbeProgram) {
-			this.vdbe = new VdbeRuntime(this, this.vdbeProgram);
-			// Apply any bindings set *before* the first step
-			this.vdbe.applyBindings(this.boundParameters);
-		}
+	async *iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
+		this.validateStatement("iterate rows for");
+		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
 
-		if (!this.vdbe) {
-			// Should not happen if compile succeeded
-			throw new SqliteError("VDBE not initialized after compile", StatusCode.INTERNAL);
-		}
+		if (params) this.bindAll(params);
 
 		this.busy = true;
-		this.currentRowInternal = null; // Clear previous row before stepping
+		try {
+			const blockPlanNode = this.compile();
+			if (!blockPlanNode.statements.length) return;
 
-		// Execute the VDBE until it yields a row, completes, or errors
-		const status = await this.vdbe.run();
+			const emissionContext = this.getEmissionContext();
+			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
+			const scheduler = new Scheduler(rootInstruction);
+			const runtimeCtx: RuntimeContext = {
+				db: this.db,
+				stmt: this,
+				params: this.boundArgs,
+				context: new Map(),
+			};
 
-		// After VDBE returns a status:
-		if (status === StatusCode.ROW) {
-			// Row is ready - OpCode.ResultRow should have set currentRowInternal
-			if (!this.currentRowInternal) {
-				this.busy = false;
-				throw new SqliteError("VDBE returned ROW but setCurrentRow failed to store data", StatusCode.INTERNAL);
-			}
-			log('Step result: %s', StatusCode[status]);
-			return StatusCode.ROW;
-		} else if (status === StatusCode.DONE || status === StatusCode.OK) {
-			// Execution finished successfully (DONE for SELECT/yielding, OK for non-yielding like INSERT/PRAGMA)
-			this.busy = false;
-			this.currentRowInternal = null;
-			log('Step result: %s', StatusCode[status]);
-			return status;
-		} else {
-			// Any other status indicates an error reported by vdbe.run()
-			this.busy = false;
-			this.currentRowInternal = null;
-			const errorDetail = this.vdbe?.error?.message || `Status code ${status}`;
-			errorLog('VDBE execution failed: %s', errorDetail);
-			// Re-throw the error, preserving the original code if available
-			throw this.vdbe?.error || new SqliteError(`VDBE execution failed with status: ${StatusCode[status] || status}`, status);
-		}
-	}
-
-	/** @internal Called by VDBE ResultRow opcode */
-	setCurrentRow(memCells: MemoryCell[]): void {
-		// Store the raw memory cells for potential later type/subtype access
-		this.currentRowInternal = memCells;
-	}
-
-	/**
-	 * Retrieves all column values for the current row as an array.
-	 * Should only be called after step() returns ROW. Consider using the
-	 * higher-level get() or all() methods for simpler fetch patterns.
-	 * @returns An array of SqlValue.
-	 * @throws MisuseError if step() did not return ROW.
-	 */
-	getArray(): SqlValue[] {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (!this.currentRowInternal) throw new MisuseError("No row available");
-		return this.currentRowInternal.map(cell => cell.value);
-	}
-
-	/**
-	 * Retrieves all column values for the current row as an object
-	 * with column names as keys.
-	 * Should only be called after step() returns ROW. Consider using the
-	 * higher-level get() or all() methods for simpler fetch patterns.
-	 * @returns An object mapping column names to values.
-	 * @throws MisuseError if step() did not return ROW or if column names are not available.
-	 */
-	getAsObject(): Record<string, SqlValue> {
-		const names = this.getColumnNames();	// (checks currentRowInternal and finalized)
-
-		return this.currentRowInternal!.reduce((acc, cell, i) => {
-			let value = cell.value;
-			// Convert BigInt to Number if it's within the safe range
-			if (typeof value === 'bigint') {
-				if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
-					value = Number(value);
+			const results = await scheduler.run(runtimeCtx);
+			if (results) {
+				if (Array.isArray(results) && results.length) {
+					const lastStatementOutput = results[results.length - 1];
+					if (isAsyncIterable(lastStatementOutput)) {
+						yield* lastStatementOutput as AsyncIterable<Row>;
+					}
+				} else if (isAsyncIterable(results)) {
+					yield* results as AsyncIterable<Row>;
 				}
-				// Otherwise, leave it as BigInt (or could convert to string)
 			}
-			acc[names[i]] = value;
-			return acc;
-		}, {} as Record<string, SqlValue>);
+		} catch (e: any) {
+			errorLog('Runtime execution failed in iterateRows for current statement: %O', e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
+		} finally {
+			this.busy = false;
+		}
 	}
 
-	/**
-	 * Gets the names of the columns in the result set.
-	 * Available after the first successful step() call that returns ROW or after compilation.
-	 * @returns An array of column names.
-	 */
 	getColumnNames(): string[] {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (!this.currentRowInternal) throw new MisuseError("No row available");
-		const names = this.vdbeProgram?.columnNames || []; // Get names from program
-		if (names.length === 0 && this.currentRowInternal.length > 0) {
-			// Fallback if compiler didn't set names (should not happen ideally)
-			return this.currentRowInternal.map((cell, i) => `col_${i}`);
-		}
-		if (names.length !== this.currentRowInternal.length) {
-			throw new SqliteError(`Column name/value count mismatch (${names.length} vs ${this.currentRowInternal.length})`, StatusCode.INTERNAL);
-		}
-		// Convert readonly array to regular array if needed
-		return [...names];
+		this.validateStatement("get column names for");
+		return this.columnDefCache.value.map(col => col.name);
 	}
 
 	/**
 	 * Resets the prepared statement to its initial state, ready to be re-executed.
-	 * Retains bound parameter values.
-	 * @returns A Promise resolving on completion.
-	 * @throws MisuseError if the statement is finalized.
 	 */
 	async reset(): Promise<void> {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.vdbe) { await this.vdbe.reset(); } // Wait for cursor closing
-		this.currentRowInternal = null;
+		this.validateStatement("reset");
+		if (this.busy) {
+			warnLog("Statement reset while busy. Iteration may not have completed.");
+		}
 		this.busy = false;
-		this.needsCompile = false; // Program is still valid
-		this.onceExecutedPCs.clear(); // Clear the Once tracker on reset
 	}
 
 	/**
 	 * Clears all bound parameter values, setting them to NULL.
-	 * @returns This statement instance for chaining.
-	 * @throws MisuseError if the statement is finalized or busy.
 	 */
 	clearBindings(): this {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.busy) throw new MisuseError("Statement busy - reset first");
-		this.boundParameters.clear();
-		if (this.vdbe) { this.vdbe.clearAppliedBindings(); }
+		this.validateStatement("clear bindings for");
+		if (this.busy) throw new MisuseError("Statement busy, reset first");
+		this.boundArgs = {};
+		this.emissionContext = null;
+		this.needsCompile = true;
 		return this;
 	}
 
 	/**
 	 * Finalizes the statement, releasing associated resources.
-	 * This statement instance should not be used after calling finalize.
-	 * @returns A promise resolving on completion.
 	 */
 	async finalize(): Promise<void> {
 		if (this.finalized) return;
 		this.finalized = true;
 		this.busy = false;
-		if (this.vdbe) { await this.vdbe.reset(); } // Ensure cursors are closed
-		this.boundParameters.clear();
-		this.currentRowInternal = null;
-		this.vdbeProgram = null;
-		this.vdbe = null;
+		this.boundArgs = {};
+		this.plan = null;
+		this.emissionContext = null;
+		this.columnDefCache.clear();
+		this.astBatchIndex = -1;
 		this.db._statementFinalized(this);
 	}
 
 	/**
 	 * Executes the prepared statement with the given parameters until completion.
-	 * This is a convenience method that binds parameters, steps through all rows,
-	 * and resets the statement. It does not return rows. Ideal for INSERT, UPDATE, DELETE.
-	 *
-	 * @param params Optional parameters (array for positional, object for named).
-	 * @returns A Promise resolving when execution is complete.
-	 * @throws MisuseError if statement is finalized or busy.
-	 * @throws SqliteError if execution fails.
 	 */
-	async run(params?: SqlValue[] | Record<string, SqlValue>): Promise<void> {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.busy) throw new MisuseError("Statement busy - already running?");
-
-		if (params) {
-			this.bindAll(params); // Use existing bindAll
-		}
-
-		try {
-			let status: StatusCode;
-			do {
-				status = await this.step(); // Use existing step
-				if (status === StatusCode.ROW) {
-					// Row produced, clear it and continue stepping
-					this.currentRowInternal = null;
-				} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-					// Error occurred during step
-					throw new SqliteError("Execution failed during run()", status);
-				}
-			} while (status === StatusCode.ROW);
-			// Status is DONE or OK here
-		} finally {
-			// Always reset the statement after run, even if it failed,
-			// making it ready for another run with potentially different params.
-			await this.reset();
-		}
+	async run(params?: SqlParameters | SqlValue[]): Promise<void> {
+		this.validateStatement("run");
+		for await (const _ of this.iterateRows(params)) { /* Consume */ }
 	}
 
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves the first result row.
-	 * Useful for queries expected to return at most one row (e.g., SELECT...LIMIT 1).
-	 * The statement is automatically reset after execution.
-	 *
-	 * @param params Optional parameters (array for positional, object for named).
-	 * @returns A Promise resolving to the first result row (as an object), or undefined if no rows are returned.
-	 * @throws MisuseError if statement is finalized or busy.
-	 * @throws SqliteError if execution fails.
 	 */
-	async get(params?: SqlValue[] | Record<string, SqlValue>): Promise<Record<string, SqlValue> | undefined> {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.busy) throw new MisuseError("Statement busy - already running?");
-
-		if (params) {
-			this.bindAll(params);
+	async get(params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
+		this.validateStatement("get first row for");
+		const names = this.getColumnNames();
+		for await (const rowArray of this.iterateRows(params)) {
+			const rowObject = rowArray.reduce((obj, val, idx) => {
+				obj[names[idx] || `col_${idx}`] = val;
+				return obj;
+			}, {} as Record<string, SqlValue>);
+			return rowObject;
 		}
-
-		let result: Record<string, SqlValue> | undefined = undefined;
-		try {
-			const status = await this.step();
-			if (status === StatusCode.ROW) {
-				result = this.getAsObject(); // Use existing getAsObject
-			} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-				throw new SqliteError("Execution failed during get()", status);
-			}
-			// Consume any potential subsequent rows if the user didn't LIMIT 1
-			let remainingStatus: StatusCode = status;
-			while (remainingStatus === StatusCode.ROW) {
-				remainingStatus = await this.step();
-				// Check for expected status codes
-				if (remainingStatus !== StatusCode.ROW &&
-					remainingStatus !== StatusCode.DONE &&
-					remainingStatus !== StatusCode.OK) {
-					// Error consuming remaining rows
-					log.extend('warn')(`Error consuming remaining rows after get(): ${StatusCode[remainingStatus]}`);
-					// Throw or just proceed to reset? Let's proceed for now.
-					break;
-				}
-			}
-		} finally {
-			await this.reset();
-		}
-		return result;
+		return undefined;
 	}
 
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves all result rows.
-	 * This is a convenience method that simplifies fetching all results into an array.
-	 * The statement is automatically reset after execution.
-	 *
-	 * @param params Optional parameters (array for positional, object for named).
-	 * @returns A Promise resolving to an array of result rows (as objects).
-	 * @throws MisuseError if statement is finalized or busy.
-	 * @throws SqliteError if execution fails.
 	 */
-	async all(params?: SqlValue[] | Record<string, SqlValue>): Promise<Record<string, SqlValue>[]> {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.busy) throw new MisuseError("Statement busy - already running?");
-
-		if (params) {
-			this.bindAll(params);
+	async *all(params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
+		this.validateStatement("get all rows for");
+		const names = this.getColumnNames();
+		for await (const rowArray of this.iterateRows(params)) {
+			const rowObject = rowArray.reduce((obj, val, idx) => {
+				obj[names[idx] || `col_${idx}`] = val;
+				return obj;
+			}, {} as Record<string, SqlValue>);
+			yield rowObject;
 		}
-
-		const results: Record<string, SqlValue>[] = [];
-		try {
-			let status: StatusCode;
-			do {
-				status = await this.step();
-				if (status === StatusCode.ROW) {
-					results.push(this.getAsObject()); // Use existing getAsObject
-				} else if (status !== StatusCode.DONE && status !== StatusCode.OK) {
-					throw new SqliteError("Execution failed during all()", status);
-				}
-			} while (status === StatusCode.ROW);
-		} finally {
-			await this.reset();
-		}
-		return results;
 	}
 
 	/**
-	 * Returns the number of parameters in the prepared statement.
-	 * @returns Number of parameters or 0 if none.
+	 * Gets the parameters required by the current statement.
 	 */
-	getParameterCount(): number {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (this.needsCompile && !this.vdbeProgram) {
-			// If not compiled yet, we don't know parameter count
-			return 0;
-		}
-		return this.vdbeProgram?.parameters.size || 0;
-	}
-
-	/**
-	 * Gets the name of a parameter by its index.
-	 * @param index The 1-based index of the parameter.
-	 * @returns The parameter name, or null if the parameter is positional or not found.
-	 */
-	getParameterName(index: number): string | null {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (index < 1) throw new RangeError("Parameter index must be >= 1");
-		if (this.needsCompile && !this.vdbeProgram) return null;
-
-		// Look through parameters for a string key mapping to this index
-		for (const [key, value] of this.vdbeProgram?.parameters || []) {
-			if (typeof key === 'string' && value.memIdx === index) {
-				return key;
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * Gets the index of a named parameter.
-	 * @param name The parameter name (with or without : or $ prefix).
-	 * @returns The 1-based index of the parameter, or null if not found.
-	 */
-	getParameterIndex(name: string): number | null {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (!name) throw new MisuseError("Parameter name cannot be empty");
-		if (this.needsCompile && !this.vdbeProgram) return null;
-
-		const info = this.vdbeProgram?.parameters.get(name);
-		return info ? info.memIdx : null;
+	getParameters(): SqlParameters {
+		this.validateStatement("get parameters for");
+		const blockPlan = this.compile();
+		return { ...blockPlan.parameters };
 	}
 
 	/**
 	 * Gets the data type of a column in the current row.
-	 * @param index The 0-based index of the column.
-	 * @returns The SQL data type.
-	 * @throws MisuseError if no row is available or index is out of range.
 	 */
-	getColumnType(index: number): SqlDataType {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (!this.currentRowInternal) throw new MisuseError("No row available");
-		if (index < 0 || index >= this.currentRowInternal.length) {
-			throw new RangeError(`Column index ${index} out of range (0-${this.currentRowInternal.length - 1})`);
+	getColumnType(index: number): Readonly<ScalarType> {
+		this.validateStatement("get column type for");
+		const columnDefs = this.columnDefCache.value;
+		if (index < 0 || index >= columnDefs.length) {
+			throw new RangeError(`Column index ${index} out of range.`);
 		}
-		// Return the data type of the cell at the given index
-		const value = this.currentRowInternal[index].value;
-
-		if (value === null) return SqlDataType.NULL;
-		if (typeof value === 'number') return SqlDataType.REAL;
-		if (typeof value === 'bigint') return SqlDataType.INTEGER;
-		if (typeof value === 'string') return SqlDataType.TEXT;
-		if (value instanceof Uint8Array) return SqlDataType.BLOB;
-		if (typeof value === 'boolean') return SqlDataType.INTEGER; // Booleans are stored as integers
-
-		// Fallback for any unexpected type
-		return SqlDataType.TEXT;
+		return columnDefs[index].type;
 	}
 
 	/**
 	 * Gets the name of a column by its index.
-	 * @param index The 0-based index of the column.
-	 * @returns The column name, or a generated name if not available.
-	 * @throws RangeError if index is out of range.
 	 */
 	getColumnName(index: number): string {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		const names = this.vdbeProgram?.columnNames || [];
-		if (index < 0 || (names.length > 0 && index >= names.length)) {
+		this.validateStatement("get column name for");
+		const names = this.getColumnNames();
+		if (index < 0 || index >= names.length) {
 			throw new RangeError(`Column index ${index} out of range (0-${names.length - 1})`);
 		}
-		return names[index] || `col_${index}`;
+		return names[index];
+	}
+
+	getColumnDefs(): DeepReadonly<ColumnDef>[] {
+		if (!this.plan) {
+			if (this.astBatchIndex >=0 && this.astBatchIndex < this.astBatch.length && this.needsCompile) {
+				try { this.compile(); } catch(e) { /*ignore compile error for _getColumnDefs, return empty */}
+			}
+			if (!this.plan) return [];
+		}
+		const lastStatementPlanInBlock = this.plan.statements[this.plan.statements.length - 1];
+		if (lastStatementPlanInBlock) {
+			const relationType = lastStatementPlanInBlock.getType();
+			if (isRelationType(relationType) && relationType.columns) {
+				return [...relationType.columns];
+			}
+		}
+		return [];
+	}
+
+	private validateStatement(operation: string): void {
+		if (this.finalized) throw new MisuseError("Statement finalized");
+		if (this.astBatchIndex < 0 || this.astBatchIndex >= this.astBatch.length) {
+			throw new MisuseError(`No current statement selected to ${operation}. Call nextStatement() first or ensure SQL was not empty.`);
+		}
+	}
+
+	private getAstStatement(): ASTStatement {
+		this.validateStatement("get AST for");
+		return this.astBatch[this.astBatchIndex];
 	}
 
 	/**
-	 * Gets the byte length of a BLOB or TEXT column value.
-	 * @param index The 0-based index of the column.
-	 * @returns The byte length, or 0 for NULL values.
-	 * @throws MisuseError if no row is available.
-	 * @throws RangeError if index is out of range.
+	 * Gets a detailed JSON representation of the query plan for debugging.
+	 * @returns JSON string containing the detailed plan tree.
 	 */
-	getColumnBytes(index: number): number {
-		if (this.finalized) throw new MisuseError("Statement finalized");
-		if (!this.currentRowInternal) throw new MisuseError("No row available");
-		if (index < 0 || index >= this.currentRowInternal.length) {
-			throw new RangeError(`Column index ${index} out of range (0-${this.currentRowInternal.length - 1})`);
+	getDebugPlan(): string {
+		this.validateStatement("get debug plan for");
+		const plan = this.compile();
+		return serializePlanTree(plan);
+	}
+
+	/**
+	 * Gets a human-readable instruction program for debugging.
+	 * @returns String representation of the instruction program.
+	 */
+	getDebugProgram(): string {
+		this.validateStatement("get debug program for");
+		const plan = this.compile();
+		const emissionContext = this.getEmissionContext();
+		const rootInstruction = emitPlanNode(plan, emissionContext);
+		const scheduler = new Scheduler(rootInstruction);
+
+		return generateInstructionProgram(scheduler.instructions, scheduler.destinations);
+	}
+
+	/**
+	 * Executes with runtime instruction tracing enabled.
+	 * @param params Optional parameters to bind.
+	 * @param tracer Optional custom tracer for collecting trace data.
+	 */
+	async *iterateRowsWithTrace(params?: SqlParameters | SqlValue[], tracer?: InstructionTracer): AsyncIterable<Row> {
+		this.validateStatement("iterate rows with trace for");
+		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
+		if (params) this.bindAll(params);
+		this.busy = true;
+
+		try {
+			const blockPlanNode = this.compile();
+			if (!blockPlanNode.statements.length) return;
+
+			const emissionContext = this.getEmissionContext();
+			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
+			const scheduler = new Scheduler(rootInstruction);
+			const runtimeCtx: RuntimeContext = {
+				db: this.db,
+				stmt: this,
+				params: this.boundArgs,
+				context: new Map(),
+				tracer: tracer
+			};
+
+			const results = await scheduler.run(runtimeCtx);
+			if (results) {
+				if (Array.isArray(results) && results.length) {
+					const lastStatementOutput = results[results.length - 1];
+					if (isAsyncIterable(lastStatementOutput)) {
+						yield* lastStatementOutput as AsyncIterable<Row>;
+					}
+				} else if (isAsyncIterable(results)) {
+					yield* results as AsyncIterable<Row>;
+				}
+			}
+		} catch (e: any) {
+			errorLog('Runtime execution failed in iterateRowsWithTrace for current statement: %O', e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
+		} finally {
+			this.busy = false;
 		}
-
-		const value = this.currentRowInternal[index].value;
-		if (value === null) return 0;
-		if (value instanceof Uint8Array) return value.byteLength;
-		if (typeof value === 'string') return new TextEncoder().encode(value).length;
-
-		// For other types, convert to string first
-		return new TextEncoder().encode(String(value)).length;
-	}
-
-	/** @internal Used by Opcode.Once handler */
-	didOnceExecute(pc: number): boolean {
-		return this.onceExecutedPCs.has(pc);
-	}
-
-	/** @internal Used by Opcode.Once handler */
-	markOnceAsExecuted(pc: number): void {
-		this.onceExecutedPCs.add(pc);
 	}
 }
+

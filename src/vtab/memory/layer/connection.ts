@@ -1,16 +1,13 @@
 import type { Layer } from './interface.js';
-import type { TransactionLayer } from './transaction.js';
-import type { MemoryTableManager } from './manager.js'; // Assuming manager class name
-import type { LayerCursorInternal } from './cursor.js';
-import type { ScanPlan } from './scan-plan.js';
-import { BaseLayerCursorInternal } from './base-cursor.js';
-import { TransactionLayerCursorInternal } from './transaction-cursor.js';
-import { createLogger } from '../../../common/logger.js'; // Import logger
+import { TransactionLayer } from './transaction.js';
+import type { MemoryTableManager } from './manager.js';
+import { createLogger } from '../../../common/logger.js';
+import type { Row } from '../../../common/types.js';
 
 let connectionCounter = 0;
-const log = createLogger('vtab:memory:layer:connection'); // Create logger
+const log = createLogger('vtab:memory:layer:connection');
 const warnLog = log.extend('warn');
-const debugLog = log; // Use base log for debug level
+const debugLog = log;
 
 /**
  * Represents the state of a single connection to a MemoryTable
@@ -18,10 +15,11 @@ const debugLog = log; // Use base log for debug level
  */
 export class MemoryTableConnection {
 	public readonly connectionId: number;
-	public readonly tableManager: MemoryTableManager; // Reference back to the manager
-	public readLayer: Layer; // The committed layer snapshot this connection reads from
-	public pendingTransactionLayer: TransactionLayer | null = null; // Uncommitted changes for this connection
-	private savepoints: Map<number, TransactionLayer> = new Map(); // Savepoint name -> Layer snapshot
+	public readonly tableManager: MemoryTableManager;
+	public readLayer: Layer;
+	public pendingTransactionLayer: TransactionLayer | null = null;
+	public explicitTransaction: boolean = false; // Track if transaction was explicitly started
+	private savepoints: Map<number, TransactionLayer> = new Map();
 
 	constructor(manager: MemoryTableManager, initialReadLayer: Layer) {
 		this.connectionId = connectionCounter++;
@@ -29,53 +27,30 @@ export class MemoryTableConnection {
 		this.readLayer = initialReadLayer;
 	}
 
-	/**
-	 * Creates the internal cursor chain for a given scan plan, starting from the
-	 * appropriate layer (pending layer if active, otherwise the connection's read layer).
-	 */
-	createLayerCursor(plan: ScanPlan): LayerCursorInternal {
-		const startLayer = this.pendingTransactionLayer ?? this.readLayer;
-		return this._buildCursorRecursive(startLayer, plan);
-	}
-
-	/** Recursive helper to build the cursor chain */
-	private _buildCursorRecursive(layer: Layer, plan: ScanPlan): LayerCursorInternal {
-		const parentLayer = layer.getParent();
-
-		if (!parentLayer) {
-			// Reached the BaseLayer
-			if (!(layer instanceof this.tableManager.getBaseLayerConstructor())) {
-				throw new Error("Cursor creation error: Layer chain did not end with a valid BaseLayer.");
-			}
-			// Cast is safe due to check above and BaseLayer being the only layer type with null parent
-			return new BaseLayerCursorInternal(layer as InstanceType<ReturnType<MemoryTableManager['getBaseLayerConstructor']>>, plan);
-		} else {
-			// Create parent cursor first
-			const parentCursor = this._buildCursorRecursive(parentLayer, plan);
-
-			// Create TransactionLayer cursor for the current layer
-			if (!(layer instanceof this.tableManager.getTransactionLayerConstructor())) {
-				// Clean up parent cursor if we fail here
-				try { parentCursor.close(); } catch { /* ignore */ }
-				throw new Error("Cursor creation error: Non-base layer was not a valid TransactionLayer.");
-			}
-			// Cast is safe due to the check above
-			return new TransactionLayerCursorInternal(layer as TransactionLayer, plan, parentCursor);
-		}
-	}
-
 	/** Begins a transaction by creating a new pending layer */
 	begin(): void {
 		if (this.pendingTransactionLayer) {
-			// Nested transactions might require savepoint logic later,
-			// but for now, starting a new transaction when one is pending is an error or no-op.
-			// Let's treat it as a no-op for basic BEGIN.
-			// Use namespaced warn logger
-			warnLog(`Connection %d: BEGIN called while already in a transaction.`, this.connectionId);
-			return;
+			// If there's already a pending transaction, handle based on type
+			if (!this.explicitTransaction) {
+				// This is an auto-created transaction from mutations
+				// We need to preserve it but mark the new one as explicit
+				warnLog(`Connection %d: BEGIN called with auto-transaction pending. Converting to explicit.`, this.connectionId);
+				this.explicitTransaction = true;
+				return;
+			} else {
+				// Nested explicit transactions - SQL standard behavior is to treat as no-op
+				warnLog(`Connection %d: BEGIN called while already in explicit transaction. Treating as no-op.`, this.connectionId);
+				return;
+			}
 		}
-		// Create a new transaction layer on top of the current read layer
-		this.pendingTransactionLayer = new (this.tableManager.getTransactionLayerConstructor())(this.readLayer);
+
+		// Create TransactionLayer based on the manager's current committed layer
+		// This ensures the parent check in commitTransaction will pass
+		this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
+		this.explicitTransaction = true; // Mark as explicitly started
+
+		debugLog(`Connection %d: Started explicit transaction with layer %d`,
+			this.connectionId, this.pendingTransactionLayer.getLayerId());
 	}
 
 	/** Commits the current transaction */
@@ -84,9 +59,10 @@ export class MemoryTableConnection {
 			// Commit without an active transaction is a no-op
 			return;
 		}
+
 		await this.tableManager.commitTransaction(this);
 		// commitTransaction handles updating connection state (readLayer, pendingTransactionLayer)
-		this.savepoints.clear(); // Clear savepoints on commit
+		this.clearTransactionState();
 	}
 
 	/** Rolls back the current transaction */
@@ -95,15 +71,33 @@ export class MemoryTableConnection {
 			// Rollback without an active transaction is a no-op
 			return;
 		}
+
+		// Reset readLayer to the current committed layer
+		// Important: We need to ensure we're reading from a clean state
+		this.readLayer = this.tableManager.currentCommittedLayer;
+
 		// Simply discard the pending layer
 		this.pendingTransactionLayer = null;
-		this.savepoints.clear(); // Clear savepoints on rollback
+		this.clearTransactionState();
+
+		debugLog(`Connection %d: Rolled back transaction, readLayer reset to ${this.readLayer.getLayerId()}`,
+			this.connectionId);
+	}
+
+	/** Helper method to clear transaction-related state */
+	private clearTransactionState(): void {
+		this.savepoints.clear();
+		this.explicitTransaction = false;
 	}
 
 	/** Creates a savepoint with the given identifier */
 	createSavepoint(savepointIndex: number): void {
+		if (savepointIndex < 0) {
+			throw new Error(`Invalid savepoint index: ${savepointIndex}. Must be non-negative.`);
+		}
+
 		if (!this.pendingTransactionLayer) {
-			// SQLite treats SAVEPOINT outside a transaction as an implicit BEGIN + SAVEPOINT
+			// Quereus treats SAVEPOINT outside a transaction as an implicit BEGIN + SAVEPOINT
 			this.begin();
 		}
 
@@ -111,15 +105,68 @@ export class MemoryTableConnection {
 			throw new Error(`Failed to create transaction for savepoint ${savepointIndex}`);
 		}
 
-		// Store the current state of the pending transaction layer
-		this.savepoints.set(savepointIndex, this.pendingTransactionLayer);
-		// Use namespaced debug logger
-		debugLog(`Connection %d: Created savepoint at index %d`, this.connectionId, savepointIndex);
+		// Create a snapshot of the current transaction state
+		const savepointLayer = this.createTransactionSnapshot(this.pendingTransactionLayer);
+
+		// Store the snapshot as the savepoint
+		this.savepoints.set(savepointIndex, savepointLayer);
+
+		// Continue using the current layer for future operations
+		// Future changes will only affect this layer, not the snapshot
+	}
+
+	/**
+	 * Creates a snapshot of a transaction layer by copying its effective data to a new independent layer.
+	 * This is necessary because BTree inheritance can cause shared mutable state issues.
+	 * The snapshot becomes immutable and independent of the source layer.
+	 */
+	private createTransactionSnapshot(sourceLayer: TransactionLayer): TransactionLayer {
+		// Create a new transaction layer based on the source layer's parent
+		// This ensures the snapshot is independent of the source layer
+		const snapshotLayer = new TransactionLayer(sourceLayer.getParent());
+
+		// Copy all data from the source layer to the snapshot
+		const primaryTree = sourceLayer.getModificationTree('primary');
+		if (!primaryTree) {
+			// Empty transaction layer - just return the empty snapshot
+			snapshotLayer.markCommitted();
+			return snapshotLayer;
+		}
+
+		const firstPath = primaryTree.first();
+		if (!firstPath.on) {
+			// No data in the tree - return the empty snapshot
+			snapshotLayer.markCommitted();
+			return snapshotLayer;
+		}
+
+		// Copy all rows from the source layer
+		const { primaryKeyExtractorFromRow } = sourceLayer.getPkExtractorsAndComparators(sourceLayer.getSchema());
+		for (const path of primaryTree.ascending(firstPath)) {
+			const row = primaryTree.at(path)!;
+			try {
+				// Extract primary key and record the row in the snapshot
+				const primaryKey = primaryKeyExtractorFromRow(row as Row);
+				snapshotLayer.recordUpsert(primaryKey, row as Row, null);
+			} catch (error) {
+				warnLog(`Connection %d: Failed to copy row to savepoint snapshot: %o`, this.connectionId, error);
+			}
+		}
+
+		// Mark the snapshot as committed to make it immutable
+		snapshotLayer.markCommitted();
+
+		return snapshotLayer;
 	}
 
 	/** Releases a savepoint and any higher-numbered savepoints */
 	releaseSavepoint(savepointIndex: number): void {
 		if (!this.pendingTransactionLayer) return; // No transaction, nothing to release
+
+		if (savepointIndex < 0) {
+			warnLog(`Connection %d: Invalid savepoint index %d for release.`, this.connectionId, savepointIndex);
+			return;
+		}
 
 		// Remove this savepoint and any with higher indices
 		for (const idx of Array.from(this.savepoints.keys())) {
@@ -127,7 +174,6 @@ export class MemoryTableConnection {
 				this.savepoints.delete(idx);
 			}
 		}
-		// Use namespaced debug logger
 		debugLog(`Connection %d: Released savepoint %d`, this.connectionId, savepointIndex);
 	}
 
@@ -135,16 +181,19 @@ export class MemoryTableConnection {
 	rollbackToSavepoint(savepointIndex: number): void {
 		if (!this.pendingTransactionLayer) return; // No transaction, nothing to rollback to
 
+		if (savepointIndex < 0) {
+			warnLog(`Connection %d: Invalid savepoint index %d for rollback.`, this.connectionId, savepointIndex);
+			return;
+		}
+
 		const savepoint = this.savepoints.get(savepointIndex);
 		if (!savepoint) {
-			// Use namespaced warn logger
 			warnLog(`Connection %d: Savepoint %d not found for rollback.`, this.connectionId, savepointIndex);
 			return;
 		}
 
-		// Restore the pending layer to the savepoint state
-		// This is a simplified approach - in a real implementation we'd need to clone the layer
-		// or maintain a more sophisticated layer history
+		// Restore the transaction layer to the savepoint state
+		// Instead of creating a new layer, we directly set the pending layer to the savepoint
 		this.pendingTransactionLayer = savepoint;
 
 		// Remove this savepoint and any with higher indices
@@ -153,8 +202,9 @@ export class MemoryTableConnection {
 				this.savepoints.delete(idx);
 			}
 		}
+	}
 
-		// Use namespaced debug logger
-		debugLog(`Connection %d: Rolled back to savepoint %d`, this.connectionId, savepointIndex);
+	public clearSavepoints(): void {
+		this.savepoints.clear();
 	}
 }

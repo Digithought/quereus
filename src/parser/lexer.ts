@@ -62,8 +62,6 @@ export enum TokenType {
 	SET = 'SET',
 	NO = 'NO',
 	ACTION = 'ACTION',
-	WITHOUT = 'WITHOUT',
-	ROWID = 'ROWID',
 	RENAME = 'RENAME',
 	COLUMN = 'COLUMN',
 	TO = 'TO',
@@ -98,6 +96,12 @@ export enum TokenType {
 	RELEASE = 'RELEASE',
 	PRAGMA = 'PRAGMA',
 	XOR = 'XOR',
+	CASE = 'CASE',
+	WHEN = 'WHEN',
+	THEN = 'THEN',
+	ELSE = 'ELSE',
+	END = 'END',
+	CAST = 'CAST',
 
 	// Operators and punctuation
 	PLUS = 'PLUS',               // +
@@ -146,7 +150,7 @@ export interface Token {
 }
 
 // Reserved keywords mapping
-const KEYWORDS: Record<string, TokenType> = {
+export const KEYWORDS: Record<string, TokenType> = {
 	'select': TokenType.SELECT,
 	'from': TokenType.FROM,
 	'where': TokenType.WHERE,
@@ -186,6 +190,7 @@ const KEYWORDS: Record<string, TokenType> = {
 	'unique': TokenType.UNIQUE,
 	'default': TokenType.DEFAULT,
 	'check': TokenType.CHECK,
+	'collate': TokenType.COLLATE,
 	'foreign': TokenType.FOREIGN,
 	'references': TokenType.REFERENCES,
 	'on': TokenType.ON,
@@ -196,8 +201,6 @@ const KEYWORDS: Record<string, TokenType> = {
 	'autoincrement': TokenType.AUTOINCREMENT,
 	'no': TokenType.NO,
 	'action': TokenType.ACTION,
-	'without': TokenType.WITHOUT,
-	'rowid': TokenType.ROWID,
 	'begin': TokenType.BEGIN,
 	'commit': TokenType.COMMIT,
 	'rollback': TokenType.ROLLBACK,
@@ -234,6 +237,12 @@ const KEYWORDS: Record<string, TokenType> = {
 	'release': TokenType.RELEASE,
 	'pragma': TokenType.PRAGMA,
 	'xor': TokenType.XOR,
+	'case': TokenType.CASE,
+	'when': TokenType.WHEN,
+	'then': TokenType.THEN,
+	'else': TokenType.ELSE,
+	'end': TokenType.END,
+	'cast': TokenType.CAST,
 };
 
 /**

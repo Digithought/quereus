@@ -1,97 +1,68 @@
-# Window Function Processing Architecture
+# Window Function Processing in Titan Architecture
 
-This document outlines the architecture and execution flow for SQL window functions in SQLiter.
+This document outlines a conceptual approach to implementing SQL window functions within Quereus's new Titan architecture (immutable PlanNodes and Instruction-based runtime).
 
 ## Overview
 
-Window functions perform calculations across a set of table rows that are somehow related to the current row. Unlike aggregate functions, they do not collapse rows; they return a value for *each* row based on the defined window.
+Window functions perform calculations across a set of table rows related to the current row without collapsing them. In the Titan architecture, this would likely involve several stages:
 
-SQLiter implements window functions using a multi-pass approach involving an ephemeral sorter table:
+1.  **Main Query Plan Execution**: The `PlanNode` tree for the main query (FROM, WHERE, GROUP BY, HAVING, excluding the window functions themselves) is constructed by the planner.
+2.  **Data Preparation & Sorting**: 
+    *   The result of the main query plan needs to be materialized and sorted according to `PARTITION BY` and `ORDER BY` clauses of all window functions used in the query.
+    *   This might involve a `SortNode` in the plan, potentially outputting to a temporary in-memory structure (e.g., an array of `Row` objects or a temporary `MemoryTable` if the dataset is large).
+    *   The data fed into this sorting/materialization step would include all columns needed for partitioning, ordering, and as arguments to any window functions, plus any other columns required for the final SELECT list.
+3.  **Window Function Calculation Pass**: 
+    *   A new set of `Instruction`s (or a dedicated `WindowAggregateInstruction`) would iterate over the sorted and partitioned data.
+    *   This pass calculates the window function results for each row.
+4.  **Final Projection**: The results, now including the calculated window function values, are projected to produce the final output rows via a `ProjectNode` and its corresponding emitter.
 
-1.  **Main Query Pass:** The main part of the `SELECT` query (FROM, WHERE, GROUP BY, HAVING) is executed, producing an intermediate result set.
-2.  **Sorter Population:** This intermediate result set is used to populate an ephemeral B-Tree table (the "window sorter"), managed internally by the compiler.
-3.  **Window Function Pass:** The VDBE executes a dedicated pass over the sorted data in the ephemeral table to calculate the window function results.
-4.  **Final Projection:** The results from the window sorter (including the calculated window function values) are projected to produce the final output rows.
+## Key Architectural Components (Titan)
 
-## Key Components
+*   **Planner (`src/planner/`)**:
+    *   Responsible for parsing window function calls (`AST.WindowFunctionExpr`) in the SELECT list.
+    *   It would construct a `PlanNode` (e.g., `WindowAggregateNode` or similar) that depends on the sorted input from the main query.
+    *   This node would encapsulate all window function definitions (`PARTITION BY`, `ORDER BY`, frame specifications, and the specific window function like `ROW_NUMBER()`, `SUM() OVER (...)`).
+*   **`PlanNode`s (`src/planner/nodes/`)**:
+    *   A potential `WindowAggregateNode` (or a series of nodes) would manage the windowing logic. This node would take the sorted relation as input.
+    *   `SortNode`: Would be crucial for preparing the data as required by `PARTITION BY` and `ORDER BY` clauses of the window definitions.
+*   **`Instruction`-based Runtime (`src/runtime/`)**:
+    *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: A specific emitter for `WindowAggregateNode` (e.g., `emitWindowAggregate`) would generate the graph of `Instruction`s for window calculations.
+    *   **Window Function `Instruction`s**: These specialized instructions would:
+        *   Iterate the sorted input (an `AsyncIterable<Row>`).
+        *   Detect partition boundaries by comparing relevant column values from the current `Row` to the previous `Row`.
+        *   Maintain state for each partition (e.g., row counters, running sums for aggregates within a frame).
+        *   For each row, calculate the frame boundaries (e.g., `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW`) based on the current row's position within its partition and the frame specification.
+        *   Execute the specific window function logic:
+            *   **Numbering Functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`)**: Calculated based on position within the partition and ordering key values.
+            *   **Aggregate Functions (`SUM`, `AVG`, `COUNT`, etc. OVER window)**: Iterate rows within the current row's calculated frame, accumulating values.
+            *   **Value Functions (`FIRST_VALUE`, `LAST_VALUE`, `LEAD`, `LAG`)**: Access data from other rows within the partition based on frame or offset.
+        *   The output of these instructions would be the original row data augmented with the calculated window function results.
+*   **Data Structures**: 
+    *   If not using a temporary `MemoryTable` for sorted data, the `WindowAggregateInstruction` might need to buffer rows for the current partition or frame, especially for complex frames or functions like `LAG`/`LEAD` that require access to non-adjacent rows.
 
-*   **`src/compiler/window.ts` (`setupWindowSorter`)**: 
-    *   Analyzes `SELECT` list and window function definitions.
-    *   Determines the necessary columns for the sorter (partition keys, order keys, function arguments, placeholders for results).
-    *   Defines the schema and sort order (`P4SortKey`) for the ephemeral sorter table.
-    *   Allocates a cursor and registers for the sorter.
-    *   Returns `WindowSorterInfo` containing all setup details.
-*   **`src/compiler/compiler.ts`**: 
-    *   Orchestrates the overall query compilation.
-    *   Calls `setupWindowSorter` if window functions are present.
-    *   Emits VDBE code to populate the sorter table.
-    *   Calls `compileWindowFunctionsPass` to generate the VDBE code for the window function calculations.
-    *   Emits VDBE code for the final projection.
-*   **`src/compiler/window_pass.ts` (`compileWindowFunctionsPass` and helpers)**:
-    *   Generates the VDBE program for the window function pass.
-    *   **Main Loop:** Iterates through the sorted rows in the window sorter cursor.
-    *   **Partition Detection:** Compares partition key columns of the current row with the previous row to detect partition boundaries and reset relevant state (row counters, ranks).
-    *   **Frame Calculation & Function Execution:** For each row, calculates the result for each window function.
-        *   **Numbering Functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`):** Calculated based on partition counters and order key comparisons.
-        *   **Aggregate Functions (`SUM`, `AVG`, `COUNT`, etc.):**
-            *   Uses `compileFrameBoundary` to determine the start and end rows of the current row's frame.
-            *   Uses `compileFrameAggregate` to iterate through rows within the calculated frame boundaries, calling the aggregate's `xStep` function via the `Function` opcode.
-            *   Calls the aggregate's `xFinal` function via the `Function` opcode.
-        *   **Value Functions (`FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`):**
-            *   Uses `compileFrameBoundary` to position the cursor at the desired row within the frame (e.g., frame start for `FIRST_VALUE`).
-            *   Uses the `VColumn` opcode to retrieve the argument value from that row.
-            *   (`NTH_VALUE` not yet implemented).
-        *   **Offset Functions (`LAG`, `LEAD`):**
-            *   Uses the `SeekRelative` opcode to move the cursor forward or backward by the specified offset.
-            *   Uses `VColumn` to retrieve the argument value if the seek was successful.
-            *   Handles default values if the seek fails (e.g., goes outside the partition).
-    *   **Cursor Management:** Employs helper functions (`compileSaveCursorPosition`, `compileRestoreCursorPosition`) to save and restore the cursor's position using rowids, ensuring functions that navigate the cursor (like `FIRST_VALUE`, `LAG`) don't interfere with subsequent calculations for the same original row.
-*   **`src/vdbe/engine.ts`**: 
-    *   Executes the VDBE instructions generated by the compiler.
-    *   Implements the logic for relevant opcodes like `Rewind`, `VNext`, `VColumn`, `VRowid`, `SeekRelative`, `SeekRowid`, `Function`, comparison opcodes, etc.
-    *   `SeekRelative` and `SeekRowid` are expected to handle partition boundaries implicitly by returning failure if a seek attempts to cross a boundary (this depends on the underlying VTab implementation, e.g., `MemoryTable`).
-*   **`src/vtab/memory-table.ts`**: 
-    *   Implements the `VirtualTableModule` interface for the ephemeral sorter.
-    *   Provides implementations for `xSeekRelative` and `xSeekToRowid` based on its internal B-Tree structure and transactional buffer, ensuring partition consistency.
+## Execution Flow (Conceptual for Titan)
 
-## Execution Flow (Window Pass)
+1.  **Planning**: Planner creates a main query plan, a `SortNode` to prepare data for windowing, and a `WindowAggregateNode` that consumes the sorted data.
+2.  **Execution - Main Query & Sort**: The `Scheduler` executes the main query plan and the `SortNode`. The result is an `AsyncIterable<Row>` sorted by partition and order keys.
+3.  **Execution - Window Functions (`emitWindowAggregate` output)**:
+    *   The `WindowAggregateInstruction` (or set of instructions) consumes the sorted `AsyncIterable<Row>`. 
+    *   It iterates row by row.
+    *   **Partition Management**: On encountering a new partition key value, it resets its internal state (accumulators for aggregates, row counters for numbering).
+    *   **Frame Calculation**: For each row, it determines the start and end of its window frame within the current partition. This might involve looking ahead or behind in the (potentially buffered) stream of rows for frame types like `ROWS PRECEDING/FOLLOWING` or `RANGE`.
+    *   **Function Execution**: 
+        *   `ROW_NUMBER()`: Increment counter within partition.
+        *   `RANK()` / `DENSE_RANK()`: Compare order keys with previous row to determine rank.
+        *   Aggregates (`SUM() OVER...`): Accumulate values from rows within the current frame. This might require buffering rows of the current frame if it's not a simple `PARTITION` or `UNBOUNDED PRECEDING` to `CURRENT ROW`.
+        *   `LAG()`/`LEAD()`: Access a row at a specific offset from the current row within the partition, potentially using a small buffer of recent/upcoming rows.
+    *   Each input `Row` is augmented with the calculated window function results and yielded.
+4.  **Execution - Final Projection**: The `ProjectNode` emitter takes these augmented rows and produces the final SELECT list.
 
-For each row fetched from the sorter (`VNext`):
+## Key Considerations in Titan Architecture
 
-1.  Get Current Rowid (`VRowid` -> `regCurrentRowPtr`).
-2.  Detect Partition Boundary: Compare current partition keys with previous; if different, reset counters/ranks and store `regCurrentRowPtr` as `regPartitionStartRowid`.
-3.  Calculate Basic Functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`) based on counters and order key comparisons.
-4.  **For each Window Function:**
-    *   **Save Original Position:** (`compileSaveCursorPosition` using `regCurrentRowPtr`).
-    *   **If Aggregate:** 
-        *   Call `compileFrameBoundary` (start) -> positions cursor, returns start rowid.
-        *   Call `compileFrameBoundary` (end) -> positions cursor, returns end rowid, saves end keys (for RANGE).
-        *   Call `compileFrameAggregate`:
-            *   Restores cursor to start rowid.
-            *   Loops (`VNext`) until past end boundary (checked via rowid or keys).
-            *   Calls `Function` opcode (`xStep`).
-            *   Calls `Function` opcode (`xFinal`).
-    *   **If `FIRST_VALUE`/`LAST_VALUE`:**
-        *   Call `compileFrameBoundary` (start or end) -> positions cursor, returns boundary rowid.
-        *   If boundary rowid not NULL, `VColumn` to get value.
-        *   Else, result is NULL.
-    *   **If `LAG`/`LEAD`:**
-        *   `SeekRelative` by offset.
-        *   If seek success, `VColumn` to get value.
-        *   Else, use default value.
-    *   **Restore Original Position:** (`compileRestoreCursorPosition` using saved original position).
-5.  Store calculated window function result(s).
-6.  Update previous partition/order keys.
-7.  Loop to next sorter row (`VNext`).
+*   **Streaming vs. Buffering**: Purely streaming window function calculation is hard for many frame types (e.g., `ROWS BETWEEN ... AND ...` requiring future rows, or `RANGE` requiring evaluation of values). The `WindowAggregateInstruction` will likely need to buffer rows, at least for the current partition or a sliding window corresponding to the frame.
+*   **Async Iterables**: All data flow between major components (PlanNode emitters) will be via `AsyncIterable<Row>`. Window function instructions must consume and produce these.
+*   **Key-Based Addressing**: There's no `rowid` for addressing rows in temporary structures. If a temporary `MemoryTable` is used for sorting, it will be key-based (identified by its `PRIMARY KEY`, which would likely be the PARTITION BY and ORDER BY keys of the window function to ensure uniqueness and sort order).
+*   **Frame Boundary Logic**: Calculating frame boundaries dynamically for each row, especially for `RANGE` based on value differences or `GROUPS`, will be complex within an instruction.
+*   **Extensibility**: New window functions could be added by defining their specific calculation logic within this framework.
 
-## Key Opcodes
-
-*   `Rewind`, `VNext`: Basic cursor iteration.
-*   `VColumn`: Reading data from the sorter.
-*   `VRowid`: Getting the current row identifier.
-*   `SeekRelative`: Moving the cursor by a relative offset (used by `LAG`, `LEAD`, ROWS frames).
-*   `SeekRowid`: Moving the cursor to a specific rowid (used by `compileRestoreCursorPosition`, frame boundary calculation for UNBOUNDED PRECEDING).
-*   `Function`: Executes UDFs, including aggregate `xStep` and `xFinal`.
-*   Comparison Opcodes (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`): Used for partition/order key comparisons and frame boundary checks.
-*   `IfNull`, `IfTrue`, etc.: Conditional jumps for control flow.
-*   `Move`, `SCopy`: Register manipulation. 
+This outlines a high-level approach. The detailed implementation of the `WindowAggregateNode` emitter and its associated `Instruction`s would be a significant undertaking. 

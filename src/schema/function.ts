@@ -1,11 +1,46 @@
-import type { SqliteContext } from '../func/context';
-import type { SqlValue } from '../common/types.js';
+import type { Row, SqlValue } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
+import type { Database } from '../core/database.js';
+
+/**
+ * Type for a scalar function implementation.
+ */
+export type ScalarFunc = (...args: SqlValue[]) => SqlValue | Promise<SqlValue>;
+
+/**
+ * Type for a table-valued function implementation.
+ */
+export type TableValuedFunc = (...args: SqlValue[]) => AsyncIterable<Row> | Promise<AsyncIterable<Row>>;
+
+/**
+ * Type for a database-aware table-valued function implementation.
+ * Takes a database instance and SQL values, returns an async iterable of rows.
+ */
+export type IntegratedTableValuedFunc = (db: Database, ...args: SqlValue[]) => AsyncIterable<Row> | Promise<AsyncIterable<Row>>;
+
+/**
+ * Type for aggregate step function.
+ */
+export type AggregateReducer<T = any> = (accumulator: T, ...args: SqlValue[]) => T;
+
+/**
+ * Type for aggregate finalizer function.
+ */
+export type AggregateFinalizer<T = any> = (accumulator: T) => SqlValue;
+
+/**
+ * Column information for table-valued functions.
+ */
+export interface TVFColumnInfo {
+	name: string;
+	type: SqlDataType;
+	nullable?: boolean;
+}
 
 /**
  * Represents the registered definition of a user-defined function
- * (scalar, aggregate, or window).
+ * (scalar, aggregate, table-valued, or window).
  */
 export interface FunctionSchema {
 	/** Function name (lowercase for consistent lookup) */
@@ -16,20 +51,36 @@ export interface FunctionSchema {
 	flags: FunctionFlags;
 	/** User data pointer passed during registration */
 	userData?: unknown;
-	/** Callback for scalar functions */
-	xFunc?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
-	/** Callback for aggregate step function */
-	xStep?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
-	/** Callback for aggregate final function */
-	xFinal?: (context: SqliteContext) => void;
-	/** Callback for window function value */
-	xValue?: (context: SqliteContext) => void;
-	/** Callback for window function inverse step */
-	xInverse?: (context: SqliteContext, args: ReadonlyArray<SqlValue>) => void;
-	/** Destructor for user data (if provided during registration) */
-	xDestroy?: (userData: unknown) => void;
-	/** Recommended affinity for the function's return value (optional) */
+	/** Recommended affinity for the function's return value (optional, for scalar functions) */
 	affinity?: SqlDataType;
+
+	// Function type and implementation
+	/** Function type */
+	type: 'scalar' | 'aggregate' | 'table-valued' | 'window';
+
+	// Scalar function
+	/** Direct scalar function implementation */
+	scalarImpl?: ScalarFunc;
+
+	// Table-valued function
+	/** Table-valued function implementation */
+	tableValuedImpl?: TableValuedFunc | IntegratedTableValuedFunc;
+	/** Column definitions for table-valued functions */
+	columns?: TVFColumnInfo[];
+	/** Whether this TVF requires database access as first parameter */
+	isIntegrated?: boolean;
+
+	// Aggregate function
+	/** Aggregate step function */
+	aggregateStepImpl?: AggregateReducer;
+	/** Aggregate finalizer function */
+	aggregateFinalizerImpl?: AggregateFinalizer;
+	/** Initial accumulator value for aggregates */
+	initialValue?: any;
+
+	// Window function (for future use)
+	/** Window function implementation */
+	windowImpl?: (...args: any[]) => any;
 }
 
 /**

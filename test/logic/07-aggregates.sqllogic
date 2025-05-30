@@ -1,0 +1,51 @@
+-- aggregates.sqllogic - Testing aggregate functions and GROUP BY/HAVING
+
+PRAGMA default_vtab_module='memory';
+
+CREATE TABLE agg_t (id INTEGER PRIMARY KEY, grp TEXT, val INTEGER);
+INSERT INTO agg_t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'a', 30), (4, 'b', 40), (5, 'c', 50), (6, 'a', null);
+
+-- Basic aggregates
+SELECT count(*), count(val), sum(val), avg(val), min(val), max(val) FROM agg_t;
+→ [{"count(*)":6,"count(val)":5,"sum(val)":150,"avg(val)":30,"min(val)":10,"max(val)":50}]
+
+-- GROUP BY
+SELECT grp, count(*) as cnt, sum(val) as total FROM agg_t GROUP BY grp ORDER BY grp;
+→ [{"grp":"a","cnt":3,"total":40},{"grp":"b","cnt":2,"total":60},{"grp":"c","cnt":1,"total":50}]
+
+-- GROUP BY with NULL value in aggregation
+SELECT grp, count(val) FROM agg_t GROUP BY grp ORDER BY grp;
+→ [{"grp":"a","count(val)":2},{"grp":"b","count(val)":2},{"grp":"c","count(val)":1}]
+
+-- HAVING clause
+SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING total > 40 ORDER BY grp;
+→ [{"grp":"b","total":60},{"grp":"c","total":50}]
+
+-- HAVING clause referencing alias
+SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING total > 40 ORDER BY grp;
+→ [{"grp":"b","total":60},{"grp":"c","total":50}]
+
+-- HAVING without GROUP BY
+SELECT sum(val) FROM agg_t HAVING sum(val) > 100;
+→ [{"sum(val)":150}]
+
+-- Aggregate with empty input
+CREATE TABLE empty_agg(x);
+SELECT count(*), sum(x) FROM empty_agg;
+→ [{"count(*)":0,"sum(x)":null}]
+DROP TABLE empty_agg;
+
+-- group_concat
+SELECT group_concat(val) FROM agg_t WHERE grp = 'a';
+→ [{"group_concat(val)":"10,30"}]
+SELECT group_concat(val, '|') FROM agg_t WHERE grp = 'b' ORDER BY val;
+→ [{"group_concat(val, '|')":"20|40"}]
+
+-- DISTINCT aggregates (Example: COUNT)
+SELECT count(distinct grp) FROM agg_t;
+→ [{"count(distinct grp)":3}]
+INSERT INTO agg_t VALUES (7, 'c', 50);
+SELECT count(distinct val) FROM agg_t WHERE grp = 'c';
+→ [{"count(distinct val)":1}]
+
+DROP TABLE agg_t;
