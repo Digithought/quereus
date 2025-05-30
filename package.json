@@ -1,0 +1,23 @@
+{
+  "name": "quereus-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quereus monorepo - Federated SQL query processor inspired by SQLite",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "clean": "yarn workspaces run clean",
+    "build": "yarn workspaces run build",
+    "lint": "yarn workspaces run lint",
+    "test": "yarn workspaces run test",
+    "test:all": "yarn workspaces run test:all",
+    "test:node": "yarn workspaces run test:node",
+    "dep-check": "yarn workspaces run dep-check",
+    "doc": "yarn workspaces run doc",
+    "prepublish": "yarn workspaces run prepublish"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
