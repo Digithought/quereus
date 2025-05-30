@@ -12,7 +12,6 @@
     "lint": "yarn workspaces run lint",
     "test": "yarn workspaces run test",
     "test:all": "yarn workspaces run test:all",
-    "test:node": "yarn workspaces run test:node",
     "dep-check": "yarn workspaces run dep-check",
     "doc": "yarn workspaces run doc",
     "prepublish": "yarn workspaces run prepublish"

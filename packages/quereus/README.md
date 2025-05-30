@@ -1,8 +1,8 @@
 # Quereus - A TypeScript SQL Query Processor
 
-![Quereus Logo](docs/cover-800.png)
+<img src="docs/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
-**(Work In Progress - Undergoing Major Refactoring: Titan Project)**
+**(Work In Progress - and undergoing Major Refactoring: Titan Project)**
 
 Quereus is a lightweight, query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism. Quereus has no persistent file storage, though one could be built as a virtual table module.
 

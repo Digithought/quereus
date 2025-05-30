@@ -23,9 +23,8 @@
     "build": "aegir build --env node",
     "lint": "aegir lint",
     "test:all": "aegir test",
-    "test:node": "aegir test --target node",
-    "test": "node --loader=ts-node/esm node_modules/mocha/bin/mocha.js 'test/**/*.spec.ts' --colors --bail",
-    "test:single": "node --loader=ts-node/esm node_modules/mocha/bin/mocha.js --bail",
+    "test": "npx --node-options=\"--loader=ts-node/esm\" mocha 'test/**/*.spec.ts' --colors --bail",
+    "test:single": "npx --node-options=\"--loader=ts-node/esm\" mocha --bail",
     "prepublish": "npm run build && npm run doc",
     "dep-check": "aegir dep-check"
   },
