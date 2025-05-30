@@ -3,4 +3,4 @@ description:
 globs:
 alwaysApply: true
 ---
-Read the [README.md](mdc:README.md), if you haven't, to get familar with the project.  If you need to see any logging, be sure to turn it on through the DEBUG env variable.
+Read the [README.md](mdc:README.md), if you haven't, to get familar with the project.  If you need to see any logging, be sure to turn it on through the DEBUG env variable.  To see traces in `yarn test`, put the env set e.g. `set QUEREUS_TEST_SHOW_TRACE=true` into it's own command first, as there seems to be a problem including it with `&&` and `yarn test`.

@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -24,6 +24,11 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode {
   getType(): RelationType {
     // Filter preserves the type of the source relation
     return this.source.getType();
+  }
+
+  getAttributes(): Attribute[] {
+    // Filter preserves the same attributes as its source
+    return this.source.getAttributes();
   }
 
   getChildren(): readonly [ScalarPlanNode] {

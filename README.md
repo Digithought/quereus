@@ -134,6 +134,8 @@ To add logging within a module:
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
 *   **Object-Based API**: Uses classes (`Database`, `Statement`) to represent resources with lifecycles, rather than handles.
 *   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Emission of schema SQL export is supported.
+*   **Bags vs Sets Distinction**: Explicit type-level distinction between relations that guarantee unique rows (sets) and those that allow duplicates (bags), enabling sophisticated optimizations and maintaining algebraic correctness in line with Third Manifesto principles.
+*   **Attribute-Based Context System**: Robust column reference resolution using stable attribute IDs eliminates architectural fragilities and provides deterministic context lookup across plan transformations.
 
 ## Major variations from SQLite
 
@@ -151,30 +153,33 @@ To add logging within a module:
 
 Quereus is **actively undergoing a major architectural refactoring (Project Titan)** to a new planner and instruction-based runtime. The previous VDBE-based compiler and runtime (`oldsrc/`) are being replaced.
 
-**Features of the new Titan architecture (under development):**
-*   Core `PlanNode` to `Instruction` architecture established.
-*   Emitters for basic operations (scans, literals, parameters, simple binary ops, DML) are being implemented.
-*   Basic SQL query execution for `SELECT`, `INSERT`, `UPDATE`, `DELETE` on single tables is being built.
+**Features of the new Titan architecture (✅ LARGELY COMPLETE):**
+*   **✅ COMPLETE: Attribute-Based Context System** - Robust column reference resolution using stable attribute IDs eliminates node type checking and provides deterministic context lookup across plan transformations.
+*   **✅ COMPLETE: Core `PlanNode` to `Instruction` architecture** - Comprehensive planning and runtime execution system.
+*   **✅ COMPLETE: Comprehensive SQL Support** - SELECT statements with complex projections, WHERE clauses, GROUP BY/HAVING, ORDER BY, LIMIT/OFFSET, window functions, and DML operations.
+*   **✅ COMPLETE: Emitters and Runtime** - Full instruction-based runtime with proper context management for all major SQL operations.
+*   **✅ COMPLETE: Plan Optimization** - Logical to physical transformation with attribute ID preservation ensuring column references remain valid across optimizations.
+*   **Outstanding:** Join operations, advanced subquery patterns, and comprehensive test coverage.
 *   See `docs/titan.md` for detailed status of the new architecture.
 
-**Previously supported features (in the old VDBE system, to be ported or re-implemented in Titan):**
-*   CTEs (recursive and non-recursive with materialization hints).
-*   Subqueries (scalar, comparison, `IN`, `EXISTS`, correlated).
-*   Joins (`INNER`, `LEFT`, `CROSS`).
-*   Aggregation (`GROUP BY`, `HAVING`).
-*   `ORDER BY`, `LIMIT`/`OFFSET`.
-*   Transactions and Savepoints (on VTabs that support them, like `MemoryTable`).
-*   `MemoryTable`, `JsonEach`, `JsonTree` VTabs.
-*   Extensive built-in functions.
-*   `PRAGMA`s.
-*   `CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX`.
-*   Row-level `CHECK` constraints.
+**Previously supported features (in the old VDBE system, ✅ PORTED to Titan):**
+*   ✅ Aggregation (`GROUP BY`, `HAVING`) - **COMPLETE** with robust attribute handling
+*   ✅ `ORDER BY`, `LIMIT`/`OFFSET` - **COMPLETE** with pre/post-projection sorting logic
+*   ✅ Transactions and Savepoints (on VTabs that support them, like `MemoryTable`)
+*   ✅ `MemoryTable`, `JsonEach`, `JsonTree` VTabs - **COMPLETE** 
+*   ✅ Extensive built-in functions - **COMPLETE**
+*   ✅ `PRAGMA`s - **COMPLETE**
+*   ✅ `CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX` - **COMPLETE**
+*   ✅ Row-level `CHECK` constraints - **COMPLETE**
+*   ✅ Complex expressions and subqueries - **LARGELY COMPLETE**
+*   **Joins (`INNER`, `LEFT`, `CROSS`)** - *In progress for Titan*
+*   **CTEs (recursive and non-recursive with materialization hints)** - *To be ported*
 
 **Limitations & Missing Features (for the new Titan architecture):**
-*   Many SQL features are yet to be fully ported to the new planner/runtime (e.g., complex joins, full aggregation, window functions, advanced subqueries).
-*   Query optimization is currently minimal in the new planner.
-*   Constraint enforcement (beyond basic VTab interactions for DML) needs to be integrated into the new runtime.
+*   Join operations are the primary remaining gap for complete SQL feature parity.
+*   Some advanced subquery patterns need completion.
 *   Comprehensive testing for the Titan architecture is ongoing.
+*   Query optimization is currently basic but has a solid foundation for enhancement.
 
 ## Testing
 

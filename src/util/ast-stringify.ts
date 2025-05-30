@@ -149,7 +149,8 @@ export function expressionToString(expr: AST.Expression): string {
 				return 'count(*)';
 			}
 			const argsStr = expr.args.map(arg => expressionToString(arg)).join(', ');
-			return `${expr.name}(${argsStr})`;
+			const distinctStr = expr.distinct ? 'distinct ' : '';
+			return `${expr.name}(${distinctStr}${argsStr})`;
 
 		case 'cast':
 			return `cast(${expressionToString(expr.expr)} as ${expr.targetType.toLowerCase()})`;

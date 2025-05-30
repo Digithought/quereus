@@ -18,20 +18,31 @@ export interface PrimaryKeyFunctions {
  * This centralizes the logic that was previously duplicated across BaseLayer and TransactionLayer.
  */
 export function createPrimaryKeyFunctions(schema: TableSchema): PrimaryKeyFunctions {
-	const pkDefinition = schema.primaryKeyDefinition ?? [];
+	const pkDefinition = schema.primaryKeyDefinition
+		// Use all columns if no primary key is defined (that's different from an empty primary key)
+		?? schema.columns.map((col, index) => ({ index, collation: col.collation || 'BINARY' }));
 
 	if (pkDefinition.length === 0) {
-		throw new QuereusError(
-			`Table schema '${schema.name}' must have a primaryKeyDefinition for key-based operations.`,
-			StatusCode.INTERNAL
-		);
-	}
-
-	if (pkDefinition.length === 1) {
+		return createSingletonPrimaryKeyFunctions();
+	} else if (pkDefinition.length === 1) {
 		return createSingleColumnPrimaryKeyFunctions(pkDefinition[0]);
 	} else {
 		return createCompositeColumnPrimaryKeyFunctions(pkDefinition);
 	}
+}
+
+/**
+ * Creates functions for tables with empty primary keys (zero or one rows possible)
+ */
+function createSingletonPrimaryKeyFunctions(): PrimaryKeyFunctions {
+	return {
+		extractFromRow: (row: Row): BTreeKeyForPrimary => {
+			return [];
+		},
+		compare: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
+			return 0;	// Always equal
+		}
+	};
 }
 
 /**

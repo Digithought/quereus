@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -25,6 +25,11 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
   getType(): RelationType {
     // LIMIT/OFFSET preserves the type of the source relation
     return this.source.getType();
+  }
+
+  getAttributes(): Attribute[] {
+    // LIMIT/OFFSET preserves the same attributes as its source
+    return this.source.getAttributes();
   }
 
   getChildren(): readonly ScalarPlanNode[] {

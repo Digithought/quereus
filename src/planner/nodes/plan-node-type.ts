@@ -8,6 +8,7 @@ export enum PlanNodeType {
   Project = 'Project',
   Distinct = 'Distinct',
   Aggregate = 'Aggregate',
+  Window = 'Window',
   Sort = 'Sort',
   LimitOffset = 'LimitOffset',
   Join = 'Join',
@@ -15,6 +16,7 @@ export enum PlanNodeType {
   CTE = 'CTE',
   In = 'In',
   Exists = 'Exists',
+  Sequencing = 'Sequencing',
 
   // DML/DDL Nodes
   Insert = 'Insert',
@@ -47,6 +49,7 @@ export enum PlanNodeType {
   Cast = 'Cast',
   Collate = 'Collate',
   ScalarFunctionCall = 'ScalarFunctionCall',
+  WindowFunctionCall = 'WindowFunctionCall',
   Between = 'Between',
   IsNull = 'IsNull',
   TableFunctionReference = 'TableFunctionReference',

@@ -15,6 +15,14 @@ export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
 	return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
 }
 
+export async function asyncIterableToArray<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+	const result: T[] = [];
+	for await (const item of iterable) {
+		result.push(item);
+	}
+	return result;
+}
+
 /**
  * Helper to get or create a VirtualTable connection for a given table.
  * This ensures transaction consistency by reusing connections within the same context.

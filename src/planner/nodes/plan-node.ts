@@ -2,6 +2,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { BaseType, RelationType, ScalarType } from '../../common/datatype.js';
 import type { Expression } from '../../parser/ast.js';
+import type { Row } from '../../common/types.js';
 
 /**
  * Physical properties that execution nodes can provide or require
@@ -49,6 +50,16 @@ export interface Attribute {
   /** Source relation that originally produced this column */
   sourceRelation?: string;
 }
+
+/**
+ * Row descriptor that maps attribute IDs to column indices in a row array
+ */
+export type RowDescriptor = number[]; // attributeId → columnIndex
+
+/**
+ * Function that returns a row when called
+ */
+export type RowGetter = () => Row;
 
 /**
  * Base class for all nodes in the logical query plan.
@@ -141,6 +152,12 @@ export interface RelationalPlanNode extends PlanNode {
   readonly estimatedRows?: number;
 
   getType(): RelationType;
+
+  /**
+   * Get the attributes (columns) produced by this relational node
+   * Each attribute has a unique ID that persists across plan transformations
+   */
+  getAttributes(): Attribute[];
 }
 
 /**

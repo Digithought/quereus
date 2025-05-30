@@ -6,16 +6,13 @@ import type { EmissionContext } from '../emission-context.js';
 
 export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext): SqlValue {
-		// For now, try to find any row context (for backward compatibility during transition)
-		// In a full implementation, we'd have a mapping from attribute IDs to row contexts
-		const contexts = Array.from(ctx.context.keys());
-		const rowContext = contexts.find(key => typeof key === 'object');
-		if (rowContext) {
-			const rowGetter = ctx.context.get(rowContext);
-			if (rowGetter) {
+		// Use deterministic lookup based on attribute ID
+		for (const [descriptor, rowGetter] of ctx.context.entries()) {
+			const columnIndex = descriptor[plan.attributeId];
+			if (columnIndex !== undefined) {
 				const row = rowGetter();
-				if (Array.isArray(row) && plan.columnIndex < row.length) {
-					return row[plan.columnIndex];
+				if (Array.isArray(row) && columnIndex < row.length) {
+					return row[columnIndex];
 				}
 			}
 		}

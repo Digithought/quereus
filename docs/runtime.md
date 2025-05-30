@@ -26,7 +26,7 @@ type OutputValue = RuntimeValue | Promise<RuntimeValue>;
 The runtime uses TypeScript's structural typing for type safety. Key classes and interfaces:
 - `PlanNode`: Base class for all plan nodes
 - `VoidNode`: Plan nodes that don't produce output (DDL, DML)
-- `RelationalNode`: Plan nodes that produce rows
+- `RelationalNode`: Plan nodes that produce rows (must implement `getAttributes()`)
 - `ExpressionNode`: Plan nodes that produce scalar values
 
 ## Adding a New Plan Node
@@ -37,23 +37,46 @@ The runtime uses TypeScript's structural typing for type safety. Key classes and
 // src/planner/nodes/my-operation-node.ts
 import { RelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
+import { Cached } from '../../util/cached.js';
 
-export interface MyOperationNode extends RelationalNode {
-	nodeType: PlanNodeType.MyOperation;
-	inputNode: RelationalNode;
-	operationParam: string;
-}
-
-export class MyOperationPlanNode extends RelationalNode implements MyOperationNode {
+export class MyOperationNode extends PlanNode implements UnaryRelationalNode {
 	readonly nodeType = PlanNodeType.MyOperation;
+	
+	private attributesCache: Cached<Attribute[]>;
 
 	constructor(
 		scope: Scope,
-		public readonly inputNode: RelationalNode,
+		public readonly source: RelationalPlanNode,
 		public readonly operationParam: string
 	) {
-		super(scope, inputNode.cost + 10); // Add operation cost
+		super(scope, source.getTotalCost() + 10); // Add operation cost
+		this.attributesCache = new Cached(() => this.buildAttributes());
 	}
+	
+	private buildAttributes(): Attribute[] {
+		// Define how this node creates/transforms attributes
+		// Option 1: Preserve source attributes (like FilterNode, SortNode)
+		return this.source.getAttributes();
+		
+		// Option 2: Create new attributes (like ProjectNode)
+		// return this.projections.map((proj, index) => ({
+		//   id: PlanNode.nextAttrId(),
+		//   name: proj.alias ?? `col_${index}`,
+		//   type: proj.node.getType(),
+		//   sourceRelation: `${this.nodeType}:${this.id}`
+		// }));
+	}
+
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
+	}
+	
+	getType(): RelationType {
+		// Define output relation type
+		return this.source.getType(); // Or build custom type
+	}
+	
+	// ... other required methods
 }
 ```
 
@@ -73,36 +96,19 @@ export enum PlanNodeType {
 // src/planner/building/my-operation.ts
 import type { PlanningContext } from '../planning-context.js';
 import * as AST from '../../parser/ast.js';
-import { MyOperationPlanNode } from '../nodes/my-operation-node.js';
+import { MyOperationNode } from '../nodes/my-operation-node.js';
 import { buildSelectStmt } from './select.js';
 
-export function buildMyOperationStmt(ctx: PlanningContext, stmt: AST.MyOperationStmt): MyOperationPlanNode {
+export function buildMyOperationStmt(ctx: PlanningContext, stmt: AST.MyOperationStmt): MyOperationNode {
 	// Build child nodes
-	const inputNode = buildSelectStmt(ctx, stmt.inputQuery);
+	const sourceNode = buildSelectStmt(ctx, stmt.inputQuery);
 	
 	// Validate parameters
 	if (!stmt.operationParam) {
 		throw new QuereusError('Operation parameter required', StatusCode.ERROR);
 	}
 
-	return new MyOperationPlanNode(ctx.scope, inputNode, stmt.operationParam);
-}
-```
-
-### 4. Register in some other builder
-
-```typescript
-// src/planner/building/block.ts
-import { buildMyOperationStmt } from './my-operation.js';
-
-export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
-	const plannedStatements = statements.map((stmt) => {
-		switch (stmt.type) {
-			// ... existing cases
-			case 'myOperation':
-				return buildMyOperationStmt(ctx, stmt as AST.MyOperationStmt);
-		}
-	});
+	return new MyOperationNode(ctx.scope, sourceNode, stmt.operationParam);
 }
 ```
 
@@ -114,20 +120,48 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 // src/runtime/emit/my-operation.ts
 import type { MyOperationNode } from '../../planner/nodes/my-operation-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 
 export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): Instruction {
-  // Do non-runtime work here to make run faster.    Can select from different run functions to avoid runtime work.
+	// Create row descriptor for source attributes
+	const sourceRowDescriptor: RowDescriptor = [];
+	const sourceAttributes = plan.source.getAttributes();
+	sourceAttributes.forEach((attr, index) => {
+		sourceRowDescriptor[attr.id] = index;
+	});
+
+	// Create output row descriptor (if this node transforms attributes)
+	const outputRowDescriptor: RowDescriptor = [];
+	const outputAttributes = plan.getAttributes();
+	outputAttributes.forEach((attr, index) => {
+		outputRowDescriptor[attr.id] = index;
+	});
 
 	// Optimal run function patterns:
 	
 	// For async generators (row-producing operations):
 	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
 		for await (const row of inputRows) {
-			// Process each row
-			const processedRow = processRow(row, plan.operationParam);
-			yield processedRow;
+			// Set up context for input row using row descriptor
+			rctx.context.set(sourceRowDescriptor, () => row);
+			
+			try {
+				// Process each row
+				const processedRow = processRow(row, plan.operationParam);
+				
+				// Set up context for output row (if different from input)
+				rctx.context.set(outputRowDescriptor, () => processedRow);
+				try {
+					yield processedRow;
+				} finally {
+					rctx.context.delete(outputRowDescriptor);
+				}
+			} finally {
+				// Clean up input context
+				rctx.context.delete(sourceRowDescriptor);
+			}
 		}
 	}
 
@@ -139,16 +173,22 @@ export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): In
 	// For void operations (DDL/DML) - async example:
 	// async function run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): Promise<void> {
 	//     for await (const row of inputRows) {
-	//         await performSideEffect(row);
+	//         // Set up context for this row
+	//         rctx.context.set(sourceRowDescriptor, () => row);
+	//         try {
+	//             await performSideEffect(row);
+	//         } finally {
+	//             rctx.context.delete(sourceRowDescriptor);
+	//         }
 	//     }
 	//     return void;
 	// }
 
 	// Emit child instructions
-	const inputInstruction = emitPlanNode(plan.inputNode, ctx);
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	return {
-		params: [inputInstruction],
+		params: [sourceInstruction],
 		run,
 		note: `myOperation(${plan.operationParam})`
 	};
@@ -167,6 +207,47 @@ export function registerEmitters() {
 }
 ```
 
+## Key Emitter Patterns
+
+### Row Context Management
+**Always** set up row context using row descriptors:
+```typescript
+// Create row descriptor
+const rowDescriptor: RowDescriptor = [];
+const attributes = plan.getAttributes();
+attributes.forEach((attr, index) => {
+	rowDescriptor[attr.id] = index;
+});
+
+// Set context for each row
+rctx.context.set(rowDescriptor, () => row);
+try {
+	// Process row...
+	yield result;
+} finally {
+	rctx.context.delete(rowDescriptor);
+}
+```
+
+### Column Reference Resolution
+Column references are resolved automatically using attribute IDs:
+```typescript
+// In emitColumnReference (built-in):
+function run(ctx: RuntimeContext): SqlValue {
+	// Use deterministic lookup based on attribute ID
+	for (const [descriptor, rowGetter] of ctx.context.entries()) {
+		const columnIndex = descriptor[plan.attributeId];
+		if (columnIndex !== undefined) {
+			const row = rowGetter();
+			if (Array.isArray(row) && columnIndex < row.length) {
+				return row[columnIndex];
+			}
+		}
+	}
+	throw new QuereusError(`No row context found for column`, StatusCode.INTERNAL);
+}
+```
+
 ## Scheduler Execution Model
 
 The Scheduler executes instructions in dependency order:
@@ -178,10 +259,12 @@ The Scheduler executes instructions in dependency order:
 
 ### Key Points for Emitter Authors
 
+- **Row Descriptors**: Always create row descriptors mapping attribute IDs to column indices
+- **Context Cleanup**: Use try/finally blocks to ensure context cleanup
 - **Return Types**: Match your function signature to expected output type
 - **Async Iterables**: Use `async function*` for row-producing operations
 - **Error Handling**: Throw `QuereusError` with appropriate `StatusCode`
-- **Resource Cleanup**: Handle cleanup in `finally` blocks if needed
+- **Attribute Preservation**: Understand whether your node preserves or creates new attributes
 
 ## Emission Context
 
@@ -198,14 +281,136 @@ const moduleKey = `vtab_module:${tableSchema.vtabModuleName}`;
 const capturedModule = ctx.getCapturedSchemaObject(moduleKey);
 ```
 
+## Attribute-Based Context System
+
+Quereus uses a robust attribute-based context system for column reference resolution. This system provides deterministic, stable column references that work reliably across plan transformations and optimizations.
+
+### Core Types
+
+**RowDescriptor**: Maps attribute IDs to column indices in a row
+```typescript
+type RowDescriptor = number[];  // attributeId → columnIndex mapping
+```
+
+**RowGetter**: Function that provides access to the current row
+```typescript
+type RowGetter = () => Row;
+```
+
+**RuntimeContext**: Uses attribute-based context mapping
+```typescript
+interface RuntimeContext {
+  db: Database;
+  stmt: Statement;
+  params: SqlParameters;
+  context: Map<RowDescriptor, RowGetter>;  // Maps row descriptors to row getters
+}
+```
+
+### Attribute System
+
+Every relational plan node must implement `getAttributes(): Attribute[]` to define its output schema:
+
+```typescript
+interface Attribute {
+  id: number;           // Stable, unique identifier
+  name: string;         // Column name
+  type: ScalarType;     // Column type
+  sourceRelation: string; // For debugging/tracing
+}
+```
+
+**Key principles:**
+- Attribute IDs are **stable** across plan transformations
+- Column references use attribute IDs for resolution, not node references
+- Optimizer preserves attribute IDs when converting logical to physical nodes
+- No node type checking required in `emitColumnReference`
+
+## Bags vs Sets (Relational Semantics)
+
+Quereus implements a precise distinction between **bags** (multisets) and **sets** in its relational model, aligning with Third Manifesto principles and enabling sophisticated query optimizations.
+
+### Core Concepts
+
+**Set**: A relation that guarantees unique rows (no duplicates)
+- All rows are distinct according to the relation's primary key(s)
+- Example: Result of `SELECT DISTINCT`, aggregation results, base tables
+
+**Bag**: A relation that can contain duplicate rows
+- Multiple identical rows are possible
+- Example: Result of `SELECT * FROM table`, table function outputs
+
+### RelationType.isSet Property
+
+Every relational plan node specifies whether it produces a set or bag via the `isSet` property:
+
+```typescript
+interface RelationType {
+  ...
+  isSet: boolean;  // true = set (unique rows), false = bag (duplicates possible)
+  ...
+}
+```
+
+### Set/Bag Classification by Node Type
+
+**Nodes that produce Sets (`isSet: true`):** - `TableScanNode`, `AggregateNode`/`StreamAggregateNode`, `SingleRowNode`, `SequencingNode`
+
+**Nodes that may produce Bags (`isSet: false`):** - `TableFunctionCallNode` (depends on function declaration), `ProjectNode` (depending on whether key columns are preserved, and whether distinct), `FilterNode` (reflects input), `SortNode` (reflects input), `WindowNode`, `ValuesNode` (assumed to be bag, but we could check statically)
+
+### SequencingNode: Bag-to-Set Conversion
+
+`SequencingNode` is a special operation that converts any bag into a set by adding a unique row number column (`sequenceColumnName`)
+
+**Runtime Behavior:**
+```typescript
+// Emitter adds row numbers to each row
+async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>): AsyncIterable<Row> {
+  let rowNumber = 1;
+  for await (const sourceRow of source) {
+    yield [...sourceRow, rowNumber++] as Row;
+  }
+}
+```
+
+### Optimization Implications
+
+The bag/set distinction enables important optimizations:
+
+**Set-Specific Optimizations:**
+- Duplicate elimination can be skipped for sets
+- Certain join algorithms are more efficient with sets
+- Set operations (UNION, INTERSECT) have different complexity
+
+**Bag-Aware Planning:**
+- Streaming operations can be more efficient on bags
+- Memory usage optimizations for bag operations
+- Different sorting strategies for bags vs sets
+
+### Third Manifesto Alignment
+
+This design aligns with Third Manifesto principles:
+- **Clear Semantics**: Explicit distinction between sets and bags
+- **Type Safety**: RelationType captures bag/set information at compile time
+- **Algebraic Foundation**: Operations preserve or transform bag/set properties predictably
+- **Optimization Enabling**: Type information guides query optimization decisions
+
 ## Common Patterns
 
-### Row Processing
+### Row Processing with Context
 ```typescript
 async function* run(rctx: RuntimeContext, input: AsyncIterable<Row>): AsyncIterable<Row> {
 	for await (const row of input) {
-		// Process row
-		yield transformedRow;
+		// Set up row context using row descriptor
+		rctx.context.set(rowDescriptor, () => row);
+		try {
+			// Process row - column references will resolve automatically
+			const result = await processRow(row);
+			yield result;
+		} finally {
+			// Always clean up context
+			rctx.context.delete(rowDescriptor);
+		}
 	}
 }
 ```
@@ -222,7 +427,12 @@ function run(rctx: RuntimeContext, ...args: SqlValue[]): SqlValue {
 ```typescript
 async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<undefined> {
 	for await (const row of input) {
-		await performMutation(row);
+		rctx.context.set(rowDescriptor, () => row);
+		try {
+			await performMutation(row);
+		} finally {
+			rctx.context.delete(rowDescriptor);
+		}
 	}
 	return undefined;
 }
@@ -252,14 +462,15 @@ The *optimiser* then walks the tree and transforms or marks each node so that, a
      –   return a **replacement node** (often a different physical algorithm), or
      –   do a deeper rewrite (e.g. `Aggregate → Sort + StreamAggregate`).
 
-4. **Column references via attributes**
-   •  `ColumnReferenceNode` uses stable `attributeId` instead of node references.
-   •  Relational nodes implement `getAttributes()` to define their output columns.
-   •  This enables robust column tracking across plan transformations.
+4. **Attribute ID preservation**
+   •  **Critical**: Optimizer preserves original attribute IDs during transformations
+   •  `ColumnReferenceNode` uses stable `attributeId` instead of node references
+   •  Relational nodes implement `getAttributes()` to define their output columns
+   •  This enables robust column tracking across plan transformations
 
 ### Example Transformations
 
-- `AggregateNode` (logical) → `SortNode + StreamAggregateNode` (physical)
+- `AggregateNode` (logical) → `SortNode + StreamAggregateNode` (physical, preserving attribute IDs)
 - `TableScanNode` → `TableScanNode` (marked physical with properties)
 - Nodes that cannot be physical (like `AggregateNode`) have `override readonly physical: undefined`
 
@@ -269,7 +480,8 @@ The optimizer automatically:
 - Collects properties from all children (scalar + relational)
 - Calls node's `getPhysical()` if available
 - Applies inference rules (e.g., constant propagation)
+- **Preserves attribute IDs** when creating physical nodes
 - Ensures every node becomes physical or fails with clear error
 
-This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms.
+This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms, all while maintaining robust column reference resolution through the attribute-based context system.
 

@@ -49,6 +49,12 @@ export type ColRef = {
 export type RelationType = DeepReadonly<BaseType & {
 	typeClass: 'relation';
 	isReadOnly: boolean;
+	/**
+	 * If true, this relation is guaranteed to be a set (no duplicate rows).
+	 * If false, this relation could be a bag (duplicate rows possible).
+	 * This affects how certain operations (like sorting) handle the data.
+	 */
+	isSet: boolean;
 	columns: ColumnDef[];
 	/** The unique keys of the relation (the primary key is arbitrarily the first one).
 	 * Note that these may or may not be supported by indexes (normally they are), but by definition are unique.

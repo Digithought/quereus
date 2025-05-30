@@ -1,32 +1,41 @@
 import type { FilterNode } from '../../planner/nodes/filter.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import { emitPlanNode, emitCall, emitCallFromPlan } from '../emitters.js';
-import { type SqlValue, type Row } from '../../common/types.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
+import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
+import { type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { isTruthy } from '../../util/comparison.js';
 
 export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction {
-	async function* run(ctx: RuntimeContext, sourceRows: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => SqlValue | Promise<SqlValue>): AsyncIterable<Row> {
-		for await (const sourceRow of sourceRows) {
-			// Set up context for this row - the source relation should be available for column references
-			ctx.context.set(plan.source, () => sourceRow);
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
+	const predicateFunc = emitCallFromPlan(plan.predicate, ctx);
+
+	// Create row descriptor for source attributes
+	const sourceRowDescriptor: RowDescriptor = [];
+	const sourceAttributes = plan.source.getAttributes();
+	sourceAttributes.forEach((attr, index) => {
+		sourceRowDescriptor[attr.id] = index;
+	});
+
+	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
+		for await (const sourceRow of source) {
+			// Set up context for this row using row descriptor
+			ctx.context.set(sourceRowDescriptor, () => sourceRow);
+
 			try {
-				if (isTruthy(await predicate(ctx))) {
+				const result = await predicate(ctx);
+				if (result) {
 					yield sourceRow;
 				}
 			} finally {
 				// Clean up context for this row
-				ctx.context.delete(plan.source);
+				ctx.context.delete(sourceRowDescriptor);
 			}
 		}
 	}
 
-	const sourceInstruction = emitPlanNode(plan.source, ctx);
-	const predicateFunc = emitCallFromPlan(plan.predicate, ctx);
-
 	return {
 		params: [sourceInstruction, predicateFunc],
 		run: run as any,
-		note: `filter(predicate)`
+		note: `filter(${plan.predicate.toString()})`
 	};
 }

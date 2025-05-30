@@ -32,6 +32,9 @@ export type { TableSchema, IndexSchema as TableIndexSchema } from './schema/tabl
 export type { ColumnSchema } from './schema/column.js';
 export type { FunctionSchema } from './schema/function.js';
 
+// Runtime utilities
+export { isAsyncIterable, asyncIterableToArray } from './runtime/utils.js';
+
 // Function registration utilities
 export {
 	createScalarFunction,

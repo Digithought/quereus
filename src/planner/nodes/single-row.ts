@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type ZeroAryRelationalNode } from './plan-node.js';
+import { PlanNode, type ZeroAryRelationalNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { EmptyScope } from '../scopes/empty.js';
 import type { Scope } from '../scopes/scope.js';
@@ -16,6 +16,7 @@ export class SingleRowNode extends PlanNode implements ZeroAryRelationalNode {
   private readonly outputType: RelationType = {
     typeClass: 'relation',
     isReadOnly: true,
+    isSet: true, // Single row is always a set
     columns: [],
     keys: [[]], // Represents a relation that can have at most one row
     rowConstraints: [],
@@ -31,6 +32,11 @@ export class SingleRowNode extends PlanNode implements ZeroAryRelationalNode {
 
   getType(): RelationType {
     return this.outputType;
+  }
+
+  getAttributes(): Attribute[] {
+    // Single row node has no columns, so no attributes
+    return [];
   }
 
   getChildren(): readonly [] {

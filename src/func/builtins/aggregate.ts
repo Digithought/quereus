@@ -139,8 +139,8 @@ export const groupConcatFuncRev = createAggregateFunction(
 		}
 
 		const strValue = String(value);
-		acc.values.push(strValue);
-		return { values: acc.values, separator: currentSeparator };
+		// Create a new array instead of mutating the existing one
+		return { values: [...acc.values, strValue], separator: currentSeparator };
 	},
 	(acc: GroupConcatAccumulator): string | null => {
 		if (acc.values.length === 0) {

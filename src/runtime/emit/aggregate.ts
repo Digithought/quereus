@@ -1,10 +1,13 @@
 import type { StreamAggregateNode } from '../../planner/nodes/stream-aggregate.js';
 import type { Instruction, RuntimeContext } from '../types.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
+import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
+import type { PlanNode } from '../../planner/nodes/plan-node.js';
 
 /**
  * Creates a group key from an array of values that can be used as a Map key
@@ -15,7 +18,54 @@ function createGroupKey(values: SqlValue[]): string {
 	return JSON.stringify(values);
 }
 
+/**
+ * Find the source relation node that column references should use as their context key.
+ * This traverses up the tree to find the original table scan or similar node.
+ */
+function findSourceRelation(node: PlanNode): PlanNode {
+	// Keep going up until we find a table scan or values node
+	let current = node;
+	while (current) {
+		if (current.nodeType === 'TableScan' || current.nodeType === 'Values' || current.nodeType === 'SingleRow') {
+			return current;
+		}
+		// Get the first relational source
+		const relations = current.getRelations();
+		if (relations.length > 0) {
+			current = relations[0];
+		} else {
+			break;
+		}
+	}
+	return node; // Fallback to the original node
+}
+
 export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionContext): Instruction {
+	// Find the actual source relation for column references
+	const sourceRelation = findSourceRelation(plan.source);
+
+	// Create row descriptors for context
+	const sourceRowDescriptor: RowDescriptor = [];
+	const sourceAttributes = plan.source.getAttributes();
+	sourceAttributes.forEach((attr, index) => {
+		sourceRowDescriptor[attr.id] = index;
+	});
+
+	const sourceRelationRowDescriptor: RowDescriptor = [];
+	if (sourceRelation !== plan.source) {
+		const sourceRelationAttributes = (sourceRelation as any).getAttributes?.() || sourceAttributes;
+		sourceRelationAttributes.forEach((attr: any, index: number) => {
+			sourceRelationRowDescriptor[attr.id] = index;
+		});
+	}
+
+	// Create output row descriptor for the StreamAggregate's output
+	const outputRowDescriptor: RowDescriptor = [];
+	const outputAttributes = plan.getAttributes();
+	outputAttributes.forEach((attr, index) => {
+		outputRowDescriptor[attr.id] = index;
+	});
+
 	async function* run(
 		ctx: RuntimeContext,
 		sourceRows: AsyncIterable<Row>,
@@ -43,6 +93,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 		// Get the function schemas for each aggregate
 		const aggregateSchemas: FunctionSchema[] = [];
+		const aggregateDistinctFlags: boolean[] = [];
 		for (const agg of plan.aggregates) {
 			const funcNode = agg.expression;
 			if (!(funcNode instanceof AggregateFunctionCallNode)) {
@@ -55,6 +106,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			}
 
 			aggregateSchemas.push(funcSchema);
+			aggregateDistinctFlags.push(funcNode.isDistinct);
 		}
 
 		// Handle the case with no GROUP BY - aggregate everything into a single group
@@ -74,15 +126,24 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 				}
 			});
 
+			// For DISTINCT aggregates, track unique values
+			const distinctSets: Set<string>[] = aggregateDistinctFlags.map(isDistinct =>
+				isDistinct ? new Set<string>() : new Set() // Empty set for non-distinct
+			);
+
 			// Process all rows
 			for await (const row of sourceRows) {
-				// Set the current row in the runtime context for evaluation
-				ctx.context.set(plan.source, () => row);
+				// Set the current row in the runtime context for evaluation using row descriptors
+				ctx.context.set(sourceRowDescriptor, () => row);
+				if (sourceRelation !== plan.source) {
+					ctx.context.set(sourceRelationRowDescriptor, () => row);
+				}
 
 				try {
 					// For each aggregate, call its step function
 					for (let i = 0; i < plan.aggregates.length; i++) {
 						const schema = aggregateSchemas[i];
+						const isDistinct = aggregateDistinctFlags[i];
 
 						// Evaluate the aggregate arguments in the context of the current row
 						const argValues: SqlValue[] = [];
@@ -101,6 +162,17 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							}
 						}
 
+						// Handle DISTINCT logic
+						if (isDistinct) {
+							// Create a key from the argument values for uniqueness check
+							const distinctKey = JSON.stringify(argValues);
+							if (distinctSets[i].has(distinctKey)) {
+								// Skip this value as it's already been processed
+								continue;
+							}
+							distinctSets[i].add(distinctKey);
+						}
+
 						// Call the step function
 						if (schema.aggregateStepImpl) {
 							accumulators[i] = schema.aggregateStepImpl(accumulators[i], ...argValues);
@@ -108,7 +180,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					}
 				} finally {
 					// Clean up context for this row
-					ctx.context.delete(plan.source);
+					ctx.context.delete(sourceRowDescriptor);
+					if (sourceRelation !== plan.source) {
+						ctx.context.delete(sourceRelationRowDescriptor);
+					}
 				}
 			}
 
@@ -127,7 +202,13 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 				resultRow.push(finalValue);
 			}
 
-			yield resultRow;
+			// Set up output context for the result row
+			ctx.context.set(outputRowDescriptor, () => resultRow);
+			try {
+				yield resultRow;
+			} finally {
+				ctx.context.delete(outputRowDescriptor);
+			}
 		} else {
 			// Handle GROUP BY case with streaming aggregation
 			// Since input is ordered by grouping columns, we can process groups sequentially
@@ -135,11 +216,15 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			let currentGroupKey: string | null = null;
 			let currentGroupValues: SqlValue[] = [];
 			let currentAccumulators: any[] = [];
+			let currentDistinctSets: Set<string>[] = [];
 
 			// Process all rows
 			for await (const row of sourceRows) {
-				// Set the current row in the runtime context for evaluation
-				ctx.context.set(plan.source, () => row);
+				// Set the current row in the runtime context for evaluation using row descriptors
+				ctx.context.set(sourceRowDescriptor, () => row);
+				if (sourceRelation !== plan.source) {
+					ctx.context.set(sourceRelationRowDescriptor, () => row);
+				}
 
 				try {
 					// Evaluate GROUP BY expressions to determine the group
@@ -172,7 +257,13 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							resultRow.push(finalValue);
 						}
 
-						yield resultRow;
+						// Set up output context for the result row
+						ctx.context.set(outputRowDescriptor, () => resultRow);
+						try {
+							yield resultRow;
+						} finally {
+							ctx.context.delete(outputRowDescriptor);
+						}
 
 						// Reset for new group
 						currentAccumulators = aggregateSchemas.map(schema => {
@@ -188,6 +279,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								return initialValue;
 							}
 						});
+						currentDistinctSets = aggregateDistinctFlags.map(isDistinct =>
+							isDistinct ? new Set<string>() : new Set()
+						);
 					}
 
 					// Initialize if first group
@@ -205,6 +299,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								return initialValue;
 							}
 						});
+						currentDistinctSets = aggregateDistinctFlags.map(isDistinct =>
+							isDistinct ? new Set<string>() : new Set()
+						);
 					}
 
 					// Update current group
@@ -214,6 +311,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					// For each aggregate, call its step function
 					for (let i = 0; i < plan.aggregates.length; i++) {
 						const schema = aggregateSchemas[i];
+						const isDistinct = aggregateDistinctFlags[i];
 
 						// Evaluate the aggregate arguments in the context of the current row
 						const argValues: SqlValue[] = [];
@@ -232,6 +330,17 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							}
 						}
 
+						// Handle DISTINCT logic
+						if (isDistinct) {
+							// Create a key from the argument values for uniqueness check
+							const distinctKey = JSON.stringify(argValues);
+							if (currentDistinctSets[i].has(distinctKey)) {
+								// Skip this value as it's already been processed
+								continue;
+							}
+							currentDistinctSets[i].add(distinctKey);
+						}
+
 						// Call the step function
 						if (schema.aggregateStepImpl) {
 							currentAccumulators[i] = schema.aggregateStepImpl(currentAccumulators[i], ...argValues);
@@ -239,7 +348,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					}
 				} finally {
 					// Clean up context for this row
-					ctx.context.delete(plan.source);
+					ctx.context.delete(sourceRowDescriptor);
+					if (sourceRelation !== plan.source) {
+						ctx.context.delete(sourceRelationRowDescriptor);
+					}
 				}
 			}
 
@@ -264,7 +376,13 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					resultRow.push(finalValue);
 				}
 
-				yield resultRow;
+				// Set up output context for the result row
+				ctx.context.set(outputRowDescriptor, () => resultRow);
+				try {
+					yield resultRow;
+				} finally {
+					ctx.context.delete(outputRowDescriptor);
+				}
 			}
 		}
 	}

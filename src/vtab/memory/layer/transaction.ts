@@ -6,6 +6,7 @@ import type { SqlValue, Row } from '../../../common/types.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
 import { createLogger } from '../../../common/logger.js';
+import { createPrimaryKeyFunctions } from '../utils/primary-key.js';
 
 const log = createLogger('vtab:memory:layer:transaction');
 const warnLog = log.extend('warn');
@@ -112,29 +113,13 @@ export class TransactionLayer implements Layer {
 			warnLog("TransactionLayer.getPkExtractorsAndComparators called with a schema different from its creation schema. Using creation schema.");
 		}
 
-		const pkDef = this.tableSchemaAtCreation.primaryKeyDefinition ?? [];
-		if (pkDef.length === 0) throw new Error("TransactionLayer: Table schema must have a primaryKeyDefinition.");
-
-		const primaryKeyExtractorFromRow = (row: Row): BTreeKeyForPrimary =>
-			pkDef.length === 1 ? row[pkDef[0].index] : pkDef.map(d => row[d.index]);
-
-		const primaryKeyComparator = (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
-			if (pkDef.length === 1) {
-				const def = pkDef[0];
-				const cmp = compareSqlValues(a as SqlValue, b as SqlValue, def.collation || 'BINARY');
-				return def.desc ? -cmp : cmp;
-			}
-			const arrA = a as SqlValue[]; const arrB = b as SqlValue[];
-			for (let i = 0; i < pkDef.length; i++) {
-				if (i >= arrA.length || i >= arrB.length) return arrA.length - arrB.length;
-				const def = pkDef[i];
-				const cmp = compareSqlValues(arrA[i], arrB[i], def.collation || 'BINARY');
-				if (cmp !== 0) return def.desc ? -cmp : cmp;
-			}
-			return 0;
+		// Use the centralized primary key functions instead of duplicating the logic
+		// This ensures consistent handling of empty primary key definitions
+		const pkFunctions = createPrimaryKeyFunctions(this.tableSchemaAtCreation);
+		return {
+			primaryKeyExtractorFromRow: pkFunctions.extractFromRow,
+			primaryKeyComparator: pkFunctions.compare
 		};
-
-		return { primaryKeyExtractorFromRow, primaryKeyComparator };
 	}
 
 	getModificationTree(indexName: string | 'primary'): BTree<BTreeKeyForPrimary, Row> | null {

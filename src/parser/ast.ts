@@ -67,6 +67,7 @@ export interface FunctionExpr extends AstNode {
 	type: 'function';
 	name: string;
 	args: Expression[];
+	distinct?: boolean; // For DISTINCT in aggregate functions like COUNT(DISTINCT col)
 }
 
 // Window function expression

@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -18,6 +18,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 	override readonly nodeType = PlanNodeType.Project;
 
 	private outputTypeCache: Cached<RelationType>;
+	private attributesCache: Cached<Attribute[]>;
 
 	constructor(
 		scope: Scope,
@@ -27,9 +28,12 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 	) {
 		super(scope, estimatedCostOverride);
 
+		const sourceType = this.source.getType();
+
 		this.outputTypeCache = new Cached(() => ({
 			typeClass: 'relation',
-			isReadOnly: this.source.getType().isReadOnly,
+			isReadOnly: sourceType.isReadOnly,
+			isSet: sourceType.isSet,
 			columns: this.projections.map((proj, index) => ({
 				name: proj.alias ?? expressionToString(proj.node.expression),
 				type: proj.node.getType(),
@@ -40,10 +44,24 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			// TODO: propagate row constraints that don't have projected off columns
 			rowConstraints: [],
 		} as RelationType));
+
+		this.attributesCache = new Cached(() => {
+			// Create new attributes for each projection
+			return this.projections.map((proj, index) => ({
+				id: PlanNode.nextAttrId(),
+				name: proj.alias ?? expressionToString(proj.node.expression),
+				type: proj.node.getType(),
+				sourceRelation: `${this.nodeType}:${this.id}` // Projects create new context
+			}));
+		});
 	}
 
 	getType(): RelationType {
 		return this.outputTypeCache.value;
+	}
+
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
 	}
 
 	getChildren(): readonly ScalarPlanNode[] {

@@ -5,11 +5,19 @@ import type { VirtualTable } from "../../vtab/table.js";
 import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
+import type { RowDescriptor } from "../../planner/nodes/plan-node.js";
 import { createValidatedInstruction } from "../emitters.js";
 import { getVTableConnection, disconnectVTable } from "../utils.js";
 
 export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.source.tableSchema;
+
+	// Create row descriptor mapping attribute IDs to column indices
+	const rowDescriptor: RowDescriptor = [];
+	const attributes = plan.getAttributes();
+	attributes.forEach((attr, index) => {
+		rowDescriptor[attr.id] = index;
+	});
 
 	// Look up the virtual table module during emission and record the dependency
 	const moduleInfo = ctx.getVtabModule(tableSchema.vtabModuleName);
@@ -58,9 +66,9 @@ export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruct
 		}
 
 		try {
-			// Put cursor row into context
+			// Put cursor row into context using row descriptor
 			let row: Row;
-			runtimeCtx.context.set(plan, () => row);
+			runtimeCtx.context.set(rowDescriptor, () => row);
 
 			const asyncRowIterable = vtabInstance.xQuery(plan.filterInfo);
 			for await (row of asyncRowIterable) {
@@ -68,7 +76,7 @@ export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruct
 			}
 
 			// Remove cursor row from context
-			runtimeCtx.context.delete(plan);
+			runtimeCtx.context.delete(rowDescriptor);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
 			throw new QuereusError(`Error during xQuery on table '${tableSchema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);

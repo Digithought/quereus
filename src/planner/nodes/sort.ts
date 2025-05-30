@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -42,6 +42,11 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 	getType(): RelationType {
 		// Sort preserves the type of the source relation
 		return this.source.getType();
+	}
+
+	getAttributes(): Attribute[] {
+		// Sort preserves the same attributes as its source
+		return this.source.getAttributes();
 	}
 
 	getChildren(): readonly ScalarPlanNode[] {

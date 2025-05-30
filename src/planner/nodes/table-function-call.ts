@@ -1,8 +1,9 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { Cached } from '../../util/cached.js';
 
 /**
  * Represents a table-valued function call in the FROM clause.
@@ -10,6 +11,8 @@ import type { FunctionSchema } from '../../schema/function.js';
  */
 export class TableFunctionCallNode extends PlanNode implements RelationalPlanNode {
   override readonly nodeType = PlanNodeType.TableFunctionCall;
+
+  private attributesCache: Cached<Attribute[]>;
 
   constructor(
     scope: Scope,
@@ -20,6 +23,21 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     estimatedCostOverride?: number
   ) {
     super(scope, estimatedCostOverride ?? 1); // Default cost for function calls
+
+    this.attributesCache = new Cached(() => {
+      // Create attributes from function schema columns
+      return this.functionSchema.columns?.map((col) => ({
+        id: PlanNode.nextAttrId(),
+        name: col.name,
+        type: {
+          typeClass: 'scalar' as const,
+          affinity: col.type,
+          nullable: col.nullable ?? true,
+          isReadOnly: true,
+        },
+        sourceRelation: `${this.functionName}()`
+      })) || [];
+    });
   }
 
   getType(): RelationType {
@@ -38,10 +56,16 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     return {
       typeClass: 'relation',
       isReadOnly: true, // Function results are read-only
+			// TODO: Have table function schema expose relation type
+      isSet: false, // Table functions can return duplicate rows (bags)
       columns,
       keys: [], // Functions don't typically have inherent keys
       rowConstraints: [],
     };
+  }
+
+  getAttributes(): Attribute[] {
+    return this.attributesCache.value;
   }
 
   getChildren(): readonly ScalarPlanNode[] {

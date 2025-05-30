@@ -1074,9 +1074,10 @@ export class Parser {
 			this.consume(TokenType.LPAREN, "Expected '(' after function name.");
 
 			const args: AST.Expression[] = [];
+			let distinct = false;
 			if (!this.check(TokenType.RPAREN)) {
 				// Handle DISTINCT inside function calls like COUNT(DISTINCT col)
-				const distinct = this.matchKeyword('DISTINCT');
+				distinct = this.matchKeyword('DISTINCT');
 				// Handle * argument AFTER checking for distinct
 				if (this.match(TokenType.ASTERISK)) {
 					// Do not add '*' as an argument to the list for aggregates like COUNT(*)
@@ -1103,6 +1104,11 @@ export class Parser {
 				args,
 				loc: _createLoc(startToken, endToken)
 			};
+
+			// Add distinct field if it was parsed
+			if (distinct) {
+				funcExpr.distinct = true;
+			}
 
 			// Check for OVER clause (window function)
 			if (this.matchKeyword('OVER')) {

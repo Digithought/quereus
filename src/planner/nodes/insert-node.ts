@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ConflictResolution } from '../../common/constants.js';
@@ -25,6 +25,11 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
 	override getType(): RelationType {
 		return this.source.getType();
 	}
+
+  getAttributes(): Attribute[] {
+    // INSERT produces the same attributes as its source
+    return this.source.getAttributes();
+  }
 
   override getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {
     return [this.source, this.table];

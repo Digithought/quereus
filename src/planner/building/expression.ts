@@ -108,7 +108,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
                   ctx.scope,
                   columnExpr,
                   agg.expression.getType(),
-                  PlanNode.nextAttrId(),
+                  agg.attributeId,
                   agg.columnIndex
                 );
               }
@@ -138,7 +138,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
           expr.name,
           functionSchema,
           args,
-          false, // isDistinct - TODO: parse from expr
+          expr.distinct ?? false, // Use the distinct field from the AST
           undefined, // orderBy - TODO: parse from expr
           undefined  // filter - TODO: parse from expr
         );

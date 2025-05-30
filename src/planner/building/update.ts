@@ -22,9 +22,12 @@ export function buildUpdateStmt(
 
   // Create a new scope with the table columns registered for column resolution
   const tableScope = new RegisteredScope(ctx.scope);
-  sourceNode.getType().columns.forEach((c, i) =>
+  const sourceAttributes = sourceNode.getAttributes();
+  sourceNode.getType().columns.forEach((c, i) => {
+    const attr = sourceAttributes[i];
     tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-      new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
+      new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+  });
 
   // Create a new planning context with the updated scope for WHERE clause resolution
   const updateCtx = { ...ctx, scope: tableScope };

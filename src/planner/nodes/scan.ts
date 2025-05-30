@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type UnaryRelationalNode, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
@@ -28,6 +28,11 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
 
 	getType(): RelationType {
 		return this.outputType.value;
+	}
+
+	getAttributes(): Attribute[] {
+		// Table scans produce the same attributes as their source table reference
+		return this.source.getAttributes();
 	}
 
 	getChildren(): readonly [] {

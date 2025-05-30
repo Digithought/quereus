@@ -143,7 +143,9 @@ export class Optimizer {
 					node.scope,
 					sortNode,
 					node.groupBy,
-					node.aggregates
+					node.aggregates,
+					undefined, // estimatedCostOverride
+					node.getAttributes() // Preserve original attribute IDs
 				);
 			} else {
 				// No GROUP BY - can stream aggregate without sorting
@@ -151,7 +153,9 @@ export class Optimizer {
 					node.scope,
 					optimizedSource,
 					node.groupBy,
-					node.aggregates
+					node.aggregates,
+					undefined, // estimatedCostOverride
+					node.getAttributes() // Preserve original attribute IDs
 				);
 			}
 		});

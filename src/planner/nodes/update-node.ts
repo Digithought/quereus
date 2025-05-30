@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, VoidNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ScalarPlanNode } from './plan-node.js';
@@ -15,7 +15,7 @@ export interface UpdateAssignment {
 /**
  * Represents an UPDATE statement in the logical query plan.
  */
-export class UpdateNode extends VoidNode {
+export class UpdateNode extends PlanNode implements RelationalPlanNode {
   override readonly nodeType = PlanNodeType.Update;
 
   constructor(
@@ -28,17 +28,26 @@ export class UpdateNode extends VoidNode {
     super(scope);
   }
 
-	override getType(): RelationType {
+	getType(): RelationType {
 		return this.source.getType();
 	}
 
-  override getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {
+  getAttributes(): Attribute[] {
+    // UPDATE produces the same attributes as its source
+    return this.source.getAttributes();
+  }
+
+  getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {
     // The source provides rows to be updated, table is the target of updates.
     return [this.source, this.table];
   }
 
-  override getChildren(): readonly PlanNode[] {
+  getChildren(): readonly ScalarPlanNode[] {
     return this.assignments.map(a => a.value);
+  }
+
+  get estimatedRows(): number | undefined {
+    return this.source.estimatedRows;
   }
 
   override toString(): string {

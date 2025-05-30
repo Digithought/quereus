@@ -26,6 +26,8 @@ import { emitTableValuedFunctionCall } from './emit/table-valued-function.js';
 import { emitTransaction } from './emit/transaction.js';
 import { emitPragma } from './emit/pragma.js';
 import { emitSort } from './emit/sort.js';
+import { emitWindow } from './emit/window.js';
+import { emitSequencing } from './emit/sequencing.js';
 
 let registered = false;
 
@@ -57,6 +59,8 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.LimitOffset, emitLimitOffset as EmitterFunc);
 	registerEmitter(PlanNodeType.TableFunctionCall, emitTableValuedFunctionCall as EmitterFunc);
 	registerEmitter(PlanNodeType.In, emitIn as EmitterFunc);
+	registerEmitter(PlanNodeType.Window, emitWindow as EmitterFunc);
+	registerEmitter(PlanNodeType.Sequencing, emitSequencing as EmitterFunc);
 
 	// Physical aggregate emitters
 	registerEmitter(PlanNodeType.StreamAggregate, emitStreamAggregate as EmitterFunc);

@@ -1,7 +1,13 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
+import { Cached } from '../../util/cached.js';
+
+export interface AggregateExpression {
+  expression: ScalarPlanNode;
+  alias: string;
+}
 
 /**
  * Represents an aggregation operation.
@@ -12,40 +18,86 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
   override readonly nodeType = PlanNodeType.Aggregate;
 	override readonly physical: undefined = undefined;
 
+  private outputTypeCache: Cached<RelationType>;
+  private attributesCache: Cached<Attribute[]>;
+
   constructor(
     scope: Scope,
     public readonly source: RelationalPlanNode,
-    public readonly groupBy: ScalarPlanNode[],
-    public readonly aggregates: { expression: ScalarPlanNode; alias: string }[],
+    public readonly groupBy: readonly ScalarPlanNode[],
+    public readonly aggregates: readonly AggregateExpression[],
     estimatedCostOverride?: number
   ) {
     super(scope, estimatedCostOverride ?? source.getTotalCost());
+
+    this.outputTypeCache = new Cached(() => this.buildOutputType());
+    this.attributesCache = new Cached(() => this.buildAttributes());
   }
 
-  getType(): RelationType {
+  private buildOutputType(): RelationType {
     // Build the output relation type based on group by columns and aggregates
     const columns = [
       // Group by columns come first
       ...this.groupBy.map((expr, index) => ({
         name: `group_${index}`,
         type: expr.getType(),
-        isReadOnly: true
+        generated: false
       })),
       // Then aggregate columns
       ...this.aggregates.map(agg => ({
         name: agg.alias,
         type: agg.expression.getType(),
-        isReadOnly: true
+        generated: true
       }))
     ];
+
+    // Determine if result is a set
+    // - Without GROUP BY: always produces exactly 1 row, so it's a set
+    // - With GROUP BY: produces one row per unique group, so it's a set
+    const isSet = true;
 
     return {
       typeClass: 'relation',
       columns,
       keys: [], // No keys for aggregate results
       rowConstraints: [], // No row constraints for aggregate results
-      isReadOnly: true
+      isReadOnly: true,
+      isSet
     };
+  }
+
+  private buildAttributes(): Attribute[] {
+    const attributes: Attribute[] = [];
+
+    // Group by columns come first
+    this.groupBy.forEach((expr, index) => {
+      attributes.push({
+        id: PlanNode.nextAttrId(),
+        name: `group_${index}`,
+        type: expr.getType(),
+        sourceRelation: `${this.nodeType}:${this.id}`
+      });
+    });
+
+    // Then aggregate columns
+    this.aggregates.forEach((agg) => {
+      attributes.push({
+        id: PlanNode.nextAttrId(),
+        name: agg.alias,
+        type: agg.expression.getType(),
+        sourceRelation: `${this.nodeType}:${this.id}`
+      });
+    });
+
+    return attributes;
+  }
+
+  getType(): RelationType {
+    return this.outputTypeCache.value;
+  }
+
+  getAttributes(): Attribute[] {
+    return this.attributesCache.value;
   }
 
   getChildren(): readonly ScalarPlanNode[] {

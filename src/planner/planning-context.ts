@@ -60,5 +60,6 @@ export interface PlanningContext {
     expression: ScalarPlanNode;
     alias: string;
     columnIndex: number;
+    attributeId: number;
   }>;
 }

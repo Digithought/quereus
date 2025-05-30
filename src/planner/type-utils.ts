@@ -39,6 +39,7 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
   return {
     typeClass: 'relation',
     isReadOnly: !!(tableSchema.isView || tableSchema.isTemporary),
+    isSet: true, // Base tables are sets by definition (enforced by primary keys)
     columns: columnDefs,
     keys: keys,
     // TODO: Populate rowConstraints from tableSchema if/when RelationType supports them

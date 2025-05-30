@@ -1,4 +1,5 @@
 import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
@@ -9,6 +10,13 @@ import type { TableFunctionCallNode } from '../../planner/nodes/table-function-c
 export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.functionName.toLowerCase();
 	const numArgs = plan.operands.length;
+
+	// Create row descriptor for function output attributes
+	const rowDescriptor: RowDescriptor = [];
+	const attributes = plan.getAttributes();
+	attributes.forEach((attr, index) => {
+		rowDescriptor[attr.id] = index;
+	});
 
 	// Look up the function during emission and record the dependency
 	// First try exact argument count, then try variable argument function
@@ -41,7 +49,14 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			const iterable = result instanceof Promise ? await result : result;
 
 			for await (const row of iterable) {
-				yield row;
+				// Set up row context for column references
+				innerCtx.context.set(rowDescriptor, () => row);
+				try {
+					yield row;
+				} finally {
+					// Clean up row context
+					innerCtx.context.delete(rowDescriptor);
+				}
 			}
 		} catch (error: any) {
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
@@ -73,7 +88,14 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			const iterable = result instanceof Promise ? await result : result;
 
 			for await (const row of iterable) {
-				yield row;
+				// Set up row context for column references
+				innerCtx.context.set(rowDescriptor, () => row);
+				try {
+					yield row;
+				} finally {
+					// Clean up row context
+					innerCtx.context.delete(rowDescriptor);
+				}
 			}
 		} catch (error: any) {
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);

@@ -19,6 +19,7 @@ import { AggregateNode } from '../nodes/aggregate-node.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { buildTableFunctionCall } from './table-function.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
+import { expressionToString } from '../../util/ast-stringify.js';
 
 /**
  * Checks if an expression contains aggregate functions
@@ -37,40 +38,6 @@ function isAggregateExpression(node: ScalarPlanNode): boolean {
 	}
 
 	return false;
-}
-
-/**
- * Gets a default alias for an expression
- */
-function getDefaultAlias(expr: AST.Expression): string {
-	switch (expr.type) {
-		case 'function':
-			if (expr.args.length === 0) {
-				// Special case for count() which should be displayed as count(*)
-				if (expr.name.toLowerCase() === 'count') {
-					return 'count(*)';
-				}
-				return `${expr.name}()`;
-			} else {
-				// Try to generate meaningful argument names
-				const argNames = expr.args.map(arg => {
-					if (arg.type === 'column') {
-						return arg.name;
-					} else if (arg.type === 'literal') {
-						return String(arg.value);
-					} else {
-						return '...';
-					}
-				}).join(', ');
-				return `${expr.name}(${argNames})`;
-			}
-		case 'column':
-			return expr.name;
-		case 'literal':
-			return String(expr.value);
-		default:
-			return 'expr';
-	}
 }
 
 /**
@@ -107,7 +74,7 @@ export function buildSelectStmt(
   const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
   const selectScope = new MultiScope([ctx.scope, ...columnScopes]);
 	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
-	const selectContext: PlanningContext = {...ctx, scope: selectScope};
+	let selectContext: PlanningContext = {...ctx, scope: selectScope};
 
 	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
 
@@ -130,6 +97,7 @@ export function buildSelectStmt(
 		if (column.type === 'all') {
 			// Handle SELECT * or table.*
 			const inputColumns = input.getType().columns;
+			const inputAttributes = input.getAttributes();
 
 			if (column.table) {
 				// Handle qualified SELECT table.*
@@ -147,18 +115,19 @@ export function buildSelectStmt(
 
 			// Add a projection for each column in the input relation
 			inputColumns.forEach((columnDef, index) => {
-				// Create a ColumnReferenceNode for this column
+				// Create a ColumnReferenceNode for this column using the input's attribute ID
 				const columnExpr: AST.ColumnExpr = {
 					type: 'column',
 					name: columnDef.name,
 					// Don't set table qualifier for SELECT * projections to avoid confusion
 				};
 
+				const attr = inputAttributes[index];
 				const columnRef = new ColumnReferenceNode(
 					selectScope,
 					columnExpr,
 					columnDef.type,
-					PlanNode.nextAttrId(), // Generate unique attribute ID
+					attr.id, // Use the attribute ID from the input relation
 					index
 				);
 
@@ -176,7 +145,7 @@ export function buildSelectStmt(
 				hasAggregates = true;
 				aggregates.push({
 					expression: scalarNode,
-					alias: column.alias || getDefaultAlias(column.expr)
+					alias: column.alias || expressionToString(column.expr)
 				});
 			} else {
 				projections.push({
@@ -228,57 +197,118 @@ export function buildSelectStmt(
 
 		input = new AggregateNode(selectScope, input, groupByExpressions, aggregates);
 
+		// Create a scope that includes the aggregate output columns
+		// This will be used for HAVING and ORDER BY after aggregation
+		const aggregateOutputScope = new RegisteredScope(selectScope);
+		const aggregateAttributes = input.getAttributes();
+
+		// Register GROUP BY columns
+		groupByExpressions.forEach((expr, index) => {
+			// Try to get a meaningful name for the GROUP BY column
+			let columnName: string;
+			if (expr instanceof ColumnReferenceNode) {
+				columnName = expr.expression.name;
+			} else {
+				columnName = `group_${index}`;
+			}
+
+			const attr = aggregateAttributes[index];
+			aggregateOutputScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, expr.getType(), attr.id, index));
+		});
+
+		// Register aggregate columns by their aliases
+		aggregates.forEach((agg, index) => {
+			const columnIndex = groupByExpressions.length + index;
+			const attr = aggregateAttributes[columnIndex];
+			aggregateOutputScope.registerSymbol(agg.alias.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), attr.id, columnIndex));
+		});
+
 		// Handle HAVING clause
 		if (stmt.having) {
-			// Create a scope that includes the aggregate output columns
-			const havingScope = new RegisteredScope(selectScope);
-
-			// Register GROUP BY columns
-			groupByExpressions.forEach((expr, index) => {
-				// Try to get a meaningful name for the GROUP BY column
-				let columnName: string;
-				if ((expr as any).expression?.type === 'column') {
-					columnName = (expr as any).expression.name;
-				} else {
-					columnName = `group_${index}`;
-				}
-
-				havingScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, expr.getType(), PlanNode.nextAttrId(), index));
-			});
-
-			// Register aggregate columns by their aliases
-			aggregates.forEach((agg, index) => {
-				const columnIndex = groupByExpressions.length + index;
-				havingScope.registerSymbol(agg.alias.toLowerCase(), (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), PlanNode.nextAttrId(), columnIndex));
-			});
-
 			// Build HAVING expression with the aggregate scope
 			// We need to use a special context that knows about the aggregates
 			const havingContext: PlanningContext = {
 				...selectContext,
-				scope: havingScope,
+				scope: aggregateOutputScope,
 				// Add the aggregates to the context so buildExpression can check them
-				aggregates: aggregates.map((agg, index) => ({
-					expression: agg.expression,
-					alias: agg.alias,
-					columnIndex: groupByExpressions.length + index
-				}))
+				aggregates: aggregates.map((agg, index) => {
+					const columnIndex = groupByExpressions.length + index;
+					const attr = aggregateAttributes[columnIndex];
+					return {
+						expression: agg.expression,
+						alias: agg.alias,
+						columnIndex,
+						attributeId: attr.id // Add the attribute ID for proper column reference creation
+					};
+				})
 			};
 			const havingExpression = buildExpression(havingContext, stmt.having, true);
 
 			// Wrap the AggregateNode with a FilterNode for HAVING
-			input = new FilterNode(havingScope, input, havingExpression);
+			input = new FilterNode(aggregateOutputScope, input, havingExpression);
 		}
+
+		// Update the select context to use the aggregate output scope for ORDER BY
+		selectContext = {...selectContext, scope: aggregateOutputScope};
 	} else {
 		// Create ProjectNode if we have projections, otherwise return input as-is
 		if (projections.length > 0) {
+			// Check if ORDER BY should be applied before projection
+			let needsPreProjectionSort = false;
+			if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
+				// Check if any ORDER BY column is not in the projection output
+				for (const orderByClause of stmt.orderBy) {
+					if (orderByClause.expr.type === 'column') {
+						const orderColumn = orderByClause.expr.name.toLowerCase();
+						// Check if this column is in the projection aliases
+						const isInProjection = projections.some(proj =>
+							(proj.alias?.toLowerCase() === orderColumn) ||
+							(proj.node instanceof ColumnReferenceNode && proj.node.expression.name.toLowerCase() === orderColumn)
+						);
+						if (!isInProjection) {
+							needsPreProjectionSort = true;
+							break;
+						}
+					}
+				}
+			}
+
+			// Apply ORDER BY before projection if needed
+			if (needsPreProjectionSort && stmt.orderBy && stmt.orderBy.length > 0) {
+				const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
+					const expression = buildExpression(selectContext, orderByClause.expr);
+					return {
+						expression,
+						direction: orderByClause.direction,
+						nulls: orderByClause.nulls
+					};
+				});
+				input = new SortNode(selectScope, input, sortKeys);
+				// Mark that we've applied ORDER BY before projection
+				preAggregateSort = true;
+			}
+
 			input = new ProjectNode(selectScope, input, projections);
+
+			// Create a new scope that maps column names to the ProjectNode's output attributes
+			const projectionOutputScope = new RegisteredScope(ctx.scope);
+			const projectionAttributes = input.getAttributes();
+			input.getType().columns.forEach((col, index) => {
+				const attr = projectionAttributes[index];
+				projectionOutputScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, index));
+			});
+
+			// Update selectContext to use the projection output scope for ORDER BY (if not already applied)
+			if (!needsPreProjectionSort) {
+				selectContext = {...selectContext, scope: projectionOutputScope};
+			}
 		}
 	}
 
-	// Plan ORDER BY clause, creating SortNode (only if not already applied before aggregation)
+	// Plan ORDER BY clause, creating SortNode (only if not already applied before aggregation or projection)
 	if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
 			const expression = buildExpression(selectContext, orderByClause.expr);
@@ -311,9 +341,12 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		fromTable = buildTableScan(fromClause, parentContext);
 
 		const tableScope = new RegisteredScope(parentContext.scope);
-		fromTable.getType().columns.forEach((c, i) =>
+		const attributes = fromTable.getAttributes();
+		fromTable.getType().columns.forEach((c, i) => {
+			const attr = attributes[i];
 			tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+		});
 
 		if (fromClause.alias) {
 			columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
@@ -328,9 +361,12 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		fromTable = buildTableFunctionCall(fromClause, parentContext);
 
 		const functionScope = new RegisteredScope(parentContext.scope);
-		fromTable.getType().columns.forEach((c, i) =>
+		const attributes = fromTable.getAttributes();
+		fromTable.getType().columns.forEach((c, i) => {
+			const attr = attributes[i];
 			functionScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+		});
 
 		if (fromClause.alias) {
 			// For table-valued functions, use empty string as parent name since columns are registered without qualifier
@@ -346,9 +382,12 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		fromTable = buildSelectStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
 
 		const subqueryScope = new RegisteredScope(parentContext.scope);
-		fromTable.getType().columns.forEach((c, i) =>
+		const attributes = fromTable.getAttributes();
+		fromTable.getType().columns.forEach((c, i) => {
+			const attr = attributes[i];
 			subqueryScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, PlanNode.nextAttrId(), i)));
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+		});
 
 		// Subqueries always have an alias (required by parser)
 		columnScope = new AliasedScope(subqueryScope, '', fromClause.alias.toLowerCase());

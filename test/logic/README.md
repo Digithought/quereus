@@ -8,7 +8,7 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 
 ## Test Status (Current Titan Implementation)
 
-### ✅ Currently Passing (01-06)
+### ✅ Currently Passing
 - `01-basic.sqllogic` - Basic table operations
 - `02-smoke.sqllogic` - Core CRUD operations 
 - `03-expressions.sqllogic` - Expression evaluation and operators
@@ -16,20 +16,20 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 - `04-transactions.sqllogic` - Transaction and savepoint support
 - `05-vtab_memory.sqllogic` - Memory table virtual table functionality
 - `06-builtin_functions.sqllogic` - Built-in scalar and aggregate functions
+- `07-aggregates.sqllogic` - Aggregate functions, group by, having
 
-### ⚠️ Partially Working (07)
-- `07-aggregates.sqllogic` - partly implemented
+### ⚠️ In progress
+- `08-views.sqllogic` - VIEW functionality (CREATE VIEW, DROP VIEW, view updates)
 
 ### 🚧 Features To Be Implemented (Tests Will Fail Until Implemented)
-- `joins.sqllogic` - JOIN operations (INNER, LEFT, CROSS, multiple JOINs)
-- `subqueries.sqllogic` - Scalar subqueries, EXISTS, IN, correlated subqueries
-- `cte.sqllogic` - Common Table Expressions (WITH clause, recursive CTEs)
-- `constraints.sqllogic` - Constraint enforcement (NOT NULL, CHECK, PRIMARY KEY violations)
-- `join_padding_order.sqllogic` - LEFT JOIN NULL padding, window functions, index optimization
-- `08-views.sqllogic` - VIEW functionality (CREATE VIEW, DROP VIEW, view updates)
 - `09-set_operations.sqllogic` - UNION, INTERSECT, EXCEPT operations
 - `10-distinct_datatypes.sqllogic` - DISTINCT operations and advanced type behavior
+- `constraints.sqllogic` - Constraint enforcement (NOT NULL, CHECK, PRIMARY KEY violations)
+- `cte.sqllogic` - Common Table Expressions (WITH clause, recursive CTEs)
 - `error_paths.sqllogic` - Comprehensive error handling for all features
+- `join_padding_order.sqllogic` - LEFT JOIN NULL padding, window functions, index optimization
+- `joins.sqllogic` - JOIN operations (INNER, LEFT, CROSS, multiple JOINs)
+- `subqueries.sqllogic` - Scalar subqueries, EXISTS, IN, correlated subqueries
 
 ## Test File Conventions
 

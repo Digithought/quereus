@@ -1,7 +1,7 @@
 import type { RuntimeValue, SqlParameters, OutputValue, Row, SqlValue } from "../common/types.js";
 import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
-import type { PlanNode } from "../planner/nodes/plan-node.js";
+import type { PlanNode, RowDescriptor, RowGetter } from "../planner/nodes/plan-node.js";
 import type { Scheduler } from "./scheduler.js";
 import type { EmissionContext } from "./emission-context.js";
 import type { VirtualTable } from "../vtab/table.js";
@@ -11,7 +11,7 @@ export type RuntimeContext = {
 	db: Database;
 	stmt: Statement | null; // Can be null for transient exec statements
 	params: SqlParameters; // User-provided values for the current execution
-	context: Map<PlanNode, () => SqlValue | Row>;
+	context: Map<RowDescriptor, RowGetter>;
 	/** Debug tracer for instruction execution, if enabled */
 	tracer?: InstructionTracer;
 	/** Active connection for the current transaction context */
