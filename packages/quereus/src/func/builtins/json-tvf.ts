@@ -13,16 +13,23 @@ export const jsonEachFunc = createTableValuedFunction(
 		name: 'json_each',
 		numArgs: -1, // Variable arguments (1 or 2)
 		deterministic: true,
-		columns: [
-			{ name: 'key', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'value', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'type', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'atom', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'id', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'parent', type: SqlDataType.INTEGER, nullable: true },
-			{ name: 'fullkey', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'path', type: SqlDataType.TEXT, nullable: false }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'key', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'value', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'atom', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'parent', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'fullkey', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'path', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (jsonText: SqlValue, rootPath?: SqlValue): AsyncIterable<Row> {
 		if (typeof jsonText !== 'string') {
@@ -108,16 +115,23 @@ export const jsonTreeFunc = createTableValuedFunction(
 		name: 'json_tree',
 		numArgs: -1, // Variable arguments (1 or 2)
 		deterministic: true,
-		columns: [
-			{ name: 'key', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'value', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'type', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'atom', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'id', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'parent', type: SqlDataType.INTEGER, nullable: true },
-			{ name: 'fullkey', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'path', type: SqlDataType.TEXT, nullable: false }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'key', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'value', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'atom', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'parent', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'fullkey', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'path', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (jsonText: SqlValue, rootPath?: SqlValue): AsyncIterable<Row> {
 		if (typeof jsonText !== 'string') {

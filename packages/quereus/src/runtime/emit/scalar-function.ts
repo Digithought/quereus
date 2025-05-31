@@ -5,6 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { isScalarFunctionSchema } from '../../schema/function.js';
 
 export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.expression.name.toLowerCase();
@@ -15,7 +16,7 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 	if (!functionSchema) {
 		throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
 	}
-	if (functionSchema.type !== 'scalar') {
+	if (!isScalarFunctionSchema(functionSchema)) {
 		throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function`, StatusCode.ERROR);
 	}
 
@@ -34,13 +35,13 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 			throw new QuereusError(`Function ${functionName} called with ${args.length} arguments, expected ${capturedFunction.numArgs}`, StatusCode.ERROR);
 		}
 
-		// Use the direct implementation
-		if (!capturedFunction.scalarImpl) {
-			throw new QuereusError(`Function ${functionName}/${numArgs} has no scalar implementation`, StatusCode.ERROR);
+		// Use the direct implementation - ensure it's a scalar function
+		if (!isScalarFunctionSchema(capturedFunction)) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} is not a scalar function at runtime`, StatusCode.INTERNAL);
 		}
 
 		try {
-			return capturedFunction.scalarImpl(...args);
+			return capturedFunction.implementation(...args);
 		} catch (error: any) {
 			throw new QuereusError(`Function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error, plan.expression.loc?.start.line, plan.expression.loc?.start.column);
 		}

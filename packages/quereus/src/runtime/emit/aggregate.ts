@@ -5,6 +5,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
 import type { PlanNode } from '../../planner/nodes/plan-node.js';
@@ -101,7 +102,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			}
 
 			const funcSchema = funcNode.functionSchema;
-			if (!funcSchema || funcSchema.type !== 'aggregate') {
+			if (!funcSchema || !isAggregateFunctionSchema(funcSchema)) {
 				throw new Error(`Function ${funcNode.functionName || 'unknown'} is not an aggregate function`);
 			}
 
@@ -114,7 +115,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			// Initialize accumulators for each aggregate
 			const accumulators: any[] = aggregateSchemas.map(schema => {
 				// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
-				const initialValue = schema.initialValue;
+				const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
 				if (typeof initialValue === 'function') {
 					return initialValue();
 				} else if (Array.isArray(initialValue)) {
@@ -174,8 +175,8 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						}
 
 						// Call the step function
-						if (schema.aggregateStepImpl) {
-							accumulators[i] = schema.aggregateStepImpl(accumulators[i], ...argValues);
+						if (isAggregateFunctionSchema(schema)) {
+							accumulators[i] = schema.stepFunction(accumulators[i], ...argValues);
 						}
 					}
 				} finally {
@@ -193,8 +194,8 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 				const schema = aggregateSchemas[i];
 
 				let finalValue: SqlValue;
-				if (schema.aggregateFinalizerImpl) {
-					finalValue = schema.aggregateFinalizerImpl(accumulators[i]);
+				if (isAggregateFunctionSchema(schema)) {
+					finalValue = schema.finalizeFunction(accumulators[i]);
 				} else {
 					finalValue = accumulators[i];
 				}
@@ -248,8 +249,8 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							const schema = aggregateSchemas[i];
 
 							let finalValue: SqlValue;
-							if (schema.aggregateFinalizerImpl) {
-								finalValue = schema.aggregateFinalizerImpl(currentAccumulators[i]);
+							if (isAggregateFunctionSchema(schema)) {
+								finalValue = schema.finalizeFunction(currentAccumulators[i]);
 							} else {
 								finalValue = currentAccumulators[i];
 							}
@@ -268,7 +269,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						// Reset for new group
 						currentAccumulators = aggregateSchemas.map(schema => {
 							// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
-							const initialValue = schema.initialValue;
+							const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
 							if (typeof initialValue === 'function') {
 								return initialValue();
 							} else if (Array.isArray(initialValue)) {
@@ -288,7 +289,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					if (currentGroupKey === null) {
 						currentAccumulators = aggregateSchemas.map(schema => {
 							// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
-							const initialValue = schema.initialValue;
+							const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
 							if (typeof initialValue === 'function') {
 								return initialValue();
 							} else if (Array.isArray(initialValue)) {
@@ -342,8 +343,8 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						}
 
 						// Call the step function
-						if (schema.aggregateStepImpl) {
-							currentAccumulators[i] = schema.aggregateStepImpl(currentAccumulators[i], ...argValues);
+						if (isAggregateFunctionSchema(schema)) {
+							currentAccumulators[i] = schema.stepFunction(currentAccumulators[i], ...argValues);
 						}
 					}
 				} finally {
@@ -367,8 +368,8 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					const schema = aggregateSchemas[i];
 
 					let finalValue: SqlValue;
-					if (schema.aggregateFinalizerImpl) {
-						finalValue = schema.aggregateFinalizerImpl(currentAccumulators[i]);
+					if (isAggregateFunctionSchema(schema)) {
+						finalValue = schema.finalizeFunction(currentAccumulators[i]);
 					} else {
 						finalValue = currentAccumulators[i];
 					}

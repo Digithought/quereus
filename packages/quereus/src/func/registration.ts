@@ -1,7 +1,18 @@
 import { createLogger } from '../common/logger.js';
-import type { AggregateFinalizer, AggregateReducer, FunctionSchema, IntegratedTableValuedFunc, ScalarFunc, TableValuedFunc, TVFColumnInfo } from '../schema/function.js';
+import type {
+	AggregateFinalizer,
+	AggregateReducer,
+	FunctionSchema,
+	IntegratedTableValuedFunc,
+	ScalarFunc,
+	TableValuedFunc,
+	ScalarFunctionSchema,
+	TableValuedFunctionSchema,
+	AggregateFunctionSchema
+} from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
+import type { ScalarType, RelationType } from '../common/datatype.js';
 
 const log = createLogger('func:registration');
 
@@ -17,8 +28,8 @@ interface ScalarFuncOptions {
 	flags?: FunctionFlags;
 	/** Whether the function is deterministic (affects caching) */
 	deterministic?: boolean;
-	/** Return type affinity hint */
-	affinity?: SqlDataType;
+	/** Return type information */
+	returnType?: ScalarType;
 }
 
 /**
@@ -33,8 +44,8 @@ interface TableValuedFuncOptions {
 	flags?: FunctionFlags;
 	/** Whether the function is deterministic (affects caching) */
 	deterministic?: boolean;
-	/** Column definitions for the table-valued function */
-	columns?: TVFColumnInfo[];
+	/** Return type (relation) information */
+	returnType?: RelationType;
 }
 
 /**
@@ -47,8 +58,12 @@ interface AggregateFuncOptions {
 	numArgs: number;
 	/** Function behavior flags */
 	flags?: FunctionFlags;
+	/** Whether the function is deterministic (affects caching) */
+	deterministic?: boolean;
 	/** Initial accumulator value */
 	initialValue?: any;
+	/** Return type information */
+	returnType?: ScalarType;
 }
 
 /**
@@ -59,14 +74,20 @@ interface AggregateFuncOptions {
  * @param jsFunc The JavaScript implementation function
  * @returns A FunctionSchema ready for registration
  */
-export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarFunc): FunctionSchema {
+export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarFunc): ScalarFunctionSchema {
+	const returnType: ScalarType = options.returnType ?? {
+		typeClass: 'scalar',
+		affinity: SqlDataType.NUMERIC,
+		nullable: true,
+		isReadOnly: true
+	};
+
 	return {
 		name: options.name,
 		numArgs: options.numArgs,
 		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
-		affinity: options.affinity,
-		type: 'scalar',
-		scalarImpl: jsFunc
+		returnType,
+		implementation: jsFunc
 	};
 }
 
@@ -78,54 +99,81 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarF
  * @param jsFunc The JavaScript implementation function
  * @returns A FunctionSchema ready for registration
  */
-export function createTableValuedFunction(options: TableValuedFuncOptions, jsFunc: TableValuedFunc): FunctionSchema {
+export function createTableValuedFunction(options: TableValuedFuncOptions, jsFunc: TableValuedFunc): TableValuedFunctionSchema {
+	const returnType: RelationType = options.returnType ?? {
+		typeClass: 'relation',
+		isReadOnly: true,
+		isSet: false, // Table functions can return duplicates by default
+		columns: [],
+		keys: [],
+		rowConstraints: []
+	};
+
 	return {
 		name: options.name,
 		numArgs: options.numArgs,
 		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
-		type: 'table-valued',
-		tableValuedImpl: jsFunc,
-		columns: options.columns
+		returnType,
+		implementation: jsFunc
 	};
 }
 
 /**
- * Creates a function schema for a database-aware table-valued function.
- * These functions receive the database instance as their first parameter.
+ * Creates a function schema for an integrated table-valued function.
+ * Integrated functions receive the database instance as their first parameter.
  *
  * @param options Configuration options for the function
- * @param jsFunc The JavaScript implementation function that takes (db, ...args)
+ * @param jsFunc The JavaScript implementation function
  * @returns A FunctionSchema ready for registration
  */
-export function createIntegratedTableValuedFunction(options: TableValuedFuncOptions, jsFunc: IntegratedTableValuedFunc): FunctionSchema {
+export function createIntegratedTableValuedFunction(options: TableValuedFuncOptions, jsFunc: IntegratedTableValuedFunc): TableValuedFunctionSchema {
+	const returnType: RelationType = options.returnType ?? {
+		typeClass: 'relation',
+		isReadOnly: true,
+		isSet: false, // Table functions can return duplicates by default
+		columns: [],
+		keys: [],
+		rowConstraints: []
+	};
+
 	return {
 		name: options.name,
 		numArgs: options.numArgs,
 		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
-		type: 'table-valued',
-		tableValuedImpl: jsFunc as any, // We'll handle the database injection in the emitter
-		columns: options.columns,
-		// Mark this as database-aware so the emitter knows to inject the database
+		returnType,
+		implementation: jsFunc,
 		isIntegrated: true
 	};
 }
 
 /**
- * Creates an aggregate function using a functional reducer pattern.
- * This is more functional and easier to reason about than the step/final approach.
+ * Creates a function schema for an aggregate function.
+ * Aggregate functions use a step/finalize pattern to accumulate values.
+ *
+ * @param options Configuration options for the function
+ * @param stepFunc Function called for each row
+ * @param finalizeFunc Function called to get final result
+ * @returns A FunctionSchema ready for registration
  */
-export function createAggregateFunction<T = any>(
+export function createAggregateFunction(
 	options: AggregateFuncOptions,
-	reducer: AggregateReducer<T>,
-	finalizer: AggregateFinalizer<T> = (acc) => acc as any
-): FunctionSchema {
+	stepFunc: AggregateReducer,
+	finalizeFunc: AggregateFinalizer
+): AggregateFunctionSchema {
+	const returnType: ScalarType = options.returnType ?? {
+		typeClass: 'scalar',
+		affinity: SqlDataType.NUMERIC,
+		nullable: true,
+		isReadOnly: true
+	};
+
 	return {
 		name: options.name,
 		numArgs: options.numArgs,
-		flags: options.flags ?? FunctionFlags.UTF8,
-		type: 'aggregate',
-		aggregateStepImpl: reducer,
-		aggregateFinalizerImpl: finalizer,
+		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
+		returnType,
+		stepFunction: stepFunc,
+		finalizeFunction: finalizeFunc,
 		initialValue: options.initialValue
 	};
 }

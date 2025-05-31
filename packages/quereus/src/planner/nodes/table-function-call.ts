@@ -3,6 +3,7 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute 
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import { Cached } from '../../util/cached.js';
 
 /**
@@ -25,40 +26,31 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     super(scope, estimatedCostOverride ?? 1); // Default cost for function calls
 
     this.attributesCache = new Cached(() => {
-      // Create attributes from function schema columns
-      return this.functionSchema.columns?.map((col) => ({
-        id: PlanNode.nextAttrId(),
-        name: col.name,
-        type: {
-          typeClass: 'scalar' as const,
-          affinity: col.type,
-          nullable: col.nullable ?? true,
-          isReadOnly: true,
-        },
-        sourceRelation: `${this.functionName}()`
-      })) || [];
+      // Create attributes from function schema return type
+      if (isTableValuedFunctionSchema(this.functionSchema)) {
+        return this.functionSchema.returnType.columns.map((col) => ({
+          id: PlanNode.nextAttrId(),
+          name: col.name,
+          type: col.type,
+          sourceRelation: `${this.functionName}()`
+        }));
+      }
+      return [];
     });
   }
 
   getType(): RelationType {
-    // Build the output relation type based on the function schema
-    const columns = this.functionSchema.columns?.map((col, index) => ({
-      name: col.name,
-      type: {
-        typeClass: 'scalar' as const,
-        affinity: col.type,
-        nullable: col.nullable ?? true,
-        isReadOnly: true,
-      },
-      generated: true, // Function results are effectively generated
-    })) || [];
+    // Return the function's defined return type
+    if (isTableValuedFunctionSchema(this.functionSchema)) {
+      return this.functionSchema.returnType;
+    }
 
+    // Fallback for non-table-valued functions (shouldn't happen)
     return {
       typeClass: 'relation',
-      isReadOnly: true, // Function results are read-only
-			// TODO: Have table function schema expose relation type
+      isReadOnly: true,
       isSet: false, // Table functions can return duplicate rows (bags)
-      columns,
+      columns: [],
       keys: [], // Functions don't typically have inherent keys
       rowConstraints: [],
     };

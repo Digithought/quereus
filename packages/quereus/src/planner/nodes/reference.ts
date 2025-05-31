@@ -7,6 +7,7 @@ import type * as AST from '../../parser/ast.js';
 import { relationTypeFromTableSchema } from '../type-utils.js';
 import { Cached } from '../../util/cached.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { isTableValuedFunctionSchema } from '../../schema/function.js';
 
 /** Represents a reference to a table in the global schema. */
 export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode {
@@ -77,17 +78,12 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 		super(scope, estimatedCostOverride ?? 1);
 
 		this.attributesCache = new Cached(() => {
-			// Create attributes from function schema columns
-			if (this.functionSchema.type === 'table-valued' && this.functionSchema.columns) {
-				return this.functionSchema.columns.map((column) => ({
+			// Create attributes from function schema return type
+			if (isTableValuedFunctionSchema(this.functionSchema)) {
+				return this.functionSchema.returnType.columns.map((column) => ({
 					id: PlanNode.nextAttrId(),
 					name: column.name,
-					type: {
-						typeClass: 'scalar' as const,
-						affinity: column.type,
-						nullable: column.nullable ?? true,
-						isReadOnly: true
-					},
+					type: column.type,
 					sourceRelation: `${this.functionSchema.name}()`
 				}));
 			}
@@ -96,26 +92,8 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 	}
 
 	getType(): RelationType {
-		if (this.functionSchema.type === 'table-valued') {
-			// Create a RelationType from the columns
-			const columns = (this.functionSchema.columns || []).map(col => ({
-				name: col.name,
-				type: {
-					typeClass: 'scalar' as const,
-					affinity: col.type,
-					nullable: col.nullable ?? true,
-					isReadOnly: true
-				}
-			}));
-
-			return {
-				typeClass: 'relation',
-				columns,
-				keys: [], // Table functions don't have keys
-				rowConstraints: [],
-				isReadOnly: true,
-				isSet: false // Table functions can return bags (duplicate rows)
-			};
+		if (isTableValuedFunctionSchema(this.functionSchema)) {
+			return this.functionSchema.returnType;
 		}
 		throw new Error(`Function ${this.functionSchema.name} is not a table-valued function`);
 	}

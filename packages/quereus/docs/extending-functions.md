@@ -10,7 +10,17 @@ Scalar functions take SQL values as input and return a single SQL value. They're
 
 ```typescript
 export const reverseFunc = createScalarFunction(
-  { name: 'reverse', numArgs: 1, deterministic: true },
+  { 
+    name: 'reverse', 
+    numArgs: 1, 
+    deterministic: true,
+    returnType: {
+      typeClass: 'scalar',
+      affinity: SqlDataType.TEXT,
+      nullable: true,
+      isReadOnly: true
+    }
+  },
   (str: SqlValue): SqlValue => {
     if (typeof str !== 'string') return null;
     return str.split('').reverse().join('');
@@ -30,7 +40,30 @@ Table-valued functions return multiple rows and can be used in FROM clauses. The
 
 ```typescript
 export const generateSeries = createTableValuedFunction(
-  { name: 'generate_series', numArgs: 2, deterministic: true },
+  { 
+    name: 'generate_series', 
+    numArgs: 2, 
+    deterministic: true,
+    returnType: {
+      typeClass: 'relation',
+      isReadOnly: true,
+      isSet: false, // Can return duplicate values
+      columns: [
+        {
+          name: 'value',
+          type: {
+            typeClass: 'scalar',
+            affinity: SqlDataType.INTEGER,
+            nullable: false,
+            isReadOnly: true
+          },
+          generated: true
+        }
+      ],
+      keys: [],
+      rowConstraints: []
+    }
+  },
   async function* (start: SqlValue, end: SqlValue): AsyncIterable<Row> {
     const startNum = Number(start);
     const endNum = Number(end);
@@ -56,7 +89,17 @@ Aggregate functions use a functional reducer pattern that's easy to understand a
 
 ```typescript
 export const stringConcat = createAggregateFunction(
-  { name: 'string_concat', numArgs: 1, initialValue: [] },
+  { 
+    name: 'string_concat', 
+    numArgs: 1, 
+    initialValue: [],
+    returnType: {
+      typeClass: 'scalar',
+      affinity: SqlDataType.TEXT,
+      nullable: true,
+      isReadOnly: true
+    }
+  },
   (acc: string[], value: SqlValue) => {
     if (typeof value === 'string') acc.push(value);
     return acc;
@@ -71,11 +114,29 @@ export const stringConcat = createAggregateFunction(
 
 ```typescript
 interface ScalarFuncOptions {
-  name: string;           // Function name as called in SQL
-  numArgs: number;        // Number of arguments (-1 for variable)
-  flags?: FunctionFlags;  // Optional behavior flags
-  deterministic?: boolean; // Whether function is deterministic (default: true)
+  name: string;                // Function name as called in SQL
+  numArgs: number;             // Number of arguments (-1 for variable)
+  flags?: FunctionFlags;       // Optional behavior flags
+  deterministic?: boolean;     // Whether function is deterministic (default: true)
+  returnType?: ScalarType;     // Return type specification
 }
+```
+
+**Example with explicit return type:**
+```typescript
+const mathFunc = createScalarFunction(
+  {
+    name: 'custom_math',
+    numArgs: 2,
+    returnType: {
+      typeClass: 'scalar',
+      affinity: SqlDataType.REAL,
+      nullable: false,
+      isReadOnly: true
+    }
+  },
+  (a: SqlValue, b: SqlValue) => Number(a) * Number(b)
+);
 ```
 
 ### Table-Valued Function Options
@@ -86,7 +147,40 @@ interface TableValuedFuncOptions {
   numArgs: number;
   flags?: FunctionFlags;
   deterministic?: boolean;
+  returnType?: RelationType;   // Relation type with column definitions
 }
+```
+
+**Example with column specification:**
+```typescript
+const userDataFunc = createTableValuedFunction(
+  {
+    name: 'user_data',
+    numArgs: 1,
+    returnType: {
+      typeClass: 'relation',
+      isReadOnly: true,
+      isSet: false,
+      columns: [
+        { 
+          name: 'id', 
+          type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true },
+          generated: true 
+        },
+        { 
+          name: 'name', 
+          type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true },
+          generated: true 
+        }
+      ],
+      keys: [[]],  // No primary keys defined
+      rowConstraints: []
+    }
+  },
+  async function* (input: SqlValue): AsyncIterable<Row> {
+    // Function implementation
+  }
+);
 ```
 
 ### Aggregate Function Options
@@ -96,7 +190,33 @@ interface AggregateFuncOptions {
   name: string;
   numArgs: number;
   flags?: FunctionFlags;
-  initialValue?: any;     // Initial accumulator value
+  initialValue?: any;          // Initial accumulator value
+  returnType?: ScalarType;     // Return type specification
+}
+```
+
+## Type System Integration
+
+Functions work seamlessly with Quereus's type system through the `BaseType` hierarchy:
+
+```typescript
+// Scalar type for functions returning single values
+type ScalarType = {
+  typeClass: 'scalar';
+  affinity: SqlDataType;
+  nullable: boolean;
+  isReadOnly: boolean;
+  collationName?: string;
+}
+
+// Relation type for table-valued functions
+type RelationType = {
+  typeClass: 'relation';
+  isReadOnly: boolean;
+  isSet: boolean;              // true for sets (no duplicates), false for bags
+  columns: RelationColumn[];   // Column definitions
+  keys: number[][];           // Key constraints
+  rowConstraints: any[];      // Row-level constraints
 }
 ```
 
@@ -106,12 +226,36 @@ Functions naturally support async operations:
 
 ```typescript
 export const fetchDataFunc = createScalarFunction(
-  { name: 'fetch_data', numArgs: 1, deterministic: false },
+  { 
+    name: 'fetch_data', 
+    numArgs: 1, 
+    deterministic: false,
+    returnType: {
+      typeClass: 'scalar',
+      affinity: SqlDataType.TEXT,
+      nullable: true,
+      isReadOnly: true
+    }
+  },
   async (url: SqlValue): Promise<SqlValue> => {
     const response = await fetch(url as string);
     return await response.text();
   }
 );
+```
+
+## Type Safety and Validation
+
+The new function schema system provides compile-time and runtime type safety:
+
+```typescript
+import { isScalarFunctionSchema, isTableValuedFunctionSchema } from '../schema/function.js';
+
+// Type guards ensure proper function usage
+if (isTableValuedFunctionSchema(functionSchema)) {
+  // Safe to access returnType.columns
+  const columns = functionSchema.returnType.columns;
+}
 ```
 
 ## Performance Benefits
@@ -120,32 +264,8 @@ The function registration system is optimized for performance:
 
 1. **Direct Function Calls**: Functions are called directly without context overhead
 2. **Optimized Emitters**: The runtime detects and uses the most efficient execution path
-3. **Sub-Program Tracking**: Automatic tracking of sub-programs for debugging
-
-## Type System
-
-Functions work with Quereus's SQL type system:
-
-```typescript
-type SqlValue = null | string | number | bigint | Uint8Array | boolean;
-type Row = SqlValue[];
-```
-
-Type conversion is handled automatically, but you can perform explicit checks:
-
-```typescript
-export const safeNumberFunc = createScalarFunction(
-  { name: 'safe_number', numArgs: 1, deterministic: true },
-  (value: SqlValue): SqlValue => {
-    if (typeof value === 'number') return value;
-    if (typeof value === 'string') {
-      const num = Number(value);
-      return isNaN(num) ? null : num;
-    }
-    return null;
-  }
-);
-```
+3. **Type-Safe Execution**: Consistent type system eliminates runtime type checking overhead
+4. **Sub-Program Tracking**: Automatic tracking of sub-programs for debugging
 
 ## Error Handling
 
@@ -155,7 +275,17 @@ Functions can handle errors by:
 
 ```typescript
 export const divideFunc = createScalarFunction(
-  { name: 'divide', numArgs: 2, deterministic: true },
+  { 
+    name: 'divide', 
+    numArgs: 2, 
+    deterministic: true,
+    returnType: {
+      typeClass: 'scalar',
+      affinity: SqlDataType.REAL,
+      nullable: true,
+      isReadOnly: true
+    }
+  },
   (a: SqlValue, b: SqlValue): SqlValue => {
     const numA = Number(a);
     const numB = Number(b);
@@ -178,14 +308,6 @@ import { BUILTIN_FUNCTIONS } from './func/builtins/index.js';
 // Add to builtin functions
 BUILTIN_FUNCTIONS.push(myCustomFunction);
 
-// Or register dynamically (if supported by your setup)
+// Or register dynamically
 database.registerFunction(myCustomFunction);
 ```
-
-## Examples
-
-The builtin functions provide excellent examples of the registration system in action. See:
-- `src/func/builtins/scalar.ts` - Scalar function examples
-- `src/func/builtins/aggregate.ts` - Aggregate function examples  
-- `src/func/builtins/json.ts` - Complex JSON manipulation functions
-- `src/func/builtins/index.ts` - Table-valued function examples
