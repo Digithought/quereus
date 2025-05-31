@@ -6,6 +6,7 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { Parser } from "../../parser/parser.js";
+import { safeJsonStringify } from "../../util/serialization.js";
 
 // Query plan explanation function (table-valued function)
 export const queryPlanFunc = createIntegratedTableValuedFunction(
@@ -21,10 +22,13 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				{ name: 'id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'parent_id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
 				{ name: 'subquery_level', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'node_type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'op', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'detail', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'object_name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
 				{ name: 'alias', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'properties', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'physical', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
 				{ name: 'est_cost', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
 				{ name: 'est_rows', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true }
 			],
@@ -51,6 +55,9 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				const { node, parentId, level } = nodeStack.pop()!;
 				const currentId = nodeId++;
 
+				// Get node type
+				const nodeType = node.nodeType || 'UNKNOWN';
+
 				// Determine operation type and details
 				let op = 'UNKNOWN';
 				let detail = 'Unknown operation';
@@ -59,45 +66,63 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				let estCost = node.estimatedCost || 1.0;
 				let estRows = (node as any).estimatedRows || 10;
 
+				// Use node's toString() method for detail if available
+				if (typeof node.toString === 'function') {
+					detail = node.toString();
+				}
+
 				if (node.nodeType) {
 					op = node.nodeType.replace(/Node$/, '').toUpperCase();
 
 					switch (node.nodeType) {
 						case 'TableScan':
-							detail = `SCAN TABLE ${node.source?.tableSchema?.name || 'unknown'}`;
 							objectName = node.source?.tableSchema?.name || null;
 							alias = node.alias || null;
 							break;
-						case 'Filter':
-							detail = `FILTER WHERE ${node.condition?.toString() || 'condition'}`;
-							break;
-						case 'Project':
-							detail = `PROJECT ${node.projections?.length || 0} columns`;
-							break;
-						case 'Aggregate':
-							detail = `AGGREGATE ${node.aggregates?.length || 0} functions`;
-							break;
-						case 'LimitOffset':
-							detail = `LIMIT ${node.limit?.toString() || 'ALL'} OFFSET ${node.offset?.toString() || '0'}`;
-							break;
 						case 'TableFunctionCall':
-							detail = `CALL ${node.functionName}(${node.operands?.length || 0} args)`;
 							objectName = node.functionName;
 							alias = node.alias || null;
 							break;
 						default:
-							detail = `${op} operation`;
+							// For other node types, try to extract common properties
+							if (node.alias) {
+								alias = node.alias;
+							}
+							if (node.tableName) {
+								objectName = node.tableName;
+							}
+							if (node.functionName) {
+								objectName = node.functionName;
+							}
 					}
+				}
+
+				// Get logical properties (if available)
+				let properties: string | null = null;
+				if (node.getLogicalProperties) {
+					const logicalProps = node.getLogicalProperties();
+					if (logicalProps) {
+						properties = safeJsonStringify(logicalProps);
+					}
+				}
+
+				// Get physical properties (if available)
+				let physical: string | null = null;
+				if (node.physical) {
+					physical = safeJsonStringify(node.physical);
 				}
 
 				yield [
 					currentId,           // id
 					parentId,           // parent_id
 					level,              // subquery_level
+					nodeType,           // node_type
 					op,                 // op
 					detail,             // detail
 					objectName,         // object_name
 					alias,              // alias
+					properties,         // properties
+					physical,           // physical
 					estCost,            // est_cost
 					estRows             // est_rows
 				];
@@ -116,7 +141,7 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 			}
 		} catch (error: any) {
 			// If planning fails, yield an error row
-			yield [1, null, 0, 'ERROR', `Failed to plan SQL: ${error.message}`, null, null, null, null];
+			yield [1, null, 0, 'ERROR', 'ERROR', `Failed to plan SQL: ${error.message}`, null, null, null, null, null, null];
 		}
 	}
 );

@@ -116,6 +116,8 @@ export abstract class PlanNode {
 		return `${this.nodeType} [${this.id}]`;
 	}
 
+	abstract getLogicalProperties?(): Record<string, unknown>;
+
   /** Helper to generate unique attribute IDs */
   public static nextAttrId(): number {
     return PlanNode.nextAttributeId++;
