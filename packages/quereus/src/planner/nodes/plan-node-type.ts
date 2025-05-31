@@ -14,6 +14,7 @@ export enum PlanNodeType {
   Join = 'Join',
   SetOperation = 'SetOperation',
   CTE = 'CTE',
+  RecursiveCTE = 'RecursiveCTE',
   In = 'In',
   Exists = 'Exists',
   Sequencing = 'Sequencing',
@@ -26,6 +27,8 @@ export enum PlanNodeType {
   DropTable = 'DropTable',
   CreateIndex = 'CreateIndex',
   DropIndex = 'DropIndex',
+  CreateView = 'CreateView',
+  DropView = 'DropView',
   AlterTable = 'AlterTable',
 
   // Physical Nodes (from optimizer)
