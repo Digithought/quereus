@@ -1059,9 +1059,9 @@ export class Parser {
 		}
 
 		if (this.match(TokenType.COLON, TokenType.DOLLAR)) {
-			// Named parameter
-			if (!this.check(TokenType.IDENTIFIER)) {
-				throw this.error(this.peek(), "Expected identifier after parameter prefix.");
+			// Named parameter (can be identifier like :name or integer like :1)
+			if (!this.check(TokenType.IDENTIFIER) && !this.check(TokenType.INTEGER)) {
+				throw this.error(this.peek(), "Expected identifier or number after parameter prefix.");
 			}
 			const nameToken = this.advance();
 			return { type: 'parameter', name: nameToken.lexeme, loc: _createLoc(startToken, nameToken) };

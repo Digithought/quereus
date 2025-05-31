@@ -47,7 +47,9 @@ export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema:
 }
 
 export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): ParameterReferenceNode | typeof Ambiguous | undefined {
-	const symbolKey = ':' + (exp.name ? exp.name : exp.index!.toString());
+	// For anonymous parameters (?), use '?' as the symbolKey
+	// For named parameters (:name), use ':name' as the symbolKey
+	const symbolKey = exp.name ? `:${exp.name}` : '?';
 	const result = scope.resolveSymbol(symbolKey, exp);
 	if (result === Ambiguous || result instanceof ParameterReferenceNode) {
 		return result;

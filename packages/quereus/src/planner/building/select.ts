@@ -24,6 +24,16 @@ import { buildWithClause } from './with.js';
 import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
 import type { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
+import { ParameterScope } from '../scopes/param.js';
+
+/**
+ * Helper function to get the non-parameter ancestor scope.
+ * This ensures table/column scopes don't inherit from ParameterScope,
+ * preventing parameter resolution ambiguity in MultiScope.
+ */
+function getNonParamAncestor(scope: Scope): Scope {
+	return (scope instanceof ParameterScope) ? scope.parentScope : scope;
+}
 
 /**
  * Checks if an expression contains aggregate functions
@@ -68,7 +78,7 @@ export function buildSelectStmt(
 		cteNodes = buildWithClause(ctx, stmt.withClause);
 
 		// Create a new scope that includes the CTEs
-		const cteScope = new RegisteredScope(ctx.scope);
+		const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
 
 		// Register each CTE in the scope
 		for (const [cteName, cteNode] of cteNodes) {
@@ -226,7 +236,7 @@ export function buildSelectStmt(
 
 		// Create a scope that includes the aggregate output columns
 		// This will be used for HAVING and ORDER BY after aggregation
-		const aggregateOutputScope = new RegisteredScope(selectScope);
+		const aggregateOutputScope = new RegisteredScope(getNonParamAncestor(selectScope));
 		const aggregateAttributes = input.getAttributes();
 
 		// Register GROUP BY columns
@@ -320,7 +330,7 @@ export function buildSelectStmt(
 			input = new ProjectNode(selectScope, input, projections);
 
 			// Create a new scope that maps column names to the ProjectNode's output attributes
-			const projectionOutputScope = new RegisteredScope(selectContext.scope);
+			const projectionOutputScope = new RegisteredScope(getNonParamAncestor(selectContext.scope));
 			const projectionAttributes = input.getAttributes();
 			input.getType().columns.forEach((col, index) => {
 				const attr = projectionAttributes[index];
@@ -374,7 +384,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
 			fromTable = cteRefNode;
 
-			const cteScope = new RegisteredScope(parentContext.scope);
+			const cteScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
 			const attributes = fromTable.getAttributes();
 			fromTable.getType().columns.forEach((c, i) => {
 				const attr = attributes[i];
@@ -396,7 +406,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				// This is a view reference - expand it to the underlying SELECT statement
 				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst) as RelationalPlanNode;
 
-				const viewScope = new RegisteredScope(parentContext.scope);
+				const viewScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
 				const attributes = fromTable.getAttributes();
 
 				// Use view column names if explicitly defined, otherwise use the SELECT output column names
@@ -424,7 +434,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				// This is a regular table reference
 				fromTable = buildTableScan(fromClause, parentContext);
 
-				const tableScope = new RegisteredScope(parentContext.scope);
+				const tableScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
 				const attributes = fromTable.getAttributes();
 				fromTable.getType().columns.forEach((c, i) => {
 					const attr = attributes[i];
@@ -445,7 +455,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	} else if (fromClause.type === 'functionSource') {
 		fromTable = buildTableFunctionCall(fromClause, parentContext);
 
-		const functionScope = new RegisteredScope(parentContext.scope);
+		const functionScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
 		const attributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
 			const attr = attributes[i];
@@ -466,7 +476,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		// Build the subquery as a relational plan node
 		fromTable = buildSelectStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
 
-		const subqueryScope = new RegisteredScope(parentContext.scope);
+		const subqueryScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
 		const attributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
 			const attr = attributes[i];
