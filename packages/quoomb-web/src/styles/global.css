@@ -33,6 +33,7 @@ html,
 body,
 #root {
   height: 100%;
+  width: 100%;
   margin: 0;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -44,26 +45,62 @@ body,
 
 /* Application theme classes */
 .app {
+  height: 100%;
+  width: 100%;
   background-color: var(--bg-primary);
   color: var(--text-primary);
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Split pane customization */
-.gutter {
+/* React Split Pane styles - IMPORTANT */
+.split {
+  display: flex !important;
+  height: 100% !important;
+  width: 100% !important;
+}
+
+/* For vertical split (stacked panes) */
+.split[style*="flex-direction: column"] {
+  flex-direction: column !important;
+}
+
+/* For horizontal split (side-by-side panes) */
+.split[style*="flex-direction: row"] {
+  flex-direction: row !important;
+}
+
+.split > div {
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.split .gutter {
   background-color: var(--border-color);
   background-repeat: no-repeat;
   background-position: 50%;
+  transition: background-color 0.2s ease;
+  z-index: 1;
+  flex-shrink: 0;
 }
 
-.gutter.gutter-horizontal {
+.split .gutter:hover {
+  background-color: var(--accent-primary);
+}
+
+/* Horizontal gutter (for vertical split - creates horizontal divider) */
+.split .gutter.gutter-vertical {
   background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAeCAYAAADkftS9AAAAIklEQVQoU2M4c+aMnoEIAA6jq+jN7/+U6mHAQJ3dx32KsQAAGwA');
   cursor: row-resize;
+  height: 6px !important;
+  width: 100% !important;
 }
 
-.gutter.gutter-vertical {
+/* Vertical gutter (for horizontal split - creates vertical divider) */
+.split .gutter.gutter-horizontal {
   background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAFCAMAAABl/6zIAAAABlBMVEUAAADMzMzIT8AyAAAAAXRSTlMAQObYZgAAABRJREFUeF7NxDEBAAAAwiD7p7/qQjsAAAQAAe4oDX8AAAAASUVORK5CYII=');
   cursor: col-resize;
+  width: 6px !important;
+  height: 100% !important;
 }
 
 /* Custom scrollbar for webkit browsers */

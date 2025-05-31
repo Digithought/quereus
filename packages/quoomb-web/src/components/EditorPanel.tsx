@@ -29,46 +29,55 @@ export const EditorPanel: React.FC = () => {
 
   const activeTab = tabs.find(tab => tab.id === activeTabId);
 
+  const handleExecute = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || isExecuting) return;
+
+    try {
+      // Get selected text or full content from current editor state
+      const selection = editor.getSelection();
+      let sqlToExecute: string;
+
+      if (selection && !selection.isEmpty()) {
+        const selectedText = editor.getModel()?.getValueInRange(selection);
+        sqlToExecute = selectedText?.trim() || '';
+      } else {
+        // Get current full content from editor
+        sqlToExecute = editor.getValue().trim();
+      }
+
+      if (!sqlToExecute) return;
+
+      await executeSQL(sqlToExecute);
+    } catch (error) {
+      console.error('Execution error:', error);
+    }
+  }, [executeSQL, isExecuting]);
+
   const handleEditorDidMount = useCallback((editor: editor.IStandaloneCodeEditor) => {
     editorRef.current = editor;
 
-    // Add keyboard shortcuts using the editor's addCommand method
+    // Add keyboard shortcut for Shift+Enter
     if (autoExecuteOnShiftEnter) {
-      editor.addCommand(editor.getModel()?.getLanguageId() === 'sql' ? 2048 + 3 : 0, () => {
-        handleExecute();
+      editor.addAction({
+        id: 'execute-sql',
+        label: 'Execute SQL',
+        keybindings: [
+          // Shift+Enter
+          2048 | 3, // Monaco.KeyMod.Shift | Monaco.KeyCode.Enter
+        ],
+        run: () => {
+          handleExecute();
+        },
       });
     }
-  }, [autoExecuteOnShiftEnter]);
+  }, [autoExecuteOnShiftEnter, handleExecute]);
 
   const handleEditorChange = useCallback((value: string | undefined) => {
     if (activeTabId && value !== undefined) {
       updateTabContent(activeTabId, value);
     }
   }, [activeTabId, updateTabContent]);
-
-  const handleExecute = useCallback(async () => {
-    if (!activeTab?.content.trim() || isExecuting) return;
-
-    try {
-      // Get selected text or full content
-      const editor = editorRef.current;
-      let sqlToExecute = activeTab.content;
-
-      if (editor) {
-        const selection = editor.getSelection();
-        if (selection && !selection.isEmpty()) {
-          const selectedText = editor.getModel()?.getValueInRange(selection);
-          if (selectedText?.trim()) {
-            sqlToExecute = selectedText;
-          }
-        }
-      }
-
-      await executeSQL(sqlToExecute);
-    } catch (error) {
-      console.error('Execution error:', error);
-    }
-  }, [activeTab, executeSQL, isExecuting]);
 
   const handleStop = useCallback(() => {
     // TODO: Implement query cancellation

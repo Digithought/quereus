@@ -17,6 +17,7 @@
     "typecheck": "yarn workspaces run typecheck",
     "dev:web": "yarn workspace @quereus/quoomb-web dev",
     "dev:cli": "yarn workspace @quereus/quoomb-cli dev",
+    "dev:cli-built": "yarn workspace @quereus/quoomb-cli build && node packages/quoomb-cli/dist/bin/quoomb.js",
     "build:web": "yarn workspace @quereus/quoomb-web build",
     "build:cli": "yarn workspace @quereus/quoomb-cli build",
     "build:engine": "yarn workspace @quereus/quereus build",

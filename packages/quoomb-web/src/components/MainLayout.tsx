@@ -28,34 +28,26 @@ export const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-screen w-full flex flex-col bg-gray-50 dark:bg-gray-900">
       {/* Top toolbar */}
       <Toolbar />
 
       {/* Main content area with split panes */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 w-full overflow-hidden">
         <Split
-          direction="horizontal"
-          sizes={[50, 50]}
-          minSize={200}
-          expandToMin={false}
-          gutterSize={6}
-          gutterAlign="center"
-          snapOffset={30}
-          dragInterval={1}
-          gutterStyle={() => ({
-            backgroundColor: 'var(--border-color)',
-            cursor: 'row-resize',
-          })}
-          style={{ height: '100%' }}
+          direction="vertical"
+          sizes={[60, 40]}
+          minSize={[200, 150]}
+          className="h-full w-full"
+          style={{ height: '100%', width: '100%' }}
         >
           {/* Top pane - Editor */}
-          <div className="flex flex-col overflow-hidden">
+          <div className="h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
             <EditorPanel />
           </div>
 
           {/* Bottom pane - Results */}
-          <div className="flex flex-col overflow-hidden">
+          <div className="h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
             <ResultsPanel />
           </div>
         </Split>

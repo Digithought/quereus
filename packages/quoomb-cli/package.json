@@ -23,7 +23,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "tsc",
-    "dev": "tsx src/bin/quoomb.ts",
+    "dev": "tsc && node dist/bin/quoomb.js",
     "lint": "eslint src/**/*.ts",
     "test": "vitest",
     "prepublish": "npm run build"
