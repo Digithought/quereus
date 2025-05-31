@@ -1,6 +1,6 @@
 import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
-import type { QuereusWorkerAPI, TableInfo, ColumnInfo } from './types.js';
+import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview } from './types.js';
 import Papa from 'papaparse';
 
 class QuereusWorker implements QuereusWorkerAPI {
@@ -60,15 +60,19 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
 
     try {
-      const explainSql = `EXPLAIN QUERY PLAN ${sql}`;
+      // Use Quereus's query_plan() function with parameterized query to avoid escaping issues
+      console.log('Original SQL:', sql);
+
       const results: Record<string, SqlValue>[] = [];
 
-      for await (const row of this.db.eval(explainSql)) {
+      // Try using parameterized query instead of string interpolation
+      for await (const row of this.db.eval('SELECT * FROM query_plan(?)', [sql])) {
         results.push(row);
       }
 
       return results;
     } catch (error) {
+      console.error('Query plan error:', error);
       throw new Error(`Query explanation failed: ${error instanceof Error ? error.message : error}`);
     }
   }
@@ -146,6 +150,104 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
   }
 
+  async previewCsv(csvData: string): Promise<CsvPreview> {
+    try {
+      // Parse CSV
+      const parseResult = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true,
+        transform: (value, field) => {
+          // Try to convert numbers
+          if (value === '') return null;
+          const num = Number(value);
+          if (!isNaN(num) && value === num.toString()) {
+            return num;
+          }
+          return value;
+        }
+      });
+
+      // Filter out warnings that shouldn't block import
+      const actualErrors = parseResult.errors.filter(error => {
+        // Allow delimiter detection warnings to pass through
+        if (error.message && error.message.includes('Unable to auto-detect delimiting character')) {
+          return false;
+        }
+        // Allow other non-critical warnings
+        if (error.type === 'Quotes' || error.type === 'Delimiter') {
+          return false;
+        }
+        return true;
+      });
+
+      if (parseResult.data.length === 0) {
+        return {
+          columns: [],
+          sampleRows: [],
+          totalRows: 0,
+          errors: actualErrors.map(e => e.message),
+          inferredTypes: {}
+        };
+      }
+
+      const firstRow = parseResult.data[0] as Record<string, any>;
+      const originalColumns = Object.keys(firstRow);
+
+      // Sanitize column names (same logic as import)
+      const sanitizedColumns = originalColumns.map((col, index) => {
+        let sanitizedCol = col.trim();
+        if (!sanitizedCol) {
+          sanitizedCol = `column_${index + 1}`;
+        }
+        sanitizedCol = sanitizedCol.replace(/[^a-zA-Z0-9_]/g, '_');
+        if (/^[0-9]/.test(sanitizedCol)) {
+          sanitizedCol = 'col_' + sanitizedCol;
+        }
+        // Ensure not empty after sanitization
+        if (!sanitizedCol || sanitizedCol === '_'.repeat(sanitizedCol.length)) {
+          sanitizedCol = `column_${index + 1}`;
+        }
+        return sanitizedCol;
+      });
+
+      // Infer column types from data (same logic as import)
+      const inferredTypes: Record<string, string> = {};
+      sanitizedColumns.forEach((sanitizedCol, index) => {
+        const originalCol = originalColumns[index];
+        const sampleValues = parseResult.data.slice(0, 10).map(row => (row as any)[originalCol]);
+        const hasNumbers = sampleValues.some(val => typeof val === 'number');
+        const hasStrings = sampleValues.some(val => typeof val === 'string' && val !== '');
+
+        let type = 'TEXT';
+        if (hasNumbers && !hasStrings) {
+          type = 'REAL';
+        }
+
+        inferredTypes[sanitizedCol] = type;
+      });
+
+      // Create sample rows with sanitized column names
+      const sampleRows = parseResult.data.slice(0, 5).map(row => {
+        const sanitizedRow: Record<string, any> = {};
+        originalColumns.forEach((originalCol, index) => {
+          const sanitizedCol = sanitizedColumns[index];
+          sanitizedRow[sanitizedCol] = (row as any)[originalCol];
+        });
+        return sanitizedRow;
+      });
+
+      return {
+        columns: sanitizedColumns, // Return sanitized column names
+        sampleRows,
+        totalRows: parseResult.data.length,
+        errors: actualErrors.map(e => e.message), // Only show actual errors
+        inferredTypes
+      };
+    } catch (error) {
+      throw new Error(`CSV preview failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
   async importCsv(csvData: string, tableName: string): Promise<{ rowsImported: number }> {
     if (!this.db) {
       throw new Error('Database not initialized');
@@ -167,20 +269,70 @@ class QuereusWorker implements QuereusWorkerAPI {
         }
       });
 
-      if (parseResult.errors.length > 0) {
-        throw new Error(`CSV parsing errors: ${parseResult.errors.map(e => e.message).join(', ')}`);
+      // Filter out warnings that shouldn't block import
+      const actualErrors = parseResult.errors.filter(error => {
+        // Allow delimiter detection warnings to pass through
+        if (error.message && error.message.includes('Unable to auto-detect delimiting character')) {
+          return false;
+        }
+        // Allow other non-critical warnings
+        if (error.type === 'Quotes' || error.type === 'Delimiter') {
+          return false;
+        }
+        return true;
+      });
+
+      if (actualErrors.length > 0) {
+        throw new Error(`CSV parsing errors: ${actualErrors.map(e => e.message).join(', ')}`);
       }
 
       if (parseResult.data.length === 0) {
         return { rowsImported: 0 };
       }
 
-      // Sanitize table name
-      const sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^[0-9]/, '_$&');
+      // Better table name sanitization - ensure it's a valid SQL identifier
+      let sanitizedTableName = tableName.trim();
+      if (!sanitizedTableName) {
+        sanitizedTableName = 'imported_table';
+      }
+      // Replace invalid characters with underscores
+      sanitizedTableName = sanitizedTableName.replace(/[^a-zA-Z0-9_]/g, '_');
+      // Ensure it doesn't start with a number
+      if (/^[0-9]/.test(sanitizedTableName)) {
+        sanitizedTableName = 'table_' + sanitizedTableName;
+      }
+      // Ensure it's not empty after sanitization
+      if (!sanitizedTableName || sanitizedTableName === '_'.repeat(sanitizedTableName.length)) {
+        sanitizedTableName = 'imported_table';
+      }
+
+      console.log('Sanitized table name:', sanitizedTableName);
 
       // Infer column types from data
       const firstRow = parseResult.data[0] as Record<string, any>;
-      const columns = Object.keys(firstRow).map(col => {
+      const columnNames = Object.keys(firstRow);
+
+      if (columnNames.length === 0) {
+        throw new Error('No columns found in CSV data');
+      }
+
+      // Sanitize column names and build column definitions
+      const columnDefs = columnNames.map((col, index) => {
+        // Sanitize column name
+        let sanitizedCol = col.trim();
+        if (!sanitizedCol) {
+          sanitizedCol = `column_${index + 1}`;
+        }
+        sanitizedCol = sanitizedCol.replace(/[^a-zA-Z0-9_]/g, '_');
+        if (/^[0-9]/.test(sanitizedCol)) {
+          sanitizedCol = 'col_' + sanitizedCol;
+        }
+        // Ensure not empty after sanitization
+        if (!sanitizedCol || sanitizedCol === '_'.repeat(sanitizedCol.length)) {
+          sanitizedCol = `column_${index + 1}`;
+        }
+
+        // Infer type
         const sampleValues = parseResult.data.slice(0, 10).map(row => (row as any)[col]);
         const hasNumbers = sampleValues.some(val => typeof val === 'number');
         const hasStrings = sampleValues.some(val => typeof val === 'string' && val !== '');
@@ -188,21 +340,41 @@ class QuereusWorker implements QuereusWorkerAPI {
         let type = 'TEXT';
         if (hasNumbers && !hasStrings) {
           type = 'REAL';
-        } else if (hasNumbers) {
-          type = 'TEXT'; // Mixed, so use TEXT
         }
 
-        return `"${col}" ${type}`;
+        return `${sanitizedCol} ${type}`;
       });
 
-      // Create table
-      const createSql = `CREATE TABLE "${sanitizedTableName}" (${columns.join(', ')})`;
-      await this.db.exec(createSql);
+      // Create table with proper SQL syntax - no quotes around column names in definition
+      const createSql = `CREATE TABLE ${sanitizedTableName} (${columnDefs.join(', ')})`;
+      console.log('CREATE TABLE SQL:', createSql);
 
-      // Insert data
-      const columnNames = Object.keys(firstRow);
-      const placeholders = columnNames.map(() => '?').join(', ');
-      const insertSql = `INSERT INTO "${sanitizedTableName}" (${columnNames.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders})`;
+      try {
+        await this.db.exec(createSql);
+      } catch (createError) {
+        console.error('CREATE TABLE failed:', createError);
+        throw new Error(`Failed to create table: ${createError instanceof Error ? createError.message : createError}`);
+      }
+
+      // Insert data with proper column mapping
+      const sanitizedColumnNames = columnNames.map((col, index) => {
+        let sanitizedCol = col.trim();
+        if (!sanitizedCol) {
+          sanitizedCol = `column_${index + 1}`;
+        }
+        sanitizedCol = sanitizedCol.replace(/[^a-zA-Z0-9_]/g, '_');
+        if (/^[0-9]/.test(sanitizedCol)) {
+          sanitizedCol = 'col_' + sanitizedCol;
+        }
+        if (!sanitizedCol || sanitizedCol === '_'.repeat(sanitizedCol.length)) {
+          sanitizedCol = `column_${index + 1}`;
+        }
+        return sanitizedCol;
+      });
+
+      const placeholders = sanitizedColumnNames.map(() => '?').join(', ');
+      const insertSql = `INSERT INTO ${sanitizedTableName} (${sanitizedColumnNames.join(', ')}) VALUES (${placeholders})`;
+      console.log('INSERT SQL:', insertSql);
 
       const stmt = await this.db.prepare(insertSql);
       let insertCount = 0;

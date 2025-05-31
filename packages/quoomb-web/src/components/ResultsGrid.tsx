@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   useReactTable,
   getCoreRowModel,
@@ -10,12 +10,13 @@ import {
 } from '@tanstack/react-table';
 import type { SqlValue } from '@quereus/quereus';
 import { useSessionStore } from '../stores/sessionStore.js';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Copy, Check } from 'lucide-react';
 
 type Row = Record<string, SqlValue>;
 
 export const ResultsGrid: React.FC = () => {
   const { queryHistory, activeResultId } = useSessionStore();
+  const [copySuccess, setCopySuccess] = useState<string | null>(null);
 
   const activeResult = queryHistory.find(result => result.id === activeResultId);
   const data = activeResult?.results || [];
@@ -61,6 +62,77 @@ export const ResultsGrid: React.FC = () => {
     },
   });
 
+  const copyToClipboard = async (text: string, type: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopySuccess(type);
+      setTimeout(() => setCopySuccess(null), 2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+    }
+  };
+
+  const copyAsCSV = async () => {
+    if (data.length === 0) return;
+
+    const headers = Object.keys(data[0]);
+    const csvRows = [
+      headers.join(','), // Header row
+      ...data.map(row =>
+        headers.map(header => {
+          const value = row[header];
+          if (value === null) return '';
+          if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+            return `"${value.replace(/"/g, '""')}"`;
+          }
+          return String(value);
+        }).join(',')
+      )
+    ];
+
+    const csvContent = csvRows.join('\n');
+    await copyToClipboard(csvContent, 'csv');
+  };
+
+  const copyAsTable = async () => {
+    if (data.length === 0) return;
+
+    const headers = Object.keys(data[0]);
+
+    // Calculate column widths
+    const colWidths = headers.map(header => {
+      const headerWidth = header.length;
+      const dataWidth = Math.max(...data.map(row => {
+        const value = row[header];
+        return value === null ? 4 : String(value).length; // 4 for "NULL"
+      }));
+      return Math.max(headerWidth, dataWidth, 8); // Min width of 8
+    });
+
+    // Create table text
+    const separator = '+-' + colWidths.map(w => '-'.repeat(w)).join('-+-') + '-+';
+    const headerRow = '| ' + headers.map((header, i) => header.padEnd(colWidths[i])).join(' | ') + ' |';
+
+    const dataRows = data.map(row =>
+      '| ' + headers.map((header, i) => {
+        const value = row[header];
+        const displayValue = value === null ? 'NULL' : String(value);
+        return displayValue.padEnd(colWidths[i]);
+      }).join(' | ') + ' |'
+    );
+
+    const tableText = [
+      separator,
+      headerRow,
+      separator,
+      ...dataRows,
+      separator,
+      `(${data.length} rows)`
+    ].join('\n');
+
+    await copyToClipboard(tableText, 'table');
+  };
+
   if (activeResult?.error) {
     return (
       <div className="p-4">
@@ -91,6 +163,53 @@ export const ResultsGrid: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-600 dark:text-gray-400">
+            {data.length} rows
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={copyAsCSV}
+            className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
+            title="Copy as CSV"
+          >
+            {copySuccess === 'csv' ? (
+              <>
+                <Check size={12} />
+                Copied!
+              </>
+            ) : (
+              <>
+                <Copy size={12} />
+                Copy CSV
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={copyAsTable}
+            className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
+            title="Copy as formatted table"
+          >
+            {copySuccess === 'table' ? (
+              <>
+                <Check size={12} />
+                Copied!
+              </>
+            ) : (
+              <>
+                <Copy size={12} />
+                Copy Table
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
       {/* Table container */}
       <div className="flex-1 overflow-auto">
         <table className="results-table">

@@ -4,12 +4,14 @@ import { useSettingsStore } from '../stores/settingsStore.js';
 import { Sun, Moon, Settings, Upload, Download, History } from 'lucide-react';
 import { HistoryPanel } from './HistoryPanel.js';
 import { ExportMenu } from './ExportMenu.js';
+import { CsvImportModal } from './CsvImportModal.js';
 
 export const Toolbar: React.FC = () => {
   const { queryHistory, clearHistory } = useSessionStore();
   const { theme, setTheme } = useSettingsStore();
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
 
   const handleThemeToggle = () => {
     if (theme === 'auto') {
@@ -43,25 +45,6 @@ export const Toolbar: React.FC = () => {
     }
   };
 
-  const handleImportCsv = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.csv';
-    input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const csvContent = e.target?.result as string;
-          // TODO: Implement CSV import via worker
-          console.log('CSV import:', file.name, csvContent);
-        };
-        reader.readAsText(file);
-      }
-    };
-    input.click();
-  };
-
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
       {/* Left side - Logo/Title */}
@@ -78,11 +61,11 @@ export const Toolbar: React.FC = () => {
       <div className="flex items-center gap-2">
         {/* Import CSV */}
         <button
-          onClick={handleImportCsv}
+          onClick={() => setIsCsvImportOpen(true)}
           className="flex items-center gap-1 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
           title="Import CSV file"
         >
-          <Upload size={16} />
+          <Download size={16} />
           Import
         </button>
 
@@ -93,7 +76,7 @@ export const Toolbar: React.FC = () => {
             className="flex items-center gap-1 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
             title="Export results"
           >
-            <Download size={16} />
+            <Upload size={16} />
             Export
           </button>
           <ExportMenu
@@ -141,10 +124,15 @@ export const Toolbar: React.FC = () => {
         </button>
       </div>
 
-      {/* History Panel */}
+      {/* Modals */}
       <HistoryPanel
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
+      />
+
+      <CsvImportModal
+        isOpen={isCsvImportOpen}
+        onClose={() => setIsCsvImportOpen(false)}
       />
     </div>
   );

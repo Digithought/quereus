@@ -11,6 +11,7 @@ export interface QueryResult {
   error?: string;
   executionTime: number;
   timestamp: Date;
+  queryPlan?: Record<string, SqlValue>[];
 }
 
 export interface Tab {
@@ -46,6 +47,7 @@ export interface SessionState {
   // Actions
   initializeSession: () => Promise<void>;
   executeSQL: (sql: string) => Promise<void>;
+  fetchQueryPlan: (sql: string) => Promise<void>;
   createTab: (name?: string) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
@@ -103,7 +105,7 @@ export const useSessionStore = create<SessionState>()(
           const initialTab: Tab = {
             id: crypto.randomUUID(),
             name: 'scratch.sql',
-            content: '-- Welcome to Quoomb!\n-- Type your SQL queries here and press Shift+Enter to execute\n\nSELECT \'Hello, Quoomb!\' as message;',
+            content: 'SELECT \'Hello, Quoomb!\' as message;',
             isActive: true,
             isDirty: false,
           };
@@ -180,6 +182,33 @@ export const useSessionStore = create<SessionState>()(
             isExecuting: false,
             currentQuery: null,
           }));
+        }
+      },
+
+      fetchQueryPlan: async (sql: string) => {
+        const { api, isConnected, queryHistory, activeResultId } = get();
+
+        if (!api || !isConnected) {
+          throw new Error('Not connected to database');
+        }
+
+        try {
+          const plan = await api.explainQuery(sql);
+
+          // Update the active result with the query plan
+          if (activeResultId) {
+            set((state) => ({
+              ...state,
+              queryHistory: state.queryHistory.map(result =>
+                result.id === activeResultId
+                  ? { ...result, queryPlan: plan }
+                  : result
+              ),
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch query plan:', error);
+          throw error;
         }
       },
 

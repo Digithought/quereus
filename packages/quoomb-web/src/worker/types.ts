@@ -32,6 +32,11 @@ export interface QuereusWorkerAPI {
   getTableSchema(tableName: string): Promise<any>;
 
   /**
+   * Preview CSV data before import
+   */
+  previewCsv(csvData: string): Promise<CsvPreview>;
+
+  /**
    * Import CSV data as a table
    */
   importCsv(csvData: string, tableName: string): Promise<{ rowsImported: number }>;
@@ -62,4 +67,12 @@ export interface ColumnInfo {
   nullable: boolean;
   defaultValue?: SqlValue;
   primaryKey: boolean;
+}
+
+export interface CsvPreview {
+  columns: string[];
+  sampleRows: Record<string, any>[];
+  totalRows: number;
+  errors: string[];
+  inferredTypes: Record<string, string>;
 }
