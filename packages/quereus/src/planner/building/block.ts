@@ -5,6 +5,8 @@ import { buildSelectStmt } from './select.js';
 import type { PlanningContext } from '../planning-context.js';
 import { buildCreateTableStmt } from './create-table.js';
 import { buildDropTableStmt } from './drop-table.js';
+import { buildCreateViewStmt } from './create-view.js';
+import { buildDropViewStmt } from './drop-view.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
@@ -19,9 +21,13 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildSelectStmt(ctx, stmt as AST.SelectStmt);
 			case 'createTable':
 				return buildCreateTableStmt(ctx, stmt as AST.CreateTableStmt);
+			case 'createView':
+				return buildCreateViewStmt(ctx, stmt as AST.CreateViewStmt);
 			case 'drop':
 				if (stmt.objectType === 'table') {
 					return buildDropTableStmt(ctx, stmt as AST.DropStmt);
+				} else if (stmt.objectType === 'view') {
+					return buildDropViewStmt(ctx, stmt as AST.DropStmt);
 				}
 				break;
 			case 'insert':

@@ -9,6 +9,9 @@ import { emitBlock } from "./emit/block.js";
 import { emitParameterReference } from './emit/parameter.js';
 import { emitCreateTable } from './emit/create-table.js';
 import { emitDropTable } from './emit/drop-table.js';
+import { emitCreateView } from './emit/create-view.js';
+import { emitDropView } from './emit/drop-view.js';
+import { emitCTE } from './emit/cte.js';
 import { emitInsert } from './emit/insert.js';
 import { emitUpdate } from './emit/update.js';
 import { emitDelete } from './emit/delete.js';
@@ -28,6 +31,7 @@ import { emitPragma } from './emit/pragma.js';
 import { emitSort } from './emit/sort.js';
 import { emitWindow } from './emit/window.js';
 import { emitSequencing } from './emit/sequencing.js';
+import { emitRecursiveCTE } from './emit/recursive-cte.js';
 
 let registered = false;
 
@@ -61,6 +65,8 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.In, emitIn as EmitterFunc);
 	registerEmitter(PlanNodeType.Window, emitWindow as EmitterFunc);
 	registerEmitter(PlanNodeType.Sequencing, emitSequencing as EmitterFunc);
+	registerEmitter(PlanNodeType.CTE, emitCTE as EmitterFunc);
+	registerEmitter(PlanNodeType.RecursiveCTE, emitRecursiveCTE as EmitterFunc);
 
 	// Physical aggregate emitters
 	registerEmitter(PlanNodeType.StreamAggregate, emitStreamAggregate as EmitterFunc);
@@ -69,6 +75,8 @@ export function registerEmitters() {
 	// DML/DDL emitters
 	registerEmitter(PlanNodeType.CreateTable, emitCreateTable as EmitterFunc);
 	registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
+	registerEmitter(PlanNodeType.CreateView, emitCreateView as EmitterFunc);
+	registerEmitter(PlanNodeType.DropView, emitDropView as EmitterFunc);
 	registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);
 	registerEmitter(PlanNodeType.Update, emitUpdate as EmitterFunc);
 	registerEmitter(PlanNodeType.Delete, emitDelete as EmitterFunc);

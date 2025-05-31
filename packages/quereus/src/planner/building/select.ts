@@ -1,7 +1,7 @@
 import type * as AST from '../../parser/ast.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode } from '../../common/types.js';
+import { StatusCode, SqlDataType } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
 import { SingleRowNode } from '../nodes/single-row.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
@@ -20,6 +20,10 @@ import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { buildTableFunctionCall } from './table-function.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
 import { expressionToString } from '../../util/ast-stringify.js';
+import { buildWithClause } from './with.js';
+import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
+import type { CTEPlanNode } from '../nodes/cte-node.js';
+import type { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 
 /**
  * Checks if an expression contains aggregate functions
@@ -56,10 +60,33 @@ export function buildSelectStmt(
   stmt: AST.SelectStmt,
 ): PlanNode {
 
+	// Phase 0: Handle WITH clause if present
+	let cteNodes: Map<string, CTEPlanNode> = new Map();
+	let contextWithCTEs = ctx;
+
+	if (stmt.withClause) {
+		cteNodes = buildWithClause(ctx, stmt.withClause);
+
+		// Create a new scope that includes the CTEs
+		const cteScope = new RegisteredScope(ctx.scope);
+
+		// Register each CTE in the scope
+		for (const [cteName, cteNode] of cteNodes) {
+			const attributes = cteNode.getAttributes();
+			cteNode.getType().columns.forEach((col: any, i: number) => {
+				const attr = attributes[i];
+				cteScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
+			});
+		}
+
+		contextWithCTEs = { ...ctx, scope: cteScope };
+	}
+
   // Phase 1: Plan FROM clause and determine local input relations for the current select scope
   const fromTables = !stmt.from || stmt.from.length === 0
 		? [SingleRowNode.instance]
-		: stmt.from.map(from => buildFrom(from, ctx));
+		: stmt.from.map(from => buildFrom(from, contextWithCTEs, cteNodes));
 
 	// TODO: Support multiple FROM sources (joins)
 	if (fromTables.length > 1) {
@@ -72,9 +99,9 @@ export function buildSelectStmt(
 	// Phase 2: Create the main scope for this SELECT statement.
   // This scope sees the parent scope and the column scopes from the FROM clause.
   const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
-  const selectScope = new MultiScope([ctx.scope, ...columnScopes]);
+  const selectScope = new MultiScope([contextWithCTEs.scope, ...columnScopes]);
 	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
-	let selectContext: PlanningContext = {...ctx, scope: selectScope};
+	let selectContext: PlanningContext = {...contextWithCTEs, scope: selectScope};
 
 	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
 
@@ -293,7 +320,7 @@ export function buildSelectStmt(
 			input = new ProjectNode(selectScope, input, projections);
 
 			// Create a new scope that maps column names to the ProjectNode's output attributes
-			const projectionOutputScope = new RegisteredScope(ctx.scope);
+			const projectionOutputScope = new RegisteredScope(selectContext.scope);
 			const projectionAttributes = input.getAttributes();
 			input.getType().columns.forEach((col, index) => {
 				const attr = projectionAttributes[index];
@@ -333,29 +360,87 @@ export function buildSelectStmt(
 	return input;
 }
 
-export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext): RelationalPlanNode {
+export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode> = new Map()): RelationalPlanNode {
   let fromTable: RelationalPlanNode;
   let columnScope: Scope;
 
 	if (fromClause.type === 'table') {
-		fromTable = buildTableScan(fromClause, parentContext);
+		const tableName = fromClause.table.name.toLowerCase();
 
-		const tableScope = new RegisteredScope(parentContext.scope);
-		const attributes = fromTable.getAttributes();
-		fromTable.getType().columns.forEach((c, i) => {
-			const attr = attributes[i];
-			tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
-		});
+		// First check if this is a CTE reference
+		const cteNode = cteNodes.get(tableName);
+		if (cteNode) {
+			// This is a CTE reference
+			const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
+			fromTable = cteRefNode;
 
-		if (fromClause.alias) {
-			columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
+			const cteScope = new RegisteredScope(parentContext.scope);
+			const attributes = fromTable.getAttributes();
+			fromTable.getType().columns.forEach((c, i) => {
+				const attr = attributes[i];
+				cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+			});
+
+			if (fromClause.alias) {
+				columnScope = new AliasedScope(cteScope, tableName, fromClause.alias.toLowerCase());
+			} else {
+				columnScope = cteScope;
+			}
 		} else {
-			columnScope = tableScope;
+			// Check if this is a view reference
+			const schemaName = fromClause.table.schema || parentContext.db.schemaManager.getCurrentSchemaName();
+			const viewSchema = parentContext.db.schemaManager.getView(schemaName, fromClause.table.name);
+
+			if (viewSchema) {
+				// This is a view reference - expand it to the underlying SELECT statement
+				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst) as RelationalPlanNode;
+
+				const viewScope = new RegisteredScope(parentContext.scope);
+				const attributes = fromTable.getAttributes();
+
+				// Use view column names if explicitly defined, otherwise use the SELECT output column names
+				const columnNames = viewSchema.columns || fromTable.getType().columns.map(c => c.name);
+
+				columnNames.forEach((columnName, i) => {
+					if (i < attributes.length) {
+						const attr = attributes[i];
+						viewScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
+							new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
+								typeClass: 'scalar',
+								affinity: SqlDataType.TEXT,
+								nullable: true,
+								isReadOnly: false
+							}, attr.id, i));
+					}
+				});
+
+				if (fromClause.alias) {
+					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
+				} else {
+					columnScope = viewScope;
+				}
+			} else {
+				// This is a regular table reference
+				fromTable = buildTableScan(fromClause, parentContext);
+
+				const tableScope = new RegisteredScope(parentContext.scope);
+				const attributes = fromTable.getAttributes();
+				fromTable.getType().columns.forEach((c, i) => {
+					const attr = attributes[i];
+					tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+				});
+
+				if (fromClause.alias) {
+					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
+				} else {
+					columnScope = tableScope;
+				}
+			}
 		}
 
-		// For now, we'll store the column scope in a property that buildSelectStmt can use
-		// TODO: This is a temporary solution; we might need a better design
+		// Store the column scope for buildSelectStmt
 		(fromTable as any).columnScope = columnScope;
 	} else if (fromClause.type === 'functionSource') {
 		fromTable = buildTableFunctionCall(fromClause, parentContext);
