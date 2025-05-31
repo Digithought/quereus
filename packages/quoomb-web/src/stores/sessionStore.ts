@@ -44,18 +44,32 @@ export interface SessionState {
   activeResultId: string | null;
   selectedPanel: 'result' | 'plan' | 'messages';
 
+  // Unsaved changes dialog
+  unsavedChangesDialog: {
+    isOpen: boolean;
+    tabId: string | null;
+    fileName: string;
+  };
+
   // Actions
   initializeSession: () => Promise<void>;
   executeSQL: (sql: string) => Promise<void>;
   fetchQueryPlan: (sql: string) => Promise<void>;
   createTab: (name?: string) => string;
   closeTab: (tabId: string) => void;
+  forceCloseTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
+  updateTabName: (tabId: string, name: string) => void;
   setSelectedPanel: (panel: 'result' | 'plan' | 'messages') => void;
   setActiveResultId: (resultId: string | null) => void;
   exportResultsAsCSV: () => void;
   exportResultsAsJSON: () => void;
+  saveCurrentTabAsFile: () => Promise<void>;
+  saveTabAsFile: (tabId: string) => Promise<void>;
+  loadSQLFile: () => Promise<void>;
+  showUnsavedChangesDialog: (tabId: string) => void;
+  hideUnsavedChangesDialog: () => void;
   clearHistory: () => void;
   disconnect: () => Promise<void>;
 }
@@ -80,6 +94,13 @@ export const useSessionStore = create<SessionState>()(
 
       activeResultId: null,
       selectedPanel: 'result',
+
+      // Unsaved changes dialog
+      unsavedChangesDialog: {
+        isOpen: false,
+        tabId: null,
+        fileName: '',
+      },
 
       // Actions
       initializeSession: async () => {
@@ -240,6 +261,47 @@ export const useSessionStore = create<SessionState>()(
 
       closeTab: (tabId: string) => {
         set((state) => {
+          const tab = state.tabs.find(tab => tab.id === tabId);
+          if (!tab) return state;
+
+          // If tab has unsaved changes, show confirmation dialog
+          if (tab.isDirty) {
+            return {
+              ...state,
+              unsavedChangesDialog: {
+                isOpen: true,
+                tabId,
+                fileName: tab.name,
+              },
+            };
+          }
+
+          // If no unsaved changes, close immediately
+          const tabIndex = state.tabs.findIndex(tab => tab.id === tabId);
+          const newTabs = state.tabs.filter(tab => tab.id !== tabId);
+          let newActiveTabId = state.activeTabId;
+
+          // If closing the active tab, activate another one
+          if (state.activeTabId === tabId) {
+            if (newTabs.length > 0) {
+              const newActiveTab = newTabs[Math.max(0, tabIndex - 1)];
+              newActiveTabId = newActiveTab.id;
+              newTabs[Math.max(0, tabIndex - 1)] = { ...newActiveTab, isActive: true };
+            } else {
+              newActiveTabId = null;
+            }
+          }
+
+          return {
+            ...state,
+            tabs: newTabs,
+            activeTabId: newActiveTabId,
+          };
+        });
+      },
+
+      forceCloseTab: (tabId: string) => {
+        set((state) => {
           const tabIndex = state.tabs.findIndex(tab => tab.id === tabId);
           if (tabIndex === -1) return state;
 
@@ -282,6 +344,17 @@ export const useSessionStore = create<SessionState>()(
           tabs: state.tabs.map(tab =>
             tab.id === tabId
               ? { ...tab, content, isDirty: true }
+              : tab
+          ),
+        }));
+      },
+
+      updateTabName: (tabId: string, name: string) => {
+        set((state) => ({
+          ...state,
+          tabs: state.tabs.map(tab =>
+            tab.id === tabId
+              ? { ...tab, name }
               : tab
           ),
         }));
@@ -371,6 +444,166 @@ export const useSessionStore = create<SessionState>()(
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
+      },
+
+      saveCurrentTabAsFile: async () => {
+        const { activeTabId, tabs } = get();
+        const activeTab = tabs.find(tab => tab.id === activeTabId);
+
+        if (!activeTab) {
+          throw new Error('No active tab to save');
+        }
+
+        let fileName = activeTab.name;
+
+        // Ensure file has .sql extension if it doesn't already have one
+        if (!fileName.toLowerCase().endsWith('.sql') && !fileName.toLowerCase().endsWith('.txt')) {
+          fileName = fileName.replace(/\.[^/.]+$/, '') + '.sql';
+        }
+
+        const content = activeTab.content;
+
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', fileName);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        // Mark tab as clean after saving
+        set((state) => ({
+          ...state,
+          tabs: state.tabs.map(tab =>
+            tab.id === activeTabId
+              ? { ...tab, isDirty: false }
+              : tab
+          ),
+        }));
+      },
+
+      saveTabAsFile: async (tabId: string) => {
+        const { tabs } = get();
+        const tab = tabs.find(t => t.id === tabId);
+
+        if (!tab) {
+          throw new Error('No such tab');
+        }
+
+        let fileName = tab.name;
+
+        // Ensure file has .sql extension if it doesn't already have one
+        if (!fileName.toLowerCase().endsWith('.sql') && !fileName.toLowerCase().endsWith('.txt')) {
+          fileName = fileName.replace(/\.[^/.]+$/, '') + '.sql';
+        }
+
+        const content = tab.content;
+
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', fileName);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        // Mark tab as clean after saving
+        set((state) => ({
+          ...state,
+          tabs: state.tabs.map(t =>
+            t.id === tabId
+              ? { ...t, isDirty: false }
+              : t
+          ),
+        }));
+      },
+
+      loadSQLFile: () => {
+        return new Promise<void>((resolve, reject) => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.sql,.txt';
+          input.style.visibility = 'hidden';
+
+          input.onchange = (event) => {
+            const file = (event.target as HTMLInputElement).files?.[0];
+            if (!file) {
+              resolve();
+              return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              try {
+                const content = e.target?.result as string;
+                const fileName = file.name;
+
+                // Create a new tab with the file content
+                const { createTab, updateTabContent, updateTabName } = get();
+                const tabId = createTab(fileName);
+                updateTabContent(tabId, content);
+
+                // Mark tab as clean since it's just loaded
+                set((state) => ({
+                  ...state,
+                  tabs: state.tabs.map(tab =>
+                    tab.id === tabId
+                      ? { ...tab, isDirty: false }
+                      : tab
+                  ),
+                }));
+
+                resolve();
+              } catch (error) {
+                reject(new Error(`Failed to read file: ${error instanceof Error ? error.message : error}`));
+              }
+            };
+
+            reader.onerror = () => {
+              reject(new Error('Failed to read file'));
+            };
+
+            reader.readAsText(file);
+          };
+
+          input.oncancel = () => {
+            resolve(); // User cancelled, not an error
+          };
+
+          document.body.appendChild(input);
+          input.click();
+          document.body.removeChild(input);
+        });
+      },
+
+      showUnsavedChangesDialog: (tabId: string) => {
+        set((state) => ({
+          ...state,
+          unsavedChangesDialog: {
+            isOpen: true,
+            tabId,
+            fileName: state.tabs.find(tab => tab.id === tabId)?.name || '',
+          },
+        }));
+      },
+
+      hideUnsavedChangesDialog: () => {
+        set((state) => ({
+          ...state,
+          unsavedChangesDialog: {
+            isOpen: false,
+            tabId: null,
+            fileName: '',
+          },
+        }));
       },
 
       clearHistory: () => {

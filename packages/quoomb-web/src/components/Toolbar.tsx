@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { useSettingsStore } from '../stores/settingsStore.js';
-import { Settings, Upload, Download, History } from 'lucide-react';
+import { Settings, Upload, Download, History, File } from 'lucide-react';
 import { HistoryPanel } from './HistoryPanel.js';
 import { ExportMenu } from './ExportMenu.js';
 import { CsvImportModal } from './CsvImportModal.js';
 import { SettingsModal } from './SettingsModal.js';
+import { FileMenu } from './FileMenu.js';
 
 export const Toolbar: React.FC = () => {
   const { queryHistory, clearHistory } = useSessionStore();
@@ -13,6 +14,7 @@ export const Toolbar: React.FC = () => {
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
 
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
@@ -23,6 +25,23 @@ export const Toolbar: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-2">
+        {/* File Menu */}
+        <div className="relative">
+          <button
+            onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
+            className="flex items-center gap-1 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
+            title="File operations"
+          >
+            <File size={16} />
+            File
+          </button>
+
+          <FileMenu
+            isOpen={isFileMenuOpen}
+            onClose={() => setIsFileMenuOpen(false)}
+          />
+        </div>
+
         {/* CSV Import */}
         <button
           onClick={() => setIsCsvImportOpen(true)}
