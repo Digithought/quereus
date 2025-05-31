@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useMemo, useState, useEffect } from 'react';
 import { Editor } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import { useSessionStore } from '../stores/sessionStore.js';
@@ -8,6 +8,9 @@ import { Play, Square } from 'lucide-react';
 
 export const EditorPanel: React.FC = () => {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const [systemIsDark, setSystemIsDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
 
   const {
     tabs,
@@ -26,6 +29,25 @@ export const EditorPanel: React.FC = () => {
     showMinimap,
     autoExecuteOnShiftEnter,
   } = useSettingsStore();
+
+  // Resolve the actual theme to apply (same logic as App.tsx)
+  const resolvedTheme = useMemo(() => {
+    if (theme === 'auto') {
+      return systemIsDark ? 'dark' : 'light';
+    }
+    return theme;
+  }, [theme, systemIsDark]);
+
+  // Listen for system theme changes
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = (e: MediaQueryListEvent) => {
+      setSystemIsDark(e.matches);
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
 
   const activeTab = tabs.find(tab => tab.id === activeTabId);
 
@@ -100,7 +122,7 @@ export const EditorPanel: React.FC = () => {
               value={activeTab.content}
               onChange={handleEditorChange}
               onMount={handleEditorDidMount}
-              theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+              theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
               options={{
                 fontSize,
                 fontFamily,

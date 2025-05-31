@@ -4,11 +4,44 @@ import { EditorPanel } from './EditorPanel.js';
 import { ResultsPanel } from './ResultsPanel.js';
 import { Toolbar } from './Toolbar.js';
 import { StatusBar } from './StatusBar.js';
+import { UnsavedChangesDialog } from './UnsavedChangesDialog.js';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { ConnectionError } from './ConnectionError.js';
 
 export const MainLayout: React.FC = () => {
-  const { isConnected, isConnecting, connectionError } = useSessionStore();
+  const {
+    isConnected,
+    isConnecting,
+    connectionError,
+    unsavedChangesDialog,
+    saveTabAsFile,
+    forceCloseTab,
+    hideUnsavedChangesDialog,
+  } = useSessionStore();
+
+  const handleSaveAndClose = async () => {
+    if (!unsavedChangesDialog.tabId) return;
+
+    try {
+      await saveTabAsFile(unsavedChangesDialog.tabId);
+      forceCloseTab(unsavedChangesDialog.tabId);
+      hideUnsavedChangesDialog();
+    } catch (error) {
+      console.error('Failed to save and close tab:', error);
+      // Dialog stays open if save fails
+    }
+  };
+
+  const handleDiscardAndClose = () => {
+    if (!unsavedChangesDialog.tabId) return;
+
+    forceCloseTab(unsavedChangesDialog.tabId);
+    hideUnsavedChangesDialog();
+  };
+
+  const handleCancelClose = () => {
+    hideUnsavedChangesDialog();
+  };
 
   // Show connection error if not connected
   if (!isConnected && !isConnecting && connectionError) {
@@ -55,6 +88,15 @@ export const MainLayout: React.FC = () => {
 
       {/* Bottom status bar */}
       <StatusBar />
+
+      {/* Unsaved Changes Dialog */}
+      <UnsavedChangesDialog
+        isOpen={unsavedChangesDialog.isOpen}
+        fileName={unsavedChangesDialog.fileName}
+        onSave={handleSaveAndClose}
+        onDiscard={handleDiscardAndClose}
+        onCancel={handleCancelClose}
+      />
     </div>
   );
 };

@@ -4,7 +4,7 @@ import { useSessionStore } from './stores/sessionStore.js';
 import { useSettingsStore } from './stores/settingsStore.js';
 
 export const App: React.FC = () => {
-  const { initializeSession } = useSessionStore();
+  const { initializeSession, saveCurrentTabAsFile, loadSQLFile, tabs } = useSessionStore();
   const { loadSettings, theme } = useSettingsStore();
   const [systemIsDark, setSystemIsDark] = useState(
     () => window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -34,6 +34,50 @@ export const App: React.FC = () => {
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
+
+  useEffect(() => {
+    // Add keyboard shortcuts
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) { // Support both Ctrl and Cmd
+        switch (e.key.toLowerCase()) {
+          case 's':
+            e.preventDefault();
+            try {
+              await saveCurrentTabAsFile();
+            } catch (error) {
+              console.error('Failed to save file:', error);
+            }
+            break;
+          case 'o':
+            e.preventDefault();
+            try {
+              await loadSQLFile();
+            } catch (error) {
+              console.error('Failed to load file:', error);
+            }
+            break;
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [saveCurrentTabAsFile, loadSQLFile]);
+
+  useEffect(() => {
+    // Warn before closing browser tab/window if there are unsaved changes
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const hasUnsavedChanges = tabs.some(tab => tab.isDirty);
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = ''; // Required for Chrome
+        return ''; // Required for other browsers
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [tabs]);
 
   return (
     <div className={`app ${resolvedTheme}`} data-theme={resolvedTheme}>

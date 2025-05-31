@@ -65,6 +65,23 @@ const defaultSettings = {
   },
 };
 
+// Helper function to get resolved theme
+const getResolvedTheme = (theme: Theme): 'light' | 'dark' => {
+  if (theme === 'auto') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return theme;
+};
+
+// Helper function to apply theme to document
+const applyThemeToDocument = (theme: Theme) => {
+  const resolvedTheme = getResolvedTheme(theme);
+  document.documentElement.setAttribute('data-theme', resolvedTheme);
+  // Also set class for compatibility
+  document.documentElement.classList.remove('light', 'dark');
+  document.documentElement.classList.add(resolvedTheme);
+};
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
@@ -72,15 +89,9 @@ export const useSettingsStore = create<SettingsState>()(
 
       loadSettings: () => {
         // Settings are automatically loaded by the persist middleware
-        // This function exists for explicit loading if needed
-        const settings = get();
-
-        // Apply theme to document
-        const resolvedTheme = settings.theme === 'auto'
-          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-          : settings.theme;
-
-        document.documentElement.setAttribute('data-theme', resolvedTheme);
+        // This function ensures theme is applied to document
+        const { theme } = get();
+        applyThemeToDocument(theme);
       },
 
       setTheme: (theme: Theme) => {
@@ -90,11 +101,7 @@ export const useSettingsStore = create<SettingsState>()(
         }));
 
         // Apply theme immediately
-        const resolvedTheme = theme === 'auto'
-          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-          : theme;
-
-        document.documentElement.setAttribute('data-theme', resolvedTheme);
+        applyThemeToDocument(theme);
       },
 
       setFontSize: (size: number) => {
@@ -178,16 +185,18 @@ export const useSettingsStore = create<SettingsState>()(
         set(() => ({ ...defaultSettings }));
 
         // Reapply theme
-        const resolvedTheme = defaultSettings.theme === 'auto'
-          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-          : defaultSettings.theme;
-
-        document.documentElement.setAttribute('data-theme', resolvedTheme);
+        applyThemeToDocument(defaultSettings.theme);
       },
     }),
     {
       name: 'quoomb-settings',
       version: 1,
+      onRehydrateStorage: () => (state) => {
+        // Apply theme immediately after rehydration
+        if (state?.theme) {
+          applyThemeToDocument(state.theme);
+        }
+      },
     }
   )
 );
@@ -197,7 +206,8 @@ if (typeof window !== 'undefined') {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
     const { theme } = useSettingsStore.getState();
     if (theme === 'auto') {
-      document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+      // Use the helper function for consistency
+      applyThemeToDocument(theme);
     }
   });
 }
