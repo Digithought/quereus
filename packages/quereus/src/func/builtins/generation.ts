@@ -25,7 +25,7 @@ export const generateSeriesFunc = createTableValuedFunction(
 					generated: true
 				}
 			],
-			keys: [[{ index: 0 ]],
+			keys: [[{ index: 0 }]],
 			rowConstraints: []
 		}
 	},

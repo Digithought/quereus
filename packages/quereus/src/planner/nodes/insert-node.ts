@@ -40,6 +40,20 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
   }
 
   override toString(): string {
-    return `${super.toString()} INTO ${this.table.tableSchema.name}`;
+    return `INSERT INTO ${this.table.tableSchema.name}`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {
+      table: this.table.tableSchema.name,
+      schema: this.table.tableSchema.schemaName,
+      targetColumns: this.targetColumns.map(col => col.name)
+    };
+
+    if (this.onConflict) {
+      props.onConflict = this.onConflict;
+    }
+
+    return props;
   }
 }

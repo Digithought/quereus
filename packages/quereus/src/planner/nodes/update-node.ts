@@ -6,6 +6,7 @@ import type { TableReferenceNode } from './reference.js';
 import type { ScalarPlanNode } from './plan-node.js';
 import type { ConflictResolution } from '../../common/constants.js';
 import type { RelationType } from '../../common/datatype.js';
+import { formatExpression } from '../../util/plan-formatter.js';
 
 export interface UpdateAssignment {
   targetColumn: AST.ColumnExpr; // Could be resolved ColumnReferenceNode or just index
@@ -51,6 +52,23 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
   }
 
   override toString(): string {
-    return `${super.toString()} (${this.table.tableSchema.name})`;
+    return `UPDATE ${this.table.tableSchema.name}`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {
+      table: this.table.tableSchema.name,
+      schema: this.table.tableSchema.schemaName,
+      assignments: this.assignments.map(assign => ({
+        column: assign.targetColumn.name,
+        value: formatExpression(assign.value)
+      }))
+    };
+
+    if (this.onConflict) {
+      props.onConflict = this.onConflict;
+    }
+
+    return props;
   }
 }

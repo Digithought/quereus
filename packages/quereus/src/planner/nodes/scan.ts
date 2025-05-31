@@ -61,6 +61,19 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.source.tableSchema.name})`;
+		return `SCAN ${this.source.tableSchema.name}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			table: this.source.tableSchema.name,
+			schema: this.source.tableSchema.schemaName,
+			filterInfo: {
+				usableIndex: this.filterInfo.indexInfoOutput.idxStr,
+				matchedClauses: this.filterInfo.indexInfoOutput.aConstraintUsage?.length || 0,
+				estimatedCost: this.filterInfo.indexInfoOutput.estimatedCost,
+				estimatedRows: this.filterInfo.indexInfoOutput.estimatedRows
+			}
+		};
 	}
 }

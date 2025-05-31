@@ -3,6 +3,7 @@ import type { Scope } from '../scopes/scope.js';
 import { PlanNode, type ScalarPlanNode, type ZeroAryRelationalNode, type Attribute } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import { Cached } from '../../util/cached.js';
+import { formatScalarType } from '../../util/plan-formatter.js';
 
 /**
  * Represents a VALUES clause, producing a relation from literal rows.
@@ -92,9 +93,25 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
   }
 
   override toString(): string {
-    const rowStrings = this.rows.map(row =>
-      `(${row.map(expr => expr.toString()).join(', ')})`
-    );
-    return `${this.nodeType} (${rowStrings.join(', ')})`;
+    return `VALUES (${this.rows.length} rows)`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    if (this.rows.length === 0) {
+      return {
+        rows: [],
+        numRows: 0
+      };
+    }
+
+    const firstRow = this.rows[0];
+    return {
+      numRows: this.rows.length,
+      numColumns: firstRow.length,
+      columnTypes: firstRow.map(expr => formatScalarType(expr.getType())),
+      rows: this.rows.map(row =>
+        row.map(expr => expr.toString())
+      )
+    };
   }
 }

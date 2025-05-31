@@ -5,6 +5,7 @@ import type { Scope } from '../scopes/scope.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import { Cached } from '../../util/cached.js';
+import { formatExpressionList } from '../../util/plan-formatter.js';
 
 /**
  * Represents a table-valued function call in the FROM clause.
@@ -74,8 +75,25 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
   }
 
   override toString(): string {
-    const argsStr = this.operands.map(op => op.toString()).join(', ');
-    const aliasStr = this.alias ? ` as ${this.alias}` : '';
-    return `${this.nodeType} (${this.functionName}(${argsStr}))${aliasStr}`;
+    const argsStr = formatExpressionList(this.operands);
+    const aliasStr = this.alias ? ` AS ${this.alias}` : '';
+    return `${this.functionName}(${argsStr})${aliasStr}`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {
+      function: this.functionName,
+      arguments: this.operands.map(op => op.toString())
+    };
+
+    if (this.alias) {
+      props.alias = this.alias;
+    }
+
+    if (isTableValuedFunctionSchema(this.functionSchema)) {
+      props.columns = this.functionSchema.returnType.columns.map(col => col.name);
+    }
+
+    return props;
   }
 }

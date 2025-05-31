@@ -112,6 +112,118 @@ export function buildMyOperationStmt(ctx: PlanningContext, stmt: AST.MyOperation
 }
 ```
 
+## Plan Node Output Format
+
+All plan nodes follow standardized output conventions for consistent query plan display and debugging.
+
+### Plan Node Data Structure
+
+Each plan node provides three complementary sources of information:
+
+```typescript
+{
+  id: string,                    // Unique node identifier
+  nodeType: PlanNodeType,        // Node type enum (displayed by viewer)
+  description: string,           // toString() output
+  logical: Record<string, any>,  // getLogicalProperties() output
+  physical?: PhysicalProperties  // Physical execution properties (when optimized)
+}
+```
+
+### toString() Guidelines
+
+**Purpose**: Provide concise, human-readable descriptions for quick plan comprehension.
+
+**Rules**:
+- Never include node type, ID, or parentheses
+- Keep ≤ 80 characters when practical  
+- Start with SQL keyword or principal action
+- Show only essential information (predicates, projections, etc.)
+- Don't duplicate information from logical/physical properties
+
+**Examples**:
+```typescript
+// TableReferenceNode
+toString(): "main.users"
+
+// FilterNode  
+toString(): "WHERE age > 40"
+
+// ProjectNode
+toString(): "SELECT name, COUNT(*) AS total"
+
+// SortNode
+toString(): "ORDER BY name DESC, age ASC"
+
+// AggregateNode
+toString(): "GROUP BY dept_id  AGG  COUNT(*) AS count, SUM(salary) AS total"
+```
+
+### getLogicalProperties() Guidelines
+
+**Purpose**: Provide comprehensive logical information for detailed plan analysis.
+
+**Rules**:
+- Always return an object (never undefined)
+- Use camelCased keys with semantic meaning
+- Return primitive JSON types when possible (strings, numbers, arrays)
+- Include logically important information not in description
+- Don't duplicate physical properties (estimatedRows, ordering, etc.)
+
+**Examples**:
+```typescript
+// FilterNode
+getLogicalProperties(): {
+  predicate: "age > 40"
+}
+
+// AggregateNode  
+getLogicalProperties(): {
+  groupBy: ["dept_id"],
+  aggregates: [
+    { expression: "COUNT(*)", alias: "count" },
+    { expression: "SUM(salary)", alias: "total" }
+  ]
+}
+```
+
+### Formatting Utilities
+
+Use consistent formatting helpers from `src/util/plan-formatter.ts`:
+
+```typescript
+import { 
+  formatExpression,      // ScalarPlanNode → string
+  formatExpressionList,  // ScalarPlanNode[] → "expr1, expr2, ..."  
+  formatProjection,      // Expression + alias → "expr AS alias"
+  formatSortKey,         // Expression + direction + nulls → "expr DESC NULLS LAST"
+  formatScalarType       // ScalarType → "INTEGER" | "TEXT" | etc.
+} from '../../util/plan-formatter.js';
+```
+
+### Implementation Template
+
+```typescript
+export class MyOperationNode extends PlanNode {
+  // ... constructor and other methods
+
+  override toString(): string {
+    // Concise description focusing on key operation details
+    return `MY_OP ${this.operationParam}`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    return {
+      operation: this.operationParam,
+      targetColumns: this.columns.map(col => col.name),
+      // Include other logical details...
+    };
+  }
+}
+```
+
+This standardized format ensures plan viewers receive consistent, comprehensive information for both quick scanning (description) and deep analysis (logical + physical properties).
+
 ## Creating an Emitter
 
 ### 1. Create the Emitter (`src/runtime/emit/`)

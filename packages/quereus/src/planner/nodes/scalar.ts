@@ -5,6 +5,7 @@ import type * as AST from "../../parser/ast.js";
 import type { Scope } from "../scopes/scope.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import { Cached } from "../../util/cached.js";
+import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
 
 export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	readonly nodeType = PlanNodeType.UnaryOp;
@@ -69,7 +70,15 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.expression.operator} ${this.operand.toString()})`;
+		return `${this.expression.operator} ${formatExpression(this.operand)}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			operator: this.expression.operator,
+			operand: formatExpression(this.operand),
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }
 
@@ -144,7 +153,16 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.expression.operator} ${this.left.toString()} ${this.right.toString()})`;
+		return `${formatExpression(this.left)} ${this.expression.operator} ${formatExpression(this.right)}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			operator: this.expression.operator,
+			left: formatExpression(this.left),
+			right: formatExpression(this.right),
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }
 
@@ -225,8 +243,19 @@ export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
 		return [];
 	}
 
-	toString(): string {
-		return `${super.toString()} (${this.expression.value})`;
+	override toString(): string {
+		const value = this.expression.value;
+		if (value === null) return 'NULL';
+		if (typeof value === 'string') return `'${value}'`;
+		if (value instanceof Uint8Array) return `X'${Array.from(value, b => b.toString(16).padStart(2, '0')).join('')}'`;
+		return String(value);
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			value: this.expression.value,
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }
 
@@ -342,12 +371,32 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 	}
 
 	override toString(): string {
-		const baseStr = this.baseExpr ? ` ${this.baseExpr.toString()}` : '';
+		const baseStr = this.baseExpr ? ` ${formatExpression(this.baseExpr)}` : '';
 		const whenThenStr = this.whenThenClauses
-			.map(clause => ` WHEN ${clause.when.toString()} THEN ${clause.then.toString()}`)
+			.map(clause => ` WHEN ${formatExpression(clause.when)} THEN ${formatExpression(clause.then)}`)
 			.join('');
-		const elseStr = this.elseExpr ? ` ELSE ${this.elseExpr.toString()}` : '';
-		return `${super.toString()} (CASE${baseStr}${whenThenStr}${elseStr} END)`;
+		const elseStr = this.elseExpr ? ` ELSE ${formatExpression(this.elseExpr)}` : '';
+		return `CASE${baseStr}${whenThenStr}${elseStr} END`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			resultType: formatScalarType(this.getType()),
+			whenThenClauses: this.whenThenClauses.map(clause => ({
+				when: formatExpression(clause.when),
+				then: formatExpression(clause.then)
+			}))
+		};
+
+		if (this.baseExpr) {
+			props.baseExpression = formatExpression(this.baseExpr);
+		}
+
+		if (this.elseExpr) {
+			props.elseExpression = formatExpression(this.elseExpr);
+		}
+
+		return props;
 	}
 }
 
@@ -445,7 +494,15 @@ export class CastNode extends PlanNode implements UnaryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (CAST ${this.operand.toString()} AS ${this.expression.targetType})`;
+		return `CAST(${formatExpression(this.operand)} AS ${this.expression.targetType})`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			operand: formatExpression(this.operand),
+			targetType: this.expression.targetType,
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }
 
@@ -489,6 +546,14 @@ export class CollateNode extends PlanNode implements UnaryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.operand.toString()} COLLATE ${this.expression.collation})`;
+		return `${formatExpression(this.operand)} COLLATE ${this.expression.collation}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			operand: formatExpression(this.operand),
+			collation: this.expression.collation,
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }

@@ -5,6 +5,7 @@ import type { Scope } from '../scopes/scope.js';
 import type { WindowFunctionExpr } from '../../parser/ast.js';
 import { Cached } from '../../util/cached.js';
 import { SqlDataType } from '../../common/types.js';
+import { formatScalarType } from '../../util/plan-formatter.js';
 
 /**
  * Represents a window function call in the query plan.
@@ -48,6 +49,15 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 	}
 
 	override toString(): string {
-		return `${this.functionName}()`;
+		const distinctStr = this.isDistinct ? 'DISTINCT ' : '';
+		return `${this.functionName}(${distinctStr})`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			function: this.functionName,
+			isDistinct: this.isDistinct,
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }

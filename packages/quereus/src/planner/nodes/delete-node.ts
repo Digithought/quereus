@@ -41,6 +41,13 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
   }
 
   override toString(): string {
-    return `${super.toString()} FROM ${this.table.tableSchema.name}`;
+    return `DELETE FROM ${this.table.tableSchema.name}`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    return {
+      table: this.table.tableSchema.name,
+      schema: this.table.tableSchema.schemaName
+    };
   }
 }

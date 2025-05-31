@@ -1,6 +1,6 @@
 # Quereus - A TypeScript SQL Query Processor
 
-<img src="docs/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
+<img src="docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
 **(Work In Progress - and undergoing Major Refactoring: Titan Project)**
 

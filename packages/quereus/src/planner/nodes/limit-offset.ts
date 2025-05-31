@@ -2,6 +2,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
+import { formatExpression } from '../../util/plan-formatter.js';
 
 /**
  * Represents a LIMIT/OFFSET operation.
@@ -57,8 +58,22 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
 
   override toString(): string {
     const parts: string[] = [];
-    if (this.limit) parts.push(`LIMIT ${this.limit.toString()}`);
-    if (this.offset) parts.push(`OFFSET ${this.offset.toString()}`);
-    return `${super.toString()} (${parts.join(' ')})`;
+    if (this.limit) parts.push(`LIMIT ${formatExpression(this.limit)}`);
+    if (this.offset) parts.push(`OFFSET ${formatExpression(this.offset)}`);
+    return parts.join(' ');
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {};
+
+    if (this.limit) {
+      props.limit = formatExpression(this.limit);
+    }
+
+    if (this.offset) {
+      props.offset = formatExpression(this.offset);
+    }
+
+    return props;
   }
 }

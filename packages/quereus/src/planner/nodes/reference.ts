@@ -8,6 +8,7 @@ import { relationTypeFromTableSchema } from '../type-utils.js';
 import { Cached } from '../../util/cached.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isTableValuedFunctionSchema } from '../../schema/function.js';
+import { formatScalarType } from '../../util/plan-formatter.js';
 
 /** Represents a reference to a table in the global schema. */
 export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode {
@@ -61,7 +62,18 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.tableSchema.schemaName}.${this.tableSchema.name})`;
+		return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			schema: this.tableSchema.schemaName,
+			table: this.tableSchema.name,
+			columns: this.tableSchema.columns.map(col => col.name),
+			estimates: {
+				rows: this.tableSchema.estimatedRows
+			}
+		};
 	}
 }
 
@@ -115,7 +127,20 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.functionSchema.name})`;
+		return `${this.functionSchema.name}()`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			function: this.functionSchema.name,
+			numArgs: this.functionSchema.numArgs
+		};
+
+		if (isTableValuedFunctionSchema(this.functionSchema)) {
+			props.columns = this.functionSchema.returnType.columns.map(col => col.name);
+		}
+
+		return props;
 	}
 }
 
@@ -150,7 +175,18 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.expression.alias ?? (this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name} attr#${this.attributeId})`;
+		const columnName = this.expression.alias ??
+			(this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name;
+		return columnName;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			column: this.expression.alias ?? this.expression.name,
+			schema: this.expression.schema,
+			attributeId: this.attributeId,
+			resultType: formatScalarType(this.columnType)
+		};
 	}
 }
 
@@ -183,7 +219,14 @@ export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNod
 	}
 
 	override toString(): string {
-		return `${super.toString()} (:${this.nameOrIndex})`;
+		return `:${this.nameOrIndex}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			parameter: this.nameOrIndex,
+			resultType: formatScalarType(this.targetType)
+		};
 	}
 }
 
@@ -212,6 +255,14 @@ export class FunctionReferenceNode extends PlanNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.functionSchema.name}(${this.functionSchema.numArgs}))`;
+		return `${this.functionSchema.name}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			function: this.functionSchema.name,
+			numArgs: this.functionSchema.numArgs,
+			targetType: this.targetType.typeClass
+		};
 	}
 }

@@ -5,6 +5,7 @@ import type { Scope } from '../scopes/scope.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import type * as AST from '../../parser/ast.js';
+import { formatExpressionList, formatScalarType } from '../../util/plan-formatter.js';
 
 /**
  * Represents an aggregate function call within a SQL query.
@@ -58,9 +59,31 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 
 	override toString(): string {
 		const distinctStr = this.isDistinct ? 'DISTINCT ' : '';
-		const argsStr = this.args.map(arg => arg.toString()).join(', ');
+		const argsStr = formatExpressionList(this.args);
 		const filterStr = this.filter ? ` FILTER (WHERE ${this.filter.toString()})` : '';
 		const orderByStr = this.orderBy?.length ? ` ORDER BY ${this.orderBy.map(item => `${item.expression.toString()} ${item.direction.toUpperCase()}`).join(', ')}` : '';
 		return `${this.functionName}(${distinctStr}${argsStr})${filterStr}${orderByStr}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			function: this.functionName,
+			arguments: this.args.map(arg => arg.toString()),
+			resultType: formatScalarType(this.getType()),
+			isDistinct: this.isDistinct
+		};
+
+		if (this.filter) {
+			props.filter = this.filter.toString();
+		}
+
+		if (this.orderBy?.length) {
+			props.orderBy = this.orderBy.map(item => ({
+				expression: item.expression.toString(),
+				direction: item.direction
+			}));
+		}
+
+		return props;
 	}
 }

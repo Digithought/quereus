@@ -6,6 +6,7 @@ import { PlanNodeType } from "./plan-node-type.js";
 import type { Scope } from "../scopes/scope.js";
 import { compareSqlValues } from "../../util/comparison.js";
 import type { Expression } from "../../parser/ast.js";
+import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
 
 export class InNode extends PlanNode implements ScalarPlanNode {
 	override readonly nodeType = PlanNodeType.In;
@@ -44,7 +45,15 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		return [this.source];
 	}
 
-	toString(): string {
-		return `${super.toString()}`;
+	override toString(): string {
+		return `${formatExpression(this.condition)} IN (subquery)`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			condition: formatExpression(this.condition),
+			subqueryType: 'in',
+			resultType: formatScalarType(this.getType())
+		};
 	}
 }

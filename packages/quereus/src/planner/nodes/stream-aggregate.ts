@@ -3,6 +3,7 @@ import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Scala
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
+import { formatExpressionList } from '../../util/plan-formatter.js';
 
 /**
  * Physical node representing a streaming aggregate operation.
@@ -148,8 +149,39 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
   }
 
   override toString(): string {
-    const groupByStr = this.groupBy.length > 0 ? ` GROUP BY ${this.groupBy.length} cols` : '';
-    const aggregatesStr = `${this.aggregates.length} aggs`;
-    return `${super.toString()} (${aggregatesStr}${groupByStr})`;
+    const parts: string[] = [];
+
+    if (this.groupBy.length > 0) {
+      parts.push(`GROUP BY ${formatExpressionList(this.groupBy)}`);
+    }
+
+    if (this.aggregates.length > 0) {
+      const aggregatesStr = this.aggregates.map(agg =>
+        `${agg.expression.toString()} AS ${agg.alias}`
+      ).join(', ');
+      parts.push(`STREAM AGG ${aggregatesStr}`);
+    }
+
+    return parts.join('  ');
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {
+      implementation: 'streaming',
+      requiresOrdering: true
+    };
+
+    if (this.groupBy.length > 0) {
+      props.groupBy = this.groupBy.map(expr => expr.toString());
+    }
+
+    if (this.aggregates.length > 0) {
+      props.aggregates = this.aggregates.map(agg => ({
+        expression: agg.expression.toString(),
+        alias: agg.alias
+      }));
+    }
+
+    return props;
   }
 }
