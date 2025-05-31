@@ -9,9 +9,25 @@ export const generateSeriesFunc = createTableValuedFunction(
 		name: 'generate_series',
 		numArgs: 2,
 		deterministic: true,
-		columns: [
-			{ name: 'value', type: SqlDataType.INTEGER, nullable: false }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: true,
+			columns: [
+				{
+					name: 'value',
+					type: {
+						typeClass: 'scalar',
+						affinity: SqlDataType.INTEGER,
+						nullable: false,
+						isReadOnly: true
+					},
+					generated: true
+				}
+			],
+			keys: [[{ index: 0 }]],
+			rowConstraints: []
+		}
 	},
 	async function* (start: SqlValue, end: SqlValue): AsyncIterable<Row> {
 		const startNum = Number(start);
@@ -19,7 +35,7 @@ export const generateSeriesFunc = createTableValuedFunction(
 
 		if (isNaN(startNum) || isNaN(endNum)) return;
 
-		for (let i = startNum; i <= endNum; i++) {
+		for (let i = startNum; i <= endNum; ++i) {
 			yield [i];
 		}
 	}

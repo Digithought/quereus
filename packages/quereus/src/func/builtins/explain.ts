@@ -6,6 +6,7 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { Parser } from "../../parser/parser.js";
+import { safeJsonStringify } from "../../util/serialization.js";
 
 // Query plan explanation function (table-valued function)
 export const queryPlanFunc = createIntegratedTableValuedFunction(
@@ -13,17 +14,27 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 		name: 'query_plan',
 		numArgs: 1,
 		deterministic: true,
-		columns: [
-			{ name: 'id', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'parent_id', type: SqlDataType.INTEGER, nullable: true },
-			{ name: 'subquery_level', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'op', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'detail', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'object_name', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'alias', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'est_cost', type: SqlDataType.REAL, nullable: true },
-			{ name: 'est_rows', type: SqlDataType.INTEGER, nullable: true }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'parent_id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'subquery_level', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'node_type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'op', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'detail', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'object_name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'alias', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'properties', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'physical', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'est_cost', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'est_rows', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
 		if (typeof sql !== 'string') {
@@ -44,6 +55,9 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				const { node, parentId, level } = nodeStack.pop()!;
 				const currentId = nodeId++;
 
+				// Get node type
+				const nodeType = node.nodeType || 'UNKNOWN';
+
 				// Determine operation type and details
 				let op = 'UNKNOWN';
 				let detail = 'Unknown operation';
@@ -52,45 +66,63 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				let estCost = node.estimatedCost || 1.0;
 				let estRows = (node as any).estimatedRows || 10;
 
+				// Use node's toString() method for detail if available
+				if (typeof node.toString === 'function') {
+					detail = node.toString();
+				}
+
 				if (node.nodeType) {
 					op = node.nodeType.replace(/Node$/, '').toUpperCase();
 
 					switch (node.nodeType) {
 						case 'TableScan':
-							detail = `SCAN TABLE ${node.source?.tableSchema?.name || 'unknown'}`;
 							objectName = node.source?.tableSchema?.name || null;
 							alias = node.alias || null;
 							break;
-						case 'Filter':
-							detail = `FILTER WHERE ${node.condition?.toString() || 'condition'}`;
-							break;
-						case 'Project':
-							detail = `PROJECT ${node.projections?.length || 0} columns`;
-							break;
-						case 'Aggregate':
-							detail = `AGGREGATE ${node.aggregates?.length || 0} functions`;
-							break;
-						case 'LimitOffset':
-							detail = `LIMIT ${node.limit?.toString() || 'ALL'} OFFSET ${node.offset?.toString() || '0'}`;
-							break;
 						case 'TableFunctionCall':
-							detail = `CALL ${node.functionName}(${node.operands?.length || 0} args)`;
 							objectName = node.functionName;
 							alias = node.alias || null;
 							break;
 						default:
-							detail = `${op} operation`;
+							// For other node types, try to extract common properties
+							if (node.alias) {
+								alias = node.alias;
+							}
+							if (node.tableName) {
+								objectName = node.tableName;
+							}
+							if (node.functionName) {
+								objectName = node.functionName;
+							}
 					}
+				}
+
+				// Get logical properties (if available)
+				let properties: string | null = null;
+				if (node.getLogicalProperties) {
+					const logicalProps = node.getLogicalProperties();
+					if (logicalProps) {
+						properties = safeJsonStringify(logicalProps);
+					}
+				}
+
+				// Get physical properties (if available)
+				let physical: string | null = null;
+				if (node.physical) {
+					physical = safeJsonStringify(node.physical);
 				}
 
 				yield [
 					currentId,           // id
 					parentId,           // parent_id
 					level,              // subquery_level
+					nodeType,           // node_type
 					op,                 // op
 					detail,             // detail
 					objectName,         // object_name
 					alias,              // alias
+					properties,         // properties
+					physical,           // physical
 					estCost,            // est_cost
 					estRows             // est_rows
 				];
@@ -109,7 +141,7 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 			}
 		} catch (error: any) {
 			// If planning fails, yield an error row
-			yield [1, null, 0, 'ERROR', `Failed to plan SQL: ${error.message}`, null, null, null, null];
+			yield [1, null, 0, 'ERROR', 'ERROR', `Failed to plan SQL: ${error.message}`, null, null, null, null, null, null];
 		}
 	}
 );
@@ -120,15 +152,22 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 		name: 'scheduler_program',
 		numArgs: 1,
 		deterministic: true,
-		columns: [
-			{ name: 'addr', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'instruction_id', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'dependencies', type: SqlDataType.TEXT, nullable: true }, // JSON array of dependency IDs
-			{ name: 'description', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'estimated_cost', type: SqlDataType.REAL, nullable: true },
-			{ name: 'is_subprogram', type: SqlDataType.INTEGER, nullable: false }, // 0/1 boolean
-			{ name: 'parent_addr', type: SqlDataType.INTEGER, nullable: true }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'addr', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'instruction_id', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'dependencies', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON array of dependency IDs
+				{ name: 'description', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'estimated_cost', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'is_subprogram', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true }, // 0/1 boolean
+				{ name: 'parent_addr', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
 		if (typeof sql !== 'string') {
@@ -198,14 +237,23 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 	{
 		name: 'stack_trace',
 		numArgs: 1,
-		deterministic: false, // Stack traces are not deterministic
-		columns: [
-			{ name: 'frame_id', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'function_name', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'instruction_addr', type: SqlDataType.INTEGER, nullable: true },
-			{ name: 'source_location', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'local_vars', type: SqlDataType.TEXT, nullable: true } // JSON representation
-		]
+		deterministic: true,
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'frame_id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'depth', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'location', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'plan_node_type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'operation', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'table_or_function', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'is_virtual', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true } // 0/1 boolean
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
 		if (typeof sql !== 'string') {
@@ -281,15 +329,17 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 				const frame = stack[i];
 				yield [
 					frameId++,                    // frame_id
-					frame.name,                   // function_name
-					i,                           // instruction_addr (simulated)
-					frame.location,              // source_location
-					JSON.stringify(frame.vars)   // local_vars
+					i,                           // depth
+					frame.location,              // location
+					frame.name,                   // plan_node_type
+					frame.name,                   // operation
+					null,                        // table_or_function
+					0                            // is_virtual
 				];
 			}
 		} catch (error: any) {
 			// If analysis fails, yield an error frame
-			yield [0, 'error', null, 'stack_trace', JSON.stringify({ error: error.message })];
+			yield [0, 0, 'error', 'stack_trace', JSON.stringify({ error: error.message })];
 		}
 	}
 );
@@ -300,15 +350,22 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 		name: 'execution_trace',
 		numArgs: 1,
 		deterministic: false, // Execution traces are not deterministic
-		columns: [
-			{ name: 'step_id', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'timestamp_ms', type: SqlDataType.REAL, nullable: false },
-			{ name: 'operation', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'duration_ms', type: SqlDataType.REAL, nullable: true },
-			{ name: 'rows_processed', type: SqlDataType.INTEGER, nullable: true },
-			{ name: 'memory_used', type: SqlDataType.INTEGER, nullable: true },
-			{ name: 'details', type: SqlDataType.TEXT, nullable: true } // JSON representation
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'step_id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'timestamp_ms', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'operation', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'duration_ms', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'rows_processed', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'memory_used', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'details', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true } // JSON representation
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
 		if (typeof sql !== 'string') {
@@ -446,5 +503,32 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 				JSON.stringify({ error: error.message, step: 'execution_trace' })
 			];
 		}
+	}
+);
+
+// Schema size function (table-valued function)
+export const schemaSizeFunc = createIntegratedTableValuedFunction(
+	{
+		name: 'schema_size',
+		numArgs: 0,
+		deterministic: false, // Schema can change
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'object_type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'object_name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'estimated_rows', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'estimated_size_kb', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'column_count', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'index_count', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
+	},
+	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
+		// Implementation of schemaSizeFunc
 	}
 );

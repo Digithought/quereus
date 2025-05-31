@@ -1,10 +1,11 @@
 import { QuereusError } from "../../common/errors.js";
-import { StatusCode } from "../../common/types.js";
+import { StatusCode, SqlDataType } from "../../common/types.js";
 import type { ScalarType } from "../../common/datatype.js";
 import * as AST from "../../parser/ast.js";
 import type { SchemaManager } from "../../schema/manager.js";
 import type { PlanNode } from "../nodes/plan-node.js";
 import { TableReferenceNode, TableFunctionReferenceNode, FunctionReferenceNode } from "../nodes/reference.js";
+import { isScalarFunctionSchema } from "../../schema/function.js";
 import { BaseScope } from "./base.js";
 import { Ambiguous, type Scope } from "./scope.js";
 
@@ -21,8 +22,13 @@ export class GlobalScope extends BaseScope {
 			if (!func) {
 				return undefined;
 			}
-			// TODO: Need a way to determine function type from schema
-			return new FunctionReferenceNode(this, func, { typeClass: 'scalar', affinity: func.affinity, nullable: true } as ScalarType);
+
+			// Get the proper scalar type from the function schema
+			const scalarType: ScalarType = isScalarFunctionSchema(func)
+				? func.returnType
+				: { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: true, isReadOnly: true };
+
+			return new FunctionReferenceNode(this, func, scalarType);
 		}
 		// Table: [schema.]table
 		const [first, second] = symbolKey.split('.');
@@ -40,8 +46,12 @@ export class GlobalScope extends BaseScope {
 		// Check for zero-argument functions first
 		const func = this.manager.findFunction(name, 0);
 		if (func) {
-			// TODO: Need a way to determine function type from schema
-			return new FunctionReferenceNode(this, func, { typeClass: 'scalar', affinity: func.affinity, nullable: true } as ScalarType);
+			// Get the proper scalar type from the function schema
+			const scalarType: ScalarType = isScalarFunctionSchema(func)
+				? func.returnType
+				: { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: true, isReadOnly: true };
+
+			return new FunctionReferenceNode(this, func, scalarType);
 		}
 		// Table: [schema.]table
 		const table = this.manager.findTable(name);

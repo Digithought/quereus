@@ -2,6 +2,7 @@ import type { Row, SqlValue } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 import type { Database } from '../core/database.js';
+import type { BaseType, ScalarType, RelationType } from '../common/datatype.js';
 
 /**
  * Type for a scalar function implementation.
@@ -30,19 +31,9 @@ export type AggregateReducer<T = any> = (accumulator: T, ...args: SqlValue[]) =>
 export type AggregateFinalizer<T = any> = (accumulator: T) => SqlValue;
 
 /**
- * Column information for table-valued functions.
+ * Base interface for all function schemas with common properties.
  */
-export interface TVFColumnInfo {
-	name: string;
-	type: SqlDataType;
-	nullable?: boolean;
-}
-
-/**
- * Represents the registered definition of a user-defined function
- * (scalar, aggregate, table-valued, or window).
- */
-export interface FunctionSchema {
+interface BaseFunctionSchema {
 	/** Function name (lowercase for consistent lookup) */
 	name: string;
 	/** Number of arguments (-1 for variable) */
@@ -51,36 +42,78 @@ export interface FunctionSchema {
 	flags: FunctionFlags;
 	/** User data pointer passed during registration */
 	userData?: unknown;
-	/** Recommended affinity for the function's return value (optional, for scalar functions) */
-	affinity?: SqlDataType;
+	/** Return type information */
+	returnType: BaseType;
+}
 
-	// Function type and implementation
-	/** Function type */
-	type: 'scalar' | 'aggregate' | 'table-valued' | 'window';
-
-	// Scalar function
+/**
+ * Schema for scalar functions that return a single value.
+ */
+export interface ScalarFunctionSchema extends BaseFunctionSchema {
+	returnType: ScalarType;
 	/** Direct scalar function implementation */
-	scalarImpl?: ScalarFunc;
+	implementation: ScalarFunc;
+}
 
-	// Table-valued function
+/**
+ * Schema for table-valued functions that return rows.
+ */
+export interface TableValuedFunctionSchema extends BaseFunctionSchema {
+	returnType: RelationType;
 	/** Table-valued function implementation */
-	tableValuedImpl?: TableValuedFunc | IntegratedTableValuedFunc;
-	/** Column definitions for table-valued functions */
-	columns?: TVFColumnInfo[];
+	implementation: TableValuedFunc | IntegratedTableValuedFunc;
 	/** Whether this TVF requires database access as first parameter */
 	isIntegrated?: boolean;
+}
 
-	// Aggregate function
+/**
+ * Schema for aggregate functions.
+ */
+export interface AggregateFunctionSchema extends BaseFunctionSchema {
+	returnType: ScalarType;
 	/** Aggregate step function */
-	aggregateStepImpl?: AggregateReducer;
+	stepFunction: AggregateReducer;
 	/** Aggregate finalizer function */
-	aggregateFinalizerImpl?: AggregateFinalizer;
+	finalizeFunction: AggregateFinalizer;
 	/** Initial accumulator value for aggregates */
 	initialValue?: any;
+}
 
-	// Window function (for future use)
+/**
+ * Schema for window functions (for future use).
+ */
+export interface WindowFunctionSchema extends BaseFunctionSchema {
+	returnType: ScalarType;
 	/** Window function implementation */
-	windowImpl?: (...args: any[]) => any;
+	implementation: (...args: any[]) => any;
+}
+
+/**
+ * Union type representing all possible function schemas.
+ */
+export type FunctionSchema =
+	| ScalarFunctionSchema
+	| TableValuedFunctionSchema
+	| AggregateFunctionSchema
+	| WindowFunctionSchema;
+
+/**
+ * Type guards for function schema types.
+ */
+export function isScalarFunctionSchema(schema: FunctionSchema): schema is ScalarFunctionSchema {
+	return schema.returnType.typeClass === 'scalar' && 'implementation' in schema && typeof schema.implementation === 'function';
+}
+
+export function isTableValuedFunctionSchema(schema: FunctionSchema): schema is TableValuedFunctionSchema {
+	return schema.returnType.typeClass === 'relation';
+}
+
+export function isAggregateFunctionSchema(schema: FunctionSchema): schema is AggregateFunctionSchema {
+	return 'stepFunction' in schema && 'finalizeFunction' in schema;
+}
+
+export function isWindowFunctionSchema(schema: FunctionSchema): schema is WindowFunctionSchema {
+	return 'implementation' in schema && schema.returnType.typeClass === 'scalar' && !isScalarFunctionSchema(schema) && !isAggregateFunctionSchema(schema);
 }
 
 /**
@@ -92,4 +125,15 @@ export interface FunctionSchema {
  */
 export function getFunctionKey(name: string, numArgs: number): string {
 	return `${name.toLowerCase()}/${numArgs}`;
+}
+
+// Legacy compatibility - deprecated interfaces and column info
+/**
+ * @deprecated Use RelationType.columns instead
+ * Column information for table-valued functions.
+ */
+export interface TVFColumnInfo {
+	name: string;
+	type: SqlDataType;
+	nullable?: boolean;
 }

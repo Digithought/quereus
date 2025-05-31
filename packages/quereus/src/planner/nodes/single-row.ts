@@ -52,6 +52,14 @@ export class SingleRowNode extends PlanNode implements ZeroAryRelationalNode {
   }
 
   override toString(): string {
-    return `${this.nodeType} (TableDee)`;
+    return `dual`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    return {
+      description: 'Single row with no columns (dual table)',
+      numRows: 1,
+      numColumns: 0
+    };
   }
 }

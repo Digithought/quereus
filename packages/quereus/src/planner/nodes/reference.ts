@@ -7,6 +7,8 @@ import type * as AST from '../../parser/ast.js';
 import { relationTypeFromTableSchema } from '../type-utils.js';
 import { Cached } from '../../util/cached.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { isTableValuedFunctionSchema } from '../../schema/function.js';
+import { formatScalarType } from '../../util/plan-formatter.js';
 
 /** Represents a reference to a table in the global schema. */
 export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode {
@@ -60,7 +62,18 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.tableSchema.schemaName}.${this.tableSchema.name})`;
+		return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			schema: this.tableSchema.schemaName,
+			table: this.tableSchema.name,
+			columns: this.tableSchema.columns.map(col => col.name),
+			estimates: {
+				rows: this.tableSchema.estimatedRows
+			}
+		};
 	}
 }
 
@@ -77,17 +90,12 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 		super(scope, estimatedCostOverride ?? 1);
 
 		this.attributesCache = new Cached(() => {
-			// Create attributes from function schema columns
-			if (this.functionSchema.type === 'table-valued' && this.functionSchema.columns) {
-				return this.functionSchema.columns.map((column) => ({
+			// Create attributes from function schema return type
+			if (isTableValuedFunctionSchema(this.functionSchema)) {
+				return this.functionSchema.returnType.columns.map((column) => ({
 					id: PlanNode.nextAttrId(),
 					name: column.name,
-					type: {
-						typeClass: 'scalar' as const,
-						affinity: column.type,
-						nullable: column.nullable ?? true,
-						isReadOnly: true
-					},
+					type: column.type,
 					sourceRelation: `${this.functionSchema.name}()`
 				}));
 			}
@@ -96,26 +104,8 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 	}
 
 	getType(): RelationType {
-		if (this.functionSchema.type === 'table-valued') {
-			// Create a RelationType from the columns
-			const columns = (this.functionSchema.columns || []).map(col => ({
-				name: col.name,
-				type: {
-					typeClass: 'scalar' as const,
-					affinity: col.type,
-					nullable: col.nullable ?? true,
-					isReadOnly: true
-				}
-			}));
-
-			return {
-				typeClass: 'relation',
-				columns,
-				keys: [], // Table functions don't have keys
-				rowConstraints: [],
-				isReadOnly: true,
-				isSet: false // Table functions can return bags (duplicate rows)
-			};
+		if (isTableValuedFunctionSchema(this.functionSchema)) {
+			return this.functionSchema.returnType;
 		}
 		throw new Error(`Function ${this.functionSchema.name} is not a table-valued function`);
 	}
@@ -137,7 +127,20 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.functionSchema.name})`;
+		return `${this.functionSchema.name}()`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			function: this.functionSchema.name,
+			numArgs: this.functionSchema.numArgs
+		};
+
+		if (isTableValuedFunctionSchema(this.functionSchema)) {
+			props.columns = this.functionSchema.returnType.columns.map(col => col.name);
+		}
+
+		return props;
 	}
 }
 
@@ -172,7 +175,18 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.expression.alias ?? (this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name} attr#${this.attributeId})`;
+		const columnName = this.expression.alias ??
+			(this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name;
+		return columnName;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			column: this.expression.alias ?? this.expression.name,
+			schema: this.expression.schema,
+			attributeId: this.attributeId,
+			resultType: formatScalarType(this.columnType)
+		};
 	}
 }
 
@@ -205,7 +219,14 @@ export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNod
 	}
 
 	override toString(): string {
-		return `${super.toString()} (:${this.nameOrIndex})`;
+		return `:${this.nameOrIndex}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			parameter: this.nameOrIndex,
+			resultType: formatScalarType(this.targetType)
+		};
 	}
 }
 
@@ -234,6 +255,14 @@ export class FunctionReferenceNode extends PlanNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.functionSchema.name}(${this.functionSchema.numArgs}))`;
+		return `${this.functionSchema.name}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			function: this.functionSchema.name,
+			numArgs: this.functionSchema.numArgs,
+			targetType: this.targetType.typeClass
+		};
 	}
 }

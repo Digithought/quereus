@@ -5,6 +5,7 @@ import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import type { WindowFunctionCallNode } from './window-function.js';
 import type { Expression, OrderByClause } from '../../parser/ast.js';
+import { expressionToString } from '../../util/ast-stringify.js';
 
 export interface WindowSpec {
 	func: WindowFunctionCallNode;
@@ -93,8 +94,30 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 
 	override toString(): string {
 		const windowStrings = this.windowSpecs.map(spec =>
-			`${spec.func.toString()} as ${spec.alias}`
-		);
-		return `${this.nodeType} (${windowStrings.join(', ')}) over (${this.source.toString()})`;
+			`${spec.func.toString()} AS ${spec.alias}`
+		).join(', ');
+		return `WINDOW ${windowStrings}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			windowFunctions: this.windowSpecs.map(spec => ({
+				function: spec.func.toString(),
+				alias: spec.alias
+			}))
+		};
+
+		if (this.partitionBy?.length) {
+			props.partitionBy = this.partitionBy.map(expr => expressionToString(expr));
+		}
+
+		if (this.orderBy?.length) {
+			props.orderBy = this.orderBy.map(clause => ({
+				expression: expressionToString(clause.expr),
+				direction: clause.direction || 'asc'
+			}));
+		}
+
+		return props;
 	}
 }

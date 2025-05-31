@@ -37,7 +37,15 @@ export class BlockNode extends PlanNode {
   }
 
   override toString(): string {
-    return `${this.nodeType} (${this.statements.length} statements)`;
+    return `${this.statements.length} statements`;
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    return {
+      numStatements: this.statements.length,
+      statementTypes: this.statements.map(stmt => stmt.nodeType),
+      parameters: Object.keys(this.parameters)
+    };
   }
 
   get estimatedRows(): number | undefined {

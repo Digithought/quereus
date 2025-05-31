@@ -4,6 +4,7 @@ import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { FunctionSchema, IntegratedTableValuedFunc, TableValuedFunc } from '../../schema/function.js';
+import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { TableFunctionCallNode } from '../../planner/nodes/table-function-call.js';
 
@@ -27,7 +28,7 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 	if (!functionSchema) {
 		throw new QuereusError(`Unknown function: ${functionName}/${numArgs}`, StatusCode.ERROR);
 	}
-	if (functionSchema.type !== 'table-valued' || !functionSchema.tableValuedImpl) {
+	if (!isTableValuedFunctionSchema(functionSchema)) {
 		throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function`, StatusCode.ERROR);
 	}
 
@@ -41,9 +42,13 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			throw new QuereusError(`Function ${functionName}/${numArgs} was not captured during emission`, StatusCode.INTERNAL);
 		}
 
+		if (!isTableValuedFunctionSchema(capturedFunction)) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function at runtime`, StatusCode.INTERNAL);
+		}
+
 		try {
 			// Check if this is a database-aware function
-			const result = (capturedFunction.tableValuedImpl as IntegratedTableValuedFunc)!(innerCtx.db, ...args);
+			const result = (capturedFunction.implementation as IntegratedTableValuedFunc)!(innerCtx.db, ...args);
 
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
@@ -70,6 +75,10 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			throw new QuereusError(`Function ${functionName}/${functionSchema!.numArgs} was not captured during emission`, StatusCode.INTERNAL);
 		}
 
+		if (!isTableValuedFunctionSchema(capturedFunction)) {
+			throw new QuereusError(`Function ${functionName}/${numArgs} is not a table-valued function at runtime`, StatusCode.INTERNAL);
+		}
+
 		// Validate argument count for variable argument functions
 		if (capturedFunction.numArgs === -1) {
 			// Special validation for known variable argument functions
@@ -82,7 +91,7 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 
 		try {
 			// Check if this is a database-aware function
-			const result = (capturedFunction.tableValuedImpl as TableValuedFunc)!(...args);
+			const result = (capturedFunction.implementation as TableValuedFunc)!(...args);
 
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;

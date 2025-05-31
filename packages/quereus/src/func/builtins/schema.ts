@@ -24,12 +24,19 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 		name: 'schema',
 		numArgs: 0,
 		deterministic: false, // Schema can change
-		columns: [
-			{ name: 'type', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'name', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'tbl_name', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'sql', type: SqlDataType.TEXT, nullable: true }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'tbl_name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'sql', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database): AsyncIterable<Row> {
 		try {
@@ -85,14 +92,21 @@ export const tableInfoFunc = createIntegratedTableValuedFunction(
 		name: 'table_info',
 		numArgs: 1,
 		deterministic: false, // Table structure can change
-		columns: [
-			{ name: 'cid', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'name', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'type', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'notnull', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'dflt_value', type: SqlDataType.TEXT, nullable: true },
-			{ name: 'pk', type: SqlDataType.INTEGER, nullable: false }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'cid', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'notnull', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'dflt_value', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'pk', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
 		if (typeof tableName !== 'string') {
@@ -131,14 +145,21 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 		name: 'function_info',
 		numArgs: 0,
 		deterministic: false, // Functions can change
-		columns: [
-			{ name: 'name', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'num_args', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'type', type: SqlDataType.TEXT, nullable: false },
-			{ name: 'deterministic', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'flags', type: SqlDataType.INTEGER, nullable: false },
-			{ name: 'signature', type: SqlDataType.TEXT, nullable: false }
-		]
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'name', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'num_args', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'type', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'deterministic', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'flags', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'signature', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
 	},
 	async function* (db: Database): AsyncIterable<Row> {
 		try {

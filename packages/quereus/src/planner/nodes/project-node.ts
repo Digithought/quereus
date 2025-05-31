@@ -4,6 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { expressionToString } from '../../util/ast-stringify.js';
+import { formatProjection } from '../../util/plan-formatter.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -78,8 +79,17 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 
 	override toString(): string {
 		const projectionStrings = this.projections.map(p =>
-			`${p.node.toString()}${p.alias ? ` as ${p.alias}` : ''}`
-		);
-		return `${this.nodeType} (${projectionStrings.join(', ')}) from (${this.source.toString()})`;
+			formatProjection(p.node, p.alias)
+		).join(', ');
+		return `SELECT ${projectionStrings}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			projections: this.projections.map(p => ({
+				expression: expressionToString(p.node.expression),
+				alias: p.alias
+			}))
+		};
 	}
 }

@@ -3,6 +3,7 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelat
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
+import { formatExpressionList } from '../../util/plan-formatter.js';
 
 export interface AggregateExpression {
   expression: ScalarPlanNode;
@@ -124,8 +125,36 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
   }
 
   override toString(): string {
-    const groupByStr = this.groupBy.length > 0 ? ` GROUP BY ${this.groupBy.map(g => g.toString()).join(', ')}` : '';
-    const aggregatesStr = this.aggregates.map(agg => `${agg.expression.toString()} AS ${agg.alias}`).join(', ');
-    return `${super.toString()} (${aggregatesStr})${groupByStr}`;
+    const parts: string[] = [];
+
+    if (this.groupBy.length > 0) {
+      parts.push(`GROUP BY ${formatExpressionList(this.groupBy)}`);
+    }
+
+    if (this.aggregates.length > 0) {
+      const aggregatesStr = this.aggregates.map(agg =>
+        `${agg.expression.toString()} AS ${agg.alias}`
+      ).join(', ');
+      parts.push(`AGG ${aggregatesStr}`);
+    }
+
+    return parts.join('  ');
+  }
+
+  override getLogicalProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {};
+
+    if (this.groupBy.length > 0) {
+      props.groupBy = this.groupBy.map(expr => expr.toString());
+    }
+
+    if (this.aggregates.length > 0) {
+      props.aggregates = this.aggregates.map(agg => ({
+        expression: agg.expression.toString(),
+        alias: agg.alias
+      }));
+    }
+
+    return props;
   }
 }

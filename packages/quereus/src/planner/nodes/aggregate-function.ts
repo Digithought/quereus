@@ -3,7 +3,9 @@ import { PlanNode, type ScalarPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { FunctionSchema } from '../../schema/function.js';
+import { isAggregateFunctionSchema } from '../../schema/function.js';
 import type * as AST from '../../parser/ast.js';
+import { formatExpressionList, formatScalarType } from '../../util/plan-formatter.js';
 
 /**
  * Represents an aggregate function call within a SQL query.
@@ -27,11 +29,14 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 
 	getType(): ScalarType {
 		// Get the return type from the function schema
-		// For aggregate functions, we need to determine the type based on the function
-		// TODO: This should be derived from the function schema or implementation
+		if (isAggregateFunctionSchema(this.functionSchema)) {
+			return this.functionSchema.returnType;
+		}
+
+		// Fallback for non-aggregate functions (shouldn't happen)
 		return {
 			typeClass: 'scalar',
-			affinity: this.functionSchema.affinity || 0,
+			affinity: 0,
 			nullable: true, // Aggregates can return NULL
 			isReadOnly: true
 		};
@@ -39,11 +44,11 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 
 	getChildren(): readonly ScalarPlanNode[] {
 		const children: ScalarPlanNode[] = [...this.args];
-		if (this.orderBy) {
-			children.push(...this.orderBy.map(o => o.expression));
-		}
 		if (this.filter) {
 			children.push(this.filter);
+		}
+		if (this.orderBy) {
+			children.push(...this.orderBy.map(item => item.expression));
 		}
 		return children;
 	}
@@ -53,12 +58,32 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 	}
 
 	override toString(): string {
-		const argsStr = this.args.map(arg => arg.toString()).join(', ');
 		const distinctStr = this.isDistinct ? 'DISTINCT ' : '';
-		const orderStr = this.orderBy
-			? ` ORDER BY ${this.orderBy.map(o => `${o.expression.toString()} ${o.direction.toUpperCase()}`).join(', ')}`
-			: '';
+		const argsStr = formatExpressionList(this.args);
 		const filterStr = this.filter ? ` FILTER (WHERE ${this.filter.toString()})` : '';
-		return `${this.functionName}(${distinctStr}${argsStr}${orderStr})${filterStr}`;
+		const orderByStr = this.orderBy?.length ? ` ORDER BY ${this.orderBy.map(item => `${item.expression.toString()} ${item.direction.toUpperCase()}`).join(', ')}` : '';
+		return `${this.functionName}(${distinctStr}${argsStr})${filterStr}${orderByStr}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			function: this.functionName,
+			arguments: this.args.map(arg => arg.toString()),
+			resultType: formatScalarType(this.getType()),
+			isDistinct: this.isDistinct
+		};
+
+		if (this.filter) {
+			props.filter = this.filter.toString();
+		}
+
+		if (this.orderBy?.length) {
+			props.orderBy = this.orderBy.map(item => ({
+				expression: item.expression.toString(),
+				direction: item.direction
+			}));
+		}
+
+		return props;
 	}
 }

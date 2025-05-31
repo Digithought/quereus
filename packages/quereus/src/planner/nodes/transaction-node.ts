@@ -2,6 +2,7 @@ import { VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import * as AST from '../../parser/ast.js';
+import { expressionToString } from '../../util/ast-stringify.js';
 
 export interface TransactionNode extends VoidNode {
 	nodeType: PlanNodeType.Transaction;
@@ -22,5 +23,39 @@ export class TransactionPlanNode extends VoidNode implements TransactionNode {
 		public readonly savepoint?: string
 	) {
 		super(scope, 1); // Transaction operations have low cost
+	}
+
+	override toString(): string {
+		switch (this.operation) {
+			case 'begin':
+				return this.mode ? `BEGIN ${this.mode.toUpperCase()}` : 'BEGIN';
+			case 'commit':
+				return 'COMMIT';
+			case 'rollback':
+				return this.savepoint ? `ROLLBACK TO ${this.savepoint}` : 'ROLLBACK';
+			case 'savepoint':
+				return `SAVEPOINT ${this.savepoint}`;
+			case 'release':
+				return `RELEASE ${this.savepoint}`;
+			default:
+				return `TRANSACTION ${this.operation}`;
+		}
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		const props: Record<string, unknown> = {
+			operation: this.operation,
+			statement: expressionToString(this.statementAst as any)
+		};
+
+		if (this.mode) {
+			props.mode = this.mode;
+		}
+
+		if (this.savepoint) {
+			props.savepoint = this.savepoint;
+		}
+
+		return props;
 	}
 }

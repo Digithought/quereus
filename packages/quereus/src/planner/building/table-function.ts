@@ -6,6 +6,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { resolveFunction } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
+import { isTableValuedFunctionSchema } from '../../schema/function.js';
 
 export function buildTableFunctionCall(
   functionSource: AST.FunctionSource,
@@ -33,7 +34,7 @@ export function buildTableFunctionCall(
   }
 
   const functionSchema = (funcResolution as any).functionSchema;
-  if (!functionSchema || functionSchema.type !== 'table-valued') {
+  if (!functionSchema || !isTableValuedFunctionSchema(functionSchema)) {
     throw new QuereusError(
       `Function ${functionName}/${args.length} is not a table-valued function`,
       StatusCode.ERROR,

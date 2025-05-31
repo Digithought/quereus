@@ -5,14 +5,13 @@ import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
-import { PlanNode } from '../nodes/plan-node.js';
-import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, SqlDataType } from '../../common/types.js';
 import type { ScalarType } from '../../common/datatype.js';
 import { resolveColumn, resolveParameter, resolveFunction } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt } from './select.js';
+import { isAggregateFunctionSchema } from '../../schema/function.js';
 
 export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allowAggregates: boolean = false): ScalarPlanNode {
   switch (expr.type) {
@@ -124,7 +123,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 
       // Check if this is an aggregate function
       const functionSchema = (funcResolution as any).functionSchema;
-      if (functionSchema && functionSchema.type === 'aggregate') {
+      if (functionSchema && isAggregateFunctionSchema(functionSchema)) {
         if (!allowAggregates) {
           throw new QuereusError(`Aggregate function ${expr.name} not allowed in this context`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
         }

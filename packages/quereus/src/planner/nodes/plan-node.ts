@@ -116,6 +116,14 @@ export abstract class PlanNode {
 		return `${this.nodeType} [${this.id}]`;
 	}
 
+	/**
+   * Get logical properties for this node.
+   * Override to provide node-specific logical information.
+   */
+  getLogicalProperties(): Record<string, unknown> {
+    return {};
+  }
+
   /** Helper to generate unique attribute IDs */
   public static nextAttrId(): number {
     return PlanNode.nextAttributeId++;

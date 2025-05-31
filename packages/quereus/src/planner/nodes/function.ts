@@ -3,6 +3,7 @@ import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
 import { PlanNode, type NaryScalarNode, type ScalarPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
+import { formatExpressionList, formatScalarType } from '../../util/plan-formatter.js';
 
 export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 	override readonly nodeType = PlanNodeType.ScalarFunctionCall;
@@ -29,6 +30,14 @@ export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 	}
 
 	override toString(): string {
-		return `${super.toString()} (${this.expression.name}(${this.operands.length}))`;
+		return `${this.expression.name}(${formatExpressionList(this.operands)})`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			function: this.expression.name,
+			arguments: this.operands.map(op => op.toString()),
+			resultType: formatScalarType(this.targetType)
+		};
 	}
 }

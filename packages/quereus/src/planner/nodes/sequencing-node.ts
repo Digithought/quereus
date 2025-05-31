@@ -76,6 +76,13 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	override toString(): string {
-		return `${this.nodeType}(${this.sequenceColumnName}) from (${this.source.toString()})`;
+		return `SEQUENCE ADD ${this.sequenceColumnName}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			sequenceColumn: this.sequenceColumnName,
+			purpose: 'Convert bag to set by adding unique row sequence'
+		};
 	}
 }

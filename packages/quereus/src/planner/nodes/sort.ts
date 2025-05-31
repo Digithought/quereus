@@ -2,6 +2,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
+import { formatSortKey } from '../../util/plan-formatter.js';
 
 /**
  * Represents a sort key for ordering results
@@ -83,8 +84,18 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 
 	override toString(): string {
 		const keyDescriptions = this.sortKeys.map(key =>
-			`${key.expression.toString()} ${key.direction.toUpperCase()}${key.nulls ? ` NULLS ${key.nulls.toUpperCase()}` : ''}`
+			formatSortKey(key.expression, key.direction, key.nulls)
 		).join(', ');
-		return `${this.nodeType} (${keyDescriptions}) ON (${this.source.toString()})`;
+		return `ORDER BY ${keyDescriptions}`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			sortKeys: this.sortKeys.map(key => ({
+				expression: key.expression.toString(),
+				direction: key.direction,
+				nulls: key.nulls
+			}))
+		};
 	}
 }
