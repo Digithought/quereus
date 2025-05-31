@@ -1,0 +1,187 @@
+/* Reset and base styles */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CSS Variables for theming */
+:root {
+  --border-color: #e5e7eb;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --accent-primary: #3b82f6;
+  --accent-secondary: #1d4ed8;
+}
+
+[data-theme="dark"] {
+  --border-color: #374151;
+  --bg-primary: #111827;
+  --bg-secondary: #1f2937;
+  --text-primary: #f9fafb;
+  --text-secondary: #9ca3af;
+  --accent-primary: #60a5fa;
+  --accent-secondary: #3b82f6;
+}
+
+/* Base application styles */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Application theme classes */
+.app {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Split pane customization */
+.gutter {
+  background-color: var(--border-color);
+  background-repeat: no-repeat;
+  background-position: 50%;
+}
+
+.gutter.gutter-horizontal {
+  background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAeCAYAAADkftS9AAAAIklEQVQoU2M4c+aMnoEIAA6jq+jN7/+U6mHAQJ3dx32KsQAAGwA');
+  cursor: row-resize;
+}
+
+.gutter.gutter-vertical {
+  background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAFCAMAAABl/6zIAAAABlBMVEUAAADMzMzIT8AyAAAAAXRSTlMAQObYZgAAABRJREFUeF7NxDEBAAAAwiD7p7/qQjsAAAQAAe4oDX8AAAAASUVORK5CYII=');
+  cursor: col-resize;
+}
+
+/* Custom scrollbar for webkit browsers */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Dark mode specific scrollbar */
+[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Focus styles */
+button:focus,
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Loading animation */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Table styles for results grid */
+.results-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.results-table th,
+.results-table td {
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  text-align: left;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.results-table th {
+  background-color: var(--bg-secondary);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.results-table tbody tr:hover {
+  background-color: var(--bg-secondary);
+}
+
+/* Monaco editor container */
+.monaco-editor-container {
+  height: 100%;
+  width: 100%;
+}
+
+/* Error message styles */
+.error-message {
+  color: #dc2626;
+  background-color: #fee2e2;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+}
+
+[data-theme="dark"] .error-message {
+  color: #fca5a5;
+  background-color: #7f1d1d;
+  border-color: #991b1b;
+}
+
+/* Success message styles */
+.success-message {
+  color: #059669;
+  background-color: #d1fae5;
+  border: 1px solid #a7f3d0;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+}
+
+[data-theme="dark"] .success-message {
+  color: #6ee7b7;
+  background-color: #064e3b;
+  border-color: #047857;
+}

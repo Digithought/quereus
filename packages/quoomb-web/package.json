@@ -1,0 +1,57 @@
+{
+  "name": "@quereus/quoomb-web",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Quoomb Web - Browser-based playground for Quereus SQL engine",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "src",
+    "dist",
+    "public",
+    "!**/*.tsbuildinfo"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "lint": "eslint src/**/*.{ts,tsx}",
+    "test": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@types/papaparse": "^5.3.16",
+    "@vitejs/plugin-react": "^4.5.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.1.4",
+    "eslint": "^9.27.0",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "playwright": "^1.52.0",
+    "tailwindcss": "^3.4.17",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.1"
+  },
+  "dependencies": {
+    "@quereus/quereus": "*",
+    "@quereus/shared-ui": "*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "monaco-editor": "^0.52.2",
+    "@monaco-editor/react": "^4.7.0",
+    "@tanstack/react-table": "^8.21.3",
+    "zustand": "^5.0.5",
+    "dexie": "^4.0.11",
+    "comlink": "^4.4.2",
+    "papaparse": "^5.5.3",
+    "react-split": "^2.0.14",
+    "lucide-react": "^0.511.0"
+  }
+}

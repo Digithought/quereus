@@ -1,0 +1,48 @@
+{
+  "name": "@quereus/quoomb-cli",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Quoomb CLI - Interactive REPL for Quereus SQL engine",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "quoomb": "./dist/bin/quoomb.js"
+  },
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc",
+    "dev": "tsx src/bin/quoomb.ts",
+    "lint": "eslint src/**/*.ts",
+    "test": "vitest",
+    "prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.3",
+    "tsx": "^4.19.4",
+    "vitest": "^3.1.4",
+    "eslint": "^9.27.0",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1"
+  },
+  "dependencies": {
+    "@quereus/quereus": "*",
+    "readline": "^1.3.0",
+    "commander": "^14.0.0",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "papaparse": "^5.5.3"
+  }
+}

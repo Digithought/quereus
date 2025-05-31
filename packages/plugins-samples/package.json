@@ -1,0 +1,49 @@
+{
+  "name": "@quereus/plugins-samples",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Sample plugins for Quoomb - CSV virtual table, fetch JSON UDF, etc.",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "src",
+    "dist",
+    "manifests",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./csv-vtab": {
+      "types": "./dist/csv-vtab/index.d.ts",
+      "import": "./dist/csv-vtab/index.js"
+    },
+    "./fetch-json-udf": {
+      "types": "./dist/fetch-json-udf/index.d.ts",
+      "import": "./dist/fetch-json-udf/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src/**/*.ts",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4",
+    "eslint": "^9.27.0",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1"
+  },
+  "dependencies": {
+    "@quereus/quereus": "*",
+    "papaparse": "^5.5.3"
+  }
+}
