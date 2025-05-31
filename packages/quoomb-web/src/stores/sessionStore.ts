@@ -51,6 +51,9 @@ export interface SessionState {
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   setSelectedPanel: (panel: 'result' | 'plan' | 'messages') => void;
+  setActiveResultId: (resultId: string | null) => void;
+  exportResultsAsCSV: () => void;
+  exportResultsAsJSON: () => void;
   clearHistory: () => void;
   disconnect: () => Promise<void>;
 }
@@ -260,6 +263,85 @@ export const useSessionStore = create<SessionState>()(
           ...state,
           selectedPanel: panel,
         }));
+      },
+
+      setActiveResultId: (resultId: string | null) => {
+        set((state) => ({
+          ...state,
+          activeResultId: resultId,
+        }));
+      },
+
+      exportResultsAsCSV: () => {
+        const { queryHistory, activeResultId } = get();
+        const activeResult = queryHistory.find(result => result.id === activeResultId);
+
+        if (!activeResult?.results || activeResult.results.length === 0) {
+          alert('No results to export');
+          return;
+        }
+
+        const results = activeResult.results;
+        const headers = Object.keys(results[0]);
+
+        // Create CSV content
+        const csvRows = [
+          headers.join(','), // Header row
+          ...results.map(row =>
+            headers.map(header => {
+              const value = row[header];
+              if (value === null) return '';
+              if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+                return `"${value.replace(/"/g, '""')}"`;
+              }
+              return String(value);
+            }).join(',')
+          )
+        ];
+
+        const csvContent = csvRows.join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `query-results-${new Date().getTime()}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      },
+
+      exportResultsAsJSON: () => {
+        const { queryHistory, activeResultId } = get();
+        const activeResult = queryHistory.find(result => result.id === activeResultId);
+
+        if (!activeResult?.results || activeResult.results.length === 0) {
+          alert('No results to export');
+          return;
+        }
+
+        const exportData = {
+          query: activeResult.sql,
+          executedAt: activeResult.timestamp.toISOString(),
+          executionTime: activeResult.executionTime,
+          rowCount: activeResult.results.length,
+          results: activeResult.results
+        };
+
+        const jsonContent = JSON.stringify(exportData, null, 2);
+        const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `query-results-${new Date().getTime()}.json`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
       },
 
       clearHistory: () => {
