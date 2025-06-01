@@ -12,6 +12,8 @@ export interface QueryResult {
   executionTime: number;
   timestamp: Date;
   queryPlan?: Record<string, SqlValue>[];
+  program?: Record<string, SqlValue>[];
+  trace?: Record<string, SqlValue>[];
 }
 
 export interface Tab {
@@ -42,7 +44,7 @@ export interface SessionState {
 
   // Results display
   activeResultId: string | null;
-  selectedPanel: 'result' | 'plan' | 'messages';
+  selectedPanel: 'result' | 'plan' | 'program' | 'trace' | 'messages';
 
   // Unsaved changes dialog
   unsavedChangesDialog: {
@@ -55,13 +57,15 @@ export interface SessionState {
   initializeSession: () => Promise<void>;
   executeSQL: (sql: string) => Promise<void>;
   fetchQueryPlan: (sql: string) => Promise<void>;
+  fetchProgram: (sql: string) => Promise<void>;
+  fetchTrace: (sql: string) => Promise<void>;
   createTab: (name?: string) => string;
   closeTab: (tabId: string) => void;
   forceCloseTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   updateTabName: (tabId: string, name: string) => void;
-  setSelectedPanel: (panel: 'result' | 'plan' | 'messages') => void;
+  setSelectedPanel: (panel: 'result' | 'plan' | 'program' | 'trace' | 'messages') => void;
   setActiveResultId: (resultId: string | null) => void;
   exportResultsAsCSV: () => void;
   exportResultsAsJSON: () => void;
@@ -233,6 +237,60 @@ export const useSessionStore = create<SessionState>()(
         }
       },
 
+      fetchProgram: async (sql: string) => {
+        const { api, isConnected, activeResultId } = get();
+
+        if (!api || !isConnected) {
+          throw new Error('Not connected to database');
+        }
+
+        try {
+          const program = await api.explainProgram(sql);
+
+          // Update the active result with the query program
+          if (activeResultId) {
+            set((state) => ({
+              ...state,
+              queryHistory: state.queryHistory.map(result =>
+                result.id === activeResultId
+                  ? { ...result, program: program }
+                  : result
+              ),
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch query program:', error);
+          throw error;
+        }
+      },
+
+      fetchTrace: async (sql: string) => {
+        const { api, isConnected, activeResultId } = get();
+
+        if (!api || !isConnected) {
+          throw new Error('Not connected to database');
+        }
+
+        try {
+          const trace = await api.executionTrace(sql);
+
+          // Update the active result with the query trace
+          if (activeResultId) {
+            set((state) => ({
+              ...state,
+              queryHistory: state.queryHistory.map(result =>
+                result.id === activeResultId
+                  ? { ...result, trace: trace }
+                  : result
+              ),
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch query trace:', error);
+          throw error;
+        }
+      },
+
       createTab: (name?: string) => {
         const tabId = crypto.randomUUID();
         const tabName = name || `query-${Date.now()}.sql`;
@@ -360,7 +418,7 @@ export const useSessionStore = create<SessionState>()(
         }));
       },
 
-      setSelectedPanel: (panel: 'result' | 'plan' | 'messages') => {
+      setSelectedPanel: (panel: 'result' | 'plan' | 'program' | 'trace' | 'messages') => {
         set((state) => ({
           ...state,
           selectedPanel: panel,

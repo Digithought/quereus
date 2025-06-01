@@ -77,6 +77,50 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
   }
 
+  async explainProgram(sql: string): Promise<Record<string, SqlValue>[]> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      console.log('Explaining program for SQL:', sql);
+
+      const results: Record<string, SqlValue>[] = [];
+
+      // Use Quereus's scheduler_program() function
+      for await (const row of this.db.eval('SELECT * FROM scheduler_program(?)', [sql])) {
+        results.push(row);
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Program explanation error:', error);
+      throw new Error(`Program explanation failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async executionTrace(sql: string): Promise<Record<string, SqlValue>[]> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      console.log('Getting execution trace for SQL:', sql);
+
+      const results: Record<string, SqlValue>[] = [];
+
+      // Use Quereus's execution_trace() function
+      for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
+        results.push(row);
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Execution trace error:', error);
+      throw new Error(`Execution trace failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
   async listTables(): Promise<Array<{ name: string; type: string }>> {
     if (!this.db) {
       throw new Error('Database not initialized');

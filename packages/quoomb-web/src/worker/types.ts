@@ -22,6 +22,16 @@ export interface QuereusWorkerAPI {
   explainQuery(sql: string): Promise<any>;
 
   /**
+   * Get the scheduler program (compiled instructions)
+   */
+  explainProgram(sql: string): Promise<Record<string, SqlValue>[]>;
+
+  /**
+   * Get execution trace data
+   */
+  executionTrace(sql: string): Promise<Record<string, SqlValue>[]>;
+
+  /**
    * List all tables in the database
    */
   listTables(): Promise<Array<{ name: string; type: string }>>;

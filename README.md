@@ -89,7 +89,8 @@ This implementation includes **Phase 0**, **Phase 1**, and **Phase 2** as specif
 
 ### ✅ Phase 2 — Rich Panels & Persisted Sessions
 - **Multi-tab editor** — Multiple SQL files with tab management
-- **Three-panel results** — Results, Plan, Messages tabs
+- **Five-panel results** — Results, Plan, Program, Trace, Messages tabs
+- **Query explain tools** — Built-in query analysis with `query_plan()`, `scheduler_program()`, `execution_trace()`
 - **Theme system** — Light/dark/auto themes with system detection
 - **Settings persistence** — localStorage-based configuration
 - **TanStack Table grid** — Sortable, paginated results display
@@ -181,8 +182,9 @@ Exported 1 rows to 'output.json'
 2. Write SQL in the Monaco editor
 3. Press **Shift+Enter** or click **Execute**
 4. View results in the grid below
-5. Switch between **Results**, **Plan**, and **Messages** tabs
-6. Import CSV files via the toolbar button
+5. Switch between **Results**, **Plan**, **Program**, **Trace**, and **Messages** tabs
+6. Use explain tools to analyze query execution and performance
+7. Import CSV files via the toolbar button
 
 ## 🏗 Web Worker Architecture
 ```text
@@ -219,9 +221,10 @@ The Quereus engine runs entirely in a Web Worker, providing:
 ## 🔮 Roadmap
 
 ### Phase 3 — Extension & Polish
+- [x] **Query analysis tools** — Plan, Program, and Trace explain functionality
 - [ ] **Plugin marketplace** — Load external virtual table modules
-- [ ] **Query plan visualization** — SVG tree rendering
-- [ ] **Chart panel** — Data visualization
+- [ ] **Query plan visualization** — SVG tree rendering of plans
+- [ ] **Chart panel** — Data visualization for result sets
 - [ ] **UDF TypeScript editor** — Inline function development
 
 ### Phase 4 — Desktop Applications
@@ -253,10 +256,13 @@ The Quereus engine runs entirely in a Web Worker, providing:
 
 ### Results Display  
 - [x] **Paginated data grid** with TanStack Table
+- [x] **Five-panel results view** — Results, Plan, Program, Trace, Messages
+- [x] **Query analysis tools** — Visual query plan, instruction program, execution trace
 - [x] **Sortable columns** — Click headers to sort
 - [x] **NULL value display** — Visual distinction
 - [x] **Error formatting** — Friendly error messages
 - [x] **Execution timing** — Performance metrics
+- [x] **Copy/export functions** — Copy query plans and traces as text
 
 ### Data Operations
 - [x] **CSV import** — Automatic table creation with type inference
