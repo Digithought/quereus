@@ -145,6 +145,7 @@ export class CollectingInstructionTracer implements InstructionTracer {
 
 	private cloneValue(value: any): any {
 		if (value === null || value === undefined) return value;
+		if (typeof value === 'function') return '[Function]';
 		if (typeof value === 'object' && Symbol.asyncIterator in value) return '[AsyncIterable]';
 		if (Array.isArray(value)) return value.map(v => this.cloneValue(v));
 		if (typeof value === 'object') return '[Object]';

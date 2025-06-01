@@ -1,4 +1,4 @@
-import { expect, chai } from 'aegir/chai';
+import { expect, config } from 'chai';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,8 +7,8 @@ import { QuereusError } from '../src/common/errors.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
 import { CollectingInstructionTracer } from '../src/runtime/types.js';
 
-chai.config.truncateThreshold = 1000;
-chai.config.includeStack = true;
+config.truncateThreshold = 1000;
+config.includeStack = true;
 
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);

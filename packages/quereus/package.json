@@ -18,44 +18,41 @@
     }
   },
   "scripts": {
-    "clean": "aegir clean",
+    "clean": "rm -rf dist",
     "doc": "npx typedoc -out doc src",
-    "build": "aegir build --env node",
-    "lint": "aegir lint",
-    "test:all": "aegir test",
-    "test": "npx --node-options=\"--loader=ts-node/esm\" mocha 'test/**/*.spec.ts' --colors --bail",
-    "test:single": "npx --node-options=\"--loader=ts-node/esm\" mocha --bail",
-    "prepublish": "npm run build && npm run doc",
-    "dep-check": "aegir dep-check"
+    "build": "tsc",
+    "lint": "eslint src/**/*.ts test/**/*.ts",
+    "test:all": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js 'packages/quereus/test/**/*.spec.ts' --colors",
+    "test": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js 'packages/quereus/test/**/*.spec.ts' --colors --bail",
+    "test:single": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js --bail",
+    "prepublishOnly": "npm run build && npm run doc",
+    "typecheck": "tsc --noEmit"
   },
-	"aegir": {
-		"test": {
-			"target": "node"
-		}
-	},
   "devDependencies": {
-    "@types/chai": "^4.3.11",
-    "@types/node": "^22.13.10",
-    "aegir": "^45.1.4",
-    "chai": "^4.3.10",
+    "@types/chai": "^5.2.2",
+    "@types/debug": "^4.1.12",
+    "@types/node": "^22.15.29",
+    "@types/mocha": "^10.0.10",
+    "@typescript-eslint/eslint-plugin": "^8.33.0",
+    "@typescript-eslint/parser": "^8.33.0",
+    "chai": "^5.2.0",
+    "eslint": "^9.28.0",
     "fast-check": "^4.1.1",
-    "tsc-alias": "^1.8.15",
-
-    "@typescript-eslint/eslint-plugin": "^8.32.1",
-    "@typescript-eslint/parser": "^8.32.1",
-    "eslint": "^9.27.0",
-
-		"typedoc": "^0.28.4",
-
-		"ts-node": "^10.9.2",
-
-		"typescript": "^5.8.3"
+    "mocha": "^11.5.0",
+    "ts-node": "^10.9.2",
+    "tsc-alias": "^1.8.16",
+    "typedoc": "^0.28.5",
+    "typescript": "^5.8.3"
   },
   "dependencies": {
-    "debug": "^4.4.0",
-    "inheritree": "^0.3.2",
+    "debug": "^4.4.1",
     "fast-json-patch": "^3.1.1",
+    "inheritree": "^0.3.2",
     "temporal-polyfill": "^0.3.0",
     "uint8arrays": "^5.1.0"
+  },
+  "ts-node": {
+    "esm": true,
+    "experimentalSpecifierResolution": "node"
   }
 }

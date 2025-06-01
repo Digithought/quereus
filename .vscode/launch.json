@@ -1,42 +1,32 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "type": "pwa-node",
-            "request": "launch",
-            "name": "Mocha - Current Test File",
-            "runtimeExecutable": "node",
-            "runtimeArgs": [
-                "--loader=ts-node/esm"
-            ],
-            "program": "${workspaceFolder}/node_modules/mocha/bin/mocha.js",
-            "args": [
-                "${file}", // Runs the currently open file
-                "--colors"
-            ],
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "pwa-node",
-            "request": "launch",
-            "name": "Mocha - All Tests",
-            "runtimeExecutable": "node",
-            "runtimeArgs": [
-                "--loader=ts-node/esm"
-            ],
-            "program": "${workspaceFolder}/node_modules/mocha/bin/mocha.js",
-            "args": [
-                "test/**/*.spec.ts", // Glob pattern for your test files
-                "--colors"
-            ],
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "cwd": "${workspaceFolder}"
-        }
-    ]
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "Mocha - Current file",
+			"runtimeExecutable": "node",
+			"runtimeArgs": ["--import", "./packages/quereus/register.mjs"],
+			"program": "${workspaceFolder}/node_modules/mocha/bin/mocha.js",
+			"args": ["${file}", "--colors", "--bail"],
+			"cwd": "${workspaceFolder}",
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen"
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "Mocha - All tests",
+			"runtimeExecutable": "node",
+			"runtimeArgs": ["--import", "./packages/quereus/register.mjs"],
+			"program": "${workspaceFolder}/node_modules/mocha/bin/mocha.js",
+			"args": ["packages/quereus/test/**/*.spec.ts", "--colors", "--bail"],
+			"cwd": "${workspaceFolder}",
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen"
+		}
+	]
 }

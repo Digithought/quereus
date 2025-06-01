@@ -183,7 +183,7 @@ Quereus is **actively undergoing a major architectural refactoring (Project Tita
 
 ## Testing
 
-The tests are located in `test/*.spec.ts` and are driven by Mocha via aegir.
+The tests are located in `test/*.spec.ts` and are driven by Mocha with ts-node/esm.
 
 ```bash
 yarn test
