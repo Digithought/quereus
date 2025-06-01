@@ -17,8 +17,16 @@ export const Toolbar: React.FC = () => {
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-      <div className="flex items-center gap-4">
+    <div className="flex items-center justify-between px-4 py-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex items-center gap-2">
+        {/* Logo */}
+        <img
+          src="/quoomb-logo.svg"
+          alt="Quereus"
+          className="w-10 h-10 flex-shrink-0 dark:invert"
+        />
+
+        {/* Title */}
         <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
           Quoomb
         </h1>
@@ -48,7 +56,7 @@ export const Toolbar: React.FC = () => {
           className="flex items-center gap-1 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
           title="Import CSV"
         >
-          <Upload size={16} />
+          <Download size={16} /> {/* Download looks like import icon */}
           Import
         </button>
 
@@ -60,7 +68,7 @@ export const Toolbar: React.FC = () => {
             className="flex items-center gap-1 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="Export results"
           >
-            <Download size={16} />
+            <Upload size={16} /> {/* Upload looks like export icon */}
             Export
           </button>
 

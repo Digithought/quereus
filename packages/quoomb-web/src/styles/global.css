@@ -53,54 +53,106 @@ body,
 }
 
 /* React Split Pane styles - IMPORTANT */
-.split {
+.split-pane-wrapper {
   display: flex !important;
   height: 100% !important;
   width: 100% !important;
 }
 
-/* For vertical split (stacked panes) */
-.split[style*="flex-direction: column"] {
-  flex-direction: column !important;
-}
-
-/* For horizontal split (side-by-side panes) */
-.split[style*="flex-direction: row"] {
-  flex-direction: row !important;
-}
-
-.split > div {
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.split .gutter {
+/* Gutter styles for react-split */
+.gutter {
   background-color: var(--border-color);
   background-repeat: no-repeat;
-  background-position: 50%;
-  transition: background-color 0.2s ease;
-  z-index: 1;
+  background-position: center;
+  transition: all 0.2s ease;
   flex-shrink: 0;
+  position: relative;
 }
 
-.split .gutter:hover {
+.gutter:hover {
   background-color: var(--accent-primary);
 }
 
+.gutter:active {
+  background-color: var(--accent-secondary);
+}
+
 /* Horizontal gutter (for vertical split - creates horizontal divider) */
-.split .gutter.gutter-vertical {
-  background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAeCAYAAADkftS9AAAAIklEQVQoU2M4c+aMnoEIAA6jq+jN7/+U6mHAQJ3dx32KsQAAGwA');
-  cursor: row-resize;
-  height: 6px !important;
+.gutter.gutter-vertical {
+  cursor: row-resize !important;
+  height: 8px !important;
   width: 100% !important;
+  background: linear-gradient(90deg, transparent 20%, var(--border-color) 20%, var(--border-color) 80%, transparent 80%);
+}
+
+.gutter.gutter-vertical:hover {
+  cursor: row-resize !important;
+  background: linear-gradient(90deg, transparent 20%, var(--accent-primary) 20%, var(--accent-primary) 80%, transparent 80%);
+}
+
+.gutter.gutter-vertical:active {
+  cursor: row-resize !important;
+  background: linear-gradient(90deg, transparent 20%, var(--accent-secondary) 20%, var(--accent-secondary) 80%, transparent 80%);
+}
+
+/* Add resize handle indicator for vertical gutters */
+.gutter.gutter-vertical::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 3px;
+  background: var(--text-secondary);
+  border-radius: 2px;
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.gutter.gutter-vertical:hover::after {
+  opacity: 0.8;
+  background: white;
 }
 
 /* Vertical gutter (for horizontal split - creates vertical divider) */
-.split .gutter.gutter-horizontal {
-  background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAFCAMAAABl/6zIAAAABlBMVEUAAADMzMzIT8AyAAAAAXRSTlMAQObYZgAAABRJREFUeF7NxDEBAAAAwiD7p7/qQjsAAAQAAe4oDX8AAAAASUVORK5CYII=');
-  cursor: col-resize;
-  width: 6px !important;
+.gutter.gutter-horizontal {
+  cursor: col-resize !important;
+  width: 8px !important;
   height: 100% !important;
+  background: linear-gradient(180deg, transparent 20%, var(--border-color) 20%, var(--border-color) 80%, transparent 80%);
+}
+
+.gutter.gutter-horizontal:hover {
+  cursor: col-resize !important;
+  background: linear-gradient(180deg, transparent 20%, var(--accent-primary) 20%, var(--accent-primary) 80%, transparent 80%);
+}
+
+.gutter.gutter-horizontal:active {
+  cursor: col-resize !important;
+  background: linear-gradient(180deg, transparent 20%, var(--accent-secondary) 20%, var(--accent-secondary) 80%, transparent 80%);
+}
+
+/* Add resize handle indicator for horizontal gutters */
+.gutter.gutter-horizontal::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 40px;
+  background: var(--text-secondary);
+  border-radius: 2px;
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.gutter.gutter-horizontal:hover::after {
+  opacity: 0.8;
+  background: white;
 }
 
 /* Custom scrollbar for webkit browsers */

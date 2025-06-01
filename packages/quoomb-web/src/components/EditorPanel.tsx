@@ -8,6 +8,7 @@ import { Play, Square } from 'lucide-react';
 
 export const EditorPanel: React.FC = () => {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [systemIsDark, setSystemIsDark] = useState(
     () => window.matchMedia('(prefers-color-scheme: dark)').matches
   );
@@ -47,6 +48,28 @@ export const EditorPanel: React.FC = () => {
 
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
+
+  // Add ResizeObserver to handle split pane resizing
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      // Trigger Monaco layout recalculation when container size changes
+      if (editorRef.current) {
+        // Small delay to ensure the container has finished resizing
+        setTimeout(() => {
+          editorRef.current?.layout();
+        }, 10);
+      }
+    });
+
+    resizeObserver.observe(container);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
   }, []);
 
   const activeTab = tabs.find(tab => tab.id === activeTabId);
@@ -93,6 +116,11 @@ export const EditorPanel: React.FC = () => {
         },
       });
     }
+
+    // Initial layout to ensure proper sizing
+    setTimeout(() => {
+      editor.layout();
+    }, 100);
   }, [autoExecuteOnShiftEnter, handleExecute]);
 
   const handleEditorChange = useCallback((value: string | undefined) => {
@@ -112,7 +140,7 @@ export const EditorPanel: React.FC = () => {
       <TabBar />
 
       {/* Editor container */}
-      <div className="flex-1 relative">
+      <div ref={containerRef} className="flex-1 relative overflow-hidden h-0">
         {activeTab ? (
           <>
             {/* Editor */}
@@ -161,7 +189,7 @@ export const EditorPanel: React.FC = () => {
             />
 
             {/* Floating execute button */}
-            <div className="absolute bottom-4 right-4 flex gap-2">
+            <div className="absolute bottom-4 right-4 flex gap-2 z-10">
               {isExecuting ? (
                 <button
                   onClick={handleStop}
