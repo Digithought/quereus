@@ -1,8 +1,8 @@
 -- test/logic/tvf.sqllogic
 
 -- Check query plan using the new TVF
-SELECT detail FROM query_plan('SELECT 1 + 1');
-→ [{"detail":"BLOCK operation"},{"detail":"PROJECT 1 columns"},{"detail":"SINGLEROW operation"},{"detail":"BINARYOP operation"},{"detail":"LITERAL operation"},{"detail":"LITERAL operation"}]
+SELECT op FROM query_plan('SELECT 1 + 1');
+→ [{"op":"BLOCK"},{"op":"PROJECT"},{"op":"SINGLEROW"},{"op":"BINARYOP"},{"op":"LITERAL"},{"op":"LITERAL"}]
 
 -- Check scheduler program dump TVF (basic execution check)
 SELECT instruction_id, description FROM scheduler_program('SELECT 1');

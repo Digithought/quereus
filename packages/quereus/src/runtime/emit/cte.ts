@@ -10,13 +10,13 @@ export function emitCTE(plan: CTENode, ctx: EmissionContext): Instruction {
 
 	// For now, we'll implement CTEs as simply executing the underlying query
 	// In a full implementation, this would handle materialization based on the hint
-	async function* run(rctx: RuntimeContext): AsyncIterable<Row> {
+	async function* run(rctx: RuntimeContext, queryResult: AsyncIterable<Row>): AsyncIterable<Row> {
 		// If materialization is explicitly requested or beneficial,
 		// we could materialize the result here
 		if (plan.materializationHint === 'materialized') {
 			// Materialize the CTE result
 			const materializedRows: Row[] = [];
-			for await (const row of queryInstruction.run(rctx) as AsyncIterable<Row>) {
+			for await (const row of queryResult) {
 				materializedRows.push(row);
 			}
 			// Yield all materialized rows
@@ -25,7 +25,7 @@ export function emitCTE(plan: CTENode, ctx: EmissionContext): Instruction {
 			}
 		} else {
 			// Stream the results directly
-			for await (const row of queryInstruction.run(rctx) as AsyncIterable<Row>) {
+			for await (const row of queryResult) {
 				yield row;
 			}
 		}
@@ -33,7 +33,7 @@ export function emitCTE(plan: CTENode, ctx: EmissionContext): Instruction {
 
 	return {
 		params: [queryInstruction],
-		run,
+		run: run as any,
 		note: `cte(${plan.cteName})`
 	};
 }

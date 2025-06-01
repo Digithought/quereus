@@ -12,6 +12,7 @@ import { emitDropTable } from './emit/drop-table.js';
 import { emitCreateView } from './emit/create-view.js';
 import { emitDropView } from './emit/drop-view.js';
 import { emitCTE } from './emit/cte.js';
+import { emitTableReference } from './emit/table-reference.js';
 import { emitInsert } from './emit/insert.js';
 import { emitUpdate } from './emit/update.js';
 import { emitDelete } from './emit/delete.js';
@@ -54,6 +55,7 @@ export function registerEmitters() {
 
 	// Relational emitters (mix of logical and physical for now)
 	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);
+	registerEmitter(PlanNodeType.TableReference, emitTableReference as EmitterFunc);
 	registerEmitter(PlanNodeType.TableScan, emitSeqScan as EmitterFunc);
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
 	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);

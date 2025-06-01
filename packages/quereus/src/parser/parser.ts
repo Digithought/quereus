@@ -84,7 +84,7 @@ export class Parser {
 				const mainStatement = this.statement(startOfMainStmtToken);
 
 				// Attach WITH clause if present
-				if (withClause && 'with' in mainStatement) {
+				if (withClause && this.statementSupportsWithClause(mainStatement)) {
 					(mainStatement as any).withClause = withClause;
 					if (withClause.loc && mainStatement.loc) {
 						mainStatement.loc.start = withClause.loc.start;
@@ -196,12 +196,16 @@ export class Parser {
 		const queryStartToken = this.peek();
 		let query: AST.SelectStmt | AST.InsertStmt | AST.UpdateStmt | AST.DeleteStmt;
 		if (this.check(TokenType.SELECT)) {
+			this.advance(); // Consume SELECT token
 			query = this.selectStatement(queryStartToken); // Pass start token
 		} else if (this.check(TokenType.INSERT)) {
+			this.advance(); // Consume INSERT token
 			query = this.insertStatement(queryStartToken);
 		} else if (this.check(TokenType.UPDATE)) {
+			this.advance(); // Consume UPDATE token
 			query = this.updateStatement(queryStartToken);
 		} else if (this.check(TokenType.DELETE)) {
+			this.advance(); // Consume DELETE token
 			query = this.deleteStatement(queryStartToken);
 		}
 		// TODO: Add support for VALUES directly if needed (though VALUES is usually part of SELECT)
@@ -2262,5 +2266,12 @@ export class Parser {
 	private isTypeNameKeyword(lexeme: string): boolean {
 		const typeKeywords = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC', 'VARCHAR', 'CHAR', 'DATE', 'DATETIME', 'BOOLEAN', 'INT'];
 		return typeKeywords.includes(lexeme.toUpperCase());
+	}
+
+	private statementSupportsWithClause(statement: AST.AstNode): boolean {
+		return statement.type === 'select' ||
+			   statement.type === 'insert' ||
+			   statement.type === 'update' ||
+			   statement.type === 'delete';
 	}
 }
