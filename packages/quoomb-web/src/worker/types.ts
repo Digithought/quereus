@@ -1,4 +1,7 @@
-import type { SqlValue } from '@quereus/quereus';
+import type { SqlValue, PluginManifest } from '@quereus/quereus';
+
+// Re-export plugin types for convenience
+export type { PluginManifest, PluginRecord, PluginSetting } from '@quereus/quereus';
 
 export interface PlanGraphNode {
   id: string;                 // stable, local to this plan
@@ -60,6 +63,11 @@ export interface QuereusWorkerAPI {
    * Get query plan as a graph structure for visualization
    */
   explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph>;
+
+  /**
+   * Load a plugin module from a URL
+   */
+  loadModule(url: string, config?: Record<string, SqlValue>): Promise<PluginManifest | undefined>;
 
   /**
    * List all tables in the database

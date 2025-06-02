@@ -1,6 +1,6 @@
 import * as Comlink from 'comlink';
-import { Database, type SqlValue } from '@quereus/quereus';
-import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode } from './types.js';
+import { Database, type SqlValue, dynamicLoadModule } from '@quereus/quereus';
+import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode, PluginManifest } from './types.js';
 import Papa from 'papaparse';
 
 class QuereusWorker implements QuereusWorkerAPI {
@@ -554,6 +554,19 @@ class QuereusWorker implements QuereusWorkerAPI {
       return { rowsImported: insertCount };
     } catch (error) {
       throw new Error(`CSV import failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async loadModule(url: string, config?: Record<string, SqlValue>): Promise<PluginManifest | undefined> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      return await dynamicLoadModule(url, this.db, config ?? {});
+    } catch (error) {
+      console.error('Failed to load module:', error);
+      throw error;
     }
   }
 

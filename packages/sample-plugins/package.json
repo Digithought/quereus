@@ -1,0 +1,33 @@
+{
+  "name": "@quereus/sample-plugins",
+  "version": "1.0.0",
+  "description": "Sample plugins demonstrating the Quereus plugin architecture",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "build": "echo \"Sample plugins are ES modules - no build needed\"",
+    "serve": "npx http-server -p 8080 --cors",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "quereus",
+    "sql",
+    "plugins",
+    "virtual-table",
+    "json",
+    "examples"
+  ],
+  "author": "Quereus Team",
+  "license": "MIT",
+  "files": [
+    "json-table/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quereus/quereus2.git",
+    "directory": "packages/sample-plugins"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
