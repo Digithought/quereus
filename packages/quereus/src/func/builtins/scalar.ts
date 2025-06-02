@@ -2,22 +2,6 @@ import type { SqlValue } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
 import { compareSqlValues, getSqlDataTypeName } from '../../util/comparison.js';
 
-// --- lower(X) ---
-export const lowerFunc = createScalarFunction(
-	{ name: 'lower', numArgs: 1, deterministic: true },
-	(arg: SqlValue): SqlValue => {
-		return typeof arg === 'string' ? arg.toLowerCase() : null;
-	}
-);
-
-// --- upper(X) ---
-export const upperFunc = createScalarFunction(
-	{ name: 'upper', numArgs: 1, deterministic: true },
-	(arg: SqlValue): SqlValue => {
-		return typeof arg === 'string' ? arg.toUpperCase() : null;
-	}
-);
-
 // --- abs(X) ---
 export const absFunc = createScalarFunction(
 	{ name: 'abs', numArgs: 1, deterministic: true },

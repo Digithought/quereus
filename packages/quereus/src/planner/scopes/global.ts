@@ -1,13 +1,12 @@
-import { QuereusError } from "../../common/errors.js";
-import { StatusCode, SqlDataType } from "../../common/types.js";
-import type { ScalarType } from "../../common/datatype.js";
-import * as AST from "../../parser/ast.js";
+import { BaseScope } from "./base.js";
 import type { SchemaManager } from "../../schema/manager.js";
 import type { PlanNode } from "../nodes/plan-node.js";
-import { TableReferenceNode, TableFunctionReferenceNode, FunctionReferenceNode } from "../nodes/reference.js";
+import * as AST from "../../parser/ast.js";
+import { FunctionReferenceNode, TableReferenceNode } from "../nodes/reference.js";
+import { Ambiguous } from "./scope.js";
+import type { ScalarType } from "../../common/datatype.js";
+import { SqlDataType } from "../../common/types.js";
 import { isScalarFunctionSchema } from "../../schema/function.js";
-import { BaseScope } from "./base.js";
-import { Ambiguous, type Scope } from "./scope.js";
 
 export class GlobalScope extends BaseScope {
 	constructor(public readonly manager: SchemaManager) {

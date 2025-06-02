@@ -63,20 +63,26 @@ function isAggregateExpression(node: ScalarPlanNode): boolean {
  *
  * @param stmt The AST.SelectStmt to plan.
  * @param ctx The parent planning context for this SELECT statement.
+ * @param parentCTEs A map of parent CTEs for compound statements.
  * @returns A BatchNode representing the plan for the SELECT statement.
  * @throws {QuereusError} If the FROM clause is missing, empty, or contains more than one source.
  */
 export function buildSelectStmt(
   ctx: PlanningContext,
   stmt: AST.SelectStmt,
+  parentCTEs: Map<string, CTEPlanNode> = new Map()
 ): PlanNode {
 
 	// Phase 0: Handle WITH clause if present
-	let cteNodes: Map<string, CTEPlanNode> = new Map();
+	let cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs); // Start with parent CTEs
 	let contextWithCTEs = ctx;
 
 	if (stmt.withClause) {
-		cteNodes = buildWithClause(ctx, stmt.withClause);
+		const newCteNodes = buildWithClause(ctx, stmt.withClause);
+		// Merge parent CTEs with new ones (new ones take precedence)
+		for (const [name, node] of newCteNodes) {
+			cteNodes.set(name, node);
+		}
 
 		// Create a new scope that includes the CTEs
 		const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
@@ -86,7 +92,26 @@ export function buildSelectStmt(
 			const attributes = cteNode.getAttributes();
 			cteNode.getType().columns.forEach((col: any, i: number) => {
 				const attr = attributes[i];
-				cteScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+				// Register CTE columns with qualified names to avoid collisions
+				const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
+				cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
+			});
+		}
+
+		contextWithCTEs = { ...ctx, scope: cteScope };
+	} else if (parentCTEs.size > 0) {
+		// No WITH clause but we have parent CTEs, create scope for them
+		const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
+
+		// Register parent CTEs in the scope
+		for (const [cteName, cteNode] of parentCTEs) {
+			const attributes = cteNode.getAttributes();
+			cteNode.getType().columns.forEach((col: any, i: number) => {
+				const attr = attributes[i];
+				// Register CTE columns with qualified names to avoid collisions
+				const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
+				cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
 			});
 		}
@@ -97,28 +122,34 @@ export function buildSelectStmt(
 	// Handle compound set operations (UNION / INTERSECT / EXCEPT)
 	if (stmt.compound) {
 		// Build left side by cloning the statement without compound and stripping ORDER BY/LIMIT/OFFSET that belong to outer query
+		// IMPORTANT: Keep the withClause for proper CTE scope inheritance
 		const { compound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt as any;
 
 		// Also strip ORDER BY/LIMIT/OFFSET from the right side - they should only apply to the final compound result
 		const { orderBy: rightOrderBy, limit: rightLimit, offset: rightOffset, ...rightCore } = stmt.compound.select as any;
 
-		const leftPlan = buildSelectStmt(ctx, leftCore as AST.SelectStmt) as RelationalPlanNode;
-		const rightPlan = buildSelectStmt(ctx, rightCore as AST.SelectStmt) as RelationalPlanNode;
+		const leftPlan = buildSelectStmt(contextWithCTEs, leftCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
+		const rightPlan = buildSelectStmt(contextWithCTEs, rightCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
 
-		const setNode = new SetOperationNode(ctx.scope, leftPlan, rightPlan, stmt.compound.op);
+		const setNode = new SetOperationNode(contextWithCTEs.scope, leftPlan, rightPlan, stmt.compound.op);
 
 		// After set operation, apply ORDER BY / LIMIT / OFFSET from the *outer* (original) statement
 		let input: RelationalPlanNode = setNode;
 
 		// Build scope for output columns
-		const setScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
+		const setScope = new RegisteredScope();
 		const attrs = input.getAttributes();
 		input.getType().columns.forEach((c: any, i: number) => {
 			const attr = attrs[i];
-			setScope.registerSymbol(c.name.toLowerCase(), (exp: any, s: any) => new ColumnReferenceNode(s, exp, c.type, attr.id, i));
+			// Ensure column has a name - use attribute name as fallback
+			const columnName = c.name || attr.name;
+			if (!columnName) {
+				throw new QuereusError(`Column at index ${i} has no name in set operation`, StatusCode.ERROR);
+			}
+			setScope.registerSymbol(columnName.toLowerCase(), (exp: any, s: any) => new ColumnReferenceNode(s, exp, c.type, attr.id, i));
 		});
 
-		let selectContext: PlanningContext = { ...ctx, scope: setScope };
+		let selectContext: PlanningContext = { ...contextWithCTEs, scope: setScope };
 
 		// ORDER BY
 		if (outerOrderBy && outerOrderBy.length > 0) {
@@ -284,7 +315,7 @@ export function buildSelectStmt(
 
 		// Create a scope that includes the aggregate output columns
 		// This will be used for HAVING and ORDER BY after aggregation
-		const aggregateOutputScope = new RegisteredScope(getNonParamAncestor(selectScope));
+		const aggregateOutputScope = new RegisteredScope();
 		const aggregateAttributes = input.getAttributes();
 
 		// Register GROUP BY columns
@@ -371,7 +402,7 @@ export function buildSelectStmt(
 			input = new ProjectNode(selectScope, input, projections);
 
 			// Create a new scope that maps column names to the ProjectNode's output attributes
-			const projectionOutputScope = new RegisteredScope(getNonParamAncestor(selectContext.scope));
+			const projectionOutputScope = new RegisteredScope();
 			const projectionAttributes = input.getAttributes();
 			input.getType().columns.forEach((col, index) => {
 				const attr = projectionAttributes[index];
@@ -425,7 +456,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
 			fromTable = cteRefNode;
 
-			const cteScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+			// Column scope for CTE - no parent needed since it only contains column symbols
+			const cteScope = new RegisteredScope();
 			const attributes = fromTable.getAttributes();
 			fromTable.getType().columns.forEach((c, i) => {
 				const attr = attributes[i];
@@ -445,9 +477,10 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 			if (viewSchema) {
 				// This is a view reference - expand it to the underlying SELECT statement
-				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst) as RelationalPlanNode;
+				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
 
-				const viewScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+				// Column scope for view - no parent needed since it only contains column symbols
+				const viewScope = new RegisteredScope();
 				const attributes = fromTable.getAttributes();
 
 				// Use view column names if explicitly defined, otherwise use the SELECT output column names
@@ -471,7 +504,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				// This is a regular table reference
 				fromTable = buildTableScan(fromClause, parentContext);
 
-				const tableScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+				// Column scope for table - no parent needed since it only contains column symbols
+				const tableScope = new RegisteredScope();
 				const attributes = fromTable.getAttributes();
 				fromTable.getType().columns.forEach((c, i) => {
 					const attr = attributes[i];
@@ -492,7 +526,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	} else if (fromClause.type === 'functionSource') {
 		fromTable = buildTableFunctionCall(fromClause, parentContext);
 
-		const functionScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+		// Column scope for function - no parent needed since it only contains column symbols
+		const functionScope = new RegisteredScope();
 		const attributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
 			const attr = attributes[i];
@@ -511,9 +546,10 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		(fromTable as any).columnScope = columnScope;
 	} else if (fromClause.type === 'subquerySource') {
 		// Build the subquery as a relational plan node
-		fromTable = buildSelectStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
+		fromTable = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
 
-		const subqueryScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+		// Column scope for subquery - no parent needed since it only contains column symbols
+		const subqueryScope = new RegisteredScope();
 		const attributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
 			const attr = attributes[i];

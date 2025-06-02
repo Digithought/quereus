@@ -61,7 +61,9 @@ export function buildCommonTableExpr(
 		const attributes = cteNode.getAttributes();
 		cteNode.getType().columns.forEach((col: any, i: number) => {
 			const attr = attributes[i];
-			cteScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+			// Register CTE columns with qualified names only to avoid conflicts with table columns
+			const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
+			cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
 		});
 	}

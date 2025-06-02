@@ -262,6 +262,7 @@ export class Optimizer {
 		// List node types that are already physical in nature
 		const directPhysicalTypes = [
 			PlanNodeType.Block,
+			PlanNodeType.TableReference,
 			PlanNodeType.TableScan,
 			PlanNodeType.TableFunctionCall,
 			PlanNodeType.Filter,

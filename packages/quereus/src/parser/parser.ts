@@ -69,31 +69,8 @@ export class Parser {
 
 		while (!this.isAtEnd()) {
 			try {
-				// Parse optional WITH clause first
-				const withClause = this.tryParseWithClause();
-				// Then parse the main statement
-				const startOfMainStmtToken = this.peek();
-				// Need to check for EOF *before* calling statement()
-				if (startOfMainStmtToken.type === TokenType.EOF) {
-					if (withClause) {
-						// Dangling WITH clause without a main statement
-						throw this.error(this.previous(), "WITH clause must be followed by a statement.");
-					}
-					break; // Normal end of parsing
-				}
-				const mainStatement = this.statement(startOfMainStmtToken);
-
-				// Attach WITH clause if present
-				if (withClause && this.statementSupportsWithClause(mainStatement)) {
-					(mainStatement as any).withClause = withClause;
-					if (withClause.loc && mainStatement.loc) {
-						mainStatement.loc.start = withClause.loc.start;
-					}
-				} else if (withClause) {
-					throw this.error(this.previous(), `WITH clause cannot be used with ${mainStatement.type} statement.`);
-				}
-
-				statements.push(mainStatement as AST.Statement); // Cast needed as statement() returns AstNode
+				const stmt = this.statement();
+				statements.push(stmt as AST.Statement); // Cast needed as statement() returns AstNode
 
 				// Consume optional semicolon at the end of the statement
 				this.match(TokenType.SEMICOLON);
@@ -220,38 +197,58 @@ export class Parser {
 
 	/**
 	 * Parse a single SQL statement
-	 * @param startToken The token that started this statement (e.g., SELECT, INSERT)
 	 */
-	private statement(startToken: Token): AST.AstNode {
+	private statement(): AST.AstNode {
+		// Check for WITH clause first
+		let withClause: AST.WithClause | undefined;
+		if (this.check(TokenType.IDENTIFIER) && this.peek().lexeme.toUpperCase() === 'WITH') {
+			withClause = this.tryParseWithClause();
+		}
+
+		const startToken = this.peek();
 		// --- Check for specific keywords first ---
 		const currentKeyword = startToken.lexeme.toUpperCase();
+		let stmt: AST.AstNode;
+
 		switch (currentKeyword) {
-			case 'SELECT': this.advance(); return this.selectStatement(startToken);
-			case 'INSERT': this.advance(); return this.insertStatement(startToken);
-			case 'UPDATE': this.advance(); return this.updateStatement(startToken);
-			case 'DELETE': this.advance(); return this.deleteStatement(startToken);
-			case 'CREATE': this.advance(); return this.createStatement(startToken);
-			case 'DROP': this.advance(); return this.dropStatement(startToken);
-			case 'ALTER': this.advance(); return this.alterTableStatement(startToken);
-			case 'BEGIN': this.advance(); return this.beginStatement(startToken);
-			case 'COMMIT': this.advance(); return this.commitStatement(startToken);
-			case 'ROLLBACK': this.advance(); return this.rollbackStatement(startToken);
-			case 'SAVEPOINT': this.advance(); return this.savepointStatement(startToken);
-			case 'RELEASE': this.advance(); return this.releaseStatement(startToken);
+			case 'SELECT': this.advance(); stmt = this.selectStatement(startToken, withClause); break;
+			case 'INSERT': this.advance(); stmt = this.insertStatement(startToken, withClause); break;
+			case 'UPDATE': this.advance(); stmt = this.updateStatement(startToken, withClause); break;
+			case 'DELETE': this.advance(); stmt = this.deleteStatement(startToken, withClause); break;
+			case 'CREATE': this.advance(); stmt = this.createStatement(startToken, withClause); break;
+			case 'DROP': this.advance(); stmt = this.dropStatement(startToken, withClause); break;
+			case 'ALTER': this.advance(); stmt = this.alterTableStatement(startToken, withClause); break;
+			case 'BEGIN': this.advance(); stmt = this.beginStatement(startToken, withClause); break;
+			case 'COMMIT': this.advance(); stmt = this.commitStatement(startToken, withClause); break;
+			case 'ROLLBACK': this.advance(); stmt = this.rollbackStatement(startToken, withClause); break;
+			case 'SAVEPOINT': this.advance(); stmt = this.savepointStatement(startToken, withClause); break;
+			case 'RELEASE': this.advance(); stmt = this.releaseStatement(startToken, withClause); break;
 			// TODO: Replace pragmas with build-in functions
-			case 'PRAGMA': this.advance(); return this.pragmaStatement(startToken);
+			case 'PRAGMA': this.advance(); stmt = this.pragmaStatement(startToken, withClause); break;
 			// --- Add default case ---
 			default:
 				// If it wasn't a recognized keyword starting the statement
 				throw this.error(startToken, `Expected statement type (SELECT, INSERT, UPDATE, DELETE, CREATE, etc.), got '${startToken.lexeme}'.`);
 		}
+
+		// Attach WITH clause if present and supported
+		if (withClause && this.statementSupportsWithClause(stmt)) {
+			(stmt as any).withClause = withClause;
+			if (withClause.loc && stmt.loc) {
+				stmt.loc.start = withClause.loc.start;
+			}
+		} else if (withClause) {
+			throw this.error(this.previous(), `WITH clause cannot be used with ${stmt.type} statement.`);
+		}
+
+		return stmt;
 	}
 
 	/**
 	 * Parse an INSERT statement
 	 * @returns AST for the INSERT statement
 	 */
-	insertStatement(startToken: Token): AST.InsertStmt {
+	insertStatement(startToken: Token, withClause?: AST.WithClause): AST.InsertStmt {
 		// INTO keyword is optional in SQLite
 		this.matchKeyword('INTO'); // Handle missing keyword gracefully
 
@@ -293,10 +290,13 @@ export class Parser {
 				values.push(valueList);
 				lastConsumedToken = this.previous(); // Update after closing paren of value list
 			} while (this.match(TokenType.COMMA));
-		} else if (this.check(TokenType.SELECT)) {
+		} else if (this.check(TokenType.SELECT)) { // If current token is SELECT
 			// Handle INSERT ... SELECT
-			const selectStartToken = this.peek();
-			select = this.selectStatement(selectStartToken);
+			// Consume the SELECT token, as selectStatement expects to start parsing after it.
+			// selectKeywordToken will be the actual 'SELECT' token object, used for location.
+			const selectKeywordToken = this.advance(); // Consume 'SELECT'
+			// Pass the withClause so the embedded SELECT can (via the planner) resolve CTEs defined for the INSERT.
+			select = this.selectStatement(selectKeywordToken, withClause);
 			lastConsumedToken = this.previous(); // After SELECT statement is parsed
 		} else {
 			throw this.error(this.peek(), "Expected VALUES or SELECT after INSERT.");
@@ -315,10 +315,11 @@ export class Parser {
 	/**
 	 * Parse a SELECT statement
 	 * @param startToken The 'SELECT' token or start token of a sub-query
+	 * @param withClause The WITH clause context for CTE access
 	 * @param isCompoundSubquery If true, don't parse ORDER BY/LIMIT as they belong to the outer compound
 	 * @returns AST for the SELECT statement
 	 */
-	selectStatement(startToken?: Token, isCompoundSubquery: boolean = false): AST.SelectStmt {
+	selectStatement(startToken?: Token, withClause?: AST.WithClause, isCompoundSubquery: boolean = false): AST.SelectStmt {
 		const start = startToken ?? this.previous(); // Use provided or the keyword token
 		let lastConsumedToken = start; // Initialize lastConsumed
 
@@ -334,7 +335,7 @@ export class Parser {
 		// Parse FROM clause if present
 		let from: AST.FromClause[] | undefined;
 		if (this.match(TokenType.FROM)) {
-			from = this.tableSourceList();
+			from = this.tableSourceList(withClause);
 			if (from.length > 0) lastConsumedToken = this.previous(); // After last source/join
 		}
 
@@ -384,13 +385,13 @@ export class Parser {
 			// Handle parenthesized subquery after set operation
 			if (this.match(TokenType.LPAREN)) {
 				const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in parenthesized set operation.");
-				rightSelect = this.selectStatement(selectToken, true); // Pass true to indicate compound subquery
+				rightSelect = this.selectStatement(selectToken, withClause, true); // Pass true to indicate compound subquery
 				this.consume(TokenType.RPAREN, "Expected ')' after parenthesized set operation.");
 			} else {
 				// Handle direct SELECT statement
 				const selectStartToken = this.peek();
 				if (this.match(TokenType.SELECT)) {
-					rightSelect = this.selectStatement(selectStartToken, true); // Pass true to indicate compound subquery
+					rightSelect = this.selectStatement(selectStartToken, withClause, true); // Pass true to indicate compound subquery
 				} else {
 					throw this.error(this.peek(), "Expected 'SELECT' or '(' after set operation keyword.");
 				}
@@ -545,16 +546,16 @@ export class Parser {
 	/**
 	 * Parse a comma-separated list of table sources (FROM clause)
 	 */
-	private tableSourceList(): AST.FromClause[] {
+	private tableSourceList(withClause?: AST.WithClause): AST.FromClause[] {
 		const sources: AST.FromClause[] = [];
 
 		do {
 			// Get the base table source
-			let source: AST.FromClause = this.tableSource();
+			let source: AST.FromClause = this.tableSource(withClause);
 
 			// Look for JOINs
 			while (this.isJoinToken()) {
-				source = this.joinClause(source);
+				source = this.joinClause(source, withClause);
 			}
 
 			sources.push(source);
@@ -566,7 +567,7 @@ export class Parser {
 	/**
 	 * Parse a single table source, which can now be a table name, table-valued function call, or subquery
 	 */
-	private tableSource(): AST.FromClause {
+	private tableSource(withClause?: AST.WithClause): AST.FromClause {
 		const startToken = this.peek();
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
@@ -576,7 +577,7 @@ export class Parser {
 			const lookahead = this.current + 1;
 			if (lookahead < this.tokens.length &&
 				this.tokens[lookahead].type === TokenType.SELECT) {
-				return this.subquerySource(startToken);
+				return this.subquerySource(startToken, withClause);
 			}
 		}
 
@@ -591,12 +592,12 @@ export class Parser {
 	}
 
 	/** Parses a subquery source: (SELECT ...) AS alias */
-	private subquerySource(startToken: Token): AST.SubquerySource {
+	private subquerySource(startToken: Token, withClause?: AST.WithClause): AST.SubquerySource {
 		this.consume(TokenType.LPAREN, "Expected '(' before subquery.");
 
 		// Consume the SELECT token and pass it as startToken to selectStatement
 		const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in subquery.");
-		const subquery = this.selectStatement(selectToken);
+		const subquery = this.selectStatement(selectToken, withClause);
 
 		this.consume(TokenType.RPAREN, "Expected ')' after subquery.");
 
@@ -728,7 +729,7 @@ export class Parser {
 	/**
 	 * Parse a JOIN clause
 	 */
-	private joinClause(left: AST.FromClause): AST.JoinClause {
+	private joinClause(left: AST.FromClause, withClause?: AST.WithClause): AST.JoinClause {
 		const joinStartToken = this.peek(); // Capture token before parsing JOIN type
 
 		// Determine join type
@@ -753,7 +754,7 @@ export class Parser {
 		this.consume(TokenType.JOIN, "Expected 'JOIN'.");
 
 		// Parse right side of join
-		const right = this.tableSource();
+		const right = this.tableSource(withClause);
 
 		// Parse join condition
 		let condition: AST.Expression | undefined;
@@ -1363,7 +1364,7 @@ export class Parser {
 	// --- Statement Parsing Stubs ---
 
 	/** @internal */
-	private updateStatement(startToken: Token): AST.UpdateStmt {
+	private updateStatement(startToken: Token, withClause?: AST.WithClause): AST.UpdateStmt {
 		const table = this.tableIdentifier();
 		this.consume(TokenType.SET, "Expected 'SET' after table name in UPDATE.");
 		const assignments: { column: string; value: AST.Expression }[] = [];
@@ -1382,7 +1383,7 @@ export class Parser {
 	}
 
 	/** @internal */
-	private deleteStatement(startToken: Token): AST.DeleteStmt {
+	private deleteStatement(startToken: Token, withClause?: AST.WithClause): AST.DeleteStmt {
 		this.matchKeyword('FROM');
 		const table = this.tableIdentifier();
 		let where: AST.Expression | undefined;
@@ -1394,20 +1395,20 @@ export class Parser {
 	}
 
 	/** @internal */
-	private createStatement(startToken: Token): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
+	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE.");
-			return this.createTableStatement(startToken);
+			return this.createTableStatement(startToken, withClause);
 		} else if (this.peekKeyword('INDEX')) {
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE.");
-			return this.createIndexStatement(startToken);
+			return this.createIndexStatement(startToken, false, withClause);
 		} else if (this.peekKeyword('VIEW')) {
 			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
-			return this.createViewStatement(startToken);
+			return this.createViewStatement(startToken, withClause);
 		} else if (this.peekKeyword('UNIQUE')) {
 			this.consumeKeyword('UNIQUE', "Expected 'UNIQUE' after CREATE.");
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE UNIQUE.");
-			return this.createIndexStatement(startToken, true);
+			return this.createIndexStatement(startToken, true, withClause);
 		}
 		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, or VIRTUAL after CREATE.");
 	}
@@ -1416,7 +1417,7 @@ export class Parser {
 	 * Parse CREATE TABLE statement
 	 * @returns AST for CREATE TABLE
 	 */
-	private createTableStatement(startToken: Token): AST.CreateTableStmt {
+	private createTableStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
@@ -1486,7 +1487,7 @@ export class Parser {
 	 * @param isUnique Flag indicating if UNIQUE keyword was already parsed
 	 * @returns AST for CREATE INDEX
 	 */
-	private createIndexStatement(startToken: Token, isUnique = false): AST.CreateIndexStmt {
+	private createIndexStatement(startToken: Token, isUnique = false, withClause?: AST.WithClause): AST.CreateIndexStmt {
 		if (!isUnique && this.peekKeyword('UNIQUE')) {
 			isUnique = true;
 			this.advance();
@@ -1530,7 +1531,7 @@ export class Parser {
 	 * Parse CREATE VIEW statement
 	 * @returns AST for CREATE VIEW
 	 */
-	private createViewStatement(startToken: Token): AST.CreateViewStmt {
+	private createViewStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateViewStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
@@ -1562,7 +1563,7 @@ export class Parser {
 		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW.");
 
 		const selectStartToken = this.consume(TokenType.SELECT, "Expected 'SELECT' after 'AS' in CREATE VIEW.");
-		const select = this.selectStatement(selectStartToken);
+		const select = this.selectStatement(selectStartToken, withClause);
 
 		return {
 			type: 'createView',
@@ -1579,7 +1580,7 @@ export class Parser {
 	 * Parse DROP statement
 	 * @returns AST for DROP statement
 	 */
-	private dropStatement(startToken: Token): AST.DropStmt {
+	private dropStatement(startToken: Token, withClause?: AST.WithClause): AST.DropStmt {
 		let objectType: 'table' | 'view' | 'index' | 'trigger';
 
 		if (this.peekKeyword('TABLE')) {
@@ -1616,7 +1617,7 @@ export class Parser {
 	 * Parse ALTER TABLE statement
 	 * @returns AST for ALTER TABLE statement
 	 */
-	private alterTableStatement(startToken: Token): AST.AlterTableStmt {
+	private alterTableStatement(startToken: Token, withClause?: AST.WithClause): AST.AlterTableStmt {
 		this.consumeKeyword('TABLE', "Expected 'TABLE' after ALTER.");
 
 		const table = this.tableIdentifier();
@@ -1661,7 +1662,7 @@ export class Parser {
 	 * Parse BEGIN statement
 	 * @returns AST for BEGIN statement
 	 */
-	private beginStatement(startToken: Token): AST.BeginStmt {
+	private beginStatement(startToken: Token, withClause?: AST.WithClause): AST.BeginStmt {
 		let mode: 'deferred' | 'immediate' | 'exclusive' | undefined;
 		if (this.peekKeyword('DEFERRED')) {
 			this.advance();
@@ -1683,7 +1684,7 @@ export class Parser {
 	 * Parse COMMIT statement
 	 * @returns AST for COMMIT statement
 	 */
-	private commitStatement(startToken: Token): AST.CommitStmt {
+	private commitStatement(startToken: Token, withClause?: AST.WithClause): AST.CommitStmt {
 		this.matchKeyword('TRANSACTION');
 		return { type: 'commit', loc: _createLoc(startToken, this.previous()) };
 	}
@@ -1692,7 +1693,7 @@ export class Parser {
 	 * Parse ROLLBACK statement
 	 * @returns AST for ROLLBACK statement
 	 */
-	private rollbackStatement(startToken: Token): AST.RollbackStmt {
+	private rollbackStatement(startToken: Token, withClause?: AST.WithClause): AST.RollbackStmt {
 		this.matchKeyword('TRANSACTION');
 
 		let savepoint: string | undefined;
@@ -1710,7 +1711,7 @@ export class Parser {
 	 * Parse SAVEPOINT statement
 	 * @returns AST for SAVEPOINT statement
 	 */
-	private savepointStatement(startToken: Token): AST.SavepointStmt {
+	private savepointStatement(startToken: Token, withClause?: AST.WithClause): AST.SavepointStmt {
 		const name = this.consumeIdentifier("Expected savepoint name after SAVEPOINT.");
 		return { type: 'savepoint', name, loc: _createLoc(startToken, this.previous()) };
 	}
@@ -1719,7 +1720,7 @@ export class Parser {
 	 * Parse RELEASE statement
 	 * @returns AST for RELEASE statement
 	 */
-	private releaseStatement(startToken: Token): AST.ReleaseStmt {
+	private releaseStatement(startToken: Token, withClause?: AST.WithClause): AST.ReleaseStmt {
 		this.matchKeyword('SAVEPOINT');
 		const name = this.consumeIdentifier("Expected savepoint name after RELEASE [SAVEPOINT].");
 		return { type: 'release', savepoint: name, loc: _createLoc(startToken, this.previous()) };
@@ -1729,7 +1730,7 @@ export class Parser {
 	 * Parse PRAGMA statement
 	 * @returns AST for PRAGMA statement
 	 */
-	private pragmaStatement(startToken: Token): AST.PragmaStmt {
+	private pragmaStatement(startToken: Token, withClause?: AST.WithClause): AST.PragmaStmt {
 		const nameValue = this.nameValueItem("pragma");
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
 	}

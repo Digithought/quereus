@@ -5,13 +5,14 @@ import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildSelectStmt } from './select.js';
+import { buildWithClause } from './with.js';
 import { ValuesNode } from '../nodes/values-node.js'; // Assuming ValuesNode exists or will be created
-import { LiteralNode } from '../nodes/scalar.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { ProjectNode } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js'; // Assuming this will be created
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
+import type { CTEPlanNode } from '../nodes/cte-node.js';
 
 export function buildInsertStmt(
 	ctx: PlanningContext,
@@ -42,7 +43,12 @@ export function buildInsertStmt(
 		sourceNode = new ValuesNode(ctx.scope, rows);
 	} else if (stmt.select) {
 		// For INSERT ... SELECT, plan the SELECT statement
-		const selectPlan = buildSelectStmt(ctx, stmt.select);
+		// Handle any WITH clause attached to the INSERT so its CTEs are visible to the SELECT
+		let parentCtes: Map<string, CTEPlanNode> = new Map();
+		if (stmt.withClause) {
+			parentCtes = buildWithClause(ctx, stmt.withClause);
+		}
+		const selectPlan = buildSelectStmt(ctx, stmt.select, parentCtes);
 		if (selectPlan.getType().typeClass !== 'relation') {
 			throw new QuereusError('SELECT statement in INSERT did not produce a relational plan.', StatusCode.INTERNAL, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
