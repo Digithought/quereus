@@ -109,7 +109,7 @@ class QuereusWorker implements QuereusWorkerAPI {
 
       const results: Record<string, SqlValue>[] = [];
 
-      // Use Quereus's execution_trace() function
+      // Use Quereus's execution_trace() function to get detailed instruction-level trace
       for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
         results.push(row);
       }

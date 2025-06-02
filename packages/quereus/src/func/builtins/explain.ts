@@ -7,6 +7,7 @@ import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { Parser } from "../../parser/parser.js";
 import { safeJsonStringify } from "../../util/serialization.js";
+import type { InstructionTraceEvent } from "../../runtime/types.js";
 
 // Query plan explanation function (table-valued function)
 export const queryPlanFunc = createIntegratedTableValuedFunction(
@@ -352,13 +353,15 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 			isReadOnly: true,
 			isSet: false,
 			columns: [
-				{ name: 'step_id', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
-				{ name: 'timestamp_ms', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: false, isReadOnly: true }, generated: true },
-				{ name: 'operation', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'instruction_index', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'operation', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'dependencies', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON array of instruction indices this depends on
+				{ name: 'input_values', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON
+				{ name: 'output_value', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON
 				{ name: 'duration_ms', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
-				{ name: 'rows_processed', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
-				{ name: 'memory_used', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true },
-				{ name: 'details', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true } // JSON representation
+				{ name: 'sub_programs', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON
+				{ name: 'error_message', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'timestamp_ms', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: false, isReadOnly: true }, generated: true }
 			],
 			keys: [],
 			rowConstraints: []
@@ -369,135 +372,146 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 			throw new QuereusError('execution_trace() requires a SQL string argument', StatusCode.ERROR);
 		}
 
-		const startTime = Date.now();
-		let stepId = 0;
-		let currentTime = startTime;
-
 		try {
-			// Step 1: Parse
-			const parseStart = performance.now();
-			const parser = new Parser();
-			const ast = parser.parse(sql);
-			const parseEnd = performance.now();
-			const parseDuration = parseEnd - parseStart;
+			// First, get the scheduler program to understand instruction dependencies
+			const instructionDependencies = new Map<number, number[]>();
+			const instructionOperations = new Map<number, string>();
 
-			yield [
-				stepId++,
-				currentTime,
-				'PARSE',
-				parseDuration,
-				null,
-				Math.round(JSON.stringify(ast).length), // Rough memory estimate
-				JSON.stringify({
-					statementType: ast.type,
-					hasSubqueries: sql.toLowerCase().includes('select') && sql.split(/\bselect\b/i).length > 2
-				})
-			];
-			currentTime += parseDuration;
+			try {
+				// Get scheduler program information
+				for await (const row of db.eval('SELECT * FROM scheduler_program(?)', [sql])) {
+					const addr = row.addr as number;
+					const dependencies = JSON.parse((row.dependencies as string) || '[]') as number[];
+					const description = row.description as string;
 
-			// Step 2: Plan
-			const planStart = performance.now();
-			const plan = db.getPlan(sql);
-			const planEnd = performance.now();
-			const planDuration = planEnd - planStart;
+					instructionDependencies.set(addr, dependencies);
+					instructionOperations.set(addr, description);
+				}
+			} catch (schedulerError: any) {
+				console.warn('Could not get scheduler program info:', schedulerError.message);
+			}
 
-			// Count plan nodes
-			let nodeCount = 0;
-			const countNodes = (node: any) => {
-				nodeCount++;
-				const children = node.getChildren ? node.getChildren() : [];
-				children.forEach(countNodes);
-				const relations = node.getRelations ? node.getRelations() : [];
-				relations.forEach(countNodes);
-			};
-			countNodes(plan);
+			// Import the CollectingInstructionTracer
+			const { CollectingInstructionTracer } = await import('../../runtime/types.js');
+			const tracer = new CollectingInstructionTracer();
 
-			yield [
-				stepId++,
-				currentTime,
-				'PLAN',
-				planDuration,
-				null,
-				nodeCount * 100, // Rough memory estimate per node
-				JSON.stringify({
-					nodeCount,
-					rootNodeType: plan.nodeType,
-					estimatedCost: plan.estimatedCost || null,
-					estimatedRows: (plan as any).estimatedRows || null
-				})
-			];
-			currentTime += planDuration;
+			// Parse the query and execute with tracing
+			let stmt: any;
+			try {
+				stmt = db.prepare(sql);
 
-			// Step 3: Emit
-			const emitStart = performance.now();
-			const { EmissionContext } = await import('../../runtime/emission-context.js');
-			const { emitPlanNode } = await import('../../runtime/emitters.js');
-			const emissionContext = new EmissionContext(db);
-			const rootInstruction = emitPlanNode(plan, emissionContext);
-			const emitEnd = performance.now();
-			const emitDuration = emitEnd - emitStart;
+				// Execute the query with tracing to collect actual instruction events
+				const results: any[] = [];
+				for await (const row of stmt.iterateRowsWithTrace(undefined, tracer)) {
+					results.push(row); // We don't yield the results, just the trace events
+				}
 
-			yield [
-				stepId++,
-				currentTime,
-				'EMIT',
-				emitDuration,
-				null,
-				1000, // Rough estimate for instruction tree
-				JSON.stringify({
-					hasSubPrograms: !!(rootInstruction.programs && rootInstruction.programs.length > 0),
-					instructionNote: rootInstruction.note || 'unknown'
-				})
-			];
-			currentTime += emitDuration;
+				await stmt.finalize();
+			} catch (executionError: any) {
+				// If execution fails, we might still have some trace events
+				console.warn('Query execution failed during tracing:', executionError.message);
+			}
 
-			// Step 4: Schedule
-			const scheduleStart = performance.now();
-			const { Scheduler } = await import('../../runtime/scheduler.js');
-			const scheduler = new Scheduler(rootInstruction);
-			const scheduleEnd = performance.now();
-			const scheduleDuration = scheduleEnd - scheduleStart;
+			// Get the collected trace events
+			const traceEvents = tracer.getTraceEvents();
 
-			yield [
-				stepId++,
-				currentTime,
-				'SCHEDULE',
-				scheduleDuration,
-				null,
-				scheduler.instructions.length * 50, // Rough memory per instruction
-				JSON.stringify({
-					instructionCount: scheduler.instructions.length,
-					hasSubPrograms: scheduler.instructions.some(i => i.programs && i.programs.length > 0)
-				})
-			];
-			currentTime += scheduleDuration;
+			// Group events by instruction index and consolidate into single rows
+			const eventsByInstruction = new Map<number, InstructionTraceEvent[]>();
+			for (const event of traceEvents) {
+				const instructionIndex = event.instructionIndex;
+				if (!eventsByInstruction.has(instructionIndex)) {
+					eventsByInstruction.set(instructionIndex, []);
+				}
+				eventsByInstruction.get(instructionIndex)!.push(event);
+			}
 
-			// Step 5: Execute (simulated - we don't actually run it)
-			const totalTime = currentTime - startTime;
-			yield [
-				stepId++,
-				currentTime,
-				'READY',
-				null,
-				null,
-				null,
-				JSON.stringify({
-					totalPreparationTime: totalTime,
-					readyForExecution: true,
-					note: 'Execution not performed in trace mode'
-				})
-			];
+			// Get sub-program information for enhanced context
+			const subPrograms = tracer.getSubPrograms ? tracer.getSubPrograms() : new Map();
+
+			// Create one row per instruction execution
+			for (const [instructionIndex, events] of eventsByInstruction.entries()) {
+				const inputEvent = events.find(e => e.type === 'input');
+				const outputEvent = events.find(e => e.type === 'output');
+				const errorEvent = events.find(e => e.type === 'error');
+
+				// Use operation name from scheduler program, fallback to event note
+				const operationName = instructionOperations.get(instructionIndex) || inputEvent?.note || 'Unknown';
+				const dependencies = instructionDependencies.get(instructionIndex) || [];
+
+				// Calculate duration between input and output
+				let duration: number | null = null;
+				if (inputEvent && outputEvent) {
+					duration = outputEvent.timestamp - inputEvent.timestamp;
+				}
+
+				// Build enhanced sub-program information
+				let subProgramsInfo: any = null;
+				if (inputEvent?.subPrograms && inputEvent.subPrograms.length > 0) {
+					// Enhance sub-program info with details from the tracer
+					subProgramsInfo = inputEvent.subPrograms.map(sp => {
+						const subProgramDetail = subPrograms.get(sp.programIndex);
+						const baseInfo = {
+							programIndex: sp.programIndex,
+							instructionCount: sp.instructionCount,
+							rootNote: sp.rootNote
+						};
+
+						if (subProgramDetail) {
+							// Add instruction details from the sub-program
+							const instructions = subProgramDetail.scheduler.instructions.map((instr: any, idx: number) => ({
+								index: idx,
+								operation: instr.note || `instruction_${idx}`,
+								dependencies: instr.params.map((_: any, paramIdx: number) => paramIdx).filter((paramIdx: number) => paramIdx < idx)
+							}));
+							return { ...baseInfo, instructions };
+						}
+
+						return baseInfo;
+					});
+				}
+
+				const timestamp = inputEvent?.timestamp || outputEvent?.timestamp || Date.now();
+
+				yield [
+					instructionIndex,                                                          // instruction_index
+					operationName,                                                            // operation
+					safeJsonStringify(dependencies),                                          // dependencies
+					inputEvent?.args ? safeJsonStringify(inputEvent.args) : null,            // input_values
+					outputEvent?.result !== undefined ? safeJsonStringify(outputEvent.result) : null, // output_value
+					duration,                                                                  // duration_ms
+					subProgramsInfo ? safeJsonStringify(subProgramsInfo) : null,             // sub_programs
+					errorEvent?.error || null,                                                // error_message
+					timestamp                                                                  // timestamp_ms
+				];
+			}
+
+			// If no trace events were captured, yield a summary row
+			if (eventsByInstruction.size === 0) {
+				yield [
+					0,                    // instruction_index
+					'NO_TRACE_DATA',      // operation
+					safeJsonStringify([]), // dependencies
+					null,                 // input_values
+					safeJsonStringify('No instruction-level trace events captured'), // output_value
+					null,                 // duration_ms
+					null,                 // sub_programs
+					null,                 // error_message
+					Date.now()            // timestamp_ms
+				];
+			}
 
 		} catch (error: any) {
-			// If any step fails, yield an error trace
+			// If tracing setup fails, yield an error event
 			yield [
-				stepId,
-				currentTime,
-				'ERROR',
-				null,
-				null,
-				null,
-				JSON.stringify({ error: error.message, step: 'execution_trace' })
+				0,                                                        // instruction_index
+				'TRACE_SETUP',                                           // operation
+				safeJsonStringify([]),                                    // dependencies
+				null,                                                     // input_values
+				null,                                                     // output_value
+				null,                                                     // duration_ms
+				null,                                                     // sub_programs
+				`Failed to setup execution trace: ${error.message}`,     // error_message
+				Date.now()                                                // timestamp_ms
 			];
 		}
 	}
