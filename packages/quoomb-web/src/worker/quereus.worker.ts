@@ -1,6 +1,6 @@
 import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
-import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview } from './types.js';
+import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode } from './types.js';
 import Papa from 'papaparse';
 
 class QuereusWorker implements QuereusWorkerAPI {
@@ -75,6 +75,167 @@ class QuereusWorker implements QuereusWorkerAPI {
       console.error('Query plan error:', error);
       throw new Error(`Query explanation failed: ${error instanceof Error ? error.message : error}`);
     }
+  }
+
+  async explainProgram(sql: string): Promise<Record<string, SqlValue>[]> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      console.log('Explaining program for SQL:', sql);
+
+      const results: Record<string, SqlValue>[] = [];
+
+      // Use Quereus's scheduler_program() function
+      for await (const row of this.db.eval('SELECT * FROM scheduler_program(?)', [sql])) {
+        results.push(row);
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Program explanation error:', error);
+      throw new Error(`Program explanation failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async executionTrace(sql: string): Promise<Record<string, SqlValue>[]> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      console.log('Getting execution trace for SQL:', sql);
+
+      const results: Record<string, SqlValue>[] = [];
+
+      // Use Quereus's execution_trace() function
+      for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
+        results.push(row);
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Execution trace error:', error);
+      throw new Error(`Execution trace failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      console.log('Getting plan graph for SQL:', sql, 'withActual:', options?.withActual);
+
+      // Get the base query plan
+      const planResults: Record<string, SqlValue>[] = [];
+      for await (const row of this.db.eval('SELECT * FROM query_plan(?)', [sql])) {
+        planResults.push(row);
+      }
+
+      // Get actual execution data if requested
+      let traceResults: Record<string, SqlValue>[] = [];
+      if (options?.withActual) {
+        try {
+          // First execute the query to get actual timing data
+          await this.db.eval(sql);
+
+          // Then get execution trace
+          for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
+            traceResults.push(row);
+          }
+        } catch (error) {
+          console.warn('Could not get actual execution data:', error);
+          // Continue with estimated data only
+        }
+      }
+
+      // Convert to graph structure
+      return this.buildPlanGraph(planResults, traceResults, sql);
+    } catch (error) {
+      console.error('Plan graph error:', error);
+      throw new Error(`Plan graph failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  private buildPlanGraph(planRows: Record<string, SqlValue>[], traceRows: Record<string, SqlValue>[], originalSql: string): PlanGraph {
+    // Build a simple linear plan structure from the plan data
+    // This is a simplified version - real implementation would need to parse the actual plan structure
+    const nodes: PlanGraphNode[] = [];
+    let totalEstCost = 0;
+    let totalEstRows = 0;
+    let totalActTime = 0;
+
+    // Create nodes from plan data
+    planRows.forEach((row, index) => {
+      const estCost = (row.estimated_cost as number) || 0;
+      const estRows = (row.estimated_rows as number) || 0;
+
+      totalEstCost += estCost;
+      totalEstRows += estRows;
+
+      // Try to extract operation type from plan data
+      const detail = (row.detail as string) || '';
+      let opcode = 'UNKNOWN';
+
+      if (detail.includes('SCAN')) opcode = 'SCAN';
+      else if (detail.includes('JOIN')) opcode = 'JOIN';
+      else if (detail.includes('SORT')) opcode = 'SORT';
+      else if (detail.includes('GROUP')) opcode = 'GROUP';
+      else if (detail.includes('FILTER')) opcode = 'FILTER';
+      else if (detail.includes('PROJECT')) opcode = 'PROJECT';
+
+      // Find corresponding trace data
+      const traceRow = traceRows.find(trace =>
+        (trace.step_id as number) === index + 1
+      );
+
+      const actTimeMs = traceRow ? (traceRow.duration_ms as number) : undefined;
+      const actRows = traceRow ? (traceRow.rows_processed as number) : undefined;
+
+      if (actTimeMs) totalActTime += actTimeMs;
+
+      nodes.push({
+        id: `node-${index}`,
+        opcode,
+        estCost,
+        estRows,
+        actTimeMs,
+        actRows,
+        sqlSpan: undefined, // TODO: Extract from plan if available
+        extra: {
+          detail: row.detail,
+          selectid: row.selectid,
+          order: row.order
+        },
+        children: []
+      });
+    });
+
+    // For now, create a simple linear tree (each node's child is the next node)
+    // Real implementation would parse the actual tree structure from selectid/order
+    for (let i = 0; i < nodes.length - 1; i++) {
+      nodes[i].children = [nodes[i + 1]];
+    }
+
+    const root = nodes[0] || {
+      id: 'root',
+      opcode: 'EMPTY',
+      estCost: 0,
+      estRows: 0,
+      children: []
+    };
+
+    return {
+      root,
+      totals: {
+        estCost: totalEstCost,
+        estRows: totalEstRows,
+        actTimeMs: totalActTime > 0 ? totalActTime : undefined
+      }
+    };
   }
 
   async listTables(): Promise<Array<{ name: string; type: string }>> {

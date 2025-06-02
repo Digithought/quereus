@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import type { SqlValue } from '@quereus/quereus';
-import { QuereusWorkerAPI } from '../worker/types.js';
+import { QuereusWorkerAPI, PlanGraph } from '../worker/types.js';
 import * as Comlink from 'comlink';
 
 export interface QueryResult {
@@ -12,6 +12,11 @@ export interface QueryResult {
   executionTime: number;
   timestamp: Date;
   queryPlan?: Record<string, SqlValue>[];
+  program?: Record<string, SqlValue>[];
+  trace?: Record<string, SqlValue>[];
+  planGraph?: PlanGraph;
+  planMode: 'estimated' | 'actual';
+  selectedNodeId?: string;
 }
 
 export interface Tab {
@@ -42,7 +47,7 @@ export interface SessionState {
 
   // Results display
   activeResultId: string | null;
-  selectedPanel: 'result' | 'plan' | 'messages';
+  selectedPanel: 'result' | 'plan' | 'graph' | 'program' | 'trace' | 'messages';
 
   // Unsaved changes dialog
   unsavedChangesDialog: {
@@ -55,14 +60,19 @@ export interface SessionState {
   initializeSession: () => Promise<void>;
   executeSQL: (sql: string) => Promise<void>;
   fetchQueryPlan: (sql: string) => Promise<void>;
+  fetchProgram: (sql: string) => Promise<void>;
+  fetchTrace: (sql: string) => Promise<void>;
+  fetchPlanGraph: (sql: string, withActual?: boolean) => Promise<void>;
   createTab: (name?: string) => string;
   closeTab: (tabId: string) => void;
   forceCloseTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   updateTabName: (tabId: string, name: string) => void;
-  setSelectedPanel: (panel: 'result' | 'plan' | 'messages') => void;
+  setSelectedPanel: (panel: 'result' | 'plan' | 'graph' | 'program' | 'trace' | 'messages') => void;
   setActiveResultId: (resultId: string | null) => void;
+  setSelectedNodeId: (nodeId: string | undefined) => void;
+  setPlanMode: (mode: 'estimated' | 'actual') => void;
   exportResultsAsCSV: () => void;
   exportResultsAsJSON: () => void;
   saveCurrentTabAsFile: () => Promise<void>;
@@ -175,6 +185,7 @@ export const useSessionStore = create<SessionState>()(
             results,
             executionTime,
             timestamp: new Date(),
+            planMode: 'estimated',
           };
 
           set((state) => ({
@@ -194,6 +205,7 @@ export const useSessionStore = create<SessionState>()(
             error: errorMessage,
             executionTime,
             timestamp: new Date(),
+            planMode: 'estimated',
           };
 
           set((state) => ({
@@ -229,6 +241,87 @@ export const useSessionStore = create<SessionState>()(
           }
         } catch (error) {
           console.error('Failed to fetch query plan:', error);
+          throw error;
+        }
+      },
+
+      fetchProgram: async (sql: string) => {
+        const { api, isConnected, activeResultId } = get();
+
+        if (!api || !isConnected) {
+          throw new Error('Not connected to database');
+        }
+
+        try {
+          const program = await api.explainProgram(sql);
+
+          // Update the active result with the query program
+          if (activeResultId) {
+            set((state) => ({
+              ...state,
+              queryHistory: state.queryHistory.map(result =>
+                result.id === activeResultId
+                  ? { ...result, program: program }
+                  : result
+              ),
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch query program:', error);
+          throw error;
+        }
+      },
+
+      fetchTrace: async (sql: string) => {
+        const { api, isConnected, activeResultId } = get();
+
+        if (!api || !isConnected) {
+          throw new Error('Not connected to database');
+        }
+
+        try {
+          const trace = await api.executionTrace(sql);
+
+          // Update the active result with the query trace
+          if (activeResultId) {
+            set((state) => ({
+              ...state,
+              queryHistory: state.queryHistory.map(result =>
+                result.id === activeResultId
+                  ? { ...result, trace: trace }
+                  : result
+              ),
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch query trace:', error);
+          throw error;
+        }
+      },
+
+      fetchPlanGraph: async (sql: string, withActual?: boolean) => {
+        const { api, isConnected, activeResultId } = get();
+
+        if (!api || !isConnected) {
+          throw new Error('Not connected to database');
+        }
+
+        try {
+          const planGraph = await api.explainPlanGraph(sql, { withActual });
+
+          // Update the active result with the query plan graph
+          if (activeResultId) {
+            set((state) => ({
+              ...state,
+              queryHistory: state.queryHistory.map(result =>
+                result.id === activeResultId
+                  ? { ...result, planGraph: planGraph }
+                  : result
+              ),
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch query plan graph:', error);
           throw error;
         }
       },
@@ -360,7 +453,7 @@ export const useSessionStore = create<SessionState>()(
         }));
       },
 
-      setSelectedPanel: (panel: 'result' | 'plan' | 'messages') => {
+      setSelectedPanel: (panel: 'result' | 'plan' | 'graph' | 'program' | 'trace' | 'messages') => {
         set((state) => ({
           ...state,
           selectedPanel: panel,
@@ -371,6 +464,30 @@ export const useSessionStore = create<SessionState>()(
         set((state) => ({
           ...state,
           activeResultId: resultId,
+        }));
+      },
+
+      setSelectedNodeId: (nodeId: string | undefined) => {
+        const { activeResultId } = get();
+        set((state) => ({
+          ...state,
+          queryHistory: state.queryHistory.map(result =>
+            result.id === activeResultId
+              ? { ...result, selectedNodeId: nodeId }
+              : result
+          ),
+        }));
+      },
+
+      setPlanMode: (mode: 'estimated' | 'actual') => {
+        const { activeResultId } = get();
+        set((state) => ({
+          ...state,
+          queryHistory: state.queryHistory.map(result =>
+            result.id === activeResultId
+              ? { ...result, planMode: mode }
+              : result
+          ),
         }));
       },
 

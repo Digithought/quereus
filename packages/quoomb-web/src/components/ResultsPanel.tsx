@@ -2,8 +2,11 @@ import React from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { ResultsGrid } from './ResultsGrid.js';
 import { QueryPlan } from './QueryPlan.js';
+import { QueryProgram } from './QueryProgram.js';
+import { ExecutionTrace } from './ExecutionTrace.js';
+import { QueryPlanGraph } from './QueryPlanGraph.js';
 import { MessagesPanel } from './MessagesPanel.js';
-import { Database, FileText, MessageSquare } from 'lucide-react';
+import { Database, FileText, MessageSquare, Layers3, Activity, Share2 } from 'lucide-react';
 
 export const ResultsPanel: React.FC = () => {
   const {
@@ -18,6 +21,9 @@ export const ResultsPanel: React.FC = () => {
   const tabs = [
     { id: 'result', label: 'Results', icon: Database },
     { id: 'plan', label: 'Plan', icon: FileText },
+    { id: 'graph', label: 'Graph', icon: Share2 },
+    { id: 'program', label: 'Program', icon: Layers3 },
+    { id: 'trace', label: 'Trace', icon: Activity },
     { id: 'messages', label: 'Messages', icon: MessageSquare },
   ] as const;
 
@@ -65,6 +71,18 @@ export const ResultsPanel: React.FC = () => {
 
         {selectedPanel === 'plan' && (
           <QueryPlan />
+        )}
+
+        {selectedPanel === 'graph' && (
+          <QueryPlanGraph />
+        )}
+
+        {selectedPanel === 'program' && (
+          <QueryProgram />
+        )}
+
+        {selectedPanel === 'trace' && (
+          <ExecutionTrace />
         )}
 
         {selectedPanel === 'messages' && (
