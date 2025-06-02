@@ -1,295 +1,186 @@
-# Quereus — TypeScript SQL Query Processor
+# Quereus
 
 <img src="packages/quereus/docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
-**(Work In Progress - and undergoing Major Refactoring: Titan Project)**
+A modern, TypeScript-native SQL engine designed for federated query processing with extensible virtual table support.
 
-Quereus is a lightweight, query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism. Quereus has no persistent file storage, though one could be built as a virtual table module.
+## Overview
 
-## 🚀 Project Status
+Quereus is a lightweight SQL database engine built from the ground up in TypeScript, inspired by SQLite but optimized for modern JavaScript environments. Unlike traditional databases, Quereus is **virtual table-centric** — all data access happens through pluggable virtual table modules that can connect to any data source: memory, JSON, APIs, files, or custom sources.
 
-**Phase 2 Complete**: Core engine with **Project Titan** architecture + full UI ecosystem
+**Key Characteristics:**
+- 🚀 **Pure TypeScript** — No native dependencies, runs anywhere JS runs
+- 🔄 **Async/Await Native** — Built for modern JavaScript with full async support  
+- 🧩 **Virtual Table Architecture** — Extensible data access through pluggable modules
+- 💾 **Memory-Focused** — Optimized for in-memory operations with optional persistence
+- 📊 **Rich SQL Support** — Comprehensive SQL dialect with CTEs, joins, window functions, and more
+- 🌐 **Universal Runtime** — Node.js, browsers, workers, edge environments
 
-- ✅ **Core SQL Engine** — Comprehensive SQL support with virtual tables
-- ✅ **CLI REPL** — Interactive terminal interface  
-- ✅ **Web Playground** — Browser-based SQL editor with Monaco
-- ✅ **Desktop Ready** — Architecture supports Electron/Tauri deployment
-
-## 📁 Monorepo Structure
-
-```text
-quereus/
-├── packages/
-│   ├── quereus/             # @quereus/quereus — Core SQL engine
-│   ├── quoomb-cli/          # @quereus/quoomb-cli — Terminal REPL
-│   ├── quoomb-web/          # @quereus/quoomb-web — Browser playground  
-│   ├── shared-ui/           # @quereus/shared-ui — Shared components
-│   └── plugins-samples/     # @quoomb/plugins-samples — Example plugins
-├── tsconfig.base.json       # Shared TypeScript configuration
-└── package.json             # Yarn workspaces root
-```
-
-## 🏗️ Architecture Overview (Titan Project)
-
-Quereus features a new architecture based on partially immutable PlanNodes and an Instruction-based runtime:
-
-1. **SQL Input** → **Parser** (Lexer + AST)
-2. **Planner** → Immutable `PlanNode` tree with relational algebra
-3. **Runtime** → `Instruction` graph execution with async operations
-4. **Virtual Tables** → Core data interface (`MemoryTable`, custom modules)
-5. **User-Defined Functions** → Custom JavaScript functions in SQL
-
-### Key Features
-
-- **Virtual Table Centric** — All tables are virtual tables
-- **Async Core** — Non-blocking operations with `AsyncIterable<Row>`
-- **Key-Based Addressing** — Primary key addressing (no implicit rowid)
-- **TypeScript Native** — Full type safety and modern JS features
-- **Cross-Platform** — Node.js, browser, React Native support
-
-### Current Implementation Status
-
-**✅ COMPLETE (Titan Architecture):**
-- Core `PlanNode` to `Instruction` architecture
-- Comprehensive SQL Support (SELECT, DML, aggregation, window functions)
-- Emitters and Runtime with proper context management
-- Plan Optimization with attribute ID preservation
-- Virtual table implementations (`MemoryTable`, `JsonEach`, `JsonTree`)
-- Extensive built-in functions and pragmas
-- Row-level CHECK constraints
-
-**🔄 IN PROGRESS:**
-- Join operations (primary remaining gap)
-- Advanced subquery patterns
-- Comprehensive testing for Titan architecture
-
----
-
-# Quoomb — Quereus SQL Playground
-
-> **Quoomb** (Query + Womb) is the official REPL and playground ecosystem for **Quereus**. It provides zero‑install environments for interactive querying, schema exploration, and extension prototyping while remaining 100% embeddable in future shells (VS Code, Electron, Tauri).
-
-## 🎯 Implementation Status
-
-This implementation includes **Phase 0**, **Phase 1**, and **Phase 2** as specified in the architecture plan:
-
-### ✅ Phase 0 — Minimal CLI (`@quereus/quoomb-cli`)
-- **REPL with readline interface** — Interactive SQL prompt
-- **Dot commands** — `.tables`, `.schema`, `.import`, `.export`  
-- **SQL execution** — Direct query execution with results formatting
-- **CSV import/export** — File-based data operations
-- **Colored output** — Beautiful terminal formatting with chalk
-
-### ✅ Phase 1 — Web Playground MVP (`@quereus/quoomb-web`)
-- **React + Monaco editor** — Full SQL editing with syntax highlighting
-- **Web Worker isolation** — Quereus engine runs in background thread
-- **Split-pane layout** — Editor on top, results below
-- **CSV file import** — Drag-and-drop file handling
-- **Run button + Shift+Enter** — Multiple execution methods
-
-### ✅ Phase 2 — Rich Panels & Persisted Sessions
-- **Multi-tab editor** — Multiple SQL files with tab management
-- **Five-panel results** — Results, Plan, Program, Trace, Messages tabs
-- **Query explain tools** — Built-in query analysis with `query_plan()`, `scheduler_program()`, `execution_trace()`
-- **Theme system** — Light/dark/auto themes with system detection
-- **Settings persistence** — localStorage-based configuration
-- **TanStack Table grid** — Sortable, paginated results display
-- **Real-time status** — Connection and execution status indicators
-
-## 🛠 Technology Stack
-
-| **Concern**                | **Implementation**                           |
-| -------------------------- | -------------------------------------------- |
-| **Language**               | TypeScript 5.x                              |
-| **Package Manager**        | Yarn workspaces                             |
-| **Build (Web)**            | Vite + esbuild                              |
-| **UI Framework**           | React 19                                     |
-| **Editor**                 | Monaco Editor (VS Code engine)              |
-| **State Management**       | Zustand                                      |
-| **Data Grid**              | TanStack Table                               |
-| **Styling**                | Tailwind CSS + CSS variables                |
-| **Worker Communication**   | Comlink (zero-boilerplate RPC)              |
-| **CLI Framework**          | Commander.js + chalk                        |
-
-## 🏃‍♂️ Getting Started
-
-### Prerequisites
-- **Node.js** 18+ 
-- **Yarn** package manager
+## Quick Start
 
 ### Installation
 
 ```bash
+npm install quereus
+```
+
+### Basic Usage
+
+```typescript
+import { Database } from 'quereus';
+
+const db = new Database();
+
+// Create an in-memory table
+await db.exec(`
+  CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE
+  ) USING memory
+`);
+
+// Insert data
+await db.exec(`
+  INSERT INTO users (name, email) VALUES 
+    ('Alice', 'alice@example.com'),
+    ('Bob', 'bob@example.com')
+`);
+
+// Query data
+const users = await db.all('SELECT * FROM users WHERE name LIKE ?', ['A%']);
+console.log(users); // [{ id: 1, name: 'Alice', email: 'alice@example.com' }]
+```
+
+### Working with JSON Data
+
+```typescript
+// Query JSON data directly
+await db.exec(`
+  CREATE TABLE products 
+  USING json_each('[
+    {"id": 1, "name": "Laptop", "price": 999},
+    {"id": 2, "name": "Mouse", "price": 25}
+  ]')
+`);
+
+const expensiveProducts = await db.all(`
+  SELECT json_extract(value, '$.name') as name,
+         json_extract(value, '$.price') as price
+  FROM products 
+  WHERE json_extract(value, '$.price') > 500
+`);
+```
+
+## Architecture
+
+Quereus is built around a three-layer architecture:
+
+### 1. **SQL Layer**
+- **Parser** — Converts SQL text into Abstract Syntax Trees
+- **Planner** — Transforms AST into optimized logical plans  
+- **Optimizer** — Converts logical plans to efficient physical execution plans
+
+### 2. **Runtime Layer**
+- **Scheduler** — Executes physical plans with dependency management
+- **Instructions** — Instruction execution
+- **Context System** — Manages row and column references during execution
+
+### 3. **Storage Layer**
+- **Virtual Table Interface** — Pluggable data access abstraction
+- **Memory Tables** — High-performance in-memory storage with MVCC
+- **JSON Tables** — Direct JSON data querying capabilities
+- **Custom Modules** — Extensible interface for any data source
+
+## Packages
+
+This repository contains multiple packages:
+
+- **[`packages/quereus/`](packages/quereus/)** — Core SQL engine and runtime
+- **[`packages/quoomb-web/`](packages/quoomb-web/)** — Web-based query interface and visualizer
+- **[`packages/quoomb-cli/`](packages/quoomb-cli/)** — Command-line interface
+- **[`packages/sample-plugins/`](packages/sample-plugins/)** — Sample plugins for testing and development
+
+## Documentation
+
+### Core Documentation
+- **[SQL Reference](packages/quereus/docs/sql.md)** — Comprehensive SQL dialect guide
+- **[Built-in Functions](packages/quereus/docs/functions.md)** — Complete function reference
+- **[Virtual Tables](packages/quereus/docs/memory-table.md)** — Virtual table system and memory tables
+- **[Runtime Architecture](packages/quereus/docs/runtime.md)** — Execution engine internals
+
+### Advanced Topics  
+- **[Query Optimizer](packages/quereus/docs/optimizer.md)** — Query planning and optimization
+- **[Usage Examples](packages/quereus/docs/usage.md)** — Practical examples and patterns
+
+## Features
+
+### SQL Capabilities
+- **Full SELECT Support** — JOINs, subqueries, CTEs, window functions
+- **Data Modification** — INSERT, UPDATE, DELETE with transaction support
+- **Schema Operations** — CREATE/DROP tables, indexes, views
+- **Advanced Features** — Recursive CTEs, constraints, savepoints
+
+### Virtual Table Ecosystem
+- **Memory Tables** — ACID-compliant in-memory storage with indexing
+- **JSON Processing** — Native JSON querying with `json_each()` and `json_tree()`
+- **Function Tables** — Table-valued functions like `generate_series()`
+- **Custom Modules** — Build your own data source integrations
+
+### Performance & Reliability
+- **Query Optimization** — Cost-based query planning with join reordering
+- **MVCC Transactions** — Multi-version concurrency control for isolation
+- **Efficient Execution** — Dependency-aware instruction scheduling
+- **Memory Management** — Copy-on-write data structures with automatic cleanup
+
+## Use Cases
+
+Quereus excels in scenarios where you need SQL capabilities without traditional database overhead:
+
+- **Data Analysis** — ETL pipelines, data transformation, reporting
+- **Application Logic** — Complex business rules expressed in SQL
+- **API Backends** — In-memory caching with SQL query capabilities  
+- **Edge Computing** — Lightweight SQL processing in serverless environments
+- **Development Tools** — SQL interfaces for configuration, testing, prototyping
+- **Embedded Analytics** — SQL queries over application data structures
+
+## Contributing
+
+We welcome contributions! Please see our [development guide](packages/quereus/README.md) for:
+
+- Setting up the development environment
+- Running tests and benchmarks  
+- Code style and architectural guidelines
+- Submitting issues and pull requests
+
+### Development Quick Start
+
+```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/gotchoices/quereus.git
 cd quereus
 
 # Install dependencies
 yarn install
 
+# Run tests
+yarn test
+
 # Build all packages
 yarn build
 ```
 
-### Development
+## License
 
-```bash
-# Start web development server
-yarn dev:web
+MIT License — see [LICENSE](LICENSE) for details.
 
-# Run CLI in development mode  
-yarn dev:cli
+## Status
 
-# Build and run CLI globally
-yarn workspace @quereus/quoomb-cli build
-npm link packages/quoomb-cli
-quoomb
-```
+Quereus is actively developed and suitable for production use in appropriate scenarios. The core SQL engine and memory table implementation are stable, with ongoing work on:
 
-### Usage Examples
+- Enhanced query optimization capabilities
+- Additional virtual table modules  
+- Performance improvements and tooling
+- Extended SQL standard compliance
 
-#### CLI Usage
-```bash
-$ quoomb
-Welcome to Quoomb - Quereus SQL REPL
-Type .help for available commands or enter SQL to execute
-
-quoomb> CREATE TABLE users (id INTEGER, name TEXT, email TEXT);
-✓ Query executed successfully (15ms)
-
-quoomb> INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
-✓ Query executed successfully (8ms)
-
-quoomb> SELECT * FROM users;
-┌────┬───────┬───────────────────┐
-│ id │ name  │ email             │
-├────┼───────┼───────────────────┤
-│ 1  │ Alice │ alice@example.com │
-└────┴───────┴───────────────────┘
-
-1 row(s) (12ms)
-
-quoomb> .import data.csv
-Created table: data
-Imported 1000 rows into table 'data'
-
-quoomb> .export "SELECT * FROM users" output.json
-Exported 1 rows to 'output.json'
-```
-
-#### Web Usage
-1. Navigate to `http://localhost:3000`
-2. Write SQL in the Monaco editor
-3. Press **Shift+Enter** or click **Execute**
-4. View results in the grid below
-5. Switch between **Results**, **Plan**, **Program**, **Trace**, and **Messages** tabs
-6. Use explain tools to analyze query execution and performance
-7. Import CSV files via the toolbar button
-
-## 🏗 Web Worker Architecture
-```text
-┌─────────────────┐    Comlink RPC    ┌──────────────────┐
-│   React App     │ ⟵─────────────⟶   │   Web Worker     │
-│                 │                   │                  │
-│ • Monaco Editor │                   │ • Quereus Engine │
-│ • Result Grid   │                   │ • SQL Execution  │
-│ • State (Zustand)│                   │ • CSV Processing │
-└─────────────────┘                   └──────────────────┘
-```
-
-The Quereus engine runs entirely in a Web Worker, providing:
-- **UI responsiveness** — Main thread never blocks
-- **Security isolation** — Engine separated from DOM
-- **Future extensibility** — Plugin system foundation
-
-### State Management (Zustand)
-
-**Session Store** (`useSessionStore`)
-- Database connection state
-- Tab management (create, close, switch)
-- Query execution and results
-- Worker communication
-
-**Settings Store** (`useSettingsStore`)  
-- Theme preferences (light/dark/auto)
-- Editor configuration (font, line numbers, etc.)
-- Execution preferences
-- Persistent storage via localStorage
-
----
-
-## 🔮 Roadmap
-
-### Phase 3 — Extension & Polish
-- [x] **Query analysis tools** — Plan, Program, and Trace explain functionality
-- [ ] **Plugin marketplace** — Load external virtual table modules
-- [ ] **Query plan visualization** — SVG tree rendering of plans
-- [ ] **Chart panel** — Data visualization for result sets
-- [ ] **UDF TypeScript editor** — Inline function development
-
-### Phase 4 — Desktop Applications
-- [ ] **Electron app** — Desktop version with file system access
-- [ ] **Tauri app** — Rust-based lightweight desktop
-- [ ] **IPC server mode** — Multi-client architecture
-
-### Phase 5 — Integration & Collaboration
-- [ ] **VS Code extension** — Quereus support in VS Code
-- [ ] **Jupyter kernel** — Notebook integration
-- [ ] **URL session sharing** — Encoded session state
-- [ ] **Live collaboration** — Real-time multi-user editing
-
-## 🧪 Features Implemented
-
-### Core Engine
-- [x] **Comprehensive SQL** — SELECT, INSERT, UPDATE, DELETE with complex expressions
-- [x] **Virtual tables** — Memory tables, JSON processing, custom modules
-- [x] **Built-in functions** — Scalar, aggregate, date/time, JSON functions
-- [x] **Transactions** — ACID compliance with savepoints
-- [x] **User-defined functions** — Custom JavaScript functions in SQL
-
-### Editor Features
-- [x] **SQL syntax highlighting** via Monaco
-- [x] **Multi-tab editing** with close buttons and dirty indicators
-- [x] **Keyboard shortcuts** (Shift+Enter to execute)
-- [x] **Selected text execution** — Run highlighted SQL only
-- [x] **Customizable fonts and themes**
-
-### Results Display  
-- [x] **Paginated data grid** with TanStack Table
-- [x] **Five-panel results view** — Results, Plan, Program, Trace, Messages
-- [x] **Query analysis tools** — Visual query plan, instruction program, execution trace
-- [x] **Sortable columns** — Click headers to sort
-- [x] **NULL value display** — Visual distinction
-- [x] **Error formatting** — Friendly error messages
-- [x] **Execution timing** — Performance metrics
-- [x] **Copy/export functions** — Copy query plans and traces as text
-
-### Data Operations
-- [x] **CSV import** — Automatic table creation with type inference
-- [x] **JSON/CSV export** — Multiple output formats
-- [x] **Schema introspection** — `.tables` and `.schema` commands
-- [x] **Query history** — Persistent execution log
-
-### User Experience
-- [x] **Dark/light themes** — System preference detection
-- [x] **Responsive layout** — Split panes with resize
-- [x] **Loading indicators** — Connection and execution status
-- [x] **Settings persistence** — Preferences saved locally
-
-## 🤝 Contributing
-
-This project follows the architecture specified in the Quoomb design document. Key principles:
-
-- **TypeScript-first** — Strict typing throughout
-- **Single purpose functions** — Expressive over imperative
-- **ES Modules** — Always include `.js` in imports  
-- **Tab indentation** — Follow `.editorconfig`
-- **No superfluous comments** — Self-documenting code
-
-## 📄 License
-
-TBD — See LICENSE file when available.
-
----
-
-*Crafted with 🐾 by the Quereus team — ready for SQL‑over‑everything!* 
+For questions, issues, or discussions, please use our [GitHub Issues](https://github.com/your-org/quereus/issues) or [Discussions](https://github.com/your-org/quereus/discussions). 

@@ -1,4 +1,7 @@
-import type { SqlValue } from '@quereus/quereus';
+import type { SqlValue, PluginManifest } from '@quereus/quereus';
+
+// Re-export plugin types for convenience
+export type { PluginManifest, PluginRecord, PluginSetting } from '@quereus/quereus';
 
 export interface PlanGraphNode {
   id: string;                 // stable, local to this plan
@@ -8,7 +11,15 @@ export interface PlanGraphNode {
   actTimeMs?: number;         // present when withActual = true
   actRows?: number;
   sqlSpan?: { start: number; end: number };  // char offsets in original SQL
-  extra?: Record<string, any>;
+  extra?: {
+    detail?: string;
+    objectName?: string;      // table/index/object name
+    alias?: string;           // query alias
+    nodeType?: string;        // node type from plan
+    subqueryLevel?: number;   // nesting level
+    selectid?: any;
+    order?: any;
+  };
   children: PlanGraphNode[];
 }
 
@@ -52,6 +63,11 @@ export interface QuereusWorkerAPI {
    * Get query plan as a graph structure for visualization
    */
   explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph>;
+
+  /**
+   * Load a plugin module from a URL
+   */
+  loadModule(url: string, config?: Record<string, SqlValue>): Promise<PluginManifest | undefined>;
 
   /**
    * List all tables in the database

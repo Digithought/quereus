@@ -3,6 +3,7 @@ import { Database } from '@quereus/quereus';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 import { DotCommands } from './commands/dot-commands.js';
+import { handleDotCommand, loadEnabledPlugins } from './commands/dot-commands.js';
 
 interface REPLOptions {
   json?: boolean;
@@ -23,7 +24,8 @@ export class REPL {
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
-      prompt: this.getPrompt()
+      prompt: this.getPrompt(),
+      completer: this.completer.bind(this)
     });
 
     this.setupSignalHandlers();
@@ -41,9 +43,20 @@ export class REPL {
   }
 
   async start(): Promise<void> {
+    console.log('🚀 Quoomb Interactive SQL Shell');
+    console.log('Type .help for available commands, or enter SQL statements');
+    console.log('');
+
+    // Load enabled plugins at startup
+    try {
+      await loadEnabledPlugins(this.db);
+    } catch (error) {
+      console.log(`Warning: Error loading plugins: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+
     this.rl.prompt();
 
-    this.rl.on('line', async (line) => {
+    this.rl.on('line', async (line: string) => {
       const trimmed = line.trim();
 
       if (!trimmed) {
@@ -51,82 +64,103 @@ export class REPL {
         return;
       }
 
+      // Handle dot commands
+      if (trimmed.startsWith('.')) {
+        try {
+          // Check if it's a plugin command first
+          if (trimmed.startsWith('.plugin')) {
+            await handleDotCommand(trimmed, this.db, this.rl);
+          } else {
+            // Use existing dot commands handler
+            const handled = await this.dotCommands.handle(trimmed, this.rl);
+            if (!handled) {
+              console.log(`Unknown command: ${trimmed}`);
+              console.log('Type .help for available commands');
+            }
+          }
+        } catch (error) {
+          console.error('Command error:', error instanceof Error ? error.message : error);
+        }
+        this.rl.prompt();
+        return;
+      }
+
+      // Handle SQL
       try {
-        if (trimmed.startsWith('.')) {
-          await this.handleDotCommand(trimmed);
+        const results = [];
+        for await (const row of this.db.eval(trimmed)) {
+          results.push(row);
+        }
+
+        if (results.length > 0) {
+          console.table(results);
+          console.log(`\n${results.length} row(s) returned\n`);
         } else {
-          await this.handleSQL(trimmed);
+          console.log('Query executed successfully\n');
         }
       } catch (error) {
-        this.printError(error);
+        console.error('SQL Error:', error instanceof Error ? error.message : error);
       }
 
       this.rl.prompt();
     });
 
-    this.rl.on('close', async () => {
-      console.log('\nGoodbye!');
-      await this.cleanup();
+    this.rl.on('close', () => {
+      console.log('\nGoodbye! 👋');
+      this.db.close();
       process.exit(0);
     });
   }
 
-  private async handleDotCommand(command: string): Promise<void> {
-    const parts = command.slice(1).split(/\s+/);
-    const cmd = parts[0];
-    const args = parts.slice(1);
+  private completer(line: string): [string[], string] {
+    const hits = [];
 
-    switch (cmd) {
-      case 'help':
-        this.printHelp();
-        break;
-      case 'exit':
-      case 'quit':
-        this.rl.close();
-        break;
-      case 'tables':
-        await this.dotCommands.listTables();
-        break;
-      case 'schema':
-        await this.dotCommands.showSchema(args[0]);
-        break;
-      case 'import':
-        await this.dotCommands.importCsv(args[0]);
-        break;
-      case 'export':
-        await this.dotCommands.exportQuery(args[0], args[1]);
-        break;
-      default:
-        console.log(chalk.red(`Unknown command: .${cmd}`));
-        console.log('Type .help for available commands');
-    }
-  }
+    // Dot command completion
+    if (line.startsWith('.')) {
+      const dotCommands = [
+        '.help',
+        '.tables',
+        '.schema',
+        '.dump',
+        '.read',
+        '.exit',
+        '.plugin',
+        '.plugin install',
+        '.plugin list',
+        '.plugin enable',
+        '.plugin disable',
+        '.plugin remove',
+        '.plugin config',
+        '.plugin reload'
+      ];
 
-  private async handleSQL(sql: string): Promise<void> {
-    const startTime = Date.now();
-
-    try {
-      // Check if this is a query that returns results
-      const trimmedSql = sql.trim().toLowerCase();
-      if (trimmedSql.startsWith('select') || trimmedSql.startsWith('with')) {
-        const results = [];
-        for await (const row of this.db.eval(sql)) {
-          results.push(row);
+      for (const cmd of dotCommands) {
+        if (cmd.startsWith(line)) {
+          hits.push(cmd);
         }
-
-        const endTime = Date.now();
-        this.printResults(results, endTime - startTime);
-      } else {
-        // Execute statement without expecting results
-        await this.db.exec(sql);
-        const endTime = Date.now();
-        console.log(chalk.green(`✓ Query executed successfully (${endTime - startTime}ms)`));
       }
-    } catch (error) {
-      const endTime = Date.now();
-      console.log(chalk.red(`✗ Query failed (${endTime - startTime}ms)`));
-      throw error;
+    } else {
+      // SQL keyword completion
+      const sqlKeywords = [
+        'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE',
+        'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'VIEW',
+        'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON',
+        'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
+        'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'EXISTS',
+        'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'DISTINCT'
+      ];
+
+      const upperLine = line.toUpperCase();
+      const lastWord = line.split(/\s+/).pop()?.toUpperCase() || '';
+
+      for (const keyword of sqlKeywords) {
+        if (keyword.startsWith(lastWord)) {
+          hits.push(line.slice(0, -lastWord.length) + keyword);
+        }
+      }
     }
+
+    return [hits, line];
   }
 
   private printResults(results: any[], executionTime: number): void {
@@ -199,11 +233,7 @@ Examples:
     console.log(this.options.color ? chalk.yellow(help) : help);
   }
 
-  private async cleanup(): Promise<void> {
-    try {
-      await this.db.close();
-    } catch (error) {
-      // Ignore cleanup errors
-    }
+  close(): void {
+    this.rl.close();
   }
 }

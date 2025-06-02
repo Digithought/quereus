@@ -54,3 +54,10 @@ export { Latches } from './util/latches.js';
 
 // Initialize runtime emitters (this ensures they are registered)
 import './runtime/register.js';
+
+// Re-export plugin system
+export { dynamicLoadModule, validatePluginUrl } from './util/plugin-loader.js';
+export type { PluginManifest, PluginRecord, PluginSetting } from './vtab/manifest.js';
+
+// Re-export virtual table framework
+export type { VirtualTableModule } from './vtab/module.js';

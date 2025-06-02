@@ -1,6 +1,6 @@
 import * as Comlink from 'comlink';
-import { Database, type SqlValue } from '@quereus/quereus';
-import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode } from './types.js';
+import { Database, type SqlValue, dynamicLoadModule } from '@quereus/quereus';
+import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode, PluginManifest } from './types.js';
 import Papa from 'papaparse';
 
 class QuereusWorker implements QuereusWorkerAPI {
@@ -109,7 +109,7 @@ class QuereusWorker implements QuereusWorkerAPI {
 
       const results: Record<string, SqlValue>[] = [];
 
-      // Use Quereus's execution_trace() function
+      // Use Quereus's execution_trace() function to get detailed instruction-level trace
       for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
         results.push(row);
       }
@@ -170,57 +170,19 @@ class QuereusWorker implements QuereusWorkerAPI {
 
     // Create nodes from plan data
     planRows.forEach((row, index) => {
-      const estCost = (row.estimated_cost as number) || 0;
-      const estRows = (row.estimated_rows as number) || 0;
+      const estCost = (row.est_cost as number) || 0;
+      const estRows = (row.est_rows as number) || 0;
 
       totalEstCost += estCost;
       totalEstRows += estRows;
 
-      // Try to extract operation type from multiple possible fields
+      // Use the proper fields from query_plan schema
+      const op = (row.op as string) || 'UNKNOWN';
       const detail = (row.detail as string) || '';
-      const opcode_field = (row.opcode as string) || '';
-      const operation = (row.operation as string) || '';
-      const plan_type = (row.plan_type as string) || '';
-
-      let opcode = 'UNKNOWN';
-
-      // First try direct opcode field
-      if (opcode_field && opcode_field !== 'UNKNOWN') {
-        opcode = opcode_field;
-      }
-      // Then try operation field
-      else if (operation && operation !== 'UNKNOWN') {
-        opcode = operation;
-      }
-      // Then try plan_type field
-      else if (plan_type && plan_type !== 'UNKNOWN') {
-        opcode = plan_type;
-      }
-      // Finally try parsing from detail
-      else if (detail) {
-        // Look for common SQL operation patterns
-        if (detail.includes('SCAN') || detail.includes('scan')) opcode = 'SCAN';
-        else if (detail.includes('JOIN') || detail.includes('join')) opcode = 'JOIN';
-        else if (detail.includes('SORT') || detail.includes('sort')) opcode = 'SORT';
-        else if (detail.includes('GROUP') || detail.includes('group')) opcode = 'GROUP';
-        else if (detail.includes('FILTER') || detail.includes('filter')) opcode = 'FILTER';
-        else if (detail.includes('PROJECT') || detail.includes('project')) opcode = 'PROJECT';
-        else if (detail.includes('INDEX') || detail.includes('index')) opcode = 'INDEX_SCAN';
-        else if (detail.includes('HASH') || detail.includes('hash')) opcode = 'HASH';
-        else if (detail.includes('NESTED') || detail.includes('nested')) opcode = 'NESTED_LOOP';
-        else if (detail.includes('AGGREGATE') || detail.includes('aggregate')) opcode = 'AGGREGATE';
-        else if (detail.includes('LIMIT') || detail.includes('limit')) opcode = 'LIMIT';
-        else if (detail.includes('ORDER') || detail.includes('order')) opcode = 'ORDER_BY';
-        else if (detail.includes('UNION') || detail.includes('union')) opcode = 'UNION';
-        else if (detail.includes('DISTINCT') || detail.includes('distinct')) opcode = 'DISTINCT';
-        // Try to extract the first word as operation name
-        else {
-          const firstWord = detail.trim().split(/\s+/)[0];
-          if (firstWord && firstWord.length > 0) {
-            opcode = firstWord.toUpperCase();
-          }
-        }
-      }
+      const objectName = (row.object_name as string) || null;
+      const alias = (row.alias as string) || null;
+      const nodeType = (row.node_type as string) || '';
+      const subqueryLevel = (row.subquery_level as number) || 0;
 
       // Find corresponding trace data
       const traceRow = traceRows.find(trace =>
@@ -234,14 +196,18 @@ class QuereusWorker implements QuereusWorkerAPI {
 
       nodes.push({
         id: `node-${index}`,
-        opcode,
+        opcode: op, // Use the proper 'op' field
         estCost,
         estRows,
         actTimeMs,
         actRows,
         sqlSpan: undefined, // TODO: Extract from plan if available
         extra: {
-          detail: row.detail,
+          detail,
+          objectName: objectName || undefined,
+          alias: alias || undefined,
+          nodeType,
+          subqueryLevel,
           selectid: row.selectid,
           order: row.order
         },
@@ -588,6 +554,19 @@ class QuereusWorker implements QuereusWorkerAPI {
       return { rowsImported: insertCount };
     } catch (error) {
       throw new Error(`CSV import failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  async loadModule(url: string, config?: Record<string, SqlValue>): Promise<PluginManifest | undefined> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      return await dynamicLoadModule(url, this.db, config ?? {});
+    } catch (error) {
+      console.error('Failed to load module:', error);
+      throw error;
     }
   }
 

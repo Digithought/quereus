@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { PluginRecord } from '../worker/types.js';
 
 export type Theme = 'light' | 'dark' | 'auto';
 
@@ -27,6 +28,9 @@ export interface SettingsState {
     results: number;
   };
 
+  // Plugins
+  plugins: PluginRecord[];
+
   // Actions
   loadSettings: () => void;
   setTheme: (theme: Theme) => void;
@@ -41,6 +45,13 @@ export interface SettingsState {
   setShowExecutionTime: (enabled: boolean) => void;
   setMaxHistoryItems: (max: number) => void;
   setPanelSizes: (sizes: { editor: number; results: number }) => void;
+
+  // Plugin management
+  addPlugin: (plugin: PluginRecord) => void;
+  updatePlugin: (id: string, updates: Partial<PluginRecord>) => void;
+  removePlugin: (id: string) => void;
+  setPlugins: (plugins: PluginRecord[]) => void;
+
   resetToDefaults: () => void;
 }
 
@@ -86,6 +97,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       ...defaultSettings,
+      plugins: [],
 
       loadSettings: () => {
         // Settings are automatically loaded by the persist middleware
@@ -181,11 +193,52 @@ export const useSettingsStore = create<SettingsState>()(
         }));
       },
 
+      addPlugin: (plugin: PluginRecord) => {
+        set((state) => ({
+          plugins: [...state.plugins, plugin],
+        }));
+      },
+
+      updatePlugin: (id: string, updates: Partial<PluginRecord>) => {
+        set((state) => ({
+          plugins: state.plugins.map((plugin) =>
+            plugin.id === id ? { ...plugin, ...updates } : plugin
+          ),
+        }));
+      },
+
+      removePlugin: (id: string) => {
+        set((state) => ({
+          plugins: state.plugins.filter((plugin) => plugin.id !== id),
+        }));
+      },
+
+      setPlugins: (plugins: PluginRecord[]) => {
+        set({ plugins });
+      },
+
       resetToDefaults: () => {
-        set(() => ({ ...defaultSettings }));
+        set({
+          theme: 'auto',
+          fontSize: 14,
+          fontFamily: '"Fira Code", "Cascadia Code", "JetBrains Mono", Monaco, Consolas, monospace',
+          autoSave: false,
+          autoSaveDelay: 2000,
+          wordWrap: false,
+          showLineNumbers: true,
+          showMinimap: false,
+          autoExecuteOnShiftEnter: true,
+          showExecutionTime: true,
+          maxHistoryItems: 100,
+          defaultPanelSizes: {
+            editor: 60,
+            results: 40,
+          },
+          plugins: [],
+        });
 
         // Reapply theme
-        applyThemeToDocument(defaultSettings.theme);
+        applyThemeToDocument('auto');
       },
     }),
     {
