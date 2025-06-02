@@ -6,6 +6,7 @@ import { AggregateNode } from './nodes/aggregate-node.js';
 import { StreamAggregateNode } from './nodes/stream-aggregate.js';
 import { SortNode } from './nodes/sort.js';
 import { FilterNode } from './nodes/filter.js';
+import { SetOperationNode } from './nodes/set-operation-node.js';
 import type { Scope } from './scopes/scope.js';
 
 const log = createLogger('optimizer');
@@ -92,6 +93,13 @@ export class Optimizer {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
 			return new FilterNode(node.scope, optimizedSource, node.predicate);
+		}
+
+		if (node instanceof SetOperationNode) {
+			const optimizedLeft = this.optimizeNode(node.left) as RelationalPlanNode;
+			const optimizedRight = this.optimizeNode(node.right) as RelationalPlanNode;
+			if (optimizedLeft === node.left && optimizedRight === node.right) return node;
+			return new SetOperationNode(node.scope, optimizedLeft, optimizedRight, node.op);
 		}
 
 		// For other nodes, return as-is for now
@@ -238,6 +246,7 @@ export class Optimizer {
 			PlanNodeType.Project,
 			PlanNodeType.Sort,
 			PlanNodeType.LimitOffset,
+			PlanNodeType.SetOperation,
 			// DDL operations
 			PlanNodeType.CreateTable,
 			PlanNodeType.DropTable,

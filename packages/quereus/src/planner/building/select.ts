@@ -25,6 +25,7 @@ import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
 import type { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 import { ParameterScope } from '../scopes/param.js';
+import { SetOperationNode } from '../nodes/set-operation-node.js';
 
 /**
  * Helper function to get the non-parameter ancestor scope.
@@ -93,8 +94,55 @@ export function buildSelectStmt(
 		contextWithCTEs = { ...ctx, scope: cteScope };
 	}
 
-  // Phase 1: Plan FROM clause and determine local input relations for the current select scope
-  const fromTables = !stmt.from || stmt.from.length === 0
+	// Handle compound set operations (UNION / INTERSECT / EXCEPT)
+	if (stmt.compound) {
+		// Build left side by cloning the statement without compound and stripping ORDER BY/LIMIT/OFFSET that belong to outer query
+		const { compound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt as any;
+
+		// Also strip ORDER BY/LIMIT/OFFSET from the right side - they should only apply to the final compound result
+		const { orderBy: rightOrderBy, limit: rightLimit, offset: rightOffset, ...rightCore } = stmt.compound.select as any;
+
+		const leftPlan = buildSelectStmt(ctx, leftCore as AST.SelectStmt) as RelationalPlanNode;
+		const rightPlan = buildSelectStmt(ctx, rightCore as AST.SelectStmt) as RelationalPlanNode;
+
+		const setNode = new SetOperationNode(ctx.scope, leftPlan, rightPlan, stmt.compound.op);
+
+		// After set operation, apply ORDER BY / LIMIT / OFFSET from the *outer* (original) statement
+		let input: RelationalPlanNode = setNode;
+
+		// Build scope for output columns
+		const setScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
+		const attrs = input.getAttributes();
+		input.getType().columns.forEach((c: any, i: number) => {
+			const attr = attrs[i];
+			setScope.registerSymbol(c.name.toLowerCase(), (exp: any, s: any) => new ColumnReferenceNode(s, exp, c.type, attr.id, i));
+		});
+
+		let selectContext: PlanningContext = { ...ctx, scope: setScope };
+
+		// ORDER BY
+		if (outerOrderBy && outerOrderBy.length > 0) {
+			const sortKeys = outerOrderBy.map((ob: any) => ({
+				expression: buildExpression(selectContext, ob.expr),
+				direction: ob.direction,
+				nulls: ob.nulls,
+			}));
+			input = new SortNode(selectContext.scope, input, sortKeys);
+		}
+
+		// LIMIT/OFFSET
+		if (outerLimit || outerOffset) {
+			const literalNull = new LiteralNode(selectContext.scope, { type: 'literal', value: null });
+			const limitExpr = outerLimit ? buildExpression(selectContext, outerLimit) : literalNull;
+			const offsetExpr = outerOffset ? buildExpression(selectContext, outerOffset) : literalNull;
+			input = new LimitOffsetNode(selectContext.scope, input, limitExpr, offsetExpr);
+		}
+
+		return input;
+	}
+
+	// Phase 1: Plan FROM clause and determine local input relations for the current select scope
+	const fromTables = !stmt.from || stmt.from.length === 0
 		? [SingleRowNode.instance]
 		: stmt.from.map(from => buildFrom(from, contextWithCTEs, cteNodes));
 

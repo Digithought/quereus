@@ -33,6 +33,7 @@ import { emitSort } from './emit/sort.js';
 import { emitWindow } from './emit/window.js';
 import { emitSequencing } from './emit/sequencing.js';
 import { emitRecursiveCTE } from './emit/recursive-cte.js';
+import { emitSetOperation } from './emit/set-operation.js';
 
 let registered = false;
 
@@ -86,4 +87,7 @@ export function registerEmitters() {
 	// Transaction control emitters
 	registerEmitter(PlanNodeType.Transaction, emitTransaction as EmitterFunc);
 	registerEmitter(PlanNodeType.Pragma, emitPragma as EmitterFunc);
+
+	// Set operation emitter
+	registerEmitter(PlanNodeType.SetOperation, emitSetOperation as EmitterFunc);
 }

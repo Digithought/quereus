@@ -315,9 +315,10 @@ export class Parser {
 	/**
 	 * Parse a SELECT statement
 	 * @param startToken The 'SELECT' token or start token of a sub-query
+	 * @param isCompoundSubquery If true, don't parse ORDER BY/LIMIT as they belong to the outer compound
 	 * @returns AST for the SELECT statement
 	 */
-	selectStatement(startToken?: Token): AST.SelectStmt {
+	selectStatement(startToken?: Token, isCompoundSubquery: boolean = false): AST.SelectStmt {
 		const start = startToken ?? this.previous(); // Use provided or the keyword token
 		let lastConsumedToken = start; // Initialize lastConsumed
 
@@ -361,9 +362,37 @@ export class Parser {
 			lastConsumedToken = this.previous(); // After having expression
 		}
 
-		// Parse ORDER BY clause if present
+		// Check for compound set operations (UNION / INTERSECT / EXCEPT) BEFORE ORDER BY/LIMIT
+		let compound: { op: 'union' | 'unionAll' | 'intersect' | 'except'; select: AST.SelectStmt } | undefined;
+		if (this.match(TokenType.UNION, TokenType.INTERSECT, TokenType.EXCEPT)) {
+			const tok = this.previous();
+			let op: 'union' | 'unionAll' | 'intersect' | 'except';
+			if (tok.type === TokenType.UNION) {
+				if (this.match(TokenType.ALL)) {
+					op = 'unionAll';
+				} else {
+					op = 'union';
+				}
+			} else if (tok.type === TokenType.INTERSECT) {
+				op = 'intersect';
+			} else {
+				op = 'except';
+			}
+
+			const selectStartToken = this.peek();
+			if (this.match(TokenType.SELECT)) {
+				const rightSelect = this.selectStatement(selectStartToken, true); // Pass true to indicate compound subquery
+				lastConsumedToken = this.previous();
+				compound = { op, select: rightSelect };
+			} else {
+				throw this.error(this.peek(), "Expected 'SELECT' after set operation keyword.");
+			}
+		}
+
+		// Parse ORDER BY clause if present (applies to final result after compound operations)
+		// Skip if this is a compound subquery as ORDER BY belongs to the outer compound
 		let orderBy: AST.OrderByClause[] | undefined;
-		if (this.match(TokenType.ORDER) && this.consume(TokenType.BY, "Expected 'BY' after 'ORDER'.")) {
+		if (!isCompoundSubquery && this.match(TokenType.ORDER) && this.consume(TokenType.BY, "Expected 'BY' after 'ORDER'.")) {
 			orderBy = [];
 			do {
 				const expr = this.expression();
@@ -374,10 +403,11 @@ export class Parser {
 			lastConsumedToken = this.previous(); // After last order by clause
 		}
 
-		// Parse LIMIT clause if present
+		// Parse LIMIT clause if present (applies to final result after compound operations)
+		// Skip if this is a compound subquery as LIMIT belongs to the outer compound
 		let limit: AST.Expression | undefined;
 		let offset: AST.Expression | undefined;
-		if (this.match(TokenType.LIMIT)) {
+		if (!isCompoundSubquery && this.match(TokenType.LIMIT)) {
 			limit = this.expression();
 			lastConsumedToken = this.previous(); // After limit expression
 
@@ -394,20 +424,6 @@ export class Parser {
 			}
 		}
 
-		// Check for UNION clause
-		let union: AST.SelectStmt | undefined;
-		let unionAll = false;
-		if (this.match(TokenType.UNION)) {
-			unionAll = this.match(TokenType.ALL);
-			const selectStartToken = this.peek(); // Start of the next SELECT
-			if (this.match(TokenType.SELECT)) {
-				union = this.selectStatement(selectStartToken); // Pass start token
-				lastConsumedToken = this.previous(); // After UNION's SELECT statement
-			} else {
-				throw this.error(this.peek(), "Expected 'SELECT' after 'UNION'.");
-			}
-		}
-
 		return {
 			type: 'select',
 			columns,
@@ -420,8 +436,7 @@ export class Parser {
 			offset,
 			distinct,
 			all,
-			union,
-			unionAll,
+			compound,
 			loc: _createLoc(start, lastConsumedToken),
 		};
 	}
