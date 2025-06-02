@@ -29,6 +29,7 @@ Quoomb Web is a modern, React-based web application that provides a full-feature
 - **File Operations** — Save and load SQL files with keyboard shortcuts (Ctrl+S, Ctrl+O)
 - **Schema Browser** — Explore table structures, indexes, and constraints
 - **Memory Tables** — Create and manage in-memory tables with full ACID support
+- **Session Persistence** — Automatically saves and restores open editor tabs, content, and unsaved changes across page refreshes
 
 ### 🎨 **Modern User Experience**
 - **Responsive Design** — Works seamlessly on desktop, tablet, and mobile devices
@@ -277,6 +278,19 @@ Access via Settings modal (⚙️ icon):
 - **Editor Settings** — Font size, word wrap, minimap
 - **Query Settings** — Auto-execute, result limits
 - **Advanced** — Debug mode, performance monitoring
+
+### **Session Persistence**
+Quoomb Web automatically persists the following data across browser sessions:
+
+- **Open Tabs** — All editor tabs with their names and active state
+- **Editor Content** — SQL code in each tab, including unsaved changes
+- **Dirty State** — Remembers which tabs have unsaved modifications (shown with • indicator)
+- **Query History** — Recent query executions and results (limited to last 50 for performance)
+- **UI State** — Active tab, selected result panel, and query execution state
+
+**Storage Location**: Data is stored in browser localStorage under the key `quoomb-session`. This data persists until explicitly cleared or when localStorage is purged by the browser.
+
+**Privacy**: All persistence happens locally in your browser. No data is sent to external servers.
 
 ### **Plugin Configuration**
 Each plugin can expose configuration options:
