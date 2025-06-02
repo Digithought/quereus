@@ -379,14 +379,25 @@ export class Parser {
 				op = 'except';
 			}
 
-			const selectStartToken = this.peek();
-			if (this.match(TokenType.SELECT)) {
-				const rightSelect = this.selectStatement(selectStartToken, true); // Pass true to indicate compound subquery
-				lastConsumedToken = this.previous();
-				compound = { op, select: rightSelect };
+			let rightSelect: AST.SelectStmt;
+
+			// Handle parenthesized subquery after set operation
+			if (this.match(TokenType.LPAREN)) {
+				const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in parenthesized set operation.");
+				rightSelect = this.selectStatement(selectToken, true); // Pass true to indicate compound subquery
+				this.consume(TokenType.RPAREN, "Expected ')' after parenthesized set operation.");
 			} else {
-				throw this.error(this.peek(), "Expected 'SELECT' after set operation keyword.");
+				// Handle direct SELECT statement
+				const selectStartToken = this.peek();
+				if (this.match(TokenType.SELECT)) {
+					rightSelect = this.selectStatement(selectStartToken, true); // Pass true to indicate compound subquery
+				} else {
+					throw this.error(this.peek(), "Expected 'SELECT' or '(' after set operation keyword.");
+				}
 			}
+
+			lastConsumedToken = this.previous();
+			compound = { op, select: rightSelect };
 		}
 
 		// Parse ORDER BY clause if present (applies to final result after compound operations)
@@ -1550,7 +1561,8 @@ export class Parser {
 
 		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW.");
 
-		const select = this.selectStatement();
+		const selectStartToken = this.consume(TokenType.SELECT, "Expected 'SELECT' after 'AS' in CREATE VIEW.");
+		const select = this.selectStatement(selectStartToken);
 
 		return {
 			type: 'createView',
@@ -1559,7 +1571,7 @@ export class Parser {
 			columns,
 			select,
 			isTemporary,
-			loc: _createLoc(startToken, this.previous()),
+				loc: _createLoc(startToken, this.previous()),
 		};
 	}
 

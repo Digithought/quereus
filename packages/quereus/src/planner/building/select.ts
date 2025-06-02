@@ -289,16 +289,9 @@ export function buildSelectStmt(
 
 		// Register GROUP BY columns
 		groupByExpressions.forEach((expr, index) => {
-			// Try to get a meaningful name for the GROUP BY column
-			let columnName: string;
-			if (expr instanceof ColumnReferenceNode) {
-				columnName = expr.expression.name;
-			} else {
-				columnName = `group_${index}`;
-			}
-
+			// Use the attribute name from the AggregateNode instead of duplicating logic
 			const attr = aggregateAttributes[index];
-			aggregateOutputScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
+			aggregateOutputScope.registerSymbol(attr.name.toLowerCase(), (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, expr.getType(), attr.id, index));
 		});
 
@@ -463,13 +456,9 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				columnNames.forEach((columnName, i) => {
 					if (i < attributes.length) {
 						const attr = attributes[i];
+						const columnType = fromTable.getType().columns[i].type; // Use actual column type
 						viewScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
-							new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
-								typeClass: 'scalar',
-								affinity: SqlDataType.TEXT,
-								nullable: true,
-								isReadOnly: false
-							}, attr.id, i));
+							new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
 					}
 				});
 

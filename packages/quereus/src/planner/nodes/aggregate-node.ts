@@ -35,12 +35,23 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
     this.attributesCache = new Cached(() => this.buildAttributes());
   }
 
+  // Helper function to extract a meaningful name from a GROUP BY expression
+  private getGroupByColumnName(expr: ScalarPlanNode, index: number): string {
+    // If it's a column reference, use the column name
+    if (expr.nodeType === PlanNodeType.ColumnReference) {
+      const colRef = expr as any; // ColumnReferenceNode
+      return colRef.expression.name;
+    }
+    // Otherwise, use a generic name
+    return `group_${index}`;
+  }
+
   private buildOutputType(): RelationType {
     // Build the output relation type based on group by columns and aggregates
     const columns = [
       // Group by columns come first
       ...this.groupBy.map((expr, index) => ({
-        name: `group_${index}`,
+        name: this.getGroupByColumnName(expr, index),
         type: expr.getType(),
         generated: false
       })),
@@ -72,9 +83,10 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
 
     // Group by columns come first
     this.groupBy.forEach((expr, index) => {
+      const name = this.getGroupByColumnName(expr, index);
       attributes.push({
         id: PlanNode.nextAttrId(),
-        name: `group_${index}`,
+        name,
         type: expr.getType(),
         sourceRelation: `${this.nodeType}:${this.id}`
       });

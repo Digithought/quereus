@@ -7,6 +7,9 @@ import { StreamAggregateNode } from './nodes/stream-aggregate.js';
 import { SortNode } from './nodes/sort.js';
 import { FilterNode } from './nodes/filter.js';
 import { SetOperationNode } from './nodes/set-operation-node.js';
+import { ProjectNode } from './nodes/project-node.js';
+import { LimitOffsetNode } from './nodes/limit-offset.js';
+import { WindowNode } from './nodes/window-node.js';
 import type { Scope } from './scopes/scope.js';
 
 const log = createLogger('optimizer');
@@ -66,8 +69,8 @@ export class Optimizer {
 	}
 
 	private optimizeChildren(node: PlanNode): PlanNode {
-		// For simplicity, we'll handle specific node types
-		// In a full implementation, this would be more generic
+		// Handle specific node types that can contain children
+		// This ensures we recurse into all common plan nodes
 
 		if (node instanceof BlockNode) {
 			const optimizedStatements = node.statements.map(stmt =>
@@ -102,8 +105,26 @@ export class Optimizer {
 			return new SetOperationNode(node.scope, optimizedLeft, optimizedRight, node.op);
 		}
 
-		// For other nodes, return as-is for now
-		// TODO: Handle all node types generically
+		if (node instanceof ProjectNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new ProjectNode(node.scope, optimizedSource, node.projections);
+		}
+
+		if (node instanceof LimitOffsetNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new LimitOffsetNode(node.scope, optimizedSource, node.limit, node.offset);
+		}
+
+		if (node instanceof WindowNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new WindowNode(node.scope, optimizedSource, node.windowSpecs, node.partitionBy, node.orderBy);
+		}
+
+		// For other nodes, return as-is
+		// This is safe for leaf nodes and nodes we don't need to optimize children for
 		return node;
 	}
 
@@ -242,14 +263,23 @@ export class Optimizer {
 		const directPhysicalTypes = [
 			PlanNodeType.Block,
 			PlanNodeType.TableScan,
+			PlanNodeType.TableFunctionCall,
 			PlanNodeType.Filter,
 			PlanNodeType.Project,
 			PlanNodeType.Sort,
 			PlanNodeType.LimitOffset,
+			PlanNodeType.Window,
+			PlanNodeType.Sequencing,
 			PlanNodeType.SetOperation,
+			PlanNodeType.Values,
+			PlanNodeType.SingleRow,
+			PlanNodeType.CTE,
+			PlanNodeType.RecursiveCTE,
 			// DDL operations
 			PlanNodeType.CreateTable,
 			PlanNodeType.DropTable,
+			PlanNodeType.CreateView,
+			PlanNodeType.DropView,
 			// DML operations
 			PlanNodeType.Insert,
 			PlanNodeType.Update,
@@ -257,6 +287,16 @@ export class Optimizer {
 			// Other operations
 			PlanNodeType.Pragma,
 			PlanNodeType.Transaction,
+			// Scalar operations (already physical)
+			PlanNodeType.Literal,
+			PlanNodeType.BinaryOp,
+			PlanNodeType.UnaryOp,
+			PlanNodeType.ColumnReference,
+			PlanNodeType.ParameterReference,
+			PlanNodeType.ScalarFunctionCall,
+			PlanNodeType.CaseExpr,
+			PlanNodeType.Cast,
+			PlanNodeType.Collate,
 			// Add more as needed
 		];
 		return directPhysicalTypes.includes(node.nodeType);
