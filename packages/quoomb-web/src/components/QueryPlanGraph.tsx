@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
-import { Play, ZoomIn, ZoomOut, RotateCcw, Eye, Activity, Copy, Check } from 'lucide-react';
+import { Play, ZoomIn, ZoomOut, RotateCcw, Eye, Activity, Copy, Check, Minimize2, Info } from 'lucide-react';
 import type { PlanGraphNode, PlanGraph } from '../worker/types.js';
 
 interface TreeLayout {
@@ -25,6 +25,8 @@ export const QueryPlanGraph: React.FC = () => {
   const [copySuccess, setCopySuccess] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [showQuery, setShowQuery] = useState(false);
+  const [showLegend, setShowLegend] = useState(true);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const activeResult = queryHistory.find(result => result.id === activeResultId);
@@ -140,9 +142,9 @@ export const QueryPlanGraph: React.FC = () => {
     return newLayouts;
   }, [planGraph, layoutTree, autoFitContent]);
 
-  // Mouse event handlers for panning
+  // Mouse event handlers - changed to use mouse buttons for zoom and wheel for pan
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (e.button === 0) { // Left mouse button
+    if (e.button === 0 || e.button === 1) { // Left or middle mouse button for pan
       setIsDragging(true);
       setLastMousePos({ x: e.clientX, y: e.clientY });
       e.preventDefault();
@@ -168,62 +170,65 @@ export const QueryPlanGraph: React.FC = () => {
     setIsDragging(false);
   };
 
+  // Changed wheel to pan instead of zoom
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
 
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    // Get mouse position relative to SVG element
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    // Convert screen coordinates to SVG world coordinates
-    const currentViewWidth = viewBox.width / viewBox.scale;
-    const currentViewHeight = viewBox.height / viewBox.scale;
-    const svgMouseX = viewBox.x + (mouseX / rect.width) * currentViewWidth;
-    const svgMouseY = viewBox.y + (mouseY / rect.height) * currentViewHeight;
-
-    // Calculate new scale
-    const scaleFactor = e.deltaY > 0 ? 0.8 : 1.25; // More pronounced zoom steps
-    const newScale = Math.max(0.1, Math.min(5, viewBox.scale * scaleFactor));
-
-    if (newScale === viewBox.scale) return; // No change needed
-
-    // Calculate new view dimensions
-    const newViewWidth = viewBox.width / newScale;
-    const newViewHeight = viewBox.height / newScale;
-
-    // Calculate new viewBox position to keep mouse point stationary
-    const mouseXRatio = mouseX / rect.width;
-    const mouseYRatio = mouseY / rect.height;
-
-    const newX = svgMouseX - mouseXRatio * newViewWidth;
-    const newY = svgMouseY - mouseYRatio * newViewHeight;
+    const panSpeed = 50;
+    const deltaX = e.deltaX * panSpeed / viewBox.scale;
+    const deltaY = e.deltaY * panSpeed / viewBox.scale;
 
     setViewBox(prev => ({
       ...prev,
-      x: newX,
-      y: newY,
-      scale: newScale
+      x: prev.x + deltaX,
+      y: prev.y + deltaY
     }));
   };
 
-  const handleZoom = (factor: number) => {
+  // Double-click to zoom in, right-click to zoom out
+  const handleDoubleClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    handleZoom(1.5, e.clientX, e.clientY);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    handleZoom(0.67, e.clientX, e.clientY);
+  };
+
+  const handleZoom = (factor: number, mouseX?: number, mouseY?: number) => {
     setViewBox(prev => {
       const newScale = Math.max(0.1, Math.min(5, prev.scale * factor));
-      const scaleRatio = newScale / prev.scale;
 
-      // Zoom towards center
-      const centerX = prev.x + prev.width / (2 * prev.scale);
-      const centerY = prev.y + prev.height / (2 * prev.scale);
+      if (mouseX !== undefined && mouseY !== undefined && svgRef.current) {
+        // Zoom towards mouse position
+        const rect = svgRef.current.getBoundingClientRect();
+        const currentViewWidth = prev.width / prev.scale;
+        const currentViewHeight = prev.height / prev.scale;
+        const svgMouseX = prev.x + ((mouseX - rect.left) / rect.width) * currentViewWidth;
+        const svgMouseY = prev.y + ((mouseY - rect.top) / rect.height) * currentViewHeight;
 
-      return {
-        ...prev,
-        x: centerX - (centerX - prev.x) * scaleRatio,
-        y: centerY - (centerY - prev.y) * scaleRatio,
-        scale: newScale
-      };
+        const scaleRatio = newScale / prev.scale;
+
+        return {
+          ...prev,
+          x: svgMouseX - (svgMouseX - prev.x) * scaleRatio,
+          y: svgMouseY - (svgMouseY - prev.y) * scaleRatio,
+          scale: newScale
+        };
+      } else {
+        // Zoom towards center
+        const scaleRatio = newScale / prev.scale;
+        const centerX = prev.x + prev.width / (2 * prev.scale);
+        const centerY = prev.y + prev.height / (2 * prev.scale);
+
+        return {
+          ...prev,
+          x: centerX - (centerX - prev.x) * scaleRatio,
+          y: centerY - (centerY - prev.y) * scaleRatio,
+          scale: newScale
+        };
+      }
     });
   };
 
@@ -287,9 +292,9 @@ export const QueryPlanGraph: React.FC = () => {
 
   if (!activeResult) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
         <div className="text-center">
-          <Eye size={48} className="mx-auto mb-4 text-gray-400" />
+          <Eye size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
           <p>No query selected for plan visualization</p>
         </div>
       </div>
@@ -297,36 +302,46 @@ export const QueryPlanGraph: React.FC = () => {
   }
 
   return (
-    <div className="p-4 h-full flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-          Query Plan Graph
-        </h3>
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+      {/* Compact Header */}
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+        <div className="flex items-center gap-3">
+          <h3 className="font-semibold text-gray-900 dark:text-white">
+            Query Plan Graph
+          </h3>
+
+          <button
+            onClick={() => setShowQuery(!showQuery)}
+            className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            title="Toggle query display"
+          >
+            <Info size={16} />
+          </button>
+        </div>
 
         <div className="flex items-center gap-2">
           {/* Plan mode toggle */}
           <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
             <button
               onClick={() => handleFetchPlan(false)}
-              className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              className={`px-2 py-1 text-xs rounded transition-colors ${
                 planMode === 'estimated'
                   ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow'
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
               }`}
             >
-              Estimated
+              Est.
             </button>
             <button
               onClick={() => handleFetchPlan(true)}
-              className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              className={`px-2 py-1 text-xs rounded transition-colors ${
                 planMode === 'actual'
                   ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow'
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
               }`}
             >
-              <Activity size={12} className="inline mr-1" />
-              Actual
+              <Activity size={10} className="inline mr-1" />
+              Act.
             </button>
           </div>
 
@@ -337,78 +352,76 @@ export const QueryPlanGraph: React.FC = () => {
               className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               title="Zoom in"
             >
-              <ZoomIn size={16} />
+              <ZoomIn size={14} />
             </button>
             <button
               onClick={() => handleZoom(0.8)}
               className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               title="Zoom out"
             >
-              <ZoomOut size={16} />
+              <ZoomOut size={14} />
             </button>
             <button
               onClick={handleReset}
               className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               title="Reset view"
             >
-              <RotateCcw size={16} />
+              <RotateCcw size={14} />
             </button>
           </div>
 
-          {/* Copy button */}
+          {/* Copy and toggle buttons */}
           {planGraph && (
-            <button
-              onClick={copyPlanAsText}
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
-              title="Copy plan as text"
-            >
-              {copySuccess ? (
-                <>
-                  <Check size={12} />
-                  Copied!
-                </>
-              ) : (
-                <>
-                  <Copy size={12} />
-                  Copy
-                </>
-              )}
-            </button>
+            <>
+              <button
+                onClick={copyPlanAsText}
+                className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                title="Copy plan as text"
+              >
+                {copySuccess ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+              <button
+                onClick={() => setShowLegend(!showLegend)}
+                className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                title="Toggle legend"
+              >
+                <Minimize2 size={14} />
+              </button>
+            </>
           )}
 
           {/* Fetch button */}
           <button
             onClick={() => handleFetchPlan(planMode === 'actual')}
             disabled={isLoading}
-            className="flex items-center gap-2 px-3 py-1 text-sm bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white rounded transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white rounded transition-colors"
           >
-            <Play size={16} />
-            {isLoading ? 'Loading...' : 'Visualize'}
+            <Play size={14} />
+            {isLoading ? 'Loading...' : 'Go'}
           </button>
         </div>
       </div>
 
-      {/* Query display */}
-      <div className="mb-4">
-        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          Query:
-        </h4>
-        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3">
-          <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words">
-            {activeResult.sql}
-          </pre>
+      {/* Collapsible Query display */}
+      {showQuery && activeResult && (
+        <div className="p-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+          <div className="bg-gray-100 dark:bg-gray-700 rounded p-2">
+            <pre className="text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words">
+              {activeResult.sql}
+            </pre>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Error display */}
       {error && (
-        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+        <div className="p-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800">
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}
 
-      {/* SVG Graph */}
-      <div className="flex-1 overflow-hidden border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900">
+      {/* SVG Graph - takes remaining space */}
+      <div className="flex-1 overflow-hidden relative">
         {planGraph ? (
           <svg
             ref={svgRef}
@@ -419,6 +432,8 @@ export const QueryPlanGraph: React.FC = () => {
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
             onWheel={handleWheel}
+            onDoubleClick={handleDoubleClick}
+            onContextMenu={handleContextMenu}
           >
             {/* Connections */}
             {layouts.map(layout =>
@@ -469,7 +484,9 @@ export const QueryPlanGraph: React.FC = () => {
                     x={layout.x}
                     y={layout.y - 15}
                     textAnchor="middle"
-                    className="text-sm font-medium fill-gray-900 dark:fill-gray-100 pointer-events-none"
+                    className="text-sm font-medium pointer-events-none"
+                    fill="currentColor"
+                    style={{ color: '#1f2937' }} // Force dark text for better contrast
                   >
                     {layout.node.opcode}
                   </text>
@@ -479,7 +496,9 @@ export const QueryPlanGraph: React.FC = () => {
                     x={layout.x}
                     y={layout.y}
                     textAnchor="middle"
-                    className="text-xs fill-gray-600 dark:fill-gray-400 pointer-events-none"
+                    className="text-xs pointer-events-none"
+                    fill="currentColor"
+                    style={{ color: '#6b7280' }} // Force gray text
                   >
                     {layout.node.actRows ?? layout.node.estRows} rows
                   </text>
@@ -489,7 +508,9 @@ export const QueryPlanGraph: React.FC = () => {
                     x={layout.x}
                     y={layout.y + 15}
                     textAnchor="middle"
-                    className="text-xs fill-gray-600 dark:fill-gray-400 pointer-events-none"
+                    className="text-xs pointer-events-none"
+                    fill="currentColor"
+                    style={{ color: '#6b7280' }} // Force gray text
                   >
                     {layout.node.actTimeMs ? `${layout.node.actTimeMs.toFixed(1)}ms` : `cost: ${layout.node.estCost}`}
                   </text>
@@ -498,43 +519,40 @@ export const QueryPlanGraph: React.FC = () => {
             })}
           </svg>
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <div className="text-center">
-              <Eye size={48} className="mx-auto mb-4 text-gray-400" />
-              <p className="mb-4">Click "Visualize" to see the query plan graph</p>
-              <p className="text-sm text-gray-400">
-                Visual representation of query execution with hotspot analysis
+              <Eye size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
+              <p className="mb-4">Click "Go" to visualize the query plan</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500">
+                Double-click to zoom in • Right-click to zoom out • Drag to pan • Scroll to pan
               </p>
             </div>
           </div>
         )}
-      </div>
 
-      {/* Legend */}
-      {planGraph && (
-        <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-800 rounded text-xs text-gray-600 dark:text-gray-400">
-          <div className="flex items-center gap-6">
+        {/* Floating Legend */}
+        {planGraph && showLegend && (
+          <div className="absolute bottom-2 left-2 bg-white dark:bg-gray-800 rounded shadow-lg border border-gray-200 dark:border-gray-600 p-2 text-xs text-gray-600 dark:text-gray-400">
             <div className="flex items-center gap-4">
-              <span>Hotspots:</span>
               <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-blue-100 border border-blue-400 rounded"></div>
-                <span>Low</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-yellow-200 border border-yellow-500 rounded"></div>
-                <span>Medium</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-red-200 border border-red-500 rounded"></div>
-                <span>High</span>
+                <span>Hotspots:</span>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-blue-100 border border-blue-400 rounded"></div>
+                  <span>Low</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-yellow-200 border border-yellow-500 rounded"></div>
+                  <span>Med</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-red-200 border border-red-500 rounded"></div>
+                  <span>High</span>
+                </div>
               </div>
             </div>
-            <span className="border-l border-gray-300 dark:border-gray-600 pl-4">
-              Click nodes to select • Drag to pan • Scroll to zoom • Use controls to reset
-            </span>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };

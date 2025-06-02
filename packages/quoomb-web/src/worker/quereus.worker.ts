@@ -176,16 +176,51 @@ class QuereusWorker implements QuereusWorkerAPI {
       totalEstCost += estCost;
       totalEstRows += estRows;
 
-      // Try to extract operation type from plan data
+      // Try to extract operation type from multiple possible fields
       const detail = (row.detail as string) || '';
+      const opcode_field = (row.opcode as string) || '';
+      const operation = (row.operation as string) || '';
+      const plan_type = (row.plan_type as string) || '';
+
       let opcode = 'UNKNOWN';
 
-      if (detail.includes('SCAN')) opcode = 'SCAN';
-      else if (detail.includes('JOIN')) opcode = 'JOIN';
-      else if (detail.includes('SORT')) opcode = 'SORT';
-      else if (detail.includes('GROUP')) opcode = 'GROUP';
-      else if (detail.includes('FILTER')) opcode = 'FILTER';
-      else if (detail.includes('PROJECT')) opcode = 'PROJECT';
+      // First try direct opcode field
+      if (opcode_field && opcode_field !== 'UNKNOWN') {
+        opcode = opcode_field;
+      }
+      // Then try operation field
+      else if (operation && operation !== 'UNKNOWN') {
+        opcode = operation;
+      }
+      // Then try plan_type field
+      else if (plan_type && plan_type !== 'UNKNOWN') {
+        opcode = plan_type;
+      }
+      // Finally try parsing from detail
+      else if (detail) {
+        // Look for common SQL operation patterns
+        if (detail.includes('SCAN') || detail.includes('scan')) opcode = 'SCAN';
+        else if (detail.includes('JOIN') || detail.includes('join')) opcode = 'JOIN';
+        else if (detail.includes('SORT') || detail.includes('sort')) opcode = 'SORT';
+        else if (detail.includes('GROUP') || detail.includes('group')) opcode = 'GROUP';
+        else if (detail.includes('FILTER') || detail.includes('filter')) opcode = 'FILTER';
+        else if (detail.includes('PROJECT') || detail.includes('project')) opcode = 'PROJECT';
+        else if (detail.includes('INDEX') || detail.includes('index')) opcode = 'INDEX_SCAN';
+        else if (detail.includes('HASH') || detail.includes('hash')) opcode = 'HASH';
+        else if (detail.includes('NESTED') || detail.includes('nested')) opcode = 'NESTED_LOOP';
+        else if (detail.includes('AGGREGATE') || detail.includes('aggregate')) opcode = 'AGGREGATE';
+        else if (detail.includes('LIMIT') || detail.includes('limit')) opcode = 'LIMIT';
+        else if (detail.includes('ORDER') || detail.includes('order')) opcode = 'ORDER_BY';
+        else if (detail.includes('UNION') || detail.includes('union')) opcode = 'UNION';
+        else if (detail.includes('DISTINCT') || detail.includes('distinct')) opcode = 'DISTINCT';
+        // Try to extract the first word as operation name
+        else {
+          const firstWord = detail.trim().split(/\s+/)[0];
+          if (firstWord && firstWord.length > 0) {
+            opcode = firstWord.toUpperCase();
+          }
+        }
+      }
 
       // Find corresponding trace data
       const traceRow = traceRows.find(trace =>
