@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MainLayout } from './components/MainLayout.js';
+import { LoadingSplash } from './components/LoadingSplash.js';
 import { useSessionStore } from './stores/sessionStore.js';
 import { useSettingsStore } from './stores/settingsStore.js';
 
 export const App: React.FC = () => {
-  const { initializeSession, saveCurrentTabAsFile, loadSQLFile, tabs } = useSessionStore();
+  const { initializeSession, saveCurrentTabAsFile, loadSQLFile, tabs, isConnected, isConnecting } = useSessionStore();
   const { loadSettings, theme } = useSettingsStore();
   const [systemIsDark, setSystemIsDark] = useState(
     () => window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -78,6 +79,15 @@ export const App: React.FC = () => {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [tabs]);
+
+  // Show loading splash while connecting or if not connected yet
+  if (isConnecting || !isConnected) {
+    return (
+      <div className={`app ${resolvedTheme}`} data-theme={resolvedTheme}>
+        <LoadingSplash />
+      </div>
+    );
+  }
 
   return (
     <div className={`app ${resolvedTheme}`} data-theme={resolvedTheme}>
