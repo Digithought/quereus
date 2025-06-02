@@ -5,6 +5,7 @@ import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
+import { ColumnReferenceNode } from './reference.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -47,13 +48,26 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		} as RelationType));
 
 		this.attributesCache = new Cached(() => {
-			// Create new attributes for each projection
-			return this.projections.map((proj, index) => ({
-				id: PlanNode.nextAttrId(),
-				name: proj.alias ?? expressionToString(proj.node.expression),
-				type: proj.node.getType(),
-				sourceRelation: `${this.nodeType}:${this.id}` // Projects create new context
-			}));
+			// For each projection, preserve attribute ID if it's a simple column reference
+			return this.projections.map((proj, index) => {
+				// If this projection is a simple column reference, preserve its attribute ID
+				if (proj.node instanceof ColumnReferenceNode) {
+					return {
+						id: proj.node.attributeId,
+						name: proj.alias ?? proj.node.expression.name,
+						type: proj.node.getType(),
+						sourceRelation: `${this.nodeType}:${this.id}`
+					};
+				} else {
+					// For computed expressions, generate new attribute ID
+					return {
+						id: PlanNode.nextAttrId(),
+						name: proj.alias ?? expressionToString(proj.node.expression),
+						type: proj.node.getType(),
+						sourceRelation: `${this.nodeType}:${this.id}`
+					};
+				}
+			});
 		});
 	}
 

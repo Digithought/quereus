@@ -1550,7 +1550,8 @@ export class Parser {
 
 		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW.");
 
-		const select = this.selectStatement();
+		const selectStartToken = this.consume(TokenType.SELECT, "Expected 'SELECT' after 'AS' in CREATE VIEW.");
+		const select = this.selectStatement(selectStartToken);
 
 		return {
 			type: 'createView',
@@ -1559,7 +1560,7 @@ export class Parser {
 			columns,
 			select,
 			isTemporary,
-			loc: _createLoc(startToken, this.previous()),
+				loc: _createLoc(startToken, this.previous()),
 		};
 	}
 
