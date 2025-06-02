@@ -70,7 +70,7 @@ export function buildCommonTableExpr(
 	cteContext.scope = cteScope;
 
 	// Check if this is a recursive CTE with UNION structure
-	if (isRecursive && cte.query.type === 'select' && (cte.query.union || cte.query.unionAll)) {
+	if (isRecursive && cte.query.type === 'select' && cte.query.compound) {
 		return buildRecursiveCTE(cteContext, cte);
 	}
 
@@ -114,23 +114,22 @@ function buildRecursiveCTE(
 ): RecursiveCTENode {
 	const selectStmt = cte.query as AST.SelectStmt;
 
-	// Validate recursive CTE structure
-	if (!selectStmt.union) {
+	// Validate recursive CTE structure - check for compound operation
+	if (!selectStmt.compound) {
 		throw new QuereusError(
 			`Recursive CTE '${cte.name}' must use UNION or UNION ALL`,
 			StatusCode.ERROR
 		);
 	}
 
-	// Extract base case (the main SELECT) and recursive case (the UNION part)
+	// Extract base case (the main SELECT) and recursive case (the compound part)
 	const baseCaseStmt: AST.SelectStmt = {
 		...selectStmt,
-		union: undefined,
-		unionAll: undefined
+		compound: undefined
 	};
 
-	const recursiveCaseStmt = selectStmt.union;
-	const isUnionAll = selectStmt.unionAll ?? false;
+	const recursiveCaseStmt = selectStmt.compound.select;
+	const isUnionAll = selectStmt.compound.op === 'unionAll';
 
 	// Build the base case query (without CTE self-reference)
 	const baseCaseQuery = buildSelectStmt(ctx, baseCaseStmt) as RelationalPlanNode;
@@ -150,18 +149,12 @@ function buildRecursiveCTE(
 		true
 	);
 
-	// Add the temporary CTE to the scope for recursive reference
-	const recursiveScope = new RegisteredScope(ctx.scope);
-	const attributes = tempCteNode.getAttributes();
-	tempCteNode.getType().columns.forEach((col: any, i: number) => {
-		const attr = attributes[i];
-		recursiveScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
-			new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
-	});
-	recursiveContext.scope = recursiveScope;
+	// Create a map containing the recursive CTE reference
+	const recursiveCteMap = new Map<string, CTEPlanNode>();
+	recursiveCteMap.set(cte.name.toLowerCase(), tempCteNode);
 
-	// Build the recursive case query
-	const recursiveCaseQuery = buildSelectStmt(recursiveContext, recursiveCaseStmt) as RelationalPlanNode;
+	// Build the recursive case query with the CTE map so it can find the table reference
+	const recursiveCaseQuery = buildSelectStmt(recursiveContext, recursiveCaseStmt, recursiveCteMap) as RelationalPlanNode;
 
 	// Determine materialization strategy (recursive CTEs should typically be materialized)
 	let materializationHint = cte.materializationHint || 'materialized';

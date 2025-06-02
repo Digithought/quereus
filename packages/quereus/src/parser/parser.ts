@@ -120,12 +120,12 @@ export class Parser {
 	 * @returns The WithClause AST node or undefined if no WITH clause is found.
 	 */
 	private tryParseWithClause(): AST.WithClause | undefined {
-		if (!this.check(TokenType.IDENTIFIER) || this.peek().lexeme.toUpperCase() !== 'WITH') {
+		if (!this.check(TokenType.WITH)) {
 			return undefined;
 		}
 		const startToken = this.advance(); // Consume WITH
 
-		const recursive = this.matchKeyword('RECURSIVE');
+		const recursive = this.match(TokenType.RECURSIVE);
 
 		const ctes: AST.CommonTableExpr[] = [];
 		do {
@@ -201,7 +201,7 @@ export class Parser {
 	private statement(): AST.AstNode {
 		// Check for WITH clause first
 		let withClause: AST.WithClause | undefined;
-		if (this.check(TokenType.IDENTIFIER) && this.peek().lexeme.toUpperCase() === 'WITH') {
+		if (this.check(TokenType.WITH)) {
 			withClause = this.tryParseWithClause();
 		}
 
