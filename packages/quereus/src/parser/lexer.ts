@@ -43,6 +43,8 @@ export enum TokenType {
 	LIMIT = 'LIMIT',
 	OFFSET = 'OFFSET',
 	UNION = 'UNION',
+	INTERSECT = 'INTERSECT',
+	EXCEPT = 'EXCEPT',
 	ALL = 'ALL',
 	PRIMARY = 'PRIMARY',
 	CONSTRAINT = 'CONSTRAINT',
@@ -243,6 +245,8 @@ export const KEYWORDS: Record<string, TokenType> = {
 	'else': TokenType.ELSE,
 	'end': TokenType.END,
 	'cast': TokenType.CAST,
+	'intersect': TokenType.INTERSECT,
+	'except': TokenType.EXCEPT,
 };
 
 /**

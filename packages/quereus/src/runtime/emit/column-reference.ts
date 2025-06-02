@@ -12,7 +12,8 @@ export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionCont
 			if (columnIndex !== undefined) {
 				const row = rowGetter();
 				if (Array.isArray(row) && columnIndex < row.length) {
-					return row[columnIndex];
+					const value = row[columnIndex];
+					return value;
 				}
 			}
 		}
