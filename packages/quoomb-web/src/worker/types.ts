@@ -1,5 +1,22 @@
 import type { SqlValue } from '@quereus/quereus';
 
+export interface PlanGraphNode {
+  id: string;                 // stable, local to this plan
+  opcode: string;             // "SCAN", "HASH_JOIN", etc.
+  estCost: number;            // planner estimate
+  estRows: number;
+  actTimeMs?: number;         // present when withActual = true
+  actRows?: number;
+  sqlSpan?: { start: number; end: number };  // char offsets in original SQL
+  extra?: Record<string, any>;
+  children: PlanGraphNode[];
+}
+
+export interface PlanGraph {
+  root: PlanGraphNode;
+  totals: { estCost: number; estRows: number; actTimeMs?: number; };
+}
+
 export interface QuereusWorkerAPI {
   /**
    * Initialize a new Quereus database session
@@ -30,6 +47,11 @@ export interface QuereusWorkerAPI {
    * Get execution trace data
    */
   executionTrace(sql: string): Promise<Record<string, SqlValue>[]>;
+
+  /**
+   * Get query plan as a graph structure for visualization
+   */
+  explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph>;
 
   /**
    * List all tables in the database
