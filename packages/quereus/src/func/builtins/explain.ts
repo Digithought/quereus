@@ -158,7 +158,6 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 			isSet: false,
 			columns: [
 				{ name: 'addr', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
-				{ name: 'instruction_id', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'dependencies', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON array of dependency IDs
 				{ name: 'description', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'estimated_cost', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: true, isReadOnly: true }, generated: true },
@@ -196,9 +195,8 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 
 				yield [
 					i, // addr
-					instruction.note || `INSTRUCTION_${i}`, // instruction_id
 					JSON.stringify(dependencies), // dependencies
-					instruction.note || 'Unknown instruction', // description
+					instruction.note || `INSTRUCTION_${i}`, // instruction_id
 					null, // estimated_cost (not available in current implementation)
 					0, // is_subprogram (main program)
 					null // parent_addr (main program)
@@ -214,9 +212,8 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 
 							yield [
 								scheduler.instructions.length + progIdx * 1000 + subI, // addr (offset for sub-programs)
-								subInstruction.note || `SUB_INSTRUCTION_${progIdx}_${subI}`, // instruction_id
 								JSON.stringify(subDependencies), // dependencies
-								subInstruction.note || 'Unknown sub-instruction', // description
+								subInstruction.note || `SUB_INSTRUCTION_${progIdx}_${subI}`, // instruction_id
 								null, // estimated_cost
 								1, // is_subprogram
 								i // parent_addr

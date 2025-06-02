@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
-import { Play, AlertTriangle, FileText, Loader, ChevronRight, ChevronDown, Copy, Check } from 'lucide-react';
+import { Play, AlertTriangle, FileText, Loader, ChevronRight, ChevronDown, Copy, Check, Info } from 'lucide-react';
 
 export const QueryPlan: React.FC = () => {
   const { queryHistory, activeResultId, fetchQueryPlan } = useSessionStore();
@@ -8,6 +8,7 @@ export const QueryPlan: React.FC = () => {
   const [planError, setPlanError] = useState<string | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<number>>(new Set());
   const [copySuccess, setCopySuccess] = useState(false);
+  const [showQuery, setShowQuery] = useState(false);
 
   const activeResult = queryHistory.find(result => result.id === activeResultId);
 
@@ -212,9 +213,9 @@ export const QueryPlan: React.FC = () => {
 
   if (!activeResult) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
         <div className="text-center">
-          <FileText size={48} className="mx-auto mb-4 text-gray-400" />
+          <FileText size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
           <p>No query selected for plan analysis</p>
         </div>
       </div>
@@ -222,63 +223,63 @@ export const QueryPlan: React.FC = () => {
   }
 
   return (
-    <div className="p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-          Query Execution Plan
-        </h3>
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+      {/* Compact Header */}
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+        <div className="flex items-center gap-3">
+          <h3 className="font-semibold text-gray-900 dark:text-white">
+            Query Execution Plan
+          </h3>
+
+          <button
+            onClick={() => setShowQuery(!showQuery)}
+            className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            title="Toggle query display"
+          >
+            <Info size={16} />
+          </button>
+        </div>
 
         <div className="flex items-center gap-2">
           {activeResult.queryPlan && (
             <button
               onClick={copyPlanAsText}
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
+              className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               title="Copy plan as text"
             >
-              {copySuccess ? (
-                <>
-                  <Check size={12} />
-                  Copied!
-                </>
-              ) : (
-                <>
-                  <Copy size={12} />
-                  Copy
-                </>
-              )}
+              {copySuccess ? <Check size={14} /> : <Copy size={14} />}
             </button>
           )}
 
           <button
             onClick={handleFetchPlan}
             disabled={isLoadingPlan}
-            className="flex items-center gap-2 px-3 py-1 text-sm bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white rounded transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white rounded transition-colors"
           >
             {isLoadingPlan ? (
-              <Loader size={16} className="animate-spin" />
+              <Loader size={14} className="animate-spin" />
             ) : (
-              <Play size={16} />
+              <Play size={14} />
             )}
             {isLoadingPlan ? 'Analyzing...' : 'Analyze Query'}
           </button>
         </div>
       </div>
 
-      {/* Query display */}
-      <div className="mb-4">
-        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          Query:
-        </h4>
-        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3">
-          <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words">
-            {activeResult.sql}
-          </pre>
+      {/* Collapsible Query display */}
+      {showQuery && activeResult && (
+        <div className="p-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+          <div className="bg-gray-100 dark:bg-gray-700 rounded p-2">
+            <pre className="text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words">
+              {activeResult.sql}
+            </pre>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Error display */}
       {planError && (
-        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+        <div className="p-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800">
           <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
             <AlertTriangle size={16} />
             <span className="text-sm font-medium">Plan Analysis Failed</span>
@@ -287,10 +288,10 @@ export const QueryPlan: React.FC = () => {
         </div>
       )}
 
-      {/* Plan display */}
+      {/* Plan display - takes remaining space */}
       <div className="flex-1 overflow-auto">
         {activeResult.queryPlan ? (
-          <div>
+          <div className="p-4">
             <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
               Execution Plan ({activeResult.queryPlan.length} steps):
             </h4>
@@ -319,11 +320,11 @@ export const QueryPlan: React.FC = () => {
             )}
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <div className="text-center">
-              <FileText size={48} className="mx-auto mb-4 text-gray-400" />
+              <FileText size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
               <p className="mb-4">Click "Analyze Query" to see the execution plan</p>
-              <p className="text-sm text-gray-400">
+              <p className="text-sm text-gray-400 dark:text-gray-500">
                 Uses Quereus's query_plan() function to show how your SQL will be executed
               </p>
             </div>

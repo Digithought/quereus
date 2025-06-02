@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
-import { Play, AlertTriangle, FileText, Loader, Copy, Check, ChevronRight, ChevronDown } from 'lucide-react';
+import { Play, AlertTriangle, Code, Loader, Copy, Check, Info } from 'lucide-react';
 
 export const QueryProgram: React.FC = () => {
   const { queryHistory, activeResultId, fetchProgram } = useSessionStore();
   const [isLoadingProgram, setIsLoadingProgram] = useState(false);
   const [programError, setProgramError] = useState<string | null>(null);
-  const [expandedInstructions, setExpandedInstructions] = useState<Set<number>>(new Set());
   const [copySuccess, setCopySuccess] = useState(false);
+  const [showQuery, setShowQuery] = useState(false);
 
   const activeResult = queryHistory.find(result => result.id === activeResultId);
 
@@ -29,39 +29,47 @@ export const QueryProgram: React.FC = () => {
   const copyProgramAsText = async () => {
     if (!activeResult?.program || activeResult.program.length === 0) return;
 
-    // Build text representation of the program
-    const instructions = activeResult.program.map(row => ({
-      addr: row.addr as number,
-      instructionId: row.instruction_id as string,
-      dependencies: row.dependencies as string,
-      description: row.description as string,
-      estimatedCost: row.estimated_cost as number | null,
-      isSubprogram: row.is_subprogram as number,
-      parentAddr: row.parent_addr as number | null,
-    }));
-
-    instructions.sort((a, b) => a.addr - b.addr);
-
     const lines = [
       `Query Program for: ${activeResult.sql}`,
       '='.repeat(80),
       ''
     ];
 
-    instructions.forEach(instr => {
-      const prefix = instr.isSubprogram ? '  SUB: ' : '';
-      lines.push(`${prefix}[${instr.addr}] ${instr.instructionId}`);
-      lines.push(`  ${instr.description}`);
-      if (instr.dependencies && instr.dependencies !== '[]') {
-        lines.push(`  Dependencies: ${instr.dependencies}`);
-      }
-      if (instr.estimatedCost !== null) {
-        lines.push(`  Cost: ${instr.estimatedCost}`);
-      }
-      lines.push('');
+    // Group instructions by operation for better readability
+    const groupedInstructions = new Map<string, Array<any>>();
+
+    activeResult.program.forEach((row, index) => {
+      const description = (row.description as string) || 'UNKNOWN';
+      const group = groupedInstructions.get(description) || [];
+      group.push({
+        index: index + 1,
+        description,
+        addr: row.addr,
+        dependencies: row.dependencies,
+        estimatedCost: row.estimated_cost as number | null,
+      });
+      groupedInstructions.set(description, group);
     });
 
-    lines.push(`Total Instructions: ${instructions.length}`);
+    // Output grouped instructions
+    for (const [description, instructions] of groupedInstructions) {
+      lines.push(`${description} Operations (${instructions.length} instructions):`);
+      lines.push('-'.repeat(50));
+
+      instructions.forEach(inst => {
+        lines.push(`  ${inst.addr.toString().padStart(3)}: ${inst.description}`);
+        if (inst.dependencies && inst.dependencies !== '[]') {
+          lines.push(`       Dependencies: ${inst.dependencies}`);
+        }
+        if (inst.estimatedCost !== null) {
+          lines.push(`       Cost: ${inst.estimatedCost}`);
+        }
+      });
+      lines.push('');
+    }
+
+    lines.push(`Total Instructions: ${activeResult.program.length}`);
+    lines.push(`Unique Instruction Types: ${groupedInstructions.size}`);
 
     try {
       await navigator.clipboard.writeText(lines.join('\n'));
@@ -72,199 +80,11 @@ export const QueryProgram: React.FC = () => {
     }
   };
 
-  const toggleInstructionExpansion = (addr: number) => {
-    const newExpanded = new Set(expandedInstructions);
-    if (newExpanded.has(addr)) {
-      newExpanded.delete(addr);
-    } else {
-      newExpanded.add(addr);
-    }
-    setExpandedInstructions(newExpanded);
-  };
-
-  const renderProgramTable = () => {
-    if (!activeResult?.program || activeResult.program.length === 0) {
-      return null;
-    }
-
-    // Build instruction list from the flat program data
-    const instructions = activeResult.program.map(row => ({
-      addr: row.addr as number,
-      instructionId: row.instruction_id as string,
-      dependencies: row.dependencies as string,
-      description: row.description as string,
-      estimatedCost: row.estimated_cost as number | null,
-      isSubprogram: row.is_subprogram as number,
-      parentAddr: row.parent_addr as number | null,
-    }));
-
-    // Sort by address
-    instructions.sort((a, b) => a.addr - b.addr);
-
-    // Group by main program vs subprograms
-    const mainInstructions = instructions.filter(i => !i.isSubprogram);
-    const subInstructions = instructions.filter(i => i.isSubprogram);
-
-    return (
-      <div className="space-y-3">
-        {/* Main program */}
-        <div>
-          <h5 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Main Program ({mainInstructions.length} instructions):
-          </h5>
-          <div className="space-y-1">
-            {mainInstructions.map((instr) => {
-              const isExpanded = expandedInstructions.has(instr.addr);
-              const hasDetails = instr.dependencies !== '[]' || instr.estimatedCost !== null;
-
-              return (
-                <div key={instr.addr} className="border border-gray-200 dark:border-gray-700 rounded">
-                  {/* Instruction header */}
-                  <div
-                    className={`flex items-center justify-between p-2 ${hasDetails ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700' : ''}`}
-                    onClick={() => hasDetails && toggleInstructionExpansion(instr.addr)}
-                  >
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      {hasDetails && (
-                        <div className="flex-shrink-0">
-                          {isExpanded ? (
-                            <ChevronDown size={14} className="text-gray-400" />
-                          ) : (
-                            <ChevronRight size={14} className="text-gray-400" />
-                          )}
-                        </div>
-                      )}
-
-                      <span className="text-xs font-mono bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-gray-600 dark:text-gray-300">
-                        #{instr.addr}
-                      </span>
-
-                      <span className="font-medium text-blue-600 dark:text-blue-400 text-sm">
-                        {instr.instructionId}
-                      </span>
-
-                      <span className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                        {instr.description}
-                      </span>
-                    </div>
-
-                    {instr.estimatedCost !== null && (
-                      <span className="text-xs text-gray-500 dark:text-gray-400 ml-2 flex-shrink-0">
-                        {instr.estimatedCost}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Expanded details */}
-                  {isExpanded && hasDetails && (
-                    <div className="border-t border-gray-200 dark:border-gray-700 px-2 py-2 bg-gray-50 dark:bg-gray-800">
-                      {instr.dependencies && instr.dependencies !== '[]' && (
-                        <div className="mb-1">
-                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Dependencies: </span>
-                          <span className="text-xs font-mono text-gray-700 dark:text-gray-300">{instr.dependencies}</span>
-                        </div>
-                      )}
-                      {instr.estimatedCost !== null && (
-                        <div>
-                          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Cost: </span>
-                          <span className="text-xs text-gray-700 dark:text-gray-300">{instr.estimatedCost}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Subprograms */}
-        {subInstructions.length > 0 && (
-          <div>
-            <h5 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Subprograms ({subInstructions.length} instructions):
-            </h5>
-            <div className="space-y-1 pl-3 border-l-2 border-orange-300 dark:border-orange-600">
-              {subInstructions.map((instr) => {
-                const isExpanded = expandedInstructions.has(instr.addr);
-                const hasDetails = instr.dependencies !== '[]' || instr.estimatedCost !== null;
-
-                return (
-                  <div key={instr.addr} className="border border-orange-200 dark:border-orange-700 rounded">
-                    {/* Instruction header */}
-                    <div
-                      className={`flex items-center justify-between p-2 ${hasDetails ? 'cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-900/20' : ''}`}
-                      onClick={() => hasDetails && toggleInstructionExpansion(instr.addr)}
-                    >
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        {hasDetails && (
-                          <div className="flex-shrink-0">
-                            {isExpanded ? (
-                              <ChevronDown size={14} className="text-gray-400" />
-                            ) : (
-                              <ChevronRight size={14} className="text-gray-400" />
-                            )}
-                          </div>
-                        )}
-
-                        <span className="text-xs font-mono bg-orange-100 dark:bg-orange-900 px-1.5 py-0.5 rounded text-orange-700 dark:text-orange-300">
-                          #{instr.addr}
-                        </span>
-
-                        <span className="font-medium text-orange-600 dark:text-orange-400 text-sm">
-                          {instr.instructionId}
-                        </span>
-
-                        {instr.parentAddr !== null && (
-                          <span className="text-xs text-gray-500 dark:text-gray-400">
-                            ↳#{instr.parentAddr}
-                          </span>
-                        )}
-
-                        <span className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                          {instr.description}
-                        </span>
-                      </div>
-
-                      {instr.estimatedCost !== null && (
-                        <span className="text-xs text-gray-500 dark:text-gray-400 ml-2 flex-shrink-0">
-                          {instr.estimatedCost}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Expanded details */}
-                    {isExpanded && hasDetails && (
-                      <div className="border-t border-orange-200 dark:border-orange-700 px-2 py-2 bg-orange-50 dark:bg-orange-900/20">
-                        {instr.dependencies && instr.dependencies !== '[]' && (
-                          <div className="mb-1">
-                            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Dependencies: </span>
-                            <span className="text-xs font-mono text-gray-700 dark:text-gray-300">{instr.dependencies}</span>
-                          </div>
-                        )}
-                        {instr.estimatedCost !== null && (
-                          <div>
-                            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Cost: </span>
-                            <span className="text-xs text-gray-700 dark:text-gray-300">{instr.estimatedCost}</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
-
   if (!activeResult) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
         <div className="text-center">
-          <FileText size={48} className="mx-auto mb-4 text-gray-400" />
+          <Code size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
           <p>No query selected for program analysis</p>
         </div>
       </div>
@@ -272,109 +92,179 @@ export const QueryProgram: React.FC = () => {
   }
 
   return (
-    <div className="p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-          Query Program
-        </h3>
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+      {/* Compact Header */}
+      <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+        <div className="flex items-center gap-3">
+          <h3 className="font-semibold text-gray-900 dark:text-white">
+            Query Program (Scheduler)
+          </h3>
+
+          <button
+            onClick={() => setShowQuery(!showQuery)}
+            className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            title="Toggle query display"
+          >
+            <Info size={16} />
+          </button>
+        </div>
 
         <div className="flex items-center gap-2">
           {activeResult.program && (
             <button
               onClick={copyProgramAsText}
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
+              className="p-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               title="Copy program as text"
             >
-              {copySuccess ? (
-                <>
-                  <Check size={12} />
-                  Copied!
-                </>
-              ) : (
-                <>
-                  <Copy size={12} />
-                  Copy
-                </>
-              )}
+              {copySuccess ? <Check size={14} /> : <Copy size={14} />}
             </button>
           )}
 
           <button
             onClick={handleFetchProgram}
             disabled={isLoadingProgram}
-            className="flex items-center gap-2 px-3 py-1 text-sm bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white rounded transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white rounded transition-colors"
           >
             {isLoadingProgram ? (
-              <Loader size={16} className="animate-spin" />
+              <Loader size={14} className="animate-spin" />
             ) : (
-              <Play size={16} />
+              <Play size={14} />
             )}
-            {isLoadingProgram ? 'Analyzing...' : 'Analyze Program'}
+            {isLoadingProgram ? 'Compiling...' : 'Compile Query'}
           </button>
         </div>
       </div>
 
-      {/* Query display */}
-      <div className="mb-4">
-        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          Query:
-        </h4>
-        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3">
-          <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words">
-            {activeResult.sql}
-          </pre>
+      {/* Collapsible Query display */}
+      {showQuery && activeResult && (
+        <div className="p-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+          <div className="bg-gray-100 dark:bg-gray-700 rounded p-2">
+            <pre className="text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words">
+              {activeResult.sql}
+            </pre>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Error display */}
       {programError && (
-        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+        <div className="p-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800">
           <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
             <AlertTriangle size={16} />
-            <span className="text-sm font-medium">Program Analysis Failed</span>
+            <span className="text-sm font-medium">Program Compilation Failed</span>
           </div>
           <p className="text-sm text-red-600 dark:text-red-400 mt-1">{programError}</p>
         </div>
       )}
 
-      {/* Program display */}
+      {/* Program display - takes remaining space */}
       <div className="flex-1 overflow-auto">
         {activeResult.program ? (
-          <div>
+          <div className="p-4">
             <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
               Compiled Program ({activeResult.program.length} instructions):
             </h4>
 
             {activeResult.program.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
-                <p>No program information available</p>
+                <p>No program instructions generated</p>
               </div>
             ) : (
               <div className="space-y-4">
-                {renderProgramTable()}
+                {/* Instruction list */}
+                <div className="bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
+                  <div className="bg-gray-200 dark:bg-gray-700 px-4 py-2 border-b border-gray-300 dark:border-gray-600">
+                    <div className="grid grid-cols-12 gap-2 text-xs font-medium text-gray-600 dark:text-gray-400">
+                      <div className="col-span-1">Addr</div>
+                      <div className="col-span-5">Instruction</div>
+                      <div className="col-span-3">Dependencies</div>
+                      <div className="col-span-3">Est. Cost</div>
+                    </div>
+                  </div>
+
+                  <div className="max-h-96 overflow-y-auto">
+                    {activeResult.program.map((row, index) => {
+                      const addr = (row.addr as number) || index;
+                      const description = (row.description as string) || 'UNKNOWN';
+                      const dependencies = (row.dependencies as string) || '[]';
+                      const estimatedCost = (row.estimated_cost as number) || null;
+
+                      return (
+                        <div
+                          key={index}
+                          className="grid grid-cols-12 gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750 text-sm"
+                        >
+                          <div className="col-span-1 font-mono text-gray-500 dark:text-gray-400">
+                            {addr}
+                          </div>
+                          <div className="col-span-5 font-mono font-medium text-blue-600 dark:text-blue-400">
+                            {description}
+                          </div>
+                          <div className="col-span-3 text-gray-500 dark:text-gray-400 text-xs">
+                            {dependencies !== '[]' ? dependencies : '—'}
+                          </div>
+                          <div className="col-span-3 font-mono text-gray-700 dark:text-gray-300 text-xs">
+                            {estimatedCost !== null ? estimatedCost.toFixed(2) : '—'}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Program statistics */}
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                  <h5 className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-2">
+                    Program Statistics
+                  </h5>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <span className="text-blue-600 dark:text-blue-400">Total Instructions:</span>
+                      <span className="ml-2 font-medium">{activeResult.program.length}</span>
+                    </div>
+                    <div>
+                      <span className="text-blue-600 dark:text-blue-400">Unique Types:</span>
+                      <span className="ml-2 font-medium">
+                        {new Set(activeResult.program.map(row => row.description)).size}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-blue-600 dark:text-blue-400">With Dependencies:</span>
+                      <span className="ml-2 font-medium">
+                        {activeResult.program.filter(row => row.dependencies && row.dependencies !== '[]').length}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-blue-600 dark:text-blue-400">With Cost Estimates:</span>
+                      <span className="ml-2 font-medium">
+                        {activeResult.program.filter(row => row.estimated_cost !== null).length}
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
                 {/* Program explanation */}
-                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mt-4">
-                  <h5 className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-2">
-                    Program Reading Guide
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+                  <h5 className="text-sm font-medium text-green-800 dark:text-green-200 mb-2">
+                    Understanding the Program
                   </h5>
-                  <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
-                    <p>• Instructions are executed by address in ascending order</p>
-                    <p>• Dependencies show which instructions must complete first</p>
-                    <p>• Subprograms are executed within their parent instruction</p>
-                    <p>• Orange badges indicate subprogram instructions</p>
+                  <div className="text-sm text-green-700 dark:text-green-300 space-y-1">
+                    <p>• Each instruction is executed sequentially by the Quereus scheduler</p>
+                    <p>• Instructions represent low-level database operations (scan, join, project, etc.)</p>
+                    <p>• Dependencies specify other instructions that must be executed before this one</p>
+                    <p>• Estimated cost provides an estimate of the time required to execute the instruction</p>
                   </div>
                 </div>
               </div>
             )}
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <div className="text-center">
-              <FileText size={48} className="mx-auto mb-4 text-gray-400" />
-              <p className="mb-4">Click "Analyze Program" to see the compiled instruction program</p>
-              <p className="text-sm text-gray-400">
-                Shows how your SQL gets compiled into executable instructions
+              <Code size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
+              <p className="mb-4">Click "Compile Query" to see the execution program</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500">
+                Uses Quereus's scheduler_program() function to show compiled instructions
               </p>
             </div>
           </div>

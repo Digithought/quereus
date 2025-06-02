@@ -37,15 +37,15 @@ export const QueryPlanGraph: React.FC = () => {
   // Simple tree layout algorithm (Reingold-Tilford style)
   const layoutTree = useCallback((root: PlanGraphNode): TreeLayout[] => {
     const layouts: TreeLayout[] = [];
-    const nodeWidth = 160;
-    const nodeHeight = 80;
-    const levelHeight = 120;
+    const nodeWidth = 200;
+    const nodeHeight = 80; // Reduced from 100 to eliminate wasted space
+    const levelHeight = 110; // Tighter spacing
     const nodeSpacing = 40;
 
     const traverse = (node: PlanGraphNode, depth: number, siblingIndex: number, siblingsCount: number) => {
       // Center nodes better by using wider spacing
       const x = (siblingIndex - (siblingsCount - 1) / 2) * (nodeWidth + nodeSpacing);
-      const y = depth * levelHeight + 50; // Add top margin
+      const y = depth * levelHeight + 50;
 
       layouts.push({ x, y, node });
 
@@ -68,8 +68,8 @@ export const QueryPlanGraph: React.FC = () => {
       return { minX: 0, maxX: 800, minY: 0, maxY: 600 };
     }
 
-    const nodeWidth = 160;
-    const nodeHeight = 80;
+    const nodeWidth = 200;
+    const nodeHeight = 80; // Updated
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 
@@ -448,9 +448,9 @@ export const QueryPlanGraph: React.FC = () => {
                   <line
                     key={`${layout.node.id}-${child.id}`}
                     x1={layout.x}
-                    y1={layout.y + 40}
+                    y1={layout.y + 40} // Updated for smaller nodes
                     x2={childLayout.x}
-                    y2={childLayout.y - 40}
+                    y2={childLayout.y - 40} // Updated for smaller nodes
                     stroke="#94a3b8"
                     strokeWidth="2"
                   />
@@ -462,19 +462,33 @@ export const QueryPlanGraph: React.FC = () => {
             {layouts.map(layout => {
               const score = getHotspotScore(layout.node, planGraph.totals);
               const isSelected = selectedNodeId === layout.node.id;
+              const node = layout.node;
+
+              // Extract information from the proper fields
+              const objectName = node.extra?.objectName || '';
+              const alias = node.extra?.alias || '';
+              const nodeType = node.extra?.nodeType || '';
+              const detail = node.extra?.detail || '';
+              const subqueryLevel = node.extra?.subqueryLevel || 0;
+              const hasActual = node.actTimeMs !== undefined || node.actRows !== undefined;
+
+              // Create meaningful display text
+              const displayName = objectName || (nodeType !== node.opcode ? nodeType : '');
+              const aliasText = alias ? ` AS ${alias}` : '';
+              const subqueryText = subqueryLevel > 0 ? ` (L${subqueryLevel})` : '';
 
               return (
                 <g key={layout.node.id}>
-                  {/* Node background */}
+                  {/* Node background - tighter */}
                   <rect
-                    x={layout.x - 80}
-                    y={layout.y - 40}
-                    width={160}
-                    height={80}
+                    x={layout.x - 100}
+                    y={layout.y - 40} // Reduced from 50
+                    width={200}
+                    height={80} // Reduced from 100
                     fill={getNodeColor(score)}
                     stroke={isSelected ? '#3b82f6' : getNodeBorderColor(score)}
                     strokeWidth={isSelected ? 3 : 2}
-                    rx={8}
+                    rx={6}
                     className="cursor-pointer hover:stroke-blue-500"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -482,40 +496,118 @@ export const QueryPlanGraph: React.FC = () => {
                     }}
                   />
 
-                  {/* Node text */}
+                  {/* Top row: Operation name + subquery level */}
                   <text
                     x={layout.x}
-                    y={layout.y - 15}
+                    y={layout.y - 22} // Adjusted
                     textAnchor="middle"
-                    className="text-sm font-medium pointer-events-none"
+                    className="text-sm font-bold pointer-events-none"
                     fill="currentColor"
-                    style={{ color: '#1f2937' }} // Force dark text for better contrast
+                    style={{ color: '#1f2937' }}
                   >
-                    {layout.node.opcode}
+                    {node.opcode}{subqueryText}
                   </text>
 
-                  {/* Stats */}
+                  {/* Second row: Object name + alias */}
+                  {displayName && (
+                    <text
+                      x={layout.x}
+                      y={layout.y - 8} // Adjusted
+                      textAnchor="middle"
+                      className="text-xs font-medium pointer-events-none"
+                      fill="currentColor"
+                      style={{ color: '#4f46e5' }}
+                    >
+                      {displayName}{aliasText}
+                    </text>
+                  )}
+
+                  {/* Third row: Rows (compact format) */}
                   <text
-                    x={layout.x}
-                    y={layout.y}
-                    textAnchor="middle"
+                    x={layout.x - 85}
+                    y={layout.y + 6} // Adjusted
+                    textAnchor="start"
                     className="text-xs pointer-events-none"
                     fill="currentColor"
-                    style={{ color: '#6b7280' }} // Force gray text
+                    style={{ color: '#6b7280' }}
                   >
-                    {layout.node.actRows ?? layout.node.estRows} rows
+                    Rows: {hasActual ? `${node.actRows || 0}` : `~${node.estRows || 0}`}
                   </text>
 
-                  {/* Time/Cost */}
+                  {/* Fourth row: Cost/Time (compact format) */}
                   <text
-                    x={layout.x}
-                    y={layout.y + 15}
-                    textAnchor="middle"
+                    x={layout.x - 85}
+                    y={layout.y + 18} // Adjusted
+                    textAnchor="start"
                     className="text-xs pointer-events-none"
                     fill="currentColor"
-                    style={{ color: '#6b7280' }} // Force gray text
+                    style={{ color: '#6b7280' }}
                   >
-                    {layout.node.actTimeMs ? `${layout.node.actTimeMs.toFixed(1)}ms` : `cost: ${layout.node.estCost}`}
+                    {hasActual && node.actTimeMs ?
+                      `Time: ${node.actTimeMs.toFixed(1)}ms` :
+                      `Cost: ${(node.estCost || 0).toFixed(1)}`
+                    }
+                  </text>
+
+                  {/* Fifth row: Estimated vs actual (when both available) - only if space */}
+                  {hasActual && (node.actRows !== node.estRows || (node.actTimeMs && node.actTimeMs > 10)) && (
+                    <text
+                      x={layout.x - 85}
+                      y={layout.y + 30} // Adjusted
+                      textAnchor="start"
+                      className="text-xs pointer-events-none"
+                      fill="currentColor"
+                      style={{ color: '#9ca3af' }}
+                    >
+                      Est: {node.estRows || 0} rows
+                    </text>
+                  )}
+
+                  {/* Operation detail (right side, top) */}
+                  {detail && detail !== node.opcode && (
+                    <text
+                      x={layout.x + 85}
+                      y={layout.y + 6} // Adjusted
+                      textAnchor="end"
+                      className="text-xs pointer-events-none"
+                      fill="currentColor"
+                      style={{ color: '#9ca3af' }}
+                    >
+                      {detail.length > 20 ? `${detail.substring(0, 17)}...` : detail}
+                    </text>
+                  )}
+
+                  {/* Performance indicator dot */}
+                  {hasActual && node.actTimeMs && node.actTimeMs > 5 && (
+                    <circle
+                      cx={layout.x + 85}
+                      cy={layout.y - 30} // Adjusted
+                      r={3}
+                      fill={node.actTimeMs > 100 ? '#ef4444' : node.actTimeMs > 25 ? '#f59e0b' : '#10b981'}
+                      className="pointer-events-none"
+                    />
+                  )}
+
+                  {/* Selection indicator */}
+                  {isSelected && (
+                    <circle
+                      cx={layout.x - 85}
+                      cy={layout.y - 30} // Adjusted
+                      r={3}
+                      fill="#3b82f6"
+                      className="pointer-events-none"
+                    />
+                  )}
+
+                  {/* Node ID badge (top left corner) */}
+                  <text
+                    x={layout.x - 90}
+                    y={layout.y - 32} // Adjusted
+                    className="text-xs font-mono pointer-events-none"
+                    fill="currentColor"
+                    style={{ color: '#9ca3af' }}
+                  >
+                    #{layout.node.id.replace('node-', '')}
                   </text>
                 </g>
               );
