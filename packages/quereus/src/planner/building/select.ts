@@ -13,6 +13,7 @@ import { MultiScope } from '../scopes/multi.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js';
 import { FilterNode } from '../nodes/filter.js';
+import { DistinctNode } from '../nodes/distinct-node.js';
 import { LimitOffsetNode } from '../nodes/limit-offset.js';
 import { LiteralNode } from '../nodes/scalar.js';
 import { AggregateNode } from '../nodes/aggregate-node.js';
@@ -415,6 +416,11 @@ export function buildSelectStmt(
 				selectContext = {...selectContext, scope: projectionOutputScope};
 			}
 		}
+	}
+
+	// Apply DISTINCT if present
+	if (stmt.distinct) {
+		input = new DistinctNode(selectScope, input);
 	}
 
 	// Plan ORDER BY clause, creating SortNode (only if not already applied before aggregation or projection)

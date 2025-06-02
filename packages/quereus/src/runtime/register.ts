@@ -20,6 +20,7 @@ import { emitProject } from './emit/project.js';
 import { emitColumnReference } from './emit/column-reference.js';
 import { emitValues, emitSingleRow } from './emit/values.js';
 import { emitFilter } from './emit/filter.js';
+import { emitDistinct } from './emit/distinct.js';
 import { emitScalarFunctionCall } from './emit/scalar-function.js';
 import { emitLimitOffset } from './emit/limit-offset.js';
 import { emitStreamAggregate } from './emit/aggregate.js';
@@ -62,6 +63,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);
 	registerEmitter(PlanNodeType.Filter, emitFilter as EmitterFunc);
 	registerEmitter(PlanNodeType.Project, emitProject as EmitterFunc);
+	registerEmitter(PlanNodeType.Distinct, emitDistinct as EmitterFunc);
 	registerEmitter(PlanNodeType.Sort, emitSort as EmitterFunc);
 	registerEmitter(PlanNodeType.LimitOffset, emitLimitOffset as EmitterFunc);
 	registerEmitter(PlanNodeType.TableFunctionCall, emitTableValuedFunctionCall as EmitterFunc);

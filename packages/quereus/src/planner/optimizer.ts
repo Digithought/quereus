@@ -6,6 +6,7 @@ import { AggregateNode } from './nodes/aggregate-node.js';
 import { StreamAggregateNode } from './nodes/stream-aggregate.js';
 import { SortNode } from './nodes/sort.js';
 import { FilterNode } from './nodes/filter.js';
+import { DistinctNode } from './nodes/distinct-node.js';
 import { SetOperationNode } from './nodes/set-operation-node.js';
 import { ProjectNode } from './nodes/project-node.js';
 import { LimitOffsetNode } from './nodes/limit-offset.js';
@@ -96,6 +97,12 @@ export class Optimizer {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
 			return new FilterNode(node.scope, optimizedSource, node.predicate);
+		}
+
+		if (node instanceof DistinctNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new DistinctNode(node.scope, optimizedSource);
 		}
 
 		if (node instanceof SetOperationNode) {
@@ -267,6 +274,7 @@ export class Optimizer {
 			PlanNodeType.TableFunctionCall,
 			PlanNodeType.Filter,
 			PlanNodeType.Project,
+			PlanNodeType.Distinct,
 			PlanNodeType.Sort,
 			PlanNodeType.LimitOffset,
 			PlanNodeType.Window,
