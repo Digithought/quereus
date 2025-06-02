@@ -170,13 +170,14 @@ export const QueryPlanGraph: React.FC = () => {
     setIsDragging(false);
   };
 
-  // Changed wheel to pan instead of zoom
+  // Fixed wheel to pan with better calculations
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
+    e.stopPropagation();
 
-    const panSpeed = 50;
-    const deltaX = e.deltaX * panSpeed / viewBox.scale;
-    const deltaY = e.deltaY * panSpeed / viewBox.scale;
+    const panSpeed = 1.5; // Reduced pan speed
+    const deltaX = e.deltaX * panSpeed;
+    const deltaY = e.deltaY * panSpeed;
 
     setViewBox(prev => ({
       ...prev,
@@ -185,14 +186,16 @@ export const QueryPlanGraph: React.FC = () => {
     }));
   };
 
-  // Double-click to zoom in, right-click to zoom out
+  // Fixed zoom event handling to prevent browser zoom
   const handleDoubleClick = (e: React.MouseEvent<SVGSVGElement>) => {
     e.preventDefault();
+    e.stopPropagation();
     handleZoom(1.5, e.clientX, e.clientY);
   };
 
   const handleContextMenu = (e: React.MouseEvent<SVGSVGElement>) => {
     e.preventDefault();
+    e.stopPropagation();
     handleZoom(0.67, e.clientX, e.clientY);
   };
 
@@ -330,7 +333,7 @@ export const QueryPlanGraph: React.FC = () => {
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
               }`}
             >
-              Est.
+              Estimated
             </button>
             <button
               onClick={() => handleFetchPlan(true)}
@@ -341,7 +344,7 @@ export const QueryPlanGraph: React.FC = () => {
               }`}
             >
               <Activity size={10} className="inline mr-1" />
-              Act.
+              Actual
             </button>
           </div>
 
