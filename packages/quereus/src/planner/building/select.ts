@@ -137,7 +137,7 @@ export function buildSelectStmt(
 		let input: RelationalPlanNode = setNode;
 
 		// Build scope for output columns
-		const setScope = new RegisteredScope(getNonParamAncestor(contextWithCTEs.scope));
+		const setScope = new RegisteredScope();
 		const attrs = input.getAttributes();
 		input.getType().columns.forEach((c: any, i: number) => {
 			const attr = attrs[i];
@@ -315,7 +315,7 @@ export function buildSelectStmt(
 
 		// Create a scope that includes the aggregate output columns
 		// This will be used for HAVING and ORDER BY after aggregation
-		const aggregateOutputScope = new RegisteredScope(getNonParamAncestor(selectScope));
+		const aggregateOutputScope = new RegisteredScope();
 		const aggregateAttributes = input.getAttributes();
 
 		// Register GROUP BY columns
@@ -402,7 +402,7 @@ export function buildSelectStmt(
 			input = new ProjectNode(selectScope, input, projections);
 
 			// Create a new scope that maps column names to the ProjectNode's output attributes
-			const projectionOutputScope = new RegisteredScope(getNonParamAncestor(selectContext.scope));
+			const projectionOutputScope = new RegisteredScope();
 			const projectionAttributes = input.getAttributes();
 			input.getType().columns.forEach((col, index) => {
 				const attr = projectionAttributes[index];
@@ -456,7 +456,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
 			fromTable = cteRefNode;
 
-			const cteScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+			// Column scope for CTE - no parent needed since it only contains column symbols
+			const cteScope = new RegisteredScope();
 			const attributes = fromTable.getAttributes();
 			fromTable.getType().columns.forEach((c, i) => {
 				const attr = attributes[i];
@@ -478,7 +479,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				// This is a view reference - expand it to the underlying SELECT statement
 				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
 
-				const viewScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+				// Column scope for view - no parent needed since it only contains column symbols
+				const viewScope = new RegisteredScope();
 				const attributes = fromTable.getAttributes();
 
 				// Use view column names if explicitly defined, otherwise use the SELECT output column names
@@ -502,7 +504,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				// This is a regular table reference
 				fromTable = buildTableScan(fromClause, parentContext);
 
-				const tableScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+				// Column scope for table - no parent needed since it only contains column symbols
+				const tableScope = new RegisteredScope();
 				const attributes = fromTable.getAttributes();
 				fromTable.getType().columns.forEach((c, i) => {
 					const attr = attributes[i];
@@ -523,7 +526,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	} else if (fromClause.type === 'functionSource') {
 		fromTable = buildTableFunctionCall(fromClause, parentContext);
 
-		const functionScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+		// Column scope for function - no parent needed since it only contains column symbols
+		const functionScope = new RegisteredScope();
 		const attributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
 			const attr = attributes[i];
@@ -544,7 +548,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		// Build the subquery as a relational plan node
 		fromTable = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
 
-		const subqueryScope = new RegisteredScope(getNonParamAncestor(parentContext.scope));
+		// Column scope for subquery - no parent needed since it only contains column symbols
+		const subqueryScope = new RegisteredScope();
 		const attributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
 			const attr = attributes[i];

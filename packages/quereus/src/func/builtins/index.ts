@@ -1,10 +1,11 @@
-import { lowerFunc, upperFunc, absFunc, roundFunc, coalesceFunc,
+import { absFunc, roundFunc, coalesceFunc,
 	nullifFunc, typeofFunc, randomFunc, randomblobFunc, iifFunc, sqrtFunc,
 	powFunc, powerFunc, floorFunc, ceilFunc, ceilingFunc,
 	clampFunc,
 	greatestFunc,
 	leastFunc,
 	chooseFunc} from './scalar.js';
+import { lowerFunc, upperFunc } from './string.js';
 import { lengthFunc, substrFunc, substringFunc, likeFunc, globFunc, trimFunc, ltrimFunc, rtrimFunc, replaceFunc,
 	instrFunc, lpadFunc, rpadFunc, reverseFunc,
 	stringConcatFunc,

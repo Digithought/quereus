@@ -50,10 +50,14 @@ export class RegisteredScope implements Scope {
 			return result;
 		}
 
-		// Don't delegate function resolution (symbolKey contains '/') to parent
-		// Functions should only be resolved in the global scope
+		// For function resolution (symbolKey contains '/'), delegate to parent if not found locally
+		// This allows CTEs and other registered scopes to inherit function resolution from global scope
 		if (symbolKey.includes('/')) {
-			return undefined;
+			const result = this.parent?.resolveSymbol(symbolKey, expression);
+			if (result && result !== Ambiguous) {
+				this.addReference(result);
+			}
+			return result;
 		}
 
 		// Delegate other symbols (columns, parameters, etc.) to parent

@@ -304,3 +304,18 @@ export const stringConcatFunc = createAggregateFunction(
 	(acc: string[]) => acc.join(',')
 );
 
+// --- lower(X) ---
+export const lowerFunc = createScalarFunction(
+	{ name: 'lower', numArgs: 1, deterministic: true },
+	(arg: SqlValue): SqlValue => {
+		return typeof arg === 'string' ? arg.toLowerCase() : null;
+	}
+);
+
+// --- upper(X) ---
+export const upperFunc = createScalarFunction(
+	{ name: 'upper', numArgs: 1, deterministic: true },
+	(arg: SqlValue): SqlValue => {
+		return typeof arg === 'string' ? arg.toUpperCase() : null;
+	}
+);

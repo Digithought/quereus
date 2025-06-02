@@ -290,11 +290,13 @@ export class Parser {
 				values.push(valueList);
 				lastConsumedToken = this.previous(); // Update after closing paren of value list
 			} while (this.match(TokenType.COMMA));
-		} else if (this.check(TokenType.SELECT)) {
+		} else if (this.check(TokenType.SELECT)) { // If current token is SELECT
 			// Handle INSERT ... SELECT
-			const selectStartToken = this.peek();
-			// Don't pass withClause to the embedded SELECT - the WITH clause applies to the INSERT statement, not the inner SELECT
-			select = this.selectStatement(selectStartToken);
+			// Consume the SELECT token, as selectStatement expects to start parsing after it.
+			// selectKeywordToken will be the actual 'SELECT' token object, used for location.
+			const selectKeywordToken = this.advance(); // Consume 'SELECT'
+			// Pass the withClause so the embedded SELECT can (via the planner) resolve CTEs defined for the INSERT.
+			select = this.selectStatement(selectKeywordToken, withClause);
 			lastConsumedToken = this.previous(); // After SELECT statement is parsed
 		} else {
 			throw this.error(this.peek(), "Expected VALUES or SELECT after INSERT.");
