@@ -23,6 +23,7 @@ export enum PlanNodeType {
   Insert = 'Insert',
   Update = 'Update',
   Delete = 'Delete',
+  ConstraintCheck = 'ConstraintCheck',
   CreateTable = 'CreateTable',
   DropTable = 'DropTable',
   CreateIndex = 'CreateIndex',

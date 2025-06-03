@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -14,6 +14,7 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
     scope: Scope,
     public readonly table: TableReferenceNode,
     public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableScanNode
+    public readonly oldRowDescriptor?: RowDescriptor, // For constraint checking
   ) {
     super(scope);
   }
@@ -45,9 +46,15 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
   }
 
   override getLogicalProperties(): Record<string, unknown> {
-    return {
+    const props: Record<string, unknown> = {
       table: this.table.tableSchema.name,
       schema: this.table.tableSchema.schemaName
     };
+
+    if (this.oldRowDescriptor) {
+      props.hasOldRowDescriptor = true;
+    }
+
+    return props;
   }
 }

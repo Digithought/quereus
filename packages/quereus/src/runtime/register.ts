@@ -35,6 +35,7 @@ import { emitWindow } from './emit/window.js';
 import { emitSequencing } from './emit/sequencing.js';
 import { emitRecursiveCTE } from './emit/recursive-cte.js';
 import { emitSetOperation } from './emit/set-operation.js';
+import { emitConstraintCheck } from './emit/constraint-check.js';
 
 let registered = false;
 
@@ -88,6 +89,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);
 	registerEmitter(PlanNodeType.Update, emitUpdate as EmitterFunc);
 	registerEmitter(PlanNodeType.Delete, emitDelete as EmitterFunc);
+	registerEmitter(PlanNodeType.ConstraintCheck, emitConstraintCheck as EmitterFunc);
 
 	// Transaction control emitters
 	registerEmitter(PlanNodeType.Transaction, emitTransaction as EmitterFunc);

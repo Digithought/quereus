@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ScalarPlanNode } from './plan-node.js';
@@ -25,6 +25,8 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     public readonly assignments: ReadonlyArray<UpdateAssignment>,
     public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableScanNode
 		public readonly onConflict?: ConflictResolution,
+    public readonly oldRowDescriptor?: RowDescriptor, // For constraint checking
+    public readonly newRowDescriptor?: RowDescriptor, // For constraint checking
   ) {
     super(scope);
   }
@@ -67,6 +69,14 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
 
     if (this.onConflict) {
       props.onConflict = this.onConflict;
+    }
+
+    if (this.oldRowDescriptor) {
+      props.hasOldRowDescriptor = true;
+    }
+
+    if (this.newRowDescriptor) {
+      props.hasNewRowDescriptor = true;
     }
 
     return props;
