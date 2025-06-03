@@ -153,7 +153,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
 						}
 						const args = funcNode.args || [];
-						const argFunctions = aggregateArgFunctions[i];
+						const argFunctions = aggregateArgFunctions[i] || []; // Add defensive check
 
 						for (let j = 0; j < args.length; j++) {
 							if (j < argFunctions.length) {
@@ -321,7 +321,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
 						}
 						const args = funcNode.args || [];
-						const argFunctions = aggregateArgFunctions[i];
+						const argFunctions = aggregateArgFunctions[i] || []; // Add defensive check
 
 						for (let j = 0; j < args.length; j++) {
 							if (j < argFunctions.length) {
@@ -402,6 +402,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		}
 		const args = funcNode.args || [];
 		for (const arg of args) {
+			if (!arg) {
+				throw new Error(`Aggregate argument is undefined for function ${funcNode.functionName}`);
+			}
 			aggregateArgInstructions.push(emitCallFromPlan(arg, ctx));
 		}
 	}

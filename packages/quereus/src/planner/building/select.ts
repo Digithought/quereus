@@ -358,9 +358,18 @@ export function buildSelectStmt(
 			input = new FilterNode(aggregateOutputScope, input, havingExpression);
 		}
 
-		// If we have additional projections (like scalar subqueries), we need a ProjectNode
-		// that projects the final SELECT list
+		// Check if we need a final projection - only if we have complex expressions
+		// that aren't just simple column references or aggregate functions
+		let needsFinalProjection = false;
 		if (projections.length > 0) {
+			// Check if any of the projections are complex expressions (not just column refs)
+			needsFinalProjection = projections.some(proj => {
+				// If it's not a simple ColumnReferenceNode, we need final projection
+				return !(proj.node instanceof ColumnReferenceNode);
+			});
+		}
+
+		if (needsFinalProjection) {
 			// Build projections for the complete SELECT list by re-processing with aggregate scope
 			const finalProjections: Projection[] = [];
 
