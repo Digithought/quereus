@@ -6,7 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import type { ColumnConstraint, TableConstraint } from '../../parser/ast.js';
+import type { RowConstraintSchema } from '../../schema/table.js';
 import { RowOp } from '../../schema/table.js';
 import { buildExpression } from '../../planner/building/expression.js';
 import { GlobalScope } from '../../planner/scopes/global.js';
@@ -23,10 +23,9 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	});
 
 	// Pre-emit CHECK constraint expressions for performance
-	// NOTE: We need to convert AST expressions to PlanNodes before emitting
-	const checkInstructions = (tableSchema.checkConstraints || [])
-		.filter((constraint: any) => shouldCheckConstraint(constraint, plan.operation))
-		.map((constraint: any) => {
+	const checkInstructions = tableSchema.checkConstraints
+		.filter((constraint: RowConstraintSchema) => shouldCheckConstraint(constraint, plan.operation))
+		.map((constraint: RowConstraintSchema) => {
 			// Build a PlanNode from the AST expression
 			// For now, use a basic global scope - in the future we might need to set up
 			// proper scoping for OLD/NEW references
@@ -99,7 +98,7 @@ async function checkConstraints(
 	plan: ConstraintCheckNode,
 	tableSchema: any,
 	row: Row,
-	checkInstructions: Array<{ constraint: any, instruction: Instruction }>
+	checkInstructions: Array<{ constraint: RowConstraintSchema, instruction: Instruction }>
 ): Promise<void> {
 	// Check NOT NULL constraints on individual columns
 	await checkNotNullConstraints(rctx, plan, tableSchema, row);
@@ -121,17 +120,11 @@ async function checkNotNullConstraints(
 		return;
 	}
 
-	// Get the row descriptor to use (NEW for INSERT/UPDATE)
-	const rowDescriptor = plan.newRowDescriptor;
-	if (!rowDescriptor) {
-		return; // No new row to check
-	}
-
 	// Check each column for NOT NULL constraint
 	for (let i = 0; i < tableSchema.columns.length; i++) {
 		const column = tableSchema.columns[i];
 		if (column.notNull) {
-			// Use column index directly since row descriptor maps attribute IDs to column positions
+			// For INSERT/UPDATE, we check the row value directly since it's the NEW value
 			const value = row[i];
 
 			if (value === null || value === undefined) {
@@ -147,14 +140,17 @@ async function checkNotNullConstraints(
 async function checkCheckConstraints(
 	rctx: RuntimeContext,
 	plan: ConstraintCheckNode,
-	checkInstructions: Array<{ constraint: any, instruction: Instruction }>
+	checkInstructions: Array<{ constraint: RowConstraintSchema, instruction: Instruction }>
 ): Promise<void> {
 	// Evaluate each CHECK constraint
 	for (const { constraint, instruction } of checkInstructions) {
 		const result = await instruction.run(rctx);
 
+		// CHECK constraint passes if result is truthy or NULL
+		// It fails only if result is false (not just falsy)
 		if (result === false) {
-			const constraintName = constraint.name || 'unnamed_constraint';
+			// Generate a proper constraint name if none was provided
+			const constraintName = constraint.name || generateDefaultConstraintName(plan.table.tableSchema, constraint);
 			throw new QuereusError(
 				`CHECK constraint failed: ${constraintName}`,
 				StatusCode.CONSTRAINT
@@ -163,12 +159,13 @@ async function checkCheckConstraints(
 	}
 }
 
-function shouldCheckConstraint(constraint: any, operation: RowOp): boolean {
-	// If no specific operations are defined, constraint applies to INSERT and UPDATE by default
-	if (!constraint.operations) {
-		return operation === RowOp.INSERT || operation === RowOp.UPDATE;
-	}
-
+function shouldCheckConstraint(constraint: RowConstraintSchema, operation: RowOp): boolean {
 	// Check if the current operation is in the constraint's operations bitmask
 	return (constraint.operations & operation) !== 0;
+}
+
+function generateDefaultConstraintName(tableSchema: any, constraint: RowConstraintSchema): string {
+	// Generate names like 'check_0', 'check_1', etc.
+	const checkIndex = tableSchema.checkConstraints.indexOf(constraint);
+	return `check_${checkIndex >= 0 ? checkIndex : 'unknown'}`;
 }

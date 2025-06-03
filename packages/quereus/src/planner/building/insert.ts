@@ -1,18 +1,20 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { InsertNode } from '../nodes/insert-node.js';
+import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildSelectStmt } from './select.js';
 import { buildWithClause } from './with.js';
 import { ValuesNode } from '../nodes/values-node.js'; // Assuming ValuesNode exists or will be created
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
 import { ProjectNode } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js'; // Assuming this will be created
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
+import { RowOp } from '../../schema/table.js';
 
 export function buildInsertStmt(
 	ctx: PlanningContext,
@@ -66,14 +68,36 @@ export function buildInsertStmt(
 		stmt.onConflict
 	);
 
+	// Wrap with constraint checking if the table has constraints
+	let resultNode: RelationalPlanNode = insertNode;
+	if (tableReference.tableSchema.checkConstraints.length > 0 ||
+			tableReference.tableSchema.columns.some(col => col.notNull)) {
+
+		// Create NEW row descriptor for INSERT - maps attribute IDs to column indices
+		const newRowDescriptor: RowDescriptor = [];
+		const insertAttributes = insertNode.getAttributes();
+		insertAttributes.forEach((attr, index) => {
+			newRowDescriptor[attr.id] = index;
+		});
+
+		resultNode = new ConstraintCheckNode(
+			ctx.scope,
+			insertNode,
+			tableReference,
+			RowOp.INSERT,
+			undefined, // No OLD row for INSERT
+			newRowDescriptor
+		);
+	}
+
   if (stmt.returning && stmt.returning.length > 0) {
     const returningProjections = stmt.returning.map(rc => {
 			// TODO: Support RETURNING *
       if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
       return { node: buildExpression(ctx, rc.expr) as ScalarPlanNode, alias: rc.alias };
     });
-    return new ProjectNode(ctx.scope, insertNode, returningProjections);
+    return new ProjectNode(ctx.scope, resultNode, returningProjections);
   }
 
-	return insertNode;
+	return resultNode;
 }

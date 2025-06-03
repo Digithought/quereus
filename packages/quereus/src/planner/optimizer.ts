@@ -13,6 +13,7 @@ import { LimitOffsetNode } from './nodes/limit-offset.js';
 import { WindowNode } from './nodes/window-node.js';
 import { InsertNode } from './nodes/insert-node.js';
 import { UpdateNode } from './nodes/update-node.js';
+import { UpdateExecutorNode } from './nodes/update-executor-node.js';
 import { DeleteNode } from './nodes/delete-node.js';
 import { ConstraintCheckNode } from './nodes/constraint-check-node.js';
 import { RowOp } from '../schema/table.js';
@@ -146,6 +147,12 @@ export class Optimizer {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
 			return new UpdateNode(node.scope, node.table, node.assignments, optimizedSource, node.onConflict, node.oldRowDescriptor, node.newRowDescriptor);
+		}
+
+		if (node instanceof UpdateExecutorNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new UpdateExecutorNode(node.scope, optimizedSource, node.table);
 		}
 
 		if (node instanceof DeleteNode) {
@@ -495,6 +502,7 @@ export class Optimizer {
 			// DML operations (only when no constraints need checking)
 			PlanNodeType.Insert,
 			PlanNodeType.Update,
+			PlanNodeType.UpdateExecutor,
 			PlanNodeType.Delete,
 			// Constraint checking
 			PlanNodeType.ConstraintCheck,

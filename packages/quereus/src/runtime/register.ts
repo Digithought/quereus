@@ -15,6 +15,7 @@ import { emitCTE } from './emit/cte.js';
 import { emitTableReference } from './emit/table-reference.js';
 import { emitInsert } from './emit/insert.js';
 import { emitUpdate } from './emit/update.js';
+import { emitUpdateExecutor } from './emit/update-executor.js';
 import { emitDelete } from './emit/delete.js';
 import { emitProject } from './emit/project.js';
 import { emitColumnReference } from './emit/column-reference.js';
@@ -88,6 +89,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.DropView, emitDropView as EmitterFunc);
 	registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);
 	registerEmitter(PlanNodeType.Update, emitUpdate as EmitterFunc);
+	registerEmitter(PlanNodeType.UpdateExecutor, emitUpdateExecutor as EmitterFunc);
 	registerEmitter(PlanNodeType.Delete, emitDelete as EmitterFunc);
 	registerEmitter(PlanNodeType.ConstraintCheck, emitConstraintCheck as EmitterFunc);
 

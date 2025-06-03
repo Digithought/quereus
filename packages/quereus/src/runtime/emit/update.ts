@@ -12,8 +12,6 @@ const errorLog = log.extend('error');
 
 export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
-	// UpdateNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
-	const isReturning = false;
 
 	// Pre-calculate assignment column indices
 	const assignmentTargetIndices = plan.assignments.map(assign => {
@@ -25,19 +23,7 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 		return tableColIdx;
 	});
 
-	// Pre-calculate primary key column indices from schema (used if sourceRow doesn't guarantee PKs first)
-	const pkColumnIndicesInSchema = tableSchema.primaryKeyDefinition.map(pkColDef => pkColDef.index);
-
-	async function* processAndUpdateRow(vtab: any, sourceRow: Row, ...assignmentValues: Array<SqlValue>): AsyncIterable<Row> {
-		// Extract primary key values from the source row
-		const keyValues: SqlValue[] = [];
-		for (const pkColIdx of pkColumnIndicesInSchema) {
-			if (pkColIdx >= sourceRow.length) {
-				throw new QuereusError(`PK column index ${pkColIdx} out of bounds for source row length ${sourceRow.length} in UPDATE on '${tableSchema.name}'.`, StatusCode.INTERNAL);
-			}
-			keyValues.push(sourceRow[pkColIdx]);
-		}
-
+	async function* processRow(sourceRow: Row, ...assignmentValues: Array<SqlValue>): AsyncIterable<Row> {
 		// Create a new row with updated values
 		const updatedRow = [...sourceRow]; // Copy the original row
 
@@ -47,37 +33,20 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 			updatedRow[targetColIdx] = assignmentValues[i];
 		}
 
-		if (isReturning) {
-			yield updatedRow; // Yield the updated row for RETURNING
-		}
-
-		// Perform the actual update via xUpdate
-		await vtab.xUpdate!('update', updatedRow, keyValues);
+		// Yield the updated row for constraint checking
+		yield updatedRow;
 	}
 
 	async function* runLogic(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentValues: Array<SqlValue>): AsyncIterable<Row> {
-		const vtab = await getVTable(ctx, tableSchema);
-
-		try {
-			for await (const row of sourceRowsIterable) {
-				for await (const returningRow of processAndUpdateRow(vtab, row, ...assignmentValues)) {
-					yield returningRow; // Only yields if RETURNING is active
-				}
+		for await (const row of sourceRowsIterable) {
+			for await (const updatedRow of processRow(row, ...assignmentValues)) {
+				yield updatedRow;
 			}
-		} finally {
-			await vtab.xDisconnect().catch((e: any) => errorLog(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
 		}
 	}
 
-	async function run(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentValues: Array<SqlValue>): Promise<AsyncIterable<Row> | SqlValue | undefined> {
-		const resultsIterable = runLogic(ctx, sourceRowsIterable, ...assignmentValues);
-		if (isReturning) {
-			return resultsIterable;
-		} else {
-			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			for await (const _ of resultsIterable) { /* Consume */ }
-			return undefined;
-		}
+	async function run(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentValues: Array<SqlValue>): Promise<AsyncIterable<Row>> {
+		return runLogic(ctx, sourceRowsIterable, ...assignmentValues);
 	}
 
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -86,6 +55,6 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 	return {
 		params: [sourceInstruction, ...assignmentValueExprs],
 		run: run as InstructionRun,
-		note: `update(${plan.table.tableSchema.name}, ${plan.assignments.length} cols)`
+		note: `updateRows(${plan.table.tableSchema.name}, ${plan.assignments.length} cols)`
 	};
 }

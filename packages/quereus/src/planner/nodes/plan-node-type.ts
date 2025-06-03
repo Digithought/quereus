@@ -22,6 +22,7 @@ export enum PlanNodeType {
   // DML/DDL Nodes
   Insert = 'Insert',
   Update = 'Update',
+  UpdateExecutor = 'UpdateExecutor',
   Delete = 'Delete',
   ConstraintCheck = 'ConstraintCheck',
   CreateTable = 'CreateTable',

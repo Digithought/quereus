@@ -1,6 +1,6 @@
 import { Schema } from './schema.js';
 import type { Database } from '../core/database.js';
-import type { TableSchema } from './table.js';
+import type { TableSchema, RowConstraintSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { QuereusError, MisuseError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
@@ -485,17 +485,25 @@ export class SchemaManager {
 			};
 		});
 
-		const checkConstraintsSchema: { name?: string; expr: AST.Expression; operations?: RowOpMask }[] = [];
+		const checkConstraintsSchema: RowConstraintSchema[] = [];
 		astColumnsToProcess.forEach(colDef => {
 			colDef.constraints?.forEach(con => {
 				if (con.type === 'check' && con.expr) {
-					checkConstraintsSchema.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
+					checkConstraintsSchema.push({
+						name: con.name,
+						expr: con.expr,
+						operations: opsToMask(con.operations)
+					});
 				}
 			});
 		});
 		(astConstraintsToProcess || []).forEach(con => {
 			if (con.type === 'check' && con.expr) {
-				checkConstraintsSchema.push({ name: con.name, expr: con.expr, operations: opsToMask(con.operations) });
+				checkConstraintsSchema.push({
+					name: con.name,
+					expr: con.expr,
+					operations: opsToMask(con.operations)
+				});
 			}
 		});
 
@@ -505,7 +513,7 @@ export class SchemaManager {
 			columns: Object.freeze(finalColumnSchemas),
 			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
 			primaryKeyDefinition: pkDefinition,
-			checkConstraints: Object.freeze(checkConstraintsSchema.map(cc => ({name: cc.name, expr: cc.expr}))),
+			checkConstraints: Object.freeze(checkConstraintsSchema),
 			isTemporary: !!stmt.isTemporary,
 			isView: false,
 			vtabModuleName: moduleName,
