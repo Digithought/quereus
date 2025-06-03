@@ -73,4 +73,6 @@ DROP TABLE expr_t;
 SELECT typeof(1 + 2), typeof(1.5 + 2), typeof('a' || 'b');
 → [{"typeof(1 + 2)":"integer","typeof(1.5 + 2)":"real","typeof('a' || 'b')":"text"}]
 
-
+-- BETWEEN
+SELECT 3 BETWEEN 2 and 6 AS IsBetwixt, 'a' between 'f' and 'z' AS NotBetwixt;
+→ [{"IsBetwixt":1,"NotBetwixt":0}]

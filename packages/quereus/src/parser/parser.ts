@@ -908,26 +908,56 @@ export class Parser {
 
 		while (this.match(
 			TokenType.LESS, TokenType.LESS_EQUAL,
-			TokenType.GREATER, TokenType.GREATER_EQUAL
+			TokenType.GREATER, TokenType.GREATER_EQUAL,
+			TokenType.BETWEEN
 		)) {
-			let operator: string;
-			switch (this.previous().type) {
-				case TokenType.LESS: operator = '<'; break;
-				case TokenType.LESS_EQUAL: operator = '<='; break;
-				case TokenType.GREATER: operator = '>'; break;
-				case TokenType.GREATER_EQUAL: operator = '>='; break;
-				default: operator = '?';
-			}
+			const operatorToken = this.previous();
 
-			const right = this.term();
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
+			if (operatorToken.type === TokenType.BETWEEN) {
+				// Parse BETWEEN expression: expr BETWEEN low AND high
+				const low = this.term();
+				this.consume(TokenType.AND, "Expected 'AND' after BETWEEN lower bound.");
+				const high = this.term();
+				const endToken = this.previous(); // End token is end of high expr
+
+				// Create a binary AND expression for the bounds
+				const boundsExpr: AST.BinaryExpr = {
+					type: 'binary',
+					operator: 'AND',
+					left: low,
+					right: high,
+					loc: _createLoc(low.loc?.start ? this.tokens.find(t => t.startOffset === low.loc!.start.offset) ?? this.peek() : this.peek(), endToken)
+				};
+
+				// Create the BETWEEN expression as a binary expression
+				expr = {
+					type: 'binary',
+					operator: 'BETWEEN',
+					left: expr,
+					right: boundsExpr,
+					loc: _createLoc(startToken, endToken),
+				};
+			} else {
+				// Handle other comparison operators
+				let operator: string;
+				switch (operatorToken.type) {
+					case TokenType.LESS: operator = '<'; break;
+					case TokenType.LESS_EQUAL: operator = '<='; break;
+					case TokenType.GREATER: operator = '>'; break;
+					case TokenType.GREATER_EQUAL: operator = '>='; break;
+					default: operator = '?';
+				}
+
+				const right = this.term();
+				const endToken = this.previous(); // End token is end of right expr
+				expr = {
+					type: 'binary',
+					operator,
+					left: expr,
+					right,
+					loc: _createLoc(startToken, endToken),
+				};
+			}
 		}
 
 		return expr;

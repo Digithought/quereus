@@ -30,6 +30,8 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 		case 'OR':
 		case 'XOR':
 			return emitLogicalOp(plan, ctx);
+		case 'BETWEEN':
+			return emitBetweenOp(plan, ctx);
 		// TODO: emitBitwise
 		default:
 			throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
@@ -227,6 +229,45 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 		params: [leftExpr, rightExpr],
 		run: run as InstructionRun,
 		note: `${plan.expression.operator}(logical)`
+	};
+}
+
+export function emitBetweenOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
+	function run(ctx: RuntimeContext, value: SqlValue, lowerBound: SqlValue, upperBound: SqlValue): SqlValue {
+		// SQL BETWEEN logic: value BETWEEN lower AND upper
+		// Equivalent to: value >= lower AND value <= upper
+		// NULL handling: if any operand is NULL, result is NULL
+		if (value === null || lowerBound === null || upperBound === null) {
+			return null;
+		}
+
+		// Use compareSqlValues for proper SQL comparison semantics
+		const lowerResult = compareSqlValues(value, lowerBound);
+		const upperResult = compareSqlValues(value, upperBound);
+
+		// value >= lowerBound AND value <= upperBound
+		return (lowerResult >= 0 && upperResult <= 0) ? 1 : 0;
+	}
+
+	const valueExpr = emitPlanNode(plan.left, ctx);
+
+	// The right side should be an AND expression with lower and upper bounds
+	const rightNode = plan.right;
+	if (rightNode.nodeType !== 'BinaryOp') {
+		throw new QuereusError(`Expected binary AND expression for BETWEEN bounds`, StatusCode.INTERNAL);
+	}
+	const rightBinaryNode = rightNode as BinaryOpNode;
+	if (rightBinaryNode.expression.operator !== 'AND') {
+		throw new QuereusError(`Expected AND operator for BETWEEN bounds, got ${rightBinaryNode.expression.operator}`, StatusCode.INTERNAL);
+	}
+
+	const lowerExpr = emitPlanNode(rightBinaryNode.left, ctx);
+	const upperExpr = emitPlanNode(rightBinaryNode.right, ctx);
+
+	return {
+		params: [valueExpr, lowerExpr, upperExpr],
+		run: run as InstructionRun,
+		note: 'BETWEEN(between)'
 	};
 }
 
