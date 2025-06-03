@@ -7,8 +7,6 @@ import type { EmissionContext } from '../emission-context.js';
 import { compareSqlValues } from '../../util/comparison.js';
 
 export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruction {
-	const sourceInstruction = emitPlanNode(plan.source, ctx);
-
 	// Create row descriptor for source attributes
 	const sourceRowDescriptor: RowDescriptor = [];
 	const sourceAttributes = plan.source.getAttributes();
@@ -49,6 +47,8 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 			}
 		}
 	}
+
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	return {
 		params: [sourceInstruction],

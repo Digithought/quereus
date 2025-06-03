@@ -202,10 +202,6 @@ export function buildSelectStmt(
 		input = new FilterNode(selectScope, input, whereExpression);
 	}
 
-	// TODO: Plan GROUP BY and HAVING clauses, creating AggregateNode
-
-	// TODO: inject a DistinctPlanNode if DISTINCT is present
-
 	// Build projections based on the SELECT list
 	const projections: Projection[] = [];
 	const aggregates: { expression: ScalarPlanNode; alias: string }[] = [];

@@ -19,7 +19,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
     case 'literal':
       return new LiteralNode(ctx.scope, expr);
     case 'column':
-      const colResolution = resolveColumn(ctx.scope, expr, 'main');
+      const colResolution = resolveColumn(ctx.scope, expr);
       if (!colResolution || colResolution === Ambiguous) {
         throw new QuereusError(`Column not found: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
@@ -36,17 +36,6 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
     case 'binary':
       const left = buildExpression(ctx, expr.left, allowAggregates);
       const right = buildExpression(ctx, expr.right, allowAggregates);
-      if (expr.operator.toUpperCase() === 'IN' && expr.right.type === 'subquery') {
-          const subqueryPlan = buildSelectStmt(ctx, expr.right.query);
-          if (subqueryPlan.getType().typeClass !== 'relation') {
-              throw new QuereusError('IN subquery must produce a relation', StatusCode.ERROR);
-          }
-          // TODO: Check column count once type system is fixed
-          // if (subqueryPlan.getType().columns.length !== 1) {
-          //     throw new QuereusError('IN subquery must select exactly one column', StatusCode.ERROR);
-          // }
-          throw new QuereusError("IN (SELECT ...) not fully implemented in buildExpression yet", StatusCode.UNSUPPORTED);
-      }
       return new BinaryOpNode(ctx.scope, expr, left, right);
     case 'case':
       // Build base expression if present
@@ -145,9 +134,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
       } else {
         // Regular scalar function
         const args = expr.args.map(arg => buildExpression(ctx, arg, allowAggregates));
-        // TODO: Fix function return type resolution
-        const resolvedReturnType: ScalarType = { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true };
-        return new ScalarFunctionCallNode(ctx.scope, expr, resolvedReturnType, args);
+        return new ScalarFunctionCallNode(ctx.scope, expr, functionSchema.returnType, args);
       }
     case 'subquery':
        // For scalar subqueries, create a context that allows correlation
@@ -155,10 +142,10 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        const subqueryContext = { ...ctx };
        const subqueryPlan = buildSelectStmt(subqueryContext, expr.query);
        if (subqueryPlan.getType().typeClass !== 'relation') {
-         throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR);
+         throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
        return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
     default:
-      throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED);
+      throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED, undefined, expr.loc?.start.line, expr.loc?.start.column);
   }
 }

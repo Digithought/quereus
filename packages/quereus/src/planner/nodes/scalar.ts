@@ -120,6 +120,7 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 			case '>=':
 			case 'IS':
 			case 'IS NOT':
+			case 'IN':
 				datatype = SqlDataType.INTEGER;
 				break;
 			case '||':

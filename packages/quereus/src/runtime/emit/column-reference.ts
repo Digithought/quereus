@@ -20,7 +20,10 @@ export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionCont
 
 		throw new QuereusError(
 			`No row context found for column ${plan.expression.name} (attr#${plan.attributeId}). The column reference must be evaluated within the context of its source relation.`,
-			StatusCode.INTERNAL
+			StatusCode.ERROR,
+			undefined,
+			plan.expression.loc?.start.line,
+			plan.expression.loc?.start.column
 		);
 	}
 

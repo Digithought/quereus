@@ -27,6 +27,7 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
     const sourceType = this.source.getType();
     return {
       ...sourceType,
+			// TODO: ensure that formed key is represented in the type
       isSet: true // DISTINCT guarantees uniqueness
     };
   }

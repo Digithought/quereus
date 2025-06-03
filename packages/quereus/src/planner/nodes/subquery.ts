@@ -51,7 +51,7 @@ export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
 	override getLogicalProperties(): Record<string, unknown> {
 		return {
 			subqueryType: 'scalar',
-			resultType: formatScalarType(this.getType())
+			resultType: formatScalarType(this.getType()),
 		};
 	}
 }
