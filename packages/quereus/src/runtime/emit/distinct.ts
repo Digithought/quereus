@@ -1,49 +1,46 @@
 import type { DistinctNode } from '../../planner/nodes/distinct-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import { BTree } from 'inheritree';
+
+/**
+ * Compares two rows for SQL DISTINCT semantics.
+ * Returns -1, 0, or 1 for BTree ordering.
+ */
+function compareRows(a: Row, b: Row): number {
+	// Let's assume correct rows
+	// if (a.length !== b.length) {
+	// 	return a.length - b.length;
+	// }
+
+	// Compare each value using SQL semantics
+	for (let i = 0; i < a.length; i++) {
+		const comparison = compareSqlValues(a[i], b[i]);
+		if (comparison !== 0) {
+			return comparison;
+		}
+	}
+	return 0;
+}
 
 export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruction {
-	// Create row descriptor for source attributes
-	const sourceRowDescriptor: RowDescriptor = [];
-	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
-
 	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>): AsyncIterable<Row> {
-		const seenRows: Row[] = [];
-
-		// Helper function to compare two rows for equality using SQL semantics
-		function rowsAreEqual(row1: Row, row2: Row): boolean {
-			if (row1.length !== row2.length) return false;
-
-			for (let i = 0; i < row1.length; i++) {
-				if (compareSqlValues(row1[i], row2[i]) !== 0) {
-					return false;
-				}
-			}
-			return true;
-		}
+		// Create BTree to efficiently track distinct rows
+		const distinctTree = new BTree<Row, Row>(
+			(row: Row) => row, // Identity function - use row as its own key
+			compareRows
+		);
 
 		for await (const sourceRow of source) {
-			// Set up context for this row using row descriptor
-			ctx.context.set(sourceRowDescriptor, () => sourceRow);
+			// Check if we've seen this row before using BTree lookup
+			const newPath = distinctTree.insert(sourceRow);
 
-			try {
-				// Check if we've seen this row before using SQL comparison semantics
-				const isDuplicate = seenRows.some(seenRow => rowsAreEqual(sourceRow, seenRow));
-
-				if (!isDuplicate) {
-					seenRows.push([...sourceRow]); // Store a copy to avoid mutation issues
-					yield sourceRow;
-				}
-			} finally {
-				// Clean up context for this row
-				ctx.context.delete(sourceRowDescriptor);
+			if (newPath.on) {
+				// This is a new distinct row - add it to our tracking and yield it
+				yield sourceRow;
 			}
 		}
 	}
@@ -53,6 +50,6 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 	return {
 		params: [sourceInstruction],
 		run: run as any,
-		note: 'distinct'
+		note: 'distinct (btree-optimized)'
 	};
 }
