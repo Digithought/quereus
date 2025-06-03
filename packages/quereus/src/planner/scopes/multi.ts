@@ -23,19 +23,19 @@ export class MultiScope extends BaseScope {
 	}
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
-		let running: PlanNode | undefined;
+		// In SQL, inner scopes shadow outer scopes for unqualified names
+		// Return the first match, don't treat multiple matches as ambiguous
 		for (const scope of this.scopes) {
 			const result = scope.resolveSymbol(symbolKey, expression);
-			if (result === Ambiguous || (result && running)) {
+			if (result === Ambiguous) {
 				return Ambiguous;
 			}
 			if (result) {
-				running = result;
+				this.addReference(result);
+				return result;
 			}
 		}
-		if (running) {
-			this.addReference(running);
-		}
-		return running;
+		return undefined;
 	}
 }
+

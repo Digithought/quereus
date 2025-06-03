@@ -41,31 +41,16 @@ export class RegisteredScope implements Scope {
 	}
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
-		const directFactory = this.registeredSymbols.get(symbolKey.toLowerCase());
-		if (directFactory) {
-			const result = directFactory(expression, this);
-			if (result) {
-				this.addReference(result);
-			}
-			return result;
+		const reference = this.registeredSymbols.get(symbolKey.toLowerCase());
+		if (reference) {
+			const node = reference(expression, this);
+			this.addReference(node);
+			return node;
 		}
-
-		// For function resolution (symbolKey contains '/'), delegate to parent if not found locally
-		// This allows CTEs and other registered scopes to inherit function resolution from global scope
-		if (symbolKey.includes('/')) {
-			const result = this.parent?.resolveSymbol(symbolKey, expression);
-			if (result && result !== Ambiguous) {
-				this.addReference(result);
-			}
-			return result;
+		if (this.parent) {
+			return this.parent.resolveSymbol(symbolKey, expression);
 		}
-
-		// Delegate other symbols (columns, parameters, etc.) to parent
-		const result = this.parent?.resolveSymbol(symbolKey, expression);
-		if (result && result !== Ambiguous) {
-			this.addReference(result);
-		}
-		return result;
+		return undefined;
 	}
 
 	/**

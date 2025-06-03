@@ -1204,11 +1204,24 @@ export class Parser {
 			}
 		}
 
-		// Parenthesized expression
+		// Parenthesized expression or scalar subquery
 		if (this.match(TokenType.LPAREN)) {
-			const expr = this.expression();
-			this.consume(TokenType.RPAREN, "Expected ')' after expression.");
-			return expr;
+			// Look ahead to see if this is a scalar subquery (SELECT ...)
+			if (this.check(TokenType.SELECT)) {
+				const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in subquery.");
+				const subquery = this.selectStatement(selectToken);
+				this.consume(TokenType.RPAREN, "Expected ')' after subquery.");
+				return {
+					type: 'subquery',
+					query: subquery,
+					loc: _createLoc(startToken, this.previous())
+				};
+			} else {
+				// Regular parenthesized expression
+				const expr = this.expression();
+				this.consume(TokenType.RPAREN, "Expected ')' after expression.");
+				return expr;
+			}
 		}
 
 		throw this.error(this.peek(), "Expected expression.");

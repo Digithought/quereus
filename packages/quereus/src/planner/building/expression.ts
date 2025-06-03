@@ -4,7 +4,8 @@ import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, Collate
 import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
-import type { ScalarPlanNode } from '../nodes/plan-node.js';
+import { ScalarSubqueryNode } from '../nodes/subquery.js';
+import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, SqlDataType } from '../../common/types.js';
 import type { ScalarType } from '../../common/datatype.js';
@@ -148,6 +149,15 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
         const resolvedReturnType: ScalarType = { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true };
         return new ScalarFunctionCallNode(ctx.scope, expr, resolvedReturnType, args);
       }
+    case 'subquery':
+       // For scalar subqueries, create a context that allows correlation
+       // The buildSelectStmt will create the proper scope chain with subquery tables taking precedence
+       const subqueryContext = { ...ctx };
+       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query);
+       if (subqueryPlan.getType().typeClass !== 'relation') {
+         throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR);
+       }
+       return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
     default:
       throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED);
   }

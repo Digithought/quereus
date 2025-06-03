@@ -4,7 +4,7 @@ import { emitBinaryOp } from "./emit/binary.js";
 import { emitUnaryOp } from "./emit/unary.js";
 import { emitLiteral } from "./emit/literal.js";
 import { emitSeqScan } from "./emit/scan.js";
-import { emitIn } from "./emit/subquery.js";
+import { emitIn, emitScalarSubquery } from "./emit/subquery.js";
 import { emitBlock } from "./emit/block.js";
 import { emitParameterReference } from './emit/parameter.js';
 import { emitCreateTable } from './emit/create-table.js';
@@ -54,6 +54,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.CaseExpr, emitCaseExpr as EmitterFunc);
 	registerEmitter(PlanNodeType.Cast, emitCast as EmitterFunc);
 	registerEmitter(PlanNodeType.Collate, emitCollate as EmitterFunc);
+	registerEmitter(PlanNodeType.ScalarSubquery, emitScalarSubquery as EmitterFunc);
 
 	// Relational emitters (mix of logical and physical for now)
 	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);
@@ -75,6 +76,8 @@ export function registerEmitters() {
 
 	// Physical aggregate emitters
 	registerEmitter(PlanNodeType.StreamAggregate, emitStreamAggregate as EmitterFunc);
+	// For now, logical aggregates also use the stream aggregate emitter
+	registerEmitter(PlanNodeType.Aggregate, emitStreamAggregate as EmitterFunc);
 	// TODO: registerEmitter(PlanNodeType.HashAggregate, emitHashAggregate as EmitterFunc);
 
 	// DML/DDL emitters

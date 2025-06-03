@@ -33,17 +33,41 @@ export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema:
 	const tableQualifier = exp.table;
 	const columnName = exp.name;
 
-	const symbolKey = tableQualifier
-		? schemaQualifier
-			? `${schemaQualifier}.${tableQualifier}.${columnName}`
-			: `${selectedSchema}.${tableQualifier}.${columnName}`
-		: columnName;
+	if (tableQualifier) {
+		if (schemaQualifier) {
+			// Fully qualified: schema.table.column
+			const symbolKey = `${schemaQualifier}.${tableQualifier}.${columnName}`;
+			const result = scope.resolveSymbol(symbolKey, exp);
+			if (result === Ambiguous || result instanceof ColumnReferenceNode) {
+				return result;
+			}
+			throw new QuereusError(`${symbolKey} isn't a column`, StatusCode.ERROR);
+		} else {
+			// Table qualified: table.column
+			// Try without schema first, then with schema if that fails
+			const unqualifiedKey = `${tableQualifier}.${columnName}`;
+			const result = scope.resolveSymbol(unqualifiedKey, exp);
+			if (result === Ambiguous || result instanceof ColumnReferenceNode) {
+				return result;
+			}
 
-	const result = scope.resolveSymbol(symbolKey, exp);
-	if (result === Ambiguous || result instanceof ColumnReferenceNode) {
-		return result;
+			// If unqualified fails, try with the selected schema
+			const qualifiedKey = `${selectedSchema}.${tableQualifier}.${columnName}`;
+			const qualifiedResult = scope.resolveSymbol(qualifiedKey, exp);
+			if (qualifiedResult === Ambiguous || qualifiedResult instanceof ColumnReferenceNode) {
+				return qualifiedResult;
+			}
+
+			throw new QuereusError(`${unqualifiedKey} isn't a column`, StatusCode.ERROR);
+		}
+	} else {
+		// Unqualified: column
+		const result = scope.resolveSymbol(columnName, exp);
+		if (result === Ambiguous || result instanceof ColumnReferenceNode) {
+			return result;
+		}
+		throw new QuereusError(`Column not found: ${columnName}`, StatusCode.ERROR);
 	}
-	throw new QuereusError(`${symbolKey} isn't a column`, StatusCode.ERROR);
 }
 
 export function resolveParameter(scope: Scope, exp: AST.ParameterExpr): ParameterReferenceNode | typeof Ambiguous | undefined {

@@ -8,6 +8,54 @@ import { compareSqlValues } from "../../util/comparison.js";
 import type { Expression } from "../../parser/ast.js";
 import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
 
+export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
+	override readonly nodeType = PlanNodeType.ScalarSubquery;
+
+	constructor(
+		readonly scope: Scope,
+		readonly expression: Expression, // The original SubqueryExpr AST node
+		readonly subquery: RelationalPlanNode,
+	) {
+		super(scope);
+	}
+
+	getType(): ScalarType {
+		// Scalar subqueries produce a single value, type depends on the subquery's first column
+		const subqueryType = this.subquery.getType();
+		if (subqueryType.typeClass === 'relation' && subqueryType.columns.length > 0) {
+			const firstColumn = subqueryType.columns[0];
+			return firstColumn.type;
+		}
+		// Fallback to nullable BLOB if we can't determine type
+		return {
+			typeClass: 'scalar',
+			affinity: SqlDataType.BLOB,
+			nullable: true,
+			isReadOnly: true,
+			datatype: SqlDataType.BLOB,
+		};
+	}
+
+	getChildren(): readonly [] {
+		return [];
+	}
+
+	getRelations(): readonly [RelationalPlanNode] {
+		return [this.subquery];
+	}
+
+	override toString(): string {
+		return `(subquery)`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			subqueryType: 'scalar',
+			resultType: formatScalarType(this.getType())
+		};
+	}
+}
+
 export class InNode extends PlanNode implements ScalarPlanNode {
 	override readonly nodeType = PlanNodeType.In;
 

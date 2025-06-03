@@ -55,6 +55,7 @@ export enum PlanNodeType {
   WindowFunctionCall = 'WindowFunctionCall',
   Between = 'Between',
   IsNull = 'IsNull',
+  ScalarSubquery = 'ScalarSubquery',
   TableFunctionReference = 'TableFunctionReference',
 
   // Special relational nodes

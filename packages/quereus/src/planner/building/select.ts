@@ -188,8 +188,9 @@ export function buildSelectStmt(
 
 	// Phase 2: Create the main scope for this SELECT statement.
   // This scope sees the parent scope and the column scopes from the FROM clause.
+  // Column scopes (FROM clause) should have higher precedence than parent scope for unqualified names
   const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
-  const selectScope = new MultiScope([contextWithCTEs.scope, ...columnScopes]);
+  const selectScope = new MultiScope([...columnScopes, contextWithCTEs.scope]);
 	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
 	let selectContext: PlanningContext = {...contextWithCTEs, scope: selectScope};
 
@@ -316,7 +317,8 @@ export function buildSelectStmt(
 
 		// Create a scope that includes the aggregate output columns
 		// This will be used for HAVING and ORDER BY after aggregation
-		const aggregateOutputScope = new RegisteredScope();
+		// It should inherit from the original scope to allow table resolution for subqueries
+		const aggregateOutputScope = new RegisteredScope(selectScope);
 		const aggregateAttributes = input.getAttributes();
 
 		// Register GROUP BY columns
@@ -360,6 +362,28 @@ export function buildSelectStmt(
 			input = new FilterNode(aggregateOutputScope, input, havingExpression);
 		}
 
+		// If we have additional projections (like scalar subqueries), we need a ProjectNode
+		// that projects the final SELECT list
+		if (projections.length > 0) {
+			// Build projections for the complete SELECT list by re-processing with aggregate scope
+			const finalProjections: Projection[] = [];
+
+			for (const column of stmt.columns) {
+				if (column.type === 'column') {
+					// Re-build the expression in the context of the aggregate output
+					const finalContext: PlanningContext = { ...selectContext, scope: aggregateOutputScope };
+					const scalarNode = buildExpression(finalContext, column.expr, true);
+
+					finalProjections.push({
+						node: scalarNode,
+						alias: column.alias || (column.expr.type === 'column' ? column.expr.name : undefined)
+					});
+				}
+			}
+
+			input = new ProjectNode(selectScope, input, finalProjections);
+		}
+
 		// Update the select context to use the aggregate output scope for ORDER BY
 		selectContext = {...selectContext, scope: aggregateOutputScope};
 	} else {
@@ -368,7 +392,7 @@ export function buildSelectStmt(
 			// Check if ORDER BY should be applied before projection
 			let needsPreProjectionSort = false;
 			if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
-				// Check if any ORDER BY column is not in the projection output
+				// Check if any ORDER BY column is not in the projection aliases
 				for (const orderByClause of stmt.orderBy) {
 					if (orderByClause.expr.type === 'column') {
 						const orderColumn = orderByClause.expr.name.toLowerCase();

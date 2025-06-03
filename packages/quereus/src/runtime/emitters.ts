@@ -21,7 +21,7 @@ export function registerEmitter(nodeType: PlanNodeType, emitter: EmitterFunc): v
 export function emitPlanNode(plan: PlanNode, ctx: EmissionContext): Instruction {
 	const emitter = emitters.get(plan.nodeType);
 	if (!emitter) {
-		throw new QuereusError(`No emitter registered for plan node type: ${plan.nodeType}`, StatusCode.INTERNAL);
+		throw new QuereusError(`No emitter registered for ${plan.nodeType}`, StatusCode.ERROR);
 	}
 	return emitter(plan, ctx);
 }

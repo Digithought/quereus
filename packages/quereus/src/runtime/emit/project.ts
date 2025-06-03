@@ -8,7 +8,9 @@ import type { EmissionContext } from '../emission-context.js';
 
 export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
-	const projectionFuncs = plan.projections.map(projection => emitCallFromPlan(projection.node, ctx));
+	const projectionFuncs = plan.projections.map((projection, index) => {
+		return emitCallFromPlan(projection.node, ctx);
+	});
 
 	// Create row descriptor for source attributes
 	const sourceRowDescriptor: RowDescriptor = [];

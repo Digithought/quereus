@@ -37,17 +37,14 @@ export class AliasedScope extends BaseScope {
 				return this.parent.resolveSymbol(parts.join('.'), expression);
 			}
 		}
-		// Handle unqualified symbols like "j.value"
+		// Handle qualified symbols like "j.value"
 		else if (parts.length === 2 && parts[0].toLowerCase() === this._alias) {
-			if (this._parentName === '') {
-				// For table-valued functions, just use the column name
-				return this.parent.resolveSymbol(parts[1], expression);
-			} else {
-				parts[0] = this._parentName;
-				return this.parent.resolveSymbol(parts.join('.'), expression);
-			}
+			// For both cases (table-valued functions and regular tables),
+			// just use the column name since the parent scope knows what table it represents
+			return this.parent.resolveSymbol(parts[1], expression);
 		}
 
+		// For all other symbols (including unqualified columns), delegate to parent
 		return this.parent.resolveSymbol(symbolKey, expression);
 	}
 }
