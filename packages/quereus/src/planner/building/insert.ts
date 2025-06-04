@@ -61,10 +61,10 @@ export function buildInsertStmt(
 						// This column is omitted - use default value or NULL
 						let defaultNode: ScalarPlanNode;
 						if (tableColumn.defaultValue !== undefined) {
-							// Use default value (for now just NULL if it's an expression)
+							// Use default value
 							if (typeof tableColumn.defaultValue === 'object' && tableColumn.defaultValue !== null && 'type' in tableColumn.defaultValue) {
-								// TODO: Default value expression - not yet supported, use NULL for now
-								defaultNode = buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode;
+								// It's an AST.Expression - build it into a plan node
+								defaultNode = buildExpression(ctx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
 							} else {
 								// Literal default value
 								defaultNode = buildExpression(ctx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
