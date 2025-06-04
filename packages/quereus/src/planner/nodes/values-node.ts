@@ -18,6 +18,8 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
     scope: Scope,
     // Each inner array is a row, consisting of ScalarPlanNodes for each cell.
     public readonly rows: ReadonlyArray<ReadonlyArray<ScalarPlanNode>>,
+    // Optional column names - if not provided, defaults to column_0, column_1, etc.
+    public readonly columnNames?: ReadonlyArray<string>,
     estimatedCostOverride?: number
   ) {
     super(scope, estimatedCostOverride ?? rows.length * 0.01); // Small cost per row
@@ -41,7 +43,7 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
     // Infer column types from the first row
     const firstRow = this.rows[0];
     const columns = firstRow.map((expr, index) => ({
-      name: `column_${index}`,
+      name: this.columnNames?.[index] ?? `column_${index}`,
       type: expr.getType(),
       generated: false,
     }));
@@ -65,7 +67,7 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
     const firstRow = this.rows[0];
     return firstRow.map((expr, index) => ({
       id: PlanNode.nextAttrId(),
-      name: `column_${index}`,
+      name: this.columnNames?.[index] ?? `column_${index}`,
       type: expr.getType(),
       sourceRelation: `${this.nodeType}:${this.id}`
     }));

@@ -148,11 +148,15 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 		case '>':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL > anything -> NULL
-				if (v1 === null || v2 === null) return null;
+				if (v1 === null || v2 === null) {
+					return null;
+				}
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValues(coercedV1, coercedV2, collationName) > 0 ? 1 : 0;
+				const comparisonResult = compareSqlValues(coercedV1, coercedV2, collationName);
+				const finalResult = comparisonResult > 0 ? 1 : 0;
+				return finalResult;
 			};
 			break;
 		case '>=':

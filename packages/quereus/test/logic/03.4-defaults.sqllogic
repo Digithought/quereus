@@ -1,0 +1,33 @@
+-- Test default value expressions
+CREATE TABLE t_defaults(
+  id INTEGER PRIMARY KEY,
+  name TEXT DEFAULT 'unnamed',
+  created_timestamp INTEGER DEFAULT (1000 + 500),
+  computed TEXT DEFAULT ('prefix_' || 'suffix')
+);
+
+-- Insert with all columns - should not use defaults
+INSERT INTO t_defaults VALUES (1, 'test1', 9999, 'custom');
+SELECT * FROM t_defaults WHERE id = 1;
+→ [{"id":1,"name":"test1","created_timestamp":9999,"computed":"custom"}]
+
+-- Insert with some columns omitted - should use default expressions
+INSERT INTO t_defaults (id, name) VALUES (2, 'test2');
+SELECT * FROM t_defaults WHERE id = 2;
+→ [{"id":2,"name":"test2","created_timestamp":1500,"computed":"prefix_suffix"}]
+
+-- Insert with different columns omitted
+INSERT INTO t_defaults (id, created_timestamp) VALUES (3, 2000);
+SELECT * FROM t_defaults WHERE id = 3;
+→ [{"id":3,"name":"unnamed","created_timestamp":2000,"computed":"prefix_suffix"}]
+
+-- Insert with only primary key - should use all defaults
+INSERT INTO t_defaults (id) VALUES (4);
+SELECT * FROM t_defaults WHERE id = 4;
+→ [{"id":4,"name":"unnamed","created_timestamp":1500,"computed":"prefix_suffix"}]
+
+-- Verify all rows
+SELECT * FROM t_defaults ORDER BY id;
+→ [{"id":1,"name":"test1","created_timestamp":9999,"computed":"custom"},{"id":2,"name":"test2","created_timestamp":1500,"computed":"prefix_suffix"},{"id":3,"name":"unnamed","created_timestamp":2000,"computed":"prefix_suffix"},{"id":4,"name":"unnamed","created_timestamp":1500,"computed":"prefix_suffix"}]
+
+DROP TABLE t_defaults;

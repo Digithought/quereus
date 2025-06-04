@@ -73,6 +73,10 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
             throw new QuereusError(`Default value expressions not yet supported for column '${col.name}'`, StatusCode.UNSUPPORTED);
           }
           valuesForXUpdate[idx + 1] = col.defaultValue as SqlValue;
+        } else {
+          // Explicitly set NULL for omitted columns without defaults
+          // This ensures NOT NULL constraint checking can catch violations
+          valuesForXUpdate[idx + 1] = null;
         }
       }
     });

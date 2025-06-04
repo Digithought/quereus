@@ -26,7 +26,7 @@ export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionCont
 				const row = rowGetter();
 				if (Array.isArray(row) && columnIndex < row.length) {
 					const value = row[columnIndex];
-					log('Successfully resolved %s (attr#%d) to value: %O', plan.expression.name, plan.attributeId, value);
+					log('Successfully resolved %s (attr#%d) to value: %O from row: %O at index %d', plan.expression.name, plan.attributeId, value, row, columnIndex);
 					return value;
 				}
 			}
