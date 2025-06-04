@@ -2,7 +2,7 @@
 
 PRAGMA default_vtab_module='memory';
 
-CREATE TABLE expr_t (i INTEGER, n NUMERIC, t TEXT, b BLOB);
+CREATE TABLE expr_t (i INTEGER PRIMARY KEY, n NUMERIC, t TEXT, b BLOB);
 INSERT INTO expr_t VALUES (1, 10.5, 'hello', x'01ff'), (2, -5, 'world', x'02'), (3, 0, null, null);
 -- No expected output for setup
 

@@ -20,6 +20,7 @@ export interface PrimaryKeyFunctions {
 export function createPrimaryKeyFunctions(schema: TableSchema): PrimaryKeyFunctions {
 	const pkDefinition = schema.primaryKeyDefinition
 		// Use all columns if no primary key is defined (that's different from an empty primary key)
+		// This is an important design change and documented deviation from SQLite behavior, and not something we want to change
 		?? schema.columns.map((col, index) => ({ index, collation: col.collation || 'BINARY' }));
 
 	if (pkDefinition.length === 0) {
