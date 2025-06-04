@@ -8,41 +8,46 @@ SELECT op FROM query_plan('SELECT 1 + 1');
 SELECT description FROM scheduler_program('SELECT 1');
 → [{"description":"single_row"},{"description":"callback(literal(1))"},{"description":"literal(1)"},{"description":"project(1 cols)"},{"description":"block(1 stmts)"}]
 
--- Basic json_each (just test it runs for now)
+-- Basic json_each - returns all elements including root and nested
 SELECT key, value FROM json_each('[10, 20, {"a": 30}]');
+→ [{"key":null,"value":"[10,20,{\"a\":30}]"},{"key":0,"value":10},{"key":1,"value":20},{"key":2,"value":"{\"a\":30}"},{"key":"a","value":30}]
 
--- Basic json_tree (just test it runs for now)
+-- Basic json_tree - returns hierarchical tree view
 SELECT id, fullkey, type, atom FROM json_tree('{"a": [1, 2], "b": true}');
+→ [{"id":1,"fullkey":"","type":"object","atom":null},{"id":2,"fullkey":".a","type":"array","atom":null},{"id":3,"fullkey":".a[0]","type":"integer","atom":1},{"id":4,"fullkey":".a[1]","type":"integer","atom":2},{"id":5,"fullkey":".b","type":"true","atom":true}]
 
--- TVF with alias (just test it runs for now)
+-- TVF with alias - filter for values > 5
 SELECT j.key FROM json_each('[5,6]') AS j WHERE j.value > 5;
+→ [{"key":null},{"key":1}]
 
--- TVF with root path (just test it runs for now)
+-- TVF with root path - extract data array
 SELECT key, value FROM json_each('{"data": [1, 2]}', '$.data');
+→ [{"key":null,"value":"[1,2]"},{"key":0,"value":1},{"key":1,"value":2}]
 
--- TVF with root path (json_tree) (just test it runs for now)
+-- TVF with root path (json_tree) - extract nested object
 SELECT fullkey, value FROM json_tree('{"a": 1, "nested": {"b": 2}}', '$.nested');
+→ [{"fullkey":"","value":"{\"b\":2}"},{"fullkey":".b","value":2}]
 
 -- Error: Invalid JSON
 SELECT * FROM json_each('invalid json');
--- error: Error: Invalid JSON provided to json_each
+-- error: Invalid JSON provided to json_each
 
 -- Error: Function not found
 SELECT * FROM non_existent_tvf(1);
--- error: Error: Table-valued function not found: non_existent_tvf/1
+-- error: Function not found/ambiguous: non_existent_tvf/1
 
 -- Error: Incorrect number of arguments (json_each - no args)
 SELECT * FROM json_each();
--- error: Error: json_each requires 1 or 2 arguments (jsonSource, [rootPath])
+-- error: json_each requires 1 or 2 arguments (jsonSource, [rootPath])
 
 -- Error: Incorrect number of arguments (json_each - too many args)
 SELECT * FROM json_each('[]', '$', 'extra');
--- error: Error: json_each requires 1 or 2 arguments (jsonSource, [rootPath])
+-- error: json_each requires 1 or 2 arguments (jsonSource, [rootPath])
 
 -- Error: Incorrect number of arguments (json_tree - no args)
 SELECT * FROM json_tree();
--- error: Error: json_tree requires 1 or 2 arguments (jsonSource, [rootPath])
+-- error: json_tree requires 1 or 2 arguments (jsonSource, [rootPath])
 
 -- Error: Incorrect number of arguments (json_tree - too many args)
 SELECT * FROM json_tree('{}', '$', 'extra');
--- error: Error: json_tree requires 1 or 2 arguments (jsonSource, [rootPath])
+-- error: json_tree requires 1 or 2 arguments (jsonSource, [rootPath])
