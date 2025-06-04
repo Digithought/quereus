@@ -11,6 +11,13 @@ import { SetOperationNode } from './nodes/set-operation-node.js';
 import { ProjectNode } from './nodes/project-node.js';
 import { LimitOffsetNode } from './nodes/limit-offset.js';
 import { WindowNode } from './nodes/window-node.js';
+import { InsertNode } from './nodes/insert-node.js';
+import { UpdateNode } from './nodes/update-node.js';
+import { UpdateExecutorNode } from './nodes/update-executor-node.js';
+import { DeleteNode } from './nodes/delete-node.js';
+import { ConstraintCheckNode } from './nodes/constraint-check-node.js';
+import { RowOp } from '../schema/table.js';
+import type { RowDescriptor } from './nodes/plan-node.js';
 import type { Scope } from './scopes/scope.js';
 
 const log = createLogger('optimizer');
@@ -130,6 +137,36 @@ export class Optimizer {
 			return new WindowNode(node.scope, optimizedSource, node.windowSpecs, node.partitionBy, node.orderBy);
 		}
 
+		if (node instanceof InsertNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new InsertNode(node.scope, node.table, node.targetColumns, optimizedSource, node.onConflict, node.newRowDescriptor);
+		}
+
+		if (node instanceof UpdateNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new UpdateNode(node.scope, node.table, node.assignments, optimizedSource, node.onConflict, node.oldRowDescriptor, node.newRowDescriptor);
+		}
+
+		if (node instanceof UpdateExecutorNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new UpdateExecutorNode(node.scope, optimizedSource, node.table);
+		}
+
+		if (node instanceof DeleteNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new DeleteNode(node.scope, node.table, optimizedSource, node.oldRowDescriptor);
+		}
+
+		if (node instanceof ConstraintCheckNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new ConstraintCheckNode(node.scope, optimizedSource, node.table, node.operation, node.oldRowDescriptor, node.newRowDescriptor);
+		}
+
 		// For other nodes, return as-is
 		// This is safe for leaf nodes and nodes we don't need to optimize children for
 		return node;
@@ -196,9 +233,119 @@ export class Optimizer {
 			}
 		});
 
-		// Rule: Logical TableScan → Physical SeqScan
-		// For now, keep TableScan as-is since it's already physical
-		// TODO: Implement this when we have separate logical/physical scan nodes
+		// Rule: Insert with constraints → ConstraintCheck + Insert
+		this.registerRule(PlanNodeType.Insert, (node, optimizer) => {
+			if (!(node instanceof InsertNode)) return null;
+
+			// Check if the table has constraints that need checking
+			const tableSchema = node.table.tableSchema;
+			const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.INSERT);
+
+			if (!hasConstraints) {
+				return null; // No constraints, no transformation needed
+			}
+
+			// Create row descriptors for constraint checking
+			const { newRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.INSERT);
+
+			// Optimize the source first
+			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+
+			// Create ConstraintCheck that processes the source rows BEFORE insert
+			const constraintCheckNode = new ConstraintCheckNode(
+				node.scope,
+				optimizedSource, // Check the rows from Values, not from Insert
+				node.table,
+				RowOp.INSERT,
+				undefined, // oldRowDescriptor
+				newRowDescriptor
+			);
+
+			// Create new Insert that receives validated rows from ConstraintCheck
+			const insertWithConstraints = new InsertNode(
+				node.scope,
+				node.table,
+				node.targetColumns,
+				constraintCheckNode, // Use ConstraintCheck as source
+				node.onConflict,
+				newRowDescriptor
+			);
+
+			return insertWithConstraints;
+		});
+
+		// Rule: Update with constraints → ConstraintCheck + Update
+		this.registerRule(PlanNodeType.Update, (node, optimizer) => {
+			if (!(node instanceof UpdateNode)) return null;
+
+			// Check if the table has constraints that need checking
+			const tableSchema = node.table.tableSchema;
+			const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.UPDATE);
+
+			if (!hasConstraints) {
+				return null; // No constraints, no transformation needed
+			}
+
+			// Create row descriptors for constraint checking
+			const { oldRowDescriptor, newRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.UPDATE);
+
+			// Create the optimized DML node with row descriptors
+			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+			const updateWithDescriptors = new UpdateNode(
+				node.scope,
+				node.table,
+				node.assignments,
+				optimizedSource,
+				node.onConflict,
+				oldRowDescriptor,
+				newRowDescriptor
+			);
+
+			// Wrap with constraint checking
+			return new ConstraintCheckNode(
+				node.scope,
+				updateWithDescriptors,
+				node.table,
+				RowOp.UPDATE,
+				oldRowDescriptor,
+				newRowDescriptor
+			);
+		});
+
+		// Rule: Delete with constraints → ConstraintCheck + Delete
+		this.registerRule(PlanNodeType.Delete, (node, optimizer) => {
+			if (!(node instanceof DeleteNode)) return null;
+
+			// Check if the table has constraints that need checking
+			const tableSchema = node.table.tableSchema;
+			const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.DELETE);
+
+			if (!hasConstraints) {
+				return null; // No constraints, no transformation needed
+			}
+
+			// Create row descriptors for constraint checking
+			const { oldRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.DELETE);
+
+			// Create the optimized DML node with row descriptors
+			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+			const deleteWithDescriptors = new DeleteNode(
+				node.scope,
+				node.table,
+				optimizedSource,
+				oldRowDescriptor
+			);
+
+			// Wrap with constraint checking
+			return new ConstraintCheckNode(
+				node.scope,
+				deleteWithDescriptors,
+				node.table,
+				RowOp.DELETE,
+				oldRowDescriptor,
+				undefined // newRowDescriptor
+			);
+		});
 
 		// Rule: Keep Sort nodes as physical
 		this.registerRule(PlanNodeType.Sort, (node, optimizer) => {
@@ -219,6 +366,69 @@ export class Optimizer {
 			};
 			return newSort;
 		});
+	}
+
+	/**
+	 * Check if a table has constraints that need checking for a specific operation
+	 */
+	private hasConstraintsForOperation(tableSchema: any, operation: RowOp): boolean {
+		// Check for NOT NULL constraints (apply to INSERT and UPDATE)
+		if (operation !== RowOp.DELETE) {
+			const hasNotNull = tableSchema.columns?.some((col: any) => col.notNull);
+			if (hasNotNull) return true;
+		}
+
+		// Check for CHECK constraints
+		const hasCheckConstraints = tableSchema.checkConstraints?.some((constraint: any) => {
+			if (!constraint.operations) {
+				// Default applies to INSERT and UPDATE
+				return operation === RowOp.INSERT || operation === RowOp.UPDATE;
+			}
+			return (constraint.operations & operation) !== 0;
+		});
+
+		return !!hasCheckConstraints;
+	}
+
+	/**
+	 * Create row descriptors for constraint checking
+	 */
+	private createRowDescriptors(node: InsertNode | UpdateNode | DeleteNode, operation: RowOp): {
+		oldRowDescriptor?: RowDescriptor;
+		newRowDescriptor?: RowDescriptor;
+	} {
+		const result: { oldRowDescriptor?: RowDescriptor; newRowDescriptor?: RowDescriptor } = {};
+
+		// For constraint checking, we need to map table columns to row positions
+		const tableSchema = node.table.tableSchema;
+
+		if (operation === RowOp.INSERT) {
+			// For INSERT, we only need NEW row descriptor
+			result.newRowDescriptor = [];
+			tableSchema.columns.forEach((column: any, index: number) => {
+				result.newRowDescriptor![column.name] = index;
+				result.newRowDescriptor![column.name.toLowerCase()] = index;
+			});
+		} else if (operation === RowOp.UPDATE) {
+			// For UPDATE, we need both OLD and NEW row descriptors
+			result.oldRowDescriptor = [];
+			result.newRowDescriptor = [];
+			tableSchema.columns.forEach((column: any, index: number) => {
+				result.oldRowDescriptor![column.name] = index;
+				result.oldRowDescriptor![column.name.toLowerCase()] = index;
+				result.newRowDescriptor![column.name] = index;
+				result.newRowDescriptor![column.name.toLowerCase()] = index;
+			});
+		} else if (operation === RowOp.DELETE) {
+			// For DELETE, we only need OLD row descriptor
+			result.oldRowDescriptor = [];
+			tableSchema.columns.forEach((column: any, index: number) => {
+				result.oldRowDescriptor![column.name] = index;
+				result.oldRowDescriptor![column.name.toLowerCase()] = index;
+			});
+		}
+
+		return result;
 	}
 
 	/**
@@ -289,10 +499,13 @@ export class Optimizer {
 			PlanNodeType.DropTable,
 			PlanNodeType.CreateView,
 			PlanNodeType.DropView,
-			// DML operations
+			// DML operations (only when no constraints need checking)
 			PlanNodeType.Insert,
 			PlanNodeType.Update,
+			PlanNodeType.UpdateExecutor,
 			PlanNodeType.Delete,
+			// Constraint checking
+			PlanNodeType.ConstraintCheck,
 			// Other operations
 			PlanNodeType.Pragma,
 			PlanNodeType.Transaction,

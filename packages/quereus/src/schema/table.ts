@@ -27,7 +27,7 @@ export interface TableSchema {
 	/** Definition of the primary key, including order and direction */
 	primaryKeyDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>;
 	/** CHECK constraints defined on the table or its columns */
-	checkConstraints: ReadonlyArray<{ name?: string, expr: Expression }>;
+	checkConstraints: ReadonlyArray<RowConstraintSchema>;
 	/** Reference to the registered module */
 	vtabModule: VirtualTableModule<any, any>;
 	/** If virtual, aux data passed during module registration */
@@ -191,7 +191,7 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		columns: columnSchemas,
 		columnIndexMap: columnIndexMap,
 		primaryKeyDefinition: pkDef,
-		checkConstraints: [],
+		checkConstraints: [] as RowConstraintSchema[],
 		indexes: [],
 		vtabModule: defaultMemoryModule,
 		vtabAuxData: null,

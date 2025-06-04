@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ConflictResolution } from '../../common/constants.js';
@@ -18,6 +18,7 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
     public readonly targetColumns: ColumnDef[],
     public readonly source: RelationalPlanNode, // Could be ValuesNode or output of a SELECT
 		public readonly onConflict?: ConflictResolution,
+    public readonly newRowDescriptor?: RowDescriptor, // For constraint checking
   ) {
     super(scope);
   }
@@ -52,6 +53,10 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
 
     if (this.onConflict) {
       props.onConflict = this.onConflict;
+    }
+
+    if (this.newRowDescriptor) {
+      props.hasNewRowDescriptor = true;
     }
 
     return props;

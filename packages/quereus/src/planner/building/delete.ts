@@ -1,15 +1,17 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { DeleteNode } from '../nodes/delete-node.js';
+import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { ProjectNode } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
+import { RowOp } from '../../schema/table.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -43,6 +45,28 @@ export function buildDeleteStmt(
     sourceNode,
   );
 
+  // Wrap with constraint checking if the table has constraints that apply to DELETE
+  let resultNode: RelationalPlanNode = deleteNode;
+  if (tableReference.tableSchema.checkConstraints.some(constraint =>
+        (constraint.operations & RowOp.DELETE) !== 0)) {
+
+    // Create OLD row descriptor for DELETE - maps attribute IDs to column indices
+    const oldRowDescriptor: RowDescriptor = [];
+    const deleteAttributes = deleteNode.getAttributes();
+    deleteAttributes.forEach((attr, index) => {
+      oldRowDescriptor[attr.id] = index;
+    });
+
+    resultNode = new ConstraintCheckNode(
+      deleteCtx.scope,
+      deleteNode,
+      tableReference,
+      RowOp.DELETE,
+      oldRowDescriptor,
+      undefined // No NEW row for DELETE
+    );
+  }
+
   if (stmt.returning && stmt.returning.length > 0) {
     const returningProjections = stmt.returning.map(rc => {
 			// TODO: RETURNING *
@@ -51,8 +75,8 @@ export function buildDeleteStmt(
     });
     // Similar to UPDATE, using sourceNode (the filtered rows to be deleted) as a stand-in for RETURNING.
     // The emitter needs to provide the *actual* deleted rows.
-    return new ProjectNode(deleteCtx.scope, deleteNode, returningProjections);
+    return new ProjectNode(deleteCtx.scope, resultNode, returningProjections);
   }
 
-	return deleteNode;
+	return resultNode;
 }
