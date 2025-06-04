@@ -3,7 +3,6 @@ import { PlanNode, type RelationalPlanNode, type PhysicalProperties } from './no
 import { PlanNodeType } from './nodes/plan-node-type.js';
 import { BlockNode } from './nodes/block.js';
 import { AggregateNode } from './nodes/aggregate-node.js';
-import { StreamAggregateNode } from './nodes/stream-aggregate.js';
 import { SortNode } from './nodes/sort.js';
 import { FilterNode } from './nodes/filter.js';
 import { DistinctNode } from './nodes/distinct-node.js';
@@ -20,57 +19,10 @@ import { RowOp } from '../schema/table.js';
 import type { RowDescriptor } from './nodes/plan-node.js';
 import { JoinNode } from './nodes/join-node.js';
 import { CacheNode } from './nodes/cache-node.js';
-import { CTENode } from './nodes/cte-node.js';
+import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
+import { getDefaultRules } from './optimizer-rules.js';
 
 const log = createLogger('optimizer');
-
-/**
- * Optimizer tuning parameters - centralized configuration for magic numbers
- */
-interface OptimizerTuning {
-	/** Row estimation defaults */
-	readonly defaultRowEstimate: number;
-
-	/** Join optimization */
-	readonly join: {
-		/** Minimum left side rows to consider caching right side */
-		readonly minLeftRowsForCaching: number;
-		/** Maximum right side rows to cache */
-		readonly maxRightRowsForCaching: number;
-		/** Cache threshold multiplier (rightSize * multiplier) */
-		readonly cacheThresholdMultiplier: number;
-		/** Maximum cache threshold */
-		readonly maxCacheThreshold: number;
-	};
-
-	/** CTE optimization */
-	readonly cte: {
-		/** Maximum CTE size to consider for caching */
-		readonly maxSizeForCaching: number;
-		/** Cache threshold multiplier for CTEs */
-		readonly cacheThresholdMultiplier: number;
-		/** Maximum cache threshold for CTEs */
-		readonly maxCacheThreshold: number;
-	};
-}
-
-/**
- * Default optimizer tuning parameters
- */
-const DEFAULT_TUNING: OptimizerTuning = {
-	defaultRowEstimate: 1000,
-	join: {
-		minLeftRowsForCaching: 1,
-		maxRightRowsForCaching: 50000,
-		cacheThresholdMultiplier: 2,
-		maxCacheThreshold: 10000
-	},
-	cte: {
-		maxSizeForCaching: 50000,
-		cacheThresholdMultiplier: 2,
-		maxCacheThreshold: 20000
-	}
-};
 
 /**
  * Optimization rule that transforms logical nodes to physical nodes
@@ -83,7 +35,7 @@ type OptimizationRule = (node: PlanNode, optimizer: Optimizer) => PlanNode | nul
 export class Optimizer {
 	private rules: Map<PlanNodeType, OptimizationRule[]> = new Map();
 
-	constructor(private tuning: OptimizerTuning = DEFAULT_TUNING) {
+	constructor(public readonly tuning: OptimizerTuning = DEFAULT_TUNING) {
 		this.registerDefaultRules();
 	}
 
@@ -95,7 +47,7 @@ export class Optimizer {
 		return this.optimizeNode(plan);
 	}
 
-	private optimizeNode(node: PlanNode): PlanNode {
+	optimizeNode(node: PlanNode): PlanNode {
 		// If already physical, just recurse on children
 		if (node.physical) {
 			return this.optimizeChildren(node);
@@ -256,246 +208,18 @@ export class Optimizer {
 	 * Register the default optimization rules
 	 */
 	private registerDefaultRules(): void {
-		// Rule: Logical Aggregate → Physical StreamAggregate
-		this.registerRule(PlanNodeType.Aggregate, (node, optimizer) => {
-			if (!(node instanceof AggregateNode)) return null;
-
-			// Optimize the source first
-			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-
-			// For now, always use StreamAggregate
-			// TODO: Check if source is ordered on groupBy columns
-			// TODO: Consider HashAggregate for unordered inputs
-
-			if (node.groupBy.length > 0) {
-				// Need to ensure ordering for streaming aggregate
-				// For now, always insert a sort
-				// TODO: Check if source already provides the required ordering
-				const sortKeys = node.groupBy.map(expr => ({
-					expression: expr,
-					direction: 'asc' as const,
-					nulls: undefined
-				}));
-
-				const sortNode = new SortNode(node.scope, optimizedSource, sortKeys);
-				sortNode.physical = {
-					ordering: node.groupBy.map((_, idx) => ({ column: idx, desc: false }))
-				};
-
-				return new StreamAggregateNode(
-					node.scope,
-					sortNode,
-					node.groupBy,
-					node.aggregates,
-					undefined, // estimatedCostOverride
-					node.getAttributes() // Preserve original attribute IDs
-				);
-			} else {
-				// No GROUP BY - can stream aggregate without sorting
-				return new StreamAggregateNode(
-					node.scope,
-					optimizedSource,
-					node.groupBy,
-					node.aggregates,
-					undefined, // estimatedCostOverride
-					node.getAttributes() // Preserve original attribute IDs
-				);
+		const defaultRules = getDefaultRules();
+		for (const [nodeType, rules] of defaultRules) {
+			for (const rule of rules) {
+				this.registerRule(nodeType, rule);
 			}
-		});
-
-		// Rule: Insert with constraints → ConstraintCheck + Insert
-		this.registerRule(PlanNodeType.Insert, (node, optimizer) => {
-			if (!(node instanceof InsertNode)) return null;
-
-			// Check if the table has constraints that need checking
-			const tableSchema = node.table.tableSchema;
-			const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.INSERT);
-
-			if (!hasConstraints) {
-				return null; // No constraints, no transformation needed
-			}
-
-			// Create row descriptors for constraint checking
-			const { newRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.INSERT);
-
-			// Optimize the source first
-			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-
-			// Create ConstraintCheck that processes the source rows BEFORE insert
-			const constraintCheckNode = new ConstraintCheckNode(
-				node.scope,
-				optimizedSource, // Check the rows from Values, not from Insert
-				node.table,
-				RowOp.INSERT,
-				undefined, // oldRowDescriptor
-				newRowDescriptor
-			);
-
-			// Create new Insert that receives validated rows from ConstraintCheck
-			const insertWithConstraints = new InsertNode(
-				node.scope,
-				node.table,
-				node.targetColumns,
-				constraintCheckNode, // Use ConstraintCheck as source
-				node.onConflict,
-				newRowDescriptor
-			);
-
-			return insertWithConstraints;
-		});
-
-		// Rule: Update with constraints → ConstraintCheck + Update
-		this.registerRule(PlanNodeType.Update, (node, optimizer) => {
-			if (!(node instanceof UpdateNode)) return null;
-
-			// Check if the table has constraints that need checking
-			const tableSchema = node.table.tableSchema;
-			const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.UPDATE);
-
-			if (!hasConstraints) {
-				return null; // No constraints, no transformation needed
-			}
-
-			// Create row descriptors for constraint checking
-			const { oldRowDescriptor, newRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.UPDATE);
-
-			// Create the optimized DML node with row descriptors
-			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-			const updateWithDescriptors = new UpdateNode(
-				node.scope,
-				node.table,
-				node.assignments,
-				optimizedSource,
-				node.onConflict,
-				oldRowDescriptor,
-				newRowDescriptor
-			);
-
-			// Wrap with constraint checking
-			return new ConstraintCheckNode(
-				node.scope,
-				updateWithDescriptors,
-				node.table,
-				RowOp.UPDATE,
-				oldRowDescriptor,
-				newRowDescriptor
-			);
-		});
-
-		// Rule: Delete with constraints → ConstraintCheck + Delete
-		this.registerRule(PlanNodeType.Delete, (node, optimizer) => {
-			if (!(node instanceof DeleteNode)) return null;
-
-			// Check if the table has constraints that need checking
-			const tableSchema = node.table.tableSchema;
-			const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.DELETE);
-
-			if (!hasConstraints) {
-				return null; // No constraints, no transformation needed
-			}
-
-			// Create row descriptors for constraint checking
-			const { oldRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.DELETE);
-
-			// Create the optimized DML node with row descriptors
-			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-			const deleteWithDescriptors = new DeleteNode(
-				node.scope,
-				node.table,
-				optimizedSource,
-				oldRowDescriptor
-			);
-
-			// Wrap with constraint checking
-			return new ConstraintCheckNode(
-				node.scope,
-				deleteWithDescriptors,
-				node.table,
-				RowOp.DELETE,
-				oldRowDescriptor,
-				undefined // newRowDescriptor
-			);
-		});
-
-		// Rule: Keep Sort nodes as physical
-		this.registerRule(PlanNodeType.Sort, (node, optimizer) => {
-			if (!(node instanceof SortNode)) return null;
-
-			// Sort is already a physical node in our current design
-			// Just optimize its source
-			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return null; // No change
-
-			const newSort = new SortNode(node.scope, optimizedSource, node.sortKeys);
-			// Set physical properties
-			newSort.physical = {
-				ordering: node.sortKeys.map((key, idx) => ({
-					column: idx,
-					desc: key.direction === 'desc'
-				}))
-			};
-			return newSort;
-		});
-
-		// Rule: CTE optimization - inject caching when beneficial
-		this.registerRule(PlanNodeType.CTE, (node, optimizer) => {
-			if (!(node instanceof CTENode)) return null;
-
-			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-
-			// Heuristics for when to cache CTEs:
-			// 1. CTE has materialization hint
-			// 2. CTE is estimated to be reasonably sized
-			// 3. CTE is not already cached
-			const sourceSize = optimizedSource.estimatedRows ?? this.tuning.defaultRowEstimate;
-			const shouldCache = (
-				node.materializationHint === 'materialized' ||
-				(sourceSize > 0 && sourceSize < this.tuning.cte.maxSizeForCaching)
-			) && optimizedSource.nodeType !== PlanNodeType.Cache;
-
-			if (shouldCache) {
-				log('Adding cache to CTE %s (estimated rows: %d)', node.cteName, sourceSize);
-				const cacheThreshold = Math.min(
-					sourceSize * this.tuning.cte.cacheThresholdMultiplier,
-					this.tuning.cte.maxCacheThreshold
-				);
-				const cachedSource = new CacheNode(
-					optimizedSource.scope,
-					optimizedSource,
-					'memory',
-					cacheThreshold
-				);
-
-				return new CTENode(
-					node.scope,
-					node.cteName,
-					node.columns,
-					cachedSource,
-					node.materializationHint,
-					node.isRecursive
-				);
-			}
-
-			// If source was optimized but no caching needed
-			if (optimizedSource !== node.source) {
-				return new CTENode(
-					node.scope,
-					node.cteName,
-					node.columns,
-					optimizedSource,
-					node.materializationHint,
-					node.isRecursive
-				);
-			}
-
-			return null; // No transformation needed
-		});
+		}
 	}
 
 	/**
 	 * Check if a table has constraints that need checking for a specific operation
 	 */
-	private hasConstraintsForOperation(tableSchema: any, operation: RowOp): boolean {
+	hasConstraintsForOperation(tableSchema: any, operation: RowOp): boolean {
 		// Check for NOT NULL constraints (apply to INSERT and UPDATE)
 		if (operation !== RowOp.DELETE) {
 			const hasNotNull = tableSchema.columns?.some((col: any) => col.notNull);
@@ -517,7 +241,7 @@ export class Optimizer {
 	/**
 	 * Create row descriptors for constraint checking
 	 */
-	private createRowDescriptors(node: InsertNode | UpdateNode | DeleteNode, operation: RowOp): {
+	createRowDescriptors(node: InsertNode | UpdateNode | DeleteNode, operation: RowOp): {
 		oldRowDescriptor?: RowDescriptor;
 		newRowDescriptor?: RowDescriptor;
 	} {
