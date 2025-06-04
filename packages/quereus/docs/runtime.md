@@ -655,3 +655,93 @@ The optimizer automatically:
 
 This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms, all while maintaining robust column reference resolution through the attribute-based context system.
 
+## Type Coercion Best Practices
+
+SQL requires different coercion strategies for different contexts. Quereus provides centralized type coercion utilities in `src/util/coercion.ts` that should be used consistently across all emitters.
+
+### Coercion Contexts
+
+**Comparison Context** (`coerceForComparison`):
+- Converts numeric strings to numbers when comparing with numeric values
+- Example: `42 = '42'` → true
+- Used in: binary comparison operators, JOIN conditions, WHERE clauses
+
+**Arithmetic Context** (`coerceToNumberForArithmetic`): 
+- Converts all values to numbers for arithmetic operations
+- Non-numeric strings become 0 (SQL standard behavior)
+- Example: `'abc' + 0` → 0, `'123' + 0` → 123
+- Used in: +, -, *, /, % operators
+
+**Aggregate Context** (`coerceForAggregate`):
+- Function-specific coercion for aggregate arguments
+- COUNT functions skip coercion, numeric aggregates (SUM/AVG) coerce strings
+- Used in: aggregate function argument processing
+
+### Implementation Guidelines
+
+```typescript
+import { coerceForComparison, coerceToNumberForArithmetic, coerceForAggregate } from '../../util/coercion.js';
+
+// In comparison operations:
+const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+const result = compareSqlValues(coercedV1, coercedV2);
+
+// In arithmetic operations:
+const n1 = coerceToNumberForArithmetic(v1);
+const n2 = coerceToNumberForArithmetic(v2);
+const result = n1 + n2;
+
+// In aggregate functions:
+const coercedArg = coerceForAggregate(rawValue, functionName);
+accumulator = schema.stepFunction(accumulator, coercedArg);
+```
+
+**Critical Rule**: Never implement custom coercion logic in individual emitters. Always use the centralized utilities to ensure consistent behavior across the system.
+
+## Uniqueness and sorting guidelines
+
+### Never Use JSON.stringify for DISTINCT
+
+**Wrong**:
+```typescript
+const seen = new Set<string>();
+const key = JSON.stringify(value);
+if (seen.has(key)) continue; // Skip duplicate
+seen.add(key);
+```
+
+**Problems**: 
+- Doesn't follow SQL comparison rules
+- `1` and `"1"` have different JSON representations but may be equal in SQL
+- Doesn't respect collation rules
+
+**Correct**:
+```typescript
+import { BTree } from 'inheritree';
+
+const distinctTree = new BTree<SqlValue, SqlValue>(
+  (val: SqlValue) => val,
+  (a: SqlValue, b: SqlValue) => compareSqlValues(a, b)
+);
+
+// Check for duplicates:
+const existingPath = distinctTree.insert(value);
+if (!existingPath.on) {
+  continue; // Skip duplicate
+}
+```
+
+### Multi-Value 
+
+For aggregates with multiple arguments:
+```typescript
+function compareDistinctValues(a: SqlValue | SqlValue[], b: SqlValue | SqlValue[]): number {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return compareGroupKeys(a, b); // Element-wise comparison
+  }
+  if (!Array.isArray(a) && !Array.isArray(b)) {
+    return compareSqlValues(a, b);
+  }
+  return Array.isArray(a) ? 1 : -1; // Mixed types
+}
+```
