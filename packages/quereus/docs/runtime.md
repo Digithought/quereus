@@ -745,3 +745,125 @@ function compareDistinctValues(a: SqlValue | SqlValue[], b: SqlValue | SqlValue[
   return Array.isArray(a) ? 1 : -1; // Mixed types
 }
 ```
+
+## Debugging and Common Pitfalls
+
+Based on real implementation experiences, here are key concepts and common mistakes to avoid when developing runtime emitters.
+
+### Scheduler-Centric Execution Model
+
+**❌ NEVER call instructions directly:**
+```typescript
+// WRONG - bypasses scheduler
+const result = await conditionInstruction.run(rctx, ...args);
+if (result) {
+    // This breaks the execution model
+}
+```
+
+**✅ ALWAYS use scheduler callbacks:**
+```typescript
+// CORRECT - scheduler handles execution and dependency resolution
+if (conditionCallback) {
+    const conditionResult = await conditionCallback(rctx);
+    conditionMet = !!conditionResult;
+}
+```
+
+**Why this matters:**
+- The scheduler manages instruction dependencies and execution order
+- Direct calls bypass dependency resolution and can cause race conditions
+- Callbacks ensure proper context setup and error handling
+
+### Context Responsibility Boundaries
+
+**❌ DON'T create output context in child instructions:**
+```typescript
+// WRONG - child instruction creating output context
+const outputRow = [...leftRow, ...rightRow];
+rctx.context.set(outputRowDescriptor, () => outputRow);
+try {
+    yield outputRow;
+} finally {
+    rctx.context.delete(outputRowDescriptor);
+}
+```
+
+**✅ DO let parent instructions handle output context:**
+```typescript
+// CORRECT - just yield the row, parent will set context as needed
+const outputRow = [...leftRow, ...rightRow];
+yield outputRow;
+```
+
+**Why this matters:**
+- Parent instructions know when and how they need to access child output
+- Child output context setup is often unnecessary overhead
+- Simpler child emitters are easier to debug and optimize
+
+### Scope Resolution Debugging
+
+When debugging column resolution issues, understand the scope hierarchy:
+
+**Scope Resolution Order:**
+1. `MultiScope` checks child scopes in order (first match wins)
+2. `AliasedScope` handles qualified references (`table.column`)
+3. `RegisteredScope` contains actual column-to-attribute mappings
+
+**Common scope resolution bugs:**
+- **Missing scope in MultiScope**: Check that all relevant scopes are included
+- **Wrong scope order**: Earlier scopes shadow later ones - order matters
+- **Projection scope issues**: After `ProjectNode`, ensure both projection outputs AND original qualified columns are accessible
+
+**Debugging pattern:**
+```typescript
+// Add targeted debugging for specific symbols
+if (symbolKey === 'problematic.column') {
+    console.log('Scope resolution for', symbolKey, 'in', this.scopes.length, 'scopes');
+}
+```
+
+### Context Lifecycle Management
+
+**Context Setup Pattern:**
+```typescript
+// Always use this pattern for row context
+rctx.context.set(rowDescriptor, () => row);
+try {
+    // Process row - column references will resolve automatically
+    const result = await processRow(row);
+    yield result;
+} finally {
+    // CRITICAL: Always clean up context
+    rctx.context.delete(rowDescriptor);
+}
+```
+
+**Common context bugs:**
+- **Forgetting cleanup**: Memory leaks and stale context references
+- **Wrong row descriptor**: Attribute IDs don't match actual row structure  
+- **Context timing**: Setting up context too late or cleaning up too early
+
+```
+
+### Debugging Techniques
+
+**Effective debugging approaches:**
+
+1. **Start with scope resolution:** Most column reference errors are scope issues
+2. **Check context timing:** Verify context is available when column references execute  
+3. **Use targeted logging:** Debug specific symbols rather than everything
+4. **Verify row descriptors:** Ensure attribute IDs match actual row structure
+5. **Test instruction isolation:** Verify emitters work independently before integration
+
+**Debugging environment variables:**
+```bash
+# Context lifecycle and column resolution
+DEBUG=quereus:runtime:context* yarn test
+
+# Specific operation tracing
+DEBUG=quereus:runtime:emit:join yarn test
+
+# Full runtime tracing (verbose)
+DEBUG=quereus:runtime* yarn test
+```

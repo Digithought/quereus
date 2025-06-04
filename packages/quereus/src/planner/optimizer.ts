@@ -19,6 +19,7 @@ import { ConstraintCheckNode } from './nodes/constraint-check-node.js';
 import { RowOp } from '../schema/table.js';
 import type { RowDescriptor } from './nodes/plan-node.js';
 import type { Scope } from './scopes/scope.js';
+import { JoinNode } from './nodes/join-node.js';
 
 const log = createLogger('optimizer');
 
@@ -86,6 +87,28 @@ export class Optimizer {
 			);
 			if (optimizedStatements === node.statements) return node;
 			return new BlockNode(node.scope, optimizedStatements, node.parameters);
+		}
+
+		if (node instanceof JoinNode) {
+			const optimizedLeft = this.optimizeNode(node.left) as RelationalPlanNode;
+			const optimizedRight = this.optimizeNode(node.right) as RelationalPlanNode;
+
+			// Also optimize the condition if present
+			const optimizedCondition = node.condition ? this.optimizeNode(node.condition) : undefined;
+
+			// If nothing changed, return original node
+			if (optimizedLeft === node.left && optimizedRight === node.right && optimizedCondition === node.condition) {
+				return node;
+			}
+
+			return new JoinNode(
+				node.scope,
+				optimizedLeft,
+				optimizedRight,
+				node.joinType,
+				optimizedCondition as any, // ScalarPlanNode
+				node.usingColumns
+			);
 		}
 
 		if (node instanceof AggregateNode) {
@@ -487,6 +510,7 @@ export class Optimizer {
 			PlanNodeType.Distinct,
 			PlanNodeType.Sort,
 			PlanNodeType.LimitOffset,
+			PlanNodeType.Join,  // Allow join to be directly physical for now
 			PlanNodeType.Window,
 			PlanNodeType.Sequencing,
 			PlanNodeType.SetOperation,

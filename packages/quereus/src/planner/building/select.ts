@@ -27,6 +27,7 @@ import type { CTEPlanNode } from '../nodes/cte-node.js';
 import type { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 import { ParameterScope } from '../scopes/param.js';
 import { SetOperationNode } from '../nodes/set-operation-node.js';
+import { JoinNode } from '../nodes/join-node.js';
 
 /**
  * Helper function to get the non-parameter ancestor scope.
@@ -440,9 +441,11 @@ export function buildSelectStmt(
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, index));
 			});
 
-			// Update selectContext to use the projection output scope for ORDER BY (if not already applied)
+			// Update selectContext to use BOTH the projection output scope AND the original scope
+			// This allows ORDER BY to reference both projected columns (unqualified) and original columns (qualified)
 			if (!needsPreProjectionSort) {
-				selectContext = {...selectContext, scope: projectionOutputScope};
+				const combinedScope = new MultiScope([projectionOutputScope, selectScope]);
+				selectContext = {...selectContext, scope: combinedScope};
 			}
 		}
 	}
@@ -597,11 +600,72 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 		// Store the column scope for buildSelectStmt
 		(fromTable as any).columnScope = columnScope;
+	} else if (fromClause.type === 'join') {
+		// Handle JOIN clauses
+		return buildJoin(fromClause, parentContext, cteNodes);
 	} else {
+		// Handle the case where fromClause.type is not recognized
+		const exhaustiveCheck: never = fromClause;
 		throw new QuereusError(
-			`Unsupported FROM clause item type: ${fromClause.type}`,
-			StatusCode.UNSUPPORTED, undefined, fromClause.loc?.start.line, fromClause.loc?.start.column
+			`Unsupported FROM clause item type: ${(exhaustiveCheck as any).type}`,
+			StatusCode.UNSUPPORTED,
+			undefined,
+			(exhaustiveCheck as any).loc?.startLine,
+			(exhaustiveCheck as any).loc?.startColumn
 		);
 	}
 	return fromTable;
+}
+
+/**
+ * Builds a join plan node from an AST join clause
+ */
+function buildJoin(joinClause: AST.JoinClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode>): JoinNode {
+	// Build left and right sides recursively
+	const leftNode = buildFrom(joinClause.left, parentContext, cteNodes);
+	const rightNode = buildFrom(joinClause.right, parentContext, cteNodes);
+
+	// Extract column scopes from left and right nodes
+	const leftScope = (leftNode as any).columnScope as Scope;
+	const rightScope = (rightNode as any).columnScope as Scope;
+
+	// Create a combined scope for the join that includes both left and right columns
+	const combinedScope = new MultiScope([leftScope, rightScope]);
+
+	// Create a new planning context with the combined scope for condition evaluation
+	const joinContext: PlanningContext = {
+		...parentContext,
+		scope: combinedScope
+	};
+
+	let condition: ScalarPlanNode | undefined;
+	let usingColumns: string[] | undefined;
+
+	// Handle ON condition
+	if (joinClause.condition) {
+		condition = buildExpression(joinContext, joinClause.condition);
+	}
+
+	// Handle USING columns
+	if (joinClause.columns) {
+		usingColumns = joinClause.columns;
+		// Convert USING to ON condition: table1.col1 = table2.col1 AND table1.col2 = table2.col2 ...
+		// For now, store the column names and let the emitter handle the condition
+		// TODO: This could be improved by synthesizing the equality conditions here
+	}
+
+	const joinNode = new JoinNode(
+		parentContext.scope,
+		leftNode,
+		rightNode,
+		joinClause.joinType,
+		condition,
+		usingColumns
+	);
+
+	// Use the combined scope as the column scope for the join
+	// This allows both qualified and unqualified column references to resolve properly
+	(joinNode as any).columnScope = combinedScope;
+
+	return joinNode;
 }
