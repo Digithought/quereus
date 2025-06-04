@@ -80,7 +80,7 @@ CREATE TABLE affinity_test (
 INSERT INTO affinity_test VALUES ('123', '45.6', 789, 'text_as_blob', '999.99');
 SELECT typeof(int_col), typeof(real_col), typeof(text_col), typeof(blob_col), typeof(numeric_col)
 FROM affinity_test;
-→ [{"typeof(int_col)":"integer","typeof(real_col)":"real","typeof(text_col)":"text","typeof(blob_col)":"blob","typeof(numeric_col)":"real"}]
+→ [{"typeof(int_col)":"integer","typeof(real_col)":"real","typeof(text_col)":"text","typeof(blob_col)":"text","typeof(numeric_col)":"real"}]
 
 DROP TABLE affinity_test;
 DROP TABLE types_test;
