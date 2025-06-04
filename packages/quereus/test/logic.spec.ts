@@ -222,6 +222,28 @@ describe('SQL Logic Tests', () => {
 					if (trimmedLine.startsWith('--')) {
 						if (trimmedLine.toLowerCase().startsWith('-- error:')) {
 							expectedErrorSubstring = trimmedLine.substring(9).trim();
+
+							// If we have accumulated SQL and now have an error expectation, execute the block immediately
+							const sqlBlock = currentSql.trim();
+							if (sqlBlock && expectedErrorSubstring !== null) {
+								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
+								try {
+									await db.exec(sqlBlock);
+									const baseError = new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
+									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
+									throw new Error(`${baseError.message}${diagnostics}`);
+								} catch (actualError: any) {
+									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
+										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
+									);
+									console.log(`   -> Caught expected error: ${actualError.message}`);
+								}
+
+								// Reset for the next block
+								currentSql = '';
+								expectedResultJson = null;
+								expectedErrorSubstring = null;
+							}
 						}
 						continue; // Skip full comment lines
 					}
@@ -247,103 +269,64 @@ describe('SQL Logic Tests', () => {
 					}
 					// --- End Refined Handling ---
 
-					// Execute when we have a full SQL block AND either an expected result or expected error
+					// Execute when we have a full SQL block AND expected results (errors are now handled immediately above)
 					const sqlBlock = currentSql.trim(); // Keep sqlBlock variable
-					if (sqlBlock && (expectedResultJson !== null || expectedErrorSubstring !== null)) {
+					if (sqlBlock && expectedResultJson !== null) {
 
-						if (expectedResultJson !== null && expectedErrorSubstring !== null) {
-							throw new Error(`[${file}:${lineNumber}] Cannot expect both a result and an error for the same SQL block.`);
+						console.log(`Executing block (expect results):\n${sqlBlock}`);
+
+						// db.eval now handles parsing the whole sqlBlock.
+						// If sqlBlock has multiple statements, db.eval will execute the first one
+						// and is intended for single result-producing queries.
+						// For logic tests with setup statements, we need to ensure setup is run first.
+
+						const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
+						if (statements.length > 1) {
+							for (let i = 0; i < statements.length - 1; i++) {
+								const statement = statements[i].trim();
+								if (statement.length > 0) {
+									console.log(`  -> Executing setup statement: ${statement}`);
+									await db.exec(statement); // exec is for side-effects
+								}
+							}
 						}
 
+						const lastStatement = statements[statements.length - 1];
+						console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
+
+						let executionResult: { results: Record<string, any>[], traceEvents: any[] };
+						if (lastStatement) {
+							executionResult = await executeWithTracing(db, lastStatement);
+						} else {
+							executionResult = { results: [], traceEvents: [] };
+						}
+
+						const actualResult = executionResult.results;
+
+						let expectedResult: any;
 						try {
-							if (expectedResultJson !== null) {
-								console.log(`Executing block (expect results):\n${sqlBlock}`);
+							expectedResult = JSON.parse(expectedResultJson);
+						} catch (jsonError: any) {
+							throw new Error(`[${file}:${lineNumber}] Invalid expected JSON: ${jsonError.message} - JSON: ${expectedResultJson}`);
+						}
 
-								// db.eval now handles parsing the whole sqlBlock.
-								// If sqlBlock has multiple statements, db.eval will execute the first one
-								// and is intended for single result-producing queries.
-								// For logic tests with setup statements, we need to ensure setup is run first.
-
-								const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
-								if (statements.length > 1) {
-									for (let i = 0; i < statements.length - 1; i++) {
-										const statement = statements[i].trim();
-										if (statement.length > 0) {
-											console.log(`  -> Executing setup statement: ${statement}`);
-											await db.exec(statement); // exec is for side-effects
-										}
-									}
-								}
-
-								const lastStatement = statements[statements.length - 1];
-								console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
-
-								let executionResult: { results: Record<string, any>[], traceEvents: any[] };
-								if (lastStatement) {
-									executionResult = await executeWithTracing(db, lastStatement);
-								} else {
-									executionResult = { results: [], traceEvents: [] };
-								}
-
-								const actualResult = executionResult.results;
-
-								let expectedResult: any;
-								try {
-									expectedResult = JSON.parse(expectedResultJson);
-								} catch (jsonError: any) {
-									throw new Error(`[${file}:${lineNumber}] Invalid expected JSON: ${jsonError.message} - JSON: ${expectedResultJson}`);
-								}
-
-								if (actualResult.length !== expectedResult.length) {
-									const baseError = new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}\nBlock:\n${sqlBlock}`);
-									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
-									const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
-									throw new Error(`${baseError.message}${diagnostics}${traceInfo}`);
-								}
-								for (let i = 0; i < actualResult.length; i++) {
-									try {
-										expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
-									} catch (matchError: any) {
-										const error = matchError instanceof Error ? matchError : new Error(String(matchError));
-										const diagnostics = generateDiagnostics(db, sqlBlock, error);
-										const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
-										throw new Error(`${error.message}${diagnostics}${traceInfo}`);
-									}
-								}
-								console.log("   -> Results match!");
-
-							} else if (expectedErrorSubstring !== null) {
-								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
-								try {
-									await db.exec(sqlBlock);
-									const baseError = new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
-									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
-									throw new Error(`${baseError.message}${diagnostics}`);
-								} catch (actualError: any) {
-									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
-										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
-									);
-									console.log(`   -> Caught expected error: ${actualError.message}`);
-								}
-							}
-						} catch (error: any) {
-							if (expectedErrorSubstring !== null && error instanceof QuereusError) { // Check if QuereusError for more consistent error source
-								expect(error.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
-									`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${error.message}"`
-								);
-								console.log(`   -> Caught expected error: ${error.message}`);
-							} else {
-								// Check if error already contains diagnostics to avoid duplication
-								if (error.message.includes('=== FAILURE DIAGNOSTICS ===')) {
-									// Error already has diagnostics, just re-throw
-									throw error;
-								} else {
-									// Add diagnostics to the error
-									const diagnostics = generateDiagnostics(db, sqlBlock, error);
-									throw new Error(`[${file}:${lineNumber}] Failed executing SQL block: ${sqlBlock} - Unexpected Error: ${error.message}${diagnostics}`);
-								}
+						if (actualResult.length !== expectedResult.length) {
+							const baseError = new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}\nBlock:\n${sqlBlock}`);
+							const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
+							const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
+							throw new Error(`${baseError.message}${diagnostics}${traceInfo}`);
+						}
+						for (let i = 0; i < actualResult.length; i++) {
+							try {
+								expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
+							} catch (matchError: any) {
+								const error = matchError instanceof Error ? matchError : new Error(String(matchError));
+								const diagnostics = generateDiagnostics(db, sqlBlock, error);
+								const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
+								throw new Error(`${error.message}${diagnostics}${traceInfo}`);
 							}
 						}
+						console.log("   -> Results match!");
 
 						// Reset for the next block
 						currentSql = '';

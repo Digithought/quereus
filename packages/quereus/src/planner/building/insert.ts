@@ -42,7 +42,54 @@ export function buildInsertStmt(
 				throw new QuereusError(`Column count mismatch in VALUES clause. Expected ${targetColumns.length} columns, got ${row.length}.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
 		});
-		sourceNode = new ValuesNode(ctx.scope, rows);
+
+		// If we're only inserting into some columns, we need to expand the VALUES to include all table columns
+		// for constraint checking to work properly (omitted columns should be NULL/default)
+		if (stmt.columns && stmt.columns.length < tableReference.tableSchema.columns.length) {
+			// Expand each row to include all table columns
+			const expandedRows = rows.map(row => {
+				const expandedRow: ScalarPlanNode[] = [];
+
+				tableReference.tableSchema.columns.forEach((tableColumn, tableColIndex) => {
+					// Check if this column is in the target columns
+					const targetColIndex = targetColumns.findIndex(tc => tc.name.toLowerCase() === tableColumn.name.toLowerCase());
+
+					if (targetColIndex >= 0) {
+						// This column is provided in the VALUES - use the provided value
+						expandedRow.push(row[targetColIndex]);
+					} else {
+						// This column is omitted - use default value or NULL
+						let defaultNode: ScalarPlanNode;
+						if (tableColumn.defaultValue !== undefined) {
+							// Use default value (for now just NULL if it's an expression)
+							if (typeof tableColumn.defaultValue === 'object' && tableColumn.defaultValue !== null && 'type' in tableColumn.defaultValue) {
+								// TODO: Default value expression - not yet supported, use NULL for now
+								defaultNode = buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode;
+							} else {
+								// Literal default value
+								defaultNode = buildExpression(ctx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
+							}
+						} else {
+							// No default value - use NULL
+							defaultNode = buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode;
+						}
+						expandedRow.push(defaultNode);
+					}
+				});
+
+				return expandedRow;
+			});
+
+			// Create column names array with all table column names
+			const tableColumnNames = tableReference.tableSchema.columns.map(col => col.name);
+			sourceNode = new ValuesNode(ctx.scope, expandedRows, tableColumnNames);
+			// Update targetColumns to reflect all table columns since we've expanded the VALUES
+			targetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
+		} else {
+			// Even for full column lists, provide proper column names to VALUES node
+			const tableColumnNames = targetColumns.map(col => col.name);
+			sourceNode = new ValuesNode(ctx.scope, rows, tableColumnNames);
+		}
 	} else if (stmt.select) {
 		// For INSERT ... SELECT, plan the SELECT statement
 		// Handle any WITH clause attached to the INSERT so its CTEs are visible to the SELECT

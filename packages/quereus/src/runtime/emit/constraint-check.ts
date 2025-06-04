@@ -3,13 +3,16 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { emitPlanNode } from '../emitters.js';
+import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode } from '../../common/types.js';
+import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
 import type { RowConstraintSchema } from '../../schema/table.js';
 import { RowOp } from '../../schema/table.js';
 import { buildExpression } from '../../planner/building/expression.js';
 import { GlobalScope } from '../../planner/scopes/global.js';
+import { RegisteredScope } from '../../planner/scopes/registered.js';
+import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
+import * as AST from '../../parser/ast.js';
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
 	// Get the table schema to access constraints
@@ -23,13 +26,46 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	});
 
 	// Pre-emit CHECK constraint expressions for performance
-	const checkInstructions = tableSchema.checkConstraints
+	const checkConstraintData = tableSchema.checkConstraints
 		.filter((constraint: RowConstraintSchema) => shouldCheckConstraint(constraint, plan.operation))
 		.map((constraint: RowConstraintSchema) => {
 			// Build a PlanNode from the AST expression
-			// For now, use a basic global scope - in the future we might need to set up
-			// proper scoping for OLD/NEW references
-			const scope = new GlobalScope(ctx.db.schemaManager);
+			// Create a scope that has access to the table columns for constraint evaluation
+			const scope = new RegisteredScope(new GlobalScope(ctx.db.schemaManager));
+
+			// Register table columns in the scope so constraint expressions can reference them
+			// We need to register the actual table column names, mapping them to the correct source attributes
+			const sourceAttributes = plan.source.getAttributes();
+			const sourceType = plan.source.getType();
+
+			// Map table columns to source columns by matching names
+			tableSchema.columns.forEach((tableColumn: any, tableColIndex: number) => {
+				// Find the corresponding source column by name
+				let sourceColumnIndex = -1;
+				let sourceAttr: any = null;
+
+				for (let i = 0; i < sourceType.columns.length; i++) {
+					if (sourceType.columns[i].name.toLowerCase() === tableColumn.name.toLowerCase()) {
+						sourceColumnIndex = i;
+						sourceAttr = sourceAttributes[i];
+						break;
+					}
+				}
+
+				if (sourceColumnIndex >= 0 && sourceAttr) {
+					// Register the table column name so CHECK constraints can reference it
+					scope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) =>
+						new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
+							typeClass: 'scalar',
+							affinity: tableColumn.affinity,
+							nullable: !tableColumn.notNull,
+							isReadOnly: false
+						}, sourceAttr.id, sourceColumnIndex));
+				} else {
+					console.warn(`Could not map table column ${tableColumn.name} to source column`);
+				}
+			});
+
 			const exprPlanNode = buildExpression(
 				{ scope, db: ctx.db, parameters: {}, schemaManager: ctx.db.schemaManager },
 				constraint.expr
@@ -37,33 +73,47 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 
 			return {
 				constraint,
-				instruction: emitPlanNode(exprPlanNode, ctx)
+				evaluator: emitCallFromPlan(exprPlanNode, ctx)
 			};
 		});
 
-	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
+	// Extract just the constraint metadata and evaluator functions
+	const constraintMetadata = checkConstraintData.map(item => item.constraint);
+	const checkEvaluators = checkConstraintData.map(item => item.evaluator);
+
+	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>, ...evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		if (!inputRows) {
 			return;
 		}
 
 		for await (const row of inputRows) {
-			// Set up context for the current row
+			// Clear any existing contexts to ensure constraint expressions resolve to the correct row
+			rctx.context.clear();
+
+			// For UPDATE operations, the 'row' contains the NEW values after the update
+			// Set up the primary source context to point to the NEW row
 			rctx.context.set(sourceRowDescriptor, () => row);
 
 			try {
-				// Set up OLD row context if available
-				if (plan.oldRowDescriptor) {
-					rctx.context.set(plan.oldRowDescriptor, () => row);
-				}
+				// Set up OLD and NEW row contexts if available
+				if (plan.operation === RowOp.UPDATE) {
+					// For UPDATE, we need to be careful about OLD vs NEW contexts
+					// The row coming from UpdateNode contains the NEW values
+					// We don't currently have access to the original OLD values in this design
+					// So for now, both OLD and NEW contexts point to the updated row
+					// This means CHECK constraints will see the NEW values (which is correct)
 
-				// Set up NEW row context if available
-				if (plan.newRowDescriptor) {
-					rctx.context.set(plan.newRowDescriptor, () => row);
+					if (plan.oldRowDescriptor) {
+						rctx.context.set(plan.oldRowDescriptor, () => row); // TODO: Should be OLD row
+					}
+					if (plan.newRowDescriptor) {
+						rctx.context.set(plan.newRowDescriptor, () => row); // NEW row (correct)
+					}
 				}
 
 				try {
 					// Check all constraints that apply to this operation
-					await checkConstraints(rctx, plan, tableSchema, row, checkInstructions);
+					await checkConstraints(rctx, plan, tableSchema, row, constraintMetadata, evaluatorFunctions);
 
 					// If all constraints pass, yield the row
 					yield row;
@@ -87,8 +137,8 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	return {
-		params: [sourceInstruction],
-		run,
+		params: [sourceInstruction, ...checkEvaluators],
+		run: run as any,
 		note: `constraintCheck(${plan.operation})`
 	};
 }
@@ -98,13 +148,14 @@ async function checkConstraints(
 	plan: ConstraintCheckNode,
 	tableSchema: any,
 	row: Row,
-	checkInstructions: Array<{ constraint: RowConstraintSchema, instruction: Instruction }>
+	constraintMetadata: Array<RowConstraintSchema>,
+	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
 ): Promise<void> {
 	// Check NOT NULL constraints on individual columns
 	await checkNotNullConstraints(rctx, plan, tableSchema, row);
 
 	// Check CHECK constraints (both column-level and table-level)
-	await checkCheckConstraints(rctx, plan, checkInstructions);
+	await checkCheckConstraints(rctx, plan, tableSchema, constraintMetadata, evaluatorFunctions);
 }
 
 async function checkNotNullConstraints(
@@ -140,21 +191,36 @@ async function checkNotNullConstraints(
 async function checkCheckConstraints(
 	rctx: RuntimeContext,
 	plan: ConstraintCheckNode,
-	checkInstructions: Array<{ constraint: RowConstraintSchema, instruction: Instruction }>
+	tableSchema: any,
+	constraintMetadata: Array<RowConstraintSchema>,
+	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
 ): Promise<void> {
 	// Evaluate each CHECK constraint
-	for (const { constraint, instruction } of checkInstructions) {
-		const result = await instruction.run(rctx);
+	for (let i = 0; i < constraintMetadata.length; i++) {
+		const constraint = constraintMetadata[i];
+		const evaluator = evaluatorFunctions[i];
 
-		// CHECK constraint passes if result is truthy or NULL
-		// It fails only if result is false (not just falsy)
-		if (result === false) {
-			// Generate a proper constraint name if none was provided
-			const constraintName = constraint.name || generateDefaultConstraintName(plan.table.tableSchema, constraint);
-			throw new QuereusError(
-				`CHECK constraint failed: ${constraintName}`,
-				StatusCode.CONSTRAINT
-			);
+		try {
+			// Use the evaluator function to get the constraint result
+			const result = evaluator(rctx) as SqlValue;
+
+			// CHECK constraint passes if result is truthy or NULL
+			// It fails only if result is false or 0 (SQLite-style numeric boolean)
+			if (result === false || result === 0) {
+				// Generate a proper constraint name if none was provided
+				// IMPORTANT: Use the original index from the full tableSchema.checkConstraints array
+				// not the filtered index, to get the correct constraint name
+				const constraintName = constraint.name || generateDefaultConstraintName(tableSchema, constraint);
+				throw new QuereusError(
+					`CHECK constraint failed: ${constraintName}`,
+					StatusCode.CONSTRAINT
+				);
+			}
+		} catch (error) {
+			if (error instanceof QuereusError && error.message.includes('CHECK constraint failed')) {
+				throw error;
+			}
+			throw error;
 		}
 	}
 }
@@ -165,7 +231,7 @@ function shouldCheckConstraint(constraint: RowConstraintSchema, operation: RowOp
 }
 
 function generateDefaultConstraintName(tableSchema: any, constraint: RowConstraintSchema): string {
-	// Generate names like 'check_0', 'check_1', etc.
-	const checkIndex = tableSchema.checkConstraints.indexOf(constraint);
-	return `check_${checkIndex >= 0 ? checkIndex : 'unknown'}`;
+	// Find the index of this constraint in the original array to get the correct constraint number
+	const originalIndex = tableSchema.checkConstraints.findIndex((c: RowConstraintSchema) => c === constraint);
+	return `check_${originalIndex >= 0 ? originalIndex : 'unknown'}`;
 }
