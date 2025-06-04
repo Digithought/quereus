@@ -1,16 +1,14 @@
 import { Schema } from './schema.js';
 import type { Database } from '../core/database.js';
-import type { TableSchema, RowConstraintSchema } from './table.js';
+import type { TableSchema, RowConstraintSchema, IndexSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
-import { QuereusError, MisuseError } from '../common/errors.js';
+import { QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
-import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, type RowOpMask } from './table.js';
+import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask } from './table.js';
 import type { ViewSchema } from './view.js';
-
-import { SqlDataType } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
 
@@ -434,6 +432,90 @@ export class SchemaManager {
 		const targetSchemaName = schemaName ?? this.currentSchemaName;
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getTable(tableName);
+	}
+
+	/**
+	 * Creates a new index on an existing table based on an AST.CreateIndexStmt.
+	 * This method validates the index definition and calls the virtual table's xCreateIndex method.
+	 *
+	 * @param stmt The AST node for the CREATE INDEX statement.
+	 * @returns A Promise that resolves when the index is created.
+	 * @throws QuereusError on errors (e.g., table not found, column not found, xCreateIndex fails).
+	 */
+	async createIndex(stmt: AST.CreateIndexStmt): Promise<void> {
+		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
+		const tableName = stmt.table.name;
+		const indexName = stmt.index.name;
+
+		// Find the table schema
+		const tableSchema = this.getTable(targetSchemaName, tableName);
+		if (!tableSchema) {
+			throw new QuereusError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+
+		// Check if the virtual table module supports xCreateIndex
+		if (typeof (tableSchema.vtabModule as any)?.xCreateIndex !== 'function') {
+			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+
+		// Check if index already exists (if not IF NOT EXISTS)
+		const existingIndex = tableSchema.indexes?.find(idx => idx.name.toLowerCase() === indexName.toLowerCase());
+		if (existingIndex) {
+			if (stmt.ifNotExists) {
+				log(`Skipping CREATE INDEX: Index %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, indexName);
+				return;
+			} else {
+				throw new QuereusError(`Index ${indexName} already exists on table ${tableName}`, StatusCode.CONSTRAINT, undefined, stmt.index.loc?.start.line, stmt.index.loc?.start.column);
+			}
+		}
+
+		// Convert AST columns to IndexSchema columns
+		const indexColumns = stmt.columns.map((indexedCol: AST.IndexedColumn) => {
+			if (indexedCol.expr) {
+				throw new QuereusError(`Indices on expressions are not supported yet.`, StatusCode.ERROR, undefined, indexedCol.expr.loc?.start.line, indexedCol.expr.loc?.start.column);
+			}
+			const colName = indexedCol.name;
+			if (!colName) {
+				// Should not happen if expr is checked first
+				throw new QuereusError(`Indexed column must be a simple column name.`, StatusCode.ERROR);
+			}
+			const tableColIndex = tableSchema.columnIndexMap.get(colName.toLowerCase());
+			if (tableColIndex === undefined) {
+				throw new QuereusError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			}
+			const tableColSchema = tableSchema.columns[tableColIndex];
+			return {
+				index: tableColIndex,
+				desc: indexedCol.direction === 'desc',
+				collation: indexedCol.collation || tableColSchema.collation // Use specified collation or inherit from table column
+			};
+		});
+
+		// Construct the IndexSchema object
+		const indexSchema: IndexSchema = {
+			name: indexName,
+			columns: Object.freeze(indexColumns),
+		};
+
+		try {
+			// Call xCreateIndex on the virtual table module
+			await tableSchema.vtabModule.xCreateIndex!(
+				this.db,
+				targetSchemaName,
+				tableName,
+				indexSchema
+			);
+
+			// Update the table schema with the new index
+			const updatedIndexes = [...(tableSchema.indexes || []), indexSchema];
+			(tableSchema as any).indexes = Object.freeze(updatedIndexes);
+
+			log(`Successfully created index %s on table %s.%s`, indexName, targetSchemaName, tableName);
+		} catch (e: any) {
+			const message = e instanceof Error ? e.message : String(e);
+			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
+			throw new QuereusError(`xCreateIndex failed for index '${indexName}' on table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		}
 	}
 
 	/**

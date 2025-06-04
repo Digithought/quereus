@@ -419,4 +419,25 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			logger.operation('Destroy Table', tableName, { schema: schemaName });
 		}
 	}
+
+	/**
+	 * Creates an index on a memory table
+	 */
+	async xCreateIndex(db: Database, schemaName: string, tableName: string, indexSchema: IndexSchema): Promise<void> {
+		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
+		const manager = this.tables.get(tableKey);
+
+		if (!manager) {
+			throw new QuereusError(`Memory table '${tableName}' not found in schema '${schemaName}'. Cannot create index.`, StatusCode.ERROR);
+		}
+
+		// Delegate to the manager to create the index
+		await manager.createIndex(indexSchema);
+
+		logger.operation('Create Index', indexSchema.name, {
+			table: tableName,
+			schema: schemaName,
+			columns: indexSchema.columns.map(col => `${col.index}${col.desc ? ' DESC' : ''}`)
+		});
+	}
 }

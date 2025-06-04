@@ -3,7 +3,8 @@ import * as AST from '../../parser/ast.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import { buildSelectStmt } from './select.js';
 import type { PlanningContext } from '../planning-context.js';
-import { buildCreateTableStmt } from './create-table.js';
+import { buildCreateTableStmt } from './ddl.js';
+import { buildCreateIndexStmt } from './ddl.js';
 import { buildDropTableStmt } from './drop-table.js';
 import { buildCreateViewStmt } from './create-view.js';
 import { buildDropViewStmt } from './drop-view.js';
@@ -21,6 +22,8 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildSelectStmt(ctx, stmt as AST.SelectStmt);
 			case 'createTable':
 				return buildCreateTableStmt(ctx, stmt as AST.CreateTableStmt);
+			case 'createIndex':
+				return buildCreateIndexStmt(ctx, stmt as AST.CreateIndexStmt);
 			case 'createView':
 				return buildCreateViewStmt(ctx, stmt as AST.CreateViewStmt);
 			case 'drop':

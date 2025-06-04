@@ -17,9 +17,11 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 - `05-vtab_memory.sqllogic` - Memory table virtual table functionality
 - `06-builtin_functions.sqllogic` - Built-in scalar and aggregate functions
 - `07-aggregates.sqllogic` - Aggregate functions, group by, having
+- `08-views.sqllogic` - VIEW functionality (CREATE VIEW, DROP VIEW, view updates)
+- `10.5-indexes.sqllogic` - INDEX functionality (CREATE INDEX, UNIQUE indexes, IF NOT EXISTS)
 
 ### ⚠️ In progress
-- `08-views.sqllogic` - VIEW functionality (CREATE VIEW, DROP VIEW, view updates)
+- `11-joins.sqllogic` - JOIN operations (some issues with column resolution)
 
 ### 🚧 Features To Be Implemented (Tests Will Fail Until Implemented)
 - `09-set_operations.sqllogic` - UNION, INTERSECT, EXCEPT operations

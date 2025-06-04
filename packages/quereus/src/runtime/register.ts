@@ -8,6 +8,7 @@ import { emitIn, emitScalarSubquery } from "./emit/subquery.js";
 import { emitBlock } from "./emit/block.js";
 import { emitParameterReference } from './emit/parameter.js';
 import { emitCreateTable } from './emit/create-table.js';
+import { emitCreateIndex } from './emit/create-index.js';
 import { emitDropTable } from './emit/drop-table.js';
 import { emitCreateView } from './emit/create-view.js';
 import { emitDropView } from './emit/drop-view.js';
@@ -86,6 +87,7 @@ export function registerEmitters() {
 
 	// DML/DDL emitters
 	registerEmitter(PlanNodeType.CreateTable, emitCreateTable as EmitterFunc);
+	registerEmitter(PlanNodeType.CreateIndex, emitCreateIndex as EmitterFunc);
 	registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateView, emitCreateView as EmitterFunc);
 	registerEmitter(PlanNodeType.DropView, emitDropView as EmitterFunc);

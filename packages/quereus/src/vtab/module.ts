@@ -2,7 +2,7 @@ import type { Database } from '../core/database.js'; // Assuming Database class 
 import type { VirtualTable } from './table.js';
 import type { IndexInfo } from './index-info.js';
 import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
-import type { TableSchema } from '../schema/table.js'; // Add import for TableSchema
+import type { TableSchema, IndexSchema } from '../schema/table.js'; // Add import for TableSchema and IndexSchema
 
 /**
  * Base interface for module-specific configuration passed to xCreate/xConnect.
@@ -87,6 +87,23 @@ export interface VirtualTableModule<
 		moduleName: string,
 		schemaName: string,
 		tableName: string
+	): Promise<void>;
+
+	/**
+	 * Creates an index on a virtual table.
+	 * Called by CREATE INDEX.
+	 *
+	 * @param db The database connection
+	 * @param schemaName The name of the database schema
+	 * @param tableName The name of the virtual table
+	 * @param indexSchema The schema definition for the index being created
+	 * @throws QuereusError on failure
+	 */
+	xCreateIndex?(
+		db: Database,
+		schemaName: string,
+		tableName: string,
+		indexSchema: IndexSchema
 	): Promise<void>;
 
 	/**
