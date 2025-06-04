@@ -30,18 +30,10 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightSource: AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
 		const joinType = plan.joinType;
 
-		// For performance, we'll materialize the right side
 		log('Starting %s join between %d left attrs and %d right attrs',
 			joinType.toUpperCase(), leftAttributes.length, rightAttributes.length);
 
-		// Materialize right side for better performance
-		const rightRows: Row[] = [];
-		for await (const rightRow of rightSource) {
-			rightRows.push(rightRow);
-		}
-		log('Materialized %d right rows', rightRows.length);
-
-		// Process left side and join with right
+		// Process left side and join with right (pure streaming)
 		for await (const leftRow of leftSource) {
 			// Set up left context
 			rctx.context.set(leftRowDescriptor, () => leftRow);
@@ -49,7 +41,8 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 			try {
 				let leftMatched = false;
 
-				for (const rightRow of rightRows) {
+				// Stream through right side for each left row
+				for await (const rightRow of rightSource) {
 					// Set up right context
 					rctx.context.set(rightRowDescriptor, () => rightRow);
 

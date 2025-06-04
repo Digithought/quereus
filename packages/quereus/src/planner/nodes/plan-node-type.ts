@@ -71,4 +71,7 @@ export enum PlanNodeType {
 
   // Utility
   Pragma = 'Pragma',
+
+  // Query execution
+  Cache = 'Cache',
 }

@@ -18,10 +18,59 @@ import { DeleteNode } from './nodes/delete-node.js';
 import { ConstraintCheckNode } from './nodes/constraint-check-node.js';
 import { RowOp } from '../schema/table.js';
 import type { RowDescriptor } from './nodes/plan-node.js';
-import type { Scope } from './scopes/scope.js';
 import { JoinNode } from './nodes/join-node.js';
+import { CacheNode } from './nodes/cache-node.js';
+import { CTENode } from './nodes/cte-node.js';
 
 const log = createLogger('optimizer');
+
+/**
+ * Optimizer tuning parameters - centralized configuration for magic numbers
+ */
+interface OptimizerTuning {
+	/** Row estimation defaults */
+	readonly defaultRowEstimate: number;
+
+	/** Join optimization */
+	readonly join: {
+		/** Minimum left side rows to consider caching right side */
+		readonly minLeftRowsForCaching: number;
+		/** Maximum right side rows to cache */
+		readonly maxRightRowsForCaching: number;
+		/** Cache threshold multiplier (rightSize * multiplier) */
+		readonly cacheThresholdMultiplier: number;
+		/** Maximum cache threshold */
+		readonly maxCacheThreshold: number;
+	};
+
+	/** CTE optimization */
+	readonly cte: {
+		/** Maximum CTE size to consider for caching */
+		readonly maxSizeForCaching: number;
+		/** Cache threshold multiplier for CTEs */
+		readonly cacheThresholdMultiplier: number;
+		/** Maximum cache threshold for CTEs */
+		readonly maxCacheThreshold: number;
+	};
+}
+
+/**
+ * Default optimizer tuning parameters
+ */
+const DEFAULT_TUNING: OptimizerTuning = {
+	defaultRowEstimate: 1000,
+	join: {
+		minLeftRowsForCaching: 1,
+		maxRightRowsForCaching: 50000,
+		cacheThresholdMultiplier: 2,
+		maxCacheThreshold: 10000
+	},
+	cte: {
+		maxSizeForCaching: 50000,
+		cacheThresholdMultiplier: 2,
+		maxCacheThreshold: 20000
+	}
+};
 
 /**
  * Optimization rule that transforms logical nodes to physical nodes
@@ -34,7 +83,7 @@ type OptimizationRule = (node: PlanNode, optimizer: Optimizer) => PlanNode | nul
 export class Optimizer {
 	private rules: Map<PlanNodeType, OptimizationRule[]> = new Map();
 
-	constructor() {
+	constructor(private tuning: OptimizerTuning = DEFAULT_TUNING) {
 		this.registerDefaultRules();
 	}
 
@@ -90,25 +139,8 @@ export class Optimizer {
 		}
 
 		if (node instanceof JoinNode) {
-			const optimizedLeft = this.optimizeNode(node.left) as RelationalPlanNode;
-			const optimizedRight = this.optimizeNode(node.right) as RelationalPlanNode;
-
-			// Also optimize the condition if present
-			const optimizedCondition = node.condition ? this.optimizeNode(node.condition) : undefined;
-
-			// If nothing changed, return original node
-			if (optimizedLeft === node.left && optimizedRight === node.right && optimizedCondition === node.condition) {
-				return node;
-			}
-
-			return new JoinNode(
-				node.scope,
-				optimizedLeft,
-				optimizedRight,
-				node.joinType,
-				optimizedCondition as any, // ScalarPlanNode
-				node.usingColumns
-			);
+			// Use specialized join optimization that may inject caching
+			return this.optimizeJoinCaching(node as JoinNode);
 		}
 
 		if (node instanceof AggregateNode) {
@@ -188,6 +220,21 @@ export class Optimizer {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
 			return new ConstraintCheckNode(node.scope, optimizedSource, node.table, node.operation, node.oldRowDescriptor, node.newRowDescriptor);
+		}
+
+		if (node instanceof CacheNode) {
+			const cacheNode = node as CacheNode;
+			const optimizedSource = this.optimizeNode(cacheNode.source) as RelationalPlanNode;
+			if (optimizedSource !== cacheNode.source) {
+				return new CacheNode(
+					cacheNode.scope,
+					optimizedSource,
+					cacheNode.strategy,
+					cacheNode.threshold,
+					cacheNode.estimatedCost
+				);
+			}
+			return cacheNode;
 		}
 
 		// For other nodes, return as-is
@@ -389,6 +436,60 @@ export class Optimizer {
 			};
 			return newSort;
 		});
+
+		// Rule: CTE optimization - inject caching when beneficial
+		this.registerRule(PlanNodeType.CTE, (node, optimizer) => {
+			if (!(node instanceof CTENode)) return null;
+
+			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+
+			// Heuristics for when to cache CTEs:
+			// 1. CTE has materialization hint
+			// 2. CTE is estimated to be reasonably sized
+			// 3. CTE is not already cached
+			const sourceSize = optimizedSource.estimatedRows ?? this.tuning.defaultRowEstimate;
+			const shouldCache = (
+				node.materializationHint === 'materialized' ||
+				(sourceSize > 0 && sourceSize < this.tuning.cte.maxSizeForCaching)
+			) && optimizedSource.nodeType !== PlanNodeType.Cache;
+
+			if (shouldCache) {
+				log('Adding cache to CTE %s (estimated rows: %d)', node.cteName, sourceSize);
+				const cacheThreshold = Math.min(
+					sourceSize * this.tuning.cte.cacheThresholdMultiplier,
+					this.tuning.cte.maxCacheThreshold
+				);
+				const cachedSource = new CacheNode(
+					optimizedSource.scope,
+					optimizedSource,
+					'memory',
+					cacheThreshold
+				);
+
+				return new CTENode(
+					node.scope,
+					node.cteName,
+					node.columns,
+					cachedSource,
+					node.materializationHint,
+					node.isRecursive
+				);
+			}
+
+			// If source was optimized but no caching needed
+			if (optimizedSource !== node.source) {
+				return new CTENode(
+					node.scope,
+					node.cteName,
+					node.columns,
+					optimizedSource,
+					node.materializationHint,
+					node.isRecursive
+				);
+			}
+
+			return null; // No transformation needed
+		});
 	}
 
 	/**
@@ -499,52 +600,59 @@ export class Optimizer {
 	 * Check if a node type can be directly marked as physical without transformation
 	 */
 	private canBePhysical(node: PlanNode): boolean {
-		// List node types that are already physical in nature
-		const directPhysicalTypes = [
-			PlanNodeType.Block,
-			PlanNodeType.TableReference,
-			PlanNodeType.TableScan,
-			PlanNodeType.TableFunctionCall,
-			PlanNodeType.Filter,
-			PlanNodeType.Project,
-			PlanNodeType.Distinct,
-			PlanNodeType.Sort,
-			PlanNodeType.LimitOffset,
-			PlanNodeType.Join,  // Allow join to be directly physical for now
-			PlanNodeType.Window,
-			PlanNodeType.Sequencing,
-			PlanNodeType.SetOperation,
-			PlanNodeType.Values,
-			PlanNodeType.SingleRow,
-			PlanNodeType.CTE,
-			PlanNodeType.RecursiveCTE,
-			// DDL operations
-			PlanNodeType.CreateTable,
-			PlanNodeType.DropTable,
-			PlanNodeType.CreateView,
-			PlanNodeType.DropView,
-			// DML operations (only when no constraints need checking)
-			PlanNodeType.Insert,
-			PlanNodeType.Update,
-			PlanNodeType.UpdateExecutor,
-			PlanNodeType.Delete,
-			// Constraint checking
-			PlanNodeType.ConstraintCheck,
-			// Other operations
-			PlanNodeType.Pragma,
-			PlanNodeType.Transaction,
-			// Scalar operations (already physical)
-			PlanNodeType.Literal,
-			PlanNodeType.BinaryOp,
-			PlanNodeType.UnaryOp,
-			PlanNodeType.ColumnReference,
-			PlanNodeType.ParameterReference,
-			PlanNodeType.ScalarFunctionCall,
-			PlanNodeType.CaseExpr,
-			PlanNodeType.Cast,
-			PlanNodeType.Collate,
-			// Add more as needed
-		];
-		return directPhysicalTypes.includes(node.nodeType);
+		// Types that need logical-to-physical transformation
+		const needsTransformation = new Set([
+			PlanNodeType.Aggregate,  // → StreamAggregate/HashAggregate
+			// Insert/Update/Delete might need ConstraintCheck wrapping (handled by rules)
+			// Most other types are directly physical
+		]);
+
+		return !needsTransformation.has(node.nodeType);
+	}
+
+	private optimizeJoinCaching(node: JoinNode): RelationalPlanNode {
+		// For nested loop joins, caching the right side can provide significant benefits
+		// when the right side will be scanned multiple times (once per left row)
+
+		const leftSize = node.left.estimatedRows ?? this.tuning.defaultRowEstimate;
+		const rightSize = node.right.estimatedRows ?? this.tuning.defaultRowEstimate;
+
+		// Heuristic: For nested loop joins, we almost always want to cache the right side
+		// unless it's obviously too large or already cached
+		const shouldCacheRight = node.right.nodeType !== PlanNodeType.Cache &&
+								// Always cache for small/medium datasets or when estimates are missing
+								(leftSize === 0 || leftSize > this.tuning.join.minLeftRowsForCaching ||
+								 rightSize === 0 || rightSize < this.tuning.join.maxRightRowsForCaching);
+
+		let optimizedLeft = this.optimizeNode(node.left) as RelationalPlanNode;
+		let optimizedRight = this.optimizeNode(node.right) as RelationalPlanNode;
+
+		if (shouldCacheRight) {
+			log('Adding cache to right side of join (left rows: %d, right rows: %d)',
+				leftSize, rightSize);
+			// Inject cache with appropriate threshold
+			const cacheThreshold = rightSize > 0 ?
+				Math.min(rightSize * this.tuning.join.cacheThresholdMultiplier, this.tuning.join.maxCacheThreshold) :
+				this.tuning.join.maxCacheThreshold;
+			optimizedRight = new CacheNode(
+				optimizedRight.scope,
+				optimizedRight,
+				'memory',
+				cacheThreshold
+			);
+		}
+
+		if (optimizedLeft !== node.left || optimizedRight !== node.right) {
+			return new JoinNode(
+				node.scope,
+				optimizedLeft,
+				optimizedRight,
+				node.joinType,
+				node.condition,
+				node.usingColumns
+			);
+		}
+
+		return node;
 	}
 }

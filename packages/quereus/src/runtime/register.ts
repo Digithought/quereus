@@ -38,6 +38,7 @@ import { emitRecursiveCTE } from './emit/recursive-cte.js';
 import { emitSetOperation } from './emit/set-operation.js';
 import { emitConstraintCheck } from './emit/constraint-check.js';
 import { emitLoopJoin } from './emit/join.js';
+import { emitCache } from './emit/cache.js';
 
 let registered = false;
 
@@ -103,4 +104,7 @@ export function registerEmitters() {
 
 	// Join emitters
 	registerEmitter(PlanNodeType.Join, emitLoopJoin as EmitterFunc);
+
+	// Cache emitter
+	registerEmitter(PlanNodeType.Cache, emitCache as EmitterFunc);
 }
