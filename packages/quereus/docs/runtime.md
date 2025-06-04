@@ -438,6 +438,64 @@ interface Attribute {
 - Optimizer preserves attribute IDs when converting logical to physical nodes
 - No node type checking required in `emitColumnReference`
 
+## Context Debugging and Tracing
+
+Quereus provides comprehensive debugging infrastructure for diagnosing context-related issues, which are common when developing new emitters or troubleshooting column reference resolution problems.
+
+**`quereus:runtime:context`**: General context lifecycle operations
+**`quereus:runtime:context:lookup`**: Column reference resolution attempts
+
+```bash
+# Enable all context tracing
+set DEBUG=quereus:runtime:context* && yarn test
+```
+
+### Debugging Common Issues
+
+**"No row context found" Errors:**
+1. Enable `DEBUG=quereus:runtime:context:lookup` to see what contexts are available
+2. Check if the expected attribute ID is present in any context
+3. Verify context push/pop timing with `DEBUG=quereus:runtime:context`
+
+**Context Lifecycle Issues:**
+1. Enable `DEBUG=quereus:runtime:context` to trace context management
+2. Look for mismatched PUSH/POP operations
+3. Verify contexts are available when column references are evaluated
+
+**Best Practices for Emitter Authors:**
+- Always use the logging helpers: `logContextPush()` and `logContextPop()`
+- Include meaningful notes that identify the operation context
+- Log attribute information when setting up row descriptors
+
+### Implementation for New Emitters
+
+```typescript
+import { createLogger } from '../../common/logger.js';
+
+const ctxLog = createLogger('runtime:context');
+
+function logContextPush(descriptor: RowDescriptor, note: string, attributes?: any[]) {
+	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
+	const attrNames = attributes ? attributes.map(attr => `${attr.name}(#${attr.id})`).join(',') : 'unknown';
+	ctxLog('PUSH context %s: attrs=[%s] names=[%s]', note, attrs.join(','), attrNames);
+}
+
+function logContextPop(descriptor: RowDescriptor, note: string) {
+	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
+	ctxLog('POP context %s: attrs=[%s]', note, attrs.join(','));
+}
+
+// In your emitter:
+ctx.context.set(rowDescriptor, () => row);
+logContextPush(rowDescriptor, 'my-operation', attributes);
+try {
+	// Process row...
+} finally {
+	logContextPop(rowDescriptor, 'my-operation');
+	ctx.context.delete(rowDescriptor);
+}
+```
+
 ## Bags vs Sets (Relational Semantics)
 
 Quereus implements a precise distinction between **bags** (multisets) and **sets** in its relational model, aligning with Third Manifesto principles and enabling sophisticated query optimizations.

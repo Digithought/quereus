@@ -1,69 +1,126 @@
 ## Project TODO List & Future Work
 
-This list outlines the remaining major features and refinements needed to make Quereus a more complete and robust VTab-centric SQL query processor.
+This list reflects the **current state** of Quereus - a surprisingly complete SQL query processor with the Titan runtime. Many core features are already implemented!
 
-**I. Parser & Compiler:**
+## I. Type System & Coercion ✅ (Mostly Complete)
 
-*   [P] **FROM Clause Subqueries (Derived Tables):** Basic structure exists (AST, schema registration). Requires:
-    *   [ ] Implement VDBE execution logic (e.g., materialization into ephemeral table).
-    *   [ ] Handle correlation with outer query values correctly (re-materialization or deferred execution).
-    *   [ ] Refactor nested loop generation logic for reuse within subquery materialization if subquery contains joins.
-*   [ ] **FROM Clause Table-Valued Functions:** Basic structure exists (AST, schema registration placeholder).
-    *   [ ] Implement schema lookup mechanism (via registry or module interface).
-    *   [ ] Define VDBE/VTab mechanism for passing arguments via VFilter.
-    *   [ ] Implement VDBE execution logic for calling functions.
+**Type Coercion**
+- [X] **Binary Operations**: All comparison and arithmetic operators ✅
+- [X] **Aggregate Functions**: Context-aware coercion (SUM vs COUNT vs JSON) ✅
+- [X] **Unary Operations**: NOT, IS NULL, unary +/-, bitwise operators ✅  
+- [X] **CAST Operations**: Full explicit type conversion ✅
+- [ ] **Built-in Scalar Functions**: Apply coercion to functions expecting numeric inputs
+- [ ] **ORDER BY**: Numeric sorting of string columns using coercion
 
-*   [ ] **Query Planning:**
-    *   [ ] Add syntax to table schema to specify estimated rows
-    *   [ ] Estimate rows for subqueries
+**Type Affinity & Storage**
+- [ ] **INSERT Type Affinity**: Column type affinity during INSERT operations
+- [ ] **Column Constraints**: NOT NULL, CHECK constraints with proper type coercion
 
-Review items:
+## II. Core SQL Features ✅ (Complete!)
 
-*   [ ] In SchemaManager.declareVtab(), there's a placeholder schema pattern where virtual table modules should override the placeholder columns. This could be clearer with a base interface or method.
-*   [ ] In importSchemaJson(), the constraint expressions are deserialized as placeholder null literals. This is a known limitation but could pose problems if the schema is being used with actual constraints.
-*   [ ] Some of the type casting with satisfies in _findTable() is a good pattern but might be unnecessary in some places.
-*   [ ] The error handling for vtab destruction in dropTable() is asynchronous but doesn't fully handle the failure case. This could be improved, potentially by returning the promise to the caller.
-*   [ ] In affinity.ts, there was a TODO comment about more robust SQLite-like parsing for edge cases in the tryParseReal function. This might need future attention to fully match SQLite's behavior.
-*   [ ] In comparison.ts, the collation system relies on a global map of collation functions. This works, but you might want to consider making it instance-based in the future for better isolation.
-*   [ ] The VdbeRuntime in runtime.ts has fairly complex stack management logic. It might be worth considering additional bounds checking to prevent potential issues.
-*   [ ] The error handling in several of the instruction handlers seems robust, but error propagation between async calls should be carefully tested, especially in the VTab-related code.
-*   [ ] The P4 operand types in instruction.ts have several placeholder types that might need to be fully implemented as the codebase evolves.
-*   [ ] Anywhere we catch our own exceptions, we should instead have a way to check without throw/catch (not an exceptional exception)
-*   [ ] Review for redundant and DEBUG only checks through inner loop runtime and memory cursor code paths
+**SELECT Operations**
+- [X] **Basic SELECT**: Project, Filter, Sort, Distinct, Limit/Offset ✅
+- [X] **Aggregate Queries**: GROUP BY, HAVING, all aggregate functions ✅
+- [X] **Window Functions**: ROW_NUMBER() with basic window support ✅
+- [X] **Set Operations**: UNION, INTERSECT, EXCEPT (all variants) ✅
 
-**II. VDBE & Compiler Core:**
+**FROM Clause**
+- [X] **Table References**: Full table and alias support ✅
+- [X] **Subqueries**: Scalar subqueries, correlated subqueries ✅
+- [X] **CTEs**: Both regular and recursive WITH support ✅
+- [X] **Table-Valued Functions**: Complete TVF framework ✅
 
-*   [ ] **Opcode Optimization:**
-    *   [ ] Consider VDBE optimizations (e.g., peephole).
-    *   [ ] Cache common allocations (e.g., small buffers for `ZeroBlob`).
-*   [ ] **VDBE Stack Frame Robustness:** Review stack/frame pointer management for edge cases and accuracy.
-*   [ ] **Runtime Checks:** Add explicit runtime checks for existence of required methods before calling (e.g., `xStep`/`xFinal` in `AggStep`/`AggFinal`).
-*   [ ] **Compiler/Parser Syntax Alignment:** Ensure parser, compiler, and documentation consistently reflect the intended SQL syntax (e.g., `CREATE TABLE ... USING`).
+**DML Operations** 
+- [X] **INSERT**: Multi-row, INSERT...SELECT, with RETURNING ✅
+- [X] **UPDATE**: Full UPDATE with assignments, with RETURNING ✅
+- [X] **DELETE**: Full DELETE with predicates, with RETURNING ✅
 
-**III. Virtual Table Enhancements:**
+**DDL Operations**
+- [X] **CREATE/DROP TABLE**: Full table management ✅
+- [X] **CREATE/DROP VIEW**: Full view support ✅
 
-*   [P] **`MemoryTable` Improvements:**
-    *   [ ] Enhance `xBestIndex` to utilize more constraint types (`LIKE`, `GLOB`, `IN`, range scans on non-leading composite key parts). Basic range/EQ planning exists.
-    *   [P] More efficient transactional merge/read: Layer cursors merge modifications, but performance under heavy load or deep layer chains could be optimized.
-    *   [ ] Improve `xBestIndex` and layer cursor scan planning to better utilize B-Tree ranges.
-    *   [ ] Honoring order of ephemeral sorting index
-*   [P] **VTab Transactionality:** Transaction hooks (`xBegin`, `xCommit`, etc.) and savepoint hooks exist in the interface and `MemoryTable`. Need more examples/guidance.
-*   [ ] **VTab Shadow Names:**
-    *   [ ] Implement `xShadowName` VTab module method check. (Interface method exists, check not implemented).
-*   [ ] **Indexable VTabs:** Support `CREATE INDEX` on virtual tables that implement necessary methods (e.g., `xFindFunction` for indexed lookups). (Parser supports, compiler no-op).
+**Advanced SQL**
+- [X] **CASE Expressions**: Both simple and searched CASE ✅
+- [X] **Scalar Functions**: Complete function call framework ✅
+- [X] **Parameter References**: Named and positional parameters ✅
+- [X] **Transaction Control**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT ✅
 
-**V. Testing & Documentation:**
+## III. Runtime Architecture ✅ (Titan is Working!)
 
-*   [ ] **Comprehensive Test Suite:**
-    *   [ ] Performance/regression tests (benchmarks).
-    *   [ ] CI configuration for automated testing (quick, full, browser).
-    *   [ ] Use SQL logic tests (porting relevant subsets from SQLite) if feasible.
-*   [ ] **Documentation - SQLite variances:** Detailed description of how this system varies from SQLite
-*   [ ] **Documentation - API:** Generate API documentation (e.g., using TypeDoc).
-*   [ ] **Documentation - VTabs:** Write a guide on creating custom Virtual Table modules.
-*   [P] **Documentation - subsystems:** Give each subsystem it's own architectural overview document
+**Query Execution**
+- [X] **Instruction Scheduling**: Async instruction execution ✅
+- [X] **Context Management**: Row descriptors and attribute resolution ✅
+- [X] **Stream Processing**: Efficient async iterator patterns ✅
+- [X] **Memory Management**: Proper context cleanup and resource management ✅
+
+**Query Planning**
+- [X] **Physical Plans**: Complete planner → emitter → runtime pipeline ✅
+- [X] **Correlation Handling**: Correlated subqueries working correctly ✅
+- [ ] **Cost-Based Optimization**: Better cost estimates for plan selection
+- [ ] **Join Reordering**: Optimize join order (joins not yet implemented)
+
+## IV. Virtual Table Framework ✅ (Robust!)
+
+**Core VTab Support**
+- [X] **xConnect/xQuery**: Full table scan and query support ✅
+- [X] **xUpdate**: INSERT/UPDATE/DELETE operations ✅ 
+- [X] **Transaction Integration**: VTab transaction coordination ✅
+- [X] **Connection Management**: Proper connection lifecycle ✅
+
+**MemoryTable Improvements**
+- [P] **Constraint Optimization**: Better xBestIndex for LIKE, GLOB, IN, ranges
+- [P] **Transaction Performance**: Optimize layer cursor merge operations
+
+## V. Missing Core Features (The Real TODOs)
+
+**JOIN Operations** 
+- [ ] **INNER/LEFT/RIGHT JOIN**: Basic join support (major gap!)
+- [ ] **JOIN Optimization**: Join reordering and optimization
+- [ ] **CROSS JOIN**: Cartesian product support
+
+**Advanced Window Functions**
+- [ ] **RANK/DENSE_RANK**: Ranking functions
+- [ ] **LAG/LEAD**: Offset functions  
+- [ ] **Windowed Aggregates**: SUM/COUNT/etc. with OVER clauses
+- [ ] **PARTITION BY**: Proper partitioning support
+
+**Missing SQL Features**
+- [ ] **EXISTS/NOT EXISTS**: Existence checks
+- [ ] **Recursive Queries**: More robust WITH RECURSIVE implementation
+
+## VI. Polish & Optimization
+
+**Performance**
+- [ ] **Index Usage**: Better index selection recommendations
+- [ ] **Query Caching**: Result caching and invalidation
+- [ ] **Memory Pooling**: Reduce allocation overhead in hot paths
+
+**Error Handling** 
+- [ ] **Better Error Messages**: More descriptive error contexts; line numbers on everything that supports it
+- [ ] **Error Recovery**: Better parser/runtime error recovery
+- [ ] **Constraint Violations**: Proper constraint error handling
+
+**Testing & Quality**
+- [ ] **JOIN Test Coverage**: Comprehensive join testing once implemented
+- [ ] **Performance Benchmarks**: Regression testing for performance  
+- [ ] **Edge Case Testing**: Boundary conditions and error cases
+
+## VII. Future Enhancements
+
+**Ecosystem Integration**
+- [ ] **Driver Development**: Native drivers for popular languages
+- [ ] **ORM Integration**: Adapters for TypeScript/JavaScript ORMs
+- [ ] **Cloud Integration**: Cloud-native deployment options
+
+**Advanced Features**
+- [ ] **Distributed Queries**: Query federation across data sources
+- [ ] **Real-time Queries**: Streaming query execution
+
+---
 
 **Legend:**
-*   `[ ]`: Not Started
-*   `[P]`: Partially Implemented / In Progress / Needs Review
-*   `[X]`: Completed / Mostly Complete
+- `[ ]`: Not Started
+- `[P]`: Partially Implemented / In Progress  
+- `[X]`: Completed ✅
+
+**Key Insight:** Quereus is **much more complete** than initially thought! The major missing piece is **JOIN operations** - once those are implemented, this becomes a very capable SQL engine.

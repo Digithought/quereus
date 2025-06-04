@@ -7,9 +7,11 @@ import type { VirtualTableConnection } from '../vtab/connection.js';
 import { createLogger } from '../common/logger.js';
 import type { MemoryVirtualTableConnection } from '../vtab/memory/connection.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
+import type { RowDescriptor } from '../planner/nodes/plan-node.js';
 
 const log = createLogger('runtime:utils');
 const errorLog = log.extend('error');
+export const ctxLog = createLogger('runtime:context');
 
 export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
 	return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
@@ -114,4 +116,21 @@ export async function disconnectVTable(ctx: RuntimeContext, vtab: VirtualTable):
 			errorLog(`Error during xDisconnect for table '${vtab.tableName}': ${e}`);
 		});
 	}
+}
+
+/**
+ * Helper function to log context push operations
+ */
+export function logContextPush(descriptor: RowDescriptor, note: string, attributes?: any[]) {
+	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
+	const attrNames = attributes ? attributes.map(attr => `${attr.name}(#${attr.id})`).join(',') : 'unknown';
+	ctxLog('PUSH context %s: attrs=[%s] names=[%s]', note, attrs.join(','), attrNames);
+}
+
+/**
+ * Helper function to log context pop operations
+ */
+export function logContextPop(descriptor: RowDescriptor, note: string) {
+	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
+	ctxLog('POP context %s: attrs=[%s]', note, attrs.join(','));
 }

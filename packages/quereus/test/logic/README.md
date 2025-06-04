@@ -58,7 +58,7 @@ yarn test     # Show execution trace
 
 You can also turn on log viewing by setting `DEBUG=quereus:...`
 
-If you need to create test scripts, note that this is how tests are run:
+If you need to create and run test scripts, note that this is how tests are run:
 
 ```bash
 cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js 'packages/quereus/test/**/*.spec.ts' --colors --bail

@@ -5,6 +5,7 @@ import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
 import { compareSqlValues } from "../../util/comparison.js";
+import { coerceForComparison, coerceToNumberForArithmetic } from "../../util/coercion.js";
 import type { EmissionContext } from "../emission-context.js";
 
 export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
@@ -58,18 +59,18 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 					return null;
 				}
 			} else {
-				const n1 = Number(v1);
-				const n2 = Number(v2);
-				if (!isNaN(n1) && !isNaN(n2)) {
-					try {
-						const result = inner(n1 as any, n2 as any);
-						if (!Number.isFinite(result)) {
-							return null;
-						}
-						return result;
-					} catch {
+				// Use shared coercion function for arithmetic context
+				const n1 = coerceToNumberForArithmetic(v1);
+				const n2 = coerceToNumberForArithmetic(v2);
+
+				try {
+					const result = inner(n1, n2);
+					if (!Number.isFinite(result)) {
 						return null;
 					}
+					return result;
+				} catch {
+					return null;
 				}
 			}
 		}
@@ -107,7 +108,10 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL = anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2, collationName) === 0 ? 1 : 0;
+
+				// Apply type coercion before comparison
+				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+				return compareSqlValues(coercedV1, coercedV2, collationName) === 0 ? 1 : 0;
 			};
 			break;
 		case '!=':
@@ -115,35 +119,50 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL != anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2, collationName) !== 0 ? 1 : 0;
+
+				// Apply type coercion before comparison
+				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+				return compareSqlValues(coercedV1, coercedV2, collationName) !== 0 ? 1 : 0;
 			};
 			break;
 		case '<':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL < anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2, collationName) < 0 ? 1 : 0;
+
+				// Apply type coercion before comparison
+				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+				return compareSqlValues(coercedV1, coercedV2, collationName) < 0 ? 1 : 0;
 			};
 			break;
 		case '<=':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL <= anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2, collationName) <= 0 ? 1 : 0;
+
+				// Apply type coercion before comparison
+				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+				return compareSqlValues(coercedV1, coercedV2, collationName) <= 0 ? 1 : 0;
 			};
 			break;
 		case '>':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL > anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2, collationName) > 0 ? 1 : 0;
+
+				// Apply type coercion before comparison
+				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+				return compareSqlValues(coercedV1, coercedV2, collationName) > 0 ? 1 : 0;
 			};
 			break;
 		case '>=':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL >= anything -> NULL
 				if (v1 === null || v2 === null) return null;
-				return compareSqlValues(v1, v2, collationName) >= 0 ? 1 : 0;
+
+				// Apply type coercion before comparison
+				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
+				return compareSqlValues(coercedV1, coercedV2, collationName) >= 0 ? 1 : 0;
 			};
 			break;
 		default:

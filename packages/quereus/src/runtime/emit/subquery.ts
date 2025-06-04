@@ -1,6 +1,6 @@
 import type { Instruction, RuntimeContext } from '../types.js';
 import type { InNode, ScalarSubqueryNode } from '../../planner/nodes/subquery.js';
-import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
+import { emitPlanNode } from '../emitters.js';
 import type { SqlValue, Row } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import type { EmissionContext } from '../emission-context.js';
