@@ -37,6 +37,7 @@ import { emitSequencing } from './emit/sequencing.js';
 import { emitRecursiveCTE } from './emit/recursive-cte.js';
 import { emitSetOperation } from './emit/set-operation.js';
 import { emitConstraintCheck } from './emit/constraint-check.js';
+import { emitLoopJoin } from './emit/join.js';
 
 let registered = false;
 
@@ -99,4 +100,7 @@ export function registerEmitters() {
 
 	// Set operation emitter
 	registerEmitter(PlanNodeType.SetOperation, emitSetOperation as EmitterFunc);
+
+	// Join emitters
+	registerEmitter(PlanNodeType.Join, emitLoopJoin as EmitterFunc);
 }

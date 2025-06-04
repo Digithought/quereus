@@ -32,29 +32,67 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 
 		const sourceType = this.source.getType();
 
-		this.outputTypeCache = new Cached(() => ({
-			typeClass: 'relation',
-			isReadOnly: sourceType.isReadOnly,
-			isSet: sourceType.isSet,
-			columns: this.projections.map((proj, index) => ({
-				name: proj.alias ?? expressionToString(proj.node.expression),
-				type: proj.node.getType(),
-				generated: proj.node.nodeType !== PlanNodeType.ColumnReference,
-			})),
-			// TODO: Infer keys based on DISTINCT and projection's effect on input keys
-			keys: [],
-			// TODO: propagate row constraints that don't have projected off columns
-			rowConstraints: [],
-		} as RelationType));
+		this.outputTypeCache = new Cached(() => {
+			// Build column names with proper duplicate handling
+			const columnNames: string[] = [];
+			const nameCount = new Map<string, number>();
+
+			const columns = this.projections.map((proj, index) => {
+				// Determine base column name
+				let baseName: string;
+				if (proj.alias) {
+					baseName = proj.alias;
+				} else if (proj.node instanceof ColumnReferenceNode) {
+					// For column references, use the unqualified column name
+					baseName = proj.node.expression.name;
+				} else {
+					// For expressions, use the string representation
+					baseName = expressionToString(proj.node.expression);
+				}
+
+				// Handle duplicate names
+				let finalName: string;
+				const currentCount = nameCount.get(baseName) || 0;
+				if (currentCount === 0) {
+					// First occurrence - use the base name
+					finalName = baseName;
+				} else {
+					// Subsequent occurrences - add numbered suffix
+					finalName = `${baseName}:${currentCount}`;
+				}
+				nameCount.set(baseName, currentCount + 1);
+				columnNames.push(finalName);
+
+				return {
+					name: finalName,
+					type: proj.node.getType(),
+					generated: proj.node.nodeType !== PlanNodeType.ColumnReference,
+				};
+			});
+
+			return {
+				typeClass: 'relation',
+				isReadOnly: sourceType.isReadOnly,
+				isSet: sourceType.isSet,
+				columns,
+				// TODO: Infer keys based on DISTINCT and projection's effect on input keys
+				keys: [],
+				// TODO: propagate row constraints that don't have projected off columns
+				rowConstraints: [],
+			} as RelationType;
+		});
 
 		this.attributesCache = new Cached(() => {
+			// Get the computed column names from the type
+			const outputType = this.getType();
+
 			// For each projection, preserve attribute ID if it's a simple column reference
 			return this.projections.map((proj, index) => {
 				// If this projection is a simple column reference, preserve its attribute ID
 				if (proj.node instanceof ColumnReferenceNode) {
 					return {
 						id: proj.node.attributeId,
-						name: proj.alias ?? proj.node.expression.name,
+						name: outputType.columns[index].name, // Use the deduplicated name
 						type: proj.node.getType(),
 						sourceRelation: `${this.nodeType}:${this.id}`
 					};
@@ -62,7 +100,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 					// For computed expressions, generate new attribute ID
 					return {
 						id: PlanNode.nextAttrId(),
-						name: proj.alias ?? expressionToString(proj.node.expression),
+						name: outputType.columns[index].name, // Use the deduplicated name
 						type: proj.node.getType(),
 						sourceRelation: `${this.nodeType}:${this.id}`
 					};
