@@ -17,16 +17,24 @@ export function emitUpdateExecutor(plan: UpdateExecutorNode, ctx: EmissionContex
 	const pkColumnIndicesInSchema = tableSchema.primaryKeyDefinition.map(pkColDef => pkColDef.index);
 
 	async function executeUpdate(vtab: any, updatedRow: Row): Promise<void> {
-		// Extract primary key values from the updated row (these should be the original key values)
-		const keyValues: SqlValue[] = [];
-		for (const pkColIdx of pkColumnIndicesInSchema) {
-			if (pkColIdx >= updatedRow.length) {
-				throw new QuereusError(`PK column index ${pkColIdx} out of bounds for updated row length ${updatedRow.length} in UPDATE on '${tableSchema.name}'.`, StatusCode.INTERNAL);
-			}
-			keyValues.push(updatedRow[pkColIdx]);
+		// For UPDATE operations, we need the OLD row's primary key values to identify which row to update
+		// The NEW row values are what we're updating TO
+		const oldRowKeyValues = (updatedRow as any).__oldRowKeyValues;
+
+		if (!oldRowKeyValues) {
+			throw new QuereusError(`Missing OLD row key values for UPDATE on '${tableSchema.name}'. Expected from ConstraintCheck.`, StatusCode.INTERNAL);
 		}
 
-		// Perform the actual update via xUpdate
+		// Extract primary key values from the OLD row (these identify which row to update)
+		const keyValues: SqlValue[] = [];
+		for (const pkColIdx of pkColumnIndicesInSchema) {
+			if (pkColIdx >= oldRowKeyValues.length) {
+				throw new QuereusError(`PK column index ${pkColIdx} out of bounds for OLD row length ${oldRowKeyValues.length} in UPDATE on '${tableSchema.name}'.`, StatusCode.INTERNAL);
+			}
+			keyValues.push(oldRowKeyValues[pkColIdx]);
+		}
+
+		// Perform the actual update via xUpdate: update the row identified by keyValues to have the values in updatedRow
 		await vtab.xUpdate!('update', updatedRow, keyValues);
 	}
 

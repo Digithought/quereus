@@ -12,6 +12,9 @@ import { CTENode } from './nodes/cte-node.js';
 import { CacheNode } from './nodes/cache-node.js';
 import { RowOp } from '../schema/table.js';
 import type { Optimizer } from './optimizer.js';
+import { UpdateExecutorNode } from './nodes/update-executor-node.js';
+import { ReturningNode, type ReturningProjection } from './nodes/returning-node.js';
+import { ProjectNode } from './nodes/project-node.js';
 
 const log = createLogger('optimizer-rules');
 
@@ -121,42 +124,69 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 		return insertWithConstraints;
 	});
 
-	// Rule: Update with constraints → ConstraintCheck + Update
-	registerRule(PlanNodeType.Update, (node, optimizer) => {
-		if (!(node instanceof UpdateNode)) return null;
+	// Rule: UpdateExecutor with constraints → UpdateExecutor + ConstraintCheck + Update
+	registerRule(PlanNodeType.UpdateExecutor, (node, optimizer) => {
+		if (!(node instanceof UpdateExecutorNode)) return null;
 
-		// Check if the table has constraints that need checking
-		const tableSchema = node.table.tableSchema;
+		// If source is already a ConstraintCheckNode, optimization has been applied - just ensure it's optimized
+		if (node.source.nodeType === PlanNodeType.ConstraintCheck) {
+			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource !== node.source) {
+				return new UpdateExecutorNode(node.scope, optimizedSource, node.table);
+			}
+			return null; // Already optimized
+		}
+
+		// Check if the child is an UpdateNode
+		if (node.source.nodeType !== PlanNodeType.Update) {
+			// Optimize the source and return if changed
+			const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource !== node.source) {
+				return new UpdateExecutorNode(node.scope, optimizedSource, node.table);
+			}
+			return null;
+		}
+
+		const updateNode = node.source as UpdateNode;
+		const tableSchema = updateNode.table.tableSchema;
 		const hasConstraints = optimizer.hasConstraintsForOperation(tableSchema, RowOp.UPDATE);
 
 		if (!hasConstraints) {
-			return null; // No constraints, no transformation needed
+			// No constraints, just optimize the UpdateNode
+			const optimizedUpdate = optimizer.optimizeNode(updateNode) as RelationalPlanNode;
+			if (optimizedUpdate !== updateNode) {
+				return new UpdateExecutorNode(node.scope, optimizedUpdate, node.table);
+			}
+			return null;
 		}
 
-		// Create row descriptors for constraint checking
-		const { oldRowDescriptor, newRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.UPDATE);
+		// Has constraints - inject ConstraintCheckNode between UpdateExecutor and UpdateNode
+		const { oldRowDescriptor, newRowDescriptor } = optimizer.createRowDescriptors(updateNode, RowOp.UPDATE);
 
-		// Create the optimized DML node with row descriptors
-		const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+		// Create the optimized UpdateNode with row descriptors
+		const optimizedSource = optimizer.optimizeNode(updateNode.source) as RelationalPlanNode;
 		const updateWithDescriptors = new UpdateNode(
-			node.scope,
-			node.table,
-			node.assignments,
+			updateNode.scope,
+			updateNode.table,
+			updateNode.assignments,
 			optimizedSource,
-			node.onConflict,
+			updateNode.onConflict,
 			oldRowDescriptor,
 			newRowDescriptor
 		);
 
-		// Wrap with constraint checking
-		return new ConstraintCheckNode(
-			node.scope,
+		// Create ConstraintCheckNode that validates the UpdateNode output
+		const constraintCheckNode = new ConstraintCheckNode(
+			updateNode.scope,
 			updateWithDescriptors,
-			node.table,
+			updateNode.table,
 			RowOp.UPDATE,
 			oldRowDescriptor,
 			newRowDescriptor
 		);
+
+		// Return UpdateExecutorNode with ConstraintCheckNode as source
+		return new UpdateExecutorNode(node.scope, constraintCheckNode, node.table);
 	});
 
 	// Rule: Delete with constraints → ConstraintCheck + Delete
@@ -171,26 +201,29 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 			return null; // No constraints, no transformation needed
 		}
 
+		// For DELETE, we need to check constraints BEFORE deletion
+		// So we put ConstraintCheck on the source rows, then pass them to DeleteNode
+		const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+
 		// Create row descriptors for constraint checking
 		const { oldRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.DELETE);
 
-		// Create the optimized DML node with row descriptors
-		const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
-		const deleteWithDescriptors = new DeleteNode(
+		// First, check constraints on the rows to be deleted
+		const constraintCheckNode = new ConstraintCheckNode(
 			node.scope,
-			node.table,
-			optimizedSource,
-			oldRowDescriptor
-		);
-
-		// Wrap with constraint checking
-		return new ConstraintCheckNode(
-			node.scope,
-			deleteWithDescriptors,
+			optimizedSource, // Check the source rows BEFORE deletion
 			node.table,
 			RowOp.DELETE,
 			oldRowDescriptor,
 			undefined // newRowDescriptor
+		);
+
+		// Then create the delete node that receives the validated rows
+		return new DeleteNode(
+			node.scope,
+			node.table,
+			constraintCheckNode, // Use constraint-checked rows as source
+			oldRowDescriptor
 		);
 	});
 
@@ -263,6 +296,99 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 				node.materializationHint,
 				node.isRecursive
 			);
+		}
+
+		return null; // No transformation needed
+	});
+
+	// Rule: ProjectNode wrapping VoidNode → ReturningNode for correct RETURNING semantics
+	registerRule(PlanNodeType.Project, (node, optimizer) => {
+		if (!(node instanceof ProjectNode)) return null;
+
+		// Check if we're projecting from a VoidNode (like UpdateExecutorNode, InsertNode, DeleteNode)
+		// This indicates a RETURNING clause that should execute after the DML operation
+		const source = node.source;
+
+		// Handle UpdateExecutorNode
+		if (source.nodeType === PlanNodeType.UpdateExecutor && source instanceof UpdateExecutorNode) {
+			log('Converting ProjectNode(UpdateExecutorNode) to ReturningNode for correct RETURNING semantics');
+
+			// The UpdateExecutorNode has a constraint-checked source that we want to project from
+			const projectionSource = source.source;
+
+			// Convert ProjectNode projections to ReturningProjections
+			const returningProjections: ReturningProjection[] = node.projections.map(proj => ({
+				node: proj.node,
+				alias: proj.alias
+			}));
+
+			// Optimize both the executor and projection source
+			const optimizedExecutor = optimizer.optimizeNode(source) as UpdateExecutorNode;
+			const optimizedProjectionSource = optimizer.optimizeNode(projectionSource) as RelationalPlanNode;
+
+			return new ReturningNode(
+				node.scope,
+				optimizedExecutor,
+				optimizedProjectionSource,
+				returningProjections
+			);
+		}
+
+		// Handle InsertNode
+		if (source.nodeType === PlanNodeType.Insert && source instanceof InsertNode) {
+			log('Converting ProjectNode(InsertNode) to ReturningNode for correct RETURNING semantics');
+
+			// For InsertNode, the projection source should be the InsertNode itself
+			// since it represents the inserted rows with table structure
+			const projectionSource = source;
+
+			// Convert ProjectNode projections to ReturningProjections
+			const returningProjections: ReturningProjection[] = node.projections.map(proj => ({
+				node: proj.node,
+				alias: proj.alias
+			}));
+
+			// Optimize both the executor and projection source
+			const optimizedExecutor = optimizer.optimizeNode(source) as InsertNode;
+			const optimizedProjectionSource = optimizedExecutor; // Use the optimized InsertNode
+
+			return new ReturningNode(
+				node.scope,
+				optimizedExecutor,
+				optimizedProjectionSource,
+				returningProjections
+			);
+		}
+
+		// Handle DeleteNode
+		if (source.nodeType === PlanNodeType.Delete && source instanceof DeleteNode) {
+			log('Converting ProjectNode(DeleteNode) to ReturningNode for correct RETURNING semantics');
+
+			// For DeleteNode, the projection source is the filtered source
+			const projectionSource = source.source;
+
+			// Convert ProjectNode projections to ReturningProjections
+			const returningProjections: ReturningProjection[] = node.projections.map(proj => ({
+				node: proj.node,
+				alias: proj.alias
+			}));
+
+			// Optimize both the executor and projection source
+			const optimizedExecutor = optimizer.optimizeNode(source) as DeleteNode;
+			const optimizedProjectionSource = optimizer.optimizeNode(projectionSource) as RelationalPlanNode;
+
+			return new ReturningNode(
+				node.scope,
+				optimizedExecutor,
+				optimizedProjectionSource,
+				returningProjections
+			);
+		}
+
+		// For other cases, just optimize the source
+		const optimizedSource = optimizer.optimizeNode(source) as RelationalPlanNode;
+		if (optimizedSource !== source) {
+			return new ProjectNode(node.scope, optimizedSource, node.projections);
 		}
 
 		return null; // No transformation needed

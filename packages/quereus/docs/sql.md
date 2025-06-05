@@ -226,7 +226,7 @@ column_name [data_type] [column_constraint...]
 { primary key [asc | desc] [conflict_clause] [autoincrement]
 | not null [conflict_clause]
 | unique [conflict_clause]
-| check (expr) [on {insert | update | delete}[,...]]
+| check [on {insert | update | delete}[,...]] (expr)
 | default value
 | collate collation_name
 | references foreign_table [(column[,...])] [ref_actions]
@@ -238,7 +238,7 @@ column_name [data_type] [column_constraint...]
 [constraint name]
 { primary key ([column [asc | desc][,...]]) [conflict_clause]
 | unique (column[,...]) [conflict_clause]
-| check (expr) [on {insert | update | delete}[,...]]
+| check [on {insert | update | delete}[,...]] (expr)
 | foreign key (column[,...]) references foreign_table [(column[,...])] [ref_actions] }
 ```
 
@@ -272,7 +272,7 @@ create table employees (
 create table order_items (
   order_id integer,
   product_id integer,
-  quantity integer not null check (quantity > 0) on insert,
+  quantity integer not null check on insert (quantity > 0),
   price real not null check (price >= 0),
   discount real default 0 check (discount >= 0 and discount <= 1),
   primary key (order_id, product_id),
@@ -1223,12 +1223,12 @@ The check constraint ensures that values in a column satisfy a specific conditio
 
 **Syntax - Column Constraint:**
 ```sql
-column_name data_type check (expression) [on operation_list]
+column_name data_type check [on operation_list] (expression)
 ```
 
 **Syntax - Table Constraint:**
 ```sql
-check (expression) [on operation_list]
+check [on operation_list] (expression)
 ```
 
 The optional `on operation_list` specifies when the constraint should be checked (insert, update, delete).
@@ -1258,7 +1258,7 @@ create table audit_log (
   record_id integer not null,
   action text not null,
   timestamp text not null,
-  check (action in ('insert', 'update', 'delete')) on insert
+  check on insert (action in ('insert', 'update', 'delete'))
 );
 ```
 
@@ -1717,8 +1717,8 @@ create table logs (timestamp integer primary key desc, event text);
 
 -- Quereus: CHECK constraints with operation specificity
 create table products (
-  price real check (price >= 0) on insert,
-  stock integer check (stock >= 0) on update
+  price real check on insert (price >= 0),
+  stock integer check on update (stock >= 0)
 );
 ```
 
@@ -1859,7 +1859,7 @@ column_constraint  = [ "constraint" name ]
                      ( primary_key_clause
                      | "not" "null" [ conflict_clause ]
                      | "unique" [ conflict_clause ]
-                     | "check" "(" expr ")" [ "on" row_op_list ]
+                     | "check" [ "on" row_op_list ] "(" expr ")"
                      | "default" ( signed_number | literal_value | "(" expr ")" )
                      | "collate" collation_name
                      | foreign_key_clause
@@ -1870,7 +1870,7 @@ primary_key_clause = "primary" "key" [ ( "asc" | "desc" ) ] [ conflict_clause ] 
 table_constraint   = [ "constraint" name ]
                      ( "primary" "key" "(" indexed_column { "," indexed_column } ")" [ conflict_clause ]
                      | "unique" "(" column_name { "," column_name } ")" [ conflict_clause ]
-                     | "check" "(" expr ")" [ "on" row_op_list ]
+                     | "check" [ "on" row_op_list ] "(" expr ")"
                      | "foreign" "key" "(" column_name { "," column_name } ")" foreign_key_clause ) ;
 
 foreign_key_clause = "references" foreign_table [ "(" column_name { "," column_name } ")" ]

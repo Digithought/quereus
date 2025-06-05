@@ -33,8 +33,16 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 			updatedRow[targetColIdx] = assignmentValues[i];
 		}
 
-		// Yield the updated row for constraint checking
-		yield updatedRow;
+		// For UPDATE operations, we need to provide both OLD and NEW row data to constraint checking
+		// Store both in a special structure that constraint checking can access
+		const updateRowData = {
+			oldRow: sourceRow,
+			newRow: updatedRow,
+			isUpdateOperation: true
+		};
+
+		// Yield the updated row with attached old row metadata
+		yield Object.assign([...updatedRow], { __updateRowData: updateRowData });
 	}
 
 	async function* runLogic(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentValues: Array<SqlValue>): AsyncIterable<Row> {

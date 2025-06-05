@@ -13,7 +13,7 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource' | 'case';
+		| 'subquerySource' | 'case' | 'in';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -22,7 +22,7 @@ export interface AstNode {
 
 // Expression types
 export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr | FunctionExpr | CastExpr
-	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr | CaseExpr;
+	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr | CaseExpr | InExpr;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -126,6 +126,14 @@ export interface ParameterExpr extends AstNode {
 export interface SubqueryExpr extends AstNode {
 	type: 'subquery';
 	query: SelectStmt;
+}
+
+// IN expression
+export interface InExpr extends AstNode {
+	type: 'in';
+	expr: Expression;  // Left side of IN
+	values?: Expression[];  // For IN (value1, value2, ...)
+	subquery?: SelectStmt;  // For IN (SELECT ...)
 }
 
 // --- Statement Types ---
@@ -374,7 +382,8 @@ export type AlterTableAction =
 	| { type: 'renameTable', newName: string }
 	| { type: 'renameColumn', oldName: string, newName: string }
 	| { type: 'addColumn', column: ColumnDef }
-	| { type: 'dropColumn', name: string };
+	| { type: 'dropColumn', name: string }
+	| { type: 'addConstraint', constraint: TableConstraint };
 
 // Add PragmaStmt interface
 export interface PragmaStmt extends AstNode {

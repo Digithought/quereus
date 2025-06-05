@@ -302,12 +302,20 @@ export class Parser {
 			throw this.error(this.peek(), "Expected VALUES or SELECT after INSERT.");
 		}
 
+		// Parse RETURNING clause if present
+		let returning: AST.ResultColumn[] | undefined;
+		if (this.matchKeyword('RETURNING')) {
+			returning = this.columnList();
+			lastConsumedToken = this.previous(); // Update after RETURNING clause
+		}
+
 		return {
 			type: 'insert',
 			table,
 			columns,
 			values,
 			select,
+			returning,
 			loc: _createLoc(startToken, lastConsumedToken),
 		};
 	}
@@ -909,7 +917,7 @@ export class Parser {
 		while (this.match(
 			TokenType.LESS, TokenType.LESS_EQUAL,
 			TokenType.GREATER, TokenType.GREATER_EQUAL,
-			TokenType.BETWEEN
+			TokenType.BETWEEN, TokenType.IN
 		)) {
 			const operatorToken = this.previous();
 
@@ -937,6 +945,42 @@ export class Parser {
 					right: boundsExpr,
 					loc: _createLoc(startToken, endToken),
 				};
+			} else if (operatorToken.type === TokenType.IN) {
+				// Parse IN expression: expr IN (value1, value2, ...) or expr IN (subquery)
+				this.consume(TokenType.LPAREN, "Expected '(' after IN.");
+
+				// Check if this is a subquery or value list
+				if (this.check(TokenType.SELECT)) {
+					// IN subquery: expr IN (SELECT ...)
+					const selectToken = this.advance(); // Consume SELECT
+					const subquery = this.selectStatement(selectToken);
+					const endToken = this.consume(TokenType.RPAREN, "Expected ')' after IN subquery.");
+
+					// Create an IN expression with subquery
+					expr = {
+						type: 'in',
+						expr,
+						subquery,
+						loc: _createLoc(startToken, endToken),
+					};
+				} else {
+					// IN value list: expr IN (value1, value2, ...)
+					const values: AST.Expression[] = [];
+					if (!this.check(TokenType.RPAREN)) {
+						do {
+							values.push(this.expression());
+						} while (this.match(TokenType.COMMA));
+					}
+					const endToken = this.consume(TokenType.RPAREN, "Expected ')' after IN values.");
+
+					// Create an IN expression with value list
+					expr = {
+						type: 'in',
+						expr,
+						values,
+						loc: _createLoc(startToken, endToken),
+					};
+				}
 			} else {
 				// Handle other comparison operators
 				let operator: string;
@@ -1085,7 +1129,7 @@ export class Parser {
 		}
 
 		// Literals
-		if (this.match(TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING, TokenType.NULL, TokenType.BLOB)) {
+		if (this.match(TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING, TokenType.NULL, TokenType.TRUE, TokenType.FALSE, TokenType.BLOB)) {
 			const token = this.previous();
 			let value: any;
 			let lexeme: string | undefined = undefined;
@@ -1093,6 +1137,12 @@ export class Parser {
 			if (token.type === TokenType.NULL) {
 				value = null;
 				lexeme = token.lexeme; // Store original case (NULL vs null)
+			} else if (token.type === TokenType.TRUE) {
+				value = true;
+				lexeme = token.lexeme; // Store original case (TRUE vs true)
+			} else if (token.type === TokenType.FALSE) {
+				value = false;
+				lexeme = token.lexeme; // Store original case (FALSE vs false)
 			} else if (token.type === TokenType.FLOAT) {
 				// For FLOAT, parse the literal (which is the original string)
 				value = parseFloat(token.literal as string);
@@ -1421,8 +1471,13 @@ export class Parser {
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
 		}
+		// Parse RETURNING clause if present
+		let returning: AST.ResultColumn[] | undefined;
+		if (this.matchKeyword('RETURNING')) {
+			returning = this.columnList();
+		}
 		const endToken = this.previous();
-		return { type: 'update', table, assignments, where, loc: _createLoc(startToken, endToken) };
+		return { type: 'update', table, assignments, where, returning, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
@@ -1433,8 +1488,15 @@ export class Parser {
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
 		}
+
+		// Parse RETURNING clause if present
+		let returning: AST.ResultColumn[] | undefined;
+		if (this.matchKeyword('RETURNING')) {
+			returning = this.columnList();
+		}
+
 		const endToken = this.previous();
-		return { type: 'delete', table, where, loc: _createLoc(startToken, endToken) };
+		return { type: 'delete', table, where, returning, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
@@ -1681,9 +1743,16 @@ export class Parser {
 			}
 		} else if (this.peekKeyword('ADD')) {
 			this.consumeKeyword('ADD', "Expected ADD.");
-			this.matchKeyword('COLUMN');
-			const column = this.columnDefinition();
-			action = { type: 'addColumn', column };
+			if (this.peekKeyword('CONSTRAINT')) {
+				// ADD CONSTRAINT ... - let tableConstraint parse everything including CONSTRAINT keyword
+				const constraint = this.tableConstraint();
+				action = { type: 'addConstraint', constraint };
+			} else {
+				// ADD [COLUMN] column_def
+				this.matchKeyword('COLUMN');
+				const column = this.columnDefinition();
+				action = { type: 'addColumn', column };
+			}
 		} else if (this.peekKeyword('DROP')) {
 			this.consumeKeyword('DROP', "Expected DROP.");
 			this.matchKeyword('COLUMN');
@@ -1785,9 +1854,19 @@ export class Parser {
 		if (this.match(TokenType.EQUAL)) {
 			if (this.check(TokenType.IDENTIFIER)) {
 				value = { type: 'identifier', name: this.advance().lexeme };
-			} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL)) {
-				const token = this.previous();
-				value = { type: 'literal', value: token.type === TokenType.NULL ? null : token.literal };
+					} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL, TokenType.TRUE, TokenType.FALSE)) {
+			const token = this.previous();
+			let literal_value: SqlValue;
+			if (token.type === TokenType.NULL) {
+				literal_value = null;
+			} else if (token.type === TokenType.TRUE) {
+				literal_value = 1;
+			} else if (token.type === TokenType.FALSE) {
+				literal_value = 0;
+			} else {
+				literal_value = token.literal;
+			}
+			value = { type: 'literal', value: literal_value };
 			} else if (this.match(TokenType.MINUS)) {
 				if (this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
 					const token = this.advance();
@@ -2016,16 +2095,15 @@ export class Parser {
 			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
 			return { type: 'unique', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
-			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
-			const expr = this.expression();
-			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			// --- Parse optional ON clause --- //
+			// --- Parse optional ON clause before parentheses --- //
 			let operations: AST.RowOp[] | undefined;
 			if (this.matchKeyword('ON')) {
 				operations = this.parseRowOpList();
-				endToken = this.previous(); // Update end token to last parsed operation or comma
 			}
 			// --- End Parse ON clause --- //
+			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
+			const expr = this.expression();
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
 			return { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.DEFAULT)) {
 			const expr = this.expression();
@@ -2090,16 +2168,15 @@ export class Parser {
 			if (onConflict) endToken = this.previous();
 			return { type: 'unique', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
-			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
-			const expr = this.expression();
-			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			// --- Parse optional ON clause --- //
+			// --- Parse optional ON clause before parentheses --- //
 			let operations: AST.RowOp[] | undefined;
 			if (this.matchKeyword('ON')) {
 				operations = this.parseRowOpList();
-				endToken = this.previous(); // Update end token after ON clause
 			}
 			// --- End Parse ON clause --- //
+			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
+			const expr = this.expression();
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
 			return { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.FOREIGN)) {
 			this.consume(TokenType.KEY, "Expected KEY after FOREIGN.");
@@ -2271,20 +2348,23 @@ export class Parser {
 		throw this.error(this.peek(), message);
 	}
 
-	/** Parses the list of operations for CHECK ON */
+			/** Parses the list of operations for CHECK ON */
 	private parseRowOpList(): AST.RowOp[] {
 		const operations: AST.RowOp[] = [];
+
+		// Parse operations in a comma-separated list
 		do {
-			if (this.matchKeyword('INSERT')) {
+			if (this.match(TokenType.INSERT)) {
 				operations.push('insert');
-			} else if (this.matchKeyword('UPDATE')) {
+			} else if (this.match(TokenType.UPDATE)) {
 				operations.push('update');
-			} else if (this.matchKeyword('DELETE')) {
+			} else if (this.match(TokenType.DELETE)) {
 				operations.push('delete');
 			} else {
 				throw this.error(this.peek(), "Expected INSERT, UPDATE, or DELETE after ON.");
 			}
 		} while (this.match(TokenType.COMMA));
+
 		// Optional: Check for duplicates? The design allows them but ignores them.
 		return operations;
 	}

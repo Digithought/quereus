@@ -1,7 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { InsertNode } from '../nodes/insert-node.js';
-import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -14,7 +13,8 @@ import { buildExpression } from './expression.js'; // Assuming this will be crea
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
-import { RowOp } from '../../schema/table.js';
+import { RegisteredScope } from '../scopes/registered.js';
+import { ColumnReferenceNode } from '../nodes/reference.js';
 
 export function buildInsertStmt(
 	ctx: PlanningContext,
@@ -115,36 +115,60 @@ export function buildInsertStmt(
 		stmt.onConflict
 	);
 
-	// Wrap with constraint checking if the table has constraints
+	// Rely on optimizer for constraint checking – no wrapping here.
 	let resultNode: RelationalPlanNode = insertNode;
-	if (tableReference.tableSchema.checkConstraints.length > 0 ||
-			tableReference.tableSchema.columns.some(col => col.notNull)) {
 
-		// Create NEW row descriptor for INSERT - maps attribute IDs to column indices
+	if (stmt.returning && stmt.returning.length > 0) {
+		// For RETURNING, we need to create a newRowDescriptor that maps table columns to attribute IDs
 		const newRowDescriptor: RowDescriptor = [];
-		const insertAttributes = insertNode.getAttributes();
-		insertAttributes.forEach((attr, index) => {
-			newRowDescriptor[attr.id] = index;
+		tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
+			const attributeId = PlanNode.nextAttrId();
+			newRowDescriptor[attributeId] = columnIndex;
 		});
 
-		resultNode = new ConstraintCheckNode(
+		// Create a new InsertNode with the row descriptor
+		const insertNodeWithDescriptor = new InsertNode(
 			ctx.scope,
-			insertNode,
 			tableReference,
-			RowOp.INSERT,
-			undefined, // No OLD row for INSERT
+			targetColumns,
+			sourceNode,
+			stmt.onConflict,
 			newRowDescriptor
 		);
-	}
 
-  if (stmt.returning && stmt.returning.length > 0) {
-    const returningProjections = stmt.returning.map(rc => {
+		// Create a context for RETURNING expressions that includes the table columns
+		const returningScope = new RegisteredScope(ctx.scope);
+
+		// Register table columns in the RETURNING scope using the newRowDescriptor attribute IDs
+		tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
+			// Find the attribute ID for this column from the newRowDescriptor
+			const attributeId = Object.keys(newRowDescriptor).find(id =>
+				newRowDescriptor[parseInt(id)] === columnIndex
+			);
+
+			if (attributeId) {
+				returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
+						typeClass: 'scalar',
+						affinity: tableColumn.affinity,
+						nullable: !tableColumn.notNull,
+						isReadOnly: false
+					}, parseInt(attributeId), columnIndex)
+				);
+			}
+		});
+
+		// Build RETURNING projections in the table column context
+		const returningProjections = stmt.returning.map(rc => {
 			// TODO: Support RETURNING *
-      if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
-      return { node: buildExpression(ctx, rc.expr) as ScalarPlanNode, alias: rc.alias };
-    });
-    return new ProjectNode(ctx.scope, resultNode, returningProjections);
-  }
+			if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
+			return {
+				node: buildExpression({ ...ctx, scope: returningScope }, rc.expr) as ScalarPlanNode,
+				alias: rc.alias
+			};
+		});
+		return new ProjectNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
+	}
 
 	return resultNode;
 }

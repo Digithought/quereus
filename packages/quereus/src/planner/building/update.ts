@@ -1,18 +1,16 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { UpdateNode, type UpdateAssignment } from '../nodes/update-node.js';
-import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { UpdateExecutorNode } from '../nodes/update-executor-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor, type VoidNode } from '../nodes/plan-node.js';
+import type { RelationalPlanNode, ScalarPlanNode, VoidNode } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { ProjectNode } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
-import { RowOp } from '../../schema/table.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -58,53 +56,22 @@ export function buildUpdateStmt(
     stmt.onConflict
   );
 
-  // Step 2: Wrap with constraint checking if the table has constraints
-  let constraintCheckedNode: RelationalPlanNode = updateNode;
-  if (tableReference.tableSchema.checkConstraints.length > 0 ||
-      tableReference.tableSchema.columns.some(col => col.notNull)) {
-
-    // Create OLD and NEW row descriptors for UPDATE
-    const updateAttributes = updateNode.getAttributes();
-
-    // For UPDATE, we need both OLD and NEW descriptors
-    // OLD row descriptor points to the original row structure
-    const oldRowDescriptor: RowDescriptor = [];
-    updateAttributes.forEach((attr, index) => {
-      oldRowDescriptor[attr.id] = index;
-    });
-
-    // NEW row descriptor points to the updated row structure (same as old for UPDATE output)
-    const newRowDescriptor: RowDescriptor = [];
-    updateAttributes.forEach((attr, index) => {
-      newRowDescriptor[attr.id] = index;
-    });
-
-    constraintCheckedNode = new ConstraintCheckNode(
-      updateCtx.scope,
-      updateNode,
-      tableReference,
-      RowOp.UPDATE,
-      oldRowDescriptor,
-      newRowDescriptor
-    );
-  }
-
-  // Step 3: Create UpdateExecutorNode that actually performs the database updates
+  // For constraint checking we now rely on the optimizer rule – do not wrap here.
   const updateExecutorNode = new UpdateExecutorNode(
     updateCtx.scope,
-    constraintCheckedNode,
+    updateNode, // pass raw update node – optimizer will inject ConstraintCheckNode when needed
     tableReference
   );
 
   if (stmt.returning && stmt.returning.length > 0) {
     const returningProjections = stmt.returning.map(rc => {
-			// TODO: Support RETURNING *
+      // TODO: Support RETURNING *
       if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
       return { node: buildExpression(updateCtx, rc.expr) as ScalarPlanNode, alias: rc.alias };
     });
-    // For RETURNING, we need to project from the constraint-checked node (before execution)
-    return new ProjectNode(updateCtx.scope, constraintCheckedNode, returningProjections);
+    // Project from the UpdateNode before execution – optimizer will ensure correct wrapping.
+    return new ProjectNode(updateCtx.scope, updateNode, returningProjections);
   }
 
-	return updateExecutorNode;
+  return updateExecutorNode;
 }

@@ -19,19 +19,19 @@ export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instructio
 		sourceRowDescriptor[attr.id] = index;
 	});
 
-	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>, ...projectionFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
+	async function* run(rctx: RuntimeContext, source: AsyncIterable<Row>, ...projectionFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		for await (const sourceRow of source) {
 			// Set up context for this row using row descriptor
-			ctx.context.set(sourceRowDescriptor, () => sourceRow);
+			rctx.context.set(sourceRowDescriptor, () => sourceRow);
 
 			try {
-				const outputs = projectionFunctions.map(func => func(ctx));
+				const outputs = projectionFunctions.map(func => func(rctx));
 				const resolved = await Promise.all(outputs);
 				// Assume we have ensured that these are all scalar values
 				yield resolved as Row;
 			} finally {
 				// Clean up context for this row
-				ctx.context.delete(sourceRowDescriptor);
+				rctx.context.delete(sourceRowDescriptor);
 			}
 		}
 	}

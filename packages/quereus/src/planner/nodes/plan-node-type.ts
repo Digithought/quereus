@@ -32,6 +32,7 @@ export enum PlanNodeType {
   CreateView = 'CreateView',
   DropView = 'DropView',
   AlterTable = 'AlterTable',
+  AddConstraint = 'AddConstraint',
 
   // Physical Nodes (from optimizer)
   SeqScan = 'SeqScan',              // Physical sequential scan
@@ -74,4 +75,7 @@ export enum PlanNodeType {
 
   // Query execution
   Cache = 'Cache',
+
+  // RETURNING support
+  Returning = 'Returning',
 }

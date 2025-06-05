@@ -12,6 +12,7 @@ import { buildExpression } from '../../planner/building/expression.js';
 import { GlobalScope } from '../../planner/scopes/global.js';
 import { RegisteredScope } from '../../planner/scopes/registered.js';
 import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
+import { PlanNode } from '../../planner/nodes/plan-node.js';
 import * as AST from '../../parser/ast.js';
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
@@ -26,6 +27,39 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	});
 
 	// Pre-emit CHECK constraint expressions for performance
+	// ------------------------------------------------------------------
+	// NEW/OLD ATTRIBUTE ID DISCOVERY
+	// The planning phase already created attribute IDs for NEW/OLD references
+	// and populated the row descriptors. We need to discover these mappings
+	// so we can register the correct symbols during constraint building.
+	// ------------------------------------------------------------------
+	const newAttrIdByCol: Record<string, number> = {};
+	const oldAttrIdByCol: Record<string, number> = {};
+
+	// Discover existing NEW attribute mappings from the row descriptor
+	if (plan.newRowDescriptor) {
+		for (const attrIdStr in plan.newRowDescriptor) {
+			const attrId = parseInt(attrIdStr);
+			const columnIndex = plan.newRowDescriptor[attrId];
+			if (columnIndex !== undefined && columnIndex < tableSchema.columns.length) {
+				const column = tableSchema.columns[columnIndex];
+				newAttrIdByCol[column.name.toLowerCase()] = attrId;
+			}
+		}
+	}
+
+	// Discover existing OLD attribute mappings from the row descriptor
+	if (plan.oldRowDescriptor) {
+		for (const attrIdStr in plan.oldRowDescriptor) {
+			const attrId = parseInt(attrIdStr);
+			const columnIndex = plan.oldRowDescriptor[attrId];
+			if (columnIndex !== undefined && columnIndex < tableSchema.columns.length) {
+				const column = tableSchema.columns[columnIndex];
+				oldAttrIdByCol[column.name.toLowerCase()] = attrId;
+			}
+		}
+	}
+
 	const checkConstraintData = tableSchema.checkConstraints
 		.filter((constraint: RowConstraintSchema) => shouldCheckConstraint(constraint, plan.operation))
 		.map((constraint: RowConstraintSchema) => {
@@ -61,6 +95,34 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 							nullable: !tableColumn.notNull,
 							isReadOnly: false
 						}, sourceAttr.id, sourceColumnIndex));
+
+					// NEW.<col>
+					if (plan.newRowDescriptor) {
+						const newAttrId = newAttrIdByCol[tableColumn.name.toLowerCase()];
+						if (newAttrId !== undefined) {
+							scope.registerSymbol(`NEW.${tableColumn.name}`, (exp, s) =>
+								new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
+									typeClass: 'scalar',
+									affinity: tableColumn.affinity,
+									nullable: !tableColumn.notNull,
+									isReadOnly: false
+								}, newAttrId, tableColIndex));
+						}
+					}
+
+					// OLD.<col>
+					if (plan.oldRowDescriptor) {
+						const oldAttrId = oldAttrIdByCol[tableColumn.name.toLowerCase()];
+						if (oldAttrId !== undefined) {
+							scope.registerSymbol(`OLD.${tableColumn.name}`, (exp, s) =>
+								new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
+									typeClass: 'scalar',
+									affinity: tableColumn.affinity,
+									nullable: !tableColumn.notNull,
+									isReadOnly: false
+								}, oldAttrId, tableColIndex));
+						}
+					}
 				} else {
 					console.warn(`Could not map table column ${tableColumn.name} to source column`);
 				}
@@ -86,28 +148,32 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			return;
 		}
 
+		let rowCount = 0;
 		for await (const row of inputRows) {
+			rowCount++;
 			// Clear any existing contexts to ensure constraint expressions resolve to the correct row
 			rctx.context.clear();
 
-			// For UPDATE operations, the 'row' contains the NEW values after the update
-			// Set up the primary source context to point to the NEW row
+			// Extract update metadata if this is an UPDATE operation
+			const updateRowData = (row as any).__updateRowData;
+			const isUpdateOperation = updateRowData?.isUpdateOperation;
+
+			// Set up the primary source context to point to the appropriate row
 			rctx.context.set(sourceRowDescriptor, () => row);
 
 			try {
 				// Set up OLD and NEW row contexts if available
-				if (plan.operation === RowOp.UPDATE) {
-					// For UPDATE, we need to be careful about OLD vs NEW contexts
-					// The row coming from UpdateNode contains the NEW values
-					// We don't currently have access to the original OLD values in this design
-					// So for now, both OLD and NEW contexts point to the updated row
-					// This means CHECK constraints will see the NEW values (which is correct)
-
-					if (plan.oldRowDescriptor) {
-						rctx.context.set(plan.oldRowDescriptor, () => row); // TODO: Should be OLD row
+				if (plan.operation === RowOp.UPDATE && isUpdateOperation) {
+					if (plan.oldRowDescriptor && Object.keys(plan.oldRowDescriptor).length > 0) {
+						rctx.context.set(plan.oldRowDescriptor, () => updateRowData.oldRow); // OLD values
 					}
-					if (plan.newRowDescriptor) {
-						rctx.context.set(plan.newRowDescriptor, () => row); // NEW row (correct)
+					if (plan.newRowDescriptor && Object.keys(plan.newRowDescriptor).length > 0) {
+						rctx.context.set(plan.newRowDescriptor, () => updateRowData.newRow); // NEW values
+					}
+				} else if (plan.operation === RowOp.DELETE) {
+					// For DELETE operations, the current row IS the OLD row
+					if (plan.oldRowDescriptor && Object.keys(plan.oldRowDescriptor).length > 0) {
+						rctx.context.set(plan.oldRowDescriptor, () => row); // OLD values are the current row being deleted
 					}
 				}
 
@@ -116,13 +182,28 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 					await checkConstraints(rctx, plan, tableSchema, row, constraintMetadata, evaluatorFunctions);
 
 					// If all constraints pass, yield the row
-					yield row;
+					if (isUpdateOperation) {
+						// For UPDATE operations, we need to preserve the OLD row's primary key values
+						// so UpdateExecutor can identify which row to update
+						const cleanUpdatedRow = [...updateRowData.newRow];
+
+						// Attach OLD row primary key information for UpdateExecutor
+						Object.defineProperty(cleanUpdatedRow, '__oldRowKeyValues', {
+							value: updateRowData.oldRow,
+							enumerable: false,
+							writable: false
+						});
+
+						yield cleanUpdatedRow;
+					} else {
+						yield row;
+					}
 				} finally {
 					// Clean up OLD/NEW contexts
-					if (plan.oldRowDescriptor) {
+					if (plan.oldRowDescriptor && Object.keys(plan.oldRowDescriptor).length > 0) {
 						rctx.context.delete(plan.oldRowDescriptor);
 					}
-					if (plan.newRowDescriptor) {
+					if (plan.newRowDescriptor && Object.keys(plan.newRowDescriptor).length > 0) {
 						rctx.context.delete(plan.newRowDescriptor);
 					}
 				}
@@ -171,7 +252,7 @@ async function checkNotNullConstraints(
 		return;
 	}
 
-	// Check each column for NOT NULL constraint
+		// Check each column for NOT NULL constraint
 	for (let i = 0; i < tableSchema.columns.length; i++) {
 		const column = tableSchema.columns[i];
 		if (column.notNull) {

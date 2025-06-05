@@ -95,10 +95,10 @@ DROP TABLE t_check;
 
 CREATE TABLE t_check_on (
     id INTEGER PRIMARY KEY,
-    status TEXT CHECK(status IN ('active', 'inactive')) ON INSERT,
+    status TEXT CHECK ON INSERT (status IN ('active', 'inactive')),
     val INTEGER,
-    CONSTRAINT positive_val CHECK(NEW.val >= 0) ON UPDATE,
-    CONSTRAINT no_delete CHECK(FALSE) ON DELETE
+    CONSTRAINT positive_val CHECK ON UPDATE (NEW.val >= 0),
+    CONSTRAINT no_delete CHECK ON DELETE (FALSE)
 );
 
 -- Insert valid (status check applies)
@@ -144,7 +144,7 @@ CREATE TABLE t_check_alias (
     id INTEGER PRIMARY KEY,
     version INTEGER DEFAULT 1,
     payload TEXT,
-    CONSTRAINT version_increase CHECK(NEW.version > OLD.version) ON UPDATE
+    CONSTRAINT version_increase CHECK ON UPDATE (NEW.version > OLD.version)
 );
 
 INSERT INTO t_check_alias (id, payload) VALUES (10, 'initial data');
@@ -175,12 +175,12 @@ DROP TABLE t_check_alias;
 CREATE TABLE products (sku TEXT PRIMARY KEY, price REAL);
 CREATE TABLE inventory (loc TEXT, sku TEXT, qty INTEGER CHECK(qty >= 0) /* Simple check */,
     FOREIGN KEY (sku) REFERENCES products(sku));
-ALTER TABLE inventory ADD CONSTRAINT enough_stock CHECK(
+ALTER TABLE inventory ADD CONSTRAINT enough_stock CHECK ON UPDATE (
         NEW.qty <= (SELECT sum(s.qty) FROM inventory s WHERE s.sku = NEW.sku)
-    ) ON UPDATE;
-ALTER TABLE inventory ADD CONSTRAINT no_delete_if_positive CHECK(
+    );
+ALTER TABLE inventory ADD CONSTRAINT no_delete_if_positive CHECK ON DELETE (
         OLD.qty <= 0
-    ) ON DELETE;
+    );
 
 INSERT INTO products VALUES ('A1', 10.0), ('B2', 20.0);
 INSERT INTO inventory VALUES ('W1', 'A1', 50), ('W2', 'A1', 30), ('W1', 'B2', 100);

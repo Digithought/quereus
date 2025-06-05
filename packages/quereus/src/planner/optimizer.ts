@@ -21,6 +21,7 @@ import { JoinNode } from './nodes/join-node.js';
 import { CacheNode } from './nodes/cache-node.js';
 import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 import { getDefaultRules } from './optimizer-rules.js';
+import { ReturningNode } from './nodes/returning-node.js';
 
 const log = createLogger('optimizer');
 
@@ -189,6 +190,20 @@ export class Optimizer {
 			return cacheNode;
 		}
 
+		if (node instanceof ReturningNode) {
+			const optimizedExecutor = this.optimizeNode(node.executor) as any; // VoidNode type
+			const optimizedProjectionSource = this.optimizeNode(node.projectionSource) as RelationalPlanNode;
+			if (optimizedExecutor !== node.executor || optimizedProjectionSource !== node.projectionSource) {
+				return new ReturningNode(
+					node.scope,
+					optimizedExecutor,
+					optimizedProjectionSource,
+					node.projections
+				);
+			}
+			return node;
+		}
+
 		// For other nodes, return as-is
 		// This is safe for leaf nodes and nodes we don't need to optimize children for
 		return node;
@@ -245,35 +260,38 @@ export class Optimizer {
 		oldRowDescriptor?: RowDescriptor;
 		newRowDescriptor?: RowDescriptor;
 	} {
+		// RowDescriptor maps attributeId (number) -> columnIndex in the physical row array.
+		// We must therefore allocate unique attribute IDs for every column reference that we
+		// want to expose through OLD./NEW. aliases so that ColumnReferenceNodes created later
+		// can resolve deterministically.
 		const result: { oldRowDescriptor?: RowDescriptor; newRowDescriptor?: RowDescriptor } = {};
 
-		// For constraint checking, we need to map table columns to row positions
 		const tableSchema = node.table.tableSchema;
 
+		// Helper that allocates a fresh attribute id for a given column index and registers it
+		// into the supplied RowDescriptor.
+		const allocAttr = (descriptor: RowDescriptor, columnIndex: number) => {
+			const attrId = PlanNode.nextAttrId();
+			descriptor[attrId] = columnIndex;
+			return attrId;
+		};
+
 		if (operation === RowOp.INSERT) {
-			// For INSERT, we only need NEW row descriptor
+			// INSERT exposes only NEW.* values
 			result.newRowDescriptor = [];
-			tableSchema.columns.forEach((column: any, index: number) => {
-				result.newRowDescriptor![column.name] = index;
-				result.newRowDescriptor![column.name.toLowerCase()] = index;
-			});
+			tableSchema.columns.forEach((_, colIdx) => allocAttr(result.newRowDescriptor!, colIdx));
 		} else if (operation === RowOp.UPDATE) {
-			// For UPDATE, we need both OLD and NEW row descriptors
+			// UPDATE exposes both OLD.* and NEW.*
 			result.oldRowDescriptor = [];
 			result.newRowDescriptor = [];
-			tableSchema.columns.forEach((column: any, index: number) => {
-				result.oldRowDescriptor![column.name] = index;
-				result.oldRowDescriptor![column.name.toLowerCase()] = index;
-				result.newRowDescriptor![column.name] = index;
-				result.newRowDescriptor![column.name.toLowerCase()] = index;
+			tableSchema.columns.forEach((_, colIdx) => {
+				allocAttr(result.oldRowDescriptor!, colIdx);
+				allocAttr(result.newRowDescriptor!, colIdx);
 			});
 		} else if (operation === RowOp.DELETE) {
-			// For DELETE, we only need OLD row descriptor
+			// DELETE exposes only OLD.* values
 			result.oldRowDescriptor = [];
-			tableSchema.columns.forEach((column: any, index: number) => {
-				result.oldRowDescriptor![column.name] = index;
-				result.oldRowDescriptor![column.name.toLowerCase()] = index;
-			});
+			tableSchema.columns.forEach((_, colIdx) => allocAttr(result.oldRowDescriptor!, colIdx));
 		}
 
 		return result;

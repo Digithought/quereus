@@ -11,6 +11,7 @@ import { buildDropViewStmt } from './drop-view.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
+import { buildAlterTableStmt } from './alter-table.js';
 import { buildBeginStmt, buildCommitStmt, buildRollbackStmt, buildSavepointStmt, buildReleaseStmt } from './transaction.js';
 import { buildPragmaStmt } from './pragma.js';
 
@@ -51,9 +52,11 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildReleaseStmt(ctx, stmt as AST.ReleaseStmt);
 			case 'pragma':
 				return buildPragmaStmt(ctx, stmt as AST.PragmaStmt);
+			case 'alterTable':
+				return buildAlterTableStmt(ctx, stmt as AST.AlterTableStmt);
 			default:
 				// Throw an exception for unsupported statement types
-				throw new Error(`Unsupported statement type: ${stmt.type}`);
+				throw new Error(`Unsupported statement type: ${(stmt as AST.Statement).type}`);
 		}
 	}).filter(p => p !== undefined) as PlanNode[]; // Ensure we only have valid PlanNodes and cast
 

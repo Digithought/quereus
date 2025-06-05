@@ -45,27 +45,9 @@ export function buildDeleteStmt(
     sourceNode,
   );
 
-  // Wrap with constraint checking if the table has constraints that apply to DELETE
+    // Note: Constraint checking for DELETE operations is handled by the optimizer rule
+  // which places ConstraintCheck BEFORE deletion to validate rows before they're removed
   let resultNode: RelationalPlanNode = deleteNode;
-  if (tableReference.tableSchema.checkConstraints.some(constraint =>
-        (constraint.operations & RowOp.DELETE) !== 0)) {
-
-    // Create OLD row descriptor for DELETE - maps attribute IDs to column indices
-    const oldRowDescriptor: RowDescriptor = [];
-    const deleteAttributes = deleteNode.getAttributes();
-    deleteAttributes.forEach((attr, index) => {
-      oldRowDescriptor[attr.id] = index;
-    });
-
-    resultNode = new ConstraintCheckNode(
-      deleteCtx.scope,
-      deleteNode,
-      tableReference,
-      RowOp.DELETE,
-      oldRowDescriptor,
-      undefined // No NEW row for DELETE
-    );
-  }
 
   if (stmt.returning && stmt.returning.length > 0) {
     const returningProjections = stmt.returning.map(rc => {

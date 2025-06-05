@@ -63,16 +63,13 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 
 	constructor(
 		readonly scope: Scope,
+		readonly expression: Expression, // The original InExpr AST node
 		readonly condition: ScalarPlanNode,
-		readonly source: RelationalPlanNode,
+		readonly source?: RelationalPlanNode,  // For IN subquery
+		readonly values?: ScalarPlanNode[],    // For IN value list
 	) {
 		super(scope);
 		this.comparator = (a, b) => compareSqlValues(a, b);
-	}
-
-	// To satisfy ScalarPlanNode interface
-	get expression(): Expression {
-		return this.condition.expression;
 	}
 
   getType(): ScalarType {
@@ -85,22 +82,33 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		}
 	}
 
-  getChildren(): readonly [ScalarPlanNode] {
+  getChildren(): readonly ScalarPlanNode[] {
+		if (this.values) {
+			return [this.condition, ...this.values];
+		}
 		return [this.condition];
 	}
 
-  getRelations(): readonly [RelationalPlanNode] {
-		return [this.source];
+  getRelations(): readonly RelationalPlanNode[] {
+		if (this.source) {
+			return [this.source];
+		}
+		return [];
 	}
 
 	override toString(): string {
-		return `${formatExpression(this.condition)} IN (subquery)`;
+		if (this.source) {
+			return `${formatExpression(this.condition)} IN (subquery)`;
+		} else {
+			return `${formatExpression(this.condition)} IN (values)`;
+		}
 	}
 
 	override getLogicalProperties(): Record<string, unknown> {
 		return {
 			condition: formatExpression(this.condition),
-			subqueryType: 'in',
+			subqueryType: this.source ? 'subquery' : 'values',
+			valueCount: this.values?.length,
 			resultType: formatScalarType(this.getType())
 		};
 	}

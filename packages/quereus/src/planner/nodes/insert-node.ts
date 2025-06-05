@@ -28,7 +28,30 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
 	}
 
   getAttributes(): Attribute[] {
-    // INSERT produces the same attributes as its source
+    // If we have a newRowDescriptor (for constraint checking/RETURNING),
+    // produce attributes that correspond to the table structure
+    if (this.newRowDescriptor && Object.keys(this.newRowDescriptor).length > 0) {
+      return this.table.tableSchema.columns.map((col, index) => {
+        // Find the attribute ID for this column from the newRowDescriptor
+        const attrId = Object.keys(this.newRowDescriptor!).find(id =>
+          this.newRowDescriptor![parseInt(id)] === index
+        );
+
+        return {
+          id: attrId ? parseInt(attrId) : PlanNode.nextAttrId(),
+          name: col.name,
+          type: {
+            typeClass: 'scalar',
+            affinity: col.affinity,
+            nullable: !col.notNull,
+            isReadOnly: false
+          },
+          sourceRelation: `${this.table.tableSchema.schemaName}.${this.table.tableSchema.name}`
+        };
+      });
+    }
+
+    // INSERT produces the same attributes as its source (for non-RETURNING cases)
     return this.source.getAttributes();
   }
 

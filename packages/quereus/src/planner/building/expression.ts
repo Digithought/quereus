@@ -4,7 +4,7 @@ import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, Collate
 import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
-import { ScalarSubqueryNode } from '../nodes/subquery.js';
+import { ScalarSubqueryNode, InNode } from '../nodes/subquery.js';
 import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, SqlDataType } from '../../common/types.js';
@@ -145,6 +145,27 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
        return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
+    case 'in':
+       // Build the left expression
+       const leftExpr = buildExpression(ctx, expr.expr, allowAggregates);
+
+       if (expr.subquery) {
+         // IN subquery: expr IN (SELECT ...)
+         const inSubqueryContext = { ...ctx };
+         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery);
+         if (inSubqueryPlan.getType().typeClass !== 'relation') {
+           throw new QuereusError('IN subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+         }
+                   return new InNode(ctx.scope, expr, leftExpr, inSubqueryPlan as RelationalPlanNode);
+               } else if (expr.values) {
+          // IN value list: expr IN (value1, value2, ...)
+          const valueExprs = expr.values.map(val => buildExpression(ctx, val, allowAggregates));
+          // Create a special IN node for value lists
+          // Import the InNode from subquery module
+          return new InNode(ctx.scope, expr, leftExpr, undefined, valueExprs);
+       } else {
+         throw new QuereusError('IN expression must have either values or subquery', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+       }
     default:
       throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED, undefined, expr.loc?.start.line, expr.loc?.start.column);
   }
