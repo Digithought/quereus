@@ -4,7 +4,6 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
 import { SingleRowNode } from '../nodes/single-row.js';
-import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildTableScan } from './table.js';
 import { AliasedScope } from '../scopes/aliased.js';
 import { RegisteredScope } from '../scopes/registered.js';
@@ -13,88 +12,31 @@ import { MultiScope } from '../scopes/multi.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js';
 import { FilterNode } from '../nodes/filter.js';
-import { DistinctNode } from '../nodes/distinct-node.js';
-import { LimitOffsetNode } from '../nodes/limit-offset.js';
-import { LiteralNode } from '../nodes/scalar.js';
-import { AggregateNode } from '../nodes/aggregate-node.js';
-import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { buildTableFunctionCall } from './table-function.js';
-import { SortNode, type SortKey } from '../nodes/sort.js';
-import { expressionToString } from '../../util/ast-stringify.js';
-import { buildWithClause } from './with.js';
 import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
-import { ParameterScope } from '../scopes/param.js';
-import { SetOperationNode } from '../nodes/set-operation-node.js';
 import { JoinNode } from '../nodes/join-node.js';
-import { WindowNode, type WindowSpec } from '../nodes/window-node.js';
-import { WindowFunctionCallNode } from '../nodes/window-function.js';
-import { ArrayIndexNode } from '../nodes/array-index-node.js';
+import { ColumnReferenceNode } from '../nodes/reference.js';
 
-/**
- * Helper function to get the non-parameter ancestor scope.
- * This ensures table/column scopes don't inherit from ParameterScope,
- * preventing parameter resolution ambiguity in MultiScope.
- */
-function getNonParamAncestor(scope: Scope): Scope {
-	return (scope instanceof ParameterScope) ? scope.parentScope : scope;
-}
+// Import decomposed functionality
+import { buildWithContext, getNonParamAncestor } from './select-context.js';
+import { buildCompoundSelect } from './select-compound.js';
+import {
+	analyzeSelectColumns,
+	buildStarProjections,
+	isAggregateExpression,
+	isWindowExpression
+} from './select-projections.js';
+import { buildAggregatePhase, buildFinalAggregateProjections } from './select-aggregates.js';
+import { buildWindowPhase } from './select-window.js';
+import {
+	buildFinalProjections,
+	applyDistinct,
+	applyOrderBy,
+	applyLimitOffset
+} from './select-modifiers.js';
 
-/**
- * Checks if an expression contains aggregate functions
- */
-function isAggregateExpression(node: ScalarPlanNode): boolean {
-	if (node instanceof AggregateFunctionCallNode) {
-		return true;
-	}
 
-	// Recursively check children (only scalar children)
-	for (const child of node.getChildren()) {
-		// Check if child is a scalar node and recursively check it
-		if ('expression' in child && isAggregateExpression(child as ScalarPlanNode)) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-/**
- * Checks if an expression contains window functions
- */
-function isWindowExpression(node: ScalarPlanNode): boolean {
-	if (node instanceof WindowFunctionCallNode) {
-		return true;
-	}
-
-	// Recursively check children (only scalar children)
-	for (const child of node.getChildren()) {
-		// Check if child is a scalar node and recursively check it
-		if ('expression' in child && isWindowExpression(child as ScalarPlanNode)) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-/**
- * Collects all window functions from an expression tree, along with their aliases
- */
-function collectWindowFunctions(node: ScalarPlanNode, alias?: string, windowFunctions: { func: WindowFunctionCallNode; alias?: string }[] = []): { func: WindowFunctionCallNode; alias?: string }[] {
-	if (node instanceof WindowFunctionCallNode) {
-		windowFunctions.push({ func: node, alias });
-	}
-
-	// Recursively check children (only scalar children)
-	for (const child of node.getChildren()) {
-		if ('expression' in child) {
-			collectWindowFunctions(child as ScalarPlanNode, undefined, windowFunctions);
-		}
-	}
-
-	return windowFunctions;
-}
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -115,102 +57,12 @@ export function buildSelectStmt(
 ): PlanNode {
 
 	// Phase 0: Handle WITH clause if present
-	let cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs); // Start with parent CTEs
-	let contextWithCTEs = ctx;
-
-	if (stmt.withClause) {
-		const newCteNodes = buildWithClause(ctx, stmt.withClause);
-		// Merge parent CTEs with new ones (new ones take precedence)
-		for (const [name, node] of newCteNodes) {
-			cteNodes.set(name, node);
-		}
-
-		// Create a new scope that includes the CTEs
-		const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
-
-		// Register each CTE in the scope
-		for (const [cteName, cteNode] of cteNodes) {
-			const attributes = cteNode.getAttributes();
-			cteNode.getType().columns.forEach((col: any, i: number) => {
-				const attr = attributes[i];
-				// Register CTE columns with qualified names to avoid collisions
-				const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
-				cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
-			});
-		}
-
-		contextWithCTEs = { ...ctx, scope: cteScope };
-	} else if (parentCTEs.size > 0) {
-		// No WITH clause but we have parent CTEs, create scope for them
-		const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
-
-		// Register parent CTEs in the scope
-		for (const [cteName, cteNode] of parentCTEs) {
-			const attributes = cteNode.getAttributes();
-			cteNode.getType().columns.forEach((col: any, i: number) => {
-				const attr = attributes[i];
-				// Register CTE columns with qualified names to avoid collisions
-				const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
-				cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
-			});
-		}
-
-		contextWithCTEs = { ...ctx, scope: cteScope };
-	}
+	const { contextWithCTEs, cteNodes } = buildWithContext(ctx, stmt, parentCTEs);
 
 	// Handle compound set operations (UNION / INTERSECT / EXCEPT)
 	if (stmt.compound) {
-		// Build left side by cloning the statement without compound and stripping ORDER BY/LIMIT/OFFSET that belong to outer query
-		// IMPORTANT: Keep the withClause for proper CTE scope inheritance
-		const { compound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt as any;
-
-		// Also strip ORDER BY/LIMIT/OFFSET from the right side - they should only apply to the final compound result
-		const { orderBy: rightOrderBy, limit: rightLimit, offset: rightOffset, ...rightCore } = stmt.compound.select as any;
-
-		const leftPlan = buildSelectStmt(contextWithCTEs, leftCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
-		const rightPlan = buildSelectStmt(contextWithCTEs, rightCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
-
-		const setNode = new SetOperationNode(contextWithCTEs.scope, leftPlan, rightPlan, stmt.compound.op);
-
-		// After set operation, apply ORDER BY / LIMIT / OFFSET from the *outer* (original) statement
-		let input: RelationalPlanNode = setNode;
-
-		// Build scope for output columns
-		const setScope = new RegisteredScope();
-		const attrs = input.getAttributes();
-		input.getType().columns.forEach((c: any, i: number) => {
-			const attr = attrs[i];
-			// Ensure column has a name - use attribute name as fallback
-			const columnName = c.name || attr.name;
-			if (!columnName) {
-				throw new QuereusError(`Column at index ${i} has no name in set operation`, StatusCode.ERROR);
-			}
-			setScope.registerSymbol(columnName.toLowerCase(), (exp: any, s: any) => new ColumnReferenceNode(s, exp, c.type, attr.id, i));
-		});
-
-		let selectContext: PlanningContext = { ...contextWithCTEs, scope: setScope };
-
-		// ORDER BY
-		if (outerOrderBy && outerOrderBy.length > 0) {
-			const sortKeys = outerOrderBy.map((ob: any) => ({
-				expression: buildExpression(selectContext, ob.expr),
-				direction: ob.direction,
-				nulls: ob.nulls,
-			}));
-			input = new SortNode(selectContext.scope, input, sortKeys);
-		}
-
-		// LIMIT/OFFSET
-		if (outerLimit || outerOffset) {
-			const literalNull = new LiteralNode(selectContext.scope, { type: 'literal', value: null });
-			const limitExpr = outerLimit ? buildExpression(selectContext, outerLimit) : literalNull;
-			const offsetExpr = outerOffset ? buildExpression(selectContext, outerOffset) : literalNull;
-			input = new LimitOffsetNode(selectContext.scope, input, limitExpr, offsetExpr);
-		}
-
-		return input;
+		return buildCompoundSelect(stmt, contextWithCTEs, cteNodes,
+			(ctx, stmt, parentCTEs) => buildSelectStmt(ctx, stmt, parentCTEs) as RelationalPlanNode);
 	}
 
 	// Phase 1: Plan FROM clause and determine local input relations for the current select scope
@@ -226,474 +78,73 @@ export function buildSelectStmt(
 		);
 	}
 
-	// Phase 2: Create the main scope for this SELECT statement.
-  // This scope sees the parent scope and the column scopes from the FROM clause.
-  // Column scopes (FROM clause) should have higher precedence than parent scope for unqualified names
-  const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
-  const selectScope = new MultiScope([...columnScopes, contextWithCTEs.scope]);
-	// Context for planning expressions within this SELECT (e.g., SELECT list, WHERE clause)
-	let selectContext: PlanningContext = {...contextWithCTEs, scope: selectScope};
+	// Phase 2: Create the main scope for this SELECT statement
+	const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
+	const selectScope = new MultiScope([...columnScopes, contextWithCTEs.scope]);
+	let selectContext: PlanningContext = { ...contextWithCTEs, scope: selectScope };
 
-	let input: RelationalPlanNode = fromTables[0]; // Ensure input is RelationalPlanNode
+	let input: RelationalPlanNode = fromTables[0];
 
-	// Plan WHERE clause using selectContext, potentially creating a FilterNode
+	// Plan WHERE clause
 	if (stmt.where) {
 		const whereExpression = buildExpression(selectContext, stmt.where);
 		input = new FilterNode(selectScope, input, whereExpression);
 	}
 
 	// Build projections based on the SELECT list
-	const projections: Projection[] = [];
-	const aggregates: { expression: ScalarPlanNode; alias: string }[] = [];
-	const windowFunctions: { func: WindowFunctionCallNode; alias?: string }[] = [];
-	let hasAggregates = false;
-	let hasWindowFunctions = false;
+	let projections: Projection[] = [];
 
+	// Analyze SELECT columns
+	const {
+		projections: columnProjections,
+		aggregates,
+		windowFunctions,
+		hasAggregates,
+		hasWindowFunctions
+	} = analyzeSelectColumns(stmt.columns, selectContext);
+
+	// Handle SELECT * separately
 	for (const column of stmt.columns) {
 		if (column.type === 'all') {
-			// Handle SELECT * or table.*
-			const inputColumns = input.getType().columns;
-			const inputAttributes = input.getAttributes();
-
-			if (column.table) {
-				// Handle qualified SELECT table.*
-				// For now, we'll assume the table qualifier matches our single input table
-				// TODO: Handle qualified star with multiple tables/joins
-				const inputTableName = (input as any).source?.tableSchema?.name;
-				const tableMatches = column.table.toLowerCase() === inputTableName?.toLowerCase();
-				if (!tableMatches) {
-					throw new QuereusError(
-						`Table '${column.table}' not found in FROM clause for qualified SELECT *`,
-						StatusCode.ERROR
-					);
-				}
-			}
-
-			// Add a projection for each column in the input relation
-			inputColumns.forEach((columnDef, index) => {
-				// Create a ColumnReferenceNode for this column using the input's attribute ID
-				const columnExpr: AST.ColumnExpr = {
-					type: 'column',
-					name: columnDef.name,
-					// Don't set table qualifier for SELECT * projections to avoid confusion
-				};
-
-				const attr = inputAttributes[index];
-				const columnRef = new ColumnReferenceNode(
-					selectScope,
-					columnExpr,
-					columnDef.type,
-					attr.id, // Use the attribute ID from the input relation
-					index
-				);
-
-				projections.push({
-					node: columnRef,
-					alias: columnDef.name // Use the original column name as alias
-				});
-			});
-		} else if (column.type === 'column') {
-			// Handle specific expressions - allow aggregates and window functions in SELECT list
-			const scalarNode = buildExpression(selectContext, column.expr, true);
-
-			// Check if this expression contains window functions
-			if (isWindowExpression(scalarNode)) {
-				hasWindowFunctions = true;
-				collectWindowFunctions(scalarNode, column.alias, windowFunctions);
-				// For window functions, we need to add a projection that will reference
-				// the window function output after the WindowNode is created
-				projections.push({
-					node: scalarNode,
-					alias: column.alias // Use the specified alias, if any
-				});
-			}
-			// Check if this expression contains aggregate functions
-			else if (isAggregateExpression(scalarNode)) {
-				hasAggregates = true;
-				aggregates.push({
-					expression: scalarNode,
-					alias: column.alias || expressionToString(column.expr)
-				});
-			} else {
-				projections.push({
-					node: scalarNode,
-					alias: column.alias // Use the specified alias, if any
-				});
-			}
+			const starProjections = buildStarProjections(column, input, selectScope);
+			projections.push(...starProjections);
 		}
 	}
 
-	// Check if we have GROUP BY clause
-	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
+	// Add non-star projections
+	projections.push(...columnProjections);
 
-	// Special handling for ORDER BY with aggregates but no GROUP BY
-	// In this case, if ORDER BY references columns not in the SELECT list,
-	// it should order the input rows before aggregation
-	let preAggregateSort = false;
-	if (hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0) {
-		// Check if ORDER BY references columns that are not in the aggregate expressions
-		// For now, we'll apply the sort before aggregation if we have any ORDER BY
-		// This handles cases like: SELECT group_concat(val, '|') FROM t ORDER BY val
-		preAggregateSort = true;
+	// Process aggregates if present
+	const aggregateResult = buildAggregatePhase(input, stmt, selectContext, aggregates, hasAggregates, projections);
+	input = aggregateResult.output;
+	let preAggregateSort = aggregateResult.preAggregateSort;
 
-		// Apply ORDER BY before aggregation
-		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(selectContext, orderByClause.expr);
-			return {
-				expression,
-				direction: orderByClause.direction,
-				nulls: orderByClause.nulls
-			};
-		});
+	// Update context if we have aggregates
+	if (aggregateResult.aggregateScope) {
+		selectContext = { ...selectContext, scope: aggregateResult.aggregateScope };
 
-		input = new SortNode(selectScope, input, sortKeys);
-	}
-
-	// If we have aggregates or GROUP BY, create an AggregateNode
-	if (hasAggregates || hasGroupBy) {
-		// Build GROUP BY expressions
-		const groupByExpressions = stmt.groupBy ? stmt.groupBy.map(expr => buildExpression(selectContext, expr, false)) : [];
-
-		// If we have non-aggregate projections with aggregates, that's an error (unless they're in GROUP BY)
-		if (projections.length > 0 && hasAggregates && !hasGroupBy) {
-			throw new QuereusError(
-				'Cannot mix aggregate and non-aggregate columns in SELECT list without GROUP BY',
-				StatusCode.ERROR
-			);
-		}
-
-		input = new AggregateNode(selectScope, input, groupByExpressions, aggregates);
-
-		// Create a scope that includes the aggregate output columns
-		// This will be used for HAVING and ORDER BY after aggregation
-		// It should inherit from the original scope to allow table resolution for subqueries
-		const aggregateOutputScope = new RegisteredScope(selectScope);
-		const aggregateAttributes = input.getAttributes();
-
-		// Register GROUP BY columns
-		groupByExpressions.forEach((expr, index) => {
-			// Use the attribute name from the AggregateNode instead of duplicating logic
-			const attr = aggregateAttributes[index];
-			aggregateOutputScope.registerSymbol(attr.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, expr.getType(), attr.id, index));
-		});
-
-		// Register aggregate columns by their aliases
-		aggregates.forEach((agg, index) => {
-			const columnIndex = groupByExpressions.length + index;
-			const attr = aggregateAttributes[columnIndex];
-			aggregateOutputScope.registerSymbol(agg.alias.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), attr.id, columnIndex));
-		});
-
-		// Handle HAVING clause
-		if (stmt.having) {
-			// Build HAVING expression with the aggregate scope
-			// We need to use a special context that knows about the aggregates
-			const havingContext: PlanningContext = {
-				...selectContext,
-				scope: aggregateOutputScope,
-				// Add the aggregates to the context so buildExpression can check them
-				aggregates: aggregates.map((agg, index) => {
-					const columnIndex = groupByExpressions.length + index;
-					const attr = aggregateAttributes[columnIndex];
-					return {
-						expression: agg.expression,
-						alias: agg.alias,
-						columnIndex,
-						attributeId: attr.id // Add the attribute ID for proper column reference creation
-					};
-				})
-			};
-			const havingExpression = buildExpression(havingContext, stmt.having, true);
-
-			// Wrap the AggregateNode with a FilterNode for HAVING
-			input = new FilterNode(aggregateOutputScope, input, havingExpression);
-		}
-
-		// Check if we need a final projection - only if we have complex expressions
-		// that aren't just simple column references or aggregate functions
-		let needsFinalProjection = false;
-		if (projections.length > 0) {
-			// Check if any of the projections are complex expressions (not just column refs)
-			needsFinalProjection = projections.some(proj => {
-				// If it's not a simple ColumnReferenceNode, we need final projection
-				return !(proj.node instanceof ColumnReferenceNode);
-			});
-		}
-
-		if (needsFinalProjection) {
-			// Build projections for the complete SELECT list by re-processing with aggregate scope
-			const finalProjections: Projection[] = [];
-
-			for (const column of stmt.columns) {
-				if (column.type === 'column') {
-					// Re-build the expression in the context of the aggregate output
-					const finalContext: PlanningContext = { ...selectContext, scope: aggregateOutputScope };
-					const scalarNode = buildExpression(finalContext, column.expr, true);
-
-					finalProjections.push({
-						node: scalarNode,
-						alias: column.alias || (column.expr.type === 'column' ? column.expr.name : undefined)
-					});
-				}
-			}
-
+		// Build final projections if needed
+		if (aggregateResult.needsFinalProjection) {
+			const finalProjections = buildFinalAggregateProjections(stmt, selectContext, aggregateResult.aggregateScope);
 			input = new ProjectNode(selectScope, input, finalProjections);
 		}
-
-		// Update the select context to use the aggregate output scope for ORDER BY
-		selectContext = {...selectContext, scope: aggregateOutputScope};
 	}
 
-					// Handle window functions if present
-	if (hasWindowFunctions && windowFunctions.length > 0) {
-		// Group window functions by their window specification
-		const windowGroups = new Map<string, { func: WindowFunctionCallNode; alias?: string }[]>();
+	// Handle window functions if present
+	input = buildWindowPhase(input, windowFunctions, selectContext, stmt);
 
-		for (const { func, alias } of windowFunctions) {
-			// Create a key based on the window specification
-			const windowSpecKey = JSON.stringify({
-				partitionBy: func.expression.window?.partitionBy || [],
-				orderBy: func.expression.window?.orderBy || [],
-				frame: func.expression.window?.frame
-			});
-
-			if (!windowGroups.has(windowSpecKey)) {
-				windowGroups.set(windowSpecKey, []);
-			}
-			windowGroups.get(windowSpecKey)!.push({ func, alias });
-		}
-
-		// Create WindowNode for each unique window specification
-		for (const [windowSpecKey, functions] of windowGroups) {
-			const firstFunc = functions[0];
-			const windowSpec: WindowSpec = {
-				partitionBy: firstFunc.func.expression.window?.partitionBy || [],
-				orderBy: firstFunc.func.expression.window?.orderBy || [],
-				frame: firstFunc.func.expression.window?.frame
-			};
-
-			// Special case: ROW_NUMBER() without PARTITION BY - use SequencingNode instead
-			if (functions.length === 1 &&
-				functions[0].func.functionName.toLowerCase() === 'row_number' &&
-				windowSpec.partitionBy.length === 0) {
-				// TODO: Replace with SequencingNode for optimal performance
-				// For now, proceed with WindowNode
-			}
-
-			// Create new WindowFunctionCallNode instances with alias information
-			const windowFuncsWithAlias = functions.map(({ func, alias }) =>
-				new WindowFunctionCallNode(
-					func.scope,
-					func.expression,
-					func.functionName,
-					func.isDistinct,
-					alias
-				)
-			);
-
-						// Build partition expressions
-			const partitionExpressions = windowSpec.partitionBy.map(expr =>
-				buildExpression(selectContext, expr, false)
-			);
-
-			// Build ORDER BY expressions
-			const orderByExpressions = windowSpec.orderBy.map(orderClause =>
-				buildExpression(selectContext, orderClause.expr, false)
-			);
-
-			// Build function argument expressions
-			const functionArguments = windowFuncsWithAlias.map(func => {
-				if (func.expression.function.args && func.expression.function.args.length > 0) {
-					const argExpr = func.expression.function.args[0];
-					return buildExpression(selectContext, argExpr, false);
-				}
-				// Special case for COUNT(*) - it has no args but still needs a placeholder
-				if (func.functionName.toLowerCase() === 'count' &&
-					func.expression.function.args.length === 0) {
-					// Create a literal 1 as the argument for COUNT(*) - it counts rows, not specific values
-					return new LiteralNode(selectScope, { type: 'literal', value: 1 });
-				}
-				return null;
-			});
-
-			input = new WindowNode(selectScope, input, windowSpec, windowFuncsWithAlias, partitionExpressions, orderByExpressions, functionArguments);
-		}
-
-						// Create projections that select only the requested columns using direct array indexing
-		const windowProjections: Projection[] = [];
-		const windowType = input.getType();
-		const sourceColumnCount = windowType.columns.length - windowFunctions.length;
-
-		for (const column of stmt.columns) {
-			if (column.type === 'column') {
-								if (isWindowExpression(buildExpression(selectContext, column.expr, true))) {
-					// For window functions, use ArrayIndexNode to access the value by direct index
-					// Find which window function this corresponds to by matching the expression
-					const originalExpr = buildExpression(selectContext, column.expr, true);
-					const matchingWindowFuncIndex = windowFunctions.findIndex(({ func, alias }) => {
-						// Match based on function name, parameters, and window specification
-						if (!(originalExpr instanceof WindowFunctionCallNode) ||
-							func.functionName.toLowerCase() !== originalExpr.functionName.toLowerCase()) {
-							return false;
-						}
-
-						// Also compare window specifications to distinguish between functions with same name
-						const originalWindow = originalExpr.expression.window;
-						const funcWindow = func.expression.window;
-
-						// Compare partition expressions
-						const originalPartition = JSON.stringify(originalWindow?.partitionBy || []);
-						const funcPartition = JSON.stringify(funcWindow?.partitionBy || []);
-
-						// Compare order expressions
-						const originalOrder = JSON.stringify(originalWindow?.orderBy || []);
-						const funcOrder = JSON.stringify(funcWindow?.orderBy || []);
-
-						// Compare frame specifications
-						const originalFrame = JSON.stringify(originalWindow?.frame || null);
-						const funcFrame = JSON.stringify(funcWindow?.frame || null);
-
-						return originalPartition === funcPartition &&
-							   originalOrder === funcOrder &&
-							   originalFrame === funcFrame;
-					});
-
-					if (matchingWindowFuncIndex >= 0) {
-						const windowColumnIndex = sourceColumnCount + matchingWindowFuncIndex;
-						const windowColumnType = windowType.columns[windowColumnIndex].type;
-
-						const arrayIndexNode = new ArrayIndexNode(
-							selectScope,
-							windowColumnIndex,
-							windowColumnType
-						);
-
-						windowProjections.push({
-							node: arrayIndexNode,
-							alias: column.alias
-						});
-					}
-				} else {
-					// For regular columns, use ArrayIndexNode to access by index
-					// Find the column in the source columns
-					const sourceColIndex = windowType.columns.findIndex((col, index) => {
-						if (index >= sourceColumnCount) return false; // Skip window function columns
-						if (column.expr.type === 'column') {
-							return col.name.toLowerCase() === column.expr.name.toLowerCase();
-						}
-						return false;
-					});
-
-					if (sourceColIndex >= 0) {
-						const arrayIndexNode = new ArrayIndexNode(
-							selectScope,
-							sourceColIndex,
-							windowType.columns[sourceColIndex].type
-						);
-
-						// For regular columns, use the column name as alias if no explicit alias provided
-						const alias = column.alias || (column.expr.type === 'column' ? column.expr.name : undefined);
-
-						windowProjections.push({
-							node: arrayIndexNode,
-							alias: alias
-						});
-					}
-				}
-			}
-		}
-
-		if (windowProjections.length > 0) {
-			input = new ProjectNode(selectScope, input, windowProjections);
-		}
-	}
-
+	// Handle final projections for non-aggregate cases
 	if (!hasAggregates && !hasWindowFunctions) {
-		// Create ProjectNode if we have projections, otherwise return input as-is
-		if (projections.length > 0) {
-			// Check if ORDER BY should be applied before projection
-			let needsPreProjectionSort = false;
-			if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
-				// Check if any ORDER BY column is not in the projection aliases
-				for (const orderByClause of stmt.orderBy) {
-					if (orderByClause.expr.type === 'column') {
-						const orderColumn = orderByClause.expr.name.toLowerCase();
-						// Check if this column is in the projection aliases
-						const isInProjection = projections.some(proj =>
-							(proj.alias?.toLowerCase() === orderColumn) ||
-							(proj.node instanceof ColumnReferenceNode && proj.node.expression.name.toLowerCase() === orderColumn)
-						);
-						if (!isInProjection) {
-							needsPreProjectionSort = true;
-							break;
-						}
-					}
-				}
-			}
-
-			// Apply ORDER BY before projection if needed
-			if (needsPreProjectionSort && stmt.orderBy && stmt.orderBy.length > 0) {
-				const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-					const expression = buildExpression(selectContext, orderByClause.expr);
-					return {
-						expression,
-						direction: orderByClause.direction,
-						nulls: orderByClause.nulls
-					};
-				});
-				input = new SortNode(selectScope, input, sortKeys);
-				// Mark that we've applied ORDER BY before projection
-				preAggregateSort = true;
-			}
-
-			input = new ProjectNode(selectScope, input, projections);
-
-			// Create a new scope that maps column names to the ProjectNode's output attributes
-			const projectionOutputScope = new RegisteredScope();
-			const projectionAttributes = input.getAttributes();
-			input.getType().columns.forEach((col, index) => {
-				const attr = projectionAttributes[index];
-				projectionOutputScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, index));
-			});
-
-			// Update selectContext to use BOTH the projection output scope AND the original scope
-			// This allows ORDER BY to reference both projected columns (unqualified) and original columns (qualified)
-			if (!needsPreProjectionSort) {
-				const combinedScope = new MultiScope([projectionOutputScope, selectScope]);
-				selectContext = {...selectContext, scope: combinedScope};
-			}
-		}
+		const finalResult = buildFinalProjections(input, projections, selectScope, stmt, selectContext);
+		input = finalResult.output;
+		selectContext = finalResult.finalContext;
+		preAggregateSort = finalResult.preAggregateSort;
 	}
 
-	// Apply DISTINCT if present
-	if (stmt.distinct) {
-		input = new DistinctNode(selectScope, input);
-	}
-
-	// Plan ORDER BY clause, creating SortNode (only if not already applied before aggregation or projection)
-	if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
-		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(selectContext, orderByClause.expr);
-			return {
-				expression,
-				direction: orderByClause.direction,
-				nulls: orderByClause.nulls
-			};
-		});
-
-		input = new SortNode(selectScope, input, sortKeys);
-	}
-
-	// Plan LIMIT and OFFSET clauses
-	if (stmt.limit || stmt.offset) {
-		const literalNull = new LiteralNode(selectScope, { type: 'literal', value: null });
-		const limitExpression = stmt.limit ? buildExpression(selectContext, stmt.limit) : literalNull;
-		const offsetExpression = stmt.offset ? buildExpression(selectContext, stmt.offset) : literalNull;
-		input = new LimitOffsetNode(selectScope, input, limitExpression, offsetExpression);
-	}
+	// Apply final modifiers
+	input = applyDistinct(input, stmt, selectScope);
+	input = applyOrderBy(input, stmt, selectContext, preAggregateSort);
+	input = applyLimitOffset(input, stmt, selectContext);
 
 	return input;
 }
