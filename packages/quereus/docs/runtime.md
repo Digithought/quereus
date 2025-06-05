@@ -395,7 +395,14 @@ const capturedModule = ctx.getCapturedSchemaObject(moduleKey);
 
 ## Attribute-Based Context System
 
-Quereus uses a robust attribute-based context system for column reference resolution. This system provides deterministic, stable column references that work reliably across plan transformations and optimizations.
+Quereus implements a robust attribute-based context system that eliminates the architectural deficiencies of traditional node-based column reference resolution.
+
+**Core Design Principles:**
+
+- **Stable Attribute IDs**: Every column is identified by a unique, stable attribute ID that persists across plan transformations and optimizations.
+- **Deterministic Resolution**: Column references use attribute IDs for lookup, eliminating the need for node type checking or fragile node-based resolution.
+- **Context Isolation**: Each row context is isolated using row descriptors that map attribute IDs to column indices.
+- **Transformation Safety**: Plan transformations (logical→physical) preserve attribute IDs, ensuring column references remain valid.
 
 ### Core Types
 
@@ -466,6 +473,79 @@ set DEBUG=quereus:runtime:context* && yarn test
 - Always use the logging helpers: `logContextPush()` and `logContextPop()`
 - Include meaningful notes that identify the operation context
 - Log attribute information when setting up row descriptors
+
+## Bags vs Sets (Relational Semantics)
+
+Quereus implements a precise distinction between **bags** (multisets) and **sets** following Third Manifesto principles, enabling sophisticated query optimizations and maintaining algebraic correctness.
+
+### Core Concepts
+
+**Set**: A relation that guarantees unique rows (no duplicates)
+- All rows are distinct according to the relation's primary key(s)
+- Example: Result of `SELECT DISTINCT`, aggregation results, base tables
+
+**Bag**: A relation that can contain duplicate rows
+- Multiple identical rows are possible
+- Example: Result of `SELECT * FROM table`, table function outputs
+
+### RelationType.isSet Property
+
+Every relational plan node specifies whether it produces a set or bag via the `isSet` property:
+
+```typescript
+interface RelationType {
+  ...
+  isSet: boolean;  // true = set (unique rows), false = bag (duplicates possible)
+  ...
+}
+```
+
+### Set/Bag Classification by Node Type
+
+**Nodes that produce Sets (`isSet: true`):**
+- `TableScanNode`, `AggregateNode`/`StreamAggregateNode`, `SingleRowNode`, `SequencingNode`
+
+**Nodes that may produce Bags (`isSet: false`):**
+- `TableFunctionCallNode` (depends on function declaration)
+- `ProjectNode` (depending on whether key columns are preserved, and whether distinct)
+- `FilterNode` (reflects input), `SortNode` (reflects input), `WindowNode`, `ValuesNode`
+
+### SequencingNode: Bag-to-Set Conversion
+
+`SequencingNode` is a special operation that converts any bag into a set by adding a unique row number column (`sequenceColumnName`)
+
+**Runtime Behavior:**
+```typescript
+// Emitter adds row numbers to each row
+async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>): AsyncIterable<Row> {
+  let rowNumber = 1;
+  for await (const sourceRow of source) {
+    yield [...sourceRow, rowNumber++] as Row;
+  }
+}
+```
+
+### Optimization Implications
+
+The bag/set distinction enables important optimizations:
+
+**Set-Specific Optimizations:**
+- Duplicate elimination can be skipped for sets
+- Certain join algorithms are more efficient with sets
+- Set operations (UNION, INTERSECT) have different complexity
+
+**Bag-Aware Planning:**
+- Streaming operations can be more efficient on bags
+- Memory usage optimizations for bag operations
+- Different sorting strategies for bags vs sets
+
+### Third Manifesto Alignment
+
+This design aligns with Third Manifesto principles:
+- **Clear Semantics**: Explicit distinction between sets and bags
+- **Type Safety**: RelationType captures bag/set information at compile time
+- **Algebraic Foundation**: Operations preserve or transform bag/set properties predictably
+- **Optimization Enabling**: Type information guides query optimization decisions
 
 ### Implementation for New Emitters
 
