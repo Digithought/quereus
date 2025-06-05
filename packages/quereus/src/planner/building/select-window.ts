@@ -184,23 +184,13 @@ function buildWindowProjections(
 					});
 				}
 			} else {
-				// For regular columns, use ArrayIndexNode to access by index
-				const sourceColIndex = findSourceColumnIndex(column, windowType, sourceColumnCount);
+				// For regular columns, use the original expression built with proper column references
+				const scalarNode = buildExpression(selectContext, column.expr, true);
 
-				if (sourceColIndex >= 0) {
-					const arrayIndexNode = new ArrayIndexNode(
-						selectContext.scope,
-						sourceColIndex,
-						windowType.columns[sourceColIndex].type
-					);
-
-					const alias = column.alias || (column.expr.type === 'column' ? column.expr.name : undefined);
-
-					windowProjections.push({
-						node: arrayIndexNode,
-						alias: alias
-					});
-				}
+				windowProjections.push({
+					node: scalarNode,
+					alias: column.alias
+				});
 			}
 		}
 	}

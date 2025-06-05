@@ -21,7 +21,8 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
     case 'literal':
       return new LiteralNode(ctx.scope, expr);
     case 'column':
-      const colResolution = resolveColumn(ctx.scope, expr);
+      const colResolution = resolveColumn(ctx.scope, expr, ctx.db.schemaManager.getCurrentSchemaName());
+
       if (!colResolution || colResolution === Ambiguous) {
         throw new QuereusError(`Column not found: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
