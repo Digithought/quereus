@@ -1,7 +1,7 @@
 import type * as AST from '../../parser/ast.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode, SqlDataType } from '../../common/types.js';
+import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
 import { SingleRowNode } from '../nodes/single-row.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
@@ -24,7 +24,6 @@ import { expressionToString } from '../../util/ast-stringify.js';
 import { buildWithClause } from './with.js';
 import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
-import type { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 import { ParameterScope } from '../scopes/param.js';
 import { SetOperationNode } from '../nodes/set-operation-node.js';
 import { JoinNode } from '../nodes/join-node.js';
@@ -506,7 +505,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			if (fromClause.alias) {
 				columnScope = new AliasedScope(cteScope, tableName, fromClause.alias.toLowerCase());
 			} else {
-				columnScope = cteScope;
+				// Even without an explicit alias, we need to support qualified column references using the CTE name
+				columnScope = new AliasedScope(cteScope, tableName, tableName);
 			}
 		} else {
 			// Check if this is a view reference
@@ -536,7 +536,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				if (fromClause.alias) {
 					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
 				} else {
-					columnScope = viewScope;
+					// Even without an explicit alias, we need to support qualified column references using the view name
+					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.table.name.toLowerCase());
 				}
 			} else {
 				// This is a regular table reference
@@ -554,7 +555,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				if (fromClause.alias) {
 					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
 				} else {
-					columnScope = tableScope;
+					// Even without an explicit alias, we need to support qualified column references using the table name
+					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.table.name.toLowerCase());
 				}
 			}
 		}

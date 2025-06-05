@@ -106,6 +106,8 @@ export enum TokenType {
 	ELSE = 'ELSE',
 	END = 'END',
 	CAST = 'CAST',
+	OVER = 'OVER',
+	PARTITION = 'PARTITION',
 
 	// Operators and punctuation
 	PLUS = 'PLUS',               // +
@@ -249,6 +251,8 @@ export const KEYWORDS: Record<string, TokenType> = {
 	'else': TokenType.ELSE,
 	'end': TokenType.END,
 	'cast': TokenType.CAST,
+	'over': TokenType.OVER,
+	'partition': TokenType.PARTITION,
 	'intersect': TokenType.INTERSECT,
 	'except': TokenType.EXCEPT,
 };

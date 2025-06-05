@@ -5,6 +5,7 @@ import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { ScalarSubqueryNode } from '../nodes/subquery.js';
+import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, SqlDataType } from '../../common/types.js';
@@ -145,6 +146,15 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
        return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
+    case 'windowFunction':
+       // Window functions are handled by creating a WindowFunctionCallNode
+       // The window definition and function details are stored in the AST node
+       return new WindowFunctionCallNode(
+         ctx.scope,
+         expr,
+         expr.function.name,
+         expr.function.distinct ?? false
+       );
     default:
       throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED, undefined, expr.loc?.start.line, expr.loc?.start.column);
   }

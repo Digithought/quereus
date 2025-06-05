@@ -34,6 +34,7 @@ import { emitTransaction } from './emit/transaction.js';
 import { emitPragma } from './emit/pragma.js';
 import { emitSort } from './emit/sort.js';
 import { emitWindow } from './emit/window.js';
+import { emitWindowFunctionCall } from './emit/window-function.js';
 import { emitSequencing } from './emit/sequencing.js';
 import { emitRecursiveCTE } from './emit/recursive-cte.js';
 import { emitSetOperation } from './emit/set-operation.js';
@@ -56,6 +57,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.ColumnReference, emitColumnReference as EmitterFunc);
 	registerEmitter(PlanNodeType.ParameterReference, emitParameterReference as EmitterFunc);
 	registerEmitter(PlanNodeType.ScalarFunctionCall, emitScalarFunctionCall as EmitterFunc);
+	registerEmitter(PlanNodeType.WindowFunctionCall, emitWindowFunctionCall as EmitterFunc);
 	registerEmitter(PlanNodeType.CaseExpr, emitCaseExpr as EmitterFunc);
 	registerEmitter(PlanNodeType.Cast, emitCast as EmitterFunc);
 	registerEmitter(PlanNodeType.Collate, emitCollate as EmitterFunc);
