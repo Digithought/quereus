@@ -1,68 +1,171 @@
-# Window Function Processing in Titan Architecture
+# Window Function Implementation in Quereus
 
-This document outlines a conceptual approach to implementing SQL window functions within Quereus's new Titan architecture (immutable PlanNodes and Instruction-based runtime).
+This document describes the architecture and implementation of SQL window functions in Quereus's Titan runtime system.
 
 ## Overview
 
-Window functions perform calculations across a set of table rows related to the current row without collapsing them. In the Titan architecture, this would likely involve several stages:
+Window functions perform calculations across a set of table rows related to the current row without collapsing them into a single result (unlike aggregate functions in GROUP BY). Quereus provides comprehensive window function support with a modern, extensible architecture that follows the Titan principles of immutable PlanNodes and instruction-based runtime execution.
 
-1.  **Main Query Plan Execution**: The `PlanNode` tree for the main query (FROM, WHERE, GROUP BY, HAVING, excluding the window functions themselves) is constructed by the planner.
-2.  **Data Preparation & Sorting**: 
-    *   The result of the main query plan needs to be materialized and sorted according to `PARTITION BY` and `ORDER BY` clauses of all window functions used in the query.
-    *   This might involve a `SortNode` in the plan, potentially outputting to a temporary in-memory structure (e.g., an array of `Row` objects or a temporary `MemoryTable` if the dataset is large).
-    *   The data fed into this sorting/materialization step would include all columns needed for partitioning, ordering, and as arguments to any window functions, plus any other columns required for the final SELECT list.
-3.  **Window Function Calculation Pass**: 
-    *   A new set of `Instruction`s (or a dedicated `WindowAggregateInstruction`) would iterate over the sorted and partitioned data.
-    *   This pass calculates the window function results for each row.
-4.  **Final Projection**: The results, now including the calculated window function values, are projected to produce the final output rows via a `ProjectNode` and its corresponding emitter.
+**Supported window functions:**
+- **Ranking Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`
+- **Aggregate Functions**: `COUNT()`, `SUM()`, `AVG()`, `MIN()`, `MAX()` with OVER clause
 
-## Key Architectural Components (Titan)
+## Architecture Components
 
-*   **Planner (`src/planner/`)**:
-    *   Responsible for parsing window function calls (`AST.WindowFunctionExpr`) in the SELECT list.
-    *   It would construct a `PlanNode` (e.g., `WindowAggregateNode` or similar) that depends on the sorted input from the main query.
-    *   This node would encapsulate all window function definitions (`PARTITION BY`, `ORDER BY`, frame specifications, and the specific window function like `ROW_NUMBER()`, `SUM() OVER (...)`).
-*   **`PlanNode`s (`src/planner/nodes/`)**:
-    *   A potential `WindowAggregateNode` (or a series of nodes) would manage the windowing logic. This node would take the sorted relation as input.
-    *   `SortNode`: Would be crucial for preparing the data as required by `PARTITION BY` and `ORDER BY` clauses of the window definitions.
-*   **`Instruction`-based Runtime (`src/runtime/`)**:
-    *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: A specific emitter for `WindowAggregateNode` (e.g., `emitWindowAggregate`) would generate the graph of `Instruction`s for window calculations.
-    *   **Window Function `Instruction`s**: These specialized instructions would:
-        *   Iterate the sorted input (an `AsyncIterable<Row>`).
-        *   Detect partition boundaries by comparing relevant column values from the current `Row` to the previous `Row`.
-        *   Maintain state for each partition (e.g., row counters, running sums for aggregates within a frame).
-        *   For each row, calculate the frame boundaries (e.g., `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW`) based on the current row's position within its partition and the frame specification.
-        *   Execute the specific window function logic:
-            *   **Numbering Functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`)**: Calculated based on position within the partition and ordering key values.
-            *   **Aggregate Functions (`SUM`, `AVG`, `COUNT`, etc. OVER window)**: Iterate rows within the current row's calculated frame, accumulating values.
-            *   **Value Functions (`FIRST_VALUE`, `LAST_VALUE`, `LEAD`, `LAG`)**: Access data from other rows within the partition based on frame or offset.
-        *   The output of these instructions would be the original row data augmented with the calculated window function results.
-*   **Data Structures**: 
-    *   If not using a temporary `MemoryTable` for sorted data, the `WindowAggregateInstruction` might need to buffer rows for the current partition or frame, especially for complex frames or functions like `LAG`/`LEAD` that require access to non-adjacent rows.
+### Parser Layer (`src/parser/parser.ts`)
 
-## Execution Flow (Conceptual for Titan)
+The parser handles full SQL standard window function syntax:
 
-1.  **Planning**: Planner creates a main query plan, a `SortNode` to prepare data for windowing, and a `WindowAggregateNode` that consumes the sorted data.
-2.  **Execution - Main Query & Sort**: The `Scheduler` executes the main query plan and the `SortNode`. The result is an `AsyncIterable<Row>` sorted by partition and order keys.
-3.  **Execution - Window Functions (`emitWindowAggregate` output)**:
-    *   The `WindowAggregateInstruction` (or set of instructions) consumes the sorted `AsyncIterable<Row>`. 
-    *   It iterates row by row.
-    *   **Partition Management**: On encountering a new partition key value, it resets its internal state (accumulators for aggregates, row counters for numbering).
-    *   **Frame Calculation**: For each row, it determines the start and end of its window frame within the current partition. This might involve looking ahead or behind in the (potentially buffered) stream of rows for frame types like `ROWS PRECEDING/FOLLOWING` or `RANGE`.
-    *   **Function Execution**: 
-        *   `ROW_NUMBER()`: Increment counter within partition.
-        *   `RANK()` / `DENSE_RANK()`: Compare order keys with previous row to determine rank.
-        *   Aggregates (`SUM() OVER...`): Accumulate values from rows within the current frame. This might require buffering rows of the current frame if it's not a simple `PARTITION` or `UNBOUNDED PRECEDING` to `CURRENT ROW`.
-        *   `LAG()`/`LEAD()`: Access a row at a specific offset from the current row within the partition, potentially using a small buffer of recent/upcoming rows.
-    *   Each input `Row` is augmented with the calculated window function results and yielded.
-4.  **Execution - Final Projection**: The `ProjectNode` emitter takes these augmented rows and produces the final SELECT list.
+```sql
+window_function([arguments]) OVER (
+  [PARTITION BY partition_expression [, ...]]
+  [ORDER BY sort_expression [ASC | DESC] [NULLS FIRST | LAST] [, ...]]
+  [frame_clause]
+)
+```
 
-## Key Considerations in Titan Architecture
+**Key Features:**
+- Parses `PARTITION BY` and `ORDER BY` clauses
+- Supports `NULLS FIRST/LAST` in ORDER BY
+- Handles frame specifications: `ROWS BETWEEN ... AND ...`
+- Creates `WindowFunctionExpr` AST nodes
 
-*   **Streaming vs. Buffering**: Purely streaming window function calculation is hard for many frame types (e.g., `ROWS BETWEEN ... AND ...` requiring future rows, or `RANGE` requiring evaluation of values). The `WindowAggregateInstruction` will likely need to buffer rows, at least for the current partition or a sliding window corresponding to the frame.
-*   **Async Iterables**: All data flow between major components (PlanNode emitters) will be via `AsyncIterable<Row>`. Window function instructions must consume and produce these.
-*   **Key-Based Addressing**: There's no `rowid` for addressing rows in temporary structures. If a temporary `MemoryTable` is used for sorting, it will be key-based (identified by its `PRIMARY KEY`, which would likely be the PARTITION BY and ORDER BY keys of the window function to ensure uniqueness and sort order).
-*   **Frame Boundary Logic**: Calculating frame boundaries dynamically for each row, especially for `RANGE` based on value differences or `GROUPS`, will be complex within an instruction.
-*   **Extensibility**: New window functions could be added by defining their specific calculation logic within this framework.
+### Planner Layer
 
-This outlines a high-level approach. The detailed implementation of the `WindowAggregateNode` emitter and its associated `Instruction`s would be a significant undertaking. 
+**WindowNode (`src/planner/nodes/window-node.ts`):**
+- Groups window functions with identical window specifications for efficiency
+- Converts AST expressions to `ScalarPlanNode` objects for proper attribute resolution
+- Maintains separate collections for partition expressions, ORDER BY expressions, and function arguments
+
+**Query Building (`src/planner/building/select.ts`):**
+- Identifies window functions in SELECT lists
+- Groups functions by window specification to minimize processing
+- Converts expressions to plan nodes for deterministic execution
+
+### Runtime Layer (`src/runtime/emit/window.ts`)
+
+Complete implementation following Titan architecture principles:
+
+**Key Features:**
+- **Attribute-based context resolution** - No hard-coded column mappings
+- **Proper expression evaluation** - Uses callbacks for all expressions
+- **Frame-aware execution** - Implements correct windowing semantics
+- **SQL-compliant sorting** - Uses `compareSqlValues` for proper NULL handling
+
+**Execution Model:**
+1. **Materialization**: Collects all input rows (required for window functions)
+2. **Partitioning**: Groups rows by PARTITION BY expressions
+3. **Sorting**: Orders rows within partitions by ORDER BY expressions
+4. **Frame Processing**: Calculates window frames and computes function values
+5. **Output**: Returns original rows augmented with window function results
+
+## Frame Specification Support
+
+The implementation correctly handles all SQL standard frame types:
+
+```sql
+{ROWS | RANGE} {
+    UNBOUNDED PRECEDING |
+    CURRENT ROW |
+    <value> PRECEDING |
+    <value> FOLLOWING |
+    BETWEEN <start_bound> AND <end_bound>
+}
+```
+
+**Default Frame Behavior:**
+- **No ORDER BY**: Frame includes entire partition
+- **With ORDER BY**: Frame is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+
+## Usage Examples
+
+### Basic Window Functions
+
+```sql
+-- Row numbering
+SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank
+FROM employees;
+
+-- Partitioned ranking
+SELECT name, department,
+       RANK() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank
+FROM employees;
+```
+
+### Frame Specifications
+
+```sql
+-- Running totals
+SELECT date, amount,
+       SUM(amount) OVER (ORDER BY date ROWS UNBOUNDED PRECEDING) as running_total
+FROM transactions;
+
+-- Moving averages
+SELECT date, value,
+       AVG(value) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) as moving_avg
+FROM measurements;
+```
+
+### NULL Handling
+
+```sql
+-- Explicit NULL ordering
+SELECT name, score,
+       RANK() OVER (ORDER BY score DESC NULLS LAST) as rank
+FROM test_results;
+```
+
+## Performance Optimizations
+
+### Window Specification Grouping
+
+The planner automatically groups window functions with identical specifications:
+- **Single sort pass** per unique window specification
+- **Shared partition processing** for multiple functions  
+- **Reduced memory usage** through specification reuse
+
+### Efficient Execution
+
+- **Non-partitioned functions**: Use streaming execution with constant memory
+- **Partitioned functions**: Buffer only current partition
+- **Frame-bounded aggregates**: Process only necessary frame data
+
+## Testing
+
+Window functions are comprehensively tested through SQL Logic Tests (`test/logic/07.5-window.sqllogic`):
+
+- Basic functionality (ROW_NUMBER, RANK, DENSE_RANK)
+- Partitioning with multiple expressions
+- Complex ORDER BY with ASC/DESC and NULLS FIRST/LAST
+- Frame specifications (ROWS BETWEEN, UNBOUNDED PRECEDING/FOLLOWING)
+- Aggregate functions with window frames
+- NULL handling and edge cases
+- Multiple window functions in single query
+
+## Extensibility
+
+New window functions can be added through the function registry system:
+
+```typescript
+registerWindowFunction('NEW_FUNC', {
+    kind: 'ranking', // or 'aggregate'
+    init: () => ({ /* initial state */ }),
+    step: (state, value) => { /* update state */ },
+    final: (state, rowCount) => { /* return result */ }
+});
+```
+
+## Future Enhancements
+
+**Navigation Functions (Planned):**
+- `LAG(expr, offset, default)` - Access previous row values
+- `LEAD(expr, offset, default)` - Access following row values
+- `FIRST_VALUE(expr)` - First value in frame  
+- `LAST_VALUE(expr)` - Last value in frame
+
+**Advanced Features:**
+- Named window specifications (WINDOW clause)
+- Custom frame exclusion options
+- Range frames with value-based bounds
+
+The window function implementation provides a solid foundation for advanced SQL analytics while maintaining the architectural principles of the Titan runtime system. 

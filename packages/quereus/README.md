@@ -117,13 +117,12 @@ To add logging within a module:
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
 * [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide
 * [Functions](docs/functions.md): Details on the built-in functions
+* [Window Function Architecture](docs/window-functions.md): Details on the window function architecture and implementation.
 * [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
 * [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
 * [Runtime](docs/runtime.md): Details on the runtime and opcodes.
 * [Error Handling](docs/error.md): Details on the error handling and status codes.
 * [TODO List](docs/todo.md): Planned features and improvements
-
-* [Window Function Architecture](docs/window-functions.md): **(Note: This describes the old VDBE approach and may need updating for the current architecture)**
 
 ## Key Design Decisions
 
@@ -199,6 +198,7 @@ This layered approach aims for broad coverage via the logic tests while using pr
 
 *   **Scalar:** `lower`, `upper`, `length`, `substr`/`substring`, `abs`, `round`, `coalesce`, `nullif`, `like`, `glob`, `typeof`
 *   **Aggregate:** `count`, `sum`, `avg`, `min`, `max`, `group_concat`, `json_group_array`, `json_group_object`
+*   **Window Functions:** Complete implementation with `row_number`, `rank`, `dense_rank`, `ntile` (ranking); `count`, `sum`, `avg`, `min`, `max` with OVER clause (aggregates); Full frame specification support (`ROWS BETWEEN`, `UNBOUNDED PRECEDING/FOLLOWING`); `NULLS FIRST/LAST` ordering
 *   **Date/Time:** `date`, `time`, `datetime`, `julianday`, `strftime` (supports common formats and modifiers)
 *   **JSON:** `json_valid`, `json_type`, `json_extract`, `json_quote`, `json_array`, `json_object`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_array_length`, `json_patch`
 *   **Query Analysis:** `query_plan`, `scheduler_program`, `execution_trace` (debugging and performance analysis)

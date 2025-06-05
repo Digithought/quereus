@@ -388,19 +388,117 @@ These functions operate on JSON values, typically represented as TEXT strings in
     *   **Returns:** INTEGER: `1` if `json` is valid, `0` otherwise.
     *   **Example:** `json_valid('{"a": 1}')` returns `1`, `json_valid('{"a": 1')` returns `0`.
 
-## Window Functions (Limited Support)
+## Window Functions
 
-Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). Quereus has **limited initial support** for window functions. The `OVER` clause syntax is parsed, but complex framing clauses (`ROWS BETWEEN ...`) might not be fully implemented or optimized.
+Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). Quereus provides comprehensive window function support with a modern, extensible architecture.
 
-*   `row_number()`: Assigns a unique sequential integer (starting from 1) to each row within its partition, based on the `ORDER BY` within the `OVER` clause.
-*   `rank()`: Assigns a rank to each row within its partition based on the `ORDER BY`. Rows with equal values receive the same rank. Gaps may appear in the ranking sequence (e.g., 1, 1, 3).
-*   `dense_rank()`: Assigns a rank like `rank()`, but without gaps in the sequence (e.g., 1, 1, 2).
-*   `lag(expr, offset?, default?)`: Returns the value of `expr` from the row that is `offset` rows *before* the current row within its partition (default offset is 1). Returns `default` (or `NULL` if `default` is omitted) if the offset row does not exist.
-*   `lead(expr, offset?, default?)`: Returns the value of `expr` from the row that is `offset` rows *after* the current row within its partition (default offset is 1). Returns `default` (or `NULL` if `default` is omitted) if the offset row does not exist.
+**Window Function Syntax:**
+```sql
+window_function([arguments]) OVER (
+  [PARTITION BY partition_expression [, ...]]
+  [ORDER BY sort_expression [ASC | DESC] [, ...]]
+  [window_frame_clause]
+)
+```
+
+### Ranking Functions
+
+*   `row_number()`
+    *   **Description:** Assigns a unique sequential integer (starting from 1) to each row within its partition, based on the `ORDER BY` within the `OVER` clause.
+    *   **Arguments:** None.
+    *   **Returns:** INTEGER - Sequential row number within the partition.
+    *   **Example:** `SELECT name, row_number() OVER (ORDER BY salary DESC) as rank FROM employees;`
+
+*   `rank()`
+    *   **Description:** Assigns a rank to each row within its partition based on the `ORDER BY`. Rows with equal values receive the same rank. Gaps appear in the ranking sequence when there are ties.
+    *   **Arguments:** None.
+    *   **Returns:** INTEGER - Rank with gaps (e.g., 1, 1, 3, 4).
+    *   **Example:** `SELECT name, salary, rank() OVER (ORDER BY salary DESC) as rank FROM employees;`
+
+*   `dense_rank()`
+    *   **Description:** Assigns a rank like `rank()`, but without gaps in the sequence. Equal values receive the same rank, but subsequent ranks are consecutive.
+    *   **Arguments:** None.
+    *   **Returns:** INTEGER - Dense rank without gaps (e.g., 1, 1, 2, 3).
+    *   **Example:** `SELECT name, salary, dense_rank() OVER (ORDER BY salary DESC) as dense_rank FROM employees;`
+
+*   `ntile(n)`
+    *   **Description:** Distributes rows into `n` approximately equal groups (buckets) and assigns the group number to each row.
+    *   **Arguments:** `n` (INTEGER) - Number of buckets to create.
+    *   **Returns:** INTEGER - Bucket number (1 to n).
+    *   **Example:** `SELECT name, ntile(4) OVER (ORDER BY salary) as quartile FROM employees;`
+
+### Aggregate Window Functions
+
+Standard aggregate functions can be used as window functions when an `OVER` clause is provided. These support both streaming execution (for non-partitioned cases) and partitioned execution with proper state management.
+
+*   `count(*)`/`count(expr)` **OVER (...)**
+    *   **Description:** Returns the count of rows (or non-NULL values) in the current window frame.
+    *   **Example:** `SELECT name, count(*) OVER (PARTITION BY department) as dept_size FROM employees;`
+
+*   `sum(expr)` **OVER (...)**
+    *   **Description:** Returns the sum of values in the current window frame.
+    *   **Example:** `SELECT name, sum(salary) OVER (PARTITION BY department ORDER BY hire_date) as running_total FROM employees;`
+
+*   `avg(expr)` **OVER (...)**
+    *   **Description:** Returns the average of values in the current window frame.
+    *   **Example:** `SELECT name, avg(salary) OVER (PARTITION BY department) as dept_avg FROM employees;`
+
+*   `min(expr)` **OVER (...)**
+    *   **Description:** Returns the minimum value in the current window frame.
+    *   **Example:** `SELECT name, min(salary) OVER (PARTITION BY department) as dept_min FROM employees;`
+
+*   `max(expr)` **OVER (...)**
+    *   **Description:** Returns the maximum value in the current window frame.
+    *   **Example:** `SELECT name, max(salary) OVER (PARTITION BY department) as dept_max FROM employees;`
+
+### Navigation Functions (Planned)
+
+*Note: The following navigation functions are planned for future implementation:*
+
+*   `lag(expr, offset?, default?)`: Returns the value of `expr` from the row that is `offset` rows *before* the current row within its partition.
+*   `lead(expr, offset?, default?)`: Returns the value of `expr` from the row that is `offset` rows *after* the current row within its partition.
 *   `first_value(expr)`: Returns the value of `expr` from the first row in the current window frame.
 *   `last_value(expr)`: Returns the value of `expr` from the last row in the current window frame.
 
-*Note: The standard aggregate functions (`sum`, `avg`, `count`, `min`, `max`) can also be used as window functions when an `OVER` clause is provided (e.g., `SUM(salary) OVER (PARTITION BY department ORDER BY hire_date)`).*
+### Performance and Architecture
+
+Quereus's window function implementation features:
+
+- **Extensible Registration System**: New window functions can be registered dynamically like scalar and aggregate functions
+- **Efficient Execution**: Groups window functions by identical window specifications for optimal performance  
+- **Streaming Support**: Non-partitioned window functions use constant memory streaming execution
+- **Partitioned Execution**: PARTITION BY clauses properly collect and process partitions
+- **Type Safety**: Full type validation and proper SQL value handling
+
+### Examples
+
+```sql
+-- Ranking employees by salary within each department
+SELECT 
+  name,
+  department,
+  salary,
+  row_number() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank,
+  rank() OVER (ORDER BY salary DESC) as overall_rank
+FROM employees;
+
+-- Running totals and departmental statistics  
+SELECT
+  name,
+  department, 
+  salary,
+  sum(salary) OVER (PARTITION BY department ORDER BY hire_date) as running_dept_total,
+  avg(salary) OVER (PARTITION BY department) as dept_average,
+  count(*) OVER (PARTITION BY department) as dept_size
+FROM employees;
+
+-- Quartile analysis
+SELECT
+  name,
+  salary,
+  ntile(4) OVER (ORDER BY salary) as salary_quartile
+FROM employees;
+```
 
 ## Diagnostic Functions (Table-Valued)
 

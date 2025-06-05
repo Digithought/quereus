@@ -27,6 +27,9 @@ import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { ParameterScope } from '../scopes/param.js';
 import { SetOperationNode } from '../nodes/set-operation-node.js';
 import { JoinNode } from '../nodes/join-node.js';
+import { WindowNode, type WindowSpec } from '../nodes/window-node.js';
+import { WindowFunctionCallNode } from '../nodes/window-function.js';
+import { ArrayIndexNode } from '../nodes/array-index-node.js';
 
 /**
  * Helper function to get the non-parameter ancestor scope.
@@ -54,6 +57,43 @@ function isAggregateExpression(node: ScalarPlanNode): boolean {
 	}
 
 	return false;
+}
+
+/**
+ * Checks if an expression contains window functions
+ */
+function isWindowExpression(node: ScalarPlanNode): boolean {
+	if (node instanceof WindowFunctionCallNode) {
+		return true;
+	}
+
+	// Recursively check children (only scalar children)
+	for (const child of node.getChildren()) {
+		// Check if child is a scalar node and recursively check it
+		if ('expression' in child && isWindowExpression(child as ScalarPlanNode)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Collects all window functions from an expression tree, along with their aliases
+ */
+function collectWindowFunctions(node: ScalarPlanNode, alias?: string, windowFunctions: { func: WindowFunctionCallNode; alias?: string }[] = []): { func: WindowFunctionCallNode; alias?: string }[] {
+	if (node instanceof WindowFunctionCallNode) {
+		windowFunctions.push({ func: node, alias });
+	}
+
+	// Recursively check children (only scalar children)
+	for (const child of node.getChildren()) {
+		if ('expression' in child) {
+			collectWindowFunctions(child as ScalarPlanNode, undefined, windowFunctions);
+		}
+	}
+
+	return windowFunctions;
 }
 
 /**
@@ -205,7 +245,9 @@ export function buildSelectStmt(
 	// Build projections based on the SELECT list
 	const projections: Projection[] = [];
 	const aggregates: { expression: ScalarPlanNode; alias: string }[] = [];
+	const windowFunctions: { func: WindowFunctionCallNode; alias?: string }[] = [];
 	let hasAggregates = false;
+	let hasWindowFunctions = false;
 
 	for (const column of stmt.columns) {
 		if (column.type === 'all') {
@@ -251,11 +293,22 @@ export function buildSelectStmt(
 				});
 			});
 		} else if (column.type === 'column') {
-			// Handle specific expressions - allow aggregates in SELECT list
+			// Handle specific expressions - allow aggregates and window functions in SELECT list
 			const scalarNode = buildExpression(selectContext, column.expr, true);
 
+			// Check if this expression contains window functions
+			if (isWindowExpression(scalarNode)) {
+				hasWindowFunctions = true;
+				collectWindowFunctions(scalarNode, column.alias, windowFunctions);
+				// For window functions, we need to add a projection that will reference
+				// the window function output after the WindowNode is created
+				projections.push({
+					node: scalarNode,
+					alias: column.alias // Use the specified alias, if any
+				});
+			}
 			// Check if this expression contains aggregate functions
-			if (isAggregateExpression(scalarNode)) {
+			else if (isAggregateExpression(scalarNode)) {
 				hasAggregates = true;
 				aggregates.push({
 					expression: scalarNode,
@@ -391,7 +444,173 @@ export function buildSelectStmt(
 
 		// Update the select context to use the aggregate output scope for ORDER BY
 		selectContext = {...selectContext, scope: aggregateOutputScope};
-	} else {
+	}
+
+					// Handle window functions if present
+	if (hasWindowFunctions && windowFunctions.length > 0) {
+		// Group window functions by their window specification
+		const windowGroups = new Map<string, { func: WindowFunctionCallNode; alias?: string }[]>();
+
+		for (const { func, alias } of windowFunctions) {
+			// Create a key based on the window specification
+			const windowSpecKey = JSON.stringify({
+				partitionBy: func.expression.window?.partitionBy || [],
+				orderBy: func.expression.window?.orderBy || [],
+				frame: func.expression.window?.frame
+			});
+
+			if (!windowGroups.has(windowSpecKey)) {
+				windowGroups.set(windowSpecKey, []);
+			}
+			windowGroups.get(windowSpecKey)!.push({ func, alias });
+		}
+
+		// Create WindowNode for each unique window specification
+		for (const [windowSpecKey, functions] of windowGroups) {
+			const firstFunc = functions[0];
+			const windowSpec: WindowSpec = {
+				partitionBy: firstFunc.func.expression.window?.partitionBy || [],
+				orderBy: firstFunc.func.expression.window?.orderBy || [],
+				frame: firstFunc.func.expression.window?.frame
+			};
+
+			// Special case: ROW_NUMBER() without PARTITION BY - use SequencingNode instead
+			if (functions.length === 1 &&
+				functions[0].func.functionName.toLowerCase() === 'row_number' &&
+				windowSpec.partitionBy.length === 0) {
+				// TODO: Replace with SequencingNode for optimal performance
+				// For now, proceed with WindowNode
+			}
+
+			// Create new WindowFunctionCallNode instances with alias information
+			const windowFuncsWithAlias = functions.map(({ func, alias }) =>
+				new WindowFunctionCallNode(
+					func.scope,
+					func.expression,
+					func.functionName,
+					func.isDistinct,
+					alias
+				)
+			);
+
+						// Build partition expressions
+			const partitionExpressions = windowSpec.partitionBy.map(expr =>
+				buildExpression(selectContext, expr, false)
+			);
+
+			// Build ORDER BY expressions
+			const orderByExpressions = windowSpec.orderBy.map(orderClause =>
+				buildExpression(selectContext, orderClause.expr, false)
+			);
+
+			// Build function argument expressions
+			const functionArguments = windowFuncsWithAlias.map(func => {
+				if (func.expression.function.args && func.expression.function.args.length > 0) {
+					const argExpr = func.expression.function.args[0];
+					return buildExpression(selectContext, argExpr, false);
+				}
+				// Special case for COUNT(*) - it has no args but still needs a placeholder
+				if (func.functionName.toLowerCase() === 'count' &&
+					func.expression.function.args.length === 0) {
+					// Create a literal 1 as the argument for COUNT(*) - it counts rows, not specific values
+					return new LiteralNode(selectScope, { type: 'literal', value: 1 });
+				}
+				return null;
+			});
+
+			input = new WindowNode(selectScope, input, windowSpec, windowFuncsWithAlias, partitionExpressions, orderByExpressions, functionArguments);
+		}
+
+						// Create projections that select only the requested columns using direct array indexing
+		const windowProjections: Projection[] = [];
+		const windowType = input.getType();
+		const sourceColumnCount = windowType.columns.length - windowFunctions.length;
+
+		for (const column of stmt.columns) {
+			if (column.type === 'column') {
+								if (isWindowExpression(buildExpression(selectContext, column.expr, true))) {
+					// For window functions, use ArrayIndexNode to access the value by direct index
+					// Find which window function this corresponds to by matching the expression
+					const originalExpr = buildExpression(selectContext, column.expr, true);
+					const matchingWindowFuncIndex = windowFunctions.findIndex(({ func, alias }) => {
+						// Match based on function name, parameters, and window specification
+						if (!(originalExpr instanceof WindowFunctionCallNode) ||
+							func.functionName.toLowerCase() !== originalExpr.functionName.toLowerCase()) {
+							return false;
+						}
+
+						// Also compare window specifications to distinguish between functions with same name
+						const originalWindow = originalExpr.expression.window;
+						const funcWindow = func.expression.window;
+
+						// Compare partition expressions
+						const originalPartition = JSON.stringify(originalWindow?.partitionBy || []);
+						const funcPartition = JSON.stringify(funcWindow?.partitionBy || []);
+
+						// Compare order expressions
+						const originalOrder = JSON.stringify(originalWindow?.orderBy || []);
+						const funcOrder = JSON.stringify(funcWindow?.orderBy || []);
+
+						// Compare frame specifications
+						const originalFrame = JSON.stringify(originalWindow?.frame || null);
+						const funcFrame = JSON.stringify(funcWindow?.frame || null);
+
+						return originalPartition === funcPartition &&
+							   originalOrder === funcOrder &&
+							   originalFrame === funcFrame;
+					});
+
+					if (matchingWindowFuncIndex >= 0) {
+						const windowColumnIndex = sourceColumnCount + matchingWindowFuncIndex;
+						const windowColumnType = windowType.columns[windowColumnIndex].type;
+
+						const arrayIndexNode = new ArrayIndexNode(
+							selectScope,
+							windowColumnIndex,
+							windowColumnType
+						);
+
+						windowProjections.push({
+							node: arrayIndexNode,
+							alias: column.alias
+						});
+					}
+				} else {
+					// For regular columns, use ArrayIndexNode to access by index
+					// Find the column in the source columns
+					const sourceColIndex = windowType.columns.findIndex((col, index) => {
+						if (index >= sourceColumnCount) return false; // Skip window function columns
+						if (column.expr.type === 'column') {
+							return col.name.toLowerCase() === column.expr.name.toLowerCase();
+						}
+						return false;
+					});
+
+					if (sourceColIndex >= 0) {
+						const arrayIndexNode = new ArrayIndexNode(
+							selectScope,
+							sourceColIndex,
+							windowType.columns[sourceColIndex].type
+						);
+
+						// For regular columns, use the column name as alias if no explicit alias provided
+						const alias = column.alias || (column.expr.type === 'column' ? column.expr.name : undefined);
+
+						windowProjections.push({
+							node: arrayIndexNode,
+							alias: alias
+						});
+					}
+				}
+			}
+		}
+
+		if (windowProjections.length > 0) {
+			input = new ProjectNode(selectScope, input, windowProjections);
+		}
+	}
+
+	if (!hasAggregates && !hasWindowFunctions) {
 		// Create ProjectNode if we have projections, otherwise return input as-is
 		if (projections.length > 0) {
 			// Check if ORDER BY should be applied before projection

@@ -20,6 +20,7 @@ import { emitUpdateExecutor } from './emit/update-executor.js';
 import { emitDelete } from './emit/delete.js';
 import { emitProject } from './emit/project.js';
 import { emitColumnReference } from './emit/column-reference.js';
+import { emitArrayIndex } from './emit/array-index.js';
 import { emitValues, emitSingleRow } from './emit/values.js';
 import { emitFilter } from './emit/filter.js';
 import { emitDistinct } from './emit/distinct.js';
@@ -55,6 +56,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.UnaryOp, emitUnaryOp as EmitterFunc);
 	registerEmitter(PlanNodeType.Literal, emitLiteral as EmitterFunc);
 	registerEmitter(PlanNodeType.ColumnReference, emitColumnReference as EmitterFunc);
+	registerEmitter(PlanNodeType.ArrayIndex, emitArrayIndex as EmitterFunc);
 	registerEmitter(PlanNodeType.ParameterReference, emitParameterReference as EmitterFunc);
 	registerEmitter(PlanNodeType.ScalarFunctionCall, emitScalarFunctionCall as EmitterFunc);
 	registerEmitter(PlanNodeType.WindowFunctionCall, emitWindowFunctionCall as EmitterFunc);

@@ -21,7 +21,7 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 **SELECT Operations**
 - [X] **Basic SELECT**: Project, Filter, Sort, Distinct, Limit/Offset ✅
 - [X] **Aggregate Queries**: GROUP BY, HAVING, all aggregate functions ✅
-- [X] **Window Functions**: ROW_NUMBER() with basic window support ✅
+- [X] **Window Functions**: Comprehensive Phase 1 implementation with ranking and aggregate functions ✅
 - [X] **Set Operations**: UNION, INTERSECT, EXCEPT (all variants) ✅
 
 **FROM Clause**
@@ -81,12 +81,15 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 - [ ] **JOIN Optimization**: Join reordering and optimization
 - [ ] **CROSS JOIN**: Cartesian product support
 
-**Advanced Window Functions**
-- [ ] **RANK/DENSE_RANK**: Ranking functions (basic emitter exists, needs proper partitioning)
-- [ ] **LAG/LEAD**: Offset functions  
-- [ ] **Windowed Aggregates**: SUM/COUNT/etc. with OVER clauses
-- [ ] **PARTITION BY**: Proper partitioning support (currently simplified in window emitter)
-- [ ] **Window Frames**: ROWS BETWEEN, RANGE BETWEEN support
+**Window Functions** ✅ (Phase 1 Complete!)
+- [X] **Ranking Functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE ✅
+- [X] **Windowed Aggregates**: COUNT, SUM, AVG, MIN, MAX with OVER clauses ✅
+- [X] **PARTITION BY**: Full partitioning support with proper execution strategies ✅
+- [X] **Registration System**: Extensible window function registration like scalar/aggregate functions ✅
+- [X] **Performance Optimization**: Groups functions by window specifications for efficiency ✅
+- [ ] **LAG/LEAD**: Offset functions (Phase 2)
+- [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions (Phase 2)
+- [ ] **Window Frames**: ROWS BETWEEN, RANGE BETWEEN support (Phase 3)
 
 **Advanced Subquery Support**
 - [ ] **Correlated Subqueries**: Enhanced support for complex correlated subquery patterns

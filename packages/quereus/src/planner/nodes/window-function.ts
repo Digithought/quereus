@@ -21,6 +21,7 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 		public readonly expression: WindowFunctionExpr,
 		public readonly functionName: string,
 		public readonly isDistinct: boolean = false,
+		public readonly alias?: string,
 		estimatedCostOverride?: number
 	) {
 		super(scope, estimatedCostOverride);
@@ -50,13 +51,15 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 
 	override toString(): string {
 		const distinctStr = this.isDistinct ? 'DISTINCT ' : '';
-		return `${this.functionName}(${distinctStr})`;
+		const aliasStr = this.alias ? ` AS ${this.alias}` : '';
+		return `${this.functionName}(${distinctStr})${aliasStr}`;
 	}
 
 	override getLogicalProperties(): Record<string, unknown> {
 		return {
 			function: this.functionName,
 			isDistinct: this.isDistinct,
+			alias: this.alias,
 			resultType: formatScalarType(this.getType())
 		};
 	}

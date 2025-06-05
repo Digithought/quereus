@@ -14,6 +14,7 @@ import { resolveColumn, resolveParameter, resolveFunction } from '../resolve.js'
 import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt } from './select.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
+import { resolveWindowFunction } from '../../schema/window-function.js';
 
 export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allowAggregates: boolean = false): ScalarPlanNode {
   switch (expr.type) {
@@ -148,7 +149,23 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
     case 'windowFunction':
        // Window functions are handled by creating a WindowFunctionCallNode
-       // The window definition and function details are stored in the AST node
+       // First validate that this is a registered window function
+       const windowSchema = resolveWindowFunction(expr.function.name);
+       if (!windowSchema) {
+         throw new QuereusError(`Unknown window function: ${expr.function.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+       }
+
+       // Validate argument count (special case for COUNT(*))
+       const isCountStar = expr.function.name.toLowerCase() === 'count' && expr.function.args.length === 0;
+       if (windowSchema.argCount !== 'variadic' && expr.function.args.length !== windowSchema.argCount && !isCountStar) {
+         throw new QuereusError(`Window function ${expr.function.name} expects ${windowSchema.argCount} arguments, got ${expr.function.args.length}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+       }
+
+       // Validate ORDER BY requirement
+       if (windowSchema.requiresOrderBy && (!expr.window?.orderBy || expr.window.orderBy.length === 0)) {
+         throw new QuereusError(`Window function ${expr.function.name} requires ORDER BY clause`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+       }
+
        return new WindowFunctionCallNode(
          ctx.scope,
          expr,

@@ -50,7 +50,7 @@ FROM sales ORDER BY region, id;
 -- Test AVG() OVER for running averages
 SELECT product, amount, AVG(amount) OVER (PARTITION BY product ORDER BY id ROWS UNBOUNDED PRECEDING) as running_avg
 FROM sales ORDER BY product, id;
-→ [{"product":"Gadget","amount":75.25,"running_avg":75.25},{"product":"Gadget","amount":90.00,"running_avg":82.625},{"product":"Gadget","amount":110.25,"running_avg":91.833333333333},{"product":"Widget","amount":100.50,"running_avg":100.50},{"product":"Widget","amount":120.75,"running_avg":110.625},{"product":"Widget","amount":85.50,"running_avg":102.25}]
+→ [{"product":"Gadget","amount":75.25,"running_avg":75.25},{"product":"Gadget","amount":90.00,"running_avg":82.625},{"product":"Gadget","amount":110.25,"running_avg":91.83333333333333},{"product":"Widget","amount":100.50,"running_avg":100.50},{"product":"Widget","amount":120.75,"running_avg":110.625},{"product":"Widget","amount":85.50,"running_avg":102.25}]
 
 -- Test multiple window functions in same query
 SELECT
