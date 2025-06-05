@@ -60,6 +60,11 @@ export interface QuereusWorkerAPI {
   executionTrace(sql: string): Promise<Record<string, SqlValue>[]>;
 
   /**
+   * Get row-level execution trace data
+   */
+  rowTrace(sql: string): Promise<Record<string, SqlValue>[]>;
+
+  /**
    * Get query plan as a graph structure for visualization
    */
   explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph>;

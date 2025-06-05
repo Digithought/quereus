@@ -35,13 +35,17 @@ export type Instruction = {
 export interface InstructionTraceEvent {
 	instructionIndex: number;
 	note?: string;
-	type: 'input' | 'output' | 'error';
+	type: 'input' | 'output' | 'row' | 'error';
 	timestamp: number;
 	args?: RuntimeValue[];
 	result?: OutputValue;
 	error?: string;
 	/** Information about sub-programs if this instruction has any */
 	subPrograms?: SubProgramInfo[];
+	/** Row index within the async iterable (for 'row' type events) */
+	rowIndex?: number;
+	/** Row data (for 'row' type events) */
+	row?: Row;
 }
 
 /** Information about a sub-program for tracing purposes */
@@ -59,6 +63,8 @@ export interface InstructionTracer {
 	traceOutput(instructionIndex: number, instruction: Instruction, result: OutputValue): void;
 	/** Called when an instruction throws an error */
 	traceError(instructionIndex: number, instruction: Instruction, error: Error): void;
+	/** Called for each row emitted by an async iterable instruction */
+	traceRow(instructionIndex: number, instruction: Instruction, rowIndex: number, row: Row): void;
 	/** Gets collected trace events (if supported by the tracer) */
 	getTraceEvents?(): InstructionTraceEvent[];
 	/** Gets information about all sub-programs encountered during tracing */
@@ -101,6 +107,17 @@ export class CollectingInstructionTracer implements InstructionTracer {
 			type: 'error',
 			timestamp: Date.now(),
 			error: error.message
+		});
+	}
+
+	traceRow(instructionIndex: number, instruction: Instruction, rowIndex: number, row: Row): void {
+		this.events.push({
+			instructionIndex,
+			note: instruction.note,
+			type: 'row',
+			timestamp: Date.now(),
+			rowIndex,
+			row
 		});
 	}
 

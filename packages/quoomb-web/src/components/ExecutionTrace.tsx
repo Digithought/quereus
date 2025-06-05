@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
-import { Play, AlertTriangle, Activity, Loader, Copy, Check, Info, ChevronDown, ChevronRight, ArrowRight } from 'lucide-react';
+import { Play, AlertTriangle, Activity, Loader, Copy, Check, Info, ChevronDown, ChevronRight, ArrowDown } from 'lucide-react';
 
 export const ExecutionTrace: React.FC = () => {
-  const { queryHistory, activeResultId, fetchTrace } = useSessionStore();
+  const { queryHistory, activeResultId, fetchTrace, fetchRowTrace } = useSessionStore();
   const [isLoadingTrace, setIsLoadingTrace] = useState(false);
   const [traceError, setTraceError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const [showQuery, setShowQuery] = useState(false);
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
+  const [includeRowData, setIncludeRowData] = useState(true);
 
   const activeResult = queryHistory.find(result => result.id === activeResultId);
 
@@ -19,7 +20,12 @@ export const ExecutionTrace: React.FC = () => {
     setTraceError(null);
 
     try {
+      // Always fetch instruction trace
       await fetchTrace(activeResult.sql);
+      // Conditionally fetch row trace
+      if (includeRowData) {
+        await fetchRowTrace(activeResult.sql);
+      }
     } catch (error) {
       setTraceError(error instanceof Error ? error.message : 'Failed to fetch execution trace');
     } finally {
@@ -37,41 +43,48 @@ export const ExecutionTrace: React.FC = () => {
     setExpandedEvents(newExpanded);
   };
 
-  // Build a dependency-aware instruction flow
-  const buildInstructionFlow = (traceData: any[]) => {
-    // Now each row is already a complete instruction execution
-    const instructionInfo = new Map<number, { dependencies: number[], operation: string }>();
+  // Build integrated trace data combining instructions with their rows
+  const buildIntegratedTrace = () => {
+    if (!activeResult?.trace) return { instructions: [], startTime: 0, finalOutput: null };
 
-    traceData.forEach(row => {
+    const instructionInfo = new Map<number, { dependencies: number[], operation: string }>();
+    const rowsByInstruction = new Map<number, any[]>();
+
+    // Calculate start time for relative timestamps
+    const startTime = Math.min(...activeResult.trace.map(row => (row.timestamp_ms as number) || 0));
+
+    // Process instruction trace
+    activeResult.trace.forEach(row => {
       const instrIndex = (row.instruction_index as number) || 0;
       const dependencies = row.dependencies ? JSON.parse(row.dependencies as string) : [];
       const operation = (row.operation as string) || 'Unknown';
       instructionInfo.set(instrIndex, { dependencies, operation });
     });
 
-    // Topological sort to order instructions by dependency
+    // Process row trace if available and enabled
+    if (includeRowData && activeResult.rowTrace) {
+      activeResult.rowTrace.forEach(row => {
+        const instrIndex = (row.instruction_index as number) || 0;
+        if (!rowsByInstruction.has(instrIndex)) {
+          rowsByInstruction.set(instrIndex, []);
+        }
+        rowsByInstruction.get(instrIndex)!.push(row);
+      });
+    }
+
+    // Topological sort for dependency order
     const instructionIndexes = Array.from(instructionInfo.keys()).sort((a, b) => a - b);
     const visited = new Set<number>();
     const visiting = new Set<number>();
     const result: number[] = [];
 
     const visit = (instrIndex: number) => {
-      if (visiting.has(instrIndex)) {
-        // Circular dependency - just add it to avoid infinite loop
-        return;
-      }
-      if (visited.has(instrIndex)) {
-        return;
-      }
-
+      if (visiting.has(instrIndex) || visited.has(instrIndex)) return;
       visiting.add(instrIndex);
       const info = instructionInfo.get(instrIndex);
       if (info) {
-        // Visit dependencies first
         info.dependencies.forEach(depIndex => {
-          if (instructionInfo.has(depIndex)) {
-            visit(depIndex);
-          }
+          if (instructionInfo.has(depIndex)) visit(depIndex);
         });
       }
       visiting.delete(instrIndex);
@@ -81,63 +94,81 @@ export const ExecutionTrace: React.FC = () => {
 
     instructionIndexes.forEach(visit);
 
-    return result.map(instrIndex => {
-      const row = traceData.find(r => r.instruction_index === instrIndex);
+    const instructions = result.map(instrIndex => {
+      const traceRow = activeResult.trace!.find(r => r.instruction_index === instrIndex);
+      const rowData = rowsByInstruction.get(instrIndex) || [];
+      const info = instructionInfo.get(instrIndex);
+
       return {
         instructionIndex: instrIndex,
-        row: row,
-        dependencies: instructionInfo.get(instrIndex)?.dependencies || [],
-        operation: instructionInfo.get(instrIndex)?.operation || 'Unknown'
+        traceRow,
+        rowData: rowData.sort((a, b) => (a.row_index || 0) - (b.row_index || 0)),
+        dependencies: info?.dependencies || [],
+        operation: info?.operation || 'Unknown',
+        relativeTime: ((traceRow?.timestamp_ms as number) || startTime) - startTime
       };
     });
+
+    // Find final output from the last instruction that has dependencies pointing to it
+    const lastInstructionIndex = Math.max(...instructionIndexes);
+    const lastInstruction = activeResult.trace.find(r => r.instruction_index === lastInstructionIndex);
+    const finalOutput = lastInstruction?.output_value as string || null;
+
+    return { instructions, startTime, finalOutput };
   };
 
   const copyTraceAsText = async () => {
-    if (!activeResult?.trace || activeResult.trace.length === 0) return;
+    if (!activeResult?.trace || activeResult.trace.length === 0 || !activeResult) return;
 
+    const { instructions, finalOutput } = buildIntegratedTrace();
     const lines = [
-      `Instruction-Level Execution Trace for: ${activeResult.sql}`,
+      `Execution Trace for: ${activeResult.sql}`,
       '='.repeat(80),
       ''
     ];
 
-    const instructionFlow = buildInstructionFlow(activeResult.trace);
+    instructions.forEach(({ instructionIndex, traceRow, rowData, dependencies, operation, relativeTime }) => {
+      lines.push(`[${instructionIndex}] ${operation} (+${relativeTime}ms)`);
 
-    instructionFlow.forEach(({ instructionIndex, row, dependencies, operation }) => {
-      lines.push(`[${instructionIndex}] ${operation}`);
-      if (dependencies.length > 0) {
-        lines.push(`  Depends on: [${dependencies.join(', ')}]`);
-      }
+      const duration = (traceRow?.duration_ms as number) || 0;
+      const inputValues = (traceRow?.input_values as string) || '';
+      const outputValue = (traceRow?.output_value as string) || '';
 
-      const duration = (row.duration_ms as number) || 0;
-      const inputValues = (row.input_values as string) || '';
-      const outputValue = (row.output_value as string) || '';
-      const errorMessage = (row.error_message as string) || '';
-      const subPrograms = (row.sub_programs as string) || '';
-
-      if (duration > 0) {
-        lines.push(`  Duration: ${duration.toFixed(2)}ms`);
-      }
+      // Parse and display input values with source indexes
       if (inputValues) {
-        lines.push(`  Input: ${inputValues}`);
+        try {
+          const parsed = JSON.parse(inputValues);
+          const values = Array.isArray(parsed) ? parsed : [parsed];
+          const inputsWithSources = values.map((val, i) => {
+            const sourceIndex = dependencies[i];
+            const value = typeof val === 'string' ? val : JSON.stringify(val);
+            return sourceIndex !== undefined ? `[${sourceIndex}]${value}` : value;
+          });
+          lines.push(`  Input: ${inputsWithSources.join(', ')}`);
+        } catch {
+          const sourceIndex = dependencies[0];
+          lines.push(`  Input: ${sourceIndex !== undefined ? `[${sourceIndex}]` : ''}${inputValues}`);
+        }
       }
-      if (outputValue) {
-        lines.push(`  Output: ${outputValue}`);
-      }
-      if (subPrograms) {
-        lines.push(`  Sub-programs: ${subPrograms}`);
-      }
-      if (errorMessage) {
-        lines.push(`  Error: ${errorMessage}`);
+
+      if (duration > 0) lines.push(`  Duration: ${duration.toFixed(2)}ms`);
+      if (outputValue) lines.push(`  Output: ${outputValue}`);
+      if (rowData.length > 0) {
+        lines.push(`  Rows: ${rowData.length}`);
+        rowData.slice(0, 3).forEach((row, i) => {
+          const { startTime } = buildIntegratedTrace();
+          const rowRelativeTime = ((row.timestamp_ms as number) || startTime) - startTime;
+          lines.push(`    ${i + 1}: ${row.row_data || ''} (+${rowRelativeTime}ms)`);
+        });
+        if (rowData.length > 3) lines.push(`    ... and ${rowData.length - 3} more`);
       }
       lines.push('');
     });
 
-    const totalDuration = activeResult.trace
-      .reduce((sum, row) => sum + ((row.duration_ms as number) || 0), 0);
-
-    lines.push(`Total Instructions: ${instructionFlow.length}`);
-    lines.push(`Total Duration: ${totalDuration.toFixed(2)}ms`);
+    if (finalOutput) {
+      lines.push('Final Output:');
+      lines.push(finalOutput);
+    }
 
     try {
       await navigator.clipboard.writeText(lines.join('\n'));
@@ -159,15 +190,14 @@ export const ExecutionTrace: React.FC = () => {
     );
   }
 
+  const { instructions: integratedTrace, finalOutput } = buildIntegratedTrace();
+
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900">
       {/* Compact Header */}
       <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
         <div className="flex items-center gap-3">
-          <h3 className="font-semibold text-gray-900 dark:text-white">
-            Instruction-Level Trace
-          </h3>
-
+          <h3 className="font-semibold text-gray-900 dark:text-white">Execution Trace</h3>
           <button
             onClick={() => setShowQuery(!showQuery)}
             className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
@@ -178,6 +208,17 @@ export const ExecutionTrace: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Row data toggle */}
+          <label className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
+            <input
+              type="checkbox"
+              checked={includeRowData}
+              onChange={(e) => setIncludeRowData(e.target.checked)}
+              className="w-3 h-3"
+            />
+            Include rows
+          </label>
+
           {activeResult.trace && (
             <button
               onClick={copyTraceAsText}
@@ -225,208 +266,266 @@ export const ExecutionTrace: React.FC = () => {
         </div>
       )}
 
-      {/* Trace display - takes remaining space */}
+      {/* Integrated trace display */}
       <div className="flex-1 overflow-auto">
-        {activeResult.trace ? (
+        {activeResult.trace && integratedTrace.length > 0 ? (
           <div className="p-4">
             <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-              Instruction Dependency Flow ({activeResult.trace.length} traced events):
+              Execution Flow ({integratedTrace.length} instructions):
             </h4>
 
-            {activeResult.trace.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <p>No execution trace data available</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {/* Dependency-ordered instruction flow */}
-                {buildInstructionFlow(activeResult.trace).map(({ instructionIndex, row, dependencies, operation }, flowIndex, flowArray) => {
-                  const eventId = `instruction-${instructionIndex}`;
-                  const isExpanded = expandedEvents.has(eventId);
+            <div className="space-y-1">
+              {integratedTrace.map(({ instructionIndex, traceRow, rowData, dependencies, operation, relativeTime }, index) => {
+                const eventId = `instruction-${instructionIndex}`;
+                const isExpanded = expandedEvents.has(eventId);
 
-                  // Get data from the single instruction row
-                  const duration = (row.duration_ms as number) || 0;
-                  const inputValues = (row.input_values as string) || '';
-                  const outputValue = (row.output_value as string) || '';
-                  const errorMessage = (row.error_message as string) || '';
-                  const subPrograms = (row.sub_programs as string) || '';
-                  const timestamp = new Date(row.timestamp_ms as number).toLocaleTimeString();
+                const duration = (traceRow?.duration_ms as number) || 0;
+                const inputValues = (traceRow?.input_values as string) || '';
+                const outputValue = (traceRow?.output_value as string) || '';
+                const errorMessage = (traceRow?.error_message as string) || '';
+                const hasDetailedData = inputValues || outputValue || errorMessage || rowData.length > 0;
 
-                  return (
-                    <div key={instructionIndex} className="relative">
-                      {/* Flow connector from previous instruction */}
-                      {flowIndex > 0 && dependencies.length > 0 && (
-                        <div className="flex items-center justify-center mb-2">
-                          <div className="flex items-center gap-2 text-gray-400 dark:text-gray-500">
-                            <div className="h-px bg-gray-300 dark:bg-gray-600 w-8"></div>
-                            <ArrowRight size={14} />
-                            <div className="h-px bg-gray-300 dark:bg-gray-600 w-8"></div>
+                // Parse input values for inline display with source instruction prefixes
+                let parsedInputs: Array<{ value: string; sourceIndex?: number }> = [];
+                if (inputValues) {
+                  try {
+                    const parsed = JSON.parse(inputValues);
+                    if (Array.isArray(parsed)) {
+                      parsedInputs = parsed.map((val, i) => ({
+                        value: typeof val === 'string' ? val : JSON.stringify(val),
+                        sourceIndex: dependencies[i] // Map to corresponding dependency
+                      }));
+                    } else {
+                      parsedInputs = [{
+                        value: typeof parsed === 'string' ? parsed : JSON.stringify(parsed),
+                        sourceIndex: dependencies[0]
+                      }];
+                    }
+                  } catch {
+                    parsedInputs = [{
+                      value: inputValues,
+                      sourceIndex: dependencies[0]
+                    }];
+                  }
+                }
+
+                return (
+                  <div key={instructionIndex}>
+                    {/* Flow arrow from dependencies */}
+                    {index > 0 && dependencies.length > 0 && (
+                      <div className="flex items-center justify-center py-1">
+                        <div className="flex items-center text-gray-400 dark:text-gray-500">
+                          <ArrowDown size={12} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Compact instruction row */}
+                    <div className="group border border-gray-200 dark:border-gray-700 rounded hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+                      <div className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800/50">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          {/* Expand button - only show if there's detailed data */}
+                          {hasDetailedData ? (
+                            <button
+                              onClick={() => toggleEventExpansion(eventId)}
+                              className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                            >
+                              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            </button>
+                          ) : (
+                            <div className="w-[14px] flex-shrink-0" /> // Spacer
+                          )}
+
+                          {/* Instruction info */}
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <span className="font-mono text-sm text-blue-600 dark:text-blue-400 flex-shrink-0">
+                              [{instructionIndex}]
+                            </span>
+                            <span className="font-medium text-gray-900 dark:text-white truncate">
+                              {operation}
+                            </span>
+
+                            {/* Input values with source instruction prefixes */}
+                            {parsedInputs.length > 0 && (
+                              <div className="flex items-center gap-1 text-xs flex-shrink-0 max-w-md">
+                                <span className="text-gray-500 dark:text-gray-400">←</span>
+                                {parsedInputs.map((input, i) => {
+                                  const displayValue = input.value;
+                                  const shouldTruncate = displayValue.length > 80;
+                                  const truncatedValue = shouldTruncate ? `${displayValue.substring(0, 80)}...` : displayValue;
+
+                                  return (
+                                    <div key={i} className="relative group flex items-center">
+                                      {/* Source instruction index prefix */}
+                                      {input.sourceIndex !== undefined && (
+                                        <span className="font-mono text-blue-500 dark:text-blue-400 mr-1">
+                                          [{input.sourceIndex}]
+                                        </span>
+                                      )}
+                                      {/* Input value */}
+                                      <span className="font-mono text-orange-600 dark:text-orange-400 truncate inline-block max-w-60">
+                                        {truncatedValue}
+                                      </span>
+                                      {/* Hover tooltip for full value */}
+                                      {shouldTruncate && (
+                                        <div className="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs p-2 rounded shadow-lg max-w-sm break-words">
+                                          {input.sourceIndex !== undefined && (
+                                            <div className="text-blue-300 dark:text-blue-600 mb-1">
+                                              From instruction [{input.sourceIndex}]:
+                                            </div>
+                                          )}
+                                          {displayValue}
+                                        </div>
+                                      )}
+                                      {i < parsedInputs.length - 1 && <span className="text-gray-400 mx-1">,</span>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Summary stats */}
+                          <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
+                            <span>+{relativeTime}ms</span>
+                            {duration > 0 && (
+                              <span>({duration.toFixed(1)}ms)</span>
+                            )}
+                            {rowData.length > 0 && (
+                              <span className="text-green-600 dark:text-green-400">
+                                {rowData.length} row{rowData.length !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {errorMessage && (
+                              <span className="text-red-600 dark:text-red-400">Error</span>
+                            )}
                           </div>
                         </div>
-                      )}
+                      </div>
 
-                      <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-                        {/* Instruction header with dependencies */}
-                        <button
-                          onClick={() => toggleEventExpansion(eventId)}
-                          className="w-full flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors text-left"
-                        >
-                          {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 flex-wrap">
-                              <span className="font-mono text-sm text-blue-600 dark:text-blue-400">
-                                [{instructionIndex}]
-                              </span>
-                              <span className="font-medium text-gray-900 dark:text-white">
-                                {operation}
-                              </span>
-                              {duration > 0 && (
-                                <span className="text-sm text-gray-500 dark:text-gray-400">
-                                  ({duration.toFixed(2)}ms)
-                                </span>
-                              )}
-                              {dependencies.length > 0 && (
-                                <div className="flex items-center gap-1 text-xs">
-                                  <span className="text-gray-500 dark:text-gray-400">depends on:</span>
-                                  {dependencies.map((dep, i) => (
-                                    <span key={dep} className="text-orange-600 dark:text-orange-400 font-mono">
-                                      [{dep}]{i < dependencies.length - 1 ? ',' : ''}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                              Executed at {timestamp}
-                            </div>
-                          </div>
-                        </button>
-
-                        {/* Expanded instruction details */}
-                        {isExpanded && (
-                          <div className="p-3 space-y-3 bg-white dark:bg-gray-900">
-                            {/* Input values */}
-                            {inputValues && (
-                              <div className="border-l-2 border-blue-200 dark:border-blue-700 pl-3">
-                                <div className="text-xs font-medium text-blue-600 dark:text-blue-400 mb-1">
-                                  Input Values:
-                                </div>
-                                <div className="bg-blue-50 dark:bg-blue-900/20 rounded p-2 text-xs font-mono">
-                                  <pre className="whitespace-pre-wrap break-words">{inputValues}</pre>
-                                </div>
+                      {/* Expanded details */}
+                      {isExpanded && hasDetailedData && (
+                        <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+                          <div className="p-3 space-y-3">
+                            {/* Input/Output in compact format */}
+                            {(inputValues || outputValue) && (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                                {inputValues && (
+                                  <div>
+                                    <div className="font-medium text-blue-600 dark:text-blue-400 mb-1">Input:</div>
+                                    <div className="bg-blue-50 dark:bg-blue-900/20 rounded p-2 font-mono">
+                                      <pre className="whitespace-pre-wrap break-words">{inputValues}</pre>
+                                    </div>
+                                  </div>
+                                )}
+                                {outputValue && (
+                                  <div>
+                                    <div className="font-medium text-green-600 dark:text-green-400 mb-1">Output:</div>
+                                    <div className="bg-green-50 dark:bg-green-900/20 rounded p-2 font-mono">
+                                      <pre className="whitespace-pre-wrap break-words">{outputValue}</pre>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             )}
 
-                            {/* Output value */}
-                            {outputValue && (
-                              <div className="border-l-2 border-green-200 dark:border-green-700 pl-3">
-                                <div className="text-xs font-medium text-green-600 dark:text-green-400 mb-1">
-                                  Output Value:
+                            {/* Row data */}
+                            {rowData.length > 0 && (
+                              <div>
+                                <div className="font-medium text-purple-600 dark:text-purple-400 mb-2">
+                                  Row Data ({rowData.length} rows):
                                 </div>
-                                <div className="bg-green-50 dark:bg-green-900/20 rounded p-2 text-xs font-mono">
-                                  <pre className="whitespace-pre-wrap break-words">{outputValue}</pre>
-                                </div>
-                              </div>
-                            )}
+                                <div className="space-y-1 max-h-40 overflow-y-auto">
+                                  {rowData.map((row, i) => {
+                                    const { startTime } = buildIntegratedTrace();
+                                    const rowRelativeTime = ((row.timestamp_ms as number) || startTime) - startTime;
 
-                            {/* Sub-programs */}
-                            {subPrograms && (
-                              <div className="border-l-2 border-purple-200 dark:border-purple-700 pl-3">
-                                <div className="text-xs font-medium text-purple-600 dark:text-purple-400 mb-1">
-                                  Sub-Programs:
-                                </div>
-                                <div className="bg-purple-50 dark:bg-purple-900/20 rounded p-2 text-xs font-mono">
-                                  <pre className="whitespace-pre-wrap break-words">{subPrograms}</pre>
+                                    return (
+                                      <div key={i} className="flex items-center gap-2 text-xs bg-purple-50 dark:bg-purple-900/20 rounded p-2">
+                                        <span className="text-purple-600 dark:text-purple-400 font-mono flex-shrink-0">
+                                          #{row.row_index || i}:
+                                        </span>
+                                        <span className="font-mono flex-1 truncate">{row.row_data || ''}</span>
+                                        <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">
+                                          +{rowRelativeTime}ms
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                             )}
 
                             {/* Error message */}
                             {errorMessage && (
-                              <div className="border-l-2 border-red-200 dark:border-red-700 pl-3">
-                                <div className="text-xs font-medium text-red-600 dark:text-red-400 mb-1">
-                                  Error:
-                                </div>
-                                <div className="bg-red-50 dark:bg-red-900/20 rounded p-2 text-xs font-mono text-red-700 dark:text-red-300">
+                              <div>
+                                <div className="font-medium text-red-600 dark:text-red-400 mb-1">Error:</div>
+                                <div className="bg-red-50 dark:bg-red-900/20 rounded p-2 text-xs text-red-700 dark:text-red-300">
                                   {errorMessage}
                                 </div>
                               </div>
                             )}
-
-                            {/* Execution summary */}
-                            <div className="border-l-2 border-gray-200 dark:border-gray-700 pl-3">
-                              <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                                Execution Summary:
-                              </div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
-                                <div>Duration: {duration > 0 ? `${duration.toFixed(2)}ms` : 'Instant'}</div>
-                                <div>Dependencies: {dependencies.length > 0 ? `[${dependencies.join(', ')}]` : 'None'}</div>
-                                <div>Timestamp: {timestamp}</div>
-                              </div>
-                            </div>
                           </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Trace statistics */}
-                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                  <h5 className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-2">
-                    Execution Statistics
-                  </h5>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                    <div>
-                      <span className="text-blue-600 dark:text-blue-400">Instructions:</span>
-                      <span className="ml-2 font-medium">
-                        {activeResult.trace.length}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-blue-600 dark:text-blue-400">Total Duration:</span>
-                      <span className="ml-2 font-medium">
-                        {activeResult.trace.reduce((sum, row) => sum + ((row.duration_ms as number) || 0), 0).toFixed(2)}ms
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-blue-600 dark:text-blue-400">With Sub-programs:</span>
-                      <span className="ml-2 font-medium">
-                        {activeResult.trace.filter(row => row.sub_programs).length}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-blue-600 dark:text-blue-400">With Errors:</span>
-                      <span className="ml-2 font-medium">
-                        {activeResult.trace.filter(row => row.error_message).length}
-                      </span>
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
+                );
+              })}
+            </div>
 
-                {/* Trace explanation */}
-                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
-                  <h5 className="text-sm font-medium text-green-800 dark:text-green-200 mb-2">
-                    Understanding Dependency Flow
-                  </h5>
-                  <div className="text-sm text-green-700 dark:text-green-300 space-y-1">
-                    <p>• Instructions are ordered by dependency flow - dependencies execute first</p>
-                    <p>• Each instruction shows which previous instructions it depends on</p>
-                    <p>• INPUT events show values passed from dependent instructions</p>
-                    <p>• OUTPUT events show values produced for subsequent instructions</p>
-                    <p>• This reveals the actual data flow through the query execution engine</p>
+            {/* Final Output Box */}
+            {finalOutput && (
+              <div className="mt-4 border border-green-200 dark:border-green-700 rounded-lg bg-green-50 dark:bg-green-900/20">
+                <div className="p-3">
+                  <div className="font-medium text-green-800 dark:text-green-200 mb-2">Final Output:</div>
+                  <div className="bg-white dark:bg-gray-800 rounded p-2 text-sm font-mono">
+                    <pre className="whitespace-pre-wrap break-words text-gray-900 dark:text-gray-100">{finalOutput}</pre>
                   </div>
                 </div>
               </div>
             )}
+
+            {/* Summary statistics */}
+            <div className="mt-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+              <h5 className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-2">
+                Execution Summary
+              </h5>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <span className="text-blue-600 dark:text-blue-400">Instructions:</span>
+                  <span className="ml-2 font-medium">{integratedTrace.length}</span>
+                </div>
+                <div>
+                  <span className="text-blue-600 dark:text-blue-400">Total Duration:</span>
+                  <span className="ml-2 font-medium">
+                    {integratedTrace.reduce((sum, t) => sum + ((t.traceRow?.duration_ms as number) || 0), 0).toFixed(2)}ms
+                  </span>
+                </div>
+                {includeRowData && (
+                  <div>
+                    <span className="text-blue-600 dark:text-blue-400">Total Rows:</span>
+                    <span className="ml-2 font-medium">
+                      {integratedTrace.reduce((sum, t) => sum + t.rowData.length, 0)}
+                    </span>
+                  </div>
+                )}
+                <div>
+                  <span className="text-blue-600 dark:text-blue-400">With Errors:</span>
+                  <span className="ml-2 font-medium">
+                    {integratedTrace.filter(t => t.traceRow?.error_message).length}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         ) : (
           <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <div className="text-center">
               <Activity size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
-              <p className="mb-4">Click "Trace Execution" to see instruction-level dependency flow</p>
+              <p className="mb-4">Click "Trace Execution" to see instruction flow with data</p>
               <p className="text-sm text-gray-400 dark:text-gray-500">
-                Shows how data flows between instructions with actual input/output values
+                Shows instruction dependencies, input values, relative timing, and optional row-level data
               </p>
             </div>
           </div>

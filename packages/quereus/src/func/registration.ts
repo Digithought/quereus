@@ -1,20 +1,8 @@
-import { createLogger } from '../common/logger.js';
-import type {
-	AggregateFinalizer,
-	AggregateReducer,
-	FunctionSchema,
-	IntegratedTableValuedFunc,
-	ScalarFunc,
-	TableValuedFunc,
-	ScalarFunctionSchema,
-	TableValuedFunctionSchema,
-	AggregateFunctionSchema
-} from '../schema/function.js';
+import type { AggregateFinalizer, AggregateReducer, IntegratedTableValuedFunc, ScalarFunc, TableValuedFunc, ScalarFunctionSchema,
+	TableValuedFunctionSchema, AggregateFunctionSchema } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 import type { ScalarType, RelationType } from '../common/datatype.js';
-
-const log = createLogger('func:registration');
 
 /**
  * Configuration options for scalar functions

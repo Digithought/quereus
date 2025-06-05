@@ -16,6 +16,7 @@ export interface QueryResult {
   queryPlan?: Record<string, SqlValue>[];
   program?: Record<string, SqlValue>[];
   trace?: Record<string, SqlValue>[];
+  rowTrace?: Record<string, SqlValue>[];
   planGraph?: PlanGraph;
   planMode: 'estimated' | 'actual';
   selectedNodeId?: string;
@@ -68,6 +69,7 @@ export interface SessionState {
   fetchQueryPlan: (sql: string) => Promise<void>;
   fetchProgram: (sql: string) => Promise<void>;
   fetchTrace: (sql: string) => Promise<void>;
+  fetchRowTrace: (sql: string) => Promise<void>;
   fetchPlanGraph: (sql: string, withActual?: boolean) => Promise<void>;
   createTab: (name?: string) => string;
   closeTab: (tabId: string) => void;
@@ -344,6 +346,33 @@ export const useSessionStore = create<SessionState>()(
             }
           } catch (error) {
             console.error('Failed to fetch query trace:', error);
+            throw error;
+          }
+        },
+
+        fetchRowTrace: async (sql: string) => {
+          const { api, isConnected, activeResultId } = get();
+
+          if (!api || !isConnected) {
+            throw new Error('Not connected to database');
+          }
+
+          try {
+            const rowTrace = await api.rowTrace(sql);
+
+            // Update the active result with the query row trace
+            if (activeResultId) {
+              set((state) => ({
+                ...state,
+                queryHistory: state.queryHistory.map(result =>
+                  result.id === activeResultId
+                    ? { ...result, rowTrace: rowTrace }
+                    : result
+                ),
+              }));
+            }
+          } catch (error) {
+            console.error('Failed to fetch query row trace:', error);
             throw error;
           }
         },
@@ -1018,27 +1047,6 @@ export const useSessionStore = create<SessionState>()(
         activeResultId: state.activeResultId,
         selectedPanel: state.selectedPanel,
       }),
-      // Custom serialization to handle Dates properly
-      serialize: (state) => {
-        return JSON.stringify({
-          ...state,
-          queryHistory: state.queryHistory?.map(result => ({
-            ...result,
-            timestamp: result.timestamp?.toISOString(),
-          })) || [],
-        });
-      },
-      // Custom deserialization to restore Dates
-      deserialize: (str) => {
-        const parsed = JSON.parse(str);
-        return {
-          ...parsed,
-          queryHistory: parsed.queryHistory?.map((result: any) => ({
-            ...result,
-            timestamp: result.timestamp ? new Date(result.timestamp) : new Date(),
-          })) || [],
-        };
-      },
       // Rehydrate callback to ensure proper state restoration
       onRehydrateStorage: () => (state) => {
         if (state) {
@@ -1052,6 +1060,14 @@ export const useSessionStore = create<SessionState>()(
             if (!state.activeTabId) {
               state.activeTabId = state.tabs.find(tab => tab.isActive)?.id || state.tabs[0]?.id || null;
             }
+          }
+
+          // Convert timestamp strings back to Date objects
+          if (state.queryHistory) {
+            state.queryHistory = state.queryHistory.map(result => ({
+              ...result,
+              timestamp: typeof result.timestamp === 'string' ? new Date(result.timestamp) : result.timestamp
+            }));
           }
         }
       },

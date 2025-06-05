@@ -121,6 +121,28 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
   }
 
+  async rowTrace(sql: string): Promise<Record<string, SqlValue>[]> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      console.log('Getting row trace for SQL:', sql);
+
+      const results: Record<string, SqlValue>[] = [];
+
+      // Use Quereus's row_trace() function to get detailed row-level trace
+      for await (const row of this.db.eval('SELECT * FROM row_trace(?)', [sql])) {
+        results.push(row);
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Row trace error:', error);
+      throw new Error(`Row trace failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
   async explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph> {
     if (!this.db) {
       throw new Error('Database not initialized');

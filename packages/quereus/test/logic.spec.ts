@@ -179,6 +179,8 @@ function formatTraceEvents(events: any[]): string {
 			lines.push(`[${event.instructionIndex}] INPUT${note} at ${timestamp}: ${safeJsonStringify(event.args)}`);
 		} else if (event.type === 'output') {
 			lines.push(`[${event.instructionIndex}] OUTPUT${note} at ${timestamp}: ${safeJsonStringify(event.result)}`);
+		} else if (event.type === 'row') {
+			lines.push(`[${event.instructionIndex}] ROW #${event.rowIndex ?? 'unknown'}${note} at ${timestamp}: ${safeJsonStringify(event.row)}`);
 		} else if (event.type === 'error') {
 			lines.push(`[${event.instructionIndex}] ERROR${note} at ${timestamp}: ${event.error}`);
 		}

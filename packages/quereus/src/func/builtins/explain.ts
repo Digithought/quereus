@@ -517,6 +517,114 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 	}
 );
 
+// Row-level execution trace function for detailed data flow analysis
+export const rowTraceFunc = createIntegratedTableValuedFunction(
+	{
+		name: 'row_trace',
+		numArgs: 1,
+		deterministic: false, // Row traces are not deterministic
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'instruction_index', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'operation', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'row_index', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'row_data', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true }, // JSON array of row values
+				{ name: 'timestamp_ms', type: { typeClass: 'scalar', affinity: SqlDataType.REAL, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'row_count', type: { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: true, isReadOnly: true }, generated: true } // Total rows for this instruction (filled in last row)
+			],
+			keys: [],
+			rowConstraints: []
+		}
+	},
+	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
+		if (typeof sql !== 'string') {
+			throw new QuereusError('row_trace() requires a SQL string argument', StatusCode.ERROR);
+		}
+
+		try {
+			// Import the CollectingInstructionTracer
+			const { CollectingInstructionTracer } = await import('../../runtime/types.js');
+			const tracer = new CollectingInstructionTracer();
+
+			// Parse the query and execute with tracing
+			let stmt: any;
+			try {
+				stmt = db.prepare(sql);
+
+				// Execute the query with tracing to collect row-level events
+				const results: any[] = [];
+				for await (const row of stmt.iterateRowsWithTrace(undefined, tracer)) {
+					results.push(row); // We don't yield the results, just the trace events
+				}
+
+				await stmt.finalize();
+			} catch (executionError: any) {
+				// If execution fails, we might still have some trace events
+				console.warn('Query execution failed during row tracing:', executionError.message);
+			}
+
+			// Get the collected trace events and filter for row events
+			const traceEvents = tracer.getTraceEvents();
+			const rowEvents = traceEvents.filter(event => event.type === 'row');
+
+			// Group row events by instruction index to calculate row counts
+			const rowsByInstruction = new Map<number, typeof rowEvents>();
+			for (const event of rowEvents) {
+				const instructionIndex = event.instructionIndex;
+				if (!rowsByInstruction.has(instructionIndex)) {
+					rowsByInstruction.set(instructionIndex, []);
+				}
+				rowsByInstruction.get(instructionIndex)!.push(event);
+			}
+
+			// Yield detailed information for each row
+			for (const [instructionIndex, instructionRowEvents] of rowsByInstruction.entries()) {
+				const totalRows = instructionRowEvents.length;
+
+				for (let i = 0; i < instructionRowEvents.length; i++) {
+					const event = instructionRowEvents[i];
+					const isLastRow = i === instructionRowEvents.length - 1;
+
+					yield [
+						instructionIndex,                                                    // instruction_index
+						event.note || 'Unknown',                                           // operation
+						event.rowIndex ?? i,                                               // row_index
+						safeJsonStringify(event.row),                                      // row_data
+						event.timestamp,                                                    // timestamp_ms
+						isLastRow ? totalRows : null                                       // row_count (only on last row)
+					];
+				}
+			}
+
+			// If no row events were captured, yield a summary row
+			if (rowEvents.length === 0) {
+				yield [
+					0,                                            // instruction_index
+					'NO_ROW_DATA',                               // operation
+					0,                                           // row_index
+					safeJsonStringify('No row-level trace events captured'), // row_data
+					Date.now(),                                  // timestamp_ms
+					0                                            // row_count
+				];
+			}
+
+		} catch (error: any) {
+			// If tracing setup fails, yield an error event
+			yield [
+				0,                                                        // instruction_index
+				'ROW_TRACE_SETUP',                                       // operation
+				0,                                                       // row_index
+				safeJsonStringify(`Failed to setup row trace: ${error.message}`), // row_data
+				Date.now(),                                              // timestamp_ms
+				null                                                     // row_count
+			];
+		}
+	}
+);
+
 // Schema size function (table-valued function)
 export const schemaSizeFunc = createIntegratedTableValuedFunction(
 	{

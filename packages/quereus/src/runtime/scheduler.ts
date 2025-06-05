@@ -1,7 +1,42 @@
 import type { Instruction, RuntimeContext } from "./types.js";
-import type { OutputValue, RuntimeValue } from "../common/types.js";
+import type { OutputValue, RuntimeValue, Row } from "../common/types.js";
+import { isAsyncIterable } from "./utils.js";
 
 type ResultDestination = number | null;
+
+/** Symbol to mark wrapped iterables to prevent double-wrapping */
+const TRACED_ITERABLE_SYMBOL = Symbol('tracedIterable');
+
+/**
+ * Wraps an async iterable to emit row-level trace events
+ */
+function wrapIterableForTracing<T>(
+	src: AsyncIterable<T>,
+	ctx: RuntimeContext,
+	instructionIndex: number,
+	instruction: Instruction
+): AsyncIterable<T> {
+	// Prevent double-wrapping
+	if ((src as any)[TRACED_ITERABLE_SYMBOL]) {
+		return src;
+	}
+
+	const tracer = ctx.tracer!;
+	const wrapped = (async function* () {
+		let rowIndex = 0;
+		for await (const row of src) {
+			// Only emit row trace events for valid rows (non-empty arrays)
+			if (Array.isArray(row) && row.length > 0) {
+				tracer.traceRow(instructionIndex, instruction, rowIndex++, row as Row);
+			}
+			yield row;
+		}
+	})();
+
+	// Mark as already wrapped
+	(wrapped as any)[TRACED_ITERABLE_SYMBOL] = true;
+	return wrapped;
+}
 
 export class Scheduler {
 	readonly instructions: Instruction[] = [];
@@ -136,6 +171,11 @@ export class Scheduler {
 					return this.runAsyncWithTracing(ctx, instrArgs, i, output);
 				}
 
+				// Wrap async iterables for row-level tracing
+				if (isAsyncIterable(output)) {
+					output = wrapIterableForTracing(output, ctx, i, instruction);
+				}
+
 				// Trace output - handle promises properly
 				ctx.tracer!.traceOutput(i, instruction, output);
 
@@ -162,12 +202,17 @@ export class Scheduler {
 		startIndex: number,
 		pendingOutput: OutputValue
 	): Promise<RuntimeValue> {
-		ctx.tracer!.traceOutput(startIndex, this.instructions[startIndex], await pendingOutput);
+		// Handle the initial pending output
+		let resolvedPendingOutput = await pendingOutput;
+		if (isAsyncIterable(resolvedPendingOutput)) {
+			resolvedPendingOutput = wrapIterableForTracing(resolvedPendingOutput, ctx, startIndex, this.instructions[startIndex]);
+		}
+		ctx.tracer!.traceOutput(startIndex, this.instructions[startIndex], resolvedPendingOutput);
 
 		// Instruction indexes that have promise arguments
 		const hasPromise: boolean[] = [];
 
-		let output: OutputValue | undefined = pendingOutput;
+		let output: OutputValue | undefined = resolvedPendingOutput;
 
 		// Store the output from the transition instruction
 		const transitionDestination = this.destinations[startIndex];
@@ -193,8 +238,15 @@ export class Scheduler {
 			try {
 				output = instruction.run(ctx, ...(args as RuntimeValue[]));
 
-				// Trace output - WARNING: this could resolve the promise earlier than the untraced version (and not at the same time as the other parameters)
-				ctx.tracer!.traceOutput(i, instruction, output instanceof Promise ? await output : output);
+				// Resolve and wrap async output for tracing
+				let resolvedOutput = output instanceof Promise ? await output : output;
+				if (isAsyncIterable(resolvedOutput)) {
+					resolvedOutput = wrapIterableForTracing(resolvedOutput, ctx, i, instruction);
+					output = resolvedOutput; // Update output to the wrapped version
+				}
+
+				// Trace output
+				ctx.tracer!.traceOutput(i, instruction, resolvedOutput);
 
 				// Keep the original output (promise or value) for flow control
 			} catch (error) {
