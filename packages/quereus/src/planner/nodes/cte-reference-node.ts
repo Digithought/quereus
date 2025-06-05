@@ -26,9 +26,10 @@ export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	private buildAttributes(): Attribute[] {
-		// Create new attribute IDs for the CTE reference to ensure proper isolation
+		// Preserve original attribute IDs from the CTE to ensure proper context resolution
+		// especially important for recursive CTEs where working table substitution occurs
 		return this.source.getAttributes().map((attr: any) => ({
-			id: PlanNode.nextAttrId(),
+			id: attr.id, // Preserve original ID instead of creating new one
 			name: attr.name,
 			type: attr.type,
 			sourceRelation: `cte_ref:${this.source.cteName}`

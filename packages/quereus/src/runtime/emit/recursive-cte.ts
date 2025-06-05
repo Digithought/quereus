@@ -3,19 +3,57 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
+import { createLogger } from '../../common/logger.js';
+
+const log = createLogger('runtime:emit:recursive-cte');
+
+/**
+ * A reusable async iterable for working table data that can be iterated multiple times.
+ * Similar to CachedIterable but for runtime-generated working table data.
+ */
+class WorkingTableIterable implements AsyncIterable<Row> {
+	constructor(
+		private rows: Row[],
+		private rctx: RuntimeContext,
+		private rowDescriptor: RowDescriptor
+	) {}
+
+	async *[Symbol.asyncIterator](): AsyncIterator<Row> {
+		for (const row of this.rows) {
+			// Set up context for this row using the CTE row descriptor
+			this.rctx.context.set(this.rowDescriptor, () => row);
+			try {
+				yield row;
+			} finally {
+				// Clean up context
+				this.rctx.context.delete(this.rowDescriptor);
+			}
+		}
+	}
+}
 
 export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): Instruction {
-	// Emit instructions for both base case and recursive case
+	// Create row descriptor for CTE output attributes
+	const rowDescriptor: RowDescriptor = [];
+	const attributes = plan.getAttributes();
+	attributes.forEach((attr, index) => {
+		rowDescriptor[attr.id] = index;
+	});
+
+	// Emit both base case and recursive case instructions
 	const baseCaseInstruction = emitPlanNode(plan.baseCaseQuery, ctx);
 	const recursiveCaseInstruction = emitPlanNode(plan.recursiveCaseQuery, ctx);
 
-	async function* run(rctx: RuntimeContext, baseCaseResult: AsyncIterable<Row>, recursiveCaseResult: AsyncIterable<Row>): AsyncIterable<Row> {
-		// Step 1: Initialize result storage
+	async function* run(rctx: RuntimeContext, baseCaseResult: AsyncIterable<Row>): AsyncIterable<Row> {
+		log('Starting recursive CTE execution for %s', plan.cteName);
+
+		// Step 1: Initialize result storage and working table
 		const seenRows = new Set<string>(); // For UNION (distinct) deduplication
 		const allResults: Row[] = [];
 		let workingTable: Row[] = [];
 
-		// Step 2: Execute base case
+		// Step 2: Execute base case and populate initial working table
 		for await (const row of baseCaseResult) {
 			const rowKey = plan.isUnionAll ? null : JSON.stringify(row);
 
@@ -34,31 +72,30 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 
 		while (workingTable.length > 0 && iterationCount < maxIterations) {
 			iterationCount++;
-			const currentIteration = workingTable;
+			const currentIteration = [...workingTable]; // Make a copy
 			workingTable = [];
 
-			// For now, we'll implement a simplified approach that doesn't handle the full
-			// table substitution complexity. We'll just iterate through the current working
-			// table and simulate the recursive case for each row.
-			// This is a temporary workaround until the full table substitution is implemented.
+			// Create a reusable working table iterable
+			const workingTableIterable = new WorkingTableIterable(currentIteration, rctx, rowDescriptor);
 
-			// Instead of trying to execute the complex recursive case instruction,
-			// we'll manually implement the recursive logic for the simple case
-			for (const workingRow of currentIteration) {
-				// For the simple case: SELECT n + 1 FROM counter WHERE n < 5
-				// We know this should produce n + 1 for each row where n < 5
-				const n = workingRow[0]; // Assuming first column is 'n'
+			// Execute recursive case with working table substitution
+			const recursiveResult = await executeWithWorkingTable(
+				recursiveCaseInstruction,
+				rctx,
+				plan.cteName,
+				workingTableIterable
+			);
 
-				if (typeof n === 'number' && n < 5) {
-					const newRow = [n + 1];
-					const rowKey = plan.isUnionAll ? null : JSON.stringify(newRow);
+			if (Symbol.asyncIterator in Object(recursiveResult)) {
+				for await (const row of recursiveResult as AsyncIterable<Row>) {
+					const rowKey = plan.isUnionAll ? null : JSON.stringify(row);
 
 					if (plan.isUnionAll || !seenRows.has(rowKey!)) {
 						if (!plan.isUnionAll) {
 							seenRows.add(rowKey!);
 						}
-						allResults.push(newRow);
-						workingTable.push(newRow);
+						allResults.push(row);
+						workingTable.push(row);
 					}
 				}
 			}
@@ -68,16 +105,61 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			throw new Error(`Recursive CTE '${plan.cteName}' exceeded maximum iteration limit (${maxIterations})`);
 		}
 
-		// Step 4: Yield all results
+		log('Recursive CTE %s completed after %d iterations, total rows: %d',
+			plan.cteName, iterationCount, allResults.length);
+
+		// Step 4: Yield all results with proper context
 		for (const row of allResults) {
-			yield row;
+			rctx.context.set(rowDescriptor, () => row);
+			try {
+				yield row;
+			} finally {
+				rctx.context.delete(rowDescriptor);
+			}
 		}
 	}
 
 	return {
-		params: [baseCaseInstruction, recursiveCaseInstruction],
+		params: [baseCaseInstruction],
 		run,
-		note: `recursiveCTE(${plan.cteName}, iterations)`
+		note: `recursiveCTE(${plan.cteName})`
 	};
+}
+
+/**
+ * Executes an instruction with working table substitution for CTE references
+ */
+async function executeWithWorkingTable(
+	instruction: Instruction,
+	rctx: RuntimeContext,
+	cteName: string,
+	workingTableIterable: AsyncIterable<Row>
+): Promise<any> {
+	// Check if this instruction is a CTE reference that needs substitution
+	if (instruction.note && instruction.note.includes('cte_ref(')) {
+		const match = instruction.note.match(/cte_ref\(([^)]+)\)/);
+		if (match) {
+			const referencedCteName = match[1].split(' AS ')[0]; // Remove alias part
+			if (referencedCteName === cteName) {
+				return workingTableIterable;
+			}
+		}
+	}
+
+	// For non-CTE instructions, recursively execute their parameters with substitution
+	const substitutedParams: any[] = [];
+	for (const param of instruction.params) {
+		if (typeof param === 'object' && param !== null && 'run' in param) {
+			// This is an instruction - execute it with substitution
+			const result = await executeWithWorkingTable(param as Instruction, rctx, cteName, workingTableIterable);
+			substitutedParams.push(result);
+		} else {
+			// This is a literal value
+			substitutedParams.push(param);
+		}
+	}
+
+	// Execute the instruction with substituted parameters
+	return await instruction.run(rctx, ...substitutedParams);
 }
 

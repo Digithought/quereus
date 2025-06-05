@@ -27,6 +27,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 		rightRowDescriptor[attr.id] = index;
 	});
 
+	// NOTE: rightSource must be re-startable (optimizer facilitates through cache node)
 	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightSource: AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
 		const joinType = plan.joinType;
 
