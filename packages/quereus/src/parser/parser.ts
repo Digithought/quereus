@@ -1330,19 +1330,43 @@ export class Parser {
 				do {
 					const expr = this.expression();
 					const direction = this.match(TokenType.DESC) ? 'desc' : (this.match(TokenType.ASC) ? 'asc' : 'asc');
-					orderBy.push({ expr, direction });
+
+					// Handle NULLS FIRST/LAST
+					let nullsOrdering: 'first' | 'last' | undefined;
+					if (this.matchKeyword('NULLS')) {
+						if (this.matchKeyword('FIRST')) {
+							nullsOrdering = 'first';
+						} else if (this.matchKeyword('LAST')) {
+							nullsOrdering = 'last';
+						} else {
+							throw this.error(this.peek(), "Expected 'FIRST' or 'LAST' after 'NULLS'.");
+						}
+					}
+
+					const orderClause: AST.OrderByClause = { expr, direction };
+					if (nullsOrdering) {
+						(orderClause as any).nullsOrdering = nullsOrdering;
+					}
+					orderBy.push(orderClause);
 				} while (this.match(TokenType.COMMA));
 			}
 
 			// Frame clause (ROWS|RANGE ...)
 			if (this.matchKeyword('ROWS') || this.matchKeyword('RANGE')) {
 				const frameType = this.previous().lexeme.toLowerCase() as 'rows' | 'range';
-				const start = this.parseWindowFrameBound();
-				let end: AST.WindowFrameBound | null = null;
-				if (this.matchKeyword('AND')) {
-					end = this.parseWindowFrameBound();
+
+				// Handle both BETWEEN...AND and single bound syntax
+				if (this.matchKeyword('BETWEEN')) {
+					// ROWS BETWEEN start_bound AND end_bound
+					const start = this.parseWindowFrameBound();
+					this.consumeKeyword('AND', "Expected 'AND' after frame start bound.");
+					const end = this.parseWindowFrameBound();
+					frame = { type: frameType, start, end };
+				} else {
+					// ROWS start_bound (shorthand for ROWS BETWEEN start_bound AND CURRENT ROW)
+					const start = this.parseWindowFrameBound();
+					frame = { type: frameType, start, end: null };
 				}
-				frame = { type: frameType, start, end };
 			}
 
 			this.consume(TokenType.RPAREN, "Expected ')' after window specification.");
@@ -2306,24 +2330,15 @@ export class Parser {
 		const keywordKey = keyword.toUpperCase();
 		const expectedTokenType = TokenType[keywordKey as keyof typeof TokenType];
 
-		// If the keyword doesn't correspond to a known TokenType, it can't be matched this way.
-		if (expectedTokenType === undefined) {
-			return false;
-		}
-
 		// Check if the current token's type is the expected specific keyword TokenType.
 		// This assumes the lexer has already correctly typed true keywords.
-		if (token.type === expectedTokenType) {
+		if (expectedTokenType !== undefined && token.type === expectedTokenType) {
 			return true;
 		}
 
 		// Fallback: if the token is a generic IDENTIFIER, check if its lexeme matches the keyword.
-		// This handles cases where a keyword might not have its own TokenType but is reserved.
-		// For Quereus, most keywords DO have their own TokenType.
+		// This handles contextual keywords like FIRST, LAST that aren't reserved keywords.
 		if (token.type === TokenType.IDENTIFIER && token.lexeme.toUpperCase() === keywordKey) {
-			// This path might indicate that the keyword was not specifically recognized by the lexer
-			// or is a "soft keyword" that can also be an identifier.
-			// For keywords like 'COLLATE', 'SELECT', etc., we expect them to be lexed with their specific TokenType.
 			return true;
 		}
 

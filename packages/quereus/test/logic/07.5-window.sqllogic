@@ -1,0 +1,106 @@
+-- Window Function Tests
+-- Tests for SQL window functions with OVER clauses
+
+-- Setup test data
+CREATE TABLE sales (
+    id INTEGER PRIMARY KEY,
+    product TEXT,
+    region TEXT,
+    amount NUMERIC
+);
+
+INSERT INTO sales VALUES
+    (1, 'Widget', 'North', 100.50),
+    (2, 'Gadget', 'North', 75.25),
+    (3, 'Widget', 'South', 120.75),
+    (4, 'Gadget', 'South', 90.00),
+    (5, 'Widget', 'North', 85.50),
+    (6, 'Gadget', 'West', 110.25);
+
+-- Basic ROW_NUMBER() without partitioning
+SELECT id, product, ROW_NUMBER() OVER (ORDER BY id) as rn
+FROM sales ORDER BY id;
+→ [{"id":1,"product":"Widget","rn":1},{"id":2,"product":"Gadget","rn":2},{"id":3,"product":"Widget","rn":3},{"id":4,"product":"Gadget","rn":4},{"id":5,"product":"Widget","rn":5},{"id":6,"product":"Gadget","rn":6}]
+
+-- ROW_NUMBER() with PARTITION BY
+SELECT product, region, amount, ROW_NUMBER() OVER (PARTITION BY product ORDER BY amount) as rn
+FROM sales ORDER BY product, amount;
+→ [{"product":"Gadget","region":"North","amount":75.25,"rn":1},{"product":"Gadget","region":"South","amount":90.00,"rn":2},{"product":"Gadget","region":"West","amount":110.25,"rn":3},{"product":"Widget","region":"North","amount":85.50,"rn":1},{"product":"Widget","region":"North","amount":100.50,"rn":2},{"product":"Widget","region":"South","amount":120.75,"rn":3}]
+
+-- Test RANK() function
+SELECT product, amount, RANK() OVER (PARTITION BY product ORDER BY amount) as rnk
+FROM sales ORDER BY product, amount;
+→ [{"product":"Gadget","amount":75.25,"rnk":1},{"product":"Gadget","amount":90.00,"rnk":2},{"product":"Gadget","amount":110.25,"rnk":3},{"product":"Widget","amount":85.50,"rnk":1},{"product":"Widget","amount":100.50,"rnk":2},{"product":"Widget","amount":120.75,"rnk":3}]
+
+-- Test DENSE_RANK() function
+SELECT product, amount, DENSE_RANK() OVER (PARTITION BY product ORDER BY amount) as dense_rnk
+FROM sales ORDER BY product, amount;
+→ [{"product":"Gadget","amount":75.25,"dense_rnk":1},{"product":"Gadget","amount":90.00,"dense_rnk":2},{"product":"Gadget","amount":110.25,"dense_rnk":3},{"product":"Widget","amount":85.50,"dense_rnk":1},{"product":"Widget","amount":100.50,"dense_rnk":2},{"product":"Widget","amount":120.75,"dense_rnk":3}]
+
+-- Test SUM() OVER for running totals
+SELECT product, amount, SUM(amount) OVER (PARTITION BY product ORDER BY id ROWS UNBOUNDED PRECEDING) as running_sum
+FROM sales ORDER BY product, id;
+→ [{"product":"Gadget","amount":75.25,"running_sum":75.25},{"product":"Gadget","amount":90.00,"running_sum":165.25},{"product":"Gadget","amount":110.25,"running_sum":275.50},{"product":"Widget","amount":100.50,"running_sum":100.50},{"product":"Widget","amount":120.75,"running_sum":221.25},{"product":"Widget","amount":85.50,"running_sum":306.75}]
+
+-- Test COUNT() OVER for row counting
+SELECT region, product, COUNT(*) OVER (PARTITION BY region ORDER BY id ROWS UNBOUNDED PRECEDING) as cumulative_count
+FROM sales ORDER BY region, id;
+→ [{"region":"North","product":"Widget","cumulative_count":1},{"region":"North","product":"Gadget","cumulative_count":2},{"region":"North","product":"Widget","cumulative_count":3},{"region":"South","product":"Widget","cumulative_count":1},{"region":"South","product":"Gadget","cumulative_count":2},{"region":"West","product":"Gadget","cumulative_count":1}]
+
+-- Test AVG() OVER for running averages
+SELECT product, amount, AVG(amount) OVER (PARTITION BY product ORDER BY id ROWS UNBOUNDED PRECEDING) as running_avg
+FROM sales ORDER BY product, id;
+→ [{"product":"Gadget","amount":75.25,"running_avg":75.25},{"product":"Gadget","amount":90.00,"running_avg":82.625},{"product":"Gadget","amount":110.25,"running_avg":91.83333333333333},{"product":"Widget","amount":100.50,"running_avg":100.50},{"product":"Widget","amount":120.75,"running_avg":110.625},{"product":"Widget","amount":85.50,"running_avg":102.25}]
+
+-- Test multiple window functions in same query
+SELECT
+    product,
+    region,
+    amount,
+    ROW_NUMBER() OVER (ORDER BY amount DESC) as overall_rank,
+    ROW_NUMBER() OVER (PARTITION BY product ORDER BY amount DESC) as product_rank,
+    SUM(amount) OVER (PARTITION BY product) as product_total
+FROM sales ORDER BY amount DESC;
+→ [{"product":"Widget","region":"South","amount":120.75,"overall_rank":1,"product_rank":1,"product_total":306.75},{"product":"Gadget","region":"West","amount":110.25,"overall_rank":2,"product_rank":1,"product_total":275.50},{"product":"Widget","region":"North","amount":100.50,"overall_rank":3,"product_rank":2,"product_total":306.75},{"product":"Gadget","region":"South","amount":90.00,"overall_rank":4,"product_rank":2,"product_total":275.50},{"product":"Widget","region":"North","amount":85.50,"overall_rank":5,"product_rank":3,"product_total":306.75},{"product":"Gadget","region":"North","amount":75.25,"overall_rank":6,"product_rank":3,"product_total":275.50}]
+
+-- Test window functions with different frame specifications
+SELECT id, amount, SUM(amount) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as windowed_sum
+FROM sales ORDER BY id;
+→ [{"id":1,"amount":100.50,"windowed_sum":175.75},{"id":2,"amount":75.25,"windowed_sum":296.50},{"id":3,"amount":120.75,"windowed_sum":286.00},{"id":4,"amount":90.00,"windowed_sum":296.25},{"id":5,"amount":85.50,"windowed_sum":285.75},{"id":6,"amount":110.25,"windowed_sum":195.75}]
+
+-- Test multiple window functions with same OVER clause
+SELECT product, amount,
+       ROW_NUMBER() OVER (PARTITION BY product ORDER BY amount) as rn,
+       RANK() OVER (PARTITION BY product ORDER BY amount) as rnk,
+       COUNT(*) OVER (PARTITION BY product ORDER BY amount ROWS UNBOUNDED PRECEDING) as cnt
+FROM sales ORDER BY product, amount;
+→ [{"product":"Gadget","amount":75.25,"rn":1,"rnk":1,"cnt":1},{"product":"Gadget","amount":90.00,"rn":2,"rnk":2,"cnt":2},{"product":"Gadget","amount":110.25,"rn":3,"rnk":3,"cnt":3},{"product":"Widget","amount":85.50,"rn":1,"rnk":1,"cnt":1},{"product":"Widget","amount":100.50,"rn":2,"rnk":2,"cnt":2},{"product":"Widget","amount":120.75,"rn":3,"rnk":3,"cnt":3}]
+
+-- Edge case: Window function with NULL handling
+CREATE TABLE sales_with_nulls (
+    id INTEGER PRIMARY KEY,
+    product TEXT,
+    amount NUMERIC
+);
+
+INSERT INTO sales_with_nulls VALUES
+    (1, 'Widget', 100.00),
+    (2, 'Widget', NULL),
+    (3, 'Gadget', 75.00),
+    (4, 'Widget', 120.00),
+    (5, 'Gadget', NULL);
+
+SELECT product, amount, ROW_NUMBER() OVER (PARTITION BY product ORDER BY amount NULLS LAST) as rn
+FROM sales_with_nulls ORDER BY product, COALESCE(amount, 999999);
+→ [{"product":"Gadget","amount":75.00,"rn":1},{"product":"Gadget","amount":null,"rn":2},{"product":"Widget","amount":100.00,"rn":1},{"product":"Widget","amount":120.00,"rn":2},{"product":"Widget","amount":null,"rn":3}]
+
+-- Test aggregate window functions with NULLs
+SELECT product, amount,
+       COUNT(*) OVER (PARTITION BY product) as total_rows,
+       COUNT(amount) OVER (PARTITION BY product) as non_null_amounts,
+       SUM(amount) OVER (PARTITION BY product) as total_amount
+FROM sales_with_nulls ORDER BY product, COALESCE(amount, 999999);
+→ [{"product":"Gadget","amount":75.00,"total_rows":2,"non_null_amounts":1,"total_amount":75.00},{"product":"Gadget","amount":null,"total_rows":2,"non_null_amounts":1,"total_amount":75.00},{"product":"Widget","amount":100.00,"total_rows":3,"non_null_amounts":2,"total_amount":220.00},{"product":"Widget","amount":120.00,"total_rows":3,"non_null_amounts":2,"total_amount":220.00},{"product":"Widget","amount":null,"total_rows":3,"non_null_amounts":2,"total_amount":220.00}]
+
+DROP TABLE sales;
+DROP TABLE sales_with_nulls;

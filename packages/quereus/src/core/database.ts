@@ -29,6 +29,7 @@ import { serializePlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { Optimizer } from '../planner/optimizer.js';
+import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-functions.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -67,6 +68,9 @@ export class Database {
 
 		// Register built-in collations
 		this.registerDefaultCollations();
+
+		// Register built-in window functions
+		registerBuiltinWindowFunctions();
 
 		registerEmitters();
 

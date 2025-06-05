@@ -21,9 +21,9 @@ See [Titan Project Overview](docs/titan.md) for details on the new architecture.
 *   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used (similar to SQLite's `WITHOUT ROWID` tables being the default and only mode).
 *   **Third Manifesto Friendly**: Embraces some of the principles of the [Third Manifesto](https://www.dcs.warwick.ac.uk/~hugh/TTM/DTATRM.pdf), such as allowing for empty keys. Utilizes algebraic planning.
 
-## Architecture Overview (Titan Project)
+## Architecture Overview
 
-Quereus is transitioning to a new architecture ("Project Titan") based on partially immutable PlanNodes and an Instruction-based runtime. The old VDBE-based compiler is being phased out.
+Quereus is built on a modern architecture based on partially immutable PlanNodes and an Instruction-based runtime with robust attribute-based context system.
 
 1.  **SQL Input**: The process starts with a SQL query string.
 2.  **Parser (`src/parser`)**:
@@ -55,14 +55,13 @@ The project is organized into the following main directories:
 *   `src/common`: Foundational types, constants, and error classes.
 *   `src/core`: High-level API classes (`Database`, `Statement`).
 *   `src/parser`: SQL lexing, parsing, and AST definitions.
-*   `src/planner`: **(New)** Building and optimizing `PlanNode` trees from AST.
-*   `src/runtime`: **(New)** Emission, scheduling, and execution of runtime `Instruction`s.
+*   `src/planner`: Building and optimizing `PlanNode` trees from AST.
+*   `src/runtime`: Emission, scheduling, and execution of runtime `Instruction`s.
 *   `src/schema`: Management of database schemas.
 *   `src/vtab`: Virtual table interface and implementations (including `memory`).
 *   `src/func`: User-defined functions.
 *   `src/util`: General utility functions.
 *   `docs`: Project documentation.
-*   `oldsrc`: **(Legacy)** Contains the previous VDBE-based compiler and runtime.
 
 ## Logging
 
@@ -118,13 +117,12 @@ To add logging within a module:
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
 * [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide
 * [Functions](docs/functions.md): Details on the built-in functions
+* [Window Function Architecture](docs/window-functions.md): Details on the window function architecture and implementation.
 * [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
 * [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
 * [Runtime](docs/runtime.md): Details on the runtime and opcodes.
 * [Error Handling](docs/error.md): Details on the error handling and status codes.
 * [TODO List](docs/todo.md): Planned features and improvements
-* [Project Titan Architecture](docs/titan.md): **(New Overview)**
-* [Window Function Architecture](docs/window-functions.md): **(Note: This describes the old VDBE approach and will need to be re-evaluated for Titan)**
 
 ## Key Design Decisions
 
@@ -151,35 +149,12 @@ To add logging within a module:
 
 ## Current Status
 
-Quereus is **actively undergoing a major architectural refactoring (Project Titan)** to a new planner and instruction-based runtime. The previous VDBE-based compiler and runtime (`oldsrc/`) are being replaced.
+Quereus has a modern planner and instruction-based runtime architecture that provides comprehensive SQL support.
 
-**Features of the new Titan architecture (✅ LARGELY COMPLETE):**
-*   **✅ COMPLETE: Attribute-Based Context System** - Robust column reference resolution using stable attribute IDs eliminates node type checking and provides deterministic context lookup across plan transformations.
-*   **✅ COMPLETE: Core `PlanNode` to `Instruction` architecture** - Comprehensive planning and runtime execution system.
-*   **✅ COMPLETE: Comprehensive SQL Support** - SELECT statements with complex projections, WHERE clauses, GROUP BY/HAVING, ORDER BY, LIMIT/OFFSET, window functions, and DML operations.
-*   **✅ COMPLETE: Emitters and Runtime** - Full instruction-based runtime with proper context management for all major SQL operations.
-*   **✅ COMPLETE: Plan Optimization** - Logical to physical transformation with attribute ID preservation ensuring column references remain valid across optimizations.
-*   **Outstanding:** Join operations, advanced subquery patterns, and comprehensive test coverage.
-*   See `docs/titan.md` for detailed status of the new architecture.
+**Major outstanding features:**
+*   **Advanced optimization** - Query optimization is currently basic but has a solid foundation for enhancement.
 
-**Previously supported features (in the old VDBE system, ✅ PORTED to Titan):**
-*   ✅ Aggregation (`GROUP BY`, `HAVING`) - **COMPLETE** with robust attribute handling
-*   ✅ `ORDER BY`, `LIMIT`/`OFFSET` - **COMPLETE** with pre/post-projection sorting logic
-*   ✅ Transactions and Savepoints (on VTabs that support them, like `MemoryTable`)
-*   ✅ `MemoryTable`, `JsonEach`, `JsonTree` VTabs - **COMPLETE** 
-*   ✅ Extensive built-in functions - **COMPLETE**
-*   ✅ `PRAGMA`s - **COMPLETE**
-*   ✅ `CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX` - **COMPLETE**
-*   ✅ Row-level `CHECK` constraints - **COMPLETE**
-*   ✅ Complex expressions and subqueries - **LARGELY COMPLETE**
-*   **Joins (`INNER`, `LEFT`, `CROSS`)** - *In progress for Titan*
-*   **CTEs (recursive and non-recursive with materialization hints)** - *To be ported*
-
-**Limitations & Missing Features (for the new Titan architecture):**
-*   Join operations are the primary remaining gap for complete SQL feature parity.
-*   Some advanced subquery patterns need completion.
-*   Comprehensive testing for the Titan architecture is ongoing.
-*   Query optimization is currently basic but has a solid foundation for enhancement.
+See the [TODO List](docs/todo.md) for a detailed breakdown.
 
 ## Testing
 
@@ -223,12 +198,9 @@ This layered approach aims for broad coverage via the logic tests while using pr
 
 *   **Scalar:** `lower`, `upper`, `length`, `substr`/`substring`, `abs`, `round`, `coalesce`, `nullif`, `like`, `glob`, `typeof`
 *   **Aggregate:** `count`, `sum`, `avg`, `min`, `max`, `group_concat`, `json_group_array`, `json_group_object`
+*   **Window Functions:** Complete implementation with `row_number`, `rank`, `dense_rank`, `ntile` (ranking); `count`, `sum`, `avg`, `min`, `max` with OVER clause (aggregates); Full frame specification support (`ROWS BETWEEN`, `UNBOUNDED PRECEDING/FOLLOWING`); `NULLS FIRST/LAST` ordering
 *   **Date/Time:** `date`, `time`, `datetime`, `julianday`, `strftime` (supports common formats and modifiers)
 *   **JSON:** `json_valid`, `json_type`, `json_extract`, `json_quote`, `json_array`, `json_object`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_array_length`, `json_patch`
 *   **Query Analysis:** `query_plan`, `scheduler_program`, `execution_trace` (debugging and performance analysis)
-
-## Future Work
-
-See the [TODO List](docs/todo.md) and [Project Titan](docs/titan.md) for a detailed breakdown.
 
 

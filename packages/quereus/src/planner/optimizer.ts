@@ -142,7 +142,7 @@ export class Optimizer {
 		if (node instanceof WindowNode) {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
-			return new WindowNode(node.scope, optimizedSource, node.windowSpecs, node.partitionBy, node.orderBy);
+			return new WindowNode(node.scope, optimizedSource, node.windowSpec, node.functions, node.partitionExpressions, node.orderByExpressions, node.functionArguments);
 		}
 
 		if (node instanceof InsertNode) {

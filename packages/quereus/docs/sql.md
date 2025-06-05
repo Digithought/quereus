@@ -945,54 +945,82 @@ select
 
 ### 5.5 Window Functions
 
-Window functions perform calculations across a set of table rows related to the current row.
+Window functions perform calculations across a set of table rows related to the current row. Quereus provides comprehensive window function support with an extensible architecture.
 
-- `row_number()`: Returns the sequential row number
-- `rank()`: Returns the rank with gaps
-- `dense_rank()`: Returns the rank without gaps
+**Window Function Syntax:**
+```sql
+window_function([arguments]) over (
+  [partition by partition_expression [, ...]]
+  [order by sort_expression [asc | desc] [, ...]]
+  [window_frame_clause]
+)
+```
+
+**Available Window Functions:**
+
+**Ranking Functions:**
+- `row_number()`: Returns a sequential row number within the partition
+- `rank()`: Returns the rank with gaps (e.g., 1, 1, 3, 4)
+- `dense_rank()`: Returns the rank without gaps (e.g., 1, 1, 2, 3)
+- `ntile(n)`: Distributes rows into n buckets
+
+**Aggregate Window Functions:**
+- `count(*)`, `count(expr)`: Count of rows or non-NULL values
+- `sum(expr)`: Sum of values in the window frame
+- `avg(expr)`: Average of values in the window frame
+- `min(expr)`, `max(expr)`: Minimum/maximum values in the window frame
+
+**Navigation Functions (Planned):**
 - `lead(expr[, offset[, default]])`: Accesses data from subsequent rows
 - `lag(expr[, offset[, default]])`: Accesses data from previous rows
 - `first_value(expr)`: Returns the first value in the window frame
 - `last_value(expr)`: Returns the last value in the window frame
 
-**Basic syntax:**
-```sql
-window_function() over (
-  [partition by expr[, ...]]
-  [order by expr [asc|desc][, ...]]
-  [frame_clause]
-)
-```
+**Architecture Features:**
+- **Extensible Registration**: Window functions are registered like scalar/aggregate functions
+- **Performance Optimized**: Groups functions by window specifications for efficiency
+- **Streaming Execution**: Non-partitioned functions use constant memory
+- **Partitioned Execution**: PARTITION BY properly collects and processes partitions
 
 **Examples:**
 ```sql
--- Basic window functions
+-- Ranking employees by salary within departments
 select 
   name,
   department,
   salary,
-  row_number() over (order by salary desc) as overall_rank,
-  rank() over (partition by department order by salary desc) as dept_rank,
-  dense_rank() over (partition by department order by salary desc) as dept_dense_rank
+  row_number() over (partition by department order by salary desc) as dept_rank,
+  rank() over (order by salary desc) as overall_rank,
+  dense_rank() over (partition by department order by salary desc) as dense_dept_rank
 from employees;
 
--- Lead/lag for comparing values
-select 
-  order_date,
-  total,
-  lag(total) over (order by order_date) as previous_total,
-  total - lag(total) over (order by order_date) as difference
-from orders;
+-- Running totals and departmental statistics
+select
+  name,
+  department,
+  salary,
+  sum(salary) over (partition by department order by hire_date) as running_dept_total,
+  avg(salary) over (partition by department) as dept_average,
+  count(*) over (partition by department) as dept_size
+from employees;
 
--- Moving averages
-select 
-  date,
-  value,
-  avg(value) over (
-    order by date
-    rows between 2 preceding and current row
-  ) as moving_avg_3day
-from daily_metrics;
+-- Quartile analysis
+select
+  name,
+  salary,
+  ntile(4) over (order by salary) as salary_quartile
+from employees;
+
+-- Multiple window functions with same specification (optimized)
+select
+  product_id,
+  sales_date,
+  amount,
+  sum(amount) over w as running_total,
+  avg(amount) over w as running_average,
+  count(*) over w as running_count
+from sales
+window w as (partition by product_id order by sales_date);
 ```
 
 ## 6. Virtual Tables
@@ -1698,7 +1726,7 @@ Quereus implements a subset of SQLite functionality with some differences in beh
 | **Triggers** | Not supported | Supported |
 | **Views** | Basic support | Full support |
 | **Foreign Keys** | Parsed but not enforced | Full support (when enabled) |
-| **Window Functions** | Subset supported | Full support |
+| **Window Functions** | Phase 1 Complete (ranking, aggregates, partitioning) | Full support |
 | **Recursive CTEs** | Basic support | Full support |
 | **JSON Functions** | Extensive support | Available as extension |
 | **Indexes** | Supported by some VTab modules | Full support |
@@ -1740,8 +1768,8 @@ When migrating from SQLite to Quereus:
 ### 11.4 Future Roadmap
 
 Quereus is actively developed with plans to add:
-- Improved window function support
-- Enhanced recursive CTE capabilities
+- Advanced window function features (navigation functions, window frames)
+- Enhanced recursive CTE capabilities  
 - More query planning enhancements
 - Additional virtual table modules
 

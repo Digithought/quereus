@@ -109,6 +109,15 @@ export enum TokenType {
 	ELSE = 'ELSE',
 	END = 'END',
 	CAST = 'CAST',
+	OVER = 'OVER',
+	PARTITION = 'PARTITION',
+	ROW = 'ROW',
+	ROWS = 'ROWS',
+	RANGE = 'RANGE',
+	UNBOUNDED = 'UNBOUNDED',
+	PRECEDING = 'PRECEDING',
+	FOLLOWING = 'FOLLOWING',
+	CURRENT = 'CURRENT',
 
 	// Operators and punctuation
 	PLUS = 'PLUS',               // +
@@ -256,6 +265,15 @@ export const KEYWORDS: Record<string, TokenType> = {
 	'else': TokenType.ELSE,
 	'end': TokenType.END,
 	'cast': TokenType.CAST,
+	'over': TokenType.OVER,
+	'partition': TokenType.PARTITION,
+	'row': TokenType.ROW,
+	'rows': TokenType.ROWS,
+	'range': TokenType.RANGE,
+	'unbounded': TokenType.UNBOUNDED,
+	'preceding': TokenType.PRECEDING,
+	'following': TokenType.FOLLOWING,
+	'current': TokenType.CURRENT,
 	'intersect': TokenType.INTERSECT,
 	'except': TokenType.EXCEPT,
 };
