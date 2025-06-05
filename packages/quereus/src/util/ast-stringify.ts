@@ -355,6 +355,12 @@ function withClauseToString(withClause: AST.WithClause): string {
 	});
 
 	result += ` ${ctes.join(', ')}`;
+
+	// Add OPTION clause if present
+	if (withClause.options?.maxRecursion !== undefined) {
+		result += ` option (maxrecursion ${withClause.options.maxRecursion})`;
+	}
+
 	return result;
 }
 

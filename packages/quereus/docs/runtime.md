@@ -924,8 +924,6 @@ try {
 - **Wrong row descriptor**: Attribute IDs don't match actual row structure  
 - **Context timing**: Setting up context too late or cleaning up too early
 
-```
-
 ### Debugging Techniques
 
 **Effective debugging approaches:**
@@ -947,3 +945,5 @@ DEBUG=quereus:runtime:emit:join yarn test
 # Full runtime tracing (verbose)
 DEBUG=quereus:runtime* yarn test
 ```
+
+[Recursive CTE Execution Pattern](./recursive-cte.md)

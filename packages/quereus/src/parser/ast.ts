@@ -396,6 +396,11 @@ export interface WithClause extends AstNode {
 	type: 'with';
 	recursive: boolean;
 	ctes: CommonTableExpr[];
+	options?: WithClauseOptions;
+}
+
+export interface WithClauseOptions {
+	maxRecursion?: number;
 }
 
 export interface CommonTableExpr extends AstNode {

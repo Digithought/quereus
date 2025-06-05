@@ -35,7 +35,7 @@ export function buildWithClause(
 	// Build each CTE in order
 	// Note: For recursive CTEs, we may need to handle forward references
 	for (const cte of withClause.ctes) {
-		const cteNode = buildCommonTableExpr(ctx, cte, withClause.recursive, cteNodes);
+		const cteNode = buildCommonTableExpr(ctx, cte, withClause.recursive, cteNodes, withClause.options);
 		cteNodes.set(cte.name.toLowerCase(), cteNode);
 	}
 
@@ -49,7 +49,8 @@ export function buildCommonTableExpr(
 	ctx: PlanningContext,
 	cte: AST.CommonTableExpr,
 	isRecursive: boolean,
-	existingCTEs: Map<string, CTEPlanNode>
+	existingCTEs: Map<string, CTEPlanNode>,
+	options?: AST.WithClauseOptions
 ): CTEPlanNode {
 	// Create a context that includes previously defined CTEs in scope
 	// This allows later CTEs to reference earlier ones
@@ -71,7 +72,7 @@ export function buildCommonTableExpr(
 
 	// Check if this is a recursive CTE with UNION structure
 	if (isRecursive && cte.query.type === 'select' && cte.query.compound) {
-		return buildRecursiveCTE(cteContext, cte);
+		return buildRecursiveCTE(cteContext, cte, options);
 	}
 
 	// For non-recursive CTEs or recursive CTEs without UNION structure
@@ -110,7 +111,8 @@ export function buildCommonTableExpr(
  */
 function buildRecursiveCTE(
 	ctx: PlanningContext,
-	cte: AST.CommonTableExpr
+	cte: AST.CommonTableExpr,
+	options?: AST.WithClauseOptions
 ): RecursiveCTENode {
 	const selectStmt = cte.query as AST.SelectStmt;
 
@@ -166,6 +168,7 @@ function buildRecursiveCTE(
 		baseCaseQuery,
 		recursiveCaseQuery,
 		isUnionAll,
-		materializationHint
+		materializationHint,
+		options?.maxRecursion
 	);
 }

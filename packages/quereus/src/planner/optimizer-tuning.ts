@@ -26,6 +26,14 @@ export interface OptimizerTuning {
 		/** Maximum cache threshold for CTEs */
 		readonly maxCacheThreshold: number;
 	};
+
+	/** Recursive CTE configuration */
+	readonly recursiveCte: {
+		/** Maximum iterations before recursive CTE is terminated (0 = unlimited) */
+		readonly maxIterations: number;
+		/** Default cache threshold for CTE self-references */
+		readonly defaultCacheThreshold: number;
+	};
 }
 
 /**
@@ -43,5 +51,9 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		maxSizeForCaching: 50000,
 		cacheThresholdMultiplier: 2,
 		maxCacheThreshold: 20000
+	},
+	recursiveCte: {
+		maxIterations: 10000,
+		defaultCacheThreshold: 10000
 	}
 };

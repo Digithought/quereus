@@ -132,9 +132,34 @@ export class Parser {
 			ctes.push(this.commonTableExpression());
 		} while (this.match(TokenType.COMMA));
 
-		const endToken = this.previous(); // Last token of the last CTE
+		// Parse optional OPTION clause
+		let options: AST.WithClauseOptions | undefined;
+		if (this.matchKeyword('OPTION')) {
+			this.consume(TokenType.LPAREN, "Expected '(' after OPTION.");
 
-		return { type: 'with', recursive, ctes, loc: _createLoc(startToken, endToken) };
+			// Parse MAXRECURSION option
+			if (this.matchKeyword('MAXRECURSION')) {
+				if (!this.check(TokenType.INTEGER)) {
+					throw this.error(this.peek(), "Expected integer value after MAXRECURSION.");
+				}
+				const maxRecursionToken = this.advance();
+				const maxRecursion = maxRecursionToken.literal as number;
+
+				if (maxRecursion < 0) {
+					throw this.error(maxRecursionToken, "MAXRECURSION value must be non-negative.");
+				}
+
+				options = { maxRecursion };
+			} else {
+				throw this.error(this.peek(), "Expected MAXRECURSION in OPTION clause.");
+			}
+
+			this.consume(TokenType.RPAREN, "Expected ')' after OPTION clause.");
+		}
+
+		const endToken = this.previous(); // Last token of the WITH clause
+
+		return { type: 'with', recursive, ctes, options, loc: _createLoc(startToken, endToken) };
 	}
 
 	/**

@@ -5,32 +5,28 @@ import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
+import { BTree } from 'inheritree';
+import { compareSqlValues } from '../../util/comparison.js';
+import { WorkingTableIterable } from '../../util/working-table-iterable.js';
+import { DEFAULT_TUNING } from '../../planner/optimizer-tuning.js';
 
 const log = createLogger('runtime:emit:recursive-cte');
 
 /**
- * A reusable async iterable for working table data that can be iterated multiple times.
- * Similar to CachedIterable but for runtime-generated working table data.
+ * Compares two rows for SQL DISTINCT semantics using proper SQL value comparison.
+ * Returns -1, 0, or 1 for BTree ordering.
  */
-class WorkingTableIterable implements AsyncIterable<Row> {
-	constructor(
-		private rows: Row[],
-		private rctx: RuntimeContext,
-		private rowDescriptor: RowDescriptor
-	) {}
-
-	async *[Symbol.asyncIterator](): AsyncIterator<Row> {
-		for (const row of this.rows) {
-			// Set up context for this row using the CTE row descriptor
-			this.rctx.context.set(this.rowDescriptor, () => row);
-			try {
-				yield row;
-			} finally {
-				// Clean up context
-				this.rctx.context.delete(this.rowDescriptor);
-			}
+function compareRows(a: Row, b: Row): number {
+	// Compare each value using SQL semantics
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const aVal = i < a.length ? a[i] : null;
+		const bVal = i < b.length ? b[i] : null;
+		const comparison = compareSqlValues(aVal, bVal);
+		if (comparison !== 0) {
+			return comparison;
 		}
 	}
+	return 0;
 }
 
 export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): Instruction {
@@ -46,34 +42,52 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 	const recursiveCaseInstruction = emitPlanNode(plan.recursiveCaseQuery, ctx);
 
 	async function* run(rctx: RuntimeContext, baseCaseResult: AsyncIterable<Row>): AsyncIterable<Row> {
-		log('Starting recursive CTE execution for %s', plan.cteName);
+		log('Starting recursive CTE execution for %s (union=%s)', plan.cteName, plan.isUnionAll ? 'ALL' : 'DISTINCT');
 
-		// Step 1: Initialize result storage and working table
-		const seenRows = new Set<string>(); // For UNION (distinct) deduplication
-		const allResults: Row[] = [];
+		// Get configuration - use plan node limit if specified, otherwise use default tuning
+		const maxIterations = plan.maxRecursion ?? DEFAULT_TUNING.recursiveCte.maxIterations;
+
+		// Step 1: Initialize deduplication storage (for UNION DISTINCT) and working table
+		const seenRowsTree = plan.isUnionAll ? null : new BTree<Row, Row>(
+			(row: Row) => row, // Identity function - use row as its own key
+			compareRows
+		);
 		let workingTable: Row[] = [];
 
 		// Step 2: Execute base case and populate initial working table
+		// Stream base case results immediately while building working table
 		for await (const row of baseCaseResult) {
-			const rowKey = plan.isUnionAll ? null : JSON.stringify(row);
+			let shouldYield = true;
 
-			if (plan.isUnionAll || !seenRows.has(rowKey!)) {
-				if (!plan.isUnionAll) {
-					seenRows.add(rowKey!);
+			if (!plan.isUnionAll && seenRowsTree) {
+				// Check if we've seen this row before using BTree lookup
+				const insertPath = seenRowsTree.insert(row);
+				shouldYield = insertPath.on; // Only yield if it's a new row
+			}
+
+			if (shouldYield) {
+				// Yield immediately (streaming)
+				rctx.context.set(rowDescriptor, () => row);
+				try {
+					yield row;
+				} finally {
+					rctx.context.delete(rowDescriptor);
 				}
-				allResults.push(row);
-				workingTable.push(row);
+
+				// Add to working table for recursive processing
+				workingTable.push([...row] as Row); // Deep copy to avoid reference issues
 			}
 		}
 
 		// Step 3: Iterative recursive execution
 		let iterationCount = 0;
-		const maxIterations = 1000;
 
-		while (workingTable.length > 0 && iterationCount < maxIterations) {
+		while (workingTable.length > 0 && (maxIterations === 0 || iterationCount < maxIterations)) {
 			iterationCount++;
+			log('Recursive CTE %s iteration %d, working table size: %d', plan.cteName, iterationCount, workingTable.length);
+
 			const currentIteration = [...workingTable]; // Make a copy
-			workingTable = [];
+			workingTable = []; // Clear working table for next iteration
 
 			// Create a reusable working table iterable
 			const workingTableIterable = new WorkingTableIterable(currentIteration, rctx, rowDescriptor);
@@ -88,35 +102,35 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 
 			if (Symbol.asyncIterator in Object(recursiveResult)) {
 				for await (const row of recursiveResult as AsyncIterable<Row>) {
-					const rowKey = plan.isUnionAll ? null : JSON.stringify(row);
+					let shouldYield = true;
 
-					if (plan.isUnionAll || !seenRows.has(rowKey!)) {
-						if (!plan.isUnionAll) {
-							seenRows.add(rowKey!);
+					if (!plan.isUnionAll && seenRowsTree) {
+						// Check if we've seen this row before using BTree lookup
+						const insertPath = seenRowsTree.insert(row);
+						shouldYield = insertPath.on; // Only yield if it's a new row
+					}
+
+					if (shouldYield) {
+						// Stream the row immediately
+						rctx.context.set(rowDescriptor, () => row);
+						try {
+							yield row;
+						} finally {
+							rctx.context.delete(rowDescriptor);
 						}
-						allResults.push(row);
-						workingTable.push(row);
+
+						// Add to working table for next iteration
+						workingTable.push([...row] as Row); // Deep copy to avoid reference issues
 					}
 				}
 			}
 		}
 
-		if (iterationCount >= maxIterations) {
+		if (maxIterations > 0 && iterationCount >= maxIterations) {
 			throw new Error(`Recursive CTE '${plan.cteName}' exceeded maximum iteration limit (${maxIterations})`);
 		}
 
-		log('Recursive CTE %s completed after %d iterations, total rows: %d',
-			plan.cteName, iterationCount, allResults.length);
-
-		// Step 4: Yield all results with proper context
-		for (const row of allResults) {
-			rctx.context.set(rowDescriptor, () => row);
-			try {
-				yield row;
-			} finally {
-				rctx.context.delete(rowDescriptor);
-			}
-		}
+		log('Recursive CTE %s completed after %d iterations', plan.cteName, iterationCount);
 	}
 
 	return {

@@ -1811,7 +1811,9 @@ sql_statement      = [ with_clause ] ( select_stmt
                     | pragma_stmt ) ;
 
 /* WITH clause and CTEs */
-with_clause        = "with" [ "recursive" ] common_table_expr { "," common_table_expr } ;
+with_clause        = "with" [ "recursive" ] common_table_expr { "," common_table_expr } [ option_clause ] ;
+
+option_clause      = "option" "(" "maxrecursion" integer ")" ;
 
 common_table_expr  = cte_name [ "(" column_name { "," column_name } ")" ] 
                      "as" [ "materialized" | "not" "materialized" ]

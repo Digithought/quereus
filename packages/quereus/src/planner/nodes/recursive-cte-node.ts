@@ -23,7 +23,8 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 		public readonly baseCaseQuery: RelationalPlanNode,
 		public readonly recursiveCaseQuery: RelationalPlanNode,
 		public readonly isUnionAll: boolean,
-		public readonly materializationHint: 'materialized' | 'not_materialized' | undefined = 'materialized'
+		public readonly materializationHint: 'materialized' | 'not_materialized' | undefined = 'materialized',
+		public readonly maxRecursion?: number
 	) {
 		super(scope, baseCaseQuery.getTotalCost() + recursiveCaseQuery.getTotalCost() + 50); // Higher cost for recursion
 		this.attributesCache = new Cached(() => this.buildAttributes());
@@ -97,6 +98,7 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 			isUnionAll: this.isUnionAll,
 			materializationHint: this.materializationHint,
 			isRecursive: true,
+			maxRecursion: this.maxRecursion,
 			baseCaseType: this.baseCaseQuery.getType(),
 			recursiveCaseType: this.recursiveCaseQuery.getType()
 		};
