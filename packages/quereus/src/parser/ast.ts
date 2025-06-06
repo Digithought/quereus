@@ -13,7 +13,7 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource' | 'case' | 'in';
+		| 'subquerySource' | 'case' | 'in' | 'exists';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -22,7 +22,8 @@ export interface AstNode {
 
 // Expression types
 export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr | FunctionExpr | CastExpr
-	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr | CaseExpr | InExpr;
+	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr | CaseExpr
+	| InExpr | ExistsExpr;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -134,6 +135,12 @@ export interface InExpr extends AstNode {
 	expr: Expression;  // Left side of IN
 	values?: Expression[];  // For IN (value1, value2, ...)
 	subquery?: SelectStmt;  // For IN (SELECT ...)
+}
+
+// EXISTS expression
+export interface ExistsExpr extends AstNode {
+	type: 'exists';
+	subquery: SelectStmt;  // EXISTS (SELECT ...)
 }
 
 // --- Statement Types ---

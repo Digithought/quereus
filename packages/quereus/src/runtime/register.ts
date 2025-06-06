@@ -1,10 +1,10 @@
 import { PlanNodeType } from "../planner/nodes/plan-node-type.js";
-import { emitPlanNode, registerEmitter, type EmitterFunc } from "./emitters.js";
+import { registerEmitter, type EmitterFunc } from "./emitters.js";
 import { emitBinaryOp } from "./emit/binary.js";
 import { emitUnaryOp } from "./emit/unary.js";
 import { emitLiteral } from "./emit/literal.js";
 import { emitSeqScan } from "./emit/scan.js";
-import { emitIn, emitScalarSubquery } from "./emit/subquery.js";
+import { emitIn, emitScalarSubquery, emitExists } from "./emit/subquery.js";
 import { emitBlock } from "./emit/block.js";
 import { emitParameterReference } from './emit/parameter.js';
 import { emitCreateTable } from './emit/create-table.js';
@@ -66,6 +66,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Cast, emitCast as EmitterFunc);
 	registerEmitter(PlanNodeType.Collate, emitCollate as EmitterFunc);
 	registerEmitter(PlanNodeType.ScalarSubquery, emitScalarSubquery as EmitterFunc);
+	registerEmitter(PlanNodeType.Exists, emitExists as EmitterFunc);
 
 	// Relational emitters (mix of logical and physical for now)
 	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);

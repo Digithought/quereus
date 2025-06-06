@@ -113,3 +113,44 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		};
 	}
 }
+
+export class ExistsNode extends PlanNode implements ScalarPlanNode {
+	override readonly nodeType = PlanNodeType.Exists;
+
+	constructor(
+		readonly scope: Scope,
+		readonly expression: Expression, // The original ExistsExpr AST node
+		readonly subquery: RelationalPlanNode,
+	) {
+		super(scope);
+	}
+
+	getType(): ScalarType {
+		return {
+			typeClass: 'scalar',
+			affinity: SqlDataType.INTEGER,
+			nullable: false,
+			isReadOnly: true,
+			datatype: SqlDataType.INTEGER,
+		};
+	}
+
+	getChildren(): readonly [] {
+		return [];
+	}
+
+	getRelations(): readonly [RelationalPlanNode] {
+		return [this.subquery];
+	}
+
+	override toString(): string {
+		return `EXISTS (subquery)`;
+	}
+
+	override getLogicalProperties(): Record<string, unknown> {
+		return {
+			subqueryType: 'exists',
+			resultType: formatScalarType(this.getType()),
+		};
+	}
+}
