@@ -942,11 +942,99 @@ export class Parser {
 		while (this.match(
 			TokenType.LESS, TokenType.LESS_EQUAL,
 			TokenType.GREATER, TokenType.GREATER_EQUAL,
-			TokenType.BETWEEN, TokenType.IN
+			TokenType.BETWEEN, TokenType.IN, TokenType.NOT
 		)) {
 			const operatorToken = this.previous();
 
-			if (operatorToken.type === TokenType.BETWEEN) {
+			// Handle NOT IN and NOT BETWEEN
+			if (operatorToken.type === TokenType.NOT) {
+				const notStartToken = operatorToken;
+				if (this.match(TokenType.IN)) {
+					// NOT IN
+					this.consume(TokenType.LPAREN, "Expected '(' after NOT IN.");
+
+					if (this.check(TokenType.SELECT)) {
+						// NOT IN subquery: expr NOT IN (SELECT ...)
+						const selectToken = this.advance(); // Consume SELECT
+						const subquery = this.selectStatement(selectToken);
+						const endToken = this.consume(TokenType.RPAREN, "Expected ')' after NOT IN subquery.");
+
+						// Create an IN expression with subquery, then wrap in NOT
+						const inExpr: AST.InExpr = {
+							type: 'in',
+							expr,
+							subquery,
+							loc: _createLoc(startToken, endToken),
+						};
+
+						expr = {
+							type: 'unary',
+							operator: 'NOT',
+							expr: inExpr,
+							loc: _createLoc(notStartToken, endToken),
+						};
+					} else {
+						// NOT IN value list: expr NOT IN (value1, value2, ...)
+						const values: AST.Expression[] = [];
+						if (!this.check(TokenType.RPAREN)) {
+							do {
+								values.push(this.expression());
+							} while (this.match(TokenType.COMMA));
+						}
+						const endToken = this.consume(TokenType.RPAREN, "Expected ')' after NOT IN values.");
+
+						// Create an IN expression with value list, then wrap in NOT
+						const inExpr: AST.InExpr = {
+							type: 'in',
+							expr,
+							values,
+							loc: _createLoc(startToken, endToken),
+						};
+
+						expr = {
+							type: 'unary',
+							operator: 'NOT',
+							expr: inExpr,
+							loc: _createLoc(notStartToken, endToken),
+						};
+					}
+				} else if (this.match(TokenType.BETWEEN)) {
+					// NOT BETWEEN
+					const low = this.term();
+					this.consume(TokenType.AND, "Expected 'AND' after NOT BETWEEN lower bound.");
+					const high = this.term();
+					const endToken = this.previous(); // End token is end of high expr
+
+					// Create a binary AND expression for the bounds
+					const boundsExpr: AST.BinaryExpr = {
+						type: 'binary',
+						operator: 'AND',
+						left: low,
+						right: high,
+						loc: _createLoc(low.loc?.start ? this.tokens.find(t => t.startOffset === low.loc!.start.offset) ?? this.peek() : this.peek(), endToken)
+					};
+
+					// Create the BETWEEN expression as a binary expression, then wrap in NOT
+					const betweenExpr: AST.BinaryExpr = {
+						type: 'binary',
+						operator: 'BETWEEN',
+						left: expr,
+						right: boundsExpr,
+						loc: _createLoc(startToken, endToken),
+					};
+
+					expr = {
+						type: 'unary',
+						operator: 'NOT',
+						expr: betweenExpr,
+						loc: _createLoc(notStartToken, endToken),
+					};
+				} else {
+					// Put back the NOT token and break out of the loop
+					this.current--;
+					break;
+				}
+			} else if (operatorToken.type === TokenType.BETWEEN) {
 				// Parse BETWEEN expression: expr BETWEEN low AND high
 				const low = this.term();
 				this.consume(TokenType.AND, "Expected 'AND' after BETWEEN lower bound.");
@@ -1151,6 +1239,20 @@ export class Parser {
 			const targetType = typeToken.lexeme;
 			const endToken = this.consume(TokenType.RPAREN, "Expected ')' after CAST expression type.");
 			return { type: 'cast', expr, targetType, loc: _createLoc(castToken, endToken) };
+		}
+
+		// EXISTS expression: EXISTS(SELECT ...)
+		if (this.match(TokenType.EXISTS)) {
+			const existsToken = this.previous();
+			this.consume(TokenType.LPAREN, "Expected '(' after EXISTS.");
+			const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in EXISTS subquery.");
+			const subquery = this.selectStatement(selectToken);
+			const endToken = this.consume(TokenType.RPAREN, "Expected ')' after EXISTS subquery.");
+			return {
+				type: 'exists',
+				subquery,
+				loc: _createLoc(existsToken, endToken)
+			};
 		}
 
 		// Literals

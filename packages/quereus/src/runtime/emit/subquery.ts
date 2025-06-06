@@ -1,11 +1,12 @@
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { InNode, ScalarSubqueryNode } from '../../planner/nodes/subquery.js';
+import type { InNode, ScalarSubqueryNode, ExistsNode } from '../../planner/nodes/subquery.js';
 import { emitPlanNode } from '../emitters.js';
 import type { SqlValue, Row } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { BTree } from 'inheritree';
 
 export function emitScalarSubquery(plan: ScalarSubqueryNode, ctx: EmissionContext): Instruction {
 
@@ -42,24 +43,32 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 				return null;
 			}
 
+			// Build BTree of all values from subquery
+			const tree = new BTree<SqlValue, SqlValue>(
+				(val: SqlValue) => val,
+				(a: SqlValue, b: SqlValue) => compareSqlValues(a, b)
+			);
+
+			let hasNull = false;
 			for await (const row of input) {
 				if (row.length > 0) {
 					const rowValue = row[0];
 					if (rowValue === null) {
-						// If any value in the subquery is NULL and we haven't found a match yet,
-						// we need to continue checking. If no match is found, result will be NULL.
+						hasNull = true;
 						continue;
 					}
-					if (compareSqlValues(rowValue, condition) === 0) {
-						return 1; // Found a match
-					}
+					tree.insert(rowValue);
 				}
 			}
 
-			// No match found - check if any value in the subquery was NULL
-			// This requires a second pass, which is inefficient. For now, we'll assume no NULLs
-			// TODO: Optimize this by collecting all values first
-			return 0; // false in SQL
+			// Check if condition exists in tree
+			const value = tree.get(condition);
+			if (value !== undefined) {
+				return 1; // Found a match
+			}
+
+			// No match found - if any value was NULL, result is NULL
+			return hasNull ? null : 0;
 		}
 
 		const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -78,15 +87,25 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 				return null;
 			}
 
+			// Build BTree of all values
+			const tree = new BTree<SqlValue, SqlValue>(
+				(val: SqlValue) => val,
+				(a: SqlValue, b: SqlValue) => compareSqlValues(a, b)
+			);
+
 			let hasNull = false;
 			for (const value of values) {
 				if (value === null) {
 					hasNull = true;
 					continue;
 				}
-				if (compareSqlValues(condition, value) === 0) {
-					return 1; // Found a match
-				}
+				tree.insert(value);
+			}
+
+			// Check if condition exists in tree
+			const path = tree.find(condition);
+			if (path.on) {
+				return 1; // Found a match
 			}
 
 			// No match found - if any value was NULL, result is NULL
@@ -104,4 +123,21 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 	} else {
 		throw new QuereusError('IN node must have either source or values', StatusCode.INTERNAL);
 	}
+}
+
+export function emitExists(plan: ExistsNode, ctx: EmissionContext): Instruction {
+	async function run(ctx: RuntimeContext, input: AsyncIterable<Row>): Promise<SqlValue> {
+		for await (const _row of input) {
+			return 1; // First row => TRUE
+		}
+		return 0; // Empty => FALSE
+	}
+
+	const innerInstruction = emitPlanNode(plan.subquery, ctx);
+
+	return {
+		params: [innerInstruction],
+		run,
+		note: 'EXISTS'
+	};
 }

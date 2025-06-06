@@ -4,12 +4,12 @@ import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, Collate
 import { ScalarFunctionCallNode } from '../nodes/function.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
-import { ScalarSubqueryNode, InNode } from '../nodes/subquery.js';
+import { ScalarSubqueryNode, InNode, ExistsNode } from '../nodes/subquery.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, SqlDataType } from '../../common/types.js';
-import type { ScalarType } from '../../common/datatype.js';
+import type { RelationType, ScalarType } from '../../common/datatype.js';
 import { resolveColumn, resolveParameter, resolveFunction } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt } from './select.js';
@@ -147,6 +147,11 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        if (subqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
+       // Validate that scalar subquery returns exactly one column
+       const scalarSubqueryType = subqueryPlan.getType();
+       if (scalarSubqueryType.typeClass === 'relation' && (scalarSubqueryType as RelationType).columns.length !== 1) {
+         throw new QuereusError('Scalar subquery must return exactly one column', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+       }
        return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
     case 'windowFunction':
        // Window functions are handled by creating a WindowFunctionCallNode
@@ -184,6 +189,11 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          if (inSubqueryPlan.getType().typeClass !== 'relation') {
            throw new QuereusError('IN subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
          }
+         // Validate that subquery returns exactly one column
+         const subqueryType = inSubqueryPlan.getType();
+         if (subqueryType.typeClass === 'relation' && (subqueryType as RelationType).columns.length !== 1) {
+           throw new QuereusError('IN subquery must return exactly one column', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+         }
                    return new InNode(ctx.scope, expr, leftExpr, inSubqueryPlan as RelationalPlanNode);
                } else if (expr.values) {
           // IN value list: expr IN (value1, value2, ...)
@@ -194,6 +204,14 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        } else {
          throw new QuereusError('IN expression must have either values or subquery', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
+    case 'exists':
+       // Build the EXISTS subquery
+       const existsSubqueryContext = { ...ctx };
+       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery);
+       if (existsSubqueryPlan.getType().typeClass !== 'relation') {
+         throw new QuereusError('EXISTS subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+       }
+       return new ExistsNode(ctx.scope, expr, existsSubqueryPlan as RelationalPlanNode);
     default:
       throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED, undefined, expr.loc?.start.line, expr.loc?.start.column);
   }

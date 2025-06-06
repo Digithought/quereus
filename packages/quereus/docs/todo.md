@@ -93,7 +93,7 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 
 **Advanced Subquery Support**
 - [ ] **Correlated Subqueries**: Enhanced support for complex correlated subquery patterns
-- [ ] **EXISTS/NOT EXISTS**: Full implementation of EXISTS subquery conditions
+- [X] **EXISTS/NOT EXISTS**: Full implementation of EXISTS subquery conditions ✅
 - [ ] **Scalar Subqueries**: Complete scalar subquery support in expressions
 
 **Missing Scalar Operations**

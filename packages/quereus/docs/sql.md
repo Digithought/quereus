@@ -654,9 +654,17 @@ where department_id in (
   select id from departments where location = 'Headquarters'
 );
 
+-- IN with value list (optimized with BTree for fast lookups)
+select * from orders 
+where status in ('pending', 'processing', 'shipped', 'delivered');
+
 -- BETWEEN
 select * from orders
 where order_date between date('2023-01-01') and date('2023-12-31');
+
+-- NOT BETWEEN  
+select * from products
+where price not between 10.00 and 100.00;
 
 -- LIKE pattern matching
 select * from users where email like '%@gmail.com';
@@ -679,6 +687,23 @@ select * from customers as c
 where exists (
   select 1 from orders as o
   where o.customer_id = c.id and o.total > 1000
+);
+
+-- NOT EXISTS  
+select * from customers as c
+where not exists (
+  select 1 from orders as o
+  where o.customer_id = c.id
+);
+
+-- NOT IN with value list
+select * from products
+where category not in ('Discontinued', 'Seasonal', 'Clearance');
+
+-- NOT IN with subquery
+select * from employees
+where department_id not in (
+  select id from departments where location = 'Remote'
 );
 ```
 
