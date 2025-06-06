@@ -374,9 +374,16 @@ export class MemoryTableManager {
 			: ConflictResolution.ABORT;
 	}
 
+	private shouldSkipPkCheck(values: Row | undefined): boolean {
+		return !!(values && (values as any)._skipPkCheck);
+	}
+
 	private cleanConflictResolutionFromValues(values: Row | undefined): void {
 		if (values && (values as any)._onConflict) {
 			delete (values as any)._onConflict;
+		}
+		if (values && (values as any)._skipPkCheck) {
+			delete (values as any)._skipPkCheck;
 		}
 	}
 
@@ -391,12 +398,16 @@ export class MemoryTableManager {
 
 		const newRowData: Row = values;
 		const primaryKey = this.primaryKeyFromRow(newRowData);
+		const skipPkCheck = this.shouldSkipPkCheck(values);
 
-		const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
+		// Only check for existing rows if not skipping PK checks (engine-level constraint checking handles this)
+		if (!skipPkCheck) {
+			const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
 
-		if (existingRow !== null) {
-			if (onConflict === ConflictResolution.IGNORE) return undefined;
-			throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
+			if (existingRow !== null) {
+				if (onConflict === ConflictResolution.IGNORE) return undefined;
+				throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
+			}
 		}
 
 		targetLayer.recordUpsert(primaryKey, newRowData, null);

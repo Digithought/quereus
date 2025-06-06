@@ -191,13 +191,11 @@ export class Optimizer {
 		}
 
 		if (node instanceof ReturningNode) {
-			const optimizedExecutor = this.optimizeNode(node.executor) as any; // VoidNode type
-			const optimizedProjectionSource = this.optimizeNode(node.projectionSource) as RelationalPlanNode;
-			if (optimizedExecutor !== node.executor || optimizedProjectionSource !== node.projectionSource) {
+			const optimizedExecutor = this.optimizeNode(node.executor) as RelationalPlanNode;
+			if (optimizedExecutor !== node.executor) {
 				return new ReturningNode(
 					node.scope,
 					optimizedExecutor,
-					optimizedProjectionSource,
 					node.projections
 				);
 			}

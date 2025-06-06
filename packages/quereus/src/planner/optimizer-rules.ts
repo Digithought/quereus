@@ -96,7 +96,12 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 		}
 
 		// Create row descriptors for constraint checking
-		const { newRowDescriptor } = optimizer.createRowDescriptors(node, RowOp.INSERT);
+		// If the InsertNode already has a newRowDescriptor (from RETURNING), preserve it
+		let newRowDescriptor = node.newRowDescriptor;
+		if (!newRowDescriptor || Object.keys(newRowDescriptor).length === 0) {
+			const descriptors = optimizer.createRowDescriptors(node, RowOp.INSERT);
+			newRowDescriptor = descriptors.newRowDescriptor;
+		}
 
 		// Optimize the source first
 		const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
@@ -161,7 +166,14 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 		}
 
 		// Has constraints - inject ConstraintCheckNode between UpdateExecutor and UpdateNode
-		const { oldRowDescriptor, newRowDescriptor } = optimizer.createRowDescriptors(updateNode, RowOp.UPDATE);
+		// If the UpdateNode already has row descriptors (from RETURNING), preserve them
+		let oldRowDescriptor = updateNode.oldRowDescriptor;
+		let newRowDescriptor = updateNode.newRowDescriptor;
+		if (!newRowDescriptor || Object.keys(newRowDescriptor).length === 0) {
+			const descriptors = optimizer.createRowDescriptors(updateNode, RowOp.UPDATE);
+			oldRowDescriptor = descriptors.oldRowDescriptor;
+			newRowDescriptor = descriptors.newRowDescriptor;
+		}
 
 		// Create the optimized UpdateNode with row descriptors
 		const optimizedSource = optimizer.optimizeNode(updateNode.source) as RelationalPlanNode;
@@ -301,20 +313,27 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 		return null; // No transformation needed
 	});
 
-	// Rule: ProjectNode wrapping VoidNode → ReturningNode for correct RETURNING semantics
+	// Rule: ProjectNode wrapping DML nodes → ReturningNode for RETURNING semantics
 	registerRule(PlanNodeType.Project, (node, optimizer) => {
 		if (!(node instanceof ProjectNode)) return null;
 
-		// Check if we're projecting from a VoidNode (like UpdateExecutorNode, InsertNode, DeleteNode)
-		// This indicates a RETURNING clause that should execute after the DML operation
+		// Check if we're projecting from a DML node (UpdateNode, InsertNode, DeleteNode)
+		// This indicates a RETURNING clause
 		const source = node.source;
 
-		// Handle UpdateExecutorNode
-		if (source.nodeType === PlanNodeType.UpdateExecutor && source instanceof UpdateExecutorNode) {
-			log('Converting ProjectNode(UpdateExecutorNode) to ReturningNode for correct RETURNING semantics');
+		// Handle UpdateNode (for UPDATE RETURNING built as ProjectNode(UpdateNode))
+		if (source.nodeType === PlanNodeType.Update && source instanceof UpdateNode) {
+			log('Converting ProjectNode(UpdateNode) to ReturningNode for UPDATE RETURNING semantics');
 
-			// The UpdateExecutorNode has a constraint-checked source that we want to project from
-			const projectionSource = source.source;
+			// First optimize the UpdateNode to get the constraint-checked pipeline
+			const optimizedUpdateNode = optimizer.optimizeNode(source) as RelationalPlanNode;
+
+			// Create UpdateExecutorNode wrapper using the optimized UpdateNode
+			const updateExecutor = new UpdateExecutorNode(
+				source.scope,
+				optimizedUpdateNode,
+				source.table
+			);
 
 			// Convert ProjectNode projections to ReturningProjections
 			const returningProjections: ReturningProjection[] = node.projections.map(proj => ({
@@ -322,25 +341,21 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 				alias: proj.alias
 			}));
 
-			// Optimize both the executor and projection source
-			const optimizedExecutor = optimizer.optimizeNode(source) as UpdateExecutorNode;
-			const optimizedProjectionSource = optimizer.optimizeNode(projectionSource) as RelationalPlanNode;
+			// Optimize the UpdateExecutorNode (this may add additional constraint checking)
+			const optimizedExecutor = optimizer.optimizeNode(updateExecutor) as UpdateExecutorNode;
 
+			// For UPDATE RETURNING, use only the UpdateExecutorNode as executor
+			// It will yield the updated rows which ReturningNode projects
 			return new ReturningNode(
 				node.scope,
 				optimizedExecutor,
-				optimizedProjectionSource,
 				returningProjections
 			);
 		}
 
 		// Handle InsertNode
 		if (source.nodeType === PlanNodeType.Insert && source instanceof InsertNode) {
-			log('Converting ProjectNode(InsertNode) to ReturningNode for correct RETURNING semantics');
-
-			// For InsertNode, the projection source should be the InsertNode itself
-			// since it represents the inserted rows with table structure
-			const projectionSource = source;
+			log('Converting ProjectNode(InsertNode) to ReturningNode for INSERT RETURNING semantics');
 
 			// Convert ProjectNode projections to ReturningProjections
 			const returningProjections: ReturningProjection[] = node.projections.map(proj => ({
@@ -348,24 +363,21 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 				alias: proj.alias
 			}));
 
-			// Optimize both the executor and projection source
-			const optimizedExecutor = optimizer.optimizeNode(source) as InsertNode;
-			const optimizedProjectionSource = optimizedExecutor; // Use the optimized InsertNode
+			// Optimize the InsertNode
+			const optimizedInsert = optimizer.optimizeNode(source) as InsertNode;
 
+			// For INSERT RETURNING, the InsertNode serves as the executor
+			// It yields inserted rows which ReturningNode projects
 			return new ReturningNode(
 				node.scope,
-				optimizedExecutor,
-				optimizedProjectionSource,
+				optimizedInsert,
 				returningProjections
 			);
 		}
 
 		// Handle DeleteNode
 		if (source.nodeType === PlanNodeType.Delete && source instanceof DeleteNode) {
-			log('Converting ProjectNode(DeleteNode) to ReturningNode for correct RETURNING semantics');
-
-			// For DeleteNode, the projection source is the filtered source
-			const projectionSource = source.source;
+			log('Converting ProjectNode(DeleteNode) to ReturningNode for DELETE RETURNING semantics');
 
 			// Convert ProjectNode projections to ReturningProjections
 			const returningProjections: ReturningProjection[] = node.projections.map(proj => ({
@@ -373,14 +385,14 @@ export const getDefaultRules = (): Map<PlanNodeType, OptimizationRule[]> => {
 				alias: proj.alias
 			}));
 
-			// Optimize both the executor and projection source
+			// Optimize the DeleteNode
 			const optimizedExecutor = optimizer.optimizeNode(source) as DeleteNode;
-			const optimizedProjectionSource = optimizer.optimizeNode(projectionSource) as RelationalPlanNode;
 
+			// For DELETE RETURNING, the DeleteNode serves as the executor
+			// It yields deleted rows which ReturningNode projects
 			return new ReturningNode(
 				node.scope,
 				optimizedExecutor,
-				optimizedProjectionSource,
 				returningProjections
 			);
 		}

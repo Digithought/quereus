@@ -1,9 +1,9 @@
 import type { UpdateNode } from '../../planner/nodes/update-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
-import { emitPlanNode, emitCall } from '../emitters.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
+import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
-import { getVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 
@@ -12,6 +12,13 @@ const errorLog = log.extend('error');
 
 export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
+
+	// Create row descriptor for the source rows (needed for assignment expression evaluation)
+	const sourceRowDescriptor: RowDescriptor = [];
+	const sourceAttributes = plan.source.getAttributes();
+	sourceAttributes.forEach((attr, index) => {
+		sourceRowDescriptor[attr.id] = index;
+	});
 
 	// Pre-calculate assignment column indices
 	const assignmentTargetIndices = plan.assignments.map(assign => {
@@ -23,46 +30,57 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 		return tableColIdx;
 	});
 
-	async function* processRow(sourceRow: Row, ...assignmentValues: Array<SqlValue>): AsyncIterable<Row> {
-		// Create a new row with updated values
-		const updatedRow = [...sourceRow]; // Copy the original row
+	// Emit assignment value expressions as callbacks
+	const assignmentEvaluators = plan.assignments.map(assign =>
+		emitCallFromPlan(assign.value, ctx)
+	);
 
-		// Evaluate assignment expressions and update the row
-		for (let i = 0; i < assignmentValues.length; i++) {
-			const targetColIdx = assignmentTargetIndices[i];
-			updatedRow[targetColIdx] = assignmentValues[i];
-		}
+	async function* run(rctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentEvaluators: Array<(ctx: RuntimeContext) => SqlValue>): AsyncIterable<Row> {
+		for await (const sourceRow of sourceRowsIterable) {
+			// Set up row context for evaluating assignment expressions
+			rctx.context.set(sourceRowDescriptor, () => sourceRow);
 
-		// For UPDATE operations, we need to provide both OLD and NEW row data to constraint checking
-		// Store both in a special structure that constraint checking can access
-		const updateRowData = {
-			oldRow: sourceRow,
-			newRow: updatedRow,
-			isUpdateOperation: true
-		};
+			try {
+				// Evaluate assignment expressions in the context of this row
+				const assignmentValues: SqlValue[] = [];
+				for (const evaluator of assignmentEvaluators) {
+					const value = evaluator(rctx) as SqlValue;
+					assignmentValues.push(value);
+				}
 
-		// Yield the updated row with attached old row metadata
-		yield Object.assign([...updatedRow], { __updateRowData: updateRowData });
-	}
+				// Create a new row with updated values
+				const updatedRow = [...sourceRow]; // Copy the original row
 
-	async function* runLogic(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentValues: Array<SqlValue>): AsyncIterable<Row> {
-		for await (const row of sourceRowsIterable) {
-			for await (const updatedRow of processRow(row, ...assignmentValues)) {
-				yield updatedRow;
+				// Apply assignment values to the row
+				for (let i = 0; i < assignmentValues.length; i++) {
+					const targetColIdx = assignmentTargetIndices[i];
+					updatedRow[targetColIdx] = assignmentValues[i];
+				}
+
+				// For UPDATE operations, we need to provide both OLD and NEW row data to constraint checking
+				// Store both in a special structure that constraint checking can access
+				const updateRowData = {
+					oldRow: sourceRow,
+					newRow: updatedRow,
+					isUpdateOperation: true
+				};
+
+				// Yield the updated row with attached old row metadata
+				// NOTE: UpdateNode only transforms rows - it does NOT execute the actual update
+				// The UpdateExecutorNode is responsible for calling vtab.xUpdate
+				yield Object.assign([...updatedRow], { __updateRowData: updateRowData });
+			} finally {
+				// Clean up row context
+				rctx.context.delete(sourceRowDescriptor);
 			}
 		}
 	}
 
-	async function run(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentValues: Array<SqlValue>): Promise<AsyncIterable<Row>> {
-		return runLogic(ctx, sourceRowsIterable, ...assignmentValues);
-	}
-
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
-	const assignmentValueExprs = plan.assignments.map(assign => emitPlanNode(assign.value, ctx));
 
 	return {
-		params: [sourceInstruction, ...assignmentValueExprs],
+		params: [sourceInstruction, ...assignmentEvaluators],
 		run: run as InstructionRun,
-		note: `updateRows(${plan.table.tableSchema.name}, ${plan.assignments.length} cols)`
+		note: `transformUpdateRows(${plan.table.tableSchema.name}, ${plan.assignments.length} cols)`
 	};
 }

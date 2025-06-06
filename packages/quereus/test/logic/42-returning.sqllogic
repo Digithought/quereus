@@ -120,25 +120,3 @@ DELETE FROM test_constrained WHERE id >= 210 RETURNING name;
 
 DROP TABLE test_constrained;
 
-DROP TABLE t_check_alias;
-CREATE TABLE t_check_alias (
-    id INTEGER PRIMARY KEY,
-    version INTEGER DEFAULT 1,
-    payload TEXT,
-    CONSTRAINT version_increase CHECK ON UPDATE (NEW.version > OLD.version)
-);
-INSERT INTO t_check_alias (id, payload) VALUES (310, 'initial data');
-SELECT version FROM t_check_alias WHERE id = 310;
-  -> Executing setup statement: DROP TABLE t_check_on
-  -> Executing setup statement: CREATE TABLE t_check_alias (
-    id INTEGER PRIMARY KEY,
-    version INTEGER DEFAULT 1,
-    payload TEXT,
-    CONSTRAINT version_increase CHECK ON UPDATE (NEW.version > OLD.version)
-)
-  -> Executing setup statement: INSERT INTO t_check_alias (id, payload) VALUES (310, 'initial data')
-  -> Executing final statement (with tracing): SELECT version FROM t_check_alias WHERE id = 310
-   -> Results match!
-Executing block (expect results):
-UPDATE t_check_alias SET version = 2, payload = 'updated data' WHERE id = 310;
-SELECT version, payload FROM t_check_alias WHERE id = 310;

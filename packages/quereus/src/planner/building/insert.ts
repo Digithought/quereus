@@ -119,11 +119,67 @@ export function buildInsertStmt(
 	let resultNode: RelationalPlanNode = insertNode;
 
 	if (stmt.returning && stmt.returning.length > 0) {
-		// For RETURNING, we need to create a newRowDescriptor that maps table columns to attribute IDs
+		// For RETURNING, create a fresh set of attribute IDs that will be used
+		// consistently in both the newRowDescriptor and the RETURNING projections
 		const newRowDescriptor: RowDescriptor = [];
+		const returningScope = new RegisteredScope(ctx.scope);
+
+		// Create one attribute ID per table column, ensuring they're used consistently
+		const columnAttributeIds: number[] = [];
 		tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
 			const attributeId = PlanNode.nextAttrId();
+			columnAttributeIds[columnIndex] = attributeId;
 			newRowDescriptor[attributeId] = columnIndex;
+
+			// Register the unqualified column name in the RETURNING scope
+			returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) => {
+				return new ColumnReferenceNode(
+					s,
+					exp as AST.ColumnExpr,
+					{
+						typeClass: 'scalar',
+						affinity: tableColumn.affinity,
+						nullable: !tableColumn.notNull,
+						isReadOnly: false
+					},
+					attributeId,
+					columnIndex
+				);
+			});
+
+			// Also register the table-qualified form (table.column)
+			const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
+			returningScope.registerSymbol(tblQualified, (exp, s) =>
+				new ColumnReferenceNode(
+					s,
+					exp as AST.ColumnExpr,
+					{
+						typeClass: 'scalar',
+						affinity: tableColumn.affinity,
+						nullable: !tableColumn.notNull,
+						isReadOnly: false
+					},
+					attributeId,
+					columnIndex
+				)
+			);
+		});
+
+		// Build RETURNING projections in the table column context
+		const returningProjections = stmt.returning.map(rc => {
+			// TODO: Support RETURNING *
+			if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
+
+			// Infer alias from column name if not explicitly provided
+			let alias = rc.alias;
+			if (!alias && rc.expr.type === 'column') {
+				alias = rc.expr.name;
+			}
+
+			return {
+				node: buildExpression({ ...ctx, scope: returningScope }, rc.expr) as ScalarPlanNode,
+				alias: alias
+			};
 		});
 
 		// Create a new InsertNode with the row descriptor
@@ -136,37 +192,6 @@ export function buildInsertStmt(
 			newRowDescriptor
 		);
 
-		// Create a context for RETURNING expressions that includes the table columns
-		const returningScope = new RegisteredScope(ctx.scope);
-
-		// Register table columns in the RETURNING scope using the newRowDescriptor attribute IDs
-		tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
-			// Find the attribute ID for this column from the newRowDescriptor
-			const attributeId = Object.keys(newRowDescriptor).find(id =>
-				newRowDescriptor[parseInt(id)] === columnIndex
-			);
-
-			if (attributeId) {
-				returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
-						typeClass: 'scalar',
-						affinity: tableColumn.affinity,
-						nullable: !tableColumn.notNull,
-						isReadOnly: false
-					}, parseInt(attributeId), columnIndex)
-				);
-			}
-		});
-
-		// Build RETURNING projections in the table column context
-		const returningProjections = stmt.returning.map(rc => {
-			// TODO: Support RETURNING *
-			if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
-			return {
-				node: buildExpression({ ...ctx, scope: returningScope }, rc.expr) as ScalarPlanNode,
-				alias: rc.alias
-			};
-		});
 		return new ProjectNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
 	}
 

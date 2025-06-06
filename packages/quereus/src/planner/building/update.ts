@@ -4,7 +4,7 @@ import { UpdateNode, type UpdateAssignment } from '../nodes/update-node.js';
 import { UpdateExecutorNode } from '../nodes/update-executor-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
-import type { RelationalPlanNode, ScalarPlanNode, VoidNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -15,7 +15,7 @@ import { ColumnReferenceNode } from '../nodes/reference.js';
 export function buildUpdateStmt(
   ctx: PlanningContext,
   stmt: AST.UpdateStmt,
-): RelationalPlanNode | VoidNode {
+): RelationalPlanNode {
   const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Plan the source of rows to update. This is typically the table itself, potentially filtered.
@@ -64,13 +64,80 @@ export function buildUpdateStmt(
   );
 
   if (stmt.returning && stmt.returning.length > 0) {
+    // For RETURNING, create coordinated attribute IDs like we do for INSERT
+    const newRowDescriptor: RowDescriptor = [];
+    const returningScope = new RegisteredScope(updateCtx.scope);
+
+    // Create consistent attribute IDs for all table columns
+    const columnAttributeIds: number[] = [];
+    tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
+      const attributeId = PlanNode.nextAttrId();
+      columnAttributeIds[columnIndex] = attributeId;
+      newRowDescriptor[attributeId] = columnIndex;
+
+      // Register the unqualified column name in the RETURNING scope
+      returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) => {
+        return new ColumnReferenceNode(
+          s,
+          exp as AST.ColumnExpr,
+          {
+            typeClass: 'scalar',
+            affinity: tableColumn.affinity,
+            nullable: !tableColumn.notNull,
+            isReadOnly: false
+          },
+          attributeId,
+          columnIndex
+        );
+      });
+
+      // Also register the table-qualified form (table.column)
+      const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
+      returningScope.registerSymbol(tblQualified, (exp, s) =>
+        new ColumnReferenceNode(
+          s,
+          exp as AST.ColumnExpr,
+          {
+            typeClass: 'scalar',
+            affinity: tableColumn.affinity,
+            nullable: !tableColumn.notNull,
+            isReadOnly: false
+          },
+          attributeId,
+          columnIndex
+        )
+      );
+    });
+
     const returningProjections = stmt.returning.map(rc => {
       // TODO: Support RETURNING *
       if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
-      return { node: buildExpression(updateCtx, rc.expr) as ScalarPlanNode, alias: rc.alias };
+
+      // Infer alias from column name if not explicitly provided
+      let alias = rc.alias;
+      if (!alias && rc.expr.type === 'column') {
+        alias = rc.expr.name;
+      }
+
+      return {
+        node: buildExpression({ ...updateCtx, scope: returningScope }, rc.expr) as ScalarPlanNode,
+        alias: alias
+      };
     });
+
+    // Create UpdateNode with the row descriptor for RETURNING coordination
+    const updateNodeWithDescriptor = new UpdateNode(
+      updateCtx.scope,
+      tableReference,
+      assignments,
+      sourceNode,
+      stmt.onConflict,
+      undefined, // oldRowDescriptor - will be set by optimizer if needed
+      newRowDescriptor
+    );
+
     // Project from the UpdateNode before execution – optimizer will ensure correct wrapping.
-    return new ProjectNode(updateCtx.scope, updateNode, returningProjections);
+    return new ProjectNode(updateCtx.scope, updateNodeWithDescriptor, returningProjections);
   }
 
   return updateExecutorNode;

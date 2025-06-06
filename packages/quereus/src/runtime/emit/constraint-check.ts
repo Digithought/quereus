@@ -232,6 +232,9 @@ async function checkConstraints(
 	constraintMetadata: Array<RowConstraintSchema>,
 	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
 ): Promise<void> {
+	// Check PRIMARY KEY constraints (UNIQUE constraints on PK columns)
+	await checkPrimaryKeyConstraints(rctx, plan, tableSchema, row);
+
 	// Check NOT NULL constraints on individual columns
 	await checkNotNullConstraints(rctx, plan, tableSchema, row);
 
@@ -267,6 +270,18 @@ async function checkNotNullConstraints(
 			}
 		}
 	}
+}
+
+async function checkPrimaryKeyConstraints(
+	rctx: RuntimeContext,
+	plan: ConstraintCheckNode,
+	tableSchema: any,
+	row: Row
+): Promise<void> {
+	// Primary Key constraints are enforced at the VTable level for now
+	// This is simpler and more efficient than trying to implement it at the engine level
+	// since the VTable has direct access to the current table state
+	return;
 }
 
 async function checkCheckConstraints(

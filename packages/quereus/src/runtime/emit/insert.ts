@@ -1,5 +1,6 @@
 import type { InsertNode } from '../../planner/nodes/insert-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row, SqlDataType } from '../../common/types.js';
@@ -9,8 +10,13 @@ import { applyIntegerAffinity, applyRealAffinity, applyNumericAffinity, applyTex
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
   const tableSchema = plan.table.tableSchema;
-	// InsertNode is now a VoidNode by default; only RETURNING wraps it in ProjectNode
-	const isReturning = false;
+
+  // Create row descriptor for the output attributes (for RETURNING support)
+  const outputRowDescriptor: RowDescriptor = [];
+  const outputAttributes = plan.getAttributes();
+  outputAttributes.forEach((attr, index) => {
+    outputRowDescriptor[attr.id] = index;
+  });
 
   // Compute targetColumnIndices at emit time
   const targetColumnIndices: number[] = [];
@@ -28,8 +34,8 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
     });
   }
 
-  // This function processes a single row and conditionally yields it if RETURNING
-  async function* processAndYieldIfNeeded(vtab: any, rowToInsert: Row): AsyncIterable<Row> {
+  // This function processes a single row and conditionally yields it for RETURNING
+  async function* processAndYieldRow(vtab: any, rowToInsert: Row): AsyncIterable<Row> {
     const valuesForXUpdate: SqlValue[] = new Array(tableSchema.columns.length + 1).fill(null);
     valuesForXUpdate[0] = null; // Placeholder for key, null for INSERT with xUpdate
 
@@ -66,6 +72,7 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
       valuesForXUpdate[tableColIdx + 1] = convertedValue;
     });
 
+    // Fill in default values for omitted columns
     tableSchema.columns.forEach((col, idx) => {
       if (valuesForXUpdate[idx + 1] === null && !targetColumnIndices.includes(idx)) {
         if (col.defaultValue !== undefined) {
@@ -75,21 +82,21 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
           valuesForXUpdate[idx + 1] = col.defaultValue as SqlValue;
         } else {
           // Explicitly set NULL for omitted columns without defaults
-          // This ensures NOT NULL constraint checking can catch violations
           valuesForXUpdate[idx + 1] = null;
         }
       }
     });
 
+        // Set conflict resolution strategy
     (valuesForXUpdate as any)._onConflict = plan.onConflict || 'abort';
+
     await vtab.xUpdate!('insert', valuesForXUpdate.slice(1), null);
 
-    if (isReturning) {
-      yield valuesForXUpdate.slice(1); // Yield the data part of the inserted row
-    }
+    // Always yield the inserted row (even for non-RETURNING cases, as optimizer will filter)
+    yield valuesForXUpdate.slice(1) as Row;
   }
 
-  async function* runLogic(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
+  async function* run(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
     // Get or create a connection for this table to ensure transaction consistency
     const connection = await getVTableConnection(ctx, tableSchema);
 
@@ -97,31 +104,19 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
     const vtab = await getVTable(ctx, tableSchema);
 
     try {
-			for await (const row of sourceValue) {
-				for await (const returningRow of processAndYieldIfNeeded(vtab, row)) {
-					yield returningRow; // Only yields if RETURNING is active
-				}
-			}
+      for await (const row of sourceValue) {
+        for await (const insertedRow of processAndYieldRow(vtab, row)) {
+          yield insertedRow;
+        }
+      }
     } finally {
       await disconnectVTable(ctx, vtab);
     }
   }
 
-  async function run(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): Promise<AsyncIterable<Row> | SqlValue | undefined> {
-    const resultsIterable = runLogic(ctx, sourceValue);
-    if (isReturning) {
-        return resultsIterable; // Return the async generator directly
-    } else {
-        // If not returning, consume the generator to execute inserts, then return undefined
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _ of resultsIterable) { /* Consume to execute */ }
-        return undefined;
-    }
-  }
-
   const sourceInstruction = emitPlanNode(plan.source, ctx);
 
-	return {
+  return {
     params: [sourceInstruction],
     run: run as InstructionRun,
     note: `insert(${plan.table.tableSchema.name}, ${plan.targetColumns.length || tableSchema.columns.length} cols)`

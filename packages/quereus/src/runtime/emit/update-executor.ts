@@ -38,18 +38,22 @@ export function emitUpdateExecutor(plan: UpdateExecutorNode, ctx: EmissionContex
 		await vtab.xUpdate!('update', updatedRow, keyValues);
 	}
 
-	async function run(ctx: RuntimeContext, updatedRowsIterable: AsyncIterable<Row>): Promise<SqlValue | undefined> {
+	// Always yield the updated rows - consumers decide if they want them
+	async function* run(ctx: RuntimeContext, updatedRowsIterable: AsyncIterable<Row>): AsyncIterable<Row> {
 		const vtab = await getVTable(ctx, tableSchema);
 
 		try {
 			for await (const updatedRow of updatedRowsIterable) {
 				await executeUpdate(vtab, updatedRow);
+				// Yield the updated row (strip metadata)
+				const cleanRow = updatedRow.slice() as Row;
+				delete (cleanRow as any).__oldRowKeyValues;
+				delete (cleanRow as any).__updateRowData;
+				yield cleanRow;
 			}
 		} finally {
 			await vtab.xDisconnect().catch((e: any) => errorLog(`Error during xDisconnect for ${tableSchema.name}: ${e}`));
 		}
-
-		return undefined;
 	}
 
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
