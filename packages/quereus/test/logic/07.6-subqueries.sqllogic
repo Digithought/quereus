@@ -45,7 +45,7 @@ SELECT id FROM outer_t WHERE outer_t.grp IN (SELECT o2.grp FROM outer_t o2 WHERE
 SELECT id FROM outer_t WHERE id = (SELECT min(outer_id) FROM inner_t);
 → [{"id":1}]
 SELECT id FROM outer_t WHERE id > (SELECT avg(outer_id) FROM inner_t WHERE outer_id IS NOT NULL) ORDER BY id;
-→ [{"id":3}]
+→ [{"id":2},{"id":3}]
 
 -- Comparison Subquery (Correlated)
 SELECT id FROM outer_t WHERE outer_t.id = (SELECT i.outer_id FROM inner_t i WHERE i.val = 400 AND i.outer_id = outer_t.id);
