@@ -76,6 +76,7 @@ export enum PlanNodeType {
 
   // Query execution
   Cache = 'Cache',
+  Sink = 'Sink',
 
   // RETURNING support
   Returning = 'Returning',

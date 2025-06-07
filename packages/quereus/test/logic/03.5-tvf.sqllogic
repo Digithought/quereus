@@ -6,7 +6,7 @@ SELECT op FROM query_plan('SELECT 1 + 1');
 
 -- Check scheduler program dump TVF (basic execution check)
 SELECT description FROM scheduler_program('SELECT 1');
-→ [{"description":"single_row"},{"description":"callback(literal(1))"},{"description":"literal(1)"},{"description":"project(1 cols)"},{"description":"block(1 stmts)"}]
+→ [{"description":"single_row"},{"description":"callback(literal(1))"},{"description":"literal(1)"},{"description":"project(1 cols)"},{"description":"block(1 stmts, result idx: 0)"}]
 
 -- Basic json_each (just test it runs for now)
 SELECT key, value FROM json_each('[10, 20, {"a": 30}]');

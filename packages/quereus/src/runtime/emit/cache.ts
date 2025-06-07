@@ -8,32 +8,19 @@ import { createLogger } from '../../common/logger.js';
 const log = createLogger('runtime:emit:cache');
 
 /**
- * A reusable async iterable that can be iterated multiple times
- */
-class CachedIterable implements AsyncIterable<Row> {
-	constructor(private rows: Row[]) {}
-
-	async *[Symbol.asyncIterator](): AsyncIterator<Row> {
-		log('Serving %d rows from cache', this.rows.length);
-		for (const row of this.rows) {
-			yield row;
-		}
-	}
-}
-
-/**
  * Emits a smart cache instruction that materializes input on first iteration
  * and serves subsequent iterations from cached results.
  */
 export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 	// Cache state persists across calls to this instruction
-	let cachedResult: CachedIterable | null = null;
+	let cachedResult: Row[] | undefined;
 	let cacheAbandoned = false;
 
-	async function run(rctx: RuntimeContext, sourceCallback: (innerCtx: RuntimeContext) => AsyncIterable<Row>): Promise<AsyncIterable<Row>> {
+	async function* run(rctx: RuntimeContext, sourceCallback: (innerCtx: RuntimeContext) => AsyncIterable<Row>): AsyncIterable<Row> {
 		// If we already have cached data, return it
 		if (cachedResult) {
-			return cachedResult;
+			yield* cachedResult;
+			return;
 		}
 
 		// If we previously abandoned caching due to threshold, just stream
@@ -43,43 +30,36 @@ export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 		}
 
 		// First time - pipeline results while building cache
-		return {
-			async *[Symbol.asyncIterator]() {
-				log('Building cache with threshold %d while pipelining', plan.threshold);
-				const cache: Row[] = [];
-				let rowCount = 0;
-				let thresholdExceeded = false;
+		log('Building cache with threshold %d while pipelining', plan.threshold);
+		let cache: Row[] | undefined = [];
 
-				// Get source iterator and pipeline while caching
-				const sourceIterable = sourceCallback(rctx);
-				for await (const row of sourceIterable) {
-					// Always yield the row immediately (pipelining)
-					yield row;
+		// Get source iterator and pipeline while caching
+		const sourceIterable = sourceCallback(rctx);
+		for await (const row of sourceIterable) {
+			// Always yield the row immediately (pipelining)
+			yield row;
 
-					// Try to cache if we haven't exceeded threshold
-					if (!thresholdExceeded) {
-						if (rowCount < plan.threshold) {
-							// Cache the row (deep copy to avoid reference issues)
-							cache.push([...row] as Row);
-							rowCount++;
-						} else {
-							// Hit threshold - dump cache and abandon caching
-							log('Cache threshold %d exceeded at row %d, dumping cache and continuing to pipeline',
-								plan.threshold, rowCount);
-							cache.length = 0; // Clear the cache
-							thresholdExceeded = true;
-							cacheAbandoned = true;
-						}
-					}
-				}
-
-				// If we finished without exceeding threshold, cache is ready
-				if (!thresholdExceeded) {
-					log('Cache built successfully with %d rows', cache.length);
-					cachedResult = new CachedIterable(cache);
+			// Try to cache if we haven't exceeded threshold
+			if (cache) {
+				if (cache.length < plan.threshold) {
+					// Cache the row (deep copy to avoid reference issues)
+					cache.push([...row] as Row);
+				} else {
+					// Hit threshold - dump cache and abandon caching
+					log('Cache threshold %d exceeded at row %d, dumping cache and continuing to pipeline',
+						plan.threshold, cache.length);
+					cache = undefined;
 				}
 			}
-		};
+		}
+
+		// If we finished without exceeding threshold, cache is ready
+		if (cache) {
+			log('Cache built successfully with %d rows', cache.length);
+			cachedResult = cache;
+		} else {
+			cacheAbandoned = true;
+		}
 	}
 
 	const sourceInstruction = emitCallFromPlan(plan.source, ctx);

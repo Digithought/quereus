@@ -1,7 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { DeleteNode } from '../nodes/delete-node.js';
-import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
@@ -11,12 +10,12 @@ import { StatusCode } from '../../common/types.js';
 import { ProjectNode } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
-import { RowOp } from '../../schema/table.js';
+import { SinkNode } from '../nodes/sink-node.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
   stmt: AST.DeleteStmt,
-): RelationalPlanNode {
+): PlanNode {
   const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Plan the source of rows to delete. This is typically the table itself, potentially filtered.
@@ -60,5 +59,5 @@ export function buildDeleteStmt(
     return new ProjectNode(deleteCtx.scope, resultNode, returningProjections);
   }
 
-	return resultNode;
+	return new SinkNode(deleteCtx.scope, resultNode, 'delete');
 }

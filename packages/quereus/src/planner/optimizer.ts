@@ -22,6 +22,7 @@ import { CacheNode } from './nodes/cache-node.js';
 import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 import { getDefaultRules } from './optimizer-rules.js';
 import { ReturningNode } from './nodes/returning-node.js';
+import { SinkNode } from './nodes/sink-node.js';
 
 const log = createLogger('optimizer');
 
@@ -200,6 +201,12 @@ export class Optimizer {
 				);
 			}
 			return node;
+		}
+
+		if (node instanceof SinkNode) {
+			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
+			if (optimizedSource === node.source) return node;
+			return new SinkNode(node.scope, optimizedSource, node.operation);
 		}
 
 		// For other nodes, return as-is

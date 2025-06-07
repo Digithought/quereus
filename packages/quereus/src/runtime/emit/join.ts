@@ -28,7 +28,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 	});
 
 	// NOTE: rightSource must be re-startable (optimizer facilitates through cache node)
-	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightSource: AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
+	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightCallback: (ctx: RuntimeContext) => AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
 		const joinType = plan.joinType;
 
 		log('Starting %s join between %d left attrs and %d right attrs',
@@ -43,7 +43,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 				let leftMatched = false;
 
 				// Stream through right side for each left row
-				for await (const rightRow of rightSource) {
+				for await (const rightRow of rightCallback(rctx)) {
 					// Set up right context
 					rctx.context.set(rightRowDescriptor, () => rightRow);
 
@@ -102,7 +102,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 	}
 
 	const leftInstruction = emitPlanNode(plan.left, ctx);
-	const rightInstruction = emitPlanNode(plan.right, ctx);
+	const rightInstruction = emitCallFromPlan(plan.right, ctx);
 
 	// Build the params array - include condition callback if present
 	const params = [leftInstruction, rightInstruction];

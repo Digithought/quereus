@@ -15,11 +15,12 @@ import type { ColumnDef } from '../../common/datatype.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
+import { SinkNode } from '../nodes/sink-node.js';
 
 export function buildInsertStmt(
 	ctx: PlanningContext,
 	stmt: AST.InsertStmt,
-): RelationalPlanNode {
+): PlanNode {
 	const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
 	let targetColumns: ColumnDef[] = [];
@@ -195,5 +196,5 @@ export function buildInsertStmt(
 		return new ProjectNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
 	}
 
-	return resultNode;
+	return new SinkNode(ctx.scope, resultNode, 'insert');
 }

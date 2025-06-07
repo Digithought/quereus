@@ -44,6 +44,7 @@ import { emitAddConstraint } from './emit/add-constraint.js';
 import { emitLoopJoin } from './emit/join.js';
 import { emitCache } from './emit/cache.js';
 import { emitReturning } from './emit/returning.js';
+import { emitSink } from './emit/sink.js';
 
 let registered = false;
 
@@ -118,4 +119,7 @@ export function registerEmitters() {
 
 	// Cache emitter
 	registerEmitter(PlanNodeType.Cache, emitCache as EmitterFunc);
+
+	// Sink emitter
+	registerEmitter(PlanNodeType.Sink, emitSink as EmitterFunc);
 }

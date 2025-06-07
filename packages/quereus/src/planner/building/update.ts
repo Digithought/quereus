@@ -11,11 +11,12 @@ import { StatusCode } from '../../common/types.js';
 import { ProjectNode } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
+import { SinkNode } from '../nodes/sink-node.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
   stmt: AST.UpdateStmt,
-): RelationalPlanNode {
+): PlanNode {
   const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Plan the source of rows to update. This is typically the table itself, potentially filtered.
@@ -140,5 +141,5 @@ export function buildUpdateStmt(
     return new ProjectNode(updateCtx.scope, updateNodeWithDescriptor, returningProjections);
   }
 
-  return updateExecutorNode;
+  return new SinkNode(updateCtx.scope, updateExecutorNode, 'update');
 }
