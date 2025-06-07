@@ -65,10 +65,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 
 						if (conditionMet) {
 							leftMatched = true;
-
-							// Output joined row directly - parent will set up context as needed
-							const outputRow = [...leftRow, ...rightRow] as Row;
-							yield outputRow;
+							yield [...leftRow, ...rightRow] as Row;
 						}
 					} finally {
 						rctx.context.delete(rightRowDescriptor);
