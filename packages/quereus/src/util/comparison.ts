@@ -1,4 +1,4 @@
-import type { SqlValue } from '../common/types.js';
+import type { Row, SqlValue } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('util:comparison');
@@ -212,6 +212,24 @@ export function compareSqlValues(a: SqlValue, b: SqlValue, collationName: string
  */
 export function isTruthy(value: SqlValue): boolean {
 	return (typeof value === 'string') ? value.length > 0 : !!value;
+}
+/**
+ * Compares two rows for SQL DISTINCT semantics.
+ * Returns -1, 0, or 1 for BTree ordering.
+ */
+export function compareRows(a: Row, b: Row): number {
+	// Let's assume correct rows
+	// if (a.length !== b.length) {
+	// 	return a.length - b.length;
+	// }
+	// Compare each value using SQL semantics
+	for (let i = 0; i < a.length; i++) {
+		const comparison = compareSqlValues(a[i], b[i]);
+		if (comparison !== 0) {
+			return comparison;
+		}
+	}
+	return 0;
 }
 
 // TODO: The main remaining task for comparison is implementing SQLite's

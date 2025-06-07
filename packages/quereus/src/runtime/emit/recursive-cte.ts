@@ -1,33 +1,16 @@
 import type { RecursiveCTENode } from '../../planner/nodes/recursive-cte-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { emitPlanNode } from '../emitters.js';
+import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
 import { BTree } from 'inheritree';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareRows } from '../../util/comparison.js';
 import { WorkingTableIterable } from '../../util/working-table-iterable.js';
 import { DEFAULT_TUNING } from '../../planner/optimizer-tuning.js';
 
 const log = createLogger('runtime:emit:recursive-cte');
-
-/**
- * Compares two rows for SQL DISTINCT semantics using proper SQL value comparison.
- * Returns -1, 0, or 1 for BTree ordering.
- */
-function compareRows(a: Row, b: Row): number {
-	// Compare each value using SQL semantics
-	for (let i = 0; i < Math.max(a.length, b.length); i++) {
-		const aVal = i < a.length ? a[i] : null;
-		const bVal = i < b.length ? b[i] : null;
-		const comparison = compareSqlValues(aVal, bVal);
-		if (comparison !== 0) {
-			return comparison;
-		}
-	}
-	return 0;
-}
 
 export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): Instruction {
 	// Create row descriptor for CTE output attributes
@@ -37,11 +20,7 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 		rowDescriptor[attr.id] = index;
 	});
 
-	// Emit both base case and recursive case instructions
-	const baseCaseInstruction = emitPlanNode(plan.baseCaseQuery, ctx);
-	const recursiveCaseInstruction = emitPlanNode(plan.recursiveCaseQuery, ctx);
-
-	async function* run(rctx: RuntimeContext, baseCaseResult: AsyncIterable<Row>): AsyncIterable<Row> {
+	async function* run(rctx: RuntimeContext, baseCaseResult: AsyncIterable<Row>, recursiveCaseCallback: (ctx: RuntimeContext) => AsyncIterable<Row>): AsyncIterable<Row> {
 		log('Starting recursive CTE execution for %s (union=%s)', plan.cteName, plan.isUnionAll ? 'ALL' : 'DISTINCT');
 
 		// Get configuration - use plan node limit if specified, otherwise use default tuning
@@ -92,16 +71,17 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			// Create a reusable working table iterable
 			const workingTableIterable = new WorkingTableIterable(currentIteration, rctx, rowDescriptor);
 
-			// Execute recursive case with working table substitution
-			const recursiveResult = await executeWithWorkingTable(
-				recursiveCaseInstruction,
-				rctx,
-				plan.cteName,
-				workingTableIterable
-			);
+			// Set up the working table in context for CTE references to access
+			// Use a special context key that CTE references can look for
+			const workingTableKey = `recursive_cte_working_table:${plan.cteName}`;
+			const originalWorkingTable = (rctx as any)[workingTableKey];
+			(rctx as any)[workingTableKey] = workingTableIterable;
 
-			if (Symbol.asyncIterator in Object(recursiveResult)) {
-				for await (const row of recursiveResult as AsyncIterable<Row>) {
+			try {
+				// Execute recursive case using the callback - let scheduler handle all instruction execution
+				const recursiveResult = await recursiveCaseCallback(rctx);
+
+				for await (const row of recursiveResult) {
 					let shouldYield = true;
 
 					if (!plan.isUnionAll && seenRowsTree) {
@@ -123,6 +103,13 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 						workingTable.push([...row] as Row); // Deep copy to avoid reference issues
 					}
 				}
+			} finally {
+				// Restore original working table context
+				if (originalWorkingTable !== undefined) {
+					(rctx as any)[workingTableKey] = originalWorkingTable;
+				} else {
+					delete (rctx as any)[workingTableKey];
+				}
 			}
 		}
 
@@ -133,47 +120,16 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 		log('Recursive CTE %s completed after %d iterations', plan.cteName, iterationCount);
 	}
 
+	// Emit both base case and recursive case instructions
+	const baseCaseInstruction = emitPlanNode(plan.baseCaseQuery, ctx);
+	const recursiveCaseInstruction = emitCallFromPlan(plan.recursiveCaseQuery, ctx);
+
 	return {
-		params: [baseCaseInstruction],
+		params: [baseCaseInstruction, recursiveCaseInstruction],
 		run,
 		note: `recursiveCTE(${plan.cteName})`
 	};
 }
 
-/**
- * Executes an instruction with working table substitution for CTE references
- */
-async function executeWithWorkingTable(
-	instruction: Instruction,
-	rctx: RuntimeContext,
-	cteName: string,
-	workingTableIterable: AsyncIterable<Row>
-): Promise<any> {
-	// Check if this instruction is a CTE reference that needs substitution
-	if (instruction.note && instruction.note.includes('cte_ref(')) {
-		const match = instruction.note.match(/cte_ref\(([^)]+)\)/);
-		if (match) {
-			const referencedCteName = match[1].split(' AS ')[0]; // Remove alias part
-			if (referencedCteName === cteName) {
-				return workingTableIterable;
-			}
-		}
-	}
 
-	// For non-CTE instructions, recursively execute their parameters with substitution
-	const substitutedParams: any[] = [];
-	for (const param of instruction.params) {
-		if (typeof param === 'object' && param !== null && 'run' in param) {
-			// This is an instruction - execute it with substitution
-			const result = await executeWithWorkingTable(param as Instruction, rctx, cteName, workingTableIterable);
-			substitutedParams.push(result);
-		} else {
-			// This is a literal value
-			substitutedParams.push(param);
-		}
-	}
-
-	// Execute the instruction with substituted parameters
-	return await instruction.run(rctx, ...substitutedParams);
-}
 

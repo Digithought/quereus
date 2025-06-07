@@ -1,30 +1,10 @@
 import type { DistinctNode } from '../../planner/nodes/distinct-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
-import { type SqlValue, type Row } from '../../common/types.js';
+import { type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareRows } from '../../util/comparison.js';
 import { BTree } from 'inheritree';
-
-/**
- * Compares two rows for SQL DISTINCT semantics.
- * Returns -1, 0, or 1 for BTree ordering.
- */
-function compareRows(a: Row, b: Row): number {
-	// Let's assume correct rows
-	// if (a.length !== b.length) {
-	// 	return a.length - b.length;
-	// }
-
-	// Compare each value using SQL semantics
-	for (let i = 0; i < a.length; i++) {
-		const comparison = compareSqlValues(a[i], b[i]);
-		if (comparison !== 0) {
-			return comparison;
-		}
-	}
-	return 0;
-}
 
 export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruction {
 	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>): AsyncIterable<Row> {
