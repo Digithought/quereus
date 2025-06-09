@@ -61,6 +61,13 @@ export type RowDescriptor = number[]; // attributeId → columnIndex
  */
 export type RowGetter = () => Row;
 
+
+export type TableDescriptor = {
+	// Just using the object's identity for now
+};
+
+export type TableGetter = () => AsyncIterable<Row>;
+
 /**
  * Base class for all nodes in the logical query plan.
  * PlanNodes are immutable once constructed.

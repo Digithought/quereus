@@ -3,7 +3,7 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
+import type { RowDescriptor, TableDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
 import { BTree } from 'inheritree';
 import { compareRows } from '../../util/comparison.js';
@@ -19,6 +19,9 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 	attributes.forEach((attr, index) => {
 		rowDescriptor[attr.id] = index;
 	});
+
+	// Use the plan's table descriptor for table context coordination
+	const { tableDescriptor } = plan;
 
 	async function* run(rctx: RuntimeContext, baseCaseResult: AsyncIterable<Row>, recursiveCaseCallback: (ctx: RuntimeContext) => AsyncIterable<Row>): AsyncIterable<Row> {
 		log('Starting recursive CTE execution for %s (union=%s)', plan.cteName, plan.isUnionAll ? 'ALL' : 'DISTINCT');
@@ -36,13 +39,8 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 		// Step 2: Execute base case and populate initial working table
 		// Stream base case results immediately while building working table
 		for await (const row of baseCaseResult) {
-			let shouldYield = true;
-
-			if (!plan.isUnionAll && seenRowsTree) {
-				// Check if we've seen this row before using BTree lookup
-				const insertPath = seenRowsTree.insert(row);
-				shouldYield = insertPath.on; // Only yield if it's a new row
-			}
+			// Yield if we're union all or if the row is new
+			const shouldYield = !seenRowsTree || seenRowsTree.insert(row).on;
 
 			if (shouldYield) {
 				// Yield immediately (streaming)
@@ -62,33 +60,20 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 		let iterationCount = 0;
 
 		while (workingTable.length > 0 && (maxIterations === 0 || iterationCount < maxIterations)) {
-			iterationCount++;
+			++iterationCount;
 			log('Recursive CTE %s iteration %d, working table size: %d', plan.cteName, iterationCount, workingTable.length);
 
-			const currentIteration = [...workingTable]; // Make a copy
-			workingTable = []; // Clear working table for next iteration
-
 			// Create a reusable working table iterable
-			const workingTableIterable = new WorkingTableIterable(currentIteration, rctx, rowDescriptor);
+			const workingTableIterable = new WorkingTableIterable([...workingTable], rctx, rowDescriptor);
+			workingTable = []; // Clear working table for next iteration
 
 			// Set up the working table in context for CTE references to access
 			// Use a special context key that CTE references can look for
-			const workingTableKey = `recursive_cte_working_table:${plan.cteName}`;
-			const originalWorkingTable = (rctx as any)[workingTableKey];
-			(rctx as any)[workingTableKey] = workingTableIterable;
-
+			rctx.tableContexts.set(tableDescriptor, () => workingTableIterable);
 			try {
-				// Execute recursive case using the callback - let scheduler handle all instruction execution
-				const recursiveResult = await recursiveCaseCallback(rctx);
-
-				for await (const row of recursiveResult) {
-					let shouldYield = true;
-
-					if (!plan.isUnionAll && seenRowsTree) {
-						// Check if we've seen this row before using BTree lookup
-						const insertPath = seenRowsTree.insert(row);
-						shouldYield = insertPath.on; // Only yield if it's a new row
-					}
+				// Execute recursive case using the callback
+				for await (const row of recursiveCaseCallback(rctx)) {
+					let shouldYield = !seenRowsTree || seenRowsTree.insert(row).on;
 
 					if (shouldYield) {
 						// Stream the row immediately
@@ -104,12 +89,7 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 					}
 				}
 			} finally {
-				// Restore original working table context
-				if (originalWorkingTable !== undefined) {
-					(rctx as any)[workingTableKey] = originalWorkingTable;
-				} else {
-					delete (rctx as any)[workingTableKey];
-				}
+				rctx.tableContexts.delete(tableDescriptor);
 			}
 		}
 

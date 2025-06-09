@@ -19,24 +19,12 @@ import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 
 // Import decomposed functionality
-import { buildWithContext, getNonParamAncestor } from './select-context.js';
+import { buildWithContext } from './select-context.js';
 import { buildCompoundSelect } from './select-compound.js';
-import {
-	analyzeSelectColumns,
-	buildStarProjections,
-	isAggregateExpression,
-	isWindowExpression
-} from './select-projections.js';
+import { analyzeSelectColumns, buildStarProjections } from './select-projections.js';
 import { buildAggregatePhase, buildFinalAggregateProjections } from './select-aggregates.js';
 import { buildWindowPhase } from './select-window.js';
-import {
-	buildFinalProjections,
-	applyDistinct,
-	applyOrderBy,
-	applyLimitOffset
-} from './select-modifiers.js';
-
-
+import { buildFinalProjections, applyDistinct, applyOrderBy, applyLimitOffset } from './select-modifiers.js';
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -70,10 +58,10 @@ export function buildSelectStmt(
 		? [SingleRowNode.instance]
 		: stmt.from.map(from => buildFrom(from, contextWithCTEs, cteNodes));
 
-	// TODO: Support multiple FROM sources (joins)
+	// Multiple FROM sources (from joins) are not supported - maybe never will be
 	if (fromTables.length > 1) {
 		throw new QuereusError(
-			'SELECT with multiple FROM sources (joins) not yet supported.',
+			'SELECT with multiple FROM sources (joins) not supported.',
 			StatusCode.UNSUPPORTED, undefined, stmt.from![1].loc?.start.line, stmt.from![1].loc?.start.column
 		);
 	}

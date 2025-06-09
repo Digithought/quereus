@@ -196,6 +196,7 @@ export class Statement {
 				stmt: this,
 				params: this.boundArgs,
 				context: new Map(),
+				tableContexts: new Map(),
 			};
 
 			const results = await scheduler.run(runtimeCtx);
@@ -409,6 +410,7 @@ export class Statement {
 				stmt: this,
 				params: this.boundArgs,
 				context: new Map(),
+				tableContexts: new Map(),
 				tracer: tracer
 			};
 

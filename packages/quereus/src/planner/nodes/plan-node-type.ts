@@ -2,6 +2,7 @@ export enum PlanNodeType {
   // Logical Nodes (from builder)
   Block = 'Block',
   TableReference = 'TableReference',
+  CTEReference = 'CTEReference',
   TableScan = 'TableScan',
   TableSeek = 'TableSeek',
   Filter = 'Filter',

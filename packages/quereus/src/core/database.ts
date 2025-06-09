@@ -180,6 +180,7 @@ export class Database {
 						stmt: null as any, // No persistent Statement object for transient exec statements
 						params: params ?? {},
 						context: new Map(),
+						tableContexts: new Map(),
 					};
 
 					void await scheduler.run(runtimeCtx);

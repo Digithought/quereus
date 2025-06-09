@@ -45,6 +45,7 @@ import { emitLoopJoin } from './emit/join.js';
 import { emitCache } from './emit/cache.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
+import { emitCTEReference } from './emit/cte-reference.js';
 
 let registered = false;
 
@@ -72,6 +73,7 @@ export function registerEmitters() {
 	// Relational emitters (mix of logical and physical for now)
 	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);
 	registerEmitter(PlanNodeType.TableReference, emitTableReference as EmitterFunc);
+	registerEmitter(PlanNodeType.CTEReference, emitCTEReference as EmitterFunc);
 	registerEmitter(PlanNodeType.TableScan, emitSeqScan as EmitterFunc);
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
 	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);

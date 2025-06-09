@@ -10,7 +10,7 @@ import { Cached } from '../../util/cached.js';
  * This points to a materialized CTE result.
  */
 export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
-	readonly nodeType = PlanNodeType.TableReference; // Reuse table reference type
+	readonly nodeType = PlanNodeType.CTEReference;
 
 	private attributesCache: Cached<Attribute[]>;
 	private typeCache: Cached<RelationType>;

@@ -34,7 +34,7 @@ export function emitPlanNode(plan: PlanNode, ctx: EmissionContext): Instruction 
 export function emitCall(root: Instruction): Instruction {
 	const program = new Scheduler(root);
 
-	function run(ctx: RuntimeContext, ...args: RuntimeValue[]): OutputValue {
+	function run(ctx: RuntimeContext): OutputValue {
 		return (innerCtx: RuntimeContext) => program.run(innerCtx);
 	}
 

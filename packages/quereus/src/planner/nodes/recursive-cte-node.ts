@@ -1,4 +1,4 @@
-import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
@@ -12,21 +12,39 @@ import type { CTEPlanNode } from './cte-node.js';
 export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 	readonly nodeType = PlanNodeType.RecursiveCTE;
 	readonly isRecursive = true; // Always true for recursive CTEs
+	readonly tableDescriptor: TableDescriptor = {}; // Identity object for table context lookup
 
 	private attributesCache: Cached<Attribute[]>;
 	private typeCache: Cached<RelationType>;
+	private _recursiveCaseQuery: RelationalPlanNode;
 
 	constructor(
 		scope: Scope,
 		public readonly cteName: string,
 		public readonly columns: string[] | undefined,
 		public readonly baseCaseQuery: RelationalPlanNode,
-		public readonly recursiveCaseQuery: RelationalPlanNode,
+		recursiveCaseQuery: RelationalPlanNode,
 		public readonly isUnionAll: boolean,
 		public readonly materializationHint: 'materialized' | 'not_materialized' | undefined = 'materialized',
 		public readonly maxRecursion?: number
 	) {
 		super(scope, baseCaseQuery.getTotalCost() + recursiveCaseQuery.getTotalCost() + 50); // Higher cost for recursion
+		this._recursiveCaseQuery = recursiveCaseQuery;
+		this.attributesCache = new Cached(() => this.buildAttributes());
+		this.typeCache = new Cached(() => this.buildType());
+	}
+
+	get recursiveCaseQuery(): RelationalPlanNode {
+		return this._recursiveCaseQuery;
+	}
+
+	/**
+	 * Sets the recursive case query after construction.
+	 * This is needed to handle the circular dependency during planning.
+	 */
+	setRecursiveCaseQuery(query: RelationalPlanNode): void {
+		this._recursiveCaseQuery = query;
+		// Clear caches since they might depend on the recursive case
 		this.attributesCache = new Cached(() => this.buildAttributes());
 		this.typeCache = new Cached(() => this.buildType());
 	}

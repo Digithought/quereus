@@ -136,12 +136,26 @@ function buildRecursiveCTE(
 	// Build the base case query (without CTE self-reference)
 	const baseCaseQuery = buildSelectStmt(ctx, baseCaseStmt) as RelationalPlanNode;
 
+	// Determine materialization strategy (recursive CTEs should typically be materialized)
+	let materializationHint = cte.materializationHint || 'materialized';
+
+	// Create the final recursive CTE node first (so we have the tableDescriptor)
+	const recursiveCTENode = new RecursiveCTENode(
+		ctx.scope,
+		cte.name,
+		cte.columns,
+		baseCaseQuery,
+		baseCaseQuery, // Temporary - will be replaced with actual recursive case
+		isUnionAll,
+		materializationHint,
+		options?.maxRecursion
+	);
+
 	// For the recursive case, we need to create a special context where the CTE name
 	// references the working table (this will be handled at runtime)
 	const recursiveContext = { ...ctx };
 
-	// Create a temporary CTE reference for the recursive case
-	// This will be replaced at runtime with the actual working table
+	// Create a temporary CTE reference for the recursive case that shares the same tableDescriptor
 	const tempCteNode = new CTENode(
 		ctx.scope,
 		cte.name,
@@ -150,6 +164,8 @@ function buildRecursiveCTE(
 		'materialized',
 		true
 	);
+	// Share the same tableDescriptor for runtime coordination
+	(tempCteNode as any).tableDescriptor = recursiveCTENode.tableDescriptor;
 
 	// Create a map containing the recursive CTE reference
 	const recursiveCteMap = new Map<string, CTEPlanNode>();
@@ -158,17 +174,8 @@ function buildRecursiveCTE(
 	// Build the recursive case query with the CTE map so it can find the table reference
 	const recursiveCaseQuery = buildSelectStmt(recursiveContext, recursiveCaseStmt, recursiveCteMap) as RelationalPlanNode;
 
-	// Determine materialization strategy (recursive CTEs should typically be materialized)
-	let materializationHint = cte.materializationHint || 'materialized';
+	// Now update the recursive CTE node with the actual recursive case query
+	recursiveCTENode.setRecursiveCaseQuery(recursiveCaseQuery);
 
-	return new RecursiveCTENode(
-		ctx.scope,
-		cte.name,
-		cte.columns,
-		baseCaseQuery,
-		recursiveCaseQuery,
-		isUnionAll,
-		materializationHint,
-		options?.maxRecursion
-	);
+	return recursiveCTENode;
 }
