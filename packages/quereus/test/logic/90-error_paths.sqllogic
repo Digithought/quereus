@@ -12,13 +12,13 @@ CREAT TABLE t_err (a);
 
 -- Semantic Error: Table not found
 SELECT * FROM non_existent_table;
--- error: no such table
+-- error: main.non_existent_table isn't a table
 
 -- Semantic Error: Column not found
 CREATE TABLE t_err_col (a INTEGER);
 INSERT INTO t_err_col VALUES (1);
 SELECT b FROM t_err_col;
--- error: no such column
+-- error: Column not found: b
 DROP TABLE t_err_col;
 
 -- Semantic Error: Ambiguous column
@@ -33,7 +33,7 @@ DROP TABLE t_amb2;
 
 -- Semantic Error: Function not found
 SELECT non_existent_function(1);
--- error: no such function
+-- error: Function not found/ambiguous: non_existent_function/1
 
 -- Runtime Error: Division by zero (SQLite returns NULL)
 SELECT 1 / 0;
