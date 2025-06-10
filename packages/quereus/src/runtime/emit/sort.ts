@@ -4,17 +4,25 @@ import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 
 export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
-	const sortKeyInstructions = plan.sortKeys.map(key => emitCallFromPlan(key.expression, ctx));
 
 	// Create row descriptor for source attributes
 	const sourceRowDescriptor: RowDescriptor = [];
 	const sourceAttributes = plan.source.getAttributes();
 	sourceAttributes.forEach((attr, index) => {
 		sourceRowDescriptor[attr.id] = index;
+	});
+
+	// Emit sort key instructions and pre-create optimized comparators with resolved collations
+	const sortKeyInstructions = plan.sortKeys.map(key => emitCallFromPlan(key.expression, ctx));
+	const sortKeyComparators = plan.sortKeys.map(key => {
+		const keyType = key.expression.getType();
+		const collationName = keyType.collationName || 'BINARY';
+		const collationFunc = resolveCollation(collationName);
+		return createOrderByComparatorFast(key.direction, key.nulls, collationFunc);
 	});
 
 	async function* run(
@@ -44,28 +52,14 @@ export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 			}
 		}
 
-		// Sort the collected rows
+		// Sort the collected rows using pre-created optimized comparators
 		rowsWithKeys.sort((a, b) => {
-			for (let i = 0; i < plan.sortKeys.length; i++) {
-				const sortKey = plan.sortKeys[i];
+			for (let i = 0; i < sortKeyComparators.length; i++) {
+				const comparator = sortKeyComparators[i];
 				const aValue = a.keys[i];
 				const bValue = b.keys[i];
 
-				let comparison = compareSqlValues(aValue, bValue);
-
-				// Handle DESC order
-				if (sortKey.direction === 'desc') {
-					comparison = -comparison;
-				}
-
-				// Handle NULL ordering (defaults to nulls last for ASC, nulls first for DESC)
-				if (aValue === null && bValue === null) {
-					comparison = 0;
-				} else if (aValue === null) {
-					comparison = sortKey.nulls === 'first' ? -1 : 1;
-				} else if (bValue === null) {
-					comparison = sortKey.nulls === 'first' ? 1 : -1;
-				}
+				const comparison = comparator(aValue, bValue);
 
 				if (comparison !== 0) {
 					return comparison;

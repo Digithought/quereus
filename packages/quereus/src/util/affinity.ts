@@ -43,23 +43,15 @@ function tryParseInt(str: string): bigint | number | null {
 /**
  * Attempts to parse a string as a floating-point number.
  * Returns null if the string doesn't represent a valid number.
+ * This is used for affinity conversion, not explicit casting.
  */
 export function tryParseReal(s: string): number | null {
 	if (s === null || s === undefined || s.trim() === '') return null;
-	// Check if it's a hex literal like X'...' or 0x...
-	// SQLite affinity rules for REAL when encountering a string that looks like a BLOB literal (e.g., X'ABCD')
-	// results in 0.0. For other non-numeric text, it also results in 0.0.
-	// The initial check for hex literals might be too aggressive or not perfectly aligned.
-	// For now, we will simplify to match SQLite's general behavior for non-numeric text to REAL.
-	/*
-	if (/^(?:x\'[0-9a-fA-F]+\'|0x[0-9a-fA-F]+)$/i.test(s.trim())) {
-		return 0.0; // SQLite converts hex literals to 0 for REAL.
-	}
-	*/
+
 	const num = parseFloat(s);
-	// SQLite returns 0.0 for non-numeric strings when casting to REAL.
-	// isNaN(num) will be true for strings like 'hello'.
-	return isNaN(num) ? 0.0 : num;
+	// For affinity conversion (not explicit casting), non-numeric strings should be preserved
+	// by returning null. The 0.0 conversion only applies to explicit CAST operations.
+	return isNaN(num) ? null : num;
 }
 
 /**

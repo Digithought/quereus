@@ -33,10 +33,10 @@ describe('Property-Based Tests', () => {
 
 					// Reset table for each property run
 					await db.exec('DELETE FROM coll_t');
-					const stmt = db.prepare('INSERT INTO coll_t (txt) VALUES (?)');
+					const stmt = db.prepare('INSERT INTO coll_t (id, txt) VALUES (?, ?)');
 					try {
-						for (const str of uniqueStrings) {
-							await stmt.run([str]);
+						for (let i = 0; i < uniqueStrings.length; i++) {
+							await stmt.run([i + 1, uniqueStrings[i]]);
 						}
 					} finally {
 						await stmt.finalize();
@@ -59,7 +59,7 @@ describe('Property-Based Tests', () => {
 		}
 	});
 
-	// --- 2. Numeric Affinity ---
+		// --- 2. Numeric Affinity ---
 	describe('Numeric Affinity', () => {
 		// Define an arbitrary that generates values representable as NULL, INTEGER, REAL, or TEXT that might look numeric
 		const sqlValueArbitrary = fc.oneof(
@@ -73,41 +73,80 @@ describe('Property-Based Tests', () => {
 		);
 
 		it('should compare values according to numeric affinity', async () => {
-			await db.exec('CREATE TABLE num_t (id INTEGER PRIMARY KEY, v ANY) USING memory'); // Use ANY type
+			await db.exec('CREATE TABLE num_t (id INTEGER PRIMARY KEY, v ANY) USING memory'); // Use ANY type (has NUMERIC affinity)
 
 			await fc.assert(fc.asyncProperty(sqlValueArbitrary, sqlValueArbitrary, async (valA, valB) => {
-				// Use compareSqlValues as the JS source of truth for how values *should* compare
-				const expectedComparison = compareSqlValues(valA, valB, 'BINARY'); // Use BINARY as base for comparison logic
-
-				// Query the database to see how it compares the values
-				let dbComparison: number;
+				// Insert values and let SQL apply type affinity conversion
+				await db.exec('DELETE FROM num_t');
+				const stmt = db.prepare('INSERT INTO num_t (id, v) VALUES (?, ?)');
 				try {
-					// Check A = B using eval and taking the first row
-					let eqResult: Record<string, any> | undefined;
-					for await (const row of db.eval('SELECT ? = ? as result', [valA, valB])) { // Cast
-						eqResult = row;
-						break; // Only need the first (and only) row
-					}
-					if (eqResult?.result) {
-						dbComparison = 0;
-					} else {
-						// Check A < B using eval and taking the first row
-						let ltResult: Record<string, any> | undefined;
-						for await (const row of db.eval('SELECT ? < ? as result', [valA, valB])) { // Cast
-							ltResult = row;
-							break; // Only need the first row
-						}
-						dbComparison = ltResult?.result ? -1 : 1;
-					}
-				} catch (e: any) {
-					// If the comparison itself throws an error in SQL, fail the property test
-					fc.pre(false); // Discard this run if SQL comparison fails
-					throw new Error(`SQL comparison failed for (${valA}, ${valB}): ${e.message}`);
+					await stmt.run([1, valA]);
+					await stmt.run([2, valB]);
+				} finally {
+					await stmt.finalize();
 				}
 
-				expect(dbComparison).to.equal(expectedComparison,
-					`Mismatch for compare(${safeJsonStringify(valA)}, ${safeJsonStringify(valB)}). JS=${expectedComparison}, DB=${dbComparison}`
-				);
+				// Retrieve the actual values after type affinity conversion
+				const actualValues: SqlValue[] = [];
+				for await (const row of db.eval('SELECT v FROM num_t ORDER BY id')) {
+					actualValues.push(row.v);
+				}
+				const [actualA, actualB] = actualValues;
+
+				// Now compare using the converted values (what SQL actually stored)
+				const expectedComparison = compareSqlValues(actualA, actualB, 'BINARY');
+
+				// Test ordering behavior using ORDER BY
+				const orderedValues: SqlValue[] = [];
+				for await (const row of db.eval('SELECT v FROM num_t ORDER BY v')) {
+					orderedValues.push(row.v);
+				}
+
+				// Check if the ordering matches our expectation based on converted values
+				if (expectedComparison < 0) {
+					expect(orderedValues).to.deep.equal([actualA, actualB],
+						`ORDER BY should place ${safeJsonStringify(actualA)} before ${safeJsonStringify(actualB)}`);
+				} else if (expectedComparison > 0) {
+					expect(orderedValues).to.deep.equal([actualB, actualA],
+						`ORDER BY should place ${safeJsonStringify(actualB)} before ${safeJsonStringify(actualA)}`);
+				} else {
+					// Equal values - order doesn't matter, but both should be present
+					expect(orderedValues).to.have.lengthOf(2);
+					expect(orderedValues).to.include(actualA);
+					expect(orderedValues).to.include(actualB);
+				}
+
+				// For non-NULL values, also test SQL boolean comparisons
+				if (actualA !== null && actualB !== null) {
+					let dbComparison: number;
+					try {
+						// Check A = B using eval and taking the first row
+						let eqResult: Record<string, any> | undefined;
+						for await (const row of db.eval('SELECT ? = ? as result', [actualA, actualB])) {
+							eqResult = row;
+							break; // Only need the first (and only) row
+						}
+						if (eqResult?.result) {
+							dbComparison = 0;
+						} else {
+							// Check A < B using eval and taking the first row
+							let ltResult: Record<string, any> | undefined;
+							for await (const row of db.eval('SELECT ? < ? as result', [actualA, actualB])) {
+								ltResult = row;
+								break; // Only need the first row
+							}
+							dbComparison = ltResult?.result ? -1 : 1;
+						}
+					} catch (e: any) {
+						// If the comparison itself throws an error in SQL, fail the property test
+						fc.pre(false); // Discard this run if SQL comparison fails
+						throw new Error(`SQL comparison failed for (${actualA}, ${actualB}): ${e.message}`);
+					}
+
+					expect(dbComparison).to.equal(expectedComparison,
+						`Mismatch for compare(${safeJsonStringify(actualA)}, ${safeJsonStringify(actualB)}). JS=${expectedComparison}, DB=${dbComparison}`
+					);
+				}
 			}), { numRuns: 200 }); // Increase runs for more diverse value pairs
 		});
 	});

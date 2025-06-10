@@ -2,7 +2,7 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { InNode, ScalarSubqueryNode, ExistsNode } from '../../planner/nodes/subquery.js';
 import { emitPlanNode } from '../emitters.js';
 import type { SqlValue, Row } from '../../common/types.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -46,7 +46,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 			// Build BTree of all values from subquery
 			const tree = new BTree<SqlValue, SqlValue>(
 				(val: SqlValue) => val,
-				(a: SqlValue, b: SqlValue) => compareSqlValues(a, b)
+				(a: SqlValue, b: SqlValue) => compareSqlValuesFast(a, b, BINARY_COLLATION)
 			);
 
 			let hasNull = false;
@@ -90,7 +90,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 			// Build BTree of all values
 			const tree = new BTree<SqlValue, SqlValue>(
 				(val: SqlValue) => val,
-				(a: SqlValue, b: SqlValue) => compareSqlValues(a, b)
+				(a: SqlValue, b: SqlValue) => compareSqlValuesFast(a, b, BINARY_COLLATION)
 			);
 
 			let hasNull = false;

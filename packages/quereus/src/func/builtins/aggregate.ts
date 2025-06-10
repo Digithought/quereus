@@ -2,7 +2,7 @@ import { createLogger } from '../../common/logger.js';
 import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createAggregateFunction } from '../registration.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 
 const log = createLogger('func:builtins:aggregate');
 const warnLog = log.extend('warn');
@@ -92,7 +92,7 @@ export const minFunc = createAggregateFunction(
 	(acc: { min: SqlValue } | null, value: SqlValue): { min: SqlValue } | null => {
 		if (value === null) return acc; // Ignore NULLs
 		if (acc === null) return { min: value }; // First non-null value
-		return compareSqlValues(value, acc.min) < 0 ? { min: value } : acc;
+		return compareSqlValuesFast(value, acc.min, BINARY_COLLATION) < 0 ? { min: value } : acc;
 	},
 	(acc: { min: SqlValue } | null): SqlValue | null => {
 		return acc?.min ?? null;
@@ -105,7 +105,7 @@ export const maxFunc = createAggregateFunction(
 	(acc: { max: SqlValue } | null, value: SqlValue): { max: SqlValue } | null => {
 		if (value === null) return acc; // Ignore NULLs
 		if (acc === null) return { max: value }; // First non-null value
-		return compareSqlValues(value, acc.max) > 0 ? { max: value } : acc;
+		return compareSqlValuesFast(value, acc.max, BINARY_COLLATION) > 0 ? { max: value } : acc;
 	},
 	(acc: { max: SqlValue } | null): SqlValue | null => {
 		return acc?.max ?? null;

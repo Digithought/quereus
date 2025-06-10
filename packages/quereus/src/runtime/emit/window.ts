@@ -7,7 +7,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareSqlValues, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 import { createLogger } from '../../common/logger.js';
 
 const log = createLogger('runtime:emit:window');
@@ -221,11 +221,23 @@ async function sortRows(
 		return rows; // No sorting needed
 	}
 
+		// Pre-create optimized comparators for all ORDER BY expressions with resolved collations
+	const orderByComparators = orderBy.map(orderClause => {
+		// TODO: Extract actual collation from order clause expression
+		// For now, use BINARY collation (most common case)
+		const collationFunc = resolveCollation('BINARY');
+		return createOrderByComparatorFast(
+			orderClause.direction,
+			(orderClause as any).nullsOrdering,
+			collationFunc
+		);
+	});
+
 	return [...rows].sort((a, b) => {
 		// Compare each ORDER BY expression in sequence
 		for (let i = 0; i < orderBy.length; i++) {
-			const orderClause = orderBy[i];
 			const callback = orderByCallbacks[i];
+			const comparator = orderByComparators[i];
 
 			// Evaluate expression for row A
 			rctx.context.set(sourceRowDescriptor, () => a);
@@ -245,25 +257,8 @@ async function sortRows(
 				rctx.context.delete(sourceRowDescriptor);
 			}
 
-			// Compare using proper SQL semantics
-			let comparison = compareSqlValues(valueA, valueB);
-
-			// Handle NULLS FIRST/LAST
-			if (valueA === null && valueB === null) {
-				comparison = 0;
-			} else if (valueA === null) {
-				// Handle nullsOrdering if specified
-				const nullsOrdering = (orderClause as any).nullsOrdering;
-				comparison = (nullsOrdering === 'last') ? 1 : -1;
-			} else if (valueB === null) {
-				const nullsOrdering = (orderClause as any).nullsOrdering;
-				comparison = (nullsOrdering === 'last') ? -1 : 1;
-			}
-
-			// Apply ASC/DESC direction
-			if (orderClause.direction === 'desc') {
-				comparison = -comparison;
-			}
+			// Use pre-created optimized comparator
+			const comparison = comparator(valueA, valueB);
 
 			// If not equal, return comparison result
 			if (comparison !== 0) {

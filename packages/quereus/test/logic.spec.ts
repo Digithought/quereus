@@ -37,7 +37,7 @@ function formatLocationInfo(error: any, sqlContext: string): string | null {
 
 	const location = { line: error.line, column: error.column };
 	const lines = sqlContext.split('\n');
-	const locationInfo: string[] = [];
+	const locationInfo = ['\n'];
 
 	if (location.line !== undefined && location.column !== undefined) {
 		locationInfo.push(`  Line ${location.line}, Column ${location.column}`);

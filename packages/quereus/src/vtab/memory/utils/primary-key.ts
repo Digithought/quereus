@@ -1,7 +1,7 @@
 import type { TableSchema, PrimaryKeyColumnDefinition } from '../../../schema/table.js';
 import type { Row, SqlValue } from '../../../common/types.js';
 import type { BTreeKeyForPrimary } from '../types.js';
-import { compareSqlValues } from '../../../util/comparison.js';
+import { compareSqlValuesFast, resolveCollation, type CollationFunction } from '../../../util/comparison.js';
 import { QuereusError } from '../../../common/errors.js';
 import { StatusCode } from '../../../common/types.js';
 
@@ -56,6 +56,9 @@ function createSingleColumnPrimaryKeyFunctions(
 	const collation = columnDef.collation || 'BINARY';
 	const descMultiplier = columnDef.desc ? -1 : 1;
 
+	// Pre-resolve collation function for optimal performance
+	const collationFunc = resolveCollation(collation);
+
 	const extractFromRow = (row: Row): BTreeKeyForPrimary => {
 		if (!row || !Array.isArray(row)) {
 			throw new QuereusError(
@@ -73,7 +76,7 @@ function createSingleColumnPrimaryKeyFunctions(
 	};
 
 	const compare = (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
-		return compareSqlValues(a as SqlValue, b as SqlValue, collation) * descMultiplier;
+		return compareSqlValuesFast(a as SqlValue, b as SqlValue, collationFunc) * descMultiplier;
 	};
 
 	return { extractFromRow, compare };
@@ -85,6 +88,11 @@ function createSingleColumnPrimaryKeyFunctions(
 function createCompositeColumnPrimaryKeyFunctions(
 	pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>
 ): PrimaryKeyFunctions {
+	// Pre-resolve all collation functions for optimal performance
+	const collationFuncs: CollationFunction[] = pkDefinition.map(def =>
+		resolveCollation(def.collation || 'BINARY')
+	);
+
 	const extractFromRow = (row: Row): BTreeKeyForPrimary => {
 		if (!row || !Array.isArray(row)) {
 			throw new QuereusError(
@@ -113,7 +121,7 @@ function createCompositeColumnPrimaryKeyFunctions(
 			}
 
 			const def = pkDefinition[i];
-			const comparison = compareSqlValues(arrA[i], arrB[i], def.collation || 'BINARY');
+			const comparison = compareSqlValuesFast(arrA[i], arrB[i], collationFuncs[i]);
 
 			if (comparison !== 0) {
 				return def.desc ? -comparison : comparison;

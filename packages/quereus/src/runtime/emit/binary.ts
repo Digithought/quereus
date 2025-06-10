@@ -4,7 +4,7 @@ import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
-import { compareSqlValues } from "../../util/comparison.js";
+import { compareSqlValuesFast, resolveCollation } from "../../util/comparison.js";
 import { coerceForComparison, coerceToNumberForArithmetic } from "../../util/coercion.js";
 import type { EmissionContext } from "../emission-context.js";
 
@@ -102,6 +102,9 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 		collationName = leftType.collationName;
 	}
 
+	// Pre-resolve collation function for optimal performance
+	const collationFunc = resolveCollation(collationName);
+
 	switch (plan.expression.operator) {
 		case '=':
 		case '==':
@@ -111,7 +114,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValues(coercedV1, coercedV2, collationName) === 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) === 0 ? 1 : 0;
 			};
 			break;
 		case '!=':
@@ -122,7 +125,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValues(coercedV1, coercedV2, collationName) !== 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) !== 0 ? 1 : 0;
 			};
 			break;
 		case '<':
@@ -132,7 +135,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValues(coercedV1, coercedV2, collationName) < 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) < 0 ? 1 : 0;
 			};
 			break;
 		case '<=':
@@ -142,7 +145,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValues(coercedV1, coercedV2, collationName) <= 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) <= 0 ? 1 : 0;
 			};
 			break;
 		case '>':
@@ -154,7 +157,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				const comparisonResult = compareSqlValues(coercedV1, coercedV2, collationName);
+				const comparisonResult = compareSqlValuesFast(coercedV1, coercedV2, collationFunc);
 				const finalResult = comparisonResult > 0 ? 1 : 0;
 				return finalResult;
 			};
@@ -166,7 +169,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValues(coercedV1, coercedV2, collationName) >= 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) >= 0 ? 1 : 0;
 			};
 			break;
 		default:
@@ -256,6 +259,9 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 }
 
 export function emitBetweenOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
+	// Pre-resolve collation function for optimal performance (using BINARY as default for BETWEEN)
+	const collationFunc = resolveCollation('BINARY');
+
 	function run(ctx: RuntimeContext, value: SqlValue, lowerBound: SqlValue, upperBound: SqlValue): SqlValue {
 		// SQL BETWEEN logic: value BETWEEN lower AND upper
 		// Equivalent to: value >= lower AND value <= upper
@@ -264,9 +270,9 @@ export function emitBetweenOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 			return null;
 		}
 
-		// Use compareSqlValues for proper SQL comparison semantics
-		const lowerResult = compareSqlValues(value, lowerBound);
-		const upperResult = compareSqlValues(value, upperBound);
+		// Use pre-resolved collation function for optimal performance
+		const lowerResult = compareSqlValuesFast(value, lowerBound, collationFunc);
+		const upperResult = compareSqlValuesFast(value, upperBound, collationFunc);
 
 		// value >= lowerBound AND value <= upperBound
 		return (lowerResult >= 0 && upperResult <= 0) ? 1 : 0;
