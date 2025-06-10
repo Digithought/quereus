@@ -9,6 +9,8 @@ import type { IndexInfo } from '../index-info.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
 import { createMemoryTableLoggers } from './utils/logging.js';
+import { AccessPlanBuilder, validateAccessPlan } from '../best-access-plan.js';
+import type { BestAccessPlanRequest, BestAccessPlanResult, ColumnMeta, PredicateConstraint } from '../best-access-plan.js';
 
 const logger = createMemoryTableLoggers('module');
 
@@ -71,7 +73,238 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	}
 
 	/**
+	 * Modern, type-safe access planning interface
+	 */
+	getBestAccessPlan(
+		db: Database,
+		tableInfo: TableSchema,
+		request: BestAccessPlanRequest
+	): BestAccessPlanResult {
+		logger.debugLog(`[getBestAccessPlan] Planning access for ${tableInfo.name} with ${request.filters.length} filters`);
+
+		// Get table size estimate for cost calculations
+		const estimatedTableSize = request.estimatedRows ?? 1000;
+
+		// Build column metadata
+		const columns = this.buildColumnMetadata(tableInfo);
+
+		// Find the best access strategy
+		const bestPlan = this.findBestAccessPlan(tableInfo, request, estimatedTableSize);
+
+		// Validate the plan before returning
+		validateAccessPlan(request, bestPlan);
+
+		logger.debugLog(`[getBestAccessPlan] Selected plan: ${bestPlan.explains} (cost: ${bestPlan.cost}, rows: ${bestPlan.rows})`);
+
+		return bestPlan;
+	}
+
+	/**
+	 * Build column metadata for access planning
+	 */
+	private buildColumnMetadata(tableInfo: TableSchema): ColumnMeta[] {
+		return tableInfo.columns.map((col, index) => ({
+			index,
+			name: col.name,
+			type: col.affinity,
+			isPrimaryKey: tableInfo.primaryKeyDefinition.some(pk => pk.index === index),
+			isUnique: col.primaryKey // Primary key columns are unique, others would be determined by constraints/indexes
+		}));
+	}
+
+	/**
+	 * Find the best access plan for the given request
+	 */
+	private findBestAccessPlan(
+		tableInfo: TableSchema,
+		request: BestAccessPlanRequest,
+		estimatedTableSize: number
+	): BestAccessPlanResult {
+		const availableIndexes = this.gatherAvailableIndexes(tableInfo);
+		let bestPlan: BestAccessPlanResult | undefined;
+
+		// Try to find an index-based plan
+		for (const index of availableIndexes) {
+			const indexPlan = this.evaluateIndexAccess(index, request, estimatedTableSize);
+			if (!bestPlan || indexPlan.cost < bestPlan.cost) {
+				bestPlan = indexPlan;
+			}
+		}
+
+		// Fallback to full scan if no index plan found
+		if (!bestPlan) {
+			bestPlan = AccessPlanBuilder
+				.fullScan(estimatedTableSize)
+				.setHandledFilters(new Array(request.filters.length).fill(false))
+				.build();
+		}
+
+		// Check if we can satisfy ordering requirements
+		if (request.requiredOrdering && request.requiredOrdering.length > 0) {
+			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
+		}
+
+		return bestPlan;
+	}
+
+	/**
+	 * Evaluate access via a specific index
+	 */
+	private evaluateIndexAccess(
+		index: IndexSchema,
+		request: BestAccessPlanRequest,
+		estimatedTableSize: number
+	): BestAccessPlanResult {
+		const indexCols = index.columns;
+		if (indexCols.length === 0) {
+			return AccessPlanBuilder.fullScan(estimatedTableSize)
+				.setHandledFilters(new Array(request.filters.length).fill(false))
+				.build();
+		}
+
+		// Check for equality constraints on index columns
+		const equalityMatches = this.findEqualityMatches(indexCols, request.filters);
+		if (equalityMatches.matchCount === indexCols.length) {
+			// Perfect equality match - index seek
+			return AccessPlanBuilder
+				.eqMatch(1) // Assuming unique index access
+				.setHandledFilters(equalityMatches.handledFilters)
+				.setIsSet(true)
+				.setExplanation(`Index seek on ${index.name}`)
+				.build();
+		}
+
+		// Check for range constraints on first index column
+		const rangeMatch = this.findRangeMatch(indexCols[0], request.filters);
+		if (rangeMatch.hasRange) {
+			const estimatedRangeRows = Math.max(1, Math.floor(estimatedTableSize / 4));
+			return AccessPlanBuilder
+				.rangeScan(estimatedRangeRows)
+				.setHandledFilters(rangeMatch.handledFilters)
+				.setExplanation(`Index range scan on ${index.name}`)
+				.build();
+		}
+
+		// No useful index access - return full scan
+		return AccessPlanBuilder.fullScan(estimatedTableSize)
+			.setHandledFilters(new Array(request.filters.length).fill(false))
+			.setExplanation(`Full scan (index ${index.name} not useful)`)
+			.build();
+	}
+
+	/**
+	 * Find equality matches for index columns
+	 */
+	private findEqualityMatches(
+		indexCols: ReadonlyArray<any>,
+		filters: readonly PredicateConstraint[]
+	): { matchCount: number; handledFilters: boolean[] } {
+		const handledFilters = new Array(filters.length).fill(false);
+		let matchCount = 0;
+
+		for (const indexCol of indexCols) {
+			let foundMatch = false;
+			for (let i = 0; i < filters.length; i++) {
+				const filter = filters[i];
+				if (filter.columnIndex === indexCol.index &&
+					filter.op === '=' &&
+					filter.usable &&
+					filter.value !== undefined) {
+					handledFilters[i] = true;
+					foundMatch = true;
+					matchCount++;
+					break;
+				}
+			}
+			if (!foundMatch) {
+				break; // Can't use remaining index columns
+			}
+		}
+
+		return { matchCount, handledFilters };
+	}
+
+	/**
+	 * Find range match for a column
+	 */
+	private findRangeMatch(
+		indexCol: any,
+		filters: readonly PredicateConstraint[]
+	): { hasRange: boolean; handledFilters: boolean[] } {
+		const handledFilters = new Array(filters.length).fill(false);
+		let hasLower = false;
+		let hasUpper = false;
+
+		for (let i = 0; i < filters.length; i++) {
+			const filter = filters[i];
+			if (filter.columnIndex === indexCol.index && filter.usable && filter.value !== undefined) {
+				if (filter.op === '>' || filter.op === '>=') {
+					handledFilters[i] = true;
+					hasLower = true;
+				} else if (filter.op === '<' || filter.op === '<=') {
+					handledFilters[i] = true;
+					hasUpper = true;
+				}
+			}
+		}
+
+		return { hasRange: hasLower || hasUpper, handledFilters };
+	}
+
+	/**
+	 * Adjust plan to account for ordering requirements
+	 */
+	private adjustPlanForOrdering(
+		plan: BestAccessPlanResult,
+		request: BestAccessPlanRequest,
+		availableIndexes: IndexSchema[]
+	): BestAccessPlanResult {
+		// Check if any index can provide the required ordering
+		for (const index of availableIndexes) {
+			if (this.indexSatisfiesOrdering(index, request.requiredOrdering!)) {
+				// This index can provide ordering - prefer it even if slightly more expensive
+				const adjustedCost = plan.cost * 0.9; // 10% discount for avoiding sort
+
+				return {
+					...plan,
+					cost: adjustedCost,
+					providesOrdering: request.requiredOrdering,
+					explains: `${plan.explains} with ordering from ${index.name}`
+				};
+			}
+		}
+
+		// No index can provide ordering - plan will need external sort
+		return plan;
+	}
+
+	/**
+	 * Check if an index can satisfy ordering requirements
+	 */
+	private indexSatisfiesOrdering(
+		index: IndexSchema,
+		requiredOrdering: readonly any[]
+	): boolean {
+		if (requiredOrdering.length > index.columns.length) {
+			return false;
+		}
+
+		for (let i = 0; i < requiredOrdering.length; i++) {
+			const required = requiredOrdering[i];
+			const indexCol = index.columns[i];
+
+			if (required.columnIndex !== indexCol.index ||
+				required.desc !== (indexCol.desc ?? false)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
 	 * Determines the best query plan for executing a query against a memory table
+	 * @deprecated Use getBestAccessPlan instead for better type safety and extensibility
 	 */
 	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
 		const planningContext = this.createPlanningContext(tableInfo, indexInfo);

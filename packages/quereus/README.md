@@ -156,12 +156,18 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Robust transaction support** - Multi-level savepoints and rollback
 *   **Rich built-in function library** - Scalar, aggregate, window, JSON, and date/time functions
 
-**Primary development focus:**
-*   **Query optimization** - Cost-based planning, join reordering, and advanced statistics
-*   **Performance enhancement** - Memory pooling, parallel execution, and streaming improvements
-*   **Advanced features** - Foreign key constraints, materialized views, and performance tooling
+**Titan Optimizer Implementation Status:**
+*   ✅ **Phase 0 - Groundwork**: Foundational infrastructure complete with cost models, constraint analysis, shared caching utilities, and development standards
+*   ✅ **xBestIndex Refactor**: Modern type-safe BestAccessPlan API replacing legacy SQLite-style interfaces  
+*   🔄 **Phase 1 - Core Framework**: Rule registration system, physical property utilities, and optimization pipeline in progress
+*   📋 **Upcoming**: Advanced optimization rules, join algorithms, and performance tooling
 
-See the [TODO List](docs/todo.md) for detailed development priorities.
+**Current development focus:**
+*   **Optimizer Infrastructure** - Rule-based transformation framework with comprehensive tracing
+*   **Access Path Selection** - Index vs scan decisions with cost-based planning
+*   **Physical Property Propagation** - Ordering, uniqueness, and constraint tracking through plan trees
+
+See the [Titan Optimizer Documentation](docs/titan-optimizer.md) for detailed implementation progress and [TODO List](docs/todo.md) for remaining priorities.
 
 ## Testing
 

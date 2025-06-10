@@ -38,6 +38,15 @@ export interface PhysicalProperties {
 }
 
 /**
+ * Default physical properties for plan nodes
+ */
+export const DEFAULT_PHYSICAL: PhysicalProperties = {
+	deterministic: true,
+	readonly: true,
+	constant: false
+} as const;
+
+/**
  * Represents a column with a unique identifier that persists across plan transformations
  */
 export interface Attribute {
@@ -134,6 +143,19 @@ export abstract class PlanNode {
   /** Helper to generate unique attribute IDs */
   public static nextAttrId(): number {
     return PlanNode.nextAttributeId++;
+  }
+
+  /**
+   * Set default physical properties on a node with optional overrides
+   * This ensures every node has consistent physical properties after optimization
+   */
+  public static setDefaultPhysical(node: PlanNode, propsOverride?: Partial<PhysicalProperties>): void {
+    if (!node.physical) {
+      node.physical = { ...DEFAULT_PHYSICAL, ...propsOverride };
+    } else {
+      // Merge with existing properties, giving precedence to existing values
+      node.physical = { ...DEFAULT_PHYSICAL, ...node.physical, ...propsOverride };
+    }
   }
 }
 

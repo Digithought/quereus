@@ -4,62 +4,43 @@ import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan } from '../emitters.js';
 import { createLogger } from '../../common/logger.js';
+import { streamWithCache, createCacheState, type SharedCacheConfig } from '../cache/shared-cache.js';
 
 const log = createLogger('runtime:emit:cache');
 
 /**
+ * Usage example for other emitters needing caching (NLJ inner caching, CTE materialization):
+ *
+ * ```typescript
+ * import { streamWithCache, createCacheState } from '../cache/shared-cache.js';
+ *
+ * // In your emitter:
+ * const cacheState = createCacheState();
+ * const config = { threshold: 10000, strategy: 'memory', name: 'NLJ-inner' };
+ *
+ * // In your run function:
+ * yield* streamWithCache(sourceIterable, config, cacheState);
+ * ```
+ */
+
+/**
  * Emits a smart cache instruction that materializes input on first iteration
  * and serves subsequent iterations from cached results.
+ *
+ * Now uses the shared cache utility to avoid code duplication.
  */
 export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
-	// Cache state persists across calls to this instruction
-	let cachedResult: Row[] | undefined;
-	let cacheAbandoned = false;
+	// Create cache state using shared utility
+	const cacheState = createCacheState();
+	const config: SharedCacheConfig = {
+		threshold: plan.threshold,
+		strategy: plan.strategy,
+		name: `CacheNode-${plan.id}`
+	};
 
 	async function* run(rctx: RuntimeContext, sourceCallback: (innerCtx: RuntimeContext) => AsyncIterable<Row>): AsyncIterable<Row> {
-		// If we already have cached data, return it
-		if (cachedResult) {
-			yield* cachedResult;
-			return;
-		}
-
-		// If we previously abandoned caching due to threshold, just stream
-		if (cacheAbandoned) {
-			log('Cache abandoned due to previous threshold exceed, streaming directly');
-			return sourceCallback(rctx);
-		}
-
-		// First time - pipeline results while building cache
-		log('Building cache with threshold %d while pipelining', plan.threshold);
-		let cache: Row[] | undefined = [];
-
-		// Get source iterator and pipeline while caching
 		const sourceIterable = sourceCallback(rctx);
-		for await (const row of sourceIterable) {
-			// Always yield the row immediately (pipelining)
-			yield row;
-
-			// Try to cache if we haven't exceeded threshold
-			if (cache) {
-				if (cache.length < plan.threshold) {
-					// Cache the row (deep copy to avoid reference issues)
-					cache.push([...row] as Row);
-				} else {
-					// Hit threshold - dump cache and abandon caching
-					log('Cache threshold %d exceeded at row %d, dumping cache and continuing to pipeline',
-						plan.threshold, cache.length);
-					cache = undefined;
-				}
-			}
-		}
-
-		// If we finished without exceeding threshold, cache is ready
-		if (cache) {
-			log('Cache built successfully with %d rows', cache.length);
-			cachedResult = cache;
-		} else {
-			cacheAbandoned = true;
-		}
+		yield* streamWithCache(sourceIterable, config, cacheState);
 	}
 
 	const sourceInstruction = emitCallFromPlan(plan.source, ctx);

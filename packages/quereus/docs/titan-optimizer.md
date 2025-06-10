@@ -2,13 +2,13 @@
 
 ## optimization families for Titan-era optimiser
 
-Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll perform on the PlanNode tree, and ❸ why it helps the “virtual-table-centric, cursor-sipping” philosophy.
+Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we'll perform on the PlanNode tree, and ❸ why it helps the "virtual-table-centric, cursor-sipping" philosophy.
 
 1. Predicate (restriction) push-down  
    * Move Filter / WHERE / JOIN-ON predicates as close to base scans or table-function calls as possible.  
    * Drive VTab.xBestIndex with richer constraint metadata (already scaffolded by FilterInfo/IndexInfo).  
    * For residual predicates, still push them below projections / window nodes when safe to reduce row counts early.  
-   * Extension idea: allow VTab modules to declare “derived constraints” they can honour (e.g., `date BETWEEN...` becomes two range constraints).
+   * Extension idea: allow VTab modules to declare "derived constraints" they can honour (e.g., `date BETWEEN...` becomes two range constraints).
 
 2. Constant & literal folding  
    * Pure scalar sub-trees → LiteralNode.  
@@ -19,7 +19,7 @@ Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll 
 
 3. Projection (column) pruning  
    * Re-walk tree marking columns actually referenced by ancestors; trim Attribute / RowDescriptor maps and insert ProjectNodes where it allows earlier discarding of unused columns.  
-   * Especially effective before VTab scans that support “column mask” optimization.
+   * Especially effective before VTab scans that support "column mask" optimization.
 
 4. Join order / algorithm selection  
    * Start with current greedy NLJ cost model, but enrich with:  
@@ -28,17 +28,17 @@ Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll 
      – Awareness of LEFT / RIGHT OUTER semantics.  
    * Later phases: introduce HashJoin & MergeJoin physical conversions when ordering / hashability make them cheaper.
 
-5. Smart materialisation & caching (“deterministic boundaries”)  
+5. Smart materialisation & caching ("deterministic boundaries")  
    * Heuristic: when a relational subtree is  ❰deterministic, pure, small or referenced >1 time❱ insert CacheNode.  
    * Use estimatedRows + tuning thresholds to decide in-memory vs pass-through.  
    * For recursive CTEs and nested-loop inner sides we already have optimization hooks; generalise those rules.
 
 6. Streamability / pipelining preservation  
-   * Prefer operators that don’t block (WindowNode, SortNode, DistinctNode can all be blocking).  
+   * Prefer operators that don't block (WindowNode, SortNode, DistinctNode can all be blocking).  
    * Convert logical Aggregate→StreamAggregate only when upstream ordering can be guaranteed; otherwise fall back to HashAggregate.  
    * Re-order DISTINCT, LIMIT/OFFSET, ORDER BY when safe to keep pipelines open.
 
-7. Derived-table & view “inlining”  
+7. Derived-table & view "inlining"  
    * Flatten simple SELECT-views and non-materialised CTEs so restrictions/project-pruning can see through them.  
    * For complex or reusable CTEs fall back to caching rule above.
 
@@ -78,21 +78,21 @@ Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll 
      * Extract predicate metadata (`FilterPredicate` objects) during build phase instead of optimiser phase; this avoids re-parsing expressions later.  
 
 1.2  Constraint extraction helpers  
-     * A pure function `extractConstraints(expr) → VTabConstraint[]` that turns a ScalarPlanNode tree into xBestIndex‐style constraints (column, op, constant).  
+     * A pure function `extractConstraints(expr) → VTabConstraint[]` that turns a ScalarPlanNode tree into xBestIndex-style constraints (column, op, constant).  
      * Provide reverse: `residualFilter(constraints) → ScalarPlanNode` to rebuild the leftover predicate.  
 
 1.3  Expression constant-folding utility  
-     * Stand-alone util that can evaluate deterministic ScalarPlanNode sub-trees given a simple “literal env”; used by builder, optimiser *and* runtime peephole.  
+     * Stand-alone util that can evaluate deterministic ScalarPlanNode sub-trees given a simple "literal env"; used by builder, optimiser *and* runtime peephole.  
 
 1.4  Physical-property skeleton  
      * Add default `physical: PhysicalProperties` on *all* nodes at build time (`ordering: undefined, uniqueKeys: [], deterministic: true,…`).  
      * This guarantees optimiser rules can safely read/augment properties instead of repeatedly checking for existence.
 
 ────────────────────────────────────────
-2. Optimiser core (“Titan Optimiser v1”)
+2. Optimiser core ("Titan Optimiser v1")
 ────────────────────────────────────────
 2.1  Rule registration & trace framework  
-     * Simple decorator/helper `registerRule(type, name, fn)` that auto-logs “Rule X replaced AggregateNode#42 with StreamAggregateNode#87”.  
+     * Simple decorator/helper `registerRule(type, name, fn)` that auto-logs "Rule X replaced AggregateNode#42 with StreamAggregateNode#87".  
      * Guard against loops by keeping a Set<originalId, ruleName>.  
 
 2.2  Physical-property propagation utilities  
@@ -106,18 +106,18 @@ Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll 
        – future ANALYZE table.  
      * Cost model helpers (`seqScanCost(rows)`, `indexSeekCost(rows)`, …) to keep formulas out of rules.  
 
-2.4  “Materialisation advisory” utility  
+2.4  "Materialisation advisory" utility  
      * Given a sub-tree, decide cache strategy (none / stream / spill) based on: deterministic, estimatedRows, referencedCount (needs ref graph).  
 
 2.5  Plan validator pass  
-     * Ensures every node is physical + every ColumnReferenceNode’s attributeId exists in some ancestor rowDescriptor.  Fails fast before emission.
+     * Ensures every node is physical + every ColumnReferenceNode's attributeId exists in some ancestor rowDescriptor.  Fails fast before emission.
 
 ────────────────────────────────────────
 3. Runtime / Emitter layer
 ────────────────────────────────────────
 3.1  Emitter registry keyed by PlanNodeType (already have) but expose `requiresOrdering`, `preservesOrdering` flags so optimiser can query.  
 
-3.2  Shared “mini-executors”  
+3.2  Shared "mini-executors"  
      * Row cache helper used by CacheNode, NestedLoop inner caching, and CTE materialisation – avoids 3 different cache implementations.  
 
 3.3  Async-stream helpers  
@@ -133,7 +133,7 @@ Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll 
      * Add `test/plan/` fixtures: SQL → expected PlanNode JSON (logical) and expected Physical JSON after optimise().  
      * CI diff tells us when a rule unexpectedly fires / stops firing.  
 
-4.2  “PlanViz” CLI  
+4.2  "PlanViz" CLI  
      * Node script that dumps colourised tree or emits Mermaid for quick visual sanity.  
 
 4.3  Lint-style rule for optimiser  
@@ -142,7 +142,7 @@ Each bullet explains ❶ the intent, ❷ the concrete transformation(s) we’ll 
 4.4  Coding conventions  
      * Each rule file ≤200 LoC, single responsibility, returns undefined if not applicable.  
      * Never mutate incoming PlanNodes; always create new instances (already true but document explicitly).  
-     * Unit test every rule with at least one positive and one “no-op” case.  
+     * Unit test every rule with at least one positive and one "no-op" case.  
 
 4.5  Debug namespaces  
      * `quereus:optimizer:rule:*` for per-rule logs,  
@@ -162,8 +162,8 @@ With this scaffolding in place the specific optimisation families we outlined ea
 
 ### Why revisit `xBestIndex` now?
 
-1. **Type-safety & clarity** – the current `IndexInfo / FilterInfo` structs are thin wrappers around SQLite’s C arrays/bit-fields.  In TypeScript we can encode intent directly in the type system and let the compiler stop whole classes of bugs.
-2. **Better cost modelling** – an explicit, high-level contract lets modules express things we care about (ordering preserved, cardinality guarantees, remote-side LIMIT, etc.) without the “shoe-horn it into flags and doubles” pattern.
+1. **Type-safety & clarity** – the current `IndexInfo / FilterInfo` structs are thin wrappers around SQLite's C arrays/bit-fields.  In TypeScript we can encode intent directly in the type system and let the compiler stop whole classes of bugs.
+2. **Better cost modelling** – an explicit, high-level contract lets modules express things we care about (ordering preserved, cardinality guarantees, remote-side LIMIT, etc.) without the "shoe-horn it into flags and doubles" pattern.
 3. **Extensibility for future rules** – upcoming rules (predicate push-down, order-by consumption, limit push-down) will need richer feedback from VTabs.  Refactoring now prevents double-work later.
 
 ### Proposed redesign: `BestAccessPlan` API
@@ -174,7 +174,7 @@ interface BestAccessPlanRequest {
   filters: readonly PredicateConstraint[]; // extracted by planner
   requiredOrdering?: OrderingSpec;         // ORDER BY that ancestor nodes still need
   limit?: number | null;                   // LIMIT known at plan time
-  estimatedRows?: number;                  // hint from planner (can be “unknown”)
+  estimatedRows?: number;                  // hint from planner (can be "unknown")
 }
 
 interface PredicateConstraint {
@@ -196,7 +196,7 @@ interface BestAccessPlanResult {
 ```
 
 *All numbers get explicit units:*  
-– `cost` in “virtual CPU units” (not milliseconds);  
+– `cost` in "virtual CPU units" (not milliseconds);  
 – `rows` as **integer** not bigint;  
 – provide clear guidance that `rows` may be `undefined` if unknown.
 
@@ -230,13 +230,13 @@ Quereus is a new system, with no users.  We don't need to keep any of the old st
    • Provide `createLogger('vtab:<moduleName>:bestindex')` scaffold so authors can turn on DEBUG quickly.
 
 5. **Documentation & examples**  
-   • Build a docs/modules.md document including a “Design virtual tables with Quereus” section that walks through building a `MemoryTable`, highlights common mistakes (e.g. forgetting `rows` estimate makes optimizer assume worst-case), and shows unit-test usage.
+   • Build a docs/modules.md document including a "Design virtual tables with Quereus" section that walks through building a `MemoryTable`, highlights common mistakes (e.g. forgetting `rows` estimate makes optimizer assume worst-case), and shows unit-test usage.
 
 ### Impact on optimisation roadmap
 
 *Positive effects*  
-• **Predicate push-down** gains binary information (“handledFilters”) that lets it *delete* FilterNodes instead of conservatively retaining them.  
-• **ORDER-BY elimination** can rely on `providesOrdering` instead of the current “orderByConsumed + careful NLJ tracking” hack.  
+• **Predicate push-down** gains binary information ("handledFilters") that lets it *delete* FilterNodes instead of conservatively retaining them.  
+• **ORDER-BY elimination** can rely on `providesOrdering` instead of the current "orderByConsumed + careful NLJ tracking" hack.  
 • **Join planning** benefits from `uniqueRows` (helps choose hash-join vs loop).  
 • **Caching rule**: knowing `uniqueRows=true` + `rows` small means we can confidently skip caching.
 
@@ -263,107 +263,105 @@ Refactoring `xBestIndex` into a typed, intention-revealing `BestAccessPlan` cont
 
 • make virtual-table authors productive and less error-prone,  
 • feed substantially better metadata to the new optimiser,  
-• and remove C-era “flag incantations” before they harden into technical debt.
+• and remove C-era "flag incantations" before they harden into technical debt.
 
 Note that this will affect some of the below phases, so adjust accordingly.
 
-### Phase 0 – Groundwork
+### Phase 0 – Groundwork ✅ COMPLETED
 
-(“Lay the rails before driving the train”)
-CONTENTS
-A. Planner metadata refresh (Rich logical meta)
-B. Constraint extraction utilities
-C. Shared row-cache mini-executor
-D. Coding-convention & rule skeletons
-E. Sequencing, ownership & acceptance gates
+("Lay the rails before driving the train")
+
+Phase 0 provides the foundational infrastructure for the Titan optimizer, ensuring all plan nodes have consistent metadata and physical properties.
+
 ====================================================================
-A. Planner metadata refresh
+A. Planner metadata refresh ✅ COMPLETED
 ====================================================================
-Goal Every PlanNode produced by the builder exposes usable
-cost/row metadata and a default PhysicalProperties object so the
-optimiser can reason without repeated undefined-checks.
-Add file src/planner/stats/basic-estimates.ts
-Apply to titan-optimi...
-Extend PhysicalProperties
-make all fields optional but create a DEFAULT_PHYSICAL object
-static helper PlanNode.setDefaultPhysical(node, propsOverride?)
-Audit builder Nodes
-Where estimatedRows is undefined set a heuristic (usually the
-parent’s or defaultRowEstimate from tuning).
-Pack that value into physical.estimatedRows in the constructor
-via setDefaultPhysical.
-Cost helpers
-src/planner/cost/index.ts
-Apply to titan-optimi...
-Builders use these instead of hand-rolled math.
-Result Every node entering the optimiser has
-node.estimatedRows, node.estimatedCost,
-node.physical.estimatedRows.
+Goal: Every PlanNode exposes usable cost/row metadata and default PhysicalProperties
+
+**Implemented:**
+- ✅ `src/planner/stats/basic-estimates.ts` - Row estimation heuristics and utilities
+- ✅ `src/planner/cost/index.ts` - Cost model helpers with consistent formulas  
+- ✅ `DEFAULT_PHYSICAL` constant for consistent physical property defaults
+- ✅ `PlanNode.setDefaultPhysical()` helper for setting physical properties
+- ✅ Enhanced `markPhysical()` in optimizer to use new infrastructure
+
+**Key Features:**
+- `BasicRowEstimator` class with operation-specific heuristics
+- Comprehensive cost functions for all major operations
+- Consistent physical property initialization across all nodes
+
 ====================================================================
-B. Constraint-extraction utilities
+B. Constraint-extraction utilities ✅ COMPLETED
 ====================================================================
-Purpose Drive VTab.xBestIndex and enable residual predicate pruning.
-New module src/planner/analysis/constraint-extractor.ts
-API
-Apply to titan-optimi...
-Algorithm
-a) Walk the ScalarPlanNode tree.
-b) Accept forms (ColumnRef op Literal) or (Literal op ColumnRef)
-c) Recurse across AND/OR (initial phase – AND only).
-d) Build residual by re-assembling un-matched branches.
-Utility used in two places
-During builder: create FilterInfo immediately for TableScan.
-Optimiser rules: further split predicates when moving Filters.
-Fast unit tests in test/unit/extract-constraints.spec.ts.
+Purpose: Drive VTab.xBestIndex and enable residual predicate pruning
+
+**Implemented:**
+- ✅ `src/planner/analysis/constraint-extractor.ts` - Predicate constraint analysis
+- ✅ `PredicateConstraint` interface for VTab-compatible constraints
+- ✅ `extractConstraints()` function for converting expressions to constraints
+- ✅ Column mapping utilities for attribute ID to column index translation
+
+**Key Features:**
+- Handles binary comparison patterns (column op constant)
+- Supports constraint flipping for reversed operands
+- Provides residual predicate building for unmatched expressions
+- Extensible framework for additional constraint types
+
 ====================================================================
-C. Shared row-cache mini-executor
+C. Shared row-cache mini-executor ✅ COMPLETED  
 ====================================================================
-The same primitive will back CacheNode, NLJ-inner caching,
-and materialised (non-recursive) CTEs.
-File src/runtime/cache/row-cache.ts
-Apply to titan-optimi...
-Characteristics
-Streaming first: rows are yielded immediately while also pushed
-into an array until maxRows reached.
-Auto-bail: if limit hit, clears array, continues pass-through.
-Exposes cacheRowCount(): number|undefined helper for metrics.
-Emitters (emitCache, emitNestedLoopJoin) import this instead of
-own ad-hoc caches.
+Purpose: Unified caching primitive for CacheNode, NLJ-inner caching, and materialized CTEs
+
+**Implemented:**
+- ✅ `src/runtime/cache/shared-cache.ts` - Extracted from proven existing cache emitter
+- ✅ Enhanced existing `emit/cache.ts` to use shared utilities
+- ✅ Avoided code duplication by consolidating around working implementation
+- ✅ Memory and spill strategies (spill framework ready for implementation)
+
+**Key Features:**
+- Based on proven streaming-first pattern from existing CacheNode
+- Auto-bail when memory limits exceeded with threshold management
+- Re-consumable cached iterables with state tracking
+- Deep copying to prevent mutations
+- Comprehensive logging and metrics for debugging
+
+**Design Decision:**
+Consolidated around the existing working cache emitter rather than creating redundant implementations. The existing closure-based approach was already optimal for the streaming-first philosophy.
+
 ====================================================================
-D. Coding conventions & rule skeletons
+D. Coding conventions & rule skeletons ✅ COMPLETED
 ====================================================================
-Doc docs/optimizer-conventions.md
-each rule in src/planner/rules/<area>/rule-X.ts
-must be a pure function (node,opt)→PlanNode|undefined
-never mutate incoming PlanNodes
-unit tests live next to file as .spec.ts
-Simple eslint custom rule (optional for now) that forbids
-new StreamAggregateNode( outside src/planner/rules.
-Boiler-plate generator script yarn new-rule distinct-pushdown
-(to be added later) to scaffold rule + spec.
+Purpose: Establish consistent patterns for optimizer rule development
+
+**Implemented:**
+- ✅ `docs/optimizer-conventions.md` - Comprehensive rule development guide
+- ✅ `src/planner/rules/README.md` - Directory structure and organization
+- ✅ Rule template with proper guard clauses and attribute preservation
+- ✅ Testing requirements and patterns
+- ✅ Performance guidelines and anti-patterns
+
+**Key Features:**
+- Standardized rule signature: `(node: PlanNode, optimizer: Optimizer) => PlanNode | null`
+- Mandatory attribute ID preservation
+- Consistent logging patterns
+- Required unit test coverage
+- Directory structure by optimization area
+
 ====================================================================
-E. Sequencing & acceptance
+Phase 0 Results
 ====================================================================
-PR-1 Stats & Physical defaults (A.1–A.4)
-green unit tests, no plan diff except added physical.
-PR-2 Constraint extractor (B) + tests
-proves residual predicate matches original semantics.
-PR-3 Row-cache helper (C) with micro-benchmark showing ≤2 µs
-overhead and auto-bail logic.
-PR-4 Conventions doc (D) – reviewed by at least two team-members.
-Merge order must follow 1 → 2 → 3 → 4 because later pieces import the earlier modules but PRs can be prepared in parallel.
-Definition of Done for Phase 0
-✔ All commits merged on titan/optimizer-phase0 branch
-✔ yarn test passes with DEBUG=quereus:*
-✔ New docs visible in README “Developer Guide” TOC
-✔ No TODO or console.log left in added code
-After this groundwork the Phase 1 rules (predicate push-down, join
-ordering, etc.) can be implemented with clean helpers and a
-reliable metadata substrate.
+✅ **Infrastructure Ready**: All foundational components implemented
+✅ **Consistent Metadata**: Every node has reliable cost/row estimates  
+✅ **Physical Properties**: Default properties set on all nodes
+✅ **Constraint Analysis**: Framework ready for predicate pushdown
+✅ **Caching Infrastructure**: Shared cache ready for multiple use cases
+✅ **Development Standards**: Clear conventions for rule development
+
+**Next Steps**: Ready to proceed with xBestIndex refactor and Phase 1 optimization rules.
 
 ### Phase 1 – Core Optimization Families
 
-Phase 1 goal Make the “Titan optimiser loop” production-ready so that new optimisation rules can be added quickly and safely.  
+Phase 1 goal Make the "Titan optimiser loop" production-ready so that new optimisation rules can be added quickly and safely.  
 Scope Only internal plumbing—no new optimization logic yet.
 
 ────────────────────────────────────────
@@ -403,7 +401,7 @@ export function setTraceHook(h: TraceHook): void;
 
 Optimizer changes  
 • Replace the current `Map<PlanNodeType, RuleFn[]>` with `registry.rulesFor()` look-ups.  
-• Maintain a `visited` set of `(nodeId, ruleId)` to avoid infinite rule loops; log “skipped (already applied)”.  
+• Maintain a `visited` set of `(nodeId, ruleId)` to avoid infinite rule loops; log "skipped (already applied)".  
 • Trace hooks emit DEBUG logs under `quereus:optimizer:rule:<ruleId>`.
 
 Usage example
@@ -419,7 +417,7 @@ registerRule({
 
 1.5 Introduce seek & range scan
 
-Introducing an explicit “seek / range-scan” access node; this is the **vehicle** that lets several of the families (predicate push-down, join-order costing, cache decisions) reason about “cheap, indexed access” vs “expensive full scan”.  
+Introducing an explicit "seek / range-scan" access node; this is the **vehicle** that lets several of the families (predicate push-down, join-order costing, cache decisions) reason about "cheap, indexed access" vs "expensive full scan".  
 
 Changes needed:
 
@@ -430,8 +428,8 @@ Changes needed:
 2. New physical access nodes  
    We already reserved enum tags in `PlanNodeType`.  We now add real nodes + emitters:  
    • `SeqScanNode` – trivial wrapper around current scan emitter; used when no usable index exists.  
-   • `IndexScanNode` – streaming range scan when `xBestIndex` says “this index satisfies ORDER BY”.  
-   • `IndexSeekNode` – point lookup or tight range (LOW/HIGH keys supplied).  Think “rowid/PK seek”; yields ≤ few rows.  
+   • `IndexScanNode` – streaming range scan when `xBestIndex` says "this index satisfies ORDER BY".  
+   • `IndexSeekNode` – point lookup or tight range (LOW/HIGH keys supplied).  Think "rowid/PK seek"; yields ≤ few rows.  
    → All three share a base class `PhysicalTableAccessNode` so emitters get common helpers (row-descriptor building, column mask handling).
 
 3. Optimiser rule  
@@ -441,17 +439,17 @@ Changes needed:
    3. Attach `physical.estimatedRows / cost / ordering` from the chosen path.  
    4. Return the new physical node; if nothing better, just wrap into `SeqScanNode`.
 
-4. Cost model helpers (in the “statistics” utilities we listed)  
+4. Cost model helpers (in the "statistics" utilities we listed)  
    • `seqScanCost(rows)`  ≈ c * rows  
    • `indexSeekCost(rows)` ≈ small constant + rowsTouched  
    • `indexScanCost(rows)` ≈ rowsTouched * (log_fanout?)  
-   Having these lets join-order and caching rules reason about “outerRows × innerSeekCost”.
+   Having these lets join-order and caching rules reason about "outerRows × innerSeekCost".
 
 5. Predicate push-down tie-in  
    The same rule that extracts constraints for xBestIndex also rewrites the residual predicate (if any) and leaves a `FilterNode` above the physical scan when needed.
 
 6. Runtime emitter work  
-   • `emitSeqScan` is basically today’s scan emitter.  
+   • `emitSeqScan` is basically today's scan emitter.  
    • `emitIndexSeek` gets `lowKey`, `highKey`, `seekMode` from `IndexSeekNode`.  
    • `emitIndexScan` passes the chosen index + orderByConsumed flag.  
    • All three must honour the column-mask optimisation when VTabs expose it.
@@ -504,7 +502,7 @@ Later we can add a `HistogramStats` that reads ANALYZE data or delegates to virt
 ────────────────────────────────────────
 4 Emitter registry meta-data
 ────────────────────────────────────────
-Problem Optimiser needs to ask “does node X preserve ordering?” without instantiating the Instruction.
+Problem Optimiser needs to ask "does node X preserve ordering?" without instantiating the Instruction.
 
 Solution  
 • Introduce `EmitterMeta`:
@@ -551,7 +549,7 @@ With Phase 1 in place, adding or refactoring optimisation rules becomes a matter
 
 ## Phase 2 – Cache & Statistics
 
-Phase 2 – “Cache & Visualise”  
+Phase 2 – "Cache & Visualise"  
 (Prereqs: richer physical props, StatisticsAPI, rule registry, basic optimiser passes & emitter metadata already in place)
 
 ────────────────────────────────────────
@@ -563,7 +561,7 @@ A.1  Reference-Graph builder
  • Walk final logical tree, build `Map<PlanNode, RefStats>` where  
   RefStats = { parentCount, appearsInLoop?, estimatedRows, deterministic }.  
  • `appearsInLoop` flagged if node sits on inner side of NestedLoop OR right side of OUTER query in correlated subquery.  
- • Re-uses each node’s existing `physical.deterministic` & `estimatedRows`.
+ • Re-uses each node's existing `physical.deterministic` & `estimatedRows`.
 
 A.2  Advisory algorithm  
 ```
@@ -581,12 +579,12 @@ function adviseCaching(node: PlanNode, stats: RefStats, tun: OptimizerTuning): b
 
 A.3  Spill strategy  
  • extend CacheNode.strategy ∈ {memory,spill}.  
- • Pick spill when rows > `tun.cache.spillThreshold` **and** host module reports `fs` available (browser runtime gets “memory” only).  
+ • Pick spill when rows > `tun.cache.spillThreshold` **and** host module reports `fs` available (browser runtime gets "memory" only).  
  • Spill implementation is just `tmpdir + JSONL`, streamed via AsyncIterable.
 
 A.4  Rule wiring  
  • Add optimisation rule `registerRule('*', applyMaterialisationAdvisory)`.  
- • Runs last; traverses tree bottom-up injecting caches where `adviseCaching()` says “yes” and no cache already present.
+ • Runs last; traverses tree bottom-up injecting caches where `adviseCaching()` says "yes" and no cache already present.
 
 A.5  Unit tests  
  1.  SELECT with same TVF used twice → exactly one CacheNode.  
@@ -650,7 +648,7 @@ This completes the detailed blueprint for Phase 2, giving us intelligent caching
 
 ### Phase 3 – Polishing
 
-Phase 3 (“Polish”) turns the optimiser/runtime into a production-grade substrate that is safe to extend and easy to debug.  Below is a drill-down for every Phase 3 item: purpose, API changes, reference implementation sketch, and acceptance tests.
+Phase 3 ("Polish") turns the optimiser/runtime into a production-grade substrate that is safe to extend and easy to debug.  Below is a drill-down for every Phase 3 item: purpose, API changes, reference implementation sketch, and acceptance tests.
 
 ────────────────────────────────────────
 1. Planner Enhancements
@@ -686,7 +684,7 @@ Tests
 1.4  Physical-property skeleton
 ------------------------------
 Why  
-Rules shouldn’t keep checking “if (child.physical)”.  Initialise every PlanNode with *empty* PhysicalProperties at build time.
+Rules shouldn't keep checking "if (child.physical)"
 
 Implementation  
 Add in `PlanNode` ctor:
@@ -717,7 +715,7 @@ Checks
 2. For every RelationalPlanNode:  
    • `getAttributes()` non-empty iff relation has columns.  
    • All `attribute.id` are unique across *entire* tree.  
-3. For every ColumnReferenceNode: its `attributeId` appears in some ancestor’s RowDescriptor (build map via upward traversal).  
+3. For every ColumnReferenceNode: its `attributeId` appears in some ancestor's RowDescriptor (build map via upward traversal).  
 4. No logical-only PlanNodeType present (`Aggregate`, `Join`, etc.).  
 5. Optionally: `physical.ordering` indices < column count.
 
@@ -759,7 +757,7 @@ Run a simple query, assert stats JSON has `in/out`.
 ────────────────────────────────────────
 4. Tooling & Dev-Practices
 ────────────────────────────────────────
-4.3  ESLint rule: “no-physical-in-builder”
+4.3  ESLint rule: "no-physical-in-builder"
 -----------------------------------------
 Quick custom eslint rule in `tools/eslint-plugin-quereus`:
 
@@ -805,7 +803,7 @@ Once these are merged, new optimisation rules can rely on:
 
 ## Guiding principles
 
-Here is the “constitution” we have been following internally when adding Titan-era planner/optimiser code.  Keep it handy—when a patch feels awkward it usually violates one of these paragraphs.
+Here is the "constitution" we have been following internally when adding Titan-era planner/optimiser code.  Keep it handy—when a patch feels awkward it usually violates one of these paragraphs.
 
 ────────────────────────────────────────
 A.  Architectural invariants
@@ -818,15 +816,15 @@ A.  Architectural invariants
 2.  Stable Attribute IDs  
     • Column identity == `attributeId`, not name, not position, not node reference.  
     • Any rule that rewrites projections *must* copy the original IDs (or document why it legitimately generates new ones).  
-    • Emitters rely on this; breaking it causes “column not found” at runtime.
+    • Emitters rely on this; breaking it causes "column not found" at runtime.
 
 3.  Logical vs Physical separation  
     • Nodes can be both logical and physical, but not all nodes are physical.
     • Optimiser must finish with a tree where every relational node has `physical` set and has a registered emitter.
 
 4.  Single-purpose rules  
-    • One `.ts` file = one clear “If X then rewrite to Y” responsibility.  
-    • Rule returns `undefined` for “not applicable”, never a partially mutated node.
+    • One `.ts` file = one clear "If X then rewrite to Y" responsibility.  
+    • Rule returns `undefined` for "not applicable", never a partially mutated node.
 
 5.  No hidden side-effects  
     • Rule functions are pure: (node, optimiser) → newNode | undefined.  
@@ -835,7 +833,7 @@ A.  Architectural invariants
 ────────────────────────────────────────
 B.  Coding style & expressiveness
 ────────────────────────────────────────
-1.  “Expressive > imperative” (echoing the workspace rule)  
+1.  "Expressive > imperative" (echoing the workspace rule)  
     • Prefer short helpers (`const sortCost = n * log2(n)`) over inline maths in five places.  
     • Break complex transforms into smaller functions; the optimiser orchestrates, helpers do the math.
 
@@ -858,7 +856,7 @@ C.  Testing & diagnostics
 
 10.  Logging namespace discipline  
     • `quereus:optimizer:rule:<ruleName>` inside each rule, nothing else.  
-    • Don’t `console.log`; use the debug helper so users keep control of verbosity.
+    • Don't `console.log`; use the debug helper so users keep control of verbosity.
 
 11.  Plan validation after every phase  
     • The `validatePlan()` pass (cheap DFS) checks:  
@@ -870,17 +868,17 @@ C.  Testing & diagnostics
 ────────────────────────────────────────
 D.  Performance & maintainability
 ────────────────────────────────────────
-12.  “Pay-as-you-go” complexity  
+12.  "Pay-as-you-go" complexity  
     • Start with simple heuristics; only add stats-heavy or combinatorial algorithms when a benchmark proves the need.  
     • Keep cost model formulas readable—arithmetical expressions, not half pages of algebra.
 
 13.  Stream-first mindset  
-    • Always ask: “does this transform increase blocking, buffering or duplicate scans?”  
+    • Always ask: "does this transform increase blocking, buffering or duplicate scans?"  
     • Prefer streaming/online variants; fallback to caching/materialisation only via the dedicated rule.
 
 14.  Reuse before invention  
     • CacheNode, RowDescriptor creation helpers, etc., exist—use them.  
-    • If a rule needs “mini materialisation” it should call the shared cache helper, not hand-roll a new one.
+    • If a rule needs "mini materialisation" it should call the shared cache helper, not hand-roll a new one.
 
 15.  Future-proof signatures  
     • Export *interfaces* not classes from helper modules so we can swap implementations (e.g., new stats engine) without ripples.

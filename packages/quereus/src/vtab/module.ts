@@ -3,6 +3,7 @@ import type { VirtualTable } from './table.js';
 import type { IndexInfo } from './index-info.js';
 import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema, IndexSchema } from '../schema/table.js'; // Add import for TableSchema and IndexSchema
+import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-plan.js';
 
 /**
  * Base interface for module-specific configuration passed to xCreate/xConnect.
@@ -60,9 +61,25 @@ export interface VirtualTableModule<
 	): TTable;
 
 	/**
+	 * Modern, type-safe access planning interface.
+	 * Preferred over xBestIndex for new implementations.
+	 *
+	 * @param db The database connection
+	 * @param tableInfo The schema information for the table being planned
+	 * @param request Planning request with constraints and requirements
+	 * @returns Access plan result describing the chosen strategy
+	 */
+	getBestAccessPlan?(
+		db: Database,
+		tableInfo: TableSchema,
+		request: BestAccessPlanRequest
+	): BestAccessPlanResult;
+
+	/**
 	 * Determines the best query plan for a given set of constraints and orderings.
 	 * This method MUST be synchronous for performance. It modifies the passed IndexInfo object.
 	 *
+	 * @deprecated Use getBestAccessPlan instead for better type safety and extensibility
 	 * @param db The database connection
 	 * @param tableInfo The schema information for the table being planned
 	 * @param indexInfo Input constraints/orderings and output plan details

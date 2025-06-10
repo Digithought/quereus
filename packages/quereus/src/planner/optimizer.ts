@@ -314,46 +314,44 @@ export class Optimizer {
 		return result;
 	}
 
-	/**
-	 * Mark a node as physical and compute its properties
-	 */
-	private markPhysical(node: PlanNode): void {
-		if (node.physical) return; // Already physical
+	  /**
+   * Mark a node as physical and compute its properties
+   */
+  private markPhysical(node: PlanNode): void {
+    if (node.physical) return; // Already physical
 
-		// Collect physical properties from children (both scalar and relational)
-		const childrenPhysical: PhysicalProperties[] = [];
+    // Collect physical properties from children (both scalar and relational)
+    const childrenPhysical: PhysicalProperties[] = [];
 
-		// Add properties from scalar children
-		for (const child of node.getChildren()) {
-			if (child instanceof PlanNode && child.physical) {
-				childrenPhysical.push(child.physical);
-			}
-		}
+    // Add properties from scalar children
+    for (const child of node.getChildren()) {
+      if (child instanceof PlanNode && child.physical) {
+        childrenPhysical.push(child.physical);
+      }
+    }
 
-		// Add properties from relational children
-		for (const relation of node.getRelations()) {
-			if (relation.physical) {
-				childrenPhysical.push(relation.physical);
-			}
-		}
+    // Add properties from relational children
+    for (const relation of node.getRelations()) {
+      if (relation.physical) {
+        childrenPhysical.push(relation.physical);
+      }
+    }
 
-		// Let the node compute its own physical properties if it can
-		if (node.getPhysical) {
-			node.physical = node.getPhysical(childrenPhysical);
-		} else {
-			// Basic defaults
-			node.physical = {
-				deterministic: true,
-				readonly: true
-			};
-		}
+    // Let the node compute its own physical properties if it can
+    let computedProperties: PhysicalProperties | undefined;
+    if (node.getPhysical) {
+      computedProperties = node.getPhysical(childrenPhysical);
+    }
 
-		// Optimizer can override/adjust properties here
-		// For example, propagate constant flag up the tree
-		if (childrenPhysical.length > 0 && childrenPhysical.every(p => p.constant)) {
-			node.physical.constant = true;
-		}
-	}
+    // Set default physical properties with computed properties as override
+    PlanNode.setDefaultPhysical(node, computedProperties);
+
+    // Optimizer can override/adjust properties here
+    // For example, propagate constant flag up the tree
+    if (childrenPhysical.length > 0 && childrenPhysical.every(p => p.constant)) {
+      node.physical!.constant = true;
+    }
+  }
 
 	/**
 	 * Check if a node type can be directly marked as physical without transformation
