@@ -103,11 +103,22 @@ export const jsonQuoteFunc = createScalarFunction(
 				return value ? 'true' : 'false';
 			case 'string':
 				return JSON.stringify(value); // Correctly escapes the string
-			// Blobs and BigInts are not directly representable in standard JSON,
-			// SQLite json_quote might handle them differently (e.g., error or specific format).
-			// For now, let's return NULL for these.
 			case 'bigint':
-			case 'object': // Catches Uint8Array
+				// BigInts are not directly representable in standard JSON
+				return null;
+			case 'object':
+				if (value instanceof Uint8Array) {
+					// BLOBs cannot be represented in JSON
+					return null;
+				} else if (Array.isArray(value) || (value !== null && typeof value === 'object')) {
+					// Handle arrays and plain objects by converting to JSON string
+					try {
+						return JSON.stringify(value);
+					} catch (e) {
+						return null;
+					}
+				}
+				return null;
 			default:
 				return null;
 		}

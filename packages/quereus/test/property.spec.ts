@@ -181,9 +181,35 @@ describe('Property-Based Tests', () => {
 					fc.pre(false); // Discard this run if SQL execution fails
 					throw new Error(`JSON roundtrip query failed for value ${safeJsonStringify(originalValue)}: ${e.message}`);
 				}
-				expect(retrievedValueParsed).to.deep.equal(originalValue,
-					`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved: ${safeJsonStringify(retrievedValueParsed)}`
-				);
+
+				// Handle the different ways json_extract returns values based on SQLite compatibility:
+				// - Objects/arrays: returned as JSON strings
+				// - Booleans: converted to integers (1/0)
+				// - Numbers/strings/null: returned as-is
+				let expectedRetrieved = originalValue;
+
+				if (typeof retrievedValueParsed === 'string' && (typeof originalValue === 'object' && originalValue !== null)) {
+					// Objects and arrays are returned as JSON strings - parse them for comparison
+					try {
+						const parsedRetrieved = JSON.parse(retrievedValueParsed);
+						expect(parsedRetrieved).to.deep.equal(originalValue,
+							`JSON roundtrip mismatch after parsing string result.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved (raw): ${safeJsonStringify(retrievedValueParsed)}\nRetrieved (parsed): ${safeJsonStringify(parsedRetrieved)}`
+						);
+					} catch (parseError) {
+						throw new Error(`JSON roundtrip failed - could not parse retrieved string.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved: ${safeJsonStringify(retrievedValueParsed)}\nParse error: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+					}
+				} else if (typeof originalValue === 'boolean' && typeof retrievedValueParsed === 'number') {
+					// Booleans are converted to integers by json_extract (SQLite compatibility)
+					const expectedInteger = originalValue ? 1 : 0;
+					expect(retrievedValueParsed).to.equal(expectedInteger,
+						`JSON boolean roundtrip mismatch.\nOriginal boolean: ${originalValue}\nExpected integer: ${expectedInteger}\nRetrieved: ${retrievedValueParsed}`
+					);
+				} else {
+					// For other scalars (numbers, strings, null), direct comparison should work
+					expect(retrievedValueParsed).to.deep.equal(originalValue,
+						`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)} (type: ${typeof originalValue})\nRetrieved: ${safeJsonStringify(retrievedValueParsed)} (type: ${typeof retrievedValueParsed})`
+					);
+				}
 			}), { numRuns: 200 });
 		});
 	});
