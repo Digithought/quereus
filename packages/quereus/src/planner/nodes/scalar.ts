@@ -6,6 +6,8 @@ import type { Scope } from "../scopes/scope.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import { Cached } from "../../util/cached.js";
 import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	readonly nodeType = PlanNodeType.UnaryOp;
@@ -234,7 +236,7 @@ export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
 				datatype: SqlDataType.BLOB,
 			};
 		}
-		throw new Error(`Unknown literal type ${typeof value}`);
+		quereusError(`Unknown literal type ${typeof value}`, StatusCode.INTERNAL);
 	}
 
 	getChildren(): readonly [] {

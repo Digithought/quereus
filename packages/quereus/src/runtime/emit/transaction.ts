@@ -3,6 +3,8 @@ import type { TransactionNode } from '../../planner/nodes/transaction-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { SqlValue } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
+import { QuereusError, quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('runtime:emit:transaction');
 
@@ -102,7 +104,7 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 
 		case 'savepoint':
 			if (!plan.savepoint) {
-				throw new Error('Savepoint name is required for SAVEPOINT operation');
+				quereusError('Savepoint name is required for SAVEPOINT operation', StatusCode.MISUSE);
 			}
 			const savepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
 			run = async (rctx: RuntimeContext) => {
@@ -125,7 +127,7 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 
 		case 'release':
 			if (!plan.savepoint) {
-				throw new Error('Savepoint name is required for RELEASE operation');
+				quereusError('Savepoint name is required for RELEASE operation', StatusCode.MISUSE);
 			}
 			const releaseSavepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
 			run = async (rctx: RuntimeContext) => {
@@ -147,7 +149,10 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 			break;
 
 		default:
-			throw new Error(`Unsupported transaction operation: ${plan.operation}`);
+			quereusError(
+				`Unsupported transaction operation: ${plan.operation}`,
+				StatusCode.UNSUPPORTED
+			);
 	}
 
 	return {

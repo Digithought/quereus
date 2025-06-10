@@ -9,6 +9,8 @@ import { Cached } from '../../util/cached.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /** Represents a reference to a table in the global schema. */
 export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode {
@@ -107,7 +109,10 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 		if (isTableValuedFunctionSchema(this.functionSchema)) {
 			return this.functionSchema.returnType;
 		}
-		throw new Error(`Function ${this.functionSchema.name} is not a table-valued function`);
+		quereusError(
+			`Function ${this.functionSchema.name} is not a table-valued function`,
+			StatusCode.INTERNAL
+		);
 	}
 
 	getAttributes(): Attribute[] {

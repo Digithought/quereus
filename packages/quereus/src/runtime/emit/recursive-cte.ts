@@ -1,7 +1,7 @@
 import type { RecursiveCTENode } from '../../planner/nodes/recursive-cte-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
+import { emitCallFromPlan, emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import type { RowDescriptor, TableDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
@@ -9,6 +9,8 @@ import { BTree } from 'inheritree';
 import { compareRows } from '../../util/comparison.js';
 import { WorkingTableIterable } from '../../util/working-table-iterable.js';
 import { DEFAULT_TUNING } from '../../planner/optimizer-tuning.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('runtime:emit:recursive-cte');
 
@@ -96,8 +98,12 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			deltaRows = newDeltaRows;
 		}
 
-		if (maxIterations > 0 && iterationCount >= maxIterations) {
-			throw new Error(`Recursive CTE '${plan.cteName}' exceeded maximum iteration limit (${maxIterations})`);
+		// Safety check for infinite recursion
+		if (iterationCount >= maxIterations) {
+			quereusError(
+				`Recursive CTE '${plan.cteName}' exceeded maximum iteration limit (${maxIterations})`,
+				StatusCode.ERROR
+			);
 		}
 
 		log('Recursive CTE %s completed after %d iterations (semi-naive algorithm)', plan.cteName, iterationCount);

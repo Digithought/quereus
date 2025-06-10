@@ -14,6 +14,8 @@ import { BTree } from 'inheritree';
 import { createLogger } from '../../common/logger.js';
 import { logContextPush, logContextPop } from '../utils.js';
 import { coerceForAggregate } from '../../util/coercion.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 export const ctxLog = createLogger('runtime:context');
 
@@ -141,7 +143,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		for (const agg of plan.aggregates) {
 			const funcNode = agg.expression;
 			if (!(funcNode instanceof AggregateFunctionCallNode)) {
-				throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+				quereusError(
+					`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`,
+					StatusCode.INTERNAL
+				);
 			}
 			const args = funcNode.args || [];
 			const aggregateArgs = groupByAndAggregateArgs.slice(aggregateArgOffset, aggregateArgOffset + args.length);
@@ -155,12 +160,18 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		for (const agg of plan.aggregates) {
 			const funcNode = agg.expression;
 			if (!(funcNode instanceof AggregateFunctionCallNode)) {
-				throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+				quereusError(
+					`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`,
+					StatusCode.INTERNAL
+				);
 			}
 
 			const funcSchema = funcNode.functionSchema;
-			if (!funcSchema || !isAggregateFunctionSchema(funcSchema)) {
-				throw new Error(`Function ${funcNode.functionName || 'unknown'} is not an aggregate function`);
+			if (!isAggregateFunctionSchema(funcSchema)) {
+				quereusError(
+					`Function ${funcNode.functionName || 'unknown'} is not an aggregate function`,
+					StatusCode.INTERNAL
+				);
 			}
 
 			aggregateSchemas.push(funcSchema);

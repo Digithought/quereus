@@ -1,10 +1,12 @@
+import { quereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 export * from './ast.js';
 export * from './parser.js';
 export * from './lexer.js';
 
-import { Parser, ParseError } from './parser';
-import type { SelectStmt, InsertStmt } from './ast';
-import { TokenType } from './lexer';
+import { Parser, ParseError } from './parser.js';
+import type { SelectStmt, InsertStmt } from './ast.js';
+import { TokenType } from './lexer.js';
 
 /**
  * Parse a SQL SELECT statement
@@ -28,7 +30,12 @@ export function parseSelect(sql: string): SelectStmt {
 export function parseInsert(sql: string): InsertStmt {
 	const stmt = parse(sql);
 	if (stmt.type !== 'insert') {
-		throw new Error(`Expected INSERT statement, but got ${stmt.type}`);
+		quereusError(
+			`Expected INSERT statement, but got ${stmt.type}`,
+			StatusCode.ERROR,
+			undefined,
+			stmt
+		);
 	}
 	return stmt as InsertStmt;
 }
@@ -50,5 +57,10 @@ export function parse(sql: string): SelectStmt | InsertStmt {
 		return stmt as InsertStmt;
 	}
 
-	throw new Error(`Unsupported SQL statement type: ${stmt.type}`);
+	quereusError(
+		`Unsupported SQL statement type: ${stmt.type}`,
+		StatusCode.UNSUPPORTED,
+		undefined,
+		stmt
+	);
 }
