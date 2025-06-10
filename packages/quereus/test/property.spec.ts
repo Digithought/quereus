@@ -17,6 +17,45 @@ describe('Property-Based Tests', () => {
 		await db.close();
 	});
 
+	/**
+	 * Deep equality comparison that treats -0 and +0 as equal,
+	 * since JSON cannot preserve the distinction between them.
+	 */
+	function deepEqualIgnoringZeroSign(actual: any, expected: any): boolean {
+		if (actual === expected) return true;
+
+		// Handle the -0 vs +0 case
+		if (typeof actual === 'number' && typeof expected === 'number' &&
+			actual === 0 && expected === 0) {
+			return true; // Treat -0 and +0 as equal
+		}
+
+		// Handle arrays
+		if (Array.isArray(actual) && Array.isArray(expected)) {
+			if (actual.length !== expected.length) return false;
+			for (let i = 0; i < actual.length; i++) {
+				if (!deepEqualIgnoringZeroSign(actual[i], expected[i])) return false;
+			}
+			return true;
+		}
+
+		// Handle objects
+		if (actual !== null && expected !== null &&
+			typeof actual === 'object' && typeof expected === 'object') {
+			const actualKeys = Object.keys(actual);
+			const expectedKeys = Object.keys(expected);
+			if (actualKeys.length !== expectedKeys.length) return false;
+
+			for (const key of actualKeys) {
+				if (!expectedKeys.includes(key)) return false;
+				if (!deepEqualIgnoringZeroSign(actual[key], expected[key])) return false;
+			}
+			return true;
+		}
+
+		return false;
+	}
+
 	// --- 1. Collation Comparator ---
 	describe('Collation Comparator', () => {
 		const collationsToTest = ['BINARY', 'NOCASE', 'RTRIM'];
@@ -192,9 +231,10 @@ describe('Property-Based Tests', () => {
 					// Objects and arrays are returned as JSON strings - parse them for comparison
 					try {
 						const parsedRetrieved = JSON.parse(retrievedValueParsed);
-						expect(parsedRetrieved).to.deep.equal(originalValue,
+						const isEqual = deepEqualIgnoringZeroSign(parsedRetrieved, originalValue);
+						expect(isEqual,
 							`JSON roundtrip mismatch after parsing string result.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved (raw): ${safeJsonStringify(retrievedValueParsed)}\nRetrieved (parsed): ${safeJsonStringify(parsedRetrieved)}`
-						);
+						).to.be.true;
 					} catch (parseError) {
 						throw new Error(`JSON roundtrip failed - could not parse retrieved string.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved: ${safeJsonStringify(retrievedValueParsed)}\nParse error: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
 					}
@@ -205,10 +245,11 @@ describe('Property-Based Tests', () => {
 						`JSON boolean roundtrip mismatch.\nOriginal boolean: ${originalValue}\nExpected integer: ${expectedInteger}\nRetrieved: ${retrievedValueParsed}`
 					);
 				} else {
-					// For other scalars (numbers, strings, null), direct comparison should work
-					expect(retrievedValueParsed).to.deep.equal(originalValue,
+					// For other scalars (numbers, strings, null), use zero-sign-aware comparison
+					const isEqual = deepEqualIgnoringZeroSign(retrievedValueParsed, originalValue);
+					expect(isEqual,
 						`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)} (type: ${typeof originalValue})\nRetrieved: ${safeJsonStringify(retrievedValueParsed)} (type: ${typeof retrievedValueParsed})`
-					);
+					).to.be.true;
 				}
 			}), { numRuns: 200 });
 		});
@@ -237,54 +278,58 @@ describe('Property-Based Tests', () => {
 			await db.exec('CREATE TABLE mixed_test (id INTEGER PRIMARY KEY, a ANY, b ANY) USING memory');
 
 			await fc.assert(fc.asyncProperty(complexValueArbitrary, complexValueArbitrary, async (valA, valB) => {
+				// Clear table and insert test values
+				await db.exec('DELETE FROM mixed_test');
+				const stmt = db.prepare('INSERT INTO mixed_test (id, a, b) VALUES (?, ?, ?)');
 				try {
-					// Clear table and insert test values
-					await db.exec('DELETE FROM mixed_test');
-					const stmt = db.prepare('INSERT INTO mixed_test (a, b) VALUES (?, ?)');
-					try {
-						await stmt.run([valA, valB]);
-					} finally {
-						await stmt.finalize();
+					await stmt.run([1, valA, valB]);
+				} finally {
+					await stmt.finalize();
+				}
+
+				// Test arithmetic in different contexts - they should all produce the same result or all fail
+				let selectResult: any = undefined;
+				let selectFailed = false;
+				let whereResult: any = undefined;
+				let whereFailed = false;
+
+				// Test in SELECT
+				try {
+					for await (const row of db.eval('SELECT (a + b) as result FROM mixed_test')) {
+						selectResult = row.result;
+						break;
 					}
+				} catch (e) {
+					selectFailed = true;
+				}
 
-					// Test arithmetic in different contexts - they should all produce the same result or all fail
-					let selectResult: any = undefined;
-					let selectFailed = false;
-					let whereResult: any = undefined;
-					let whereFailed = false;
-
-					// Test in SELECT
-					try {
-						for await (const row of db.eval('SELECT (a + b) as result FROM mixed_test')) {
-							selectResult = row.result;
-							break;
-						}
-					} catch (e) {
-						selectFailed = true;
+				// Test in WHERE (using a comparison to ensure arithmetic works)
+				try {
+					for await (const row of db.eval('SELECT (a + b) as result FROM mixed_test WHERE (a + b) = (a + b)')) {
+						whereResult = row.result;
+						break;
 					}
+				} catch (e) {
+					whereFailed = true;
+				}
 
-					// Test in WHERE (using a known value to see if arithmetic works)
-					try {
-						for await (const row of db.eval('SELECT (a + b) as result FROM mixed_test WHERE (a + b) IS NOT NULL')) {
-							whereResult = row.result;
-							break;
-						}
-					} catch (e) {
-						whereFailed = true;
-					}
+				// Both should succeed or both should fail
+				expect(selectFailed).to.equal(whereFailed,
+					`Arithmetic behavior inconsistent between SELECT and WHERE for (${safeJsonStringify(valA)}, ${safeJsonStringify(valB)})`);
 
-					// Both should succeed or both should fail
-					expect(selectFailed).to.equal(whereFailed,
-						`Arithmetic behavior inconsistent between SELECT and WHERE for (${safeJsonStringify(valA)}, ${safeJsonStringify(valB)})`);
-
-					// If both succeeded, results should match
-					if (!selectFailed && !whereFailed) {
+				// If both succeeded, results should match
+				// Note: if selectResult is null, whereResult might be undefined (no rows returned)
+				// This is expected behavior when the result is null
+				if (!selectFailed && !whereFailed) {
+					if (selectResult === null) {
+						// If SELECT returns null, WHERE with self-comparison should return no rows (undefined)
+						// This is actually correct behavior - NULL != NULL in SQL
+						expect(whereResult).to.be.undefined;
+					} else {
+						// For non-null results, they should match exactly
 						expect(selectResult).to.equal(whereResult,
 							`Arithmetic results differ between SELECT and WHERE for (${safeJsonStringify(valA)}, ${safeJsonStringify(valB)})`);
 					}
-				} catch (e: any) {
-					// Skip runs that cause unexpected errors
-					fc.pre(false);
 				}
 			}), { numRuns: 100 });
 		});
