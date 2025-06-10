@@ -150,7 +150,7 @@ export function expressionToString(expr: AST.Expression): string {
 			}
 			const argsStr = expr.args.map(arg => expressionToString(arg)).join(', ');
 			const distinctStr = expr.distinct ? 'distinct ' : '';
-			return `${expr.name}(${distinctStr}${argsStr})`;
+			return `${expr.name.toLowerCase()}(${distinctStr}${argsStr})`;
 
 		case 'cast':
 			return `cast(${expressionToString(expr.expr)} as ${expr.targetType.toLowerCase()})`;
@@ -233,7 +233,7 @@ function windowDefinitionToString(win: AST.WindowDefinition): string {
 		const orderParts = win.orderBy.map(clause => {
 			let orderStr = expressionToString(clause.expr);
 			if (clause.direction === 'desc') orderStr += ' desc';
-			if (clause.nulls) orderStr += ` nulls ${clause.nulls}`;
+			if (clause.nulls) orderStr += ` nulls ${clause.nulls.toLowerCase()}`;
 			return orderStr;
 		});
 		parts.push(`order by ${orderParts.join(', ')}`);
@@ -247,7 +247,7 @@ function windowDefinitionToString(win: AST.WindowDefinition): string {
 }
 
 function windowFrameToString(frame: AST.WindowFrame): string {
-	let frameStr = frame.type; // 'rows' or 'range'
+	let frameStr = frame.type.toLowerCase(); // 'rows' or 'range'
 
 	if (frame.end) {
 		frameStr += ` between ${windowFrameBoundToString(frame.start)} and ${windowFrameBoundToString(frame.end)}`;
@@ -256,7 +256,7 @@ function windowFrameToString(frame: AST.WindowFrame): string {
 	}
 
 	if (frame.exclusion) {
-		frameStr += ` exclude ${frame.exclusion}`;
+		frameStr += ` exclude ${frame.exclusion.toLowerCase()}`;
 	}
 
 	return frameStr;
@@ -317,7 +317,7 @@ export function selectToString(stmt: AST.SelectStmt): string {
 		const orderParts = stmt.orderBy.map(clause => {
 			let orderStr = expressionToString(clause.expr);
 			if (clause.direction === 'desc') orderStr += ' desc';
-			if (clause.nulls) orderStr += ` nulls ${clause.nulls}`;
+			if (clause.nulls) orderStr += ` nulls ${clause.nulls.toLowerCase()}`;
 			return orderStr;
 		});
 		parts.push('order by', orderParts.join(', '));
@@ -379,14 +379,23 @@ function fromClauseToString(from: AST.FromClause): string {
 
 		case 'functionSource':
 			const args = from.args.map(expressionToString).join(', ');
-			let funcStr = `${expressionToString(from.name)}(${args})`;
+			// Check if from.name is a function expression or identifier expression
+			let funcName: string;
+			if (from.name.type === 'identifier') {
+				funcName = from.name.name.toLowerCase();
+			} else if (from.name.type === 'function') {
+				funcName = expressionToString(from.name);
+			} else {
+				funcName = expressionToString(from.name);
+			}
+			let funcStr = `${funcName}(${args})`;
 			if (from.alias) funcStr += ` as ${quoteIdentifierIfNeeded(from.alias)}`;
 			return funcStr;
 
 		case 'join':
 			const leftStr = fromClauseToString(from.left);
 			const rightStr = fromClauseToString(from.right);
-			let joinStr = `${leftStr} ${from.joinType} join ${rightStr}`;
+			let joinStr = `${leftStr} ${from.joinType.toLowerCase()} join ${rightStr}`;
 			if (from.condition) {
 				joinStr += ` on ${expressionToString(from.condition)}`;
 			} else if (from.columns) {
@@ -519,7 +528,7 @@ function createIndexToString(stmt: AST.CreateIndexStmt): string {
 	const columns = stmt.columns.map(col => {
 		if (col.name) {
 			let colStr = quoteIdentifierIfNeeded(col.name);
-			if (col.collation) colStr += ` collate ${col.collation}`;
+			if (col.collation) colStr += ` collate ${col.collation.toLowerCase()}`;
 			if (col.direction === 'desc') colStr += ' desc';
 			return colStr;
 		} else if (col.expr) {
@@ -555,7 +564,7 @@ function createViewToString(stmt: AST.CreateViewStmt): string {
 }
 
 function dropToString(stmt: AST.DropStmt): string {
-	const parts: string[] = ['drop', stmt.objectType];
+	const parts: string[] = ['drop', stmt.objectType.toLowerCase()];
 	if (stmt.ifExists) parts.push('if exists');
 	parts.push(expressionToString(stmt.name));
 	return parts.join(' ');
@@ -564,7 +573,7 @@ function dropToString(stmt: AST.DropStmt): string {
 function beginToString(stmt: AST.BeginStmt): string {
 	let result = 'begin';
 	if (stmt.mode && stmt.mode !== 'deferred') {
-		result += ` ${stmt.mode}`;
+		result += ` ${stmt.mode.toLowerCase()}`;
 	}
 	result += ' transaction';
 	return result;
@@ -591,7 +600,7 @@ function releaseToString(stmt: AST.ReleaseStmt): string {
 }
 
 function pragmaToString(stmt: AST.PragmaStmt): string {
-	let result = `pragma ${stmt.name}`;
+	let result = `pragma ${stmt.name.toLowerCase()}`;
 	if (stmt.value) {
 		result += ` = ${expressionToString(stmt.value)}`;
 	}
@@ -634,7 +643,7 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				s += `default ${expressionToString(c.expr!)}`;
 				break;
 			case 'collate':
-				s += `collate ${c.collation}`;
+				s += `collate ${c.collation!.toLowerCase()}`;
 				break;
 			case 'foreignKey': // References clause needs more detail
 				s += 'references ?'; // Placeholder
