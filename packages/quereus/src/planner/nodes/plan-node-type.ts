@@ -60,6 +60,8 @@ export enum PlanNodeType {
   WindowFunctionCall = 'WindowFunctionCall',
   Between = 'Between',
   IsNull = 'IsNull',
+  IsNotNull = 'IsNotNull',
+  Like = 'Like',
   ScalarSubquery = 'ScalarSubquery',
   TableFunctionReference = 'TableFunctionReference',
 

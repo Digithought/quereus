@@ -25,6 +25,7 @@
     "test:all": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js 'packages/quereus/test/**/*.spec.ts' --colors",
     "test": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js 'packages/quereus/test/**/*.spec.ts' --colors --bail",
     "test:single": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js --bail",
+    "test:plans": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js 'packages/quereus/test/plan/**/*.spec.ts' --colors",
     "prepublishOnly": "npm run build && npm run doc",
     "typecheck": "tsc --noEmit"
   },

@@ -25,6 +25,11 @@ import { ReturningNode } from './nodes/returning-node.js';
 import { SinkNode } from './nodes/sink-node.js';
 import { quereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
+import { applyRules, clearVisitedRules, registerRules, createRule } from './framework/registry.js';
+import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
+import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
+import { createOptContext, type OptContext } from './framework/context.js';
+import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
 
 const log = createLogger('optimizer');
 
@@ -38,9 +43,63 @@ type OptimizationRule = (node: PlanNode, optimizer: Optimizer) => PlanNode | nul
  */
 export class Optimizer {
 	private rules: Map<PlanNodeType, OptimizationRule[]> = new Map();
+	private readonly stats: StatsProvider;
+	private context?: OptContext;
 
-	constructor(public readonly tuning: OptimizerTuning = DEFAULT_TUNING) {
+	constructor(
+		public readonly tuning: OptimizerTuning = DEFAULT_TUNING,
+		stats?: StatsProvider
+	) {
+		this.stats = stats ?? defaultStatsProvider;
 		this.registerDefaultRules();
+
+		// Ensure global framework rules are registered once
+		Optimizer.ensureGlobalRulesRegistered();
+	}
+
+	private static globalRulesRegistered = false;
+
+	/**
+	 * Ensure global framework rules are registered only once
+	 */
+	private static ensureGlobalRulesRegistered(): void {
+		if (Optimizer.globalRulesRegistered) {
+			return;
+		}
+		Optimizer.globalRulesRegistered = true;
+
+		const defaultRules = getDefaultRules();
+
+		// Register in new framework system
+		const newFrameworkRules = [];
+
+		// Register legacy rules
+		for (const [nodeType, rules] of defaultRules) {
+			for (let i = 0; i < rules.length; i++) {
+				const rule = rules[i];
+				// Convert old rule format to new framework format
+				const ruleId = `legacy-${nodeType.toLowerCase()}-${i}`;
+				newFrameworkRules.push(createRule(
+					ruleId,
+					nodeType,
+					'impl', // Most legacy rules are implementation rules
+					rule,
+					50 // Medium priority for legacy rules
+				));
+			}
+		}
+
+		// Register new Phase 1 rules
+		newFrameworkRules.push(createRule(
+			'select-access-path',
+			PlanNodeType.TableScan,
+			'impl',
+			ruleSelectAccessPath,
+			30 // Higher priority than legacy rules
+		));
+
+		// Register all converted rules at once
+		registerRules(newFrameworkRules);
 	}
 
 	/**
@@ -48,33 +107,51 @@ export class Optimizer {
 	 */
 	optimize(plan: PlanNode): PlanNode {
 		log('Starting optimization of plan', plan.nodeType);
-		return this.optimizeNode(plan);
+
+		// Clear rule tracking from previous runs
+		clearVisitedRules();
+
+		// Create optimization context
+		this.context = createOptContext(this, this.stats, this.tuning);
+
+		tracePhaseStart('optimization');
+		try {
+			const result = this.optimizeNode(plan);
+			return result;
+		} finally {
+			tracePhaseEnd('optimization');
+			this.context = undefined;
+		}
 	}
 
 	optimizeNode(node: PlanNode): PlanNode {
+		traceNodeStart(node);
+
 		// If already physical, just recurse on children
 		if (node.physical) {
-			return this.optimizeChildren(node);
+			const result = this.optimizeChildren(node);
+			traceNodeEnd(node, result);
+			return result;
 		}
 
 		// First optimize all children
 		const optimizedNode = this.optimizeChildren(node);
 
-		// Try to apply rules for this node type
-		const rules = this.rules.get(optimizedNode.nodeType) || [];
-		for (const rule of rules) {
-			const result = rule(optimizedNode, this);
-			if (result) {
-				log(`Applied rule for ${optimizedNode.nodeType}, transformed to ${result.nodeType}`);
-				// Mark as physical and compute properties
-				this.markPhysical(result);
-				return result;
-			}
+		// Apply rules using the new framework
+		const rulesApplied = applyRules(optimizedNode, this);
+
+		if (rulesApplied !== optimizedNode) {
+			// Rules transformed the node
+			log(`Rules applied to ${optimizedNode.nodeType}, transformed to ${rulesApplied.nodeType}`);
+			this.markPhysical(rulesApplied);
+			traceNodeEnd(node, rulesApplied);
+			return rulesApplied;
 		}
 
 		// No rule applied - if node supports direct physical conversion, do it
 		if (this.canBePhysical(optimizedNode)) {
 			this.markPhysical(optimizedNode);
+			traceNodeEnd(node, optimizedNode);
 			return optimizedNode;
 		}
 
@@ -89,6 +166,7 @@ export class Optimizer {
 
 		// Mark as physical and return
 		this.markPhysical(optimizedNode);
+		traceNodeEnd(node, optimizedNode);
 		return optimizedNode;
 	}
 
@@ -227,6 +305,20 @@ export class Optimizer {
 	}
 
 	/**
+	 * Get the statistics provider
+	 */
+	getStats(): StatsProvider {
+		return this.stats;
+	}
+
+	/**
+	 * Get the current optimization context
+	 */
+	getContext(): OptContext | undefined {
+		return this.context;
+	}
+
+	/**
 	 * Register a transformation rule for a specific node type
 	 */
 	registerRule(nodeType: PlanNodeType, rule: OptimizationRule): void {
@@ -241,6 +333,8 @@ export class Optimizer {
 	 */
 	private registerDefaultRules(): void {
 		const defaultRules = getDefaultRules();
+
+		// Register in old system (for backwards compatibility)
 		for (const [nodeType, rules] of defaultRules) {
 			for (const rule of rules) {
 				this.registerRule(nodeType, rule);

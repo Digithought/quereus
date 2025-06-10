@@ -75,6 +75,12 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.TableReference, emitTableReference as EmitterFunc);
 	registerEmitter(PlanNodeType.CTEReference, emitCTEReference as EmitterFunc);
 	registerEmitter(PlanNodeType.TableScan, emitSeqScan as EmitterFunc);
+
+	// Physical access node emitters (Phase 1)
+	registerEmitter(PlanNodeType.SeqScan, emitSeqScan as EmitterFunc);
+	registerEmitter(PlanNodeType.IndexScan, emitSeqScan as EmitterFunc); // Reuse for now
+	registerEmitter(PlanNodeType.IndexSeek, emitSeqScan as EmitterFunc); // Reuse for now
+
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
 	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);
 	registerEmitter(PlanNodeType.Filter, emitFilter as EmitterFunc);

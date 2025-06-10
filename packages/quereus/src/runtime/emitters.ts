@@ -11,19 +11,62 @@ const log = createLogger('emitters');
 
 export type EmitterFunc = (plan: PlanNode, ctx: EmissionContext) => Instruction;
 
-const emitters: Map<PlanNodeType, EmitterFunc> = new Map();
+/**
+ * Metadata about an emitter's execution characteristics
+ * Used by optimizer to make decisions about physical properties
+ */
+export interface EmitterMeta {
+	/** Whether this emitter preserves input ordering */
+	preservesOrdering?: boolean;
 
-export function registerEmitter(nodeType: PlanNodeType, emitter: EmitterFunc): void {
-	emitters.set(nodeType, emitter);
-	log(`Registered emitter for ${nodeType}`);
+	/** Column indexes that must be ordered for this emitter to work efficiently */
+	requiresOrdering?: number[];
+
+	/** Whether this emitter can handle streaming input efficiently */
+	supportsStreaming?: boolean;
+
+	/** Whether this emitter produces deterministic output */
+	isDeterministic?: boolean;
+
+	/** Estimated CPU cost factor relative to other operations */
+	cpuCostFactor?: number;
+
+	/** Estimated memory usage factor */
+	memoryCostFactor?: number;
+
+	/** Free-text description for debugging */
+	note?: string;
+}
+
+/**
+ * Emitter registration with metadata
+ */
+interface EmitterRegistration {
+	emitter: EmitterFunc;
+	meta: EmitterMeta;
+}
+
+const emitters: Map<PlanNodeType, EmitterRegistration> = new Map();
+
+export function registerEmitter(nodeType: PlanNodeType, emitter: EmitterFunc, meta: EmitterMeta = {}): void {
+	emitters.set(nodeType, { emitter, meta });
+	log(`Registered emitter for ${nodeType} with meta: %O`, meta);
+}
+
+/**
+ * Get emitter metadata for a node type
+ */
+export function getEmitterMeta(nodeType: PlanNodeType): EmitterMeta | undefined {
+	const registration = emitters.get(nodeType);
+	return registration?.meta;
 }
 
 export function emitPlanNode(plan: PlanNode, ctx: EmissionContext): Instruction {
-	const emitter = emitters.get(plan.nodeType);
-	if (!emitter) {
+	const registration = emitters.get(plan.nodeType);
+	if (!registration) {
 		throw new QuereusError(`No emitter registered for ${plan.nodeType}`, StatusCode.ERROR);
 	}
-	return emitter(plan, ctx);
+	return registration.emitter(plan, ctx);
 }
 
 /**

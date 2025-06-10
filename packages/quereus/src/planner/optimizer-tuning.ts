@@ -5,6 +5,9 @@ export interface OptimizerTuning {
 	/** Row estimation defaults */
 	readonly defaultRowEstimate: number;
 
+	/** Maximum optimization depth to prevent infinite recursion */
+	readonly maxOptimizationDepth: number;
+
 	/** Join optimization */
 	readonly join: {
 		/** Minimum left side rows to consider caching right side */
@@ -41,6 +44,7 @@ export interface OptimizerTuning {
  */
 export const DEFAULT_TUNING: OptimizerTuning = {
 	defaultRowEstimate: 1000,
+	maxOptimizationDepth: 50,
 	join: {
 		minLeftRowsForCaching: 1,
 		maxRightRowsForCaching: 50000,

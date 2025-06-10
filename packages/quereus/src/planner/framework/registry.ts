@@ -7,6 +7,7 @@ import { createLogger } from '../../common/logger.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { Optimizer } from '../optimizer.js';
+import { traceRuleStart, traceRuleEnd } from './trace.js';
 
 const log = createLogger('optimizer:framework:registry');
 
@@ -212,17 +213,27 @@ export function applyRules(node: PlanNode, optimizer: Optimizer): PlanNode {
 
 		try {
 			const ruleLog = createLogger(`optimizer:rule:${rule.id}`);
+
+			// Trace rule start
+			traceRuleStart(rule, currentNode);
 			ruleLog('Applying rule to node %s', currentNode.id);
 
 			const result = rule.fn(currentNode, optimizer);
 
-			if (result && result !== currentNode) {
+						if (result && result !== currentNode) {
 				ruleLog('Rule transformed %s to %s', currentNode.nodeType, result.nodeType);
 				markRuleApplied(currentNode.id, rule.id);
+
+				// Trace successful transformation
+				traceRuleEnd(rule, currentNode, result);
+
 				currentNode = result;
 				appliedAnyRule = true;
 			} else {
 				ruleLog('Rule not applicable to node %s', currentNode.id);
+
+				// Trace rule not applicable
+				traceRuleEnd(rule, currentNode, null);
 			}
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
