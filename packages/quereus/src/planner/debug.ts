@@ -3,6 +3,8 @@ import { safeJsonStringify } from '../util/serialization.js';
 import { astToString } from '../util/ast-stringify.js';
 import type { Instruction, InstructionTracer } from '../runtime/types.js';
 import type * as AST from '../parser/ast.js';
+import { quereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 
 /**
  * Detailed information about a PlanNode for debugging purposes.
@@ -154,7 +156,7 @@ export function serializePlanTree(rootNode: PlanNode): string {
 
 	const rootInfo = nodeMap.get(rootNode);
 	if (!rootInfo) {
-		throw new Error('Root node not found in serialization map');
+		quereusError('Root node not found in serialization map', StatusCode.INTERNAL);
 	}
 
 	return safeJsonStringify(rootInfo, 2);

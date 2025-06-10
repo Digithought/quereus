@@ -4,6 +4,8 @@ import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
 import { getLiteralSqlType } from '../common/type-inference.js';
 import type { SqlValue } from '../common/types.js';
+import { quereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 
 const log = createLogger('parser:parser'); // Create logger instance
 const errorLog = log.extend('error');
@@ -84,7 +86,11 @@ export class Parser {
 					throw e;
 				}
 				errorLog("Unhandled parser error: %O", e);
-				throw new Error(`Parser error: ${e instanceof Error ? e.message : e}`);
+				quereusError(
+					`Parser error: ${e instanceof Error ? e.message : e}`,
+					StatusCode.ERROR,
+					e instanceof Error ? e : undefined
+				);
 			}
 		}
 
@@ -104,7 +110,7 @@ export class Parser {
 			// Handle case of empty input or input with only comments/whitespace
 			// Depending on desired behavior, could return null, undefined, or throw.
 			// Throwing seems reasonable as prepare/eval expect a statement.
-			throw new Error("No SQL statement found to parse.");
+			quereusError("No SQL statement found to parse.", StatusCode.ERROR);
 		}
 		if (statements.length > 1) {
 			// Find the token that starts the second statement for better error location
@@ -1720,7 +1726,13 @@ export class Parser {
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 
 		} else if (this.matchKeyword('AS')) {
-			throw new Error('CREATE TABLE AS SELECT is not supported.');
+			const token = this.previous();
+			quereusError(
+				'CREATE TABLE AS SELECT is not supported.',
+				StatusCode.UNSUPPORTED,
+				undefined,
+				{ loc: { start: { line: token.startLine, column: token.startColumn } } }
+			);
 		} else {
 			throw this.error(this.peek(), "Expected '(' or 'AS' after table name.");
 		}
@@ -1828,7 +1840,7 @@ export class Parser {
 			columns,
 			select,
 			isTemporary,
-				loc: _createLoc(startToken, this.previous()),
+			loc: _createLoc(startToken, this.previous()),
 		};
 	}
 

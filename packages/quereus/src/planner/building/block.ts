@@ -14,6 +14,8 @@ import { buildDeleteStmt } from './delete.js';
 import { buildAlterTableStmt } from './alter-table.js';
 import { buildBeginStmt, buildCommitStmt, buildRollbackStmt, buildSavepointStmt, buildReleaseStmt } from './transaction.js';
 import { buildPragmaStmt } from './pragma.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
@@ -56,7 +58,12 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildAlterTableStmt(ctx, stmt as AST.AlterTableStmt);
 			default:
 				// Throw an exception for unsupported statement types
-				throw new Error(`Unsupported statement type: ${(stmt as AST.Statement).type}`);
+				quereusError(
+					`Unsupported statement type: ${(stmt as AST.Statement).type}`,
+					StatusCode.UNSUPPORTED,
+					undefined,
+					stmt
+				);
 		}
 	}).filter(p => p !== undefined) as PlanNode[]; // Ensure we only have valid PlanNodes and cast
 

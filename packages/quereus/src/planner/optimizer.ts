@@ -23,6 +23,8 @@ import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 import { getDefaultRules } from './optimizer-rules.js';
 import { ReturningNode } from './nodes/returning-node.js';
 import { SinkNode } from './nodes/sink-node.js';
+import { quereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 
 const log = createLogger('optimizer');
 
@@ -76,8 +78,18 @@ export class Optimizer {
 			return optimizedNode;
 		}
 
-		// Otherwise, this is an error - all nodes must become physical
-		throw new Error(`No rule to make ${optimizedNode.nodeType} physical`);
+		// If we failed to make it physical after applying rules
+		if (!this.canBePhysical(optimizedNode)) {
+			log('Failed to make node %s physical after optimization', optimizedNode.nodeType);
+			quereusError(
+				`No rule to make ${optimizedNode.nodeType} physical`,
+				StatusCode.INTERNAL
+			);
+		}
+
+		// Mark as physical and return
+		this.markPhysical(optimizedNode);
+		return optimizedNode;
 	}
 
 	private optimizeChildren(node: PlanNode): PlanNode {

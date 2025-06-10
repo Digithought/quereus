@@ -76,3 +76,26 @@ export class MisuseError extends QuereusError {
 		Object.setPrototypeOf(this, MisuseError.prototype);
 	}
 }
+
+/**
+ * Helper function to throw a QuereusError with optional location information from AST nodes
+ * @param message Error message
+ * @param code Status code (defaults to ERROR)
+ * @param cause Optional underlying error
+ * @param astNode Optional AST node or object with location information
+ * @returns Never (always throws)
+ */
+export function quereusError(
+	message: string,
+	code: StatusCode = StatusCode.ERROR,
+	cause?: Error,
+	astNode?: { loc?: { start: { line: number; column: number } } }
+): never {
+	throw new QuereusError(
+		message,
+		code,
+		cause,
+		astNode?.loc?.start.line,
+		astNode?.loc?.start.column
+	);
+}
