@@ -62,6 +62,8 @@ export function astToString(node: AST.AstNode): string {
 			return updateToString(node as AST.UpdateStmt);
 		case 'delete':
 			return deleteToString(node as AST.DeleteStmt);
+		case 'values':
+			return valuesToString(node as AST.ValuesStmt);
 		case 'createTable':
 			return createTableToString(node as AST.CreateTableStmt);
 		case 'createIndex':
@@ -375,7 +377,23 @@ function fromClauseToString(from: AST.FromClause): string {
 			return tableStr;
 
 		case 'subquerySource':
-			return `(${selectToString(from.subquery)}) as ${quoteIdentifierIfNeeded(from.alias)}`;
+			let subqueryStr: string;
+			if (from.subquery.type === 'select') {
+				subqueryStr = selectToString(from.subquery);
+			} else if (from.subquery.type === 'values') {
+				subqueryStr = valuesToString(from.subquery);
+			} else {
+				// Handle the case where subquery type is not recognized
+				const exhaustiveCheck: never = from.subquery;
+				subqueryStr = astToString(exhaustiveCheck);
+			}
+
+			let aliasStr = `as ${quoteIdentifierIfNeeded(from.alias)}`;
+			if (from.columns && from.columns.length > 0) {
+				aliasStr += ` (${from.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+			}
+
+			return `(${subqueryStr}) ${aliasStr}`;
 
 		case 'functionSource':
 			const args = from.args.map(expressionToString).join(', ');
@@ -515,6 +533,13 @@ export function deleteToString(stmt: AST.DeleteStmt): string {
 	}
 
 	return parts.join(' ');
+}
+
+export function valuesToString(stmt: AST.ValuesStmt): string {
+	const valueRows = stmt.values.map(row =>
+		`(${row.map(expressionToString).join(', ')})`
+	);
+	return `values ${valueRows.join(', ')}`;
 }
 
 function createIndexToString(stmt: AST.CreateIndexStmt): string {

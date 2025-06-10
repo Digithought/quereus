@@ -2,12 +2,7 @@
 
 <img src="docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
-**(Work In Progress - and undergoing Major Refactoring: Titan Project)**
-
-Quereus is a lightweight, query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It aims to provide rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs) over data sources exposed via the virtual table mechanism. Quereus has no persistent file storage, though one could be built as a virtual table module.
-
-See [SQLite 3 Source](amalgamation/sqlite3.c) for C reference.
-See [Titan Project Overview](docs/titan.md) for details on the new architecture.
+Quereus is a feature-complete SQL query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It provides rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs, window functions, constraints) over data sources exposed via the virtual table mechanism. Quereus has no persistent file storage, though one could be built as a virtual table module.
 
 ## Project Goals
 
@@ -17,7 +12,7 @@ See [Titan Project Overview](docs/titan.md) for details on the new architecture.
 *   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
 *   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native.
 *   **Minimal Dependencies**: Avoid heavy external dependencies where possible.
-*   **SQL Compatibility**: Support a rich subset of SQL, particularly DML (select, insert, update, delete) features useful for querying and manipulating data across virtual tables.
+*   **SQL Compatibility**: Comprehensive support for modern SQL features including joins, window functions, subqueries, CTEs, constraints, views, and advanced DML/DDL operations.
 *   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used (similar to SQLite's `WITHOUT ROWID` tables being the default and only mode).
 *   **Third Manifesto Friendly**: Embraces some of the principles of the [Third Manifesto](https://www.dcs.warwick.ac.uk/~hugh/TTM/DTATRM.pdf), such as allowing for empty keys. Utilizes algebraic planning.
 
@@ -34,6 +29,7 @@ Quereus is built on a modern architecture based on partially immutable PlanNodes
     *   Handles Common Table Expressions (CTEs) and Subqueries by converting them into relational `PlanNode`s.
     *   Resolves table and function references using the Schema Manager.
     *   Performs query planning, incorporating virtual table `xBestIndex` method and table schema statistics.
+    *   **Optimizer (`src/planner/optimizer`)**: Performs query optimization, including join reordering, predicate pushdown, and other optimizations.
 4.  **Runtime (`src/runtime`)**:
     *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: Translate `PlanNode`s into a graph of `Instruction` objects.
     *   **Scheduler (`src/runtime/scheduler.ts`)**: Manages the execution flow of the `Instruction` graph.
@@ -149,12 +145,23 @@ To add logging within a module:
 
 ## Current Status
 
-Quereus has a modern planner and instruction-based runtime architecture that provides comprehensive SQL support.
+Quereus is a feature-complete SQL query processor with a modern planner and instruction-based runtime architecture. The engine successfully handles complex SQL workloads including joins, window functions, subqueries, CTEs, constraints, and comprehensive DML/DDL operations.
 
-**Major outstanding features:**
-*   **Advanced optimization** - Query optimization is currently basic but has a solid foundation for enhancement.
+**Current capabilities include:**
+*   **Complete JOIN support** - INNER, LEFT, RIGHT, CROSS joins with proper NULL padding
+*   **Advanced window functions** - Ranking, aggregates, and frame specifications
+*   **Full constraint system** - NOT NULL, CHECK constraints with operation-specific triggers  
+*   **Comprehensive subqueries** - Scalar, correlated, EXISTS, and IN subqueries
+*   **Complete set operations** - UNION, INTERSECT, EXCEPT with proper deduplication
+*   **Robust transaction support** - Multi-level savepoints and rollback
+*   **Rich built-in function library** - Scalar, aggregate, window, JSON, and date/time functions
 
-See the [TODO List](docs/todo.md) for a detailed breakdown.
+**Primary development focus:**
+*   **Query optimization** - Cost-based planning, join reordering, and advanced statistics
+*   **Performance enhancement** - Memory pooling, parallel execution, and streaming improvements
+*   **Advanced features** - Foreign key constraints, materialized views, and performance tooling
+
+See the [TODO List](docs/todo.md) for detailed development priorities.
 
 ## Testing
 
@@ -176,7 +183,7 @@ Quereus employs a multi-faceted testing strategy:
         *   `QUEREUS_TEST_SHOW_STACK=true` - Include full stack trace in diagnostics
         *   `QUEREUS_TEST_SHOW_TRACE=true` - Include execution trace in diagnostics
     *   This helps pinpoint failures at the Parser, Planner, or Runtime layer while keeping output manageable.
-    *   Covers core functionality: basic CRUD, expressions, joins, aggregates, subqueries, CTEs, transactions, VTab planning basics, built-ins, and common error paths.
+    *   Provides comprehensive coverage of SQL features: basic CRUD, complex expressions, all join types, window functions, aggregates, subqueries, CTEs, constraints, transactions, set operations, views, and error handling.
 
 2.  **Property-Based Tests (`test/property.spec.ts`)**:
     *   Uses the `fast-check` library to generate a wide range of inputs for specific, tricky areas.

@@ -89,7 +89,7 @@ export function quereusError(
 	message: string,
 	code: StatusCode = StatusCode.ERROR,
 	cause?: Error,
-	astNode?: { loc?: { start: { line: number; column: number } } }
+	astNode?: { loc?: { start: { line: number; column: number }, end?: { line: number; column: number } } }
 ): never {
 	throw new QuereusError(
 		message,

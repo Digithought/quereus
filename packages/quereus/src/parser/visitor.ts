@@ -17,6 +17,7 @@ export interface AstVisitorCallbacks {
 	visitInsert?: (node: AST.InsertStmt) => void | boolean;
 	visitUpdate?: (node: AST.UpdateStmt) => void | boolean;
 	visitDelete?: (node: AST.DeleteStmt) => void | boolean;
+	visitValues?: (node: AST.ValuesStmt) => void | boolean;
 	visitTableSource?: (node: AST.TableSource) => void | boolean;
 	visitJoin?: (node: AST.JoinClause) => void | boolean;
 	visitFunctionSource?: (node: AST.FunctionSource) => void | boolean;
@@ -90,6 +91,11 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 			const stmt = node as AST.DeleteStmt;
 			traverseAst(stmt.table, callbacks);
 			traverseAst(stmt.where, callbacks);
+			break;
+		}
+		case 'values': {
+			const stmt = node as AST.ValuesStmt;
+			stmt.values.forEach(row => row.forEach(v => traverseAst(v, callbacks)));
 			break;
 		}
 		case 'table':

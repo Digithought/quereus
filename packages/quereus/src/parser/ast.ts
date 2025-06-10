@@ -13,7 +13,7 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource' | 'case' | 'in' | 'exists';
+		| 'subquerySource' | 'case' | 'in' | 'exists' | 'values';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -204,6 +204,12 @@ export interface DeleteStmt extends AstNode {
 	returning?: ResultColumn[];
 }
 
+// VALUES statement
+export interface ValuesStmt extends AstNode {
+	type: 'values';
+	values: Expression[][]; // Array of value lists: VALUES (1, 'a'), (2, 'b'), ...
+}
+
 // CREATE TABLE statement
 export interface CreateTableStmt extends AstNode {
 	type: 'createTable';
@@ -304,8 +310,9 @@ export interface TableSource extends AstNode {
 // --- Add SubquerySource type --- Needed before FromClause use
 export interface SubquerySource extends AstNode {
 	type: 'subquerySource'; // Distinct type for FROM clause subqueries
-	subquery: SelectStmt;
+	subquery: SelectStmt | ValuesStmt;
 	alias: string; // Subqueries in FROM MUST have an alias
+	columns?: string[]; // Optional column names for the alias: AS alias(col1, col2, ...)
 }
 
 // JOIN clause in FROM
@@ -446,6 +453,7 @@ export type Statement =
 	| InsertStmt
 	| UpdateStmt
 	| DeleteStmt
+	| ValuesStmt
 	| CreateTableStmt
 	| CreateIndexStmt
 	| CreateViewStmt

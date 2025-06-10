@@ -69,3 +69,41 @@ DROP TABLE set_numbers;
 
 DROP TABLE set_a;
 DROP TABLE set_b;
+
+-- Test set operation mathematical properties
+-- Test UNION commutativity: A UNION B = B UNION A
+SELECT value FROM (VALUES (1), (2), (3)) AS t1(value)
+UNION
+SELECT value FROM (VALUES (2), (4), (5)) AS t2(value)
+ORDER BY value;
+→ [{"value":1},{"value":2},{"value":3},{"value":4},{"value":5}]
+
+SELECT value FROM (VALUES (2), (4), (5)) AS t1(value)
+UNION
+SELECT value FROM (VALUES (1), (2), (3)) AS t2(value)
+ORDER BY value;
+→ [{"value":1},{"value":2},{"value":3},{"value":4},{"value":5}]
+
+-- Test UNION idempotency: A UNION A = A
+SELECT value FROM (VALUES (1), (2), (3)) AS t1(value)
+UNION
+SELECT value FROM (VALUES (1), (2), (3)) AS t2(value)
+ORDER BY value;
+→ [{"value":1},{"value":2},{"value":3}]
+
+SELECT DISTINCT value FROM (VALUES (1), (2), (3)) AS t1(value)
+ORDER BY value;
+→ [{"value":1},{"value":2},{"value":3}]
+
+-- Test INTERSECT commutativity
+SELECT value FROM (VALUES (1), (2), (3), (4)) AS t1(value)
+INTERSECT
+SELECT value FROM (VALUES (2), (3), (4), (5)) AS t2(value)
+ORDER BY value;
+→ [{"value":2},{"value":3},{"value":4}]
+
+SELECT value FROM (VALUES (2), (3), (4), (5)) AS t1(value)
+INTERSECT
+SELECT value FROM (VALUES (1), (2), (3), (4)) AS t2(value)
+ORDER BY value;
+→ [{"value":2},{"value":3},{"value":4}]

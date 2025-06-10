@@ -74,5 +74,36 @@ SELECT typeof(1 + 2), typeof(1.5 + 2), typeof('a' || 'b');
 → [{"typeof(1 + 2)":"integer","typeof(1.5 + 2)":"real","typeof('a' || 'b')":"text"}]
 
 -- BETWEEN
-SELECT 3 BETWEEN 2 and 6 AS IsBetwixt, 'a' between 'f' and 'z' AS NotBetwixt;
-→ [{"IsBetwixt":1,"NotBetwixt":0}]
+SELECT 3 BETWEEN 2 and 6 AS isbetwixt, 'a' between 'f' and 'z' AS notbetwixt;
+→ [{"isbetwixt":1,"notbetwixt":0}]
+
+-- Expression evaluation consistency across contexts
+CREATE TABLE expr_context_test (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c INTEGER);
+INSERT INTO expr_context_test VALUES (1, 5, 3, null), (2, -2, 4, 7), (3, 0, 1, 0);
+
+-- Test that expressions evaluate consistently across SELECT, WHERE, HAVING
+SELECT id, (a + b * 2) as expr_result FROM expr_context_test ORDER BY id;
+→ [{"id":1,"expr_result":11},{"id":2,"expr_result":6},{"id":3,"expr_result":2}]
+
+-- Same expression in WHERE - should find matching rows
+SELECT id, (a + b * 2) as expr_result FROM expr_context_test WHERE (a + b * 2) = 11;
+→ [{"id":1,"expr_result":11}]
+
+SELECT id, (a + b * 2) as expr_result FROM expr_context_test WHERE (a + b * 2) = 6;
+→ [{"id":2,"expr_result":6}]
+
+SELECT id, (a + b * 2) as expr_result FROM expr_context_test WHERE (a + b * 2) = 2;
+→ [{"id":3,"expr_result":2}]
+
+-- Same expression in HAVING
+SELECT id, (a + b * 2) as expr_result FROM expr_context_test GROUP BY id HAVING (a + b * 2) = 11;
+→ [{"id":1,"expr_result":11}]
+
+SELECT id, (a + b * 2) as expr_result FROM expr_context_test GROUP BY id HAVING (a + b * 2) IN (2, 6) ORDER BY id;
+→ [{"id":2,"expr_result":6},{"id":3,"expr_result":2}]
+
+-- Test more complex expressions
+SELECT id, (a * b + COALESCE(c, 0)) as complex_expr FROM expr_context_test ORDER BY id;
+→ [{"id":1,"complex_expr":15},{"id":2,"complex_expr":-1},{"id":3,"complex_expr":0}]
+
+DROP TABLE expr_context_test;

@@ -2,7 +2,6 @@ import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
-import { getLiteralSqlType } from '../common/type-inference.js';
 import type { SqlValue } from '../common/types.js';
 import { quereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
@@ -56,7 +55,23 @@ export class Parser {
 		// Check for errors from lexer
 		const errorToken = this.tokens.find(t => t.type === TokenType.ERROR);
 		if (errorToken) {
-			throw new ParseError(errorToken, `${errorToken.lexeme} at line ${errorToken.startLine}, column ${errorToken.startColumn}`);
+			quereusError(
+				`Lexer error: ${errorToken.lexeme}`,
+				StatusCode.ERROR,
+				undefined,
+				{
+					loc: {
+						start: {
+							line: errorToken.startLine,
+							column: errorToken.startColumn,
+						},
+						end: {
+							line: errorToken.endLine,
+							column: errorToken.endColumn,
+						}
+					}
+				}
+			);
 		}
 
 		return this;
@@ -78,13 +93,12 @@ export class Parser {
 				this.match(TokenType.SEMICOLON);
 
 			} catch (e) {
-				if (e instanceof ParseError) {
-					if (!e.message.includes(`at line ${e.token.startLine}`)) {
-						const locationInfo = ` at line ${e.token.startLine}, column ${e.token.startColumn}`;
-						(e as any).message = e.message + locationInfo;
-					}
+				// error() method now throws QuereusError directly with location info
+				if (e instanceof Error && e.name === 'QuereusError') {
 					throw e;
 				}
+
+				// Handle unexpected non-QuereusError exceptions
 				errorLog("Unhandled parser error: %O", e);
 				quereusError(
 					`Parser error: ${e instanceof Error ? e.message : e}`,
@@ -116,7 +130,7 @@ export class Parser {
 			// Find the token that starts the second statement for better error location
 			const secondStatementStartToken = statements[1]?.loc?.start;
 			const errToken = this.tokens.find(t => t.startOffset === secondStatementStartToken?.offset) ?? this.peek();
-			throw this.error(errToken, "Provided SQL string contains multiple statements. Use exec() for multi-statement execution.");
+			this.error(errToken, "Provided SQL string contains multiple statements. Use exec() for multi-statement execution.");
 		}
 		return statements[0];
 	}
@@ -146,13 +160,13 @@ export class Parser {
 			// Parse MAXRECURSION option
 			if (this.matchKeyword('MAXRECURSION')) {
 				if (!this.check(TokenType.INTEGER)) {
-					throw this.error(this.peek(), "Expected integer value after MAXRECURSION.");
+					this.error(this.peek(), "Expected integer value after MAXRECURSION.");
 				}
 				const maxRecursionToken = this.advance();
 				const maxRecursion = maxRecursionToken.literal as number;
 
 				if (maxRecursion < 0) {
-					throw this.error(maxRecursionToken, "MAXRECURSION value must be non-negative.");
+					this.error(maxRecursionToken, "MAXRECURSION value must be non-negative.");
 				}
 
 				options = { maxRecursion };
@@ -246,6 +260,7 @@ export class Parser {
 			case 'INSERT': this.advance(); stmt = this.insertStatement(startToken, withClause); break;
 			case 'UPDATE': this.advance(); stmt = this.updateStatement(startToken, withClause); break;
 			case 'DELETE': this.advance(); stmt = this.deleteStatement(startToken, withClause); break;
+			case 'VALUES': this.advance(); stmt = this.valuesStatement(startToken); break;
 			case 'CREATE': this.advance(); stmt = this.createStatement(startToken, withClause); break;
 			case 'DROP': this.advance(); stmt = this.dropStatement(startToken, withClause); break;
 			case 'ALTER': this.advance(); stmt = this.alterTableStatement(startToken, withClause); break;
@@ -259,7 +274,7 @@ export class Parser {
 			// --- Add default case ---
 			default:
 				// If it wasn't a recognized keyword starting the statement
-				throw this.error(startToken, `Expected statement type (SELECT, INSERT, UPDATE, DELETE, CREATE, etc.), got '${startToken.lexeme}'.`);
+				throw this.error(startToken, `Expected statement type (SELECT, INSERT, UPDATE, DELETE, VALUES, CREATE, etc.), got '${startToken.lexeme}'.`);
 		}
 
 		// Attach WITH clause if present and supported
@@ -610,12 +625,13 @@ export class Parser {
 		const startToken = this.peek();
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
-		// Check for subquery: ( SELECT ...
+		// Check for subquery: ( SELECT ... or ( VALUES ...
 		if (this.check(TokenType.LPAREN)) {
 			// Look ahead to see if this is a subquery
 			const lookahead = this.current + 1;
 			if (lookahead < this.tokens.length &&
-				this.tokens[lookahead].type === TokenType.SELECT) {
+				(this.tokens[lookahead].type === TokenType.SELECT ||
+				 this.tokens[lookahead].type === TokenType.VALUES)) {
 				return this.subquerySource(startToken, withClause);
 			}
 		}
@@ -634,14 +650,26 @@ export class Parser {
 	private subquerySource(startToken: Token, withClause?: AST.WithClause): AST.SubquerySource {
 		this.consume(TokenType.LPAREN, "Expected '(' before subquery.");
 
-		// Consume the SELECT token and pass it as startToken to selectStatement
-		const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' in subquery.");
-		const subquery = this.selectStatement(selectToken, withClause);
+		let subquery: AST.SelectStmt | AST.ValuesStmt;
+
+		if (this.check(TokenType.SELECT)) {
+			// Consume the SELECT token and pass it as startToken to selectStatement
+			const selectToken = this.advance();
+			subquery = this.selectStatement(selectToken, withClause);
+		} else if (this.check(TokenType.VALUES)) {
+			// Handle VALUES subquery
+			const valuesToken = this.advance();
+			subquery = this.valuesStatement(valuesToken);
+		} else {
+			throw this.error(this.peek(), "Expected 'SELECT' or 'VALUES' in subquery.");
+		}
 
 		this.consume(TokenType.RPAREN, "Expected ')' after subquery.");
 
 		// Parse optional alias for subquery
 		let alias: string;
+		let columns: string[] | undefined;
+
 		if (this.match(TokenType.AS)) {
 			if (!this.checkIdentifierLike([])) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
@@ -660,11 +688,25 @@ export class Parser {
 			alias = `subquery_${startToken.startOffset}`;
 		}
 
+		// Parse optional column list after alias: AS alias(col1, col2, ...)
+		if (this.match(TokenType.LPAREN)) {
+			columns = [];
+			const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
+
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in alias column list."));
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
+		}
+
 		const endToken = this.previous();
 		return {
 			type: 'subquerySource',
 			subquery,
 			alias,
+			columns,
 			loc: _createLoc(startToken, endToken),
 		};
 	}
@@ -1554,7 +1596,7 @@ export class Parser {
 			return this.advance();
 		}
 
-		throw this.error(this.peek(), message);
+		this.error(this.peek(), message);
 	}
 
 	private check(type: TokenType): boolean {
@@ -1584,9 +1626,24 @@ export class Parser {
 		return this.tokens[this.current - 1];
 	}
 
-	private error(token: Token, message: string): ParseError {
-		const locationInfo = ` at line ${token.startLine}, column ${token.startColumn}`;
-		return new ParseError(token, message + locationInfo);
+	private error(token: Token, message: string): never {
+		quereusError(
+			message,
+			StatusCode.ERROR,
+			undefined,
+			{
+				loc: {
+					start: {
+						line: token.startLine,
+						column: token.startColumn,
+					},
+					end: {
+						line: token.endLine,
+						column: token.endColumn,
+					}
+				}
+			}
+		);
 	}
 
 	private isJoinToken(): boolean {
@@ -1657,6 +1714,28 @@ export class Parser {
 	}
 
 	/** @internal */
+	private valuesStatement(startToken: Token): AST.ValuesStmt {
+		const values: AST.Expression[][] = [];
+
+		do {
+			this.consume(TokenType.LPAREN, "Expected '(' before values.");
+			const valueList: AST.Expression[] = [];
+
+			if (!this.check(TokenType.RPAREN)) { // Check for empty value list
+				do {
+					valueList.push(this.expression());
+				} while (this.match(TokenType.COMMA));
+			}
+
+			this.consume(TokenType.RPAREN, "Expected ')' after values.");
+			values.push(valueList);
+		} while (this.match(TokenType.COMMA));
+
+		const endToken = this.previous();
+		return { type: 'values', values, loc: _createLoc(startToken, endToken) };
+	}
+
+	/** @internal */
 	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE.");
@@ -1695,21 +1774,6 @@ export class Parser {
 
 		const table = this.tableIdentifier();
 
-		let moduleName: string | undefined;
-		let moduleArgs: Record<string, SqlValue> = {};
-		if (this.matchKeyword('USING')) {
-			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
-			if (this.matchKeyword('(')) {
-				while (!this.match(TokenType.RPAREN)) {
-					const nameValue = this.nameValueItem("module argument");
-					moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? nameValue.value.value : nameValue.value.name;
-					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
-						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
-					}
-				}
-			}
-		}
-
 		const columns: AST.ColumnDef[] = [];
 		const constraints: AST.TableConstraint[] = [];
 
@@ -1735,6 +1799,21 @@ export class Parser {
 			);
 		} else {
 			throw this.error(this.peek(), "Expected '(' or 'AS' after table name.");
+		}
+
+		let moduleName: string | undefined;
+		let moduleArgs: Record<string, SqlValue> = {};
+		if (this.matchKeyword('USING')) {
+			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
+			if (this.matchKeyword('(')) {
+				while (!this.match(TokenType.RPAREN)) {
+					const nameValue = this.nameValueItem("module argument");
+					moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? nameValue.value.value : nameValue.value.name;
+					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
+						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
+					}
+				}
+			}
 		}
 
 		return {

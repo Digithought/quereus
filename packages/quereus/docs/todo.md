@@ -1,27 +1,27 @@
 ## Project TODO List & Future Work
 
-This list reflects the **current state** of Quereus - a surprisingly complete SQL query processor with the Titan runtime. Many core features are already implemented!
+This list reflects the **current state** of Quereus - a surprisingly complete SQL query processor with the Titan runtime. Most core SQL features are now implemented and working!
 
-## I. Type System & Coercion ✅ (Mostly Complete)
+## I. Type System & Coercion ✅ (Nearly Complete)
 
 **Type Coercion**
 - [X] **Binary Operations**: All comparison and arithmetic operators ✅
 - [X] **Aggregate Functions**: Context-aware coercion (SUM vs COUNT vs JSON) ✅
 - [X] **Unary Operations**: NOT, IS NULL, unary +/-, bitwise operators ✅  
 - [X] **CAST Operations**: Full explicit type conversion ✅
-- [ ] **Built-in Scalar Functions**: Apply coercion to functions expecting numeric inputs
-- [ ] **ORDER BY**: Numeric sorting of string columns using coercion
+- [X] **Built-in Scalar Functions**: Most scalar functions with proper type handling ✅
+- [ ] **ORDER BY**: Enhanced numeric sorting of string columns using coercion
 
 **Type Affinity & Storage**
-- [ ] **INSERT Type Affinity**: Column type affinity during INSERT operations
-- [ ] **Column Constraints**: NOT NULL, CHECK constraints with proper type coercion
+- [X] **Column Type Affinity**: Basic type affinity working in storage ✅
+- [X] **Column Constraints**: NOT NULL, CHECK constraints with proper type coercion ✅
 
 ## II. Core SQL Features ✅ (Complete!)
 
 **SELECT Operations**
 - [X] **Basic SELECT**: Project, Filter, Sort, Distinct, Limit/Offset ✅
 - [X] **Aggregate Queries**: GROUP BY, HAVING, all aggregate functions ✅
-- [X] **Window Functions**: Comprehensive Phase 1 implementation with ranking and aggregate functions ✅
+- [X] **Window Functions**: Comprehensive implementation with ranking, aggregate functions, and frame specifications ✅
 - [X] **Set Operations**: UNION, INTERSECT, EXCEPT (all variants) ✅
 
 **FROM Clause**
@@ -29,6 +29,7 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 - [X] **Subqueries**: Scalar subqueries, correlated subqueries ✅
 - [X] **CTEs**: Both regular and recursive WITH support ✅
 - [X] **Table-Valued Functions**: Complete TVF framework ✅
+- [X] **JOINs**: INNER, LEFT, RIGHT, CROSS JOIN support ✅
 
 **DML Operations** 
 - [X] **INSERT**: Multi-row, INSERT...SELECT, with RETURNING ✅
@@ -38,12 +39,16 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 **DDL Operations**
 - [X] **CREATE/DROP TABLE**: Full table management ✅
 - [X] **CREATE/DROP VIEW**: Full view support ✅
+- [X] **CREATE INDEX**: Index creation with UNIQUE, multi-column, DESC support ✅
+- [X] **ALTER TABLE ADD CONSTRAINT**: Dynamic constraint addition ✅
 
 **Advanced SQL**
 - [X] **CASE Expressions**: Both simple and searched CASE ✅
 - [X] **Scalar Functions**: Complete function call framework ✅
 - [X] **Parameter References**: Named and positional parameters ✅
 - [X] **Transaction Control**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT ✅
+- [X] **DISTINCT**: Full SELECT DISTINCT support ✅
+- [X] **Constraints**: NOT NULL, CHECK constraints with operation-specific triggers ✅
 
 ## III. Runtime Architecture ✅ (Titan is Working!)
 
@@ -56,8 +61,10 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 **Query Planning**
 - [X] **Physical Plans**: Complete planner → emitter → runtime pipeline ✅
 - [X] **Correlation Handling**: Correlated subqueries working correctly ✅
+- [X] **JOIN Planning**: Full join planning and execution ✅
+- [X] **Scalar Operations**: UnaryOpNode, BinaryOpNode, CastNode, CollateNode, CaseExprNode all implemented ✅
 - [ ] **Cost-Based Optimization**: Better cost estimates for plan selection
-- [ ] **Join Reordering**: Optimize join order (joins not yet implemented)
+- [ ] **Join Reordering**: Optimize join order based on statistics
 
 ## IV. Virtual Table Framework ✅ (Robust!)
 
@@ -68,90 +75,112 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 - [X] **Connection Management**: Proper connection lifecycle ✅
 
 **MemoryTable Improvements**
-- [P] **Constraint Optimization**: Better xBestIndex for LIKE, GLOB, IN, ranges
+- [P] **Index Optimization**: Better xBestIndex for LIKE, GLOB, IN, ranges
 - [P] **Transaction Performance**: Optimize layer cursor merge operations
 
-## V. Missing Core Features (The Real TODOs)
+## V. Recently Implemented Features ✅
 
-**JOIN Operations** 
-- [ ] **INNER/LEFT/RIGHT JOIN**: Basic join support (major gap!)
-  - [ ] **JOIN Planning**: Implement planning for various `JOIN` types, creating `JoinNode`s
-  - [ ] **JOIN Emitters**: Create `emitJoin` for `JoinNode` with proper attribute handling for both sides
-  - [ ] **Join Condition Planning**: Handle join conditions and updating scopes correctly across join boundaries
-- [ ] **JOIN Optimization**: Join reordering and optimization
-- [ ] **CROSS JOIN**: Cartesian product support
+**JOIN Operations** ✅ (Complete!)
+- [X] **INNER/LEFT/RIGHT/CROSS JOIN**: All basic join types working ✅
+- [X] **JOIN Planning**: Full planning for JOIN types with JoinNode ✅
+- [X] **JOIN Emitters**: Complete emitJoin with proper attribute handling ✅
+- [X] **Join Condition Planning**: Proper condition handling and scope management ✅
+- [X] **Multiple JOINs**: Chain multiple joins correctly ✅
+- [ ] **JOIN Optimization**: Join reordering and algorithm selection
 
-**Window Functions** ✅ (Phase 1 Complete!)
+**Window Functions** ✅ (Comprehensive!)
 - [X] **Ranking Functions**: ROW_NUMBER, RANK, DENSE_RANK, NTILE ✅
 - [X] **Windowed Aggregates**: COUNT, SUM, AVG, MIN, MAX with OVER clauses ✅
-- [X] **PARTITION BY**: Full partitioning support with proper execution strategies ✅
-- [X] **Registration System**: Extensible window function registration like scalar/aggregate functions ✅
-- [X] **Performance Optimization**: Groups functions by window specifications for efficiency ✅
+- [X] **PARTITION BY**: Full partitioning support ✅
+- [X] **Window Frames**: ROWS BETWEEN, UNBOUNDED PRECEDING/FOLLOWING ✅
+- [X] **NULLS FIRST/LAST**: Null ordering in window specifications ✅
+- [X] **Registration System**: Extensible window function registration ✅
+- [X] **Performance Optimization**: Groups functions by window specifications ✅
 - [ ] **LAG/LEAD**: Offset functions (Phase 2)
 - [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions (Phase 2)
-- [ ] **Window Frames**: ROWS BETWEEN, RANGE BETWEEN support (Phase 3)
+- [ ] **RANGE BETWEEN**: Range-based window frames (Phase 3)
 
-**Advanced Subquery Support**
-- [ ] **Correlated Subqueries**: Enhanced support for complex correlated subquery patterns
-- [X] **EXISTS/NOT EXISTS**: Full implementation of EXISTS subquery conditions ✅
-- [ ] **Scalar Subqueries**: Complete scalar subquery support in expressions
+**Advanced Subquery Support** ✅ (Complete!)
+- [X] **Correlated Subqueries**: Full support for complex correlated patterns ✅
+- [X] **EXISTS/NOT EXISTS**: Complete implementation ✅
+- [X] **Scalar Subqueries**: Full scalar subquery support in expressions ✅
+- [X] **IN Subqueries**: Both correlated and uncorrelated IN support ✅
 
-**Missing Scalar Operations**
-- [ ] **UnaryOpNode**: Complete implementation for unary operations
-- [ ] **CastNode**: Enhanced casting operations
-- [ ] **CollateNode**: Full collation support
-- [ ] **CaseExprNode**: Complete CASE expression handling
+**Advanced SQL Features** ✅ (Complete!)
+- [X] **DISTINCT**: Full support for SELECT DISTINCT ✅
+- [X] **Set Operations**: UNION, INTERSECT, EXCEPT with proper attribute handling ✅
+- [X] **Recursive CTEs**: Robust WITH RECURSIVE implementation ✅
+- [X] **Views**: CREATE/DROP VIEW with full query support ✅
+- [X] **Constraints**: Comprehensive constraint system with operation-specific triggers ✅
 
-**Advanced SQL Features**
-- [ ] **DISTINCT**: Implement support for `SELECT DISTINCT`
-- [ ] **Set Operations**: UNION, INTERSECT, EXCEPT with proper attribute handling
-- [ ] **Recursive Queries**: More robust WITH RECURSIVE implementation
-
-## VI. Polish & Optimization
+## VI. Current Development Priorities
 
 **Query Optimization Enhancements**
-- [ ] **Index Selection**: Implement `TableSeekNode` for indexed access and enhance cost-based optimization
-- [ ] **Join Optimization**: Join reordering and optimal join algorithm selection  
+- [ ] **Cost-Based Planning**: Implement sophisticated cost models and statistics
+- [ ] **Join Optimization**: Join reordering based on cardinality estimates
+- [ ] **Index Selection**: Enhanced `TableSeekNode` for optimal index usage
 - [ ] **Predicate Pushdown**: Advanced predicate pushdown optimizations
-- [ ] **Cost-Based Planning**: Better cost estimates for plan selection
+- [ ] **Constant Folding**: Compile-time evaluation of constant expressions
 
-**Performance**
-- [ ] **Index Usage**: Better index selection recommendations
-- [ ] **Query Caching**: Result caching and invalidation
+**Performance & Scalability**
 - [ ] **Memory Pooling**: Reduce allocation overhead in hot paths
+- [ ] **Query Caching**: Result caching and invalidation strategies
+- [ ] **Streaming Execution**: Better streaming support for large result sets
+- [ ] **Parallel Execution**: Multi-threaded query execution for CPU-bound operations
 
-**Schema and Constraint Enhancements**
-- [ ] **DDL Operations**: Enhanced `CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX` support
-- [ ] **Constraint Enforcement**: Integration of CHECK constraints and foreign key validation
-- [ ] **Emission Context**: Introduce emission context for compile-time schema lookups rather than runtime lookups
-- [ ] **Schema Versioning**: Implement schema versioning to invalidate plans when schema changes
+**Advanced Window Functions**
+- [ ] **LAG/LEAD**: Offset functions for accessing previous/next rows
+- [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions within window frames
+- [ ] **RANGE BETWEEN**: Range-based window frames (vs current ROWS BETWEEN)
+- [ ] **NTILE**: N-tile distribution functions
+- [ ] **PERCENT_RANK/CUME_DIST**: Statistical ranking functions
 
-**Error Handling** 
-- [ ] **Better Error Messages**: More descriptive error contexts; line numbers on everything that supports it
-- [ ] **Error Recovery**: Better parser/runtime error recovery
-- [ ] **Constraint Violations**: Proper constraint error handling
+**Schema & DDL Enhancements**
+- [ ] **Foreign Key Constraints**: REFERENCES constraints with cascading actions
+- [ ] **Computed Columns**: Columns with derived values
+- [ ] **Schema Versioning**: Track schema changes and invalidate plans
+- [ ] **ALTER TABLE**: More comprehensive ALTER TABLE operations
+- [ ] **Materialized Views**: Views with cached results
 
-**Testing & Quality**
-- [ ] **JOIN Test Coverage**: Comprehensive join testing once implemented
-- [ ] **Performance Benchmarks**: Regression testing for performance  
-- [ ] **Edge Case Testing**: Boundary conditions and error cases
+## VII. Quality & Developer Experience
 
-## VII. Future Enhancements
+**Error Handling & Diagnostics**
+- [ ] **Enhanced Error Messages**: Better error contexts with line numbers
+- [ ] **Query Explain**: Enhanced EXPLAIN capabilities for query analysis
+- [ ] **Performance Profiling**: Detailed execution timing and resource usage
+- [ ] **Plan Visualization**: Tools to visualize and debug query plans
 
-**Developer Tools & Debugging**
-- [ ] **Plan Serialization**: Implement mechanisms to serialize `PlanNode` trees for debugging and analysis
-- [ ] **Query Visualization**: Develop tools to visualize query plans and execution flow
-- [ ] **Performance Profiling**: Enhanced debugging capabilities with detailed performance profiling
+**Testing & Reliability**
+- [ ] **Stress Testing**: Large dataset and concurrent operation testing
+- [ ] **Fuzzing**: Automated testing with random SQL generation
+- [ ] **Performance Benchmarks**: Regression testing for performance
+- [ ] **Compatibility Testing**: Cross-platform and environment testing
 
-**Ecosystem Integration**
-- [ ] **Driver Development**: Native drivers for popular languages
-- [ ] **ORM Integration**: Adapters for TypeScript/JavaScript ORMs
-- [ ] **Cloud Integration**: Cloud-native deployment options
+**Documentation & Tooling**
+- [ ] **API Documentation**: Comprehensive API documentation with examples
+- [ ] **Query Optimization Guide**: Best practices for query performance
+- [ ] **Virtual Table Development**: Guide for creating custom vtab modules
+- [ ] **Migration Tools**: Tools for importing data from other databases
+
+## VIII. Future Architecture Evolution
 
 **Advanced Features**
-- [ ] **Alternative Backends**: Explore targeting different execution backends while maintaining the attribute-based architecture
-- [ ] **Distributed Queries**: Query federation across data sources
-- [ ] **Real-time Queries**: Streaming query execution
+- [ ] **Distributed Queries**: Query federation across multiple data sources
+- [ ] **Real-time Queries**: Streaming query execution over live data
+- [ ] **Graph Queries**: Graph traversal and pattern matching capabilities
+- [ ] **Machine Learning Integration**: Built-in ML functions and operators
+
+**Ecosystem Integration**
+- [ ] **Driver Development**: Native drivers for popular languages (Python, Java, etc.)
+- [ ] **ORM Adapters**: Integration with TypeScript/JavaScript ORMs
+- [ ] **Cloud Platform**: Cloud-native deployment and scaling options
+- [ ] **Data Connectors**: Standard connectors for popular data sources
+
+**Performance & Scale**
+- [ ] **Columnar Storage**: Column-oriented storage for analytical workloads
+- [ ] **Compression**: Data compression algorithms for memory efficiency
+- [ ] **Tiered Storage**: Hot/warm/cold data tiering strategies
+- [ ] **Distributed Execution**: Multi-node query execution
 
 ---
 
@@ -160,4 +189,14 @@ This list reflects the **current state** of Quereus - a surprisingly complete SQ
 - `[P]`: Partially Implemented / In Progress  
 - `[X]`: Completed ✅
 
-**Key Insight:** Quereus has a **robust, modern architecture** with comprehensive SQL support! The attribute-based context system provides excellent stability across plan transformations. The primary remaining gap is **JOIN operations** - the basic infrastructure is complete (qualified column name resolution works!), just needs the JOIN node implementation. Once implemented, this becomes a very capable SQL engine.
+**Status Update:** Quereus has evolved significantly beyond the previous TODO assessment! The engine now has:
+
+- **Complete JOIN support** with all major join types working
+- **Comprehensive window functions** including frame specifications
+- **Full constraint system** with operation-specific triggers
+- **Complete set operations** (UNION, INTERSECT, EXCEPT)
+- **Robust subquery support** including correlated subqueries
+- **Full DISTINCT support** and advanced SQL features
+- **Complete DDL support** including indexes and views
+
+**Next Phase Focus:** The primary development focus should shift from implementing missing core SQL features (which are now largely complete) to **optimization, performance, and advanced features**. The engine has a solid foundation and can handle complex SQL workloads effectively.

@@ -28,6 +28,37 @@ const DIAG_CONFIG = {
 };
 
 /**
+ * Formats location information from QuereusError for display
+ */
+function formatLocationInfo(error: any, sqlContext: string): string | null {
+	if (!(error instanceof QuereusError) || error.line === undefined ) {
+		return null;
+	}
+
+	const location = { line: error.line, column: error.column };
+	const lines = sqlContext.split('\n');
+	const locationInfo: string[] = [];
+
+	if (location.line !== undefined && location.column !== undefined) {
+		locationInfo.push(`  Line ${location.line}, Column ${location.column}`);
+
+		// Show the problematic line with a caret indicator
+		if (location.line > 0 && location.line <= lines.length) {
+			const lineContent = lines[location.line - 1];
+			locationInfo.push(`  ${lineContent}`);
+
+			// Add caret pointer if column is valid
+			if (location.column > 0 && location.column <= lineContent.length) {
+				const pointer = ' '.repeat(location.column - 1) + '^';
+				locationInfo.push(`  ${pointer}`);
+			}
+		}
+	}
+
+	return locationInfo.join('\n');
+}
+
+/**
  * Generates configurable diagnostic information for failed tests.
  *
  * Environment variables to control output:
@@ -38,6 +69,12 @@ const DIAG_CONFIG = {
  */
 function generateDiagnostics(db: Database, sqlBlock: string, error: Error): string {
 	const diagnostics = ['\n=== FAILURE DIAGNOSTICS ==='];
+
+	// Always show location information if available
+	const locationInfo = formatLocationInfo(error, sqlBlock);
+	if (locationInfo) {
+		diagnostics.push(locationInfo);
+	}
 
 	// Show configuration hint if no diagnostics are enabled
 	const anyDiagEnabled = Object.values(DIAG_CONFIG).some(v => v);
@@ -148,11 +185,19 @@ async function executeWithTracing(db: Database, sql: string, params?: any[]): Pr
 
 		await stmt.finalize();
 	} catch (error: any) {
-		// Re-throw with optional trace information
+		// Re-throw with optional trace and location information
 		let errorMsg = error.message || String(error);
+
+		// Add location information if available
+		const locationInfo = formatLocationInfo(error, sql);
+		if (locationInfo) {
+			errorMsg += locationInfo;
+		}
+
 		if (DIAG_CONFIG.showTrace) {
 			errorMsg += `\n\nEXECUTION TRACE:\n${formatTraceEvents(tracer.getTraceEvents())}`;
 		}
+
 		const enhancedError = new Error(errorMsg);
 		enhancedError.stack = error.stack;
 		throw enhancedError;
@@ -238,6 +283,12 @@ describe('SQL Logic Tests', () => {
 									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
 										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
 									);
+
+									// Show location information if available
+									const locationInfo = formatLocationInfo(actualError, sqlBlock);
+									if (locationInfo) {
+										console.log(`   -> Error location: ${locationInfo}`);
+									}
 									console.log(`   -> Caught expected error: ${actualError.message}`);
 								}
 
@@ -350,8 +401,16 @@ describe('SQL Logic Tests', () => {
 					} catch (error: any) {
 						// If the final block was actually expected to error, this catch is wrong.
 						// The loop structure assumes errors/results are declared *before* the SQL.
-						const baseError = new Error(`[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}`);
-						const diagnostics = generateDiagnostics(db, finalSql, baseError);
+						let errorMessage = `[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}`;
+
+						// Add location information if available
+						const locationInfo = formatLocationInfo(error, finalSql);
+						if (locationInfo) {
+							errorMessage += locationInfo;
+						}
+
+						const baseError = new Error(errorMessage);
+						const diagnostics = generateDiagnostics(db, finalSql, error); // Pass original error for diagnostics
 						throw new Error(`${baseError.message}${diagnostics}`);
 					}
 				}

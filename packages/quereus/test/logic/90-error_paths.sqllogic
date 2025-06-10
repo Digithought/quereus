@@ -4,11 +4,11 @@ PRAGMA default_vtab_module='memory';
 
 -- Syntax Error: Incomplete statement
 SELECT * FROM;
--- error: Parse error
+-- error: Expected table name. (at line 3, column 14)
 
 -- Syntax Error: Misspelled keyword
 CREAT TABLE t_err (a);
--- error: Parse error
+-- error: Expected statement type (SELECT, INSERT, UPDATE, DELETE, VALUES, CREATE, etc.), got 'CREAT'. (at line 1, column 1)
 
 -- Semantic Error: Table not found
 SELECT * FROM non_existent_table;

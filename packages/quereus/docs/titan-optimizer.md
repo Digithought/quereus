@@ -158,6 +158,115 @@ Phase 3 (polish)      → 1.3, 1.4, 2.5, 3.4, 4.3, 4.5
 
 With this scaffolding in place the specific optimisation families we outlined earlier can be dropped in as small, independent rule files with high confidence that they (a) leave the plan in a valid, fully-physical state and (b) are easy to debug and reason about.
 
+### Prerequisite - refactor xBestIndex
+
+### Why revisit `xBestIndex` now?
+
+1. **Type-safety & clarity** – the current `IndexInfo / FilterInfo` structs are thin wrappers around SQLite’s C arrays/bit-fields.  In TypeScript we can encode intent directly in the type system and let the compiler stop whole classes of bugs.
+2. **Better cost modelling** – an explicit, high-level contract lets modules express things we care about (ordering preserved, cardinality guarantees, remote-side LIMIT, etc.) without the “shoe-horn it into flags and doubles” pattern.
+3. **Extensibility for future rules** – upcoming rules (predicate push-down, order-by consumption, limit push-down) will need richer feedback from VTabs.  Refactoring now prevents double-work later.
+
+### Proposed redesign: `BestAccessPlan` API
+
+```
+interface BestAccessPlanRequest {
+  columns: readonly ColumnMeta[];          // schema info
+  filters: readonly PredicateConstraint[]; // extracted by planner
+  requiredOrdering?: OrderingSpec;         // ORDER BY that ancestor nodes still need
+  limit?: number | null;                   // LIMIT known at plan time
+  estimatedRows?: number;                  // hint from planner (can be “unknown”)
+}
+
+interface PredicateConstraint {
+  columnIndex: number;
+  op: '=' | '>' | '>=' | '<' | '<=' | 'MATCH' | 'LIKE' | 'GLOB';
+  value?: SqlValue;        // value if constant
+  usable: boolean;         // planner sets; module may ignore false items
+}
+
+interface BestAccessPlanResult {
+  handledFilters: boolean[];   // parallel to filters[]
+  residualFilter?: (row: Row)=>boolean; // optional JS filter optimiser can inject
+  cost: number;                // arbitrary units
+  rows: number | undefined;    // estimated rows returned
+  providesOrdering?: OrderingSpec; // order guaranteed when cursor yields
+  uniqueRows?: boolean;        // true if at most one row per PK (helps DISTINCT)
+  explains?: string;           // free-text for debugging
+}
+```
+
+*All numbers get explicit units:*  
+– `cost` in “virtual CPU units” (not milliseconds);  
+– `rows` as **integer** not bigint;  
+– provide clear guidance that `rows` may be `undefined` if unknown.
+
+Convenience helpers:
+
+```
+class AccessPlanBuilder {
+  // static methods: .fullScan(), .eqMatch(), .rangeScan()…
+}
+
+function validateAccessPlan(req:BestAccessPlanRequest,
+                            res:BestAccessPlanResult): void;
+```
+
+### Migration steps
+
+Quereus is a new system, with no users.  We don't need to keep any of the old structures around.
+
+1. Adapt existing modules to the new interface.
+2. **Planner changes**
+   • `extractConstraints()` now produces `PredicateConstraint[]`.  
+   • When calling into the module, supply `requiredOrdering` and `limit` fields.  
+   • Update `FilterInfo` struct or retire it in favour of the new request object.
+
+3. **Runtime/emitter changes**  
+   • Emitters already use `filterInfo`; refactor them to expect the richer `BestAccessPlanResult`.  
+   • Residual predicates can be emitted as an extra `FilterNode` when `result.residualFilter` exists.
+
+4. **Module author ergonomics**  
+   • Add a tiny `@quereus/vtab-test` package: give it a set of `BestAccessPlanRequest` fixtures and assert the returned plan.  
+   • Provide `createLogger('vtab:<moduleName>:bestindex')` scaffold so authors can turn on DEBUG quickly.
+
+5. **Documentation & examples**  
+   • Build a docs/modules.md document including a “Design virtual tables with Quereus” section that walks through building a `MemoryTable`, highlights common mistakes (e.g. forgetting `rows` estimate makes optimizer assume worst-case), and shows unit-test usage.
+
+### Impact on optimisation roadmap
+
+*Positive effects*  
+• **Predicate push-down** gains binary information (“handledFilters”) that lets it *delete* FilterNodes instead of conservatively retaining them.  
+• **ORDER-BY elimination** can rely on `providesOrdering` instead of the current “orderByConsumed + careful NLJ tracking” hack.  
+• **Join planning** benefits from `uniqueRows` (helps choose hash-join vs loop).  
+• **Caching rule**: knowing `uniqueRows=true` + `rows` small means we can confidently skip caching.
+
+*Required adjustments*  
+• Update optimiser rule helpers (`inferOrdering`, `combineUniqueKeys`) to read from `BestAccessPlanResult`.  
+• Retune default cost functions once real modules start returning richer numbers.  
+• Rewrite tests/fixtures that assert old `idxStr`, `idxNum` fields.
+
+### Best-practice guard-rails
+
+1. **Schema-bound helper**  
+   ```
+   class VTabHelper {
+     constructor(public readonly table: TableSchema) { … }
+     // validateColumnIndex(), assertAllFiltersHandled()…
+   }
+   ```
+2. **Lint rule** – forbids returning `cost=0` or omitting `handledFilters`, common mistakes in early modules.
+3. **Debug assert** – during development builds, the adapter runs `validateAccessPlan()` and throws if obvious contracts are violated.
+
+### Conclusion
+
+Refactoring `xBestIndex` into a typed, intention-revealing `BestAccessPlan` contract will:
+
+• make virtual-table authors productive and less error-prone,  
+• feed substantially better metadata to the new optimiser,  
+• and remove C-era “flag incantations” before they harden into technical debt.
+
+Note that this will affect some of the below phases, so adjust accordingly.
+
 ### Phase 0 – Groundwork
 
 (“Lay the rails before driving the train”)

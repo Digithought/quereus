@@ -14,6 +14,7 @@ import { buildDeleteStmt } from './delete.js';
 import { buildAlterTableStmt } from './alter-table.js';
 import { buildBeginStmt, buildCommitStmt, buildRollbackStmt, buildSavepointStmt, buildReleaseStmt } from './transaction.js';
 import { buildPragmaStmt } from './pragma.js';
+import { buildValuesStmt } from './select.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
@@ -56,6 +57,8 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildPragmaStmt(ctx, stmt as AST.PragmaStmt);
 			case 'alterTable':
 				return buildAlterTableStmt(ctx, stmt as AST.AlterTableStmt);
+			case 'values':
+				return buildValuesStmt(ctx, stmt as AST.ValuesStmt);
 			default:
 				// Throw an exception for unsupported statement types
 				quereusError(

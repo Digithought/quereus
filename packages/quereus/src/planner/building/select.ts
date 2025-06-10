@@ -17,6 +17,7 @@ import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
+import { ValuesNode } from '../nodes/values-node.js';
 
 // Import decomposed functionality
 import { buildWithContext } from './select-context.js';
@@ -137,6 +138,26 @@ export function buildSelectStmt(
 	return input;
 }
 
+/**
+ * Creates a plan for a VALUES statement.
+ *
+ * @param ctx The planning context
+ * @param stmt The AST.ValuesStmt to plan
+ * @returns A ValuesNode representing the VALUES clause
+ */
+export function buildValuesStmt(
+	ctx: PlanningContext,
+	stmt: AST.ValuesStmt
+): ValuesNode {
+	// Build each row of values
+	const rows: ScalarPlanNode[][] = stmt.values.map(rowValues =>
+		rowValues.map(valueExpr => buildExpression(ctx, valueExpr))
+	);
+
+	// Create the VALUES node
+	return new ValuesNode(ctx.scope, rows);
+}
+
 export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode> = new Map()): RelationalPlanNode {
   let fromTable: RelationalPlanNode;
   let columnScope: Scope;
@@ -244,15 +265,36 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		(fromTable as any).columnScope = columnScope;
 	} else if (fromClause.type === 'subquerySource') {
 		// Build the subquery as a relational plan node
-		fromTable = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
+		if (fromClause.subquery.type === 'select') {
+			fromTable = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
+		} else if (fromClause.subquery.type === 'values') {
+			fromTable = buildValuesStmt(parentContext, fromClause.subquery);
+		} else {
+			// Handle the case where subquery type is not recognized
+			const exhaustiveCheck: never = fromClause.subquery;
+			throw new QuereusError(
+				`Unsupported subquery type: ${(exhaustiveCheck as any).type}`,
+				StatusCode.UNSUPPORTED,
+				undefined,
+				(exhaustiveCheck as any).loc?.startLine,
+				(exhaustiveCheck as any).loc?.startColumn
+			);
+		}
 
 		// Column scope for subquery - no parent needed since it only contains column symbols
 		const subqueryScope = new RegisteredScope();
 		const attributes = fromTable.getAttributes();
-		fromTable.getType().columns.forEach((c, i) => {
-			const attr = attributes[i];
-			subqueryScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+
+		// Use explicit column names from alias if provided, otherwise use subquery column names
+		const columnNames = fromClause.columns || fromTable.getType().columns.map(c => c.name);
+
+		columnNames.forEach((columnName, i) => {
+			if (i < attributes.length) {
+				const attr = attributes[i];
+				const columnType = fromTable.getType().columns[i].type;
+				subqueryScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
+			}
 		});
 
 		// Subqueries always have an alias (required by parser)

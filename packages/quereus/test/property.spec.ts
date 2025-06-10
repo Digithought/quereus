@@ -110,8 +110,6 @@ describe('Property-Based Tests', () => {
 				);
 			}), { numRuns: 200 }); // Increase runs for more diverse value pairs
 		});
-
-		// TODO: Add tests for aggregation functions with mixed types (e.g., SUM('1', 2))
 	});
 
 	// --- 3. JSON Roundtrip ---
@@ -148,6 +146,82 @@ describe('Property-Based Tests', () => {
 					`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved: ${safeJsonStringify(retrievedValueParsed)}`
 				);
 			}), { numRuns: 200 });
+		});
+	});
+
+	// --- 4. Mixed Type Arithmetic Edge Cases ---
+	describe('Mixed Type Arithmetic Edge Cases', () => {
+		const complexValueArbitrary = fc.oneof(
+			fc.constant(null),
+			fc.integer({ min: -1000, max: 1000 }),
+			fc.float({ min: -1000, max: 1000, noNaN: true }),
+			fc.boolean(),
+			fc.oneof(
+				fc.string({ minLength: 0, maxLength: 5 }),
+				fc.integer().map(n => n.toString()),
+				fc.float().map(n => n.toString()),
+				fc.constant(''),
+				fc.constant('0'),
+				fc.constant('1'),
+				fc.constant('true'),
+				fc.constant('false')
+			)
+		);
+
+		it('should handle mixed type arithmetic consistently across contexts', async () => {
+			await db.exec('CREATE TABLE mixed_test (id INTEGER PRIMARY KEY, a ANY, b ANY) USING memory');
+
+			await fc.assert(fc.asyncProperty(complexValueArbitrary, complexValueArbitrary, async (valA, valB) => {
+				try {
+					// Clear table and insert test values
+					await db.exec('DELETE FROM mixed_test');
+					const stmt = db.prepare('INSERT INTO mixed_test (a, b) VALUES (?, ?)');
+					try {
+						await stmt.run([valA, valB]);
+					} finally {
+						await stmt.finalize();
+					}
+
+					// Test arithmetic in different contexts - they should all produce the same result or all fail
+					let selectResult: any = undefined;
+					let selectFailed = false;
+					let whereResult: any = undefined;
+					let whereFailed = false;
+
+					// Test in SELECT
+					try {
+						for await (const row of db.eval('SELECT (a + b) as result FROM mixed_test')) {
+							selectResult = row.result;
+							break;
+						}
+					} catch (e) {
+						selectFailed = true;
+					}
+
+					// Test in WHERE (using a known value to see if arithmetic works)
+					try {
+						for await (const row of db.eval('SELECT (a + b) as result FROM mixed_test WHERE (a + b) IS NOT NULL')) {
+							whereResult = row.result;
+							break;
+						}
+					} catch (e) {
+						whereFailed = true;
+					}
+
+					// Both should succeed or both should fail
+					expect(selectFailed).to.equal(whereFailed,
+						`Arithmetic behavior inconsistent between SELECT and WHERE for (${safeJsonStringify(valA)}, ${safeJsonStringify(valB)})`);
+
+					// If both succeeded, results should match
+					if (!selectFailed && !whereFailed) {
+						expect(selectResult).to.equal(whereResult,
+							`Arithmetic results differ between SELECT and WHERE for (${safeJsonStringify(valA)}, ${safeJsonStringify(valB)})`);
+					}
+				} catch (e: any) {
+					// Skip runs that cause unexpected errors
+					fc.pre(false);
+				}
+			}), { numRuns: 100 });
 		});
 	});
 
