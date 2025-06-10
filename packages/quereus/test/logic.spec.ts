@@ -24,8 +24,14 @@ const DIAG_CONFIG = {
 	showPlan: process.env.QUEREUS_TEST_SHOW_PLAN === 'true',
 	showProgram: process.env.QUEREUS_TEST_SHOW_PROGRAM === 'true',
 	showStack: process.env.QUEREUS_TEST_SHOW_STACK === 'true',
-	showTrace: process.env.QUEREUS_TEST_SHOW_TRACE === 'true'
+	showTrace: process.env.QUEREUS_TEST_SHOW_TRACE === 'true',
+	verbose: process.env.QUEREUS_TEST_VERBOSE === 'true'
 };
+
+// Debug: check if verbose flag is working (remove this after testing)
+if (DIAG_CONFIG.verbose) {
+	console.log('VERBOSE MODE ENABLED');
+}
 
 /**
  * Formats location information from QuereusError for display
@@ -62,6 +68,7 @@ function formatLocationInfo(error: any, sqlContext: string): string | null {
  * Generates configurable diagnostic information for failed tests.
  *
  * Environment variables to control output:
+ * - QUEREUS_TEST_VERBOSE=true       : Show execution progress during tests
  * - QUEREUS_TEST_SHOW_PLAN=true     : Include query plan in diagnostics
  * - QUEREUS_TEST_SHOW_PROGRAM=true  : Include instruction program in diagnostics
  * - QUEREUS_TEST_SHOW_STACK=true    : Include full stack trace in diagnostics
@@ -80,6 +87,7 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
 	const anyDiagEnabled = Object.values(DIAG_CONFIG).some(v => v);
 	if (!anyDiagEnabled) {
 		diagnostics.push('\nFor more detailed diagnostics, set environment variables:');
+		diagnostics.push('  QUEREUS_TEST_VERBOSE=true       - Show execution progress');
 		diagnostics.push('  QUEREUS_TEST_SHOW_PLAN=true     - Show query plan');
 		diagnostics.push('  QUEREUS_TEST_SHOW_PROGRAM=true  - Show instruction program');
 		diagnostics.push('  QUEREUS_TEST_SHOW_STACK=true    - Show full stack trace');
@@ -273,7 +281,9 @@ describe('SQL Logic Tests', () => {
 							// If we have accumulated SQL and now have an error expectation, execute the block immediately
 							const sqlBlock = currentSql.trim();
 							if (sqlBlock && expectedErrorSubstring !== null) {
-								console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
+								if (DIAG_CONFIG.verbose) {
+									console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
+								}
 								try {
 									await db.exec(sqlBlock);
 									const baseError = new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
@@ -286,10 +296,12 @@ describe('SQL Logic Tests', () => {
 
 									// Show location information if available
 									const locationInfo = formatLocationInfo(actualError, sqlBlock);
-									if (locationInfo) {
+									if (DIAG_CONFIG.verbose && locationInfo) {
 										console.log(`   -> Error location: ${locationInfo}`);
 									}
-									console.log(`   -> Caught expected error: ${actualError.message}`);
+									if (DIAG_CONFIG.verbose) {
+										console.log(`   -> Caught expected error: ${actualError.message}`);
+									}
 								}
 
 								// Reset for the next block
@@ -326,7 +338,9 @@ describe('SQL Logic Tests', () => {
 					const sqlBlock = currentSql.trim(); // Keep sqlBlock variable
 					if (sqlBlock && expectedResultJson !== null) {
 
-						console.log(`Executing block (expect results):\n${sqlBlock}`);
+						if (DIAG_CONFIG.verbose) {
+							console.log(`Executing block (expect results):\n${sqlBlock}`);
+						}
 
 						// db.eval now handles parsing the whole sqlBlock.
 						// If sqlBlock has multiple statements, db.eval will execute the first one
@@ -338,14 +352,18 @@ describe('SQL Logic Tests', () => {
 							for (let i = 0; i < statements.length - 1; i++) {
 								const statement = statements[i].trim();
 								if (statement.length > 0) {
-									console.log(`  -> Executing setup statement: ${statement}`);
+									if (DIAG_CONFIG.verbose) {
+										console.log(`  -> Executing setup statement: ${statement}`);
+									}
 									await db.exec(statement); // exec is for side-effects
 								}
 							}
 						}
 
 						const lastStatement = statements[statements.length - 1];
-						console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
+						if (DIAG_CONFIG.verbose) {
+							console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
+						}
 
 						let executionResult: { results: Record<string, any>[], traceEvents: any[] };
 						if (lastStatement) {
@@ -379,7 +397,9 @@ describe('SQL Logic Tests', () => {
 								throw new Error(`${error.message}${diagnostics}${traceInfo}`);
 							}
 						}
-						console.log("   -> Results match!");
+						if (DIAG_CONFIG.verbose) {
+							console.log("   -> Results match!");
+						}
 
 						// Reset for the next block
 						currentSql = '';
@@ -396,7 +416,9 @@ describe('SQL Logic Tests', () => {
 						console.warn(`[${file}] Dangling SQL block at end of file with expectation: ${finalSql}`);
 					}
 					try {
-						console.log(`Executing (final, no results expected): ${finalSql}`);
+						if (DIAG_CONFIG.verbose) {
+							console.log(`Executing (final, no results expected): ${finalSql}`);
+						}
 						await db.exec(finalSql);
 					} catch (error: any) {
 						// If the final block was actually expected to error, this catch is wrong.

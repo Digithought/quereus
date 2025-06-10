@@ -178,6 +178,7 @@ Quereus employs a multi-faceted testing strategy:
     *   Uses simple text files (`*.sqllogic`) containing SQL statements and their expected JSON results (using `→` marker) or expected error messages (using `-- error:` directive).
     *   Driven by a Mocha test runner (`test/logic.spec.ts`) that executes the SQL against a fresh `Database` instance for each file.
     *   **Configurable Diagnostics**: On unexpected failures, the test runner provides clean error messages by default with optional detailed diagnostics controlled by environment variables:
+        *   `QUEREUS_TEST_VERBOSE=true` - Show execution progress during tests
         *   `QUEREUS_TEST_SHOW_PLAN=true` - Include query plan in diagnostics
         *   `QUEREUS_TEST_SHOW_PROGRAM=true` - Include instruction program in diagnostics
         *   `QUEREUS_TEST_SHOW_STACK=true` - Include full stack trace in diagnostics
