@@ -63,6 +63,13 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
     return [];
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+      throw new Error(`InsertNode expects 0 children, got ${newChildren.length}`);
+    }
+    return this; // No children in getChildren(), source is accessed via getRelations()
+  }
+
   override toString(): string {
     return `INSERT INTO ${this.table.tableSchema.name}`;
   }

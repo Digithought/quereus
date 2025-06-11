@@ -35,6 +35,31 @@ export class UpdateExecutorNode extends PlanNode implements RelationalPlanNode {
     return [this.source];
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 1) {
+      throw new Error(`UpdateExecutorNode expects 1 child, got ${newChildren.length}`);
+    }
+
+    const [newSource] = newChildren;
+
+    // Type check
+    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+      throw new Error('UpdateExecutorNode: child must be a RelationalPlanNode');
+    }
+
+    // Return same instance if nothing changed
+    if (newSource === this.source) {
+      return this;
+    }
+
+    // Create new instance
+    return new UpdateExecutorNode(
+      this.scope,
+      newSource as RelationalPlanNode,
+      this.table
+    );
+  }
+
   get estimatedRows(): number | undefined {
     return this.source.estimatedRows;
   }

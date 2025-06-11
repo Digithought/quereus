@@ -4,7 +4,8 @@ import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { SqlDataType } from '../../common/types.js';
+import { SqlDataType, StatusCode } from '../../common/types.js';
+import { quereusError } from '../../common/errors.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';
 
@@ -113,12 +114,51 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode {
 		};
 	}
 
-	getChildren(): readonly [ScalarPlanNode] | readonly [] {
-		return this.condition ? [this.condition] : [];
+	getChildren(): readonly PlanNode[] {
+		return this.condition ? [this.left, this.right, this.condition] : [this.left, this.right];
 	}
 
 	getRelations(): readonly [RelationalPlanNode, RelationalPlanNode] {
 		return [this.left, this.right];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const expectedLength = this.condition ? 3 : 2;
+		if (newChildren.length !== expectedLength) {
+			quereusError(`JoinNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newLeft, newRight, newCondition] = newChildren;
+
+		// Type check
+		if (!('getAttributes' in newLeft) || typeof (newLeft as any).getAttributes !== 'function') {
+			quereusError('JoinNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+		if (!('getAttributes' in newRight) || typeof (newRight as any).getAttributes !== 'function') {
+			quereusError('JoinNode: second child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+		if (newCondition && !('expression' in newCondition)) {
+			quereusError('JoinNode: third child must be a ScalarPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Check if anything changed
+		const leftChanged = newLeft !== this.left;
+		const rightChanged = newRight !== this.right;
+		const conditionChanged = newCondition !== this.condition;
+
+		if (!leftChanged && !rightChanged && !conditionChanged) {
+			return this;
+		}
+
+		// Create new instance - JoinNode creates new attributes by combining left and right
+		return new JoinNode(
+			this.scope,
+			newLeft as RelationalPlanNode,
+			newRight as RelationalPlanNode,
+			this.joinType,
+			newCondition as ScalarPlanNode | undefined,
+			this.usingColumns
+		);
 	}
 
 	get estimatedRows(): number | undefined {

@@ -2,6 +2,8 @@ import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../index.js';
 
 /**
  * Represents a DISTINCT operation that eliminates duplicate rows.
@@ -37,8 +39,8 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
     return this.source.getAttributes();
   }
 
-  getChildren(): readonly [] {
-    return [];
+  getChildren(): readonly [RelationalPlanNode] {
+    return [this.source];
   }
 
   getRelations(): readonly [RelationalPlanNode] {
@@ -63,5 +65,29 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
 
   override getLogicalProperties(): Record<string, unknown> {
     return { };
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 1) {
+      quereusError(`DistinctNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+    }
+
+    const [newSource] = newChildren;
+
+    // Type check
+    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+      quereusError('DistinctNode: child must be a RelationalPlanNode', StatusCode.INTERNAL);
+    }
+
+    // Return same instance if nothing changed
+    if (newSource === this.source) {
+      return this;
+    }
+
+    // Create new instance preserving attributes (distinct preserves source attributes)
+    return new DistinctNode(
+      this.scope,
+      newSource as RelationalPlanNode
+    );
   }
 }

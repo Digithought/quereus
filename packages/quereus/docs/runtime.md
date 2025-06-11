@@ -690,7 +690,8 @@ async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<und
 
 ## Optimiser Architecture (Titan Phase-I)
 
-Titan uses a single plan node hierarchy with a logical→physical transformation pass.
+Titan uses a single plan node hierarchy with a logical→physical transformation pass, enhanced by a robust generic tree rewriting infrastructure that ensures attribute ID preservation and eliminates optimizer maintenance burden.
+
 Every plan node built by the *builder* starts as **logical** (no `physical` property).
 The *optimiser* then walks the tree and transforms or marks each node so that, after optimisation, **every** node in the tree has a `physical` property and therefore has a registered runtime emitter.
 
@@ -700,23 +701,138 @@ The *optimiser* then walks the tree and transforms or marks each node so that, a
    •  One `PlanNode` type tree – no duplicated logical/physical subclasses.
    •  Each instance carries optional `physical: PhysicalProperties` to indicate its phase.
 
-2. **Physical Properties**
+2. **Generic Tree Rewriting Infrastructure**
+   •  **Abstract `withChildren()` method**: Every `PlanNode` implements generic tree rewriting capability
+   •  **Attribute ID Preservation**: Critical architectural guarantee that column references remain valid across optimizations
+   •  **Type-Safe Reconstruction**: Each node validates child types and maintains invariants during reconstruction
+   •  **Performance Optimized**: Only creates new instances when children actually change
+
+3. **Physical Properties**
    •  `PhysicalProperties` captures execution characteristics: ordering, row estimates, unique keys, determinism, etc.
    •  Nodes can implement `getPhysical(childrenPhysical)` to compute their properties based on children.
    •  The optimizer calls this during the logical→physical transformation.
 
-3. **Transformation rules**
+4. **Transformation rules**
    •  Rules are registered per `PlanNodeType` (see `optimizer.ts`).
    •  Each rule can:
      –   return *null* (not applicable),
      –   return a **replacement node** (often a different physical algorithm), or
      –   do a deeper rewrite (e.g. `Aggregate → Sort + StreamAggregate`).
 
-4. **Attribute ID preservation**
+5. **Attribute ID preservation**
    •  **Critical**: Optimizer preserves original attribute IDs during transformations
    •  `ColumnReferenceNode` uses stable `attributeId` instead of node references
    •  Relational nodes implement `getAttributes()` to define their output columns
    •  This enables robust column tracking across plan transformations
+
+### Generic Tree Rewriting System
+
+The centerpiece of the Titan optimizer is its generic tree rewriting capability:
+
+**Abstract Interface:**
+```typescript
+abstract class PlanNode {
+  abstract getChildren(): readonly PlanNode[];
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+```
+
+**Generic Optimizer Core:**
+```typescript
+private optimizeChildren(node: PlanNode): PlanNode {
+  const originalChildren = node.getChildren();
+  const optimizedChildren = originalChildren.map(child => this.optimizeNode(child));
+  
+  const childrenChanged = optimizedChildren.some((child, i) => child !== originalChildren[i]);
+  if (!childrenChanged) {
+    return node; // No changes
+  }
+  
+  return node.withChildren(optimizedChildren); // ✅ Attribute IDs preserved
+}
+```
+
+**Benefits:**
+- **Eliminates Manual Node Handling**: No more 200-line `instanceof` chains in optimizer core
+- **Prevents Attribute ID Regressions**: Generic rewriting preserves column reference validity
+- **Simplifies Adding New Nodes**: New node types automatically work with optimization
+- **Type Safety**: Each node validates child types during reconstruction
+
+### Implementation Patterns
+
+**Leaf Nodes (Zero Children):**
+```typescript
+withChildren(newChildren: readonly PlanNode[]): PlanNode {
+  if (newChildren.length !== 0) {
+    throw new Error(`${this.nodeType} expects 0 children, got ${newChildren.length}`);
+  }
+  return this; // No children, so no change
+}
+```
+
+**Unary Relational Nodes:**
+```typescript
+withChildren(newChildren: readonly PlanNode[]): PlanNode {
+  if (newChildren.length !== 1) {
+    throw new Error(`FilterNode expects 1 child, got ${newChildren.length}`);
+  }
+  
+  const [newSource] = newChildren;
+  if (!('getAttributes' in newSource)) {
+    throw new Error('FilterNode: child must be a RelationalPlanNode');
+  }
+  
+  if (newSource === this.source) return this; // Optimization: no change
+  
+  return new FilterNode(this.scope, newSource, this.predicate); // Preserves attribute IDs
+}
+```
+
+**Multi-Child Complex Nodes:**
+```typescript
+withChildren(newChildren: readonly PlanNode[]): PlanNode {
+  const expectedLength = 1 + this.projections.length;
+  if (newChildren.length !== expectedLength) {
+    throw new Error(`ProjectNode expects ${expectedLength} children, got ${newChildren.length}`);
+  }
+  
+  const [newSource, ...newProjectionNodes] = newChildren;
+  
+  // Type checking and change detection...
+  
+  // ✅ Critical: Preserve original attribute IDs
+  const newProjections = this.projections.map((proj, i) => ({
+    node: newProjectionNodes[i] as ScalarPlanNode,
+    alias: proj.alias,
+    attributeId: proj.attributeId // Preserved from original
+  }));
+  
+  return new ProjectNode(this.scope, newSource, newProjections);
+}
+```
+
+### Consistent Child Enumeration
+
+All nodes implement `getChildren()` to return ALL children (both relational and scalar) in a predictable order:
+
+```typescript
+// FilterNode: source + predicate
+getChildren(): readonly [RelationalPlanNode, ScalarPlanNode] {
+  return [this.source, this.predicate];
+}
+
+// ProjectNode: source + all projection expressions  
+getChildren(): readonly PlanNode[] {
+  return [this.source, ...this.projections.map(p => p.node)];
+}
+
+// AggregateNode: source + group expressions + aggregate expressions
+getChildren(): readonly PlanNode[] {
+  return [this.source, ...this.groupBy, ...this.aggregates.map(agg => agg.expression)];
+}
+```
+
+This consistency enables the generic optimizer to work uniformly across all node types.
 
 ### Example Transformations
 
@@ -733,7 +849,16 @@ The optimizer automatically:
 - **Preserves attribute IDs** when creating physical nodes
 - Ensures every node becomes physical or fails with clear error
 
-This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms, all while maintaining robust column reference resolution through the attribute-based context system.
+### Attribute-Based Context System Integration
+
+The optimizer's attribute ID preservation directly supports the runtime's attribute-based context system:
+
+- **Stable References**: Column references use attribute IDs that remain valid across optimizations
+- **Context Resolution**: Runtime context maps attribute IDs to column indices without fragile node lookups  
+- **Transformation Safety**: Plan transformations preserve attribute mappings, ensuring `emitColumnReference` always works
+- **No Type Checking**: Runtime avoids complex node type checking because attribute IDs provide deterministic lookup
+
+This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms, all while maintaining robust column reference resolution through the attribute-based context system and eliminating optimizer maintenance burden through generic tree rewriting.
 
 ## Type Coercion Best Practices
 

@@ -63,12 +63,37 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 		return this.source.getAttributes();
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly [RelationalPlanNode] {
+		return [this.source];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.source];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			throw new Error(`SequencingNode expects 1 child, got ${newChildren.length}`);
+		}
+
+		const [newSource] = newChildren;
+
+		// Type check
+		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+			throw new Error('SequencingNode: child must be a RelationalPlanNode');
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance preserving attributes (sequencing preserves source attributes)
+		return new SequencingNode(
+			this.scope,
+			newSource as RelationalPlanNode,
+			this.sequenceColumnName
+		);
 	}
 
 	get estimatedRows(): number | undefined {

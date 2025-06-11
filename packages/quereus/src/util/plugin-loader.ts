@@ -1,6 +1,7 @@
 import type { Database } from '../core/database.js';
 import type { PluginManifest } from '../vtab/manifest.js';
-import type { SqlValue } from '../common/types.js';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import { quereusError } from '../common/errors.js';
 
 /**
  * Dynamically loads and registers a plugin module
@@ -27,7 +28,7 @@ export async function dynamicLoadModule(
 
 		// Validate module structure
 		if (typeof mod.default !== 'function') {
-			throw new Error(`Module at ${url} has no default export function`);
+			quereusError(`Module at ${url} has no default export function`, StatusCode.FORMAT);
 		}
 
 		// Call the module's register function with the database and config
@@ -37,7 +38,7 @@ export async function dynamicLoadModule(
 		return mod.manifest as PluginManifest | undefined;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Failed to load plugin from ${url}: ${message}`);
+		quereusError(`Failed to load plugin from ${url}: ${message}`);
 	}
 }
 

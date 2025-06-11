@@ -7,6 +7,8 @@ import type { Optimizer } from '../optimizer.js';
 import type { StatsProvider } from '../stats/index.js';
 import type { OptimizerTuning } from '../optimizer-tuning.js';
 import { createLogger } from '../../common/logger.js';
+import { StatusCode } from '../../common/types.js';
+import { quereusError } from '../../common/errors.js';
 
 const log = createLogger('optimizer:framework:context');
 
@@ -68,7 +70,7 @@ export class OptimizationContext implements OptContext {
 	 */
 	withIncrementedDepth(): OptimizationContext {
 		if (this.depth >= this.tuning.maxOptimizationDepth) {
-			throw new Error(`Maximum optimization depth exceeded: ${this.depth}`);
+			quereusError(`Maximum optimization depth exceeded: ${this.depth}`, StatusCode.ERROR);
 		}
 
 		return new OptimizationContext(

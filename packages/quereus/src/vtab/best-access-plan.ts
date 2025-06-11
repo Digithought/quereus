@@ -3,7 +3,8 @@
  * Provides better type safety, clearer intent, and extensibility for future optimizations
  */
 
-import type { SqlDataType, SqlValue } from '../common/types.js';
+import { quereusError } from '../common/errors.js';
+import { StatusCode, type SqlDataType, type SqlValue } from '../common/types.js';
 
 /**
  * Constraint operators that can be pushed down to virtual tables
@@ -187,7 +188,7 @@ export class AccessPlanBuilder {
 	build(): BestAccessPlanResult {
 		// Ensure required fields are set
 		if (this.result.cost === undefined) {
-			throw new Error('Access plan cost must be set');
+			quereusError('Access plan cost must be set', StatusCode.INTERNAL);
 		}
 		if (this.result.handledFilters === undefined) {
 			this.result.handledFilters = [];
@@ -207,27 +208,29 @@ export function validateAccessPlan(
 ): void {
 	// Validate handledFilters array length
 	if (result.handledFilters.length !== request.filters.length) {
-		throw new Error(
-			`handledFilters length (${result.handledFilters.length}) must match filters length (${request.filters.length})`
+		quereusError(
+			`handledFilters length (${result.handledFilters.length}) must match filters length (${request.filters.length})`,
+			StatusCode.FORMAT
 		);
 	}
 
 	// Validate cost is non-negative
 	if (result.cost < 0) {
-		throw new Error(`Access plan cost cannot be negative: ${result.cost}`);
+		quereusError(`Access plan cost cannot be negative: ${result.cost}`, StatusCode.INTERNAL);
 	}
 
 	// Validate rows is non-negative if specified
 	if (result.rows !== undefined && result.rows < 0) {
-		throw new Error(`Access plan rows cannot be negative: ${result.rows}`);
+		quereusError(`Access plan rows cannot be negative: ${result.rows}`, StatusCode.INTERNAL);
 	}
 
 	// Validate ordering column indexes
 	if (result.providesOrdering) {
 		for (const order of result.providesOrdering) {
 			if (order.columnIndex < 0 || order.columnIndex >= request.columns.length) {
-				throw new Error(
-					`Invalid ordering column index ${order.columnIndex}, must be 0-${request.columns.length - 1}`
+				quereusError(
+					`Invalid ordering column index ${order.columnIndex}, must be 0-${request.columns.length - 1}`,
+					StatusCode.FORMAT
 				);
 			}
 		}

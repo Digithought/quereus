@@ -8,6 +8,8 @@ import type { PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { Optimizer } from '../optimizer.js';
 import { traceRuleStart, traceRuleEnd } from './trace.js';
+import { StatusCode } from '../../common/types.js';
+import { quereusError } from '../../common/errors.js';
 
 const log = createLogger('optimizer:framework:registry');
 
@@ -56,7 +58,7 @@ class RuleRegistry {
 
 		// Check for duplicate rule IDs
 		if (nodeRules.some(r => r.id === handle.id)) {
-			throw new Error(`Optimization rule '${handle.id}' already registered for node type ${handle.nodeType}`);
+			quereusError(`Optimization rule '${handle.id}' already registered for node type ${handle.nodeType}`, StatusCode.INTERNAL);
 		}
 
 		// Insert rule maintaining priority order (lower priority first)

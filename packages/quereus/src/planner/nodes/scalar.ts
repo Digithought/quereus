@@ -71,6 +71,31 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			quereusError(`UnaryOpNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newOperand] = newChildren;
+
+		// Type check
+		if (!('expression' in newOperand)) {
+			quereusError('UnaryOpNode: child must be a ScalarPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Return same instance if nothing changed
+		if (newOperand === this.operand) {
+			return this;
+		}
+
+		// Create new instance
+		return new UnaryOpNode(
+			this.scope,
+			this.expression,
+			newOperand as ScalarPlanNode
+		);
+	}
+
 	override toString(): string {
 		return `${this.expression.operator} ${formatExpression(this.operand)}`;
 	}
@@ -154,6 +179,32 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 
 	getRelations(): readonly [] {
 		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 2) {
+			quereusError(`BinaryOpNode expects 2 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newLeft, newRight] = newChildren;
+
+		// Type check
+		if (!('expression' in newLeft) || !('expression' in newRight)) {
+			quereusError('BinaryOpNode: children must be ScalarPlanNodes', StatusCode.INTERNAL);
+		}
+
+		// Return same instance if nothing changed
+		if (newLeft === this.left && newRight === this.right) {
+			return this;
+		}
+
+		// Create new instance
+		return new BinaryOpNode(
+			this.scope,
+			this.expression,
+			newLeft as ScalarPlanNode,
+			newRight as ScalarPlanNode
+		);
 	}
 
 	override toString(): string {
@@ -245,6 +296,13 @@ export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
 
 	getRelations(): readonly [] {
 		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			quereusError(`LiteralNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+		return this; // No children, so no change
 	}
 
 	override toString(): string {
@@ -374,6 +432,57 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const expectedLength = this.operands.length;
+		if (newChildren.length !== expectedLength) {
+			quereusError(`CaseExprNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		// Type check
+		for (const child of newChildren) {
+			if (!('expression' in child)) {
+				quereusError('CaseExprNode: all children must be ScalarPlanNodes', StatusCode.INTERNAL);
+			}
+		}
+
+		// Check if anything changed
+		const childrenChanged = newChildren.some((child, i) => child !== this.operands[i]);
+		if (!childrenChanged) {
+			return this;
+		}
+
+		// Rebuild the complex structure
+		let childIndex = 0;
+		let newBaseExpr: ScalarPlanNode | undefined = undefined;
+
+		if (this.baseExpr) {
+			newBaseExpr = newChildren[childIndex] as ScalarPlanNode;
+			childIndex++;
+		}
+
+		const newWhenThenClauses: { when: ScalarPlanNode; then: ScalarPlanNode }[] = [];
+		for (let i = 0; i < this.whenThenClauses.length; i++) {
+			const when = newChildren[childIndex] as ScalarPlanNode;
+			const then = newChildren[childIndex + 1] as ScalarPlanNode;
+			newWhenThenClauses.push({ when, then });
+			childIndex += 2;
+		}
+
+		let newElseExpr: ScalarPlanNode | undefined = undefined;
+		if (this.elseExpr) {
+			newElseExpr = newChildren[childIndex] as ScalarPlanNode;
+		}
+
+		// Create new instance
+		return new CaseExprNode(
+			this.scope,
+			this.expression,
+			newBaseExpr,
+			newWhenThenClauses,
+			newElseExpr
+		);
+	}
+
 	override toString(): string {
 		const baseStr = this.baseExpr ? ` ${formatExpression(this.baseExpr)}` : '';
 		const whenThenStr = this.whenThenClauses
@@ -497,6 +606,31 @@ export class CastNode extends PlanNode implements UnaryScalarNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			quereusError(`CastNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newOperand] = newChildren;
+
+		// Type check
+		if (!('expression' in newOperand)) {
+			quereusError('CastNode: child must be a ScalarPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Return same instance if nothing changed
+		if (newOperand === this.operand) {
+			return this;
+		}
+
+		// Create new instance
+		return new CastNode(
+			this.scope,
+			this.expression,
+			newOperand as ScalarPlanNode
+		);
+	}
+
 	override toString(): string {
 		return `CAST(${formatExpression(this.operand)} AS ${this.expression.targetType})`;
 	}
@@ -547,6 +681,31 @@ export class CollateNode extends PlanNode implements UnaryScalarNode {
 
 	getRelations(): readonly [] {
 		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			quereusError(`CollateNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newOperand] = newChildren;
+
+		// Type check
+		if (!('expression' in newOperand)) {
+			quereusError('CollateNode: child must be a ScalarPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Return same instance if nothing changed
+		if (newOperand === this.operand) {
+			return this;
+		}
+
+		// Create new instance
+		return new CollateNode(
+			this.scope,
+			this.expression,
+			newOperand as ScalarPlanNode
+		);
 	}
 
 	override toString(): string {

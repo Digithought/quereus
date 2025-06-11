@@ -44,6 +44,13 @@ export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
 		return [this.subquery];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`ScalarSubqueryNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children in getChildren(), subquery is accessed via getRelations()
+	}
+
 	override toString(): string {
 		return `(subquery)`;
 	}
@@ -72,7 +79,7 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		this.comparator = (a, b) => compareSqlValues(a, b);
 	}
 
-  getType(): ScalarType {
+	getType(): ScalarType {
 		return {
 			typeClass: 'scalar',
 			affinity: SqlDataType.INTEGER,
@@ -82,18 +89,55 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		}
 	}
 
-  getChildren(): readonly ScalarPlanNode[] {
+	getChildren(): readonly ScalarPlanNode[] {
 		if (this.values) {
 			return [this.condition, ...this.values];
 		}
 		return [this.condition];
 	}
 
-  getRelations(): readonly RelationalPlanNode[] {
+	getRelations(): readonly RelationalPlanNode[] {
 		if (this.source) {
 			return [this.source];
 		}
 		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const expectedLength = this.values ? 1 + this.values.length : 1;
+		if (newChildren.length !== expectedLength) {
+			throw new Error(`InNode expects ${expectedLength} children, got ${newChildren.length}`);
+		}
+
+		const [newCondition, ...newValues] = newChildren;
+
+		// Type check
+		if (!('expression' in newCondition)) {
+			throw new Error('InNode: condition must be a ScalarPlanNode');
+		}
+
+		for (const value of newValues) {
+			if (!('expression' in value)) {
+				throw new Error('InNode: values must be ScalarPlanNodes');
+			}
+		}
+
+		// Check if anything changed
+		const conditionChanged = newCondition !== this.condition;
+		const valuesChanged = this.values && newValues.some((val, i) => val !== this.values![i]);
+
+		if (!conditionChanged && !valuesChanged) {
+			return this;
+		}
+
+		// Create new instance
+		return new InNode(
+			this.scope,
+			this.expression,
+			newCondition as ScalarPlanNode,
+			this.source, // Source doesn't change via withChildren
+			this.values ? newValues as ScalarPlanNode[] : undefined
+		);
 	}
 
 	override toString(): string {
@@ -141,6 +185,13 @@ export class ExistsNode extends PlanNode implements ScalarPlanNode {
 
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.subquery];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`ExistsNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children in getChildren(), subquery is accessed via getRelations()
 	}
 
 	override toString(): string {

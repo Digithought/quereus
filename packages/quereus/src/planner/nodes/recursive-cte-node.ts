@@ -101,6 +101,13 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 		return [this.baseCaseQuery];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`RecursiveCTENode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children in getChildren(), sources are accessed via getRelations()
+	}
+
 	override toString(): string {
 		const recursiveText = 'RECURSIVE ';
 		const columnsText = this.columns ? `(${this.columns.join(', ')})` : '';

@@ -1,6 +1,8 @@
 import type { ArrayIndexNode } from '../../planner/nodes/array-index-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 export function emitArrayIndex(plan: ArrayIndexNode, ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext): any {
@@ -12,7 +14,7 @@ export function emitArrayIndex(plan: ArrayIndexNode, ctx: EmissionContext): Inst
 			}
 		}
 
-		throw new Error(`No row context found for array index ${plan.index}`);
+		quereusError(`No row context found for array index ${plan.index}`, StatusCode.INTERNAL);
 	}
 
 	return {

@@ -67,6 +67,13 @@ export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
 		return [this.source];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`CTEReferenceNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children in getChildren(), source is accessed via getRelations()
+	}
+
 	override toString(): string {
 		const aliasText = this.alias ? ` AS ${this.alias}` : '';
 		return `CTE_REF ${this.source.cteName}${aliasText}`;

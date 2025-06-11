@@ -3,6 +3,8 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelat
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatSortKey } from '../../util/plan-formatter.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Represents a sort key for ordering results
@@ -50,9 +52,9 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 		return this.source.getAttributes();
 	}
 
-	getChildren(): readonly ScalarPlanNode[] {
-		// Return all sort key expressions as children
-		return this.sortKeys.map(key => key.expression);
+	getChildren(): readonly PlanNode[] {
+		// Return source first, then all sort key expressions
+		return [this.source, ...this.sortKeys.map(key => key.expression)];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
@@ -97,5 +99,40 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 				nulls: key.nulls
 			}))
 		};
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1 + this.sortKeys.length) {
+			quereusError(`SortNode expects ${1 + this.sortKeys.length} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newSource, ...newSortExpressions] = newChildren;
+
+		// Type check
+		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+			quereusError('SortNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Check if anything changed
+		const sourceChanged = newSource !== this.source;
+		const sortExpressionsChanged = newSortExpressions.some((expr, i) => expr !== this.sortKeys[i].expression);
+
+		if (!sourceChanged && !sortExpressionsChanged) {
+			return this;
+		}
+
+		// Build new sort keys array
+		const newSortKeys = newSortExpressions.map((expr, i) => ({
+			expression: expr as ScalarPlanNode,
+			direction: this.sortKeys[i].direction,
+			nulls: this.sortKeys[i].nulls
+		}));
+
+		// Create new instance preserving attributes (sort preserves source attributes)
+		return new SortNode(
+			this.scope,
+			newSource as RelationalPlanNode,
+			newSortKeys
+		);
 	}
 }

@@ -34,6 +34,13 @@ export class SinkNode extends PlanNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`SinkNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children in getChildren(), source is accessed via getRelations()
+	}
+
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.source];
 	}

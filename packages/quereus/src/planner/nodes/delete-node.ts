@@ -37,6 +37,13 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
     return [];
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+      throw new Error(`DeleteNode expects 0 children, got ${newChildren.length}`);
+    }
+    return this; // No children in getChildren(), source is accessed via getRelations()
+  }
+
   get estimatedRows(): number | undefined {
     return this.source.estimatedRows;
   }

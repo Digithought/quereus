@@ -7,6 +7,7 @@ import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../
 import type { Layer } from './interface.js';
 import { createLogger } from '../../../common/logger.js';
 import { createPrimaryKeyFunctions } from '../utils/primary-key.js';
+import { QuereusError } from '../../../common/errors.js';
 
 const log = createLogger('vtab:memory:layer:transaction');
 const warnLog = log.extend('warn');
@@ -133,7 +134,7 @@ export class TransactionLayer implements Layer {
 
 	/** Records an insert or update in this transaction layer */
 	recordUpsert(primaryKey: BTreeKeyForPrimary, newRowData: Row, oldRowDataIfUpdate?: Row | null): void {
-		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
+		if (this._isCommitted) throw new QuereusError("Cannot modify a committed layer");
 
 		this.primaryModifications.upsert(newRowData);
 
@@ -167,7 +168,7 @@ export class TransactionLayer implements Layer {
 
 	/** Records a delete in this transaction layer */
 	recordDelete(primaryKey: BTreeKeyForPrimary, oldRowDataForIndexes: Row): void {
-		if (this._isCommitted) throw new Error("Cannot modify a committed layer");
+		if (this._isCommitted) throw new QuereusError("Cannot modify a committed layer");
 
 		// Find the existing entry
 		const existingPath = this.primaryModifications.find(primaryKey);

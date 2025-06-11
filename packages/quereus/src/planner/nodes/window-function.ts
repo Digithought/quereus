@@ -49,6 +49,13 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`WindowFunctionCallNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children, so no change
+	}
+
 	override toString(): string {
 		const distinctStr = this.isDistinct ? 'DISTINCT ' : '';
 		const aliasStr = this.alias ? ` AS ${this.alias}` : '';

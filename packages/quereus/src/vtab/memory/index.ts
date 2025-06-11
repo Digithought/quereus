@@ -1,10 +1,11 @@
 import { BTree } from 'inheritree';
-import type { Row, SqlValue } from '../../common/types.js';
+import { StatusCode, type Row, type SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from './types.js';
 import type { IndexColumnSchema as IndexColumnSpec } from '../../schema/table.js'; // Renamed for clarity
 import type { ColumnSchema } from '../../schema/column.js';
 import { createMemoryTableLoggers } from './utils/logging.js';
+import { quereusError } from '../../common/errors.js';
 
 const logger = createMemoryTableLoggers('index');
 
@@ -47,7 +48,7 @@ export class MemoryIndex {
 		);
 
 		if (hasInvalidIndex) {
-			throw new Error(`Invalid column index in index '${this.name ?? '(unnamed)'}'.`);
+			quereusError(`Invalid column index in index '${this.name ?? '(unnamed)'}'.`, StatusCode.INTERNAL);
 		}
 	}
 
@@ -111,7 +112,7 @@ export class MemoryIndex {
 
 	private validateRowLength(row: Row, columnIndex: number): void {
 		if (columnIndex < 0 || columnIndex >= row.length) {
-			throw new Error(`Index key col index ${columnIndex} OOB for row len ${row.length}`);
+			quereusError(`Index key col index ${columnIndex} OOB for row len ${row.length}`, StatusCode.INTERNAL);
 		}
 	}
 

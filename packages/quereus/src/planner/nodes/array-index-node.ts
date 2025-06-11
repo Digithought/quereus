@@ -37,6 +37,13 @@ export class ArrayIndexNode extends PlanNode implements ZeroAryScalarNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`ArrayIndexNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children, so no change
+	}
+
 	override toString(): string {
 		return `[${this.index}]`;
 	}

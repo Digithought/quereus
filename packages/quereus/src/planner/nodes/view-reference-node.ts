@@ -75,6 +75,13 @@ export class ViewReferenceNode extends PlanNode implements ZeroAryRelationalNode
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`ViewReferenceNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this; // No children, so no change
+	}
+
 	override toString(): string {
 		const aliasText = this.alias ? ` AS ${this.alias}` : '';
 		return `VIEW ${this.viewSchema.schemaName}.${this.viewSchema.name}${aliasText}`;

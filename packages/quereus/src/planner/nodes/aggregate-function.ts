@@ -57,6 +57,62 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const expectedLength = this.args.length + (this.filter ? 1 : 0) + (this.orderBy?.length || 0);
+		if (newChildren.length !== expectedLength) {
+			throw new Error(`AggregateFunctionCallNode expects ${expectedLength} children, got ${newChildren.length}`);
+		}
+
+		// Type check
+		for (const child of newChildren) {
+			if (!('expression' in child)) {
+				throw new Error('AggregateFunctionCallNode: all children must be ScalarPlanNodes');
+			}
+		}
+
+		// Split children back into their respective arrays
+		let childIndex = 0;
+		const newArgs = newChildren.slice(childIndex, childIndex + this.args.length) as ScalarPlanNode[];
+		childIndex += this.args.length;
+
+		let newFilter: ScalarPlanNode | undefined = undefined;
+		if (this.filter) {
+			newFilter = newChildren[childIndex] as ScalarPlanNode;
+			childIndex++;
+		}
+
+		let newOrderBy: ReadonlyArray<{ expression: ScalarPlanNode; direction: 'asc' | 'desc' }> | undefined = undefined;
+		if (this.orderBy?.length) {
+			const newOrderByExpressions = newChildren.slice(childIndex) as ScalarPlanNode[];
+			newOrderBy = this.orderBy.map((item, i) => ({
+				expression: newOrderByExpressions[i],
+				direction: item.direction
+			}));
+		}
+
+		// Check if anything changed
+		const argsChanged = newArgs.some((arg, i) => arg !== this.args[i]);
+		const filterChanged = newFilter !== this.filter;
+		const orderByChanged = newOrderBy && this.orderBy &&
+			newOrderBy.some((item, i) => item.expression !== this.orderBy![i].expression);
+
+		if (!argsChanged && !filterChanged && !orderByChanged) {
+			return this;
+		}
+
+		// Create new instance
+		return new AggregateFunctionCallNode(
+			this.scope,
+			this.expression,
+			this.functionName,
+			this.functionSchema,
+			newArgs,
+			this.isDistinct,
+			newOrderBy,
+			newFilter
+		);
+	}
+
 	override toString(): string {
 		const distinctStr = this.isDistinct ? 'DISTINCT ' : '';
 		const argsStr = formatExpressionList(this.args);

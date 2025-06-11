@@ -218,63 +218,38 @@ export class Optimizer {
 	}
 
 	private optimizeChildren(node: PlanNode): PlanNode {
+		// Generic tree walk using withChildren
+		const originalChildren = node.getChildren();
+		const optimizedChildren = originalChildren.map(child => this.optimizeNode(child));
+
+		// Check if any children changed
+		const childrenChanged = optimizedChildren.some((child, i) => child !== originalChildren[i]);
+
+		if (!childrenChanged) {
+			return node; // No changes
+		}
+
+		// Use withChildren to create new node with optimized children
+		try {
+			return node.withChildren(optimizedChildren);
+		} catch (error) {
+			// Fallback for nodes that don't have withChildren implemented yet
+			log('withChildren not implemented for %s, using manual approach: %s', node.nodeType, error);
+			return this.optimizeChildrenManual(node);
+		}
+	}
+
+	/**
+	 * Manual child optimization for nodes that don't have withChildren implemented yet
+	 * This is a temporary fallback during the migration
+	 */
+	private optimizeChildrenManual(node: PlanNode): PlanNode {
 		// Handle specific node types that can contain children
 		// This ensures we recurse into all common plan nodes
-
-		if (node instanceof BlockNode) {
-			const optimizedStatements = node.statements.map(stmt =>
-				stmt instanceof PlanNode ? this.optimizeNode(stmt) : stmt
-			);
-			if (optimizedStatements === node.statements) return node;
-			return new BlockNode(node.scope, optimizedStatements, node.parameters);
-		}
 
 		if (node instanceof JoinNode) {
 			// Use specialized join optimization that may inject caching
 			return this.optimizeJoinCaching(node as JoinNode);
-		}
-
-		if (node instanceof AggregateNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new AggregateNode(node.scope, optimizedSource, node.groupBy, node.aggregates);
-		}
-
-		if (node instanceof SortNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new SortNode(node.scope, optimizedSource, node.sortKeys);
-		}
-
-		if (node instanceof FilterNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new FilterNode(node.scope, optimizedSource, node.predicate);
-		}
-
-		if (node instanceof DistinctNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new DistinctNode(node.scope, optimizedSource);
-		}
-
-		if (node instanceof SetOperationNode) {
-			const optimizedLeft = this.optimizeNode(node.left) as RelationalPlanNode;
-			const optimizedRight = this.optimizeNode(node.right) as RelationalPlanNode;
-			if (optimizedLeft === node.left && optimizedRight === node.right) return node;
-			return new SetOperationNode(node.scope, optimizedLeft, optimizedRight, node.op);
-		}
-
-		if (node instanceof ProjectNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new ProjectNode(node.scope, optimizedSource, node.projections);
-		}
-
-		if (node instanceof LimitOffsetNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new LimitOffsetNode(node.scope, optimizedSource, node.limit, node.offset);
 		}
 
 		if (node instanceof WindowNode) {
@@ -311,21 +286,6 @@ export class Optimizer {
 			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
 			if (optimizedSource === node.source) return node;
 			return new ConstraintCheckNode(node.scope, optimizedSource, node.table, node.operation, node.oldRowDescriptor, node.newRowDescriptor);
-		}
-
-		if (node instanceof CacheNode) {
-			const cacheNode = node as CacheNode;
-			const optimizedSource = this.optimizeNode(cacheNode.source) as RelationalPlanNode;
-			if (optimizedSource !== cacheNode.source) {
-				return new CacheNode(
-					cacheNode.scope,
-					optimizedSource,
-					cacheNode.strategy,
-					cacheNode.threshold,
-					cacheNode.estimatedCost
-				);
-			}
-			return cacheNode;
 		}
 
 		if (node instanceof ReturningNode) {
@@ -365,48 +325,46 @@ export class Optimizer {
 		return this.context;
 	}
 
-
-
 	// Constraint-related methods removed - constraints now handled in builders
 
-	  /**
-   * Mark a node as physical and compute its properties
-   */
-  private markPhysical(node: PlanNode): void {
-    if (node.physical) return; // Already physical
+	/**
+	 * Mark a node as physical and compute its properties
+	 */
+	private markPhysical(node: PlanNode): void {
+		if (node.physical) return; // Already physical
 
-    // Collect physical properties from children (both scalar and relational)
-    const childrenPhysical: PhysicalProperties[] = [];
+		// Collect physical properties from children (both scalar and relational)
+		const childrenPhysical: PhysicalProperties[] = [];
 
-    // Add properties from scalar children
-    for (const child of node.getChildren()) {
-      if (child instanceof PlanNode && child.physical) {
-        childrenPhysical.push(child.physical);
-      }
-    }
+		// Add properties from scalar children
+		for (const child of node.getChildren()) {
+			if (child instanceof PlanNode && child.physical) {
+				childrenPhysical.push(child.physical);
+			}
+		}
 
-    // Add properties from relational children
-    for (const relation of node.getRelations()) {
-      if (relation.physical) {
-        childrenPhysical.push(relation.physical);
-      }
-    }
+		// Add properties from relational children
+		for (const relation of node.getRelations()) {
+			if (relation.physical) {
+				childrenPhysical.push(relation.physical);
+			}
+		}
 
-    // Let the node compute its own physical properties if it can
-    let computedProperties: PhysicalProperties | undefined;
-    if (node.getPhysical) {
-      computedProperties = node.getPhysical(childrenPhysical);
-    }
+		// Let the node compute its own physical properties if it can
+		let computedProperties: PhysicalProperties | undefined;
+		if (node.getPhysical) {
+			computedProperties = node.getPhysical(childrenPhysical);
+		}
 
-    // Set default physical properties with computed properties as override
-    PlanNode.setDefaultPhysical(node, computedProperties);
+		// Set default physical properties with computed properties as override
+		PlanNode.setDefaultPhysical(node, computedProperties);
 
-    // Optimizer can override/adjust properties here
-    // For example, propagate constant flag up the tree
-    if (childrenPhysical.length > 0 && childrenPhysical.every(p => p.constant)) {
-      node.physical!.constant = true;
-    }
-  }
+		// Optimizer can override/adjust properties here
+		// For example, propagate constant flag up the tree
+		if (childrenPhysical.length > 0 && childrenPhysical.every(p => p.constant)) {
+			node.physical!.constant = true;
+		}
+	}
 
 	/**
 	 * Check if a node type can be directly marked as physical without transformation
@@ -454,15 +412,26 @@ export class Optimizer {
 			);
 		}
 
+		// Use withChildren to rebuild the join with optimized children
+		const newChildren = node.condition ?
+			[optimizedLeft, optimizedRight, node.condition] :
+			[optimizedLeft, optimizedRight];
+
 		if (optimizedLeft !== node.left || optimizedRight !== node.right) {
-			return new JoinNode(
-				node.scope,
-				optimizedLeft,
-				optimizedRight,
-				node.joinType,
-				node.condition,
-				node.usingColumns
-			);
+			try {
+				return node.withChildren(newChildren) as RelationalPlanNode;
+			} catch (error) {
+				// Fallback to manual construction
+				log('withChildren failed for JoinNode, using manual construction: %s', error);
+				return new JoinNode(
+					node.scope,
+					optimizedLeft,
+					optimizedRight,
+					node.joinType,
+					node.condition,
+					node.usingColumns
+				);
+			}
 		}
 
 		return node;

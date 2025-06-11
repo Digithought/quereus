@@ -1,10 +1,12 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
-import type { TableReferenceNode } from './reference.js';
+import { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import type { FilterInfo } from '../../vtab/filter-info.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Represents a table scan operation (full or filtered).
@@ -35,12 +37,37 @@ export class TableScanNode extends PlanNode implements UnaryRelationalNode {
 		return this.source.getAttributes();
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly [TableReferenceNode] {
+		return [this.source];
 	}
 
 	getRelations(): readonly [TableReferenceNode] {
 		return [this.source];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			quereusError(`TableScanNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newSource] = newChildren;
+
+		// Type check - TableScanNode specifically needs a TableReferenceNode
+		if (!(newSource instanceof TableReferenceNode)) {
+			quereusError('TableScanNode: child must be a TableReferenceNode', StatusCode.INTERNAL);
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance preserving attributes (scan preserves table attributes)
+		return new TableScanNode(
+			this.scope,
+			newSource,
+			this.filterInfo
+		);
 	}
 
 	get estimatedRows(): number | undefined {

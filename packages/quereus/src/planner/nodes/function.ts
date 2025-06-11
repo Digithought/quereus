@@ -29,6 +29,33 @@ export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== this.operands.length) {
+			throw new Error(`ScalarFunctionCallNode expects ${this.operands.length} children, got ${newChildren.length}`);
+		}
+
+		// Type check
+		for (const child of newChildren) {
+			if (!('expression' in child)) {
+				throw new Error('ScalarFunctionCallNode: all children must be ScalarPlanNodes');
+			}
+		}
+
+		// Check if anything changed
+		const childrenChanged = newChildren.some((child, i) => child !== this.operands[i]);
+		if (!childrenChanged) {
+			return this;
+		}
+
+		// Create new instance
+		return new ScalarFunctionCallNode(
+			this.scope,
+			this.expression,
+			this.targetType,
+			newChildren as ScalarPlanNode[]
+		);
+	}
+
 	override toString(): string {
 		return `${this.expression.name}(${formatExpressionList(this.operands)})`;
 	}

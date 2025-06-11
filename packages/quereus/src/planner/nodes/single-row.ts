@@ -47,6 +47,13 @@ export class SingleRowNode extends PlanNode implements ZeroAryRelationalNode {
 		return [];
 	}
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+      throw new Error(`SingleRowNode expects 0 children, got ${newChildren.length}`);
+    }
+    return this; // No children, so no change
+  }
+
   get estimatedRows(): number {
     return 1;
   }

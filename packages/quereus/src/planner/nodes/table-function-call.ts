@@ -69,6 +69,34 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     return [];
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== this.operands.length) {
+      throw new Error(`TableFunctionCallNode expects ${this.operands.length} children, got ${newChildren.length}`);
+    }
+
+    // Type check
+    for (const child of newChildren) {
+      if (!('expression' in child)) {
+        throw new Error('TableFunctionCallNode: all children must be ScalarPlanNodes');
+      }
+    }
+
+    // Check if anything changed
+    const childrenChanged = newChildren.some((child, i) => child !== this.operands[i]);
+    if (!childrenChanged) {
+      return this;
+    }
+
+    // Create new instance
+    return new TableFunctionCallNode(
+      this.scope,
+      this.functionName,
+      this.functionSchema,
+      newChildren as ScalarPlanNode[],
+      this.alias
+    );
+  }
+
   get estimatedRows(): number | undefined {
     // Functions can return variable numbers of rows, so we'll use a default estimate
     return 10; // Conservative estimate

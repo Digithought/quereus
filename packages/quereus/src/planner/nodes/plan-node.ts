@@ -3,6 +3,7 @@ import type { Scope } from '../scopes/scope.js';
 import type { BaseType, RelationType, ScalarType } from '../../common/datatype.js';
 import type { Expression } from '../../parser/ast.js';
 import type { Row } from '../../common/types.js';
+import { quereusError, QuereusError } from '../../common/errors.js';
 
 /**
  * Physical properties that execution nodes can provide or require
@@ -103,7 +104,27 @@ export abstract class PlanNode {
 
   abstract getType(): BaseType;
   abstract getChildren(): readonly PlanNode[];
-	abstract getRelations(): readonly RelationalPlanNode[];
+
+  /**
+   * Default implementation of getRelations() that filters getChildren()
+   * Can be overridden for performance if needed
+   */
+	getRelations(): readonly RelationalPlanNode[] {
+    return this.getChildren()
+               .filter((c): c is RelationalPlanNode =>
+                        'getAttributes' in c && typeof (c as any).getAttributes === 'function');
+  }
+
+  /**
+   * Return this node with its children replaced by newChildren.
+   * MUST keep attribute IDs stable unless the concrete node deliberately produces new columns.
+   *
+   * Implementations must:
+   *   1. Verify arity (throw if length mismatch)
+   *   2. Return `this` if nothing changed
+   *   3. Otherwise construct a new instance copying all immutable properties
+   */
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
 
   /**
    * Compute physical properties for this node based on its children.
@@ -173,6 +194,13 @@ export abstract class VoidNode extends PlanNode {
 
   getChildren(): readonly PlanNode[] {
     return []; // No direct child plan nodes in the execution sense
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+      quereusError(`${this.nodeType} expects 0 children, got ${newChildren.length}`);
+    }
+    return this; // No children, so no change
   }
 
 	getRelations(): readonly RelationalPlanNode[] {
@@ -254,4 +282,133 @@ export interface BinaryScalarNode extends ScalarPlanNode {
 export interface NaryScalarNode extends ScalarPlanNode {
   readonly operands: ReadonlyArray<ScalarPlanNode>;
   getChildren(): readonly ScalarPlanNode[];
+}
+
+// --- Concrete Arity-Based Base Classes ---
+
+/**
+ * Base class for relational nodes with no relational inputs (leaf nodes)
+ */
+export abstract class ZeroAryRelationalBase extends PlanNode implements ZeroAryRelationalNode {
+  abstract getType(): RelationType;
+  abstract getAttributes(): Attribute[];
+
+  getChildren(): readonly PlanNode[] {
+    return [];
+  }
+
+  getRelations(): readonly [] {
+    return [];
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+			quereusError(`${this.nodeType} expects 0 children, got ${newChildren.length}`);
+    }
+    return this;
+  }
+}
+
+/**
+ * Base class for relational nodes with one relational input
+ */
+export abstract class UnaryRelationalBase extends PlanNode implements UnaryRelationalNode {
+  abstract readonly source: RelationalPlanNode;
+  abstract getType(): RelationType;
+  abstract getAttributes(): Attribute[];
+
+  getChildren(): readonly PlanNode[] {
+    return [this.source];
+  }
+
+  getRelations(): readonly [RelationalPlanNode] {
+    return [this.source];
+  }
+
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+
+/**
+ * Base class for relational nodes with two relational inputs
+ */
+export abstract class BinaryRelationalBase extends PlanNode implements BinaryRelationalNode {
+  abstract readonly left: RelationalPlanNode;
+  abstract readonly right: RelationalPlanNode;
+  abstract getType(): RelationType;
+  abstract getAttributes(): Attribute[];
+
+  getChildren(): readonly PlanNode[] {
+    return [this.left, this.right];
+  }
+
+  getRelations(): readonly [RelationalPlanNode, RelationalPlanNode] {
+    return [this.left, this.right];
+  }
+
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+
+/**
+ * Base class for scalar nodes with no scalar inputs (leaf expressions)
+ */
+export abstract class ZeroAryScalarBase extends PlanNode implements ZeroAryScalarNode {
+  abstract readonly expression: Expression;
+  abstract getType(): ScalarType;
+
+  getChildren(): readonly [] {
+    return [];
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+      quereusError(`${this.nodeType} expects 0 children, got ${newChildren.length}`);
+    }
+    return this;
+  }
+}
+
+/**
+ * Base class for scalar nodes with one scalar input
+ */
+export abstract class UnaryScalarBase extends PlanNode implements UnaryScalarNode {
+  abstract readonly operand: ScalarPlanNode;
+  abstract readonly expression: Expression;
+  abstract getType(): ScalarType;
+
+  getChildren(): readonly [ScalarPlanNode] {
+    return [this.operand];
+  }
+
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+
+/**
+ * Base class for scalar nodes with two scalar inputs
+ */
+export abstract class BinaryScalarBase extends PlanNode implements BinaryScalarNode {
+  abstract readonly left: ScalarPlanNode;
+  abstract readonly right: ScalarPlanNode;
+  abstract readonly expression: Expression;
+  abstract getType(): ScalarType;
+
+  getChildren(): readonly [ScalarPlanNode, ScalarPlanNode] {
+    return [this.left, this.right];
+  }
+
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+
+/**
+ * Base class for scalar nodes with N scalar inputs
+ */
+export abstract class NaryScalarBase extends PlanNode implements NaryScalarNode {
+  abstract readonly operands: ReadonlyArray<ScalarPlanNode>;
+  abstract readonly expression: Expression;
+  abstract getType(): ScalarType;
+
+  getChildren(): readonly ScalarPlanNode[] {
+    return this.operands;
+  }
+
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
 }

@@ -223,7 +223,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						const argValues: SqlValue[] = [];
 						const funcNode = plan.aggregates[i].expression;
 						if (!(funcNode instanceof AggregateFunctionCallNode)) {
-							throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+							quereusError(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`, StatusCode.INTERNAL);
 						}
 						const args = funcNode.args || [];
 						const argFunctions = aggregateArgFunctions[i] || []; // Add defensive check
@@ -324,7 +324,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					for (let i = 0; i < plan.aggregates.length; i++) {
 						const funcNode = plan.aggregates[i].expression;
 						if (!(funcNode instanceof AggregateFunctionCallNode)) {
-							throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+							quereusError(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`, StatusCode.INTERNAL);
 						}
 						const args = funcNode.args || [];
 						const argFunctions = aggregateArgFunctions[i] || [];
@@ -536,12 +536,12 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	for (const agg of plan.aggregates) {
 		const funcNode = agg.expression;
 		if (!(funcNode instanceof AggregateFunctionCallNode)) {
-			throw new Error(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`);
+			quereusError(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`, StatusCode.INTERNAL);
 		}
 		const args = funcNode.args || [];
 		for (const arg of args) {
 			if (!arg) {
-				throw new Error(`Aggregate argument is undefined for function ${funcNode.functionName}`);
+				quereusError(`Aggregate argument is undefined for function ${funcNode.functionName}`, StatusCode.INTERNAL);
 			}
 			aggregateArgInstructions.push(emitCallFromPlan(arg, ctx));
 		}

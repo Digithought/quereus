@@ -2,7 +2,7 @@ import { Schema } from './schema.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema, RowConstraintSchema, IndexSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
-import { QuereusError } from '../common/errors.js';
+import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
 import type { VirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
@@ -136,12 +136,12 @@ export class SchemaManager {
 		try {
 			const parsedArgs = JSON.parse(argsJsonString);
 			if (typeof parsedArgs !== 'object') {
-				throw new Error("JSON value must be an object.");
+				quereusError("JSON value must be an object.", StatusCode.MISUSE);
 			}
 			this.setDefaultVTabArgs(parsedArgs);
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			throw new QuereusError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
+			quereusError(`Invalid JSON for default_vtab_args: ${msg}`, StatusCode.ERROR);
 		}
 	}
 

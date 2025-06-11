@@ -6,7 +6,7 @@ import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../
 import { getAffinity } from '../common/type-inference.js';
 import { SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
-import { QuereusError } from '../common/errors.js';
+import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:table');
@@ -178,7 +178,7 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 	const pkDef = pkColNames
 		? pkColNames.map(pkName => {
 			const idx = columnIndexMap.get(pkName.toLowerCase());
-			if (idx === undefined) throw new Error(`PK column ${pkName} not found`);
+			if (idx === undefined) quereusError(`PK column ${pkName} not found`);
 			return { index: idx, desc: false };
 		})
 		: [];

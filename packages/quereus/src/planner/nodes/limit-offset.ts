@@ -3,6 +3,8 @@ import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Scala
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Represents a LIMIT/OFFSET operation.
@@ -33,8 +35,8 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
     return this.source.getAttributes();
   }
 
-  getChildren(): readonly ScalarPlanNode[] {
-    const children: ScalarPlanNode[] = [];
+  getChildren(): readonly PlanNode[] {
+    const children: PlanNode[] = [this.source];
     if (this.limit) children.push(this.limit);
     if (this.offset) children.push(this.offset);
     return children;
@@ -75,5 +77,49 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
     }
 
     return props;
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    const expectedLength = 1 + (this.limit ? 1 : 0) + (this.offset ? 1 : 0);
+    if (newChildren.length !== expectedLength) {
+      quereusError(`LimitOffsetNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+    }
+
+    const [newSource, ...restChildren] = newChildren;
+
+    // Type check
+    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+      quereusError('LimitOffsetNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
+    }
+
+    // Parse optional limit and offset from remaining children
+    let newLimit: ScalarPlanNode | undefined = undefined;
+    let newOffset: ScalarPlanNode | undefined = undefined;
+    let childIndex = 0;
+
+    if (this.limit) {
+      newLimit = restChildren[childIndex] as ScalarPlanNode;
+      childIndex++;
+    }
+    if (this.offset) {
+      newOffset = restChildren[childIndex] as ScalarPlanNode;
+    }
+
+    // Check if anything changed
+    const sourceChanged = newSource !== this.source;
+    const limitChanged = newLimit !== this.limit;
+    const offsetChanged = newOffset !== this.offset;
+
+    if (!sourceChanged && !limitChanged && !offsetChanged) {
+      return this;
+    }
+
+    // Create new instance preserving attributes (limit/offset preserves source attributes)
+    return new LimitOffsetNode(
+      this.scope,
+      newSource as RelationalPlanNode,
+      newLimit,
+      newOffset
+    );
   }
 }

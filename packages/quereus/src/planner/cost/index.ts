@@ -3,6 +3,9 @@
  * Provides consistent cost estimation formulas across the optimizer
  */
 
+import { quereusError } from "../../common/errors.js";
+import { StatusCode } from "../../common/types.js";
+
 /**
  * Basic cost constants (in arbitrary "virtual CPU units")
  */
@@ -158,7 +161,7 @@ export function cacheCost(rows: number, accessCount: number = 1): number {
  */
 export function chooseCheapest<T>(options: Array<{ cost: number; option: T }>): T {
 	if (options.length === 0) {
-		throw new Error('No options provided to chooseCheapest');
+		quereusError('No options provided to chooseCheapest', StatusCode.INTERNAL);
 	}
 	return options.reduce((min, current) =>
 		current.cost < min.cost ? current : min

@@ -4,6 +4,8 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { formatExpressionList } from '../../util/plan-formatter.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Physical node representing a streaming aggregate operation.
@@ -107,8 +109,8 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     return this.attributesCache.value;
   }
 
-  getChildren(): readonly ScalarPlanNode[] {
-    return [...this.groupBy, ...this.aggregates.map(agg => agg.expression)];
+  getChildren(): readonly PlanNode[] {
+    return [this.source, ...this.groupBy, ...this.aggregates.map(agg => agg.expression)];
   }
 
   getRelations(): readonly [RelationalPlanNode] {
@@ -183,5 +185,46 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     }
 
     return props;
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    const expectedLength = 1 + this.groupBy.length + this.aggregates.length;
+    if (newChildren.length !== expectedLength) {
+      quereusError(`StreamAggregateNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+    }
+
+    const [newSource, ...restChildren] = newChildren;
+    const newGroupBy = restChildren.slice(0, this.groupBy.length);
+    const newAggregateExpressions = restChildren.slice(this.groupBy.length);
+
+    // Type check
+    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+      quereusError('StreamAggregateNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
+    }
+
+    // Check if anything changed
+    const sourceChanged = newSource !== this.source;
+    const groupByChanged = newGroupBy.some((expr, i) => expr !== this.groupBy[i]);
+    const aggregatesChanged = newAggregateExpressions.some((expr, i) => expr !== this.aggregates[i].expression);
+
+    if (!sourceChanged && !groupByChanged && !aggregatesChanged) {
+      return this;
+    }
+
+    // Build new aggregates array
+    const newAggregates = newAggregateExpressions.map((expr, i) => ({
+      expression: expr as ScalarPlanNode,
+      alias: this.aggregates[i].alias
+    }));
+
+    // Create new instance preserving attribute IDs if they were preserved originally
+    return new StreamAggregateNode(
+      this.scope,
+      newSource as RelationalPlanNode,
+      newGroupBy as ScalarPlanNode[],
+      newAggregates,
+      undefined, // Let it recalculate cost
+      this.preserveAttributeIds // Preserve the original attribute IDs
+    );
   }
 }

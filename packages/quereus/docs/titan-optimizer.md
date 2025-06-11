@@ -555,13 +555,13 @@ Phase 2 – "Cache & Visualise"
 ────────────────────────────────────────
 A.  Materialisation-Advisory Framework
 ────────────────────────────────────────
-Goal Auto-decide when/where to inject CacheNode (or spill-cache) so the inner side of repeated scans and expensive pure sub-trees is read only once.
+Goal Auto-decide when/where to inject CacheNode (or spill-cache) so the inner side of repeated scans and expensive pure sub-trees is read only once.
 
 A.1  Reference-Graph builder  
- • Walk final logical tree, build `Map<PlanNode, RefStats>` where  
-  RefStats = { parentCount, appearsInLoop?, estimatedRows, deterministic }.  
- • `appearsInLoop` flagged if node sits on inner side of NestedLoop OR right side of OUTER query in correlated subquery.  
- • Re-uses each node's existing `physical.deterministic` & `estimatedRows`.
+ • Walk final logical tree, build `Map<PlanNode, RefStats>` where  
+  RefStats = { parentCount, appearsInLoop?, estimatedRows, deterministic }.  
+ • `appearsInLoop` flagged if node sits on inner side of NestedLoop OR right side of OUTER query in correlated subquery.  
+ • Re-uses each node's existing `physical.deterministic` & `estimatedRows`.
 
 A.2  Advisory algorithm  
 ```
@@ -574,23 +574,23 @@ function adviseCaching(node: PlanNode, stats: RefStats, tun: OptimizerTuning): b
   return cheap || stats.appearsInLoop;
 }
 ```
- • Result true ⇒ insert `new CacheNode(node.scope,node,'memory',calcThreshold(rows))`.  
- • `calcThreshold` = `min(rows * tun.join.cacheThresholdMultiplier, tun.join.maxCacheThreshold)`.
+ • Result true ⇒ insert `new CacheNode(node.scope,node,'memory',calcThreshold(rows))`.  
+ • `calcThreshold` = `min(rows * tun.join.cacheThresholdMultiplier, tun.join.maxCacheThreshold)`.
 
 A.3  Spill strategy  
- • extend CacheNode.strategy ∈ {memory,spill}.  
- • Pick spill when rows > `tun.cache.spillThreshold` **and** host module reports `fs` available (browser runtime gets "memory" only).  
- • Spill implementation is just `tmpdir + JSONL`, streamed via AsyncIterable.
+ • extend CacheNode.strategy ∈ {memory,spill}.  
+ • Pick spill when rows > `tun.cache.spillThreshold` **and** host module reports `fs` available (browser runtime gets "memory" only).  
+ • Spill implementation is just `tmpdir + JSONL`, streamed via AsyncIterable.
 
 A.4  Rule wiring  
- • Add optimisation rule `registerRule('*', applyMaterialisationAdvisory)`.  
- • Runs last; traverses tree bottom-up injecting caches where `adviseCaching()` says "yes" and no cache already present.
+ • Add optimisation rule `registerRule('*', applyMaterialisationAdvisory)`.  
+ • Runs last; traverses tree bottom-up injecting caches where `adviseCaching()` says "yes" and no cache already present.
 
 A.5  Unit tests  
- 1.  SELECT with same TVF used twice → exactly one CacheNode.  
- 2.  COUNT(*) subquery correlated → CacheNode on inner.  
- 3.  Huge table (> threshold) → no cache.  
- 4.  Nondeterministic TVF → no cache.
+ 1.  SELECT with same TVF used twice → exactly one CacheNode.  
+ 2.  COUNT(*) subquery correlated → CacheNode on inner.  
+ 3.  Huge table (> threshold) → no cache.  
+ 4.  Nondeterministic TVF → no cache.
 
 ────────────────────────────────────────
 B.  Async-Stream Utilities
@@ -605,17 +605,17 @@ export function tee<T>(src: AsyncIterable<T>): [AsyncIterable<T>,AsyncIterable<T
 export function buffered<T>(src:AsyncIterable<T>, max:number): AsyncIterable<T>
 ```
 Implementation guidelines  
- • zero deps, pure async generators.  
- • `buffered` uses ring-buffer; yields rows eagerly, back-pressures when max reached (for CacheNode).  
- • `tee` duplicates stream by materialising chunks internally; used by spill cache & tracing.
+ • zero deps, pure async generators.  
+ • `buffered` uses ring-buffer; yields rows eagerly, back-pressures when max reached (for CacheNode).  
+ • `tee` duplicates stream by materialising chunks internally; used by spill cache & tracing.
 
 Emitter integration  
- • CacheNode emitter uses `buffered` to stop caching when row-limit exceeded.  
- • NestedLoopJoin inner side uses `tee` when right side already cached but also needed un-cached for SELECT list.
+ • CacheNode emitter uses `buffered` to stop caching when row-limit exceeded.  
+ • NestedLoopJoin inner side uses `tee` when right side already cached but also needed un-cached for SELECT list.
 
 Tests  
- • property test that `tee` produces identical streams.  
- • memory profile for `buffered`.
+ • property test that `tee` produces identical streams.  
+ • memory profile for `buffered`.
 
 ────────────────────────────────────────
 C.  PlanViz CLI
@@ -631,18 +631,18 @@ quereus-planviz file.sql \
 ```
 
 C.2  Implementation  
- • Leverage existing `serializePlanTree()` for JSON.  
- • Tree renderer: depth-first pretty print with cost/rows/ordering badges.  
- • Mermaid: emit `graph TD; N1["SCAN users"] --> N2["FILTER age>30"]; …`.  
- • Accept piped SQL; internally `Database().prepare(sql).planTree(/*phase*/)`.  
- • Add flag `--open` that pops browser with Mermaid live view when available.
+ • Leverage existing `serializePlanTree()` for JSON.  
+ • Tree renderer: depth-first pretty print with cost/rows/ordering badges.  
+ • Mermaid: emit `graph TD; N1["SCAN users"] --> N2["FILTER age>30"]; …`.  
+ • Accept piped SQL; internally `Database().prepare(sql).planTree(/*phase*/)`.  
+ • Add flag `--open` that pops browser with Mermaid live view when available.
 
 C.3  Integration with tests/CI  
- • `yarn planviz test/visual/*.sql --format mermaid` generates artifacts committed to `/docs/planviz/` so diffs show plan changes in PRs.
+ • `yarn planviz test/visual/*.sql --format mermaid` generates artifacts committed to `/docs/planviz/` so diffs show plan changes in PRs.
 
 Risk & Mitigation  
- • Incorrect ref-graph counts → add debug flag `DEBUG=quereus:optimizer:materialise` that logs decisions.  
- • Memory bloat in buffered cache → env `QUEREUS_CACHE_MAX_MB` overrides thresholds.
+ • Incorrect ref-graph counts → add debug flag `DEBUG=quereus:optimizer:materialise` that logs decisions.  
+ • Memory bloat in buffered cache → env `QUEREUS_CACHE_MAX_MB` overrides thresholds.
 
 ====================================================================
 Phase 2 Results
@@ -661,6 +661,147 @@ Phase 2 Results
 - Enhanced cache emitter uses buffering and tracing for improved debugging and performance
 
 **Next Steps**: Ready to proceed with Phase 3 polishing and additional optimization rule families.
+
+## Phase 2.5 – Generic Tree Rewriting Infrastructure ✅ COMPLETED
+
+Phase 2.5 addresses a critical architectural limitation that was causing attribute ID regressions and limiting optimizer extensibility. This phase implements a generic tree rewriting system that eliminates the need for manual node-specific handling in the optimizer core.
+
+### Problem Statement
+
+The original optimizer used a massive 200-line `optimizeChildren()` method with manual `instanceof` checks for each node type:
+
+```typescript
+// OLD: Manual, error-prone approach
+if (node instanceof FilterNode) {
+  const newSource = this.optimizeNode(node.source);
+  const newPredicate = this.optimizeNode(node.predicate);
+  if (newSource !== node.source || newPredicate !== node.predicate) {
+    return new FilterNode(node.scope, newSource, newPredicate); // ❌ Could break attribute IDs
+  }
+}
+// ... 40+ more cases
+```
+
+**Critical Issues:**
+- **Attribute ID Breakage**: Manual node reconstruction often failed to preserve attribute IDs correctly
+- **Maintenance Burden**: Adding new node types required updating the central optimizer method
+- **Code Duplication**: Similar patterns repeated across many node types
+- **Error Prone**: Easy to forget edge cases or mishandle attribute preservation
+
+### Solution: Abstract `withChildren()` Method
+
+Every `PlanNode` now implements an abstract `withChildren()` method that handles generic tree rewriting:
+
+```typescript
+abstract class PlanNode {
+  abstract getChildren(): readonly PlanNode[];
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+```
+
+### Design Principles
+
+**1. Immutable Tree Rewriting**
+- Each `withChildren()` returns a new instance only if children changed
+- Returns `this` when no changes are detected (optimization)
+- Never mutates existing nodes
+
+**2. Type-Safe Reconstruction**  
+- Proper type checking ensures only valid child types are accepted
+- Throws descriptive errors for invalid child configurations
+- Maintains node-specific invariants during reconstruction
+
+**3. Attribute ID Preservation**
+- **Critical**: All `withChildren()` implementations preserve original attribute IDs
+- Enables robust column reference resolution across plan transformations
+- Eliminates the regression issues that plagued manual reconstruction
+
+**4. Generic Optimizer Core**
+The optimizer's tree walk is now completely generic:
+
+```typescript
+// NEW: Generic, robust approach
+private optimizeChildren(node: PlanNode): PlanNode {
+  const originalChildren = node.getChildren();
+  const optimizedChildren = originalChildren.map(child => this.optimizeNode(child));
+  
+  const childrenChanged = optimizedChildren.some((child, i) => child !== originalChildren[i]);
+  if (!childrenChanged) {
+    return node;
+  }
+  
+  return node.withChildren(optimizedChildren); // ✅ Attribute IDs preserved
+}
+```
+
+### Example Implementation Patterns
+
+**Zero-ary Nodes (Leaf Nodes):**
+```typescript
+withChildren(newChildren: readonly PlanNode[]): PlanNode {
+  if (newChildren.length !== 0) {
+    quereusError(`${this.nodeType} expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+  }
+  return this; // No children, so no change
+}
+```
+
+**Unary Relational Nodes:**
+```typescript
+withChildren(newChildren: readonly PlanNode[]): PlanNode {
+  if (newChildren.length !== 1) {
+    quereusError(`${this.nodeType} expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+  }
+  
+  const [newSource] = newChildren;
+  if (!('getAttributes' in newSource)) {
+    quereusError(`${this.nodeType}: child must be a RelationalPlanNode`, StatusCode.INTERNAL);
+  }
+  
+  if (newSource === this.source) return this;
+  
+  return new FilterNode(this.scope, newSource, this.predicate); // Preserves attribute IDs
+}
+```
+
+**Complex Multi-Child Nodes:**
+```typescript
+withChildren(newChildren: readonly PlanNode[]): PlanNode {
+  const expectedLength = 1 + this.projections.length;
+  if (newChildren.length !== expectedLength) {
+    quereusError(`ProjectNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+  }
+  
+  const [newSource, ...newProjectionNodes] = newChildren;
+  
+  // Type checking and change detection...
+  
+  // Preserve original attribute IDs when creating new projections
+  const newProjections = this.projections.map((proj, i) => ({
+    node: newProjectionNodes[i] as ScalarPlanNode,
+    alias: proj.alias,
+    attributeId: proj.attributeId // ✅ Preserve original attribute ID
+  }));
+  
+  return new ProjectNode(this.scope, newSource, newProjections);
+}
+```
+
+### `getChildren()` Consistency
+
+All nodes now consistently implement `getChildren()` to return ALL children (both relational and scalar) in a predictable order:
+
+```typescript
+// ProjectNode example
+getChildren(): readonly PlanNode[] {
+  return [this.source, ...this.projections.map(p => p.node)];
+}
+
+// FilterNode example  
+getChildren(): readonly [RelationalPlanNode, ScalarPlanNode] {
+  return [this.source, this.predicate];
+}
+```
 
 ### Phase 3 – Polishing
 

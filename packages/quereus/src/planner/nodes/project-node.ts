@@ -6,6 +6,8 @@ import { Cached } from '../../util/cached.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -117,8 +119,8 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		return this.attributesCache.value;
 	}
 
-	getChildren(): readonly ScalarPlanNode[] {
-		return this.projections.map(p => p.node);
+	getChildren(): readonly PlanNode[] {
+		return [this.source, ...this.projections.map(p => p.node)];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
@@ -143,5 +145,39 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 				alias: p.alias
 			}))
 		};
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1 + this.projections.length) {
+			quereusError(`ProjectNode expects ${1 + this.projections.length} children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newSource, ...newProjectionNodes] = newChildren;
+
+		// Type check
+		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+			quereusError('ProjectNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Check if anything changed
+		const sourceChanged = newSource !== this.source;
+		const projectionsChanged = newProjectionNodes.some((node, i) => node !== this.projections[i].node);
+
+		if (!sourceChanged && !projectionsChanged) {
+			return this;
+		}
+
+		// Build new projections array
+		const newProjections = newProjectionNodes.map((node, i) => ({
+			node: node as ScalarPlanNode,
+			alias: this.projections[i].alias
+		}));
+
+		// Create new instance - ProjectNode creates new attributes for expressions
+		return new ProjectNode(
+			this.scope,
+			newSource as RelationalPlanNode,
+			newProjections
+		);
 	}
 }

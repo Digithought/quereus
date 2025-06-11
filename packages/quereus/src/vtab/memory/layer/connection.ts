@@ -2,7 +2,8 @@ import type { Layer } from './interface.js';
 import { TransactionLayer } from './transaction.js';
 import type { MemoryTableManager } from './manager.js';
 import { createLogger } from '../../../common/logger.js';
-import type { Row } from '../../../common/types.js';
+import { StatusCode, type Row } from '../../../common/types.js';
+import { quereusError } from '../../../common/errors.js';
 
 let connectionCounter = 0;
 const log = createLogger('vtab:memory:layer:connection');
@@ -93,7 +94,7 @@ export class MemoryTableConnection {
 	/** Creates a savepoint with the given identifier */
 	createSavepoint(savepointIndex: number): void {
 		if (savepointIndex < 0) {
-			throw new Error(`Invalid savepoint index: ${savepointIndex}. Must be non-negative.`);
+			quereusError(`Invalid savepoint index: ${savepointIndex}. Must be non-negative.`, StatusCode.INTERNAL);
 		}
 
 		if (!this.pendingTransactionLayer) {
@@ -102,7 +103,7 @@ export class MemoryTableConnection {
 		}
 
 		if (!this.pendingTransactionLayer) {
-			throw new Error(`Failed to create transaction for savepoint ${savepointIndex}`);
+			quereusError(`Failed to create transaction for savepoint ${savepointIndex}`);
 		}
 
 		// Create a snapshot of the current transaction state

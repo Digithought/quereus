@@ -29,7 +29,7 @@ export class BlockNode extends PlanNode {
   }
 
   getChildren(): readonly PlanNode[] {
-    return [];
+    return this.statements;
   }
 
   getRelations(): readonly RelationalPlanNode[] {
@@ -50,5 +50,31 @@ export class BlockNode extends PlanNode {
 
   get estimatedRows(): number | undefined {
     return this.getRelations().reduce((acc, s) => acc + (s.estimatedRows ?? 0), 0);
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    // Check if statements changed
+    if (newChildren.length !== this.statements.length) {
+      // Create new instance with new statements
+      return new BlockNode(
+        this.scope,
+        [...newChildren],
+        this.parameters
+      );
+    }
+
+    // Check if any individual statement changed
+    const statementsChanged = newChildren.some((child, i) => child !== this.statements[i]);
+
+    if (!statementsChanged) {
+      return this;
+    }
+
+    // Create new instance with updated statements
+    return new BlockNode(
+      this.scope,
+      [...newChildren],
+      this.parameters
+    );
   }
 }

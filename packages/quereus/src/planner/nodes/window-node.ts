@@ -72,8 +72,72 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		return [...sourceAttrs, ...windowAttrs];
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly PlanNode[] {
+		// Return all scalar expressions: partition expressions, order by expressions, and function arguments
+		const children: PlanNode[] = [];
+		children.push(...this.partitionExpressions);
+		children.push(...this.orderByExpressions);
+		children.push(...this.functionArguments.filter(arg => arg !== null) as ScalarPlanNode[]);
+		return children;
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const expectedLength = this.partitionExpressions.length +
+			this.orderByExpressions.length +
+			this.functionArguments.filter(arg => arg !== null).length;
+
+		if (newChildren.length !== expectedLength) {
+			throw new Error(`WindowNode expects ${expectedLength} children, got ${newChildren.length}`);
+		}
+
+		// Type check
+		for (const child of newChildren) {
+			if (!('expression' in child)) {
+				throw new Error('WindowNode: all children must be ScalarPlanNodes');
+			}
+		}
+
+		// Split children back into their respective arrays
+		let childIndex = 0;
+		const newPartitionExpressions = newChildren.slice(childIndex, childIndex + this.partitionExpressions.length) as ScalarPlanNode[];
+		childIndex += this.partitionExpressions.length;
+
+		const newOrderByExpressions = newChildren.slice(childIndex, childIndex + this.orderByExpressions.length) as ScalarPlanNode[];
+		childIndex += this.orderByExpressions.length;
+
+		const nonNullFunctionArgs = this.functionArguments.filter(arg => arg !== null);
+		const newNonNullFunctionArgs = newChildren.slice(childIndex) as ScalarPlanNode[];
+
+		// Rebuild function arguments array preserving null positions
+		const newFunctionArguments: (ScalarPlanNode | null)[] = [];
+		let nonNullIndex = 0;
+		for (const arg of this.functionArguments) {
+			if (arg === null) {
+				newFunctionArguments.push(null);
+			} else {
+				newFunctionArguments.push(newNonNullFunctionArgs[nonNullIndex++]);
+			}
+		}
+
+		// Check if anything changed
+		const partitionChanged = newPartitionExpressions.some((expr, i) => expr !== this.partitionExpressions[i]);
+		const orderByChanged = newOrderByExpressions.some((expr, i) => expr !== this.orderByExpressions[i]);
+		const functionArgsChanged = newFunctionArguments.some((arg, i) => arg !== this.functionArguments[i]);
+
+		if (!partitionChanged && !orderByChanged && !functionArgsChanged) {
+			return this;
+		}
+
+		// Create new instance
+		return new WindowNode(
+			this.scope,
+			this.source, // Source doesn't change via withChildren
+			this.windowSpec,
+			this.functions, // Functions don't change via withChildren
+			newPartitionExpressions,
+			newOrderByExpressions,
+			newFunctionArguments
+		);
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {

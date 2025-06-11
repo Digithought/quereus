@@ -1,7 +1,8 @@
 import { createLogger } from '../../common/logger.js'; // Import logger
 import { Temporal } from 'temporal-polyfill';
-import type { SqlValue } from '../../common/types.js';
+import { StatusCode, type SqlValue } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
+import { quereusError } from '../../common/errors.js';
 
 const log = createLogger('func:builtins:datetime'); // Create logger instance
 const warnLog = log.extend('warn');
@@ -172,7 +173,7 @@ function applyTemporalModifier(dt: Temporal.ZonedDateTime, modifier: string): Te
 		const unit = relativeMatch[3]; // unit is guaranteed to be a string here
 
 		if (isNaN(value)) {
-			throw new Error(`Invalid number in modifier: ${modifier}`);
+			quereusError(`Invalid number in modifier: ${modifier}`, StatusCode.MISUSE);
 		}
 
 		// Use Record<string, number> for better type checking with dynamic keys
@@ -189,7 +190,7 @@ function applyTemporalModifier(dt: Temporal.ZonedDateTime, modifier: string): Te
 				durationLike[`${unit}s`] = value;
 			}
 		} else {
-			throw new Error(`Internal error: Unknown unit ${unit}`);
+			quereusError(`Internal error: Unknown unit ${unit}`, StatusCode.MISUSE);
 		}
 
 		const duration = Temporal.Duration.from(durationLike);

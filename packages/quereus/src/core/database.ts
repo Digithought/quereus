@@ -1,5 +1,5 @@
 import { createLogger } from '../common/logger.js';
-import { MisuseError, QuereusError } from '../common/errors.js';
+import { MisuseError, quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
@@ -359,7 +359,7 @@ export class Database {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
 			errorLog(`Failed to register scalar function ${name}/${options.numArgs}: %O`, e);
-			if (e instanceof Error) throw e; else throw new Error(String(e));
+			if (e instanceof Error) throw e; else quereusError(String(e));
 		}
 	}
 
@@ -395,7 +395,7 @@ export class Database {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
 			errorLog(`Failed to register aggregate function ${name}/${options.numArgs}: %O`, e);
-			if (e instanceof Error) throw e; else throw new Error(String(e));
+			if (e instanceof Error) throw e; else quereusError(String(e));
 		}
 	}
 
@@ -411,7 +411,7 @@ export class Database {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		} catch (e) {
 			errorLog(`Failed to register function ${schema.name}/${schema.numArgs}: %O`, e);
-			if (e instanceof Error) throw e; else throw new Error(String(e));
+			if (e instanceof Error) throw e; else quereusError(String(e));
 		}
 	}
 

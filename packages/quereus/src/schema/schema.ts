@@ -3,7 +3,7 @@ import type { FunctionSchema } from './function.js';
 import { getFunctionKey } from './function.js';
 import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
-import { QuereusError } from '../common/errors.js';
+import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
@@ -92,7 +92,7 @@ export class Schema {
 	 */
 	addView(view: ViewSchema): void {
 		if (view.schemaName !== this.name) {
-			throw new Error(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
+			quereusError(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
 		}
 		if (this.tables.has(view.name.toLowerCase())) {
 			throw new QuereusError(`Schema '${this.name}': Cannot add view '${view.name}', a table with the same name already exists.`);

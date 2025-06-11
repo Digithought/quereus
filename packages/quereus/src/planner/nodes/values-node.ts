@@ -90,6 +90,44 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
     return [];
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    const expectedLength = this.rows.flat().length;
+    if (newChildren.length !== expectedLength) {
+      throw new Error(`ValuesNode expects ${expectedLength} children, got ${newChildren.length}`);
+    }
+
+    // Type check
+    for (const child of newChildren) {
+      if (!('expression' in child)) {
+        throw new Error('ValuesNode: all children must be ScalarPlanNodes');
+      }
+    }
+
+    // Check if anything changed
+    const flatChildren = this.rows.flat();
+    const childrenChanged = newChildren.some((child, i) => child !== flatChildren[i]);
+    if (!childrenChanged) {
+      return this;
+    }
+
+    // Rebuild the rows structure
+    const newRows: ScalarPlanNode[][] = [];
+    let childIndex = 0;
+    for (let rowIndex = 0; rowIndex < this.rows.length; rowIndex++) {
+      const rowLength = this.rows[rowIndex].length;
+      const newRow = newChildren.slice(childIndex, childIndex + rowLength) as ScalarPlanNode[];
+      newRows.push(newRow);
+      childIndex += rowLength;
+    }
+
+    // Create new instance
+    return new ValuesNode(
+      this.scope,
+      newRows,
+      this.columnNames
+    );
+  }
+
   get estimatedRows(): number {
     return this.rows.length;
   }

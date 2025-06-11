@@ -111,6 +111,38 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     return this.projections.map(proj => proj.node);
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== this.projections.length) {
+      throw new Error(`ReturningNode expects ${this.projections.length} children, got ${newChildren.length}`);
+    }
+
+    // Type check
+    for (const child of newChildren) {
+      if (!('expression' in child)) {
+        throw new Error('ReturningNode: all children must be ScalarPlanNodes');
+      }
+    }
+
+    // Check if anything changed
+    const childrenChanged = newChildren.some((child, i) => child !== this.projections[i].node);
+    if (!childrenChanged) {
+      return this;
+    }
+
+    // Create new projections with updated nodes
+    const newProjections = this.projections.map((proj, i) => ({
+      node: newChildren[i] as ScalarPlanNode,
+      alias: proj.alias
+    }));
+
+    // Create new instance
+    return new ReturningNode(
+      this.scope,
+      this.executor, // Executor doesn't change via withChildren
+      newProjections
+    );
+  }
+
   get estimatedRows(): number | undefined {
     return this.executor.estimatedRows;
   }

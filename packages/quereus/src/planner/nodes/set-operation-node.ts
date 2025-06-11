@@ -4,7 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { QuereusError } from '../../common/errors.js';
+import { quereusError, QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
 export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
@@ -50,6 +50,35 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
 
   getRelations(): readonly [RelationalPlanNode, RelationalPlanNode] {
     return [this.left, this.right];
+  }
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 2) {
+      quereusError(`SetOperationNode expects 2 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+    }
+
+    const [newLeft, newRight] = newChildren;
+
+    // Type check
+    if (!('getAttributes' in newLeft) || typeof (newLeft as any).getAttributes !== 'function') {
+      quereusError('SetOperationNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
+    }
+    if (!('getAttributes' in newRight) || typeof (newRight as any).getAttributes !== 'function') {
+      quereusError('SetOperationNode: second child must be a RelationalPlanNode', StatusCode.INTERNAL);
+    }
+
+    // Return same instance if nothing changed
+    if (newLeft === this.left && newRight === this.right) {
+      return this;
+    }
+
+    // Create new instance preserving attributes (set operation preserves left child's attributes)
+    return new SetOperationNode(
+      this.scope,
+      newLeft as RelationalPlanNode,
+      newRight as RelationalPlanNode,
+      this.op
+    );
   }
 
   override toString(): string {

@@ -3,6 +3,8 @@
  * Provides helpers for handling ordering, unique keys, and property propagation
  */
 
+import { quereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 import type { PhysicalProperties } from './nodes/plan-node.js';
 
 /**
@@ -163,6 +165,6 @@ export function estimateResultRows(
 		}
 
 		default:
-			throw new Error(`Unknown operation: ${operation}`);
+			quereusError(`Unknown operation: ${operation}`, StatusCode.INTERNAL);
 	}
 }

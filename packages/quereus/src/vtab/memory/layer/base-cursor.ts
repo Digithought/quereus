@@ -3,8 +3,9 @@ import type { BaseLayer } from './base.js';
 import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
-import type { Row } from '../../../common/types.js';
+import { StatusCode, type Row } from '../../../common/types.js';
 import { safeIterate } from './safe-iterate.js';
+import { QuereusError } from '../../../common/errors.js';
 
 export async function* scanBaseLayer(
 	layer: BaseLayer,
@@ -69,7 +70,7 @@ export async function* scanBaseLayer(
 		}
 	} else { // Secondary Index Scan
 		const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
-		if (!secondaryIndex) throw new Error(`Secondary index '${plan.indexName}' not found in BaseLayer.`);
+		if (!secondaryIndex) throw new QuereusError(`Secondary index '${plan.indexName}' not found in BaseLayer.`, StatusCode.INTERNAL);
 
 		const indexTree = secondaryIndex.data; // BTree<BTreeKeyForIndex, MemoryIndexEntry> from inheritree
 

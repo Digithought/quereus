@@ -59,6 +59,13 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			quereusError(`TableReferenceNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+		return this; // No children, so no change
+	}
+
 	get estimatedRows(): number | undefined {
 		return this.tableSchema.estimatedRows;
 	}
@@ -127,6 +134,13 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			quereusError(`TableFunctionReferenceNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+		return this; // No children, so no change
+	}
+
 	get estimatedRows(): number | undefined {
 		return 100; // Default estimate for table functions
 	}
@@ -179,6 +193,13 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			quereusError(`ColumnReferenceNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+		return this; // No children, so no change
+	}
+
 	override toString(): string {
 		const columnName = this.expression.alias ??
 			(this.expression.schema ? this.expression.schema + '.' : '') + this.expression.name;
@@ -223,6 +244,13 @@ export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNod
 		return [];
 	}
 
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			quereusError(`ParameterReferenceNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+		return this; // No children, so no change
+	}
+
 	override toString(): string {
 		return `:${this.nameOrIndex}`;
 	}
@@ -257,6 +285,13 @@ export class FunctionReferenceNode extends PlanNode {
 
 	getRelations(): readonly [] {
 		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			quereusError(`FunctionReferenceNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+		return this; // No children, so no change
 	}
 
 	override toString(): string {

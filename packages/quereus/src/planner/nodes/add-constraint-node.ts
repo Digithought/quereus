@@ -32,6 +32,13 @@ export class AddConstraintNode extends PlanNode implements VoidNode {
     return [];
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 0) {
+      throw new Error(`AddConstraintNode expects 0 children, got ${newChildren.length}`);
+    }
+    return this; // No children, so no change
+  }
+
   override toString(): string {
     const constraintType = this.constraint.type.toUpperCase();
     const constraintName = this.constraint.name || 'unnamed';

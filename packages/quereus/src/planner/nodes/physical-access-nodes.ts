@@ -5,7 +5,7 @@
 
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
-import type { TableReferenceNode } from './reference.js';
+import { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -40,12 +40,33 @@ export abstract class PhysicalTableAccessNode extends PlanNode implements UnaryR
 		return this.outputType.value;
 	}
 
-	getChildren(): readonly [TableReferenceNode] {
+	getChildren(): readonly PlanNode[] {
 		return [this.source];
 	}
 
 	getRelations(): readonly [TableReferenceNode] {
 		return [this.source];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			throw new Error(`${this.nodeType} expects 1 child, got ${newChildren.length}`);
+		}
+
+		const [newSource] = newChildren;
+
+		// Type check - Physical access nodes specifically need a TableReferenceNode
+		if (!(newSource instanceof TableReferenceNode)) {
+			throw new Error(`${this.nodeType}: child must be a TableReferenceNode`);
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Subclasses must override this with their specific constructor
+		throw new Error(`${this.nodeType} must override withChildren method`);
 	}
 
 		/**
@@ -99,6 +120,31 @@ export class SeqScanNode extends PhysicalTableAccessNode {
 	override toString(): string {
 		return `SEQ SCAN ${this.source.tableSchema.name}`;
 	}
+
+	override withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			throw new Error(`SeqScanNode expects 1 child, got ${newChildren.length}`);
+		}
+
+		const [newSource] = newChildren;
+
+		// Type check - Physical access nodes specifically need a TableReferenceNode
+		if (!(newSource instanceof TableReferenceNode)) {
+			throw new Error('SeqScanNode: child must be a TableReferenceNode');
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance
+		return new SeqScanNode(
+			this.scope,
+			newSource,
+			this.filterInfo
+		);
+	}
 }
 
 /**
@@ -142,6 +188,33 @@ export class IndexScanNode extends PhysicalTableAccessNode {
 			indexName: this.indexName,
 			providesOrdering: this.providesOrdering
 		};
+	}
+
+	override withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			throw new Error(`IndexScanNode expects 1 child, got ${newChildren.length}`);
+		}
+
+		const [newSource] = newChildren;
+
+		// Type check - Physical access nodes specifically need a TableReferenceNode
+		if (!(newSource instanceof TableReferenceNode)) {
+			throw new Error('IndexScanNode: child must be a TableReferenceNode');
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance
+		return new IndexScanNode(
+			this.scope,
+			newSource,
+			this.filterInfo,
+			this.indexName,
+			this.providesOrdering
+		);
 	}
 }
 
@@ -197,5 +270,49 @@ export class IndexSeekNode extends PhysicalTableAccessNode {
 
 	getSeekKeys(): readonly ScalarPlanNode[] {
 		return this.seekKeys;
+	}
+
+	override getChildren(): readonly PlanNode[] {
+		return [this.source, ...this.seekKeys];
+	}
+
+	override withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const expectedLength = 1 + this.seekKeys.length;
+		if (newChildren.length !== expectedLength) {
+			throw new Error(`IndexSeekNode expects ${expectedLength} children, got ${newChildren.length}`);
+		}
+
+		const [newSource, ...newSeekKeys] = newChildren;
+
+		// Type check - Physical access nodes specifically need a TableReferenceNode
+		if (!(newSource instanceof TableReferenceNode)) {
+			throw new Error('IndexSeekNode: first child must be a TableReferenceNode');
+		}
+
+		// Type check seek keys
+		for (const seekKey of newSeekKeys) {
+			if (!('expression' in seekKey)) {
+				throw new Error('IndexSeekNode: seek keys must be ScalarPlanNodes');
+			}
+		}
+
+		// Check if anything changed
+		const sourceChanged = newSource !== this.source;
+		const seekKeysChanged = newSeekKeys.some((key, i) => key !== this.seekKeys[i]);
+
+		if (!sourceChanged && !seekKeysChanged) {
+			return this;
+		}
+
+		// Create new instance
+		return new IndexSeekNode(
+			this.scope,
+			newSource,
+			this.filterInfo,
+			this.indexName,
+			newSeekKeys as ScalarPlanNode[],
+			this.isRange,
+			this.providesOrdering
+		);
 	}
 }

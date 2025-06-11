@@ -2,6 +2,8 @@ import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
+import { StatusCode } from '../../common/types.js';
+import { quereusError } from '../../common/errors.js';
 
 export type CacheStrategy = 'memory' | 'spill'; // Future: spill-to-disk
 
@@ -40,12 +42,38 @@ export class CacheNode extends PlanNode implements UnaryRelationalNode {
 		};
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly [RelationalPlanNode] {
+		return [this.source];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.source];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			quereusError(`CacheNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newSource] = newChildren;
+
+		// Type check
+		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+			quereusError('CacheNode: child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance preserving attributes (cache preserves source attributes exactly)
+		return new CacheNode(
+			this.scope,
+			newSource as RelationalPlanNode,
+			this.strategy,
+			this.threshold
+		);
 	}
 
 	get estimatedRows(): number | undefined {

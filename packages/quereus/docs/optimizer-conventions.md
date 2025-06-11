@@ -187,7 +187,7 @@ if (!isValidPrecondition) {
 
 // ❌ WRONG - don't throw for normal non-applicable cases
 if (!isValidPrecondition) {
-	throw new Error('Rule not applicable');
+	quereusError('Rule not applicable');
 }
 ```
 
@@ -196,7 +196,7 @@ Only throw for actual programming errors:
 ```typescript
 // ✅ CORRECT - throw for programming errors
 if (node.getAttributes().length === 0) {
-	throw new Error(`Internal error: ${node.nodeType} has no attributes`);
+	quereusError(`Internal error: ${node.nodeType} has no attributes`);
 }
 ```
 

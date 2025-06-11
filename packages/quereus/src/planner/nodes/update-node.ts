@@ -49,6 +49,42 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     return this.assignments.map(a => a.value);
   }
 
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== this.assignments.length) {
+      throw new Error(`UpdateNode expects ${this.assignments.length} children, got ${newChildren.length}`);
+    }
+
+    // Type check
+    for (const child of newChildren) {
+      if (!('expression' in child)) {
+        throw new Error('UpdateNode: all children must be ScalarPlanNodes');
+      }
+    }
+
+    // Check if anything changed
+    const childrenChanged = newChildren.some((child, i) => child !== this.assignments[i].value);
+    if (!childrenChanged) {
+      return this;
+    }
+
+    // Create new assignments with updated values
+    const newAssignments = this.assignments.map((assignment, i) => ({
+      targetColumn: assignment.targetColumn,
+      value: newChildren[i] as ScalarPlanNode
+    }));
+
+    // Create new instance
+    return new UpdateNode(
+      this.scope,
+      this.table,
+      newAssignments,
+      this.source, // Source doesn't change via withChildren
+      this.onConflict,
+      this.oldRowDescriptor,
+      this.newRowDescriptor
+    );
+  }
+
   get estimatedRows(): number | undefined {
     return this.source.estimatedRows;
   }
