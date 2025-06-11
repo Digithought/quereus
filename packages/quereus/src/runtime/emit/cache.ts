@@ -5,6 +5,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan } from '../emitters.js';
 import { createLogger } from '../../common/logger.js';
 import { streamWithCache, createCacheState, type SharedCacheConfig } from '../cache/shared-cache.js';
+import { buffered, traced } from '../async-util.js';
 
 const log = createLogger('runtime:emit:cache');
 
@@ -39,7 +40,19 @@ export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 	};
 
 	async function* run(rctx: RuntimeContext, sourceCallback: (innerCtx: RuntimeContext) => AsyncIterable<Row>): AsyncIterable<Row> {
-		const sourceIterable = sourceCallback(rctx);
+		let sourceIterable = sourceCallback(rctx);
+
+		// Optional: Add buffering for large threshold caches to improve performance
+		if (plan.threshold > 50000) {
+			sourceIterable = buffered(sourceIterable, Math.min(plan.threshold / 10, 5000));
+		}
+
+		// Optional: Add tracing in debug mode
+		if (process.env.DEBUG?.includes('quereus:runtime:cache')) {
+			sourceIterable = traced(sourceIterable, `cache-${plan.id}`,
+				(row, index) => `row ${index}: [${row.length} columns]`);
+		}
+
 		yield* streamWithCache(sourceIterable, config, cacheState);
 	}
 

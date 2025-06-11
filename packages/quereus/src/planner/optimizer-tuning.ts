@@ -37,6 +37,16 @@ export interface OptimizerTuning {
 		/** Default cache threshold for CTE self-references */
 		readonly defaultCacheThreshold: number;
 	};
+
+	/** Materialization advisory configuration */
+	readonly cache: {
+		/** Row threshold for switching from memory to spill strategy */
+		readonly spillThreshold: number;
+		/** Maximum memory buffer size for spill caches */
+		readonly maxSpillBuffer: number;
+		/** Whether spill caching is enabled */
+		readonly spillEnabled: boolean;
+	};
 }
 
 /**
@@ -59,5 +69,10 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 	recursiveCte: {
 		maxIterations: 10000,
 		defaultCacheThreshold: 10000
+	},
+	cache: {
+		spillThreshold: 100000,
+		maxSpillBuffer: 10000,
+		spillEnabled: true
 	}
 };

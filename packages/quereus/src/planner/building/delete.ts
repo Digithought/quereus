@@ -7,10 +7,12 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescrip
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { ProjectNode } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
+import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
+import { RowOp } from '../../schema/table.js';
+import { ReturningNode } from '../nodes/returning-node.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -38,14 +40,23 @@ export function buildDeleteStmt(
     sourceNode = new FilterNode(deleteCtx.scope, sourceNode, filterExpression);
   }
 
+  // Always inject ConstraintCheckNode for DELETE operations
+  // Checks constraints (like foreign key references) before deletion
+  const constraintCheckNode = new ConstraintCheckNode(
+    deleteCtx.scope,
+    sourceNode,
+    tableReference,
+    RowOp.DELETE,
+    undefined, // oldRowDescriptor - not needed for DELETE constraint checking
+    undefined  // newRowDescriptor - not needed for DELETE
+  );
+
   const deleteNode = new DeleteNode(
     deleteCtx.scope,
     tableReference,
-    sourceNode,
+    constraintCheckNode, // Use constraint-checked rows as source
   );
 
-    // Note: Constraint checking for DELETE operations is handled by the optimizer rule
-  // which places ConstraintCheck BEFORE deletion to validate rows before they're removed
   let resultNode: RelationalPlanNode = deleteNode;
 
   if (stmt.returning && stmt.returning.length > 0) {
@@ -56,7 +67,7 @@ export function buildDeleteStmt(
     });
     // Similar to UPDATE, using sourceNode (the filtered rows to be deleted) as a stand-in for RETURNING.
     // The emitter needs to provide the *actual* deleted rows.
-    return new ProjectNode(deleteCtx.scope, resultNode, returningProjections);
+    return new ReturningNode(deleteCtx.scope, resultNode, returningProjections);
   }
 
 	return new SinkNode(deleteCtx.scope, resultNode, 'delete');

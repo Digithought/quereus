@@ -8,10 +8,12 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescrip
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { ProjectNode } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
+import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
+import { RowOp } from '../../schema/table.js';
+import { ReturningNode } from '../nodes/returning-node.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -47,22 +49,6 @@ export function buildUpdateStmt(
       value: buildExpression(updateCtx, assign.value),
     };
   });
-
-  // Step 1: Create UpdateNode that produces updated rows (but doesn't execute them)
-  const updateNode = new UpdateNode(
-    updateCtx.scope,
-    tableReference,
-    assignments,
-    sourceNode,
-    stmt.onConflict
-  );
-
-  // For constraint checking we now rely on the optimizer rule – do not wrap here.
-  const updateExecutorNode = new UpdateExecutorNode(
-    updateCtx.scope,
-    updateNode, // pass raw update node – optimizer will inject ConstraintCheckNode when needed
-    tableReference
-  );
 
   if (stmt.returning && stmt.returning.length > 0) {
     // For RETURNING, create coordinated attribute IDs like we do for INSERT
@@ -137,9 +123,51 @@ export function buildUpdateStmt(
       newRowDescriptor
     );
 
-    // Project from the UpdateNode before execution – optimizer will ensure correct wrapping.
-    return new ProjectNode(updateCtx.scope, updateNodeWithDescriptor, returningProjections);
+    // For returning, we still need to execute the update before projecting
+    // Always inject ConstraintCheckNode for UPDATE operations (provides required metadata)
+    const constraintCheckNode = new ConstraintCheckNode(
+      updateCtx.scope,
+      updateNodeWithDescriptor,
+      tableReference,
+      RowOp.UPDATE,
+      undefined, // oldRowDescriptor - UpdateNode already handles old row metadata
+      newRowDescriptor
+    );
+
+    const updateExecutorNode = new UpdateExecutorNode(
+      updateCtx.scope,
+      constraintCheckNode,
+      tableReference
+    );
+
+    // Return the RETURNING results from the executed update
+    return new ReturningNode(updateCtx.scope, updateExecutorNode, returningProjections);
   }
+
+  // Step 1: Create UpdateNode that produces updated rows (but doesn't execute them)
+  const updateNode = new UpdateNode(
+    updateCtx.scope,
+    tableReference,
+    assignments,
+    sourceNode,
+    stmt.onConflict
+  );
+
+  // Always inject ConstraintCheckNode for UPDATE operations (provides required metadata)
+  const constraintCheckNode = new ConstraintCheckNode(
+    updateCtx.scope,
+    updateNode,
+    tableReference,
+    RowOp.UPDATE,
+    undefined, // oldRowDescriptor - UpdateNode already handles old row metadata
+    undefined  // newRowDescriptor - not needed for non-returning updates
+  );
+
+  const updateExecutorNode = new UpdateExecutorNode(
+    updateCtx.scope,
+    constraintCheckNode,
+    tableReference
+  );
 
   return new SinkNode(updateCtx.scope, updateExecutorNode, 'update');
 }

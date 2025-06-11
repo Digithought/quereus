@@ -255,7 +255,7 @@ async function checkNotNullConstraints(
 		return;
 	}
 
-		// Check each column for NOT NULL constraint
+	// Check each column for NOT NULL constraint
 	for (let i = 0; i < tableSchema.columns.length; i++) {
 		const column = tableSchema.columns[i];
 		if (column.notNull) {

@@ -61,3 +61,6 @@ export type { PluginManifest, PluginRecord, PluginSetting } from './vtab/manifes
 
 // Re-export virtual table framework
 export type { VirtualTableModule } from './vtab/module.js';
+
+// Debug and development utilities
+export { serializePlanTree } from './planner/debug.js';

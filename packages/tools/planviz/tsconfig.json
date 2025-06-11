@@ -1,0 +1,20 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "declaration": true,
+    "declarationMap": true,
+		"moduleResolution": "node",
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "sourceMap": true
+  },
+	"include": ["src", "test"],
+	"exclude": [
+		"node_modules",
+		"dist"
+	]
+}

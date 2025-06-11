@@ -547,7 +547,7 @@ Add ENV `UPDATE_PLANS=true` to overwrite golden files (like Jest snapshots).
 
 With Phase 1 in place, adding or refactoring optimisation rules becomes a matter of dropping a file into `optimizer/rules/`, writing two snapshot tests, and verifying the DEBUG trace, setting us up for the richer optimisation families in later phases.
 
-## Phase 2 – Cache & Statistics
+## Phase 2 – Cache & Statistics ✅ COMPLETED
 
 Phase 2 – "Cache & Visualise"  
 (Prereqs: richer physical props, StatisticsAPI, rule registry, basic optimiser passes & emitter metadata already in place)
@@ -644,7 +644,23 @@ Risk & Mitigation
  • Incorrect ref-graph counts → add debug flag `DEBUG=quereus:optimizer:materialise` that logs decisions.  
  • Memory bloat in buffered cache → env `QUEREUS_CACHE_MAX_MB` overrides thresholds.
 
-This completes the detailed blueprint for Phase 2, giving us intelligent caching, better streaming helpers, and the visual tooling developers need to reason about ever-more-sophisticated optimisation phases.
+====================================================================
+Phase 2 Results
+====================================================================
+✅ **Materialisation-Advisory Framework**: Intelligent cache injection based on reference graph analysis
+✅ **Async-Stream Utilities**: Comprehensive async iterable processing helpers with tee, buffering, and tracing
+✅ **PlanViz CLI Tool**: Visual query plan inspection with tree, JSON, and Mermaid output formats
+✅ **Enhanced Cache Integration**: CacheNode emitter enhanced with async utilities for better performance
+✅ **Spill Strategy Configuration**: Tunable cache strategy selection with memory/spill thresholds
+
+**Key Features:**
+- Reference graph builder identifies nodes appearing in loops or with multiple parents
+- Advisory algorithm with deterministic heuristics for cache injection decisions
+- Async utilities provide zero-dependency stream processing with back-pressure and memory management
+- PlanViz CLI supports multiple output formats and browser integration for Mermaid diagrams
+- Enhanced cache emitter uses buffering and tracing for improved debugging and performance
+
+**Next Steps**: Ready to proceed with Phase 3 polishing and additional optimization rule families.
 
 ### Phase 3 – Polishing
 

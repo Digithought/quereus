@@ -8,7 +8,6 @@ import { buildSelectStmt } from './select.js';
 import { buildWithClause } from './with.js';
 import { ValuesNode } from '../nodes/values-node.js'; // Assuming ValuesNode exists or will be created
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
-import { ProjectNode } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js'; // Assuming this will be created
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
@@ -16,6 +15,9 @@ import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
+import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
+import { RowOp } from '../../schema/table.js';
+import { ReturningNode } from '../nodes/returning-node.js';
 
 export function buildInsertStmt(
 	ctx: PlanningContext,
@@ -108,15 +110,24 @@ export function buildInsertStmt(
 		throw new QuereusError('INSERT statement must have a VALUES clause or a SELECT query.', StatusCode.ERROR);
 	}
 
+	// Always inject ConstraintCheckNode for INSERT operations
+	const constraintCheckNode = new ConstraintCheckNode(
+		ctx.scope,
+		sourceNode,
+		tableReference,
+		RowOp.INSERT,
+		undefined, // oldRowDescriptor - not needed for INSERT
+		undefined  // newRowDescriptor - not needed for non-returning inserts
+	);
+
 	const insertNode = new InsertNode(
 		ctx.scope,
 		tableReference,
 		targetColumns,
-		sourceNode,
+		constraintCheckNode, // Use constraint-checked rows as source
 		stmt.onConflict
 	);
 
-	// Rely on optimizer for constraint checking – no wrapping here.
 	let resultNode: RelationalPlanNode = insertNode;
 
 	if (stmt.returning && stmt.returning.length > 0) {
@@ -183,17 +194,27 @@ export function buildInsertStmt(
 			};
 		});
 
+		// Always inject ConstraintCheckNode for INSERT operations (even with RETURNING)
+		const constraintCheckNodeWithDescriptor = new ConstraintCheckNode(
+			ctx.scope,
+			sourceNode,
+			tableReference,
+			RowOp.INSERT,
+			undefined, // oldRowDescriptor - not needed for INSERT
+			newRowDescriptor
+		);
+
 		// Create a new InsertNode with the row descriptor
 		const insertNodeWithDescriptor = new InsertNode(
 			ctx.scope,
 			tableReference,
 			targetColumns,
-			sourceNode,
+			constraintCheckNodeWithDescriptor, // Use constraint-checked rows as source
 			stmt.onConflict,
 			newRowDescriptor
 		);
 
-		return new ProjectNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
+		return new ReturningNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
 	}
 
 	return new SinkNode(ctx.scope, resultNode, 'insert');

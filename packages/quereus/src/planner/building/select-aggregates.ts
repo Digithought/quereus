@@ -27,15 +27,38 @@ export function buildAggregatePhase(
 	needsFinalProjection: boolean;
 	preAggregateSort: boolean;
 } {
+	// If there is a HAVING clause but the SELECT contains **no aggregate functions**
+	// we can safely treat the HAVING predicate as a regular filter that runs *before*
+	// the aggregation (i.e. between the source and the AggregateNode). This avoids
+	// the "missing column context" problem where the predicate refers to columns
+	// that are not available after the AggregateNode (only grouping columns and
+	// aggregate results are exposed). This behaviour is compatible with SQLite –
+	// GROUP BY with a primary-key guarantees one row per group so the semantics
+	// are unchanged.
+	const shouldPushHavingBelowAggregate = Boolean(stmt.having && !hasAggregates);
+
 	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
 
 	if (!hasAggregates && !hasGroupBy) {
 		return { output: input, needsFinalProjection: false, preAggregateSort: false };
 	}
 
+	// ---------------------------------------------------------------------------
+	// Build HAVING predicate as *pre-aggregate* filter when appropriate
+	// ---------------------------------------------------------------------------
+	let currentInput: RelationalPlanNode = input;
+	if (shouldPushHavingBelowAggregate) {
+		// Build the predicate using the *pre-aggregate* scope because all columns
+		// are still available here.
+		const havingExpr = buildExpression(selectContext, stmt.having as AST.Expression, true);
+		currentInput = new FilterNode(selectContext.scope, currentInput, havingExpr);
+	}
+
+	// After (optional) early HAVING filter we continue with the existing pipeline
+	// ----------------------------------------------------------------------------
 	// Handle pre-aggregate sorting for ORDER BY without GROUP BY
 	const preAggregateSort = Boolean(hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0);
-	let currentInput = handlePreAggregateSort(input, stmt, selectContext, hasAggregates, !!hasGroupBy);
+	currentInput = handlePreAggregateSort(currentInput, stmt, selectContext, hasAggregates, !!hasGroupBy);
 
 	// Validate aggregate/non-aggregate mixing
 	validateAggregateProjections(projections, hasAggregates, !!hasGroupBy);
@@ -55,8 +78,9 @@ export function buildAggregatePhase(
 		aggregates
 	);
 
-	// Handle HAVING clause
-	if (stmt.having) {
+	// Handle HAVING clause *after* aggregation only when we did not already push
+	// it below the AggregateNode.
+	if (stmt.having && !shouldPushHavingBelowAggregate) {
 		currentInput = buildHavingFilter(currentInput, stmt.having, selectContext, aggregateOutputScope, aggregates, groupByExpressions);
 	}
 

@@ -15,12 +15,10 @@ import { UpdateNode } from './nodes/update-node.js';
 import { UpdateExecutorNode } from './nodes/update-executor-node.js';
 import { DeleteNode } from './nodes/delete-node.js';
 import { ConstraintCheckNode } from './nodes/constraint-check-node.js';
-import { RowOp } from '../schema/table.js';
-import type { RowDescriptor } from './nodes/plan-node.js';
 import { JoinNode } from './nodes/join-node.js';
 import { CacheNode } from './nodes/cache-node.js';
 import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
-import { getDefaultRules } from './optimizer-rules.js';
+
 import { ReturningNode } from './nodes/returning-node.js';
 import { SinkNode } from './nodes/sink-node.js';
 import { quereusError } from '../common/errors.js';
@@ -29,20 +27,25 @@ import { applyRules, clearVisitedRules, registerRules, createRule } from './fram
 import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
 import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
 import { createOptContext, type OptContext } from './framework/context.js';
+// Phase 2 rules
+import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-advisory.js';
+// Phase 1.5 rules
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
+// Core optimization rules
+import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
+// Constraint rules removed - now handled in builders for correctness
+import { ruleSortOptimization } from './rules/physical/rule-sort-optimization.js';
+import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
+import { ruleProjectOptimization } from './rules/physical/rule-project-optimization.js';
+import { ruleFilterOptimization } from './rules/physical/rule-filter-optimization.js';
+import { ruleMarkPhysical } from './rules/physical/rule-mark-physical.js';
 
 const log = createLogger('optimizer');
-
-/**
- * Optimization rule that transforms logical nodes to physical nodes
- */
-type OptimizationRule = (node: PlanNode, optimizer: Optimizer) => PlanNode | null;
 
 /**
  * The query optimizer transforms logical plan trees into physical plan trees
  */
 export class Optimizer {
-	private rules: Map<PlanNodeType, OptimizationRule[]> = new Map();
 	private readonly stats: StatsProvider;
 	private context?: OptContext;
 
@@ -51,7 +54,6 @@ export class Optimizer {
 		stats?: StatsProvider
 	) {
 		this.stats = stats ?? defaultStatsProvider;
-		this.registerDefaultRules();
 
 		// Ensure global framework rules are registered once
 		Optimizer.ensureGlobalRulesRegistered();
@@ -68,38 +70,91 @@ export class Optimizer {
 		}
 		Optimizer.globalRulesRegistered = true;
 
-		const defaultRules = getDefaultRules();
+		const toRegister = [];
 
-		// Register in new framework system
-		const newFrameworkRules = [];
+		// Core optimization rules (converted from old system)
+		toRegister.push(createRule(
+			'aggregate-streaming',
+			PlanNodeType.Aggregate,
+			'impl',
+			ruleAggregateStreaming,
+			40 // High priority - fundamental logical→physical transformation
+		));
 
-		// Register legacy rules
-		for (const [nodeType, rules] of defaultRules) {
-			for (let i = 0; i < rules.length; i++) {
-				const rule = rules[i];
-				// Convert old rule format to new framework format
-				const ruleId = `legacy-${nodeType.toLowerCase()}-${i}`;
-				newFrameworkRules.push(createRule(
-					ruleId,
-					nodeType,
-					'impl', // Most legacy rules are implementation rules
-					rule,
-					50 // Medium priority for legacy rules
-				));
-			}
-		}
+		// Constraint rules removed - now handled directly in builders for correctness
 
-		// Register new Phase 1 rules
-		newFrameworkRules.push(createRule(
+		toRegister.push(createRule(
+			'sort-optimization',
+			PlanNodeType.Sort,
+			'impl',
+			ruleSortOptimization,
+			60 // Medium priority - optimization only
+		));
+
+		toRegister.push(createRule(
+			'cte-optimization',
+			PlanNodeType.CTE,
+			'impl',
+			ruleCteOptimization,
+			70 // Lower priority - caching optimization
+		));
+
+		// toRegister.push(createRule(
+		// 	'project-optimization',
+		// 	PlanNodeType.Project,
+		// 	'impl',
+		// 	ruleProjectOptimization,
+		// 	50 // Medium priority - basic optimization
+		// ));
+
+		// toRegister.push(createRule(
+		// 	'filter-optimization',
+		// 	PlanNodeType.Filter,
+		// 	'impl',
+		// 	ruleFilterOptimization,
+		// 	50 // Medium priority - basic optimization
+		// ));
+
+		// Phase 1.5 rules
+		toRegister.push(createRule(
 			'select-access-path',
 			PlanNodeType.TableScan,
 			'impl',
 			ruleSelectAccessPath,
-			30 // Higher priority than legacy rules
+			30 // High priority - fundamental access path selection
 		));
 
-		// Register all converted rules at once
-		registerRules(newFrameworkRules);
+		// Phase 2 rules
+		toRegister.push(createRule(
+			'materialization-advisory',
+			PlanNodeType.Block, // Apply to root-level nodes
+			'rewrite',
+			ruleMaterializationAdvisory,
+			90 // Low priority - run last for global analysis
+		));
+
+		// Fallback rule - must run last with lowest priority
+		// We need to register this for multiple node types that might need fallback handling
+		const fallbackNodeTypes = [
+			PlanNodeType.TableScan, PlanNodeType.Values, PlanNodeType.TableFunctionCall,
+			PlanNodeType.Join, PlanNodeType.NestedLoopJoin, PlanNodeType.SingleRow,
+			PlanNodeType.SetOperation, PlanNodeType.Distinct, PlanNodeType.LimitOffset,
+			PlanNodeType.Window, PlanNodeType.Block, PlanNodeType.CTEReference,
+			PlanNodeType.Cache, PlanNodeType.Sequencing, PlanNodeType.UpdateExecutor
+		];
+
+		for (const nodeType of fallbackNodeTypes) {
+			toRegister.push(createRule(
+				`mark-physical-${nodeType.toLowerCase()}`,
+				nodeType,
+				'impl',
+				ruleMarkPhysical,
+				100 // Lowest priority - absolute fallback
+			));
+		}
+
+		// Register all rules at once
+		registerRules(toRegister);
 	}
 
 	/**
@@ -137,7 +192,7 @@ export class Optimizer {
 		// First optimize all children
 		const optimizedNode = this.optimizeChildren(node);
 
-		// Apply rules using the new framework
+		// Apply rules
 		const rulesApplied = applyRules(optimizedNode, this);
 
 		if (rulesApplied !== optimizedNode) {
@@ -153,21 +208,13 @@ export class Optimizer {
 			this.markPhysical(optimizedNode);
 			traceNodeEnd(node, optimizedNode);
 			return optimizedNode;
-		}
-
-		// If we failed to make it physical after applying rules
-		if (!this.canBePhysical(optimizedNode)) {
+		} else {
 			log('Failed to make node %s physical after optimization', optimizedNode.nodeType);
 			quereusError(
 				`No rule to make ${optimizedNode.nodeType} physical`,
 				StatusCode.INTERNAL
 			);
 		}
-
-		// Mark as physical and return
-		this.markPhysical(optimizedNode);
-		traceNodeEnd(node, optimizedNode);
-		return optimizedNode;
 	}
 
 	private optimizeChildren(node: PlanNode): PlanNode {
@@ -318,95 +365,9 @@ export class Optimizer {
 		return this.context;
 	}
 
-	/**
-	 * Register a transformation rule for a specific node type
-	 */
-	registerRule(nodeType: PlanNodeType, rule: OptimizationRule): void {
-		if (!this.rules.has(nodeType)) {
-			this.rules.set(nodeType, []);
-		}
-		this.rules.get(nodeType)!.push(rule);
-	}
 
-	/**
-	 * Register the default optimization rules
-	 */
-	private registerDefaultRules(): void {
-		const defaultRules = getDefaultRules();
 
-		// Register in old system (for backwards compatibility)
-		for (const [nodeType, rules] of defaultRules) {
-			for (const rule of rules) {
-				this.registerRule(nodeType, rule);
-			}
-		}
-	}
-
-	/**
-	 * Check if a table has constraints that need checking for a specific operation
-	 */
-	hasConstraintsForOperation(tableSchema: any, operation: RowOp): boolean {
-		// Check for NOT NULL constraints (apply to INSERT and UPDATE)
-		if (operation !== RowOp.DELETE) {
-			const hasNotNull = tableSchema.columns?.some((col: any) => col.notNull);
-			if (hasNotNull) return true;
-		}
-
-		// Check for CHECK constraints
-		const hasCheckConstraints = tableSchema.checkConstraints?.some((constraint: any) => {
-			if (!constraint.operations) {
-				// Default applies to INSERT and UPDATE
-				return operation === RowOp.INSERT || operation === RowOp.UPDATE;
-			}
-			return (constraint.operations & operation) !== 0;
-		});
-
-		return !!hasCheckConstraints;
-	}
-
-	/**
-	 * Create row descriptors for constraint checking
-	 */
-	createRowDescriptors(node: InsertNode | UpdateNode | DeleteNode, operation: RowOp): {
-		oldRowDescriptor?: RowDescriptor;
-		newRowDescriptor?: RowDescriptor;
-	} {
-		// RowDescriptor maps attributeId (number) -> columnIndex in the physical row array.
-		// We must therefore allocate unique attribute IDs for every column reference that we
-		// want to expose through OLD./NEW. aliases so that ColumnReferenceNodes created later
-		// can resolve deterministically.
-		const result: { oldRowDescriptor?: RowDescriptor; newRowDescriptor?: RowDescriptor } = {};
-
-		const tableSchema = node.table.tableSchema;
-
-		// Helper that allocates a fresh attribute id for a given column index and registers it
-		// into the supplied RowDescriptor.
-		const allocAttr = (descriptor: RowDescriptor, columnIndex: number) => {
-			const attrId = PlanNode.nextAttrId();
-			descriptor[attrId] = columnIndex;
-			return attrId;
-		};
-
-		if (operation === RowOp.INSERT) {
-			// INSERT exposes only NEW.* values
-			result.newRowDescriptor = [];
-			tableSchema.columns.forEach((_, colIdx) => allocAttr(result.newRowDescriptor!, colIdx));
-		} else if (operation === RowOp.UPDATE) {
-			// UPDATE exposes both OLD.* and NEW.*
-			result.oldRowDescriptor = [];
-			result.newRowDescriptor = [];
-			tableSchema.columns.forEach((_, colIdx) => {
-				allocAttr(result.oldRowDescriptor!, colIdx);
-				allocAttr(result.newRowDescriptor!, colIdx);
-			});
-		} else if (operation === RowOp.DELETE) {
-			// DELETE exposes only OLD.* values
-			result.oldRowDescriptor = [];
-			tableSchema.columns.forEach((_, colIdx) => allocAttr(result.oldRowDescriptor!, colIdx));
-		}
-
-		return result;
-	}
+	// Constraint-related methods removed - constraints now handled in builders
 
 	  /**
    * Mark a node as physical and compute its properties
