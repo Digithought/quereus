@@ -230,86 +230,11 @@ export class Optimizer {
 		}
 
 		// Use withChildren to create new node with optimized children
-		try {
-			return node.withChildren(optimizedChildren);
-		} catch (error) {
-			// Fallback for nodes that don't have withChildren implemented yet
-			log('withChildren not implemented for %s, using manual approach: %s', node.nodeType, error);
-			return this.optimizeChildrenManual(node);
-		}
+		// withChildren is a required contract - any errors should propagate
+		return node.withChildren(optimizedChildren);
 	}
 
-	/**
-	 * Manual child optimization for nodes that don't have withChildren implemented yet
-	 * This is a temporary fallback during the migration
-	 */
-	private optimizeChildrenManual(node: PlanNode): PlanNode {
-		// Handle specific node types that can contain children
-		// This ensures we recurse into all common plan nodes
 
-		if (node instanceof JoinNode) {
-			// Use specialized join optimization that may inject caching
-			return this.optimizeJoinCaching(node as JoinNode);
-		}
-
-		if (node instanceof WindowNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new WindowNode(node.scope, optimizedSource, node.windowSpec, node.functions, node.partitionExpressions, node.orderByExpressions, node.functionArguments);
-		}
-
-		if (node instanceof InsertNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new InsertNode(node.scope, node.table, node.targetColumns, optimizedSource, node.onConflict, node.newRowDescriptor);
-		}
-
-		if (node instanceof UpdateNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new UpdateNode(node.scope, node.table, node.assignments, optimizedSource, node.onConflict, node.oldRowDescriptor, node.newRowDescriptor);
-		}
-
-		if (node instanceof UpdateExecutorNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new UpdateExecutorNode(node.scope, optimizedSource, node.table);
-		}
-
-		if (node instanceof DeleteNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new DeleteNode(node.scope, node.table, optimizedSource, node.oldRowDescriptor);
-		}
-
-		if (node instanceof ConstraintCheckNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new ConstraintCheckNode(node.scope, optimizedSource, node.table, node.operation, node.oldRowDescriptor, node.newRowDescriptor);
-		}
-
-		if (node instanceof ReturningNode) {
-			const optimizedExecutor = this.optimizeNode(node.executor) as RelationalPlanNode;
-			if (optimizedExecutor !== node.executor) {
-				return new ReturningNode(
-					node.scope,
-					optimizedExecutor,
-					node.projections
-				);
-			}
-			return node;
-		}
-
-		if (node instanceof SinkNode) {
-			const optimizedSource = this.optimizeNode(node.source) as RelationalPlanNode;
-			if (optimizedSource === node.source) return node;
-			return new SinkNode(node.scope, optimizedSource, node.operation);
-		}
-
-		// For other nodes, return as-is
-		// This is safe for leaf nodes and nodes we don't need to optimize children for
-		return node;
-	}
 
 	/**
 	 * Get the statistics provider
@@ -418,20 +343,7 @@ export class Optimizer {
 			[optimizedLeft, optimizedRight];
 
 		if (optimizedLeft !== node.left || optimizedRight !== node.right) {
-			try {
-				return node.withChildren(newChildren) as RelationalPlanNode;
-			} catch (error) {
-				// Fallback to manual construction
-				log('withChildren failed for JoinNode, using manual construction: %s', error);
-				return new JoinNode(
-					node.scope,
-					optimizedLeft,
-					optimizedRight,
-					node.joinType,
-					node.condition,
-					node.usingColumns
-				);
-			}
+			return node.withChildren(newChildren) as RelationalPlanNode;
 		}
 
 		return node;

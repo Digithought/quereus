@@ -129,15 +129,11 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				];
 
 				// Add children to stack (in reverse order so they're processed in correct order)
+				// Note: getChildren() should include all children (both relational and scalar)
+				// Don't add getRelations() separately as it would cause duplication
 				const children = node.getChildren ? node.getChildren() : [];
 				for (let i = children.length - 1; i >= 0; i--) {
 					nodeStack.push({ node: children[i], parentId: currentId, level });
-				}
-
-				// Add relations (input tables/nodes)
-				const relations = node.getRelations ? node.getRelations() : [];
-				for (let i = relations.length - 1; i >= 0; i--) {
-					nodeStack.push({ node: relations[i], parentId: currentId, level });
 				}
 			}
 		} catch (error: any) {
