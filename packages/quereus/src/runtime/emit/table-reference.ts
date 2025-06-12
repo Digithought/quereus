@@ -2,21 +2,17 @@ import type { TableReferenceNode } from '../../planner/nodes/reference.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { Row } from '../../common/types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { getVTable, disconnectVTable } from '../utils.js';
 import { createValidatedInstruction } from '../emitters.js';
 import type { FilterInfo } from '../../vtab/filter-info.js';
 import type { IndexInfo, IndexConstraintUsage } from '../../vtab/index-info.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitTableReference(plan: TableReferenceNode, ctx: EmissionContext): Instruction {
 	// Create row descriptor for output attributes
-	const rowDescriptor: RowDescriptor = [];
-	const attributes = plan.getAttributes();
-	attributes.forEach((attr, index) => {
-		rowDescriptor[attr.id] = index;
-	});
+	const rowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	async function* run(rctx: RuntimeContext): AsyncIterable<Row> {
 		// Get the table schema

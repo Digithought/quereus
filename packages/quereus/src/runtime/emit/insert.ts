@@ -1,22 +1,15 @@
 import type { InsertNode } from '../../planner/nodes/insert-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row, SqlDataType } from '../../common/types.js';
 import { getVTableConnection, getVTable, disconnectVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 import { applyIntegerAffinity, applyRealAffinity, applyNumericAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
-
-	// Create row descriptor for the output attributes (for RETURNING support)
-	const outputRowDescriptor: RowDescriptor = [];
-	const outputAttributes = plan.getAttributes();
-	outputAttributes.forEach((attr, index) => {
-		outputRowDescriptor[attr.id] = index;
-	});
 
 	// Compute targetColumnIndices at emit time
 	const targetColumnIndices: number[] = [];

@@ -12,6 +12,8 @@ import { StatusCode } from '../../common/types.js';
 export interface Projection {
 	node: ScalarPlanNode;
 	alias?: string;
+	/** Optional predefined attribute ID to preserve during optimization */
+	attributeId?: number;
 }
 
 /**
@@ -28,7 +30,9 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		scope: Scope,
 		public readonly source: RelationalPlanNode,
 		public readonly projections: ReadonlyArray<Projection>,
-		estimatedCostOverride?: number
+		estimatedCostOverride?: number,
+		/** Optional predefined attributes for preserving IDs during optimization */
+		predefinedAttributes?: Attribute[]
 	) {
 		super(scope, estimatedCostOverride);
 
@@ -85,11 +89,26 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		});
 
 		this.attributesCache = new Cached(() => {
+			// If predefined attributes are provided, use them (for optimization)
+			if (predefinedAttributes) {
+				return predefinedAttributes;
+			}
+
 			// Get the computed column names from the type
 			const outputType = this.getType();
 
 			// For each projection, preserve attribute ID if it's a simple column reference
 			return this.projections.map((proj, index) => {
+				// Check if projection has a predefined attribute ID
+				if (proj.attributeId !== undefined) {
+					return {
+						id: proj.attributeId,
+						name: outputType.columns[index].name,
+						type: proj.node.getType(),
+						sourceRelation: `${this.nodeType}:${this.id}`
+					};
+				}
+
 				// If this projection is a simple column reference, preserve its attribute ID
 				if (proj.node instanceof ColumnReferenceNode) {
 					return {
@@ -167,17 +186,23 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			return this;
 		}
 
-		// Build new projections array
+		// **CRITICAL**: Preserve original attribute IDs to maintain column reference stability
+		const originalAttributes = this.getAttributes();
+
+		// Build new projections array with preserved attribute IDs
 		const newProjections = newProjectionNodes.map((node, i) => ({
 			node: node as ScalarPlanNode,
-			alias: this.projections[i].alias
+			alias: this.projections[i].alias,
+			attributeId: originalAttributes[i].id // Preserve original attribute ID
 		}));
 
-		// Create new instance - ProjectNode creates new attributes for expressions
+		// Create new instance with predefined attributes
 		return new ProjectNode(
 			this.scope,
 			newSource as RelationalPlanNode,
-			newProjections
+			newProjections,
+			undefined, // estimatedCostOverride
+			originalAttributes // Pass original attributes to preserve IDs
 		);
 	}
 }

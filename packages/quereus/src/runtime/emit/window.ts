@@ -2,13 +2,14 @@ import type { WindowNode } from '../../planner/nodes/window-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import type { Row, SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { compareSqlValues, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 import { createLogger } from '../../common/logger.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { RowDescriptor } from '../../planner/nodes/plan-node.js';
 
 const log = createLogger('runtime:emit:window');
 
@@ -38,17 +39,8 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 	);
 
 	// Create row descriptors
-	const sourceRowDescriptor: RowDescriptor = [];
-	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
-
-	const outputRowDescriptor: RowDescriptor = [];
-	const outputAttributes = plan.getAttributes();
-	outputAttributes.forEach((attr, index) => {
-		outputRowDescriptor[attr.id] = index;
-	});
+	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
+	const outputRowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	async function* run(
 		rctx: RuntimeContext,

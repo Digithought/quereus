@@ -1,10 +1,10 @@
 import type { ProjectNode } from '../../planner/nodes/project-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type Row } from '../../common/types.js';
 import { type OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -13,11 +13,7 @@ export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instructio
 	});
 
 	// Create row descriptor for source attributes
-	const sourceRowDescriptor: RowDescriptor = [];
-	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
+	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
 	async function* run(rctx: RuntimeContext, source: AsyncIterable<Row>, ...projectionFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		for await (const sourceRow of source) {

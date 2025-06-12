@@ -3,7 +3,6 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan, emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import type { Row } from '../../common/types.js';
-import type { RowDescriptor, TableDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
 import { BTree } from 'inheritree';
 import { compareRows } from '../../util/comparison.js';
@@ -11,16 +10,13 @@ import { WorkingTableIterable } from '../../util/working-table-iterable.js';
 import { DEFAULT_TUNING } from '../../planner/optimizer-tuning.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 const log = createLogger('runtime:emit:recursive-cte');
 
 export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): Instruction {
 	// Create row descriptor for CTE output attributes
-	const rowDescriptor: RowDescriptor = [];
-	const attributes = plan.getAttributes();
-	attributes.forEach((attr, index) => {
-		rowDescriptor[attr.id] = index;
-	});
+	const rowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	// Use the plan's table descriptor for table context coordination
 	const { tableDescriptor } = plan;

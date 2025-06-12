@@ -5,10 +5,13 @@ import type { ScalarPlanNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { ColumnReferenceNode } from './reference.js';
 import { expressionToString } from '../../util/ast-stringify.js';
+import { Cached } from '../../util/cached.js';
 
 export interface ReturningProjection {
   node: ScalarPlanNode;
   alias?: string;
+  /** Optional predefined attribute ID to preserve during optimization */
+  attributeId?: number;
 }
 
 /**
@@ -18,15 +21,30 @@ export interface ReturningProjection {
 export class ReturningNode extends PlanNode implements RelationalPlanNode {
   override readonly nodeType = PlanNodeType.Returning;
 
+  private outputTypeCache: Cached<RelationType>;
+  private attributesCache: Cached<Attribute[]>;
+
   constructor(
     scope: Scope,
     public readonly executor: RelationalPlanNode, // The DML operation that yields affected rows
     public readonly projections: ReadonlyArray<ReturningProjection>,
+    /** Optional predefined attributes for preserving IDs during optimization */
+    predefinedAttributes?: Attribute[]
   ) {
     super(scope);
+
+    this.outputTypeCache = new Cached(() => this.buildOutputType());
+    this.attributesCache = new Cached(() => {
+      // If predefined attributes are provided, use them (for optimization)
+      if (predefinedAttributes) {
+        return predefinedAttributes.slice(); // Return a copy
+      }
+
+      return this.buildAttributes();
+    });
   }
 
-    getType(): RelationType {
+  private buildOutputType(): RelationType {
     // Return type is based on the projections, similar to ProjectNode
     // Build column names with proper duplicate handling
     const columnNames: string[] = [];
@@ -75,13 +93,23 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     };
   }
 
-    getAttributes(): Attribute[] {
+  private buildAttributes(): Attribute[] {
     // Create attributes for the projected columns
     // Get the computed column names from the type
     const outputType = this.getType();
 
     // For each projection, preserve attribute ID if it's a simple column reference
     return this.projections.map((proj, index) => {
+      // Check if projection has a predefined attribute ID
+      if (proj.attributeId !== undefined) {
+        return {
+          id: proj.attributeId,
+          name: outputType.columns[index].name,
+          type: proj.node.getType(),
+          sourceRelation: `${this.nodeType}:${this.id}`
+        };
+      }
+
       // If this projection is a simple column reference, preserve its attribute ID
       if (proj.node instanceof ColumnReferenceNode) {
         return {
@@ -100,6 +128,14 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
         };
       }
     });
+  }
+
+  getType(): RelationType {
+    return this.outputTypeCache.value;
+  }
+
+  getAttributes(): Attribute[] {
+    return this.attributesCache.value;
   }
 
   getRelations(): readonly RelationalPlanNode[] {
@@ -129,17 +165,22 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       return this;
     }
 
-    // Create new projections with updated nodes
+    // **CRITICAL**: Preserve original attribute IDs to maintain column reference stability
+    const originalAttributes = this.getAttributes();
+
+    // Create new projections with preserved attribute IDs
     const newProjections = this.projections.map((proj, i) => ({
       node: newChildren[i] as ScalarPlanNode,
-      alias: proj.alias
+      alias: proj.alias,
+      attributeId: originalAttributes[i].id // Preserve original attribute ID
     }));
 
-    // Create new instance
+    // Create new instance with preserved attributes
     return new ReturningNode(
       this.scope,
       this.executor, // Executor doesn't change via withChildren
-      newProjections
+      newProjections,
+      originalAttributes // Pass original attributes to preserve IDs
     );
   }
 

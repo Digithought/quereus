@@ -21,6 +21,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 	override readonly nodeType = PlanNodeType.Window;
 
 	private outputTypeCache: Cached<RelationType>;
+	private attributesCache: Cached<Attribute[]>;
 
 	constructor(
 		scope: Scope,
@@ -30,7 +31,9 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		public readonly partitionExpressions: ScalarPlanNode[],
 		public readonly orderByExpressions: ScalarPlanNode[],
 		public readonly functionArguments: (ScalarPlanNode | null)[],
-		estimatedCostOverride?: number
+		estimatedCostOverride?: number,
+		/** Optional predefined attributes for preserving IDs during optimization */
+		public readonly predefinedAttributes?: Attribute[]
 	) {
 		super(scope, estimatedCostOverride);
 
@@ -53,6 +56,24 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 				rowConstraints: sourceType.rowConstraints,
 			} as RelationType;
 		});
+
+		this.attributesCache = new Cached(() => {
+			// If predefined attributes are provided, use them (for optimization)
+			if (this.predefinedAttributes) {
+				return this.predefinedAttributes.slice(); // Return a copy
+			}
+
+			// Preserve source attributes and add window function attributes
+			const sourceAttrs = this.source.getAttributes();
+			const windowAttrs = this.functions.map((func, index) => ({
+				id: PlanNode.nextAttrId(),
+				name: func.alias || func.functionName.toLowerCase(),
+				type: func.getType(),
+				sourceRelation: `${this.nodeType}:${this.id}`
+			}));
+
+			return [...sourceAttrs, ...windowAttrs];
+		});
 	}
 
 	getType(): RelationType {
@@ -60,16 +81,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	getAttributes(): Attribute[] {
-		// Preserve source attributes and add window function attributes
-		const sourceAttrs = this.source.getAttributes();
-		const windowAttrs = this.functions.map((func, index) => ({
-			id: PlanNode.nextAttrId(),
-			name: func.alias || func.functionName.toLowerCase(),
-			type: func.getType(),
-			sourceRelation: `${this.nodeType}:${this.id}`
-		}));
-
-		return [...sourceAttrs, ...windowAttrs];
+		return this.attributesCache.value;
 	}
 
 	getChildren(): readonly PlanNode[] {
@@ -128,7 +140,10 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			return this;
 		}
 
-		// Create new instance
+		// **CRITICAL**: Preserve original attribute IDs to maintain column reference stability
+		const originalAttributes = this.getAttributes();
+
+		// Create new instance with preserved attributes
 		return new WindowNode(
 			this.scope,
 			this.source, // Source doesn't change via withChildren
@@ -136,7 +151,9 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			this.functions, // Functions don't change via withChildren
 			newPartitionExpressions,
 			newOrderByExpressions,
-			newFunctionArguments
+			newFunctionArguments,
+			undefined, // estimatedCostOverride
+			originalAttributes // Preserve original attribute IDs
 		);
 	}
 

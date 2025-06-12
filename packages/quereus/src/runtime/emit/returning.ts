@@ -5,7 +5,7 @@ import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { createLogger } from '../../common/logger.js';
-import { PlanNodeType } from '../../planner/nodes/plan-node-type.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 const log = createLogger('runtime:emit:returning');
 
@@ -23,10 +23,7 @@ export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instru
 		rowDescriptor = executor.oldRowDescriptor;
 	} else {
 		// Fallback: create row descriptor from executor attributes
-		const executorAttributes = plan.executor.getAttributes();
-		executorAttributes.forEach((attr, index) => {
-			rowDescriptor[attr.id] = index;
-		});
+		rowDescriptor = buildRowDescriptor(plan.executor.getAttributes());
 	}
 
 	// Pre-emit the projection expressions

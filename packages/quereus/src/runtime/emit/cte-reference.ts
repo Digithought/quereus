@@ -1,20 +1,16 @@
-import type { Row } from '../../common/types';
-import type { CTEReferenceNode } from '../../planner/nodes/cte-reference-node';
-import type { RowDescriptor } from '../../planner/nodes/plan-node';
-import type { EmissionContext } from '../emission-context';
-import { emitPlanNode, createValidatedInstruction } from '../emitters';
-import type { Instruction, RuntimeContext } from '../types';
+import type { Row } from '../../common/types.js';
+import type { CTEReferenceNode } from '../../planner/nodes/cte-reference-node.js';
+import type { EmissionContext } from '../emission-context.js';
+import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
+import type { Instruction, RuntimeContext } from '../types.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { PlanNodeType } from '../../planner/nodes/plan-node-type.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitCTEReference(plan: CTEReferenceNode, ctx: EmissionContext): Instruction {
 	// Create row descriptor for output attributes
-	const rowDescriptor: RowDescriptor = [];
-	const attributes = plan.getAttributes();
-	attributes.forEach((attr, index) => {
-		rowDescriptor[attr.id] = index;
-	});
+	const rowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	// Check if this is an internal recursive reference (inside the recursive case)
 	// These use table context to access the working table

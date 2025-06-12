@@ -20,12 +20,21 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
     public readonly rows: ReadonlyArray<ReadonlyArray<ScalarPlanNode>>,
     // Optional column names - if not provided, defaults to column_0, column_1, etc.
     public readonly columnNames?: ReadonlyArray<string>,
-    estimatedCostOverride?: number
+    estimatedCostOverride?: number,
+    /** Optional predefined attributes for preserving IDs during optimization */
+    predefinedAttributes?: Attribute[]
   ) {
     super(scope, estimatedCostOverride ?? rows.length * 0.01); // Small cost per row
 
     this.outputTypeCache = new Cached(() => this.buildOutputType());
-    this.attributesCache = new Cached(() => this.buildAttributes());
+    this.attributesCache = new Cached(() => {
+      // If predefined attributes are provided, use them (for optimization)
+      if (predefinedAttributes) {
+        return predefinedAttributes.slice(); // Return a copy
+      }
+
+      return this.buildAttributes();
+    });
   }
 
   private buildOutputType(): RelationType {
@@ -120,11 +129,16 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
       childIndex += rowLength;
     }
 
-    // Create new instance
+    // Preserve original attribute IDs to maintain column reference stability
+    const originalAttributes = this.getAttributes();
+
+    // Create new instance with preserved attributes
     return new ValuesNode(
       this.scope,
       newRows,
-      this.columnNames
+      this.columnNames,
+      undefined, // estimatedCostOverride
+      originalAttributes // Preserve original attribute IDs
     );
   }
 

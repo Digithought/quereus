@@ -1,20 +1,16 @@
 import type { SortNode } from '../../planner/nodes/sort.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	// Create row descriptor for source attributes
-	const sourceRowDescriptor: RowDescriptor = [];
-	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
+	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
 	// Emit sort key instructions and pre-create optimized comparators with resolved collations
 	const sortKeyInstructions = plan.sortKeys.map(key => emitCallFromPlan(key.expression, ctx));

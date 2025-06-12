@@ -6,6 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 const log = createLogger('runtime:emit:join');
 
@@ -15,17 +16,11 @@ const log = createLogger('runtime:emit:join');
  */
 export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction {
 	// Create row descriptors for left and right inputs
-	const leftRowDescriptor: RowDescriptor = [];
 	const leftAttributes = plan.left.getAttributes();
-	leftAttributes.forEach((attr, index) => {
-		leftRowDescriptor[attr.id] = index;
-	});
+	const leftRowDescriptor = buildRowDescriptor(leftAttributes);
 
-	const rightRowDescriptor: RowDescriptor = [];
 	const rightAttributes = plan.right.getAttributes();
-	rightAttributes.forEach((attr, index) => {
-		rightRowDescriptor[attr.id] = index;
-	});
+	const rightRowDescriptor = buildRowDescriptor(rightAttributes);
 
 	// NOTE: rightSource must be re-startable (optimizer facilitates through cache node)
 	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightCallback: (ctx: RuntimeContext) => AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => any): AsyncIterable<Row> {

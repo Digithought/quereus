@@ -1,14 +1,12 @@
 import type { StreamAggregateNode } from '../../planner/nodes/stream-aggregate.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
-import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
-import type { PlanNode } from '../../planner/nodes/plan-node.js';
+import type { PlanNode, RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { BTree } from 'inheritree';
 import { createLogger } from '../../common/logger.js';
@@ -16,6 +14,7 @@ import { logContextPush, logContextPop } from '../utils.js';
 import { coerceForAggregate } from '../../util/coercion.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export const ctxLog = createLogger('runtime:context');
 
@@ -88,19 +87,12 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	const sourceRelation = findSourceRelation(plan.source);
 
 	// Create row descriptors for context
-	const sourceRowDescriptor: RowDescriptor = [];
 	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
+	const sourceRowDescriptor = buildRowDescriptor(sourceAttributes);
 
-	const sourceRelationRowDescriptor: RowDescriptor = [];
-	if (sourceRelation !== plan.source) {
-		const sourceRelationAttributes = (sourceRelation as any).getAttributes?.() || sourceAttributes;
-		sourceRelationAttributes.forEach((attr: any, index: number) => {
-			sourceRelationRowDescriptor[attr.id] = index;
-		});
-	}
+	const sourceRelationRowDescriptor = sourceRelation !== plan.source
+		? buildRowDescriptor((sourceRelation as any).getAttributes?.() || sourceAttributes)
+		: sourceRowDescriptor;
 
 	ctxLog('StreamAggregate setup: source=%s, sourceRelation=%s', plan.source.nodeType, sourceRelation.nodeType);
 	ctxLog('Source attributes: %O', sourceAttributes.map(attr => `${attr.name}(#${attr.id})`));
@@ -110,11 +102,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	}
 
 	// Create output row descriptor for the StreamAggregate's output
-	const outputRowDescriptor: RowDescriptor = [];
-	const outputAttributes = plan.getAttributes();
-	outputAttributes.forEach((attr, index) => {
-		outputRowDescriptor[attr.id] = index;
-	});
+	const outputRowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	// CRITICAL FIX: Create a combined descriptor that includes BOTH output and source attributes
 	// This allows correlated subqueries to access original table attributes

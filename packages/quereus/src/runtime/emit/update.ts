@@ -1,11 +1,11 @@
 import type { UpdateNode } from '../../planner/nodes/update-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 const log = createLogger('runtime:emit:update');
 const errorLog = log.extend('error');
@@ -14,11 +14,7 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 	const tableSchema = plan.table.tableSchema;
 
 	// Create row descriptor for the source rows (needed for assignment expression evaluation)
-	const sourceRowDescriptor: RowDescriptor = [];
-	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
+	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
 	// Pre-calculate assignment column indices
 	const assignmentTargetIndices = plan.assignments.map(assign => {

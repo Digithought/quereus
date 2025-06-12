@@ -5,8 +5,12 @@ import { type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { compareRows } from '../../util/comparison.js';
 import { BTree } from 'inheritree';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruction {
+	// Create row descriptor for output attributes (same as source since DISTINCT preserves attributes)
+	const outputRowDescriptor = buildRowDescriptor(plan.getAttributes());
+
 	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>): AsyncIterable<Row> {
 		// Create BTree to efficiently track distinct rows
 		const distinctTree = new BTree<Row, Row>(
@@ -19,8 +23,14 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 			const newPath = distinctTree.insert(sourceRow);
 
 			if (newPath.on) {
-				// This is a new distinct row - add it to our tracking and yield it
-				yield sourceRow;
+				// This is a new distinct row - set up context and yield it
+				ctx.context.set(outputRowDescriptor, () => sourceRow);
+				try {
+					yield sourceRow;
+				} finally {
+					// Clean up context for this row
+					ctx.context.delete(outputRowDescriptor);
+				}
 			}
 		}
 	}

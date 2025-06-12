@@ -1,6 +1,5 @@
 import type { ConstraintCheckNode } from '../../planner/nodes/constraint-check-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
@@ -12,19 +11,15 @@ import { buildExpression } from '../../planner/building/expression.js';
 import { GlobalScope } from '../../planner/scopes/global.js';
 import { RegisteredScope } from '../../planner/scopes/registered.js';
 import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
-import { PlanNode } from '../../planner/nodes/plan-node.js';
 import * as AST from '../../parser/ast.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
 	// Get the table schema to access constraints
 	const tableSchema = plan.table.tableSchema;
 
 	// Create row descriptors for the input rows
-	const sourceRowDescriptor: RowDescriptor = [];
-	const sourceAttributes = plan.source.getAttributes();
-	sourceAttributes.forEach((attr, index) => {
-		sourceRowDescriptor[attr.id] = index;
-	});
+	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
 	// Pre-emit CHECK constraint expressions for performance
 	// ------------------------------------------------------------------

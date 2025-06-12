@@ -1,5 +1,4 @@
 import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
@@ -7,17 +6,14 @@ import type { FunctionSchema, IntegratedTableValuedFunc, TableValuedFunc } from 
 import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { TableFunctionCallNode } from '../../planner/nodes/table-function-call.js';
+import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.functionName.toLowerCase();
 	const numArgs = plan.operands.length;
 
 	// Create row descriptor for function output attributes
-	const rowDescriptor: RowDescriptor = [];
-	const attributes = plan.getAttributes();
-	attributes.forEach((attr, index) => {
-		rowDescriptor[attr.id] = index;
-	});
+	const rowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	// Look up the function during emission and record the dependency
 	// First try exact argument count, then try variable argument function

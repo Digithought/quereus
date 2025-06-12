@@ -5,19 +5,15 @@ import type { VirtualTable } from "../../vtab/table.js";
 import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
-import type { RowDescriptor } from "../../planner/nodes/plan-node.js";
 import { createValidatedInstruction } from "../emitters.js";
 import { getVTableConnection, disconnectVTable } from "../utils.js";
+import { buildRowDescriptor } from "../../util/row-descriptor.js";
 
 export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.source.tableSchema;
 
 	// Create row descriptor mapping attribute IDs to column indices
-	const rowDescriptor: RowDescriptor = [];
-	const attributes = plan.getAttributes();
-	attributes.forEach((attr, index) => {
-		rowDescriptor[attr.id] = index;
-	});
+	const rowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	// Look up the virtual table module during emission and record the dependency
 	const moduleInfo = ctx.getVtabModule(tableSchema.vtabModuleName);
