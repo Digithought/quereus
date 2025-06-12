@@ -29,7 +29,8 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
     public readonly source: RelationalPlanNode,
     public readonly groupBy: readonly ScalarPlanNode[],
     public readonly aggregates: readonly AggregateExpression[],
-    estimatedCostOverride?: number
+    estimatedCostOverride?: number,
+    public readonly preserveAttributeIds?: readonly Attribute[]
   ) {
     super(scope, estimatedCostOverride ?? source.getTotalCost());
 
@@ -81,6 +82,11 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
   }
 
   private buildAttributes(): Attribute[] {
+    // If we have preserved attribute IDs, use them
+    if (this.preserveAttributeIds) {
+      return this.preserveAttributeIds.slice(); // Return a copy
+    }
+
     const attributes: Attribute[] = [];
 
     // Group by columns come first
@@ -153,12 +159,14 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
       alias: this.aggregates[i].alias
     }));
 
-    // Create new instance - AggregateNode creates new attributes
+    // Create new instance that preserves original attribute IDs
     return new AggregateNode(
       this.scope,
       newSource as RelationalPlanNode,
       newGroupBy as ScalarPlanNode[],
-      newAggregates
+      newAggregates,
+      undefined, // estimatedCostOverride
+      this.getAttributes() // Preserve original attribute IDs
     );
   }
 
