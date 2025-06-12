@@ -95,7 +95,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 					if (plan.newRowDescriptor) {
 						const newAttrId = newAttrIdByCol[tableColumn.name.toLowerCase()];
 						if (newAttrId !== undefined) {
-							scope.registerSymbol(`NEW.${tableColumn.name}`, (exp, s) =>
+							scope.registerSymbol(`new.${tableColumn.name.toLowerCase()}`, (exp, s) =>
 								new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
 									typeClass: 'scalar',
 									affinity: tableColumn.affinity,
@@ -109,7 +109,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 					if (plan.oldRowDescriptor) {
 						const oldAttrId = oldAttrIdByCol[tableColumn.name.toLowerCase()];
 						if (oldAttrId !== undefined) {
-							scope.registerSymbol(`OLD.${tableColumn.name}`, (exp, s) =>
+							scope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
 								new ColumnReferenceNode(s, exp as AST.ColumnExpr, {
 									typeClass: 'scalar',
 									affinity: tableColumn.affinity,

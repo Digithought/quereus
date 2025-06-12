@@ -41,13 +41,20 @@ export function buildDeleteStmt(
   }
 
   // Always inject ConstraintCheckNode for DELETE operations
+  // Create oldRowDescriptor for constraint checking with OLD references
+  const oldRowDescriptor: RowDescriptor = [];
+  tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
+    const oldAttributeId = PlanNode.nextAttrId();
+    oldRowDescriptor[oldAttributeId] = columnIndex;
+  });
+
   // Checks constraints (like foreign key references) before deletion
   const constraintCheckNode = new ConstraintCheckNode(
     deleteCtx.scope,
     sourceNode,
     tableReference,
     RowOp.DELETE,
-    undefined, // oldRowDescriptor - not needed for DELETE constraint checking
+    oldRowDescriptor, // oldRowDescriptor - needed for OLD references in DELETE constraints
     undefined  // newRowDescriptor - not needed for DELETE
   );
 

@@ -145,12 +145,24 @@ export function buildUpdateStmt(
   }
 
   // Step 1: Create UpdateNode that produces updated rows (but doesn't execute them)
+  // Create newRowDescriptor and oldRowDescriptor for constraint checking with NEW/OLD references
+  const newRowDescriptor: RowDescriptor = [];
+  const oldRowDescriptor: RowDescriptor = [];
+  tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
+    const newAttributeId = PlanNode.nextAttrId();
+    const oldAttributeId = PlanNode.nextAttrId();
+    newRowDescriptor[newAttributeId] = columnIndex;
+    oldRowDescriptor[oldAttributeId] = columnIndex;
+  });
+
   const updateNode = new UpdateNode(
     updateCtx.scope,
     tableReference,
     assignments,
     sourceNode,
-    stmt.onConflict
+    stmt.onConflict,
+    oldRowDescriptor,
+    newRowDescriptor
   );
 
   // Always inject ConstraintCheckNode for UPDATE operations (provides required metadata)
@@ -159,8 +171,8 @@ export function buildUpdateStmt(
     updateNode,
     tableReference,
     RowOp.UPDATE,
-    undefined, // oldRowDescriptor - UpdateNode already handles old row metadata
-    undefined  // newRowDescriptor - not needed for non-returning updates
+    oldRowDescriptor, // oldRowDescriptor - needed for OLD references in constraints
+    newRowDescriptor  // newRowDescriptor - needed for NEW/OLD references in constraints
   );
 
   const updateExecutorNode = new UpdateExecutorNode(
