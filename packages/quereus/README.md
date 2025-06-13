@@ -161,8 +161,10 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   ✅ **xBestIndex Refactor**: Modern type-safe BestAccessPlan API replacing legacy SQLite-style interfaces  
 *   ✅ **Phase 1 - Core Framework**: Complete rule registration system, trace framework, physical property utilities, statistics provider abstraction, emitter metadata, and golden plan test harness
 *   ✅ **Phase 2 - Cache & Visualize**: Intelligent materialization advisory, async stream utilities, and PlanViz CLI tool for visual plan inspection
+*   ✅ **Phase 2.5 - Generic Tree Rewriting**: Abstract `withChildren()` method eliminating manual node handling and preserving attribute IDs
+*   ✅ **Phase 3 - Constant Folding**: Functional safety flags, runtime-based evaluation, and expression boundary optimization
 *   🔄 **Phase 1.5 - Access Path Selection**: Seek/range scan infrastructure and access path selection rules  
-*   📋 **Upcoming**: Phase 3 polishing, advanced optimization rules, join algorithms, and performance tooling
+*   📋 **Upcoming**: Advanced optimization rules, join algorithms, and performance tooling
 
 **Current development focus:**
 *   **Access Path Selection** - Physical seek/range scan nodes and optimization rules

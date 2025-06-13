@@ -1,18 +1,18 @@
 import type { LimitOffsetNode } from '../../planner/nodes/limit-offset.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { type SqlValue, type Row } from '../../common/types.js';
+import { type SqlValue, type Row, MaybePromise } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 
 export function emitLimitOffset(plan: LimitOffsetNode, ctx: EmissionContext): Instruction {
 	async function* run(
 		ctx: RuntimeContext,
 		sourceRows: AsyncIterable<Row>,
-		...args: Array<(ctx: RuntimeContext) => SqlValue | Promise<SqlValue>>
+		...args: Array<(ctx: RuntimeContext) => MaybePromise<SqlValue>>
 	): AsyncIterable<Row> {
 		// Determine which args we have
-		let limitFn: ((ctx: RuntimeContext) => SqlValue | Promise<SqlValue>) | undefined;
-		let offsetFn: ((ctx: RuntimeContext) => SqlValue | Promise<SqlValue>) | undefined;
+		let limitFn: ((ctx: RuntimeContext) => MaybePromise<SqlValue>) | undefined;
+		let offsetFn: ((ctx: RuntimeContext) => MaybePromise<SqlValue>) | undefined;
 
 		let argIndex = 0;
 		if (plan.limit) {

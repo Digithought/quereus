@@ -3,7 +3,7 @@
  * Used by CacheNode emitter, NestedLoopJoin inner side, and other streaming operations
  */
 
-import type { Row } from '../common/types.js';
+import type { MaybePromise, Row } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('runtime:async-util');
@@ -25,7 +25,7 @@ export async function* mapRows<T extends Row, R>(
  */
 export async function* filterRows<T>(
 	src: AsyncIterable<T>,
-	pred: (row: T) => boolean | Promise<boolean>
+	pred: (row: T) => MaybePromise<boolean>
 ): AsyncIterable<T> {
 	for await (const row of src) {
 		const include = await pred(row);

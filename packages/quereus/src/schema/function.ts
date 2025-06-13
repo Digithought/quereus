@@ -1,4 +1,4 @@
-import type { Row, SqlValue } from '../common/types.js';
+import type { MaybePromise, Row, SqlValue } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 import type { Database } from '../core/database.js';
@@ -7,18 +7,18 @@ import type { BaseType, ScalarType, RelationType } from '../common/datatype.js';
 /**
  * Type for a scalar function implementation.
  */
-export type ScalarFunc = (...args: SqlValue[]) => SqlValue | Promise<SqlValue>;
+export type ScalarFunc = (...args: SqlValue[]) => MaybePromise<SqlValue>;
 
 /**
  * Type for a table-valued function implementation.
  */
-export type TableValuedFunc = (...args: SqlValue[]) => AsyncIterable<Row> | Promise<AsyncIterable<Row>>;
+export type TableValuedFunc = (...args: SqlValue[]) => MaybePromise<AsyncIterable<Row>>;
 
 /**
  * Type for a database-aware table-valued function implementation.
  * Takes a database instance and SQL values, returns an async iterable of rows.
  */
-export type IntegratedTableValuedFunc = (db: Database, ...args: SqlValue[]) => AsyncIterable<Row> | Promise<AsyncIterable<Row>>;
+export type IntegratedTableValuedFunc = (db: Database, ...args: SqlValue[]) => MaybePromise<AsyncIterable<Row>>;
 
 /**
  * Type for aggregate step function.

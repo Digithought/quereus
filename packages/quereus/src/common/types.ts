@@ -1,5 +1,7 @@
 import type { RuntimeContext } from '../runtime/types.js';
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
 
 /**
@@ -20,7 +22,7 @@ export type Row = SqlValue[];
 export type RuntimeValue = SqlValue | Row | AsyncIterable<Row> | ((ctx: RuntimeContext) => OutputValue)
 
 /** Represents a value that can be output from an instruction or program. */
-export type OutputValue = RuntimeValue | Promise<RuntimeValue>;
+export type OutputValue = MaybePromise<RuntimeValue>;
 
 export type SqlParameters = Record<string, SqlValue> | SqlValue[];
 

@@ -6,7 +6,7 @@
 import { createLogger } from '../../common/logger.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
-import type { Optimizer } from '../optimizer.js';
+import type { OptContext } from './context.js';
 import { traceRuleStart, traceRuleEnd } from './trace.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
@@ -16,7 +16,7 @@ const log = createLogger('optimizer:framework:registry');
 /**
  * Rule function signature for optimization transformations
  */
-export type RuleFn = (node: PlanNode, optimizer: Optimizer) => PlanNode | null;
+export type RuleFn = (node: PlanNode, context: OptContext) => PlanNode | null;
 
 /**
  * Rule phases for categorizing optimization rules
@@ -196,7 +196,7 @@ export function getAllRules(): Map<PlanNodeType, readonly RuleHandle[]> {
 /**
  * Apply rules to a node with tracing and loop detection
  */
-export function applyRules(node: PlanNode, optimizer: Optimizer): PlanNode {
+export function applyRules(node: PlanNode, context: OptContext): PlanNode {
 	const applicableRules = rulesFor(node.nodeType);
 
 	if (applicableRules.length === 0) {
@@ -220,7 +220,7 @@ export function applyRules(node: PlanNode, optimizer: Optimizer): PlanNode {
 			traceRuleStart(rule, currentNode);
 			ruleLog('Applying rule to node %s', currentNode.id);
 
-			const result = rule.fn(currentNode, optimizer);
+			const result = rule.fn(currentNode, context);
 
 						if (result && result !== currentNode) {
 				ruleLog('Rule transformed %s to %s', currentNode.nodeType, result.nodeType);

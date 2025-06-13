@@ -1,7 +1,7 @@
 import type { SortNode } from '../../planner/nodes/sort.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { type SqlValue, type Row } from '../../common/types.js';
+import { type SqlValue, type Row, type MaybePromise } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
@@ -24,7 +24,7 @@ export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 	async function* run(
 		ctx: RuntimeContext,
 		source: AsyncIterable<Row>,
-		...sortKeyFunctions: Array<(ctx: RuntimeContext) => SqlValue | Promise<SqlValue>>
+		...sortKeyFunctions: Array<(ctx: RuntimeContext) => MaybePromise<SqlValue>>
 	): AsyncIterable<Row> {
 
 		// Collect all rows with their sort key values

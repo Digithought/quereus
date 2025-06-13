@@ -1,3 +1,5 @@
+import { MaybePromise } from "../common/types";
+
 /**
  * Generic interface for VirtualTable connections that support transactions.
  * This allows different vtab modules to implement their own connection strategies
@@ -12,23 +14,23 @@ export interface VirtualTableConnection {
 
 	// Transaction methods
 	/** Begins a transaction on this connection */
-	begin(): void | Promise<void>;
+	begin(): MaybePromise<void>;
 
 	/** Commits the current transaction */
-	commit(): void | Promise<void>;
+	commit(): MaybePromise<void>;
 
 	/** Rolls back the current transaction */
-	rollback(): void | Promise<void>;
+	rollback(): MaybePromise<void>;
 
 	/** Creates a savepoint with the given index */
-	createSavepoint(index: number): void | Promise<void>;
+	createSavepoint(index: number): MaybePromise<void>;
 
 	/** Releases a savepoint with the given index */
-	releaseSavepoint(index: number): void | Promise<void>;
+	releaseSavepoint(index: number): MaybePromise<void>;
 
 	/** Rolls back to a savepoint with the given index */
-	rollbackToSavepoint(index: number): void | Promise<void>;
+	rollbackToSavepoint(index: number): MaybePromise<void>;
 
 	/** Disconnects and cleans up this connection */
-	disconnect(): void | Promise<void>;
+	disconnect(): MaybePromise<void>;
 }

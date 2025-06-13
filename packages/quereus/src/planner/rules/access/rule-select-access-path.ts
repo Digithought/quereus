@@ -8,7 +8,7 @@
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
-import type { Optimizer } from '../../optimizer.js';
+import type { OptContext } from '../../framework/context.js';
 import { TableScanNode } from '../../nodes/scan.js';
 import { SeqScanNode, IndexScanNode, IndexSeekNode } from '../../nodes/physical-access-nodes.js';
 import { extractConstraints } from '../../analysis/constraint-extractor.js';
@@ -18,7 +18,7 @@ import { PlanNode as BasePlanNode } from '../../nodes/plan-node.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
 
-export function ruleSelectAccessPath(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanNode | null {
 	// Guard: only apply to TableScanNode
 	if (!(node instanceof TableScanNode)) {
 		return null;

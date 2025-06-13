@@ -9,6 +9,7 @@ import type { OptimizerTuning } from '../optimizer-tuning.js';
 import { createLogger } from '../../common/logger.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
+import { Database } from '../../core/database.js';
 
 const log = createLogger('optimizer:framework:context');
 
@@ -34,6 +35,9 @@ export interface OptContext {
 
 	/** Additional context data that rules can use */
 	readonly context: Map<string, any>;
+
+	/** Database instance */
+	readonly db: Database;
 }
 
 /**
@@ -47,7 +51,8 @@ export class OptimizationContext implements OptContext {
 		public readonly stats: StatsProvider,
 		public readonly tuning: OptimizerTuning,
 		public readonly phase: 'rewrite' | 'impl' = 'rewrite',
-		public readonly depth: number = 0
+		public readonly db: Database,
+		public readonly depth: number = 0,
 	) {
 		log('Created optimization context (phase: %s, depth: %d)', phase, depth);
 	}
@@ -61,7 +66,8 @@ export class OptimizationContext implements OptContext {
 			this.stats,
 			this.tuning,
 			phase,
-			this.depth
+			this.db,
+			this.depth,
 		);
 	}
 
@@ -78,7 +84,8 @@ export class OptimizationContext implements OptContext {
 			this.stats,
 			this.tuning,
 			this.phase,
-			this.depth + 1
+			this.db,
+			this.depth + 1,
 		);
 	}
 
@@ -91,7 +98,8 @@ export class OptimizationContext implements OptContext {
 			this.stats,
 			this.tuning,
 			this.phase,
-			this.depth
+			this.db,
+			this.depth,
 		);
 
 		// Copy existing context
@@ -159,9 +167,10 @@ export function createOptContext(
 	optimizer: Optimizer,
 	stats: StatsProvider,
 	tuning: OptimizerTuning,
-	phase: 'rewrite' | 'impl' = 'rewrite'
+	db: Database,
+	phase: 'rewrite' | 'impl' = 'rewrite',
 ): OptContext {
-	return new OptimizationContext(optimizer, stats, tuning, phase);
+	return new OptimizationContext(optimizer, stats, tuning, phase, db);
 }
 
 /**

@@ -138,6 +138,21 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		return this.attributesCache.value;
 	}
 
+	getProducingExprs(): Map<number, ScalarPlanNode> {
+		const attributes = this.getAttributes();
+		const map = new Map<number, ScalarPlanNode>();
+		
+		for (let i = 0; i < this.projections.length; i++) {
+			const proj = this.projections[i];
+			const attr = attributes[i];
+			if (attr) {
+				map.set(attr.id, proj.node);
+			}
+		}
+		
+		return map;
+	}
+
 	getChildren(): readonly PlanNode[] {
 		return [this.source, ...this.projections.map(p => p.node)];
 	}

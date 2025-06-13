@@ -1,4 +1,4 @@
-import type { SqlValue } from '../common/types.js';
+import type { MaybePromise, SqlValue } from '../common/types.js';
 import type { ConflictResolution } from '../common/constants.js';
 
 /**
@@ -28,7 +28,7 @@ export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr |
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
 	type: 'literal';
-	value: SqlValue;
+	value: MaybePromise<SqlValue>;
 	lexeme?: string; // Optional: Original text representation, e.g., for numbers like '2.0'
 }
 

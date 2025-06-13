@@ -1,7 +1,7 @@
 import type { StreamAggregateNode } from '../../planner/nodes/stream-aggregate.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { type SqlValue, type Row } from '../../common/types.js';
+import { type SqlValue, type Row, type MaybePromise } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
@@ -117,7 +117,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	async function* run(
 		ctx: RuntimeContext,
 		sourceRows: AsyncIterable<Row>,
-		...groupByAndAggregateArgs: Array<(ctx: RuntimeContext) => SqlValue | Promise<SqlValue>>
+		...groupByAndAggregateArgs: Array<(ctx: RuntimeContext) => MaybePromise<SqlValue>>
 	): AsyncIterable<Row> {
 
 		// Split the arguments: first N are GROUP BY expressions, rest are aggregate args
@@ -126,7 +126,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 		// For aggregate arguments, we need to properly index them based on each aggregate's argument count
 		let aggregateArgOffset = numGroupBy;
-		const aggregateArgFunctions: Array<Array<(ctx: RuntimeContext) => SqlValue | Promise<SqlValue>>> = [];
+		const aggregateArgFunctions: Array<Array<(ctx: RuntimeContext) => MaybePromise<SqlValue>>> = [];
 
 		for (const agg of plan.aggregates) {
 			const funcNode = agg.expression;

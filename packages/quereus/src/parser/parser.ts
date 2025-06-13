@@ -5,6 +5,7 @@ import { ConflictResolution } from '../common/constants.js';
 import type { SqlValue } from '../common/types.js';
 import { quereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
+import { getSyncLiteral } from './utils.js';
 
 const log = createLogger('parser:parser'); // Create logger instance
 const errorLog = log.extend('error');
@@ -1808,7 +1809,7 @@ export class Parser {
 			if (this.matchKeyword('(')) {
 				while (!this.match(TokenType.RPAREN)) {
 					const nameValue = this.nameValueItem("module argument");
-					moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? nameValue.value.value : nameValue.value.name;
+					moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? getSyncLiteral(nameValue.value) : nameValue.value.name;
 					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
 						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
 					}

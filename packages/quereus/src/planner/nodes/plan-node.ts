@@ -36,6 +36,13 @@ export interface PhysicalProperties {
    * Examples: literal values, deterministic functions of constants
    */
   constant?: boolean;
+
+  /**
+   * Whether this node is functional (pure and deterministic).
+   * A functional node is safe to fold during constant folding.
+   * Defaults to (deterministic && readonly) if omitted.
+   */
+  functional?: boolean;
 }
 
 /**
@@ -44,7 +51,8 @@ export interface PhysicalProperties {
 export const DEFAULT_PHYSICAL: PhysicalProperties = {
 	deterministic: true,
 	readonly: true,
-	constant: false
+	constant: false,
+	// functional will be computed as deterministic && readonly if omitted
 } as const;
 
 /**
@@ -138,6 +146,12 @@ export abstract class PlanNode {
    */
   getAttributes?(): Attribute[];
 
+  /**
+   * Get map of attribute ID to producing scalar expression (for constant folding)
+   * Only relational nodes that synthesize columns from expressions need implement this
+   */
+  getProducingExprs?(): Map<number, ScalarPlanNode>;
+
 	getTotalCost(): number {
 		return (this.estimatedCost + this.getChildren().reduce((acc, child) => acc + child.getTotalCost(), 0))
 			* (this.getRelations().reduce((acc, relation) => acc + relation.getTotalCost(), 0) || 1);
@@ -176,6 +190,11 @@ export abstract class PlanNode {
     } else {
       // Merge with existing properties, giving precedence to existing values
       node.physical = { ...DEFAULT_PHYSICAL, ...node.physical, ...propsOverride };
+    }
+
+    // Ensure functional property is computed if not explicitly set
+    if (node.physical.functional === undefined) {
+      node.physical.functional = (node.physical.deterministic !== false) && (node.physical.readonly !== false);
     }
   }
 }

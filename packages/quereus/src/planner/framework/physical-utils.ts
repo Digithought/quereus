@@ -315,6 +315,27 @@ export function mergePhysicalProperties(
 		uniqueKeys: overrides.uniqueKeys ?? [],
 		readonly: overrides.readonly ?? propagateReadonlyFlag(children),
 		deterministic: overrides.deterministic ?? propagateDeterministicFlag(children),
-		constant: overrides.constant ?? propagateConstantFlag(children)
+		constant: overrides.constant ?? propagateConstantFlag(children),
+		functional: overrides.functional ?? propagateFunctionalFlag(children)
 	};
+}
+
+/**
+ * Propagate functional flag from children to parent
+ */
+export function propagateFunctionalFlag(children: PhysicalProperties[]): boolean {
+	// A node is functional if all its children are functional
+	return children.length === 0 || children.every(child => isFunctional(child));
+}
+
+/**
+ * Check if a node is functional (pure and deterministic), safe to fold during constant folding
+ */
+export function isFunctional(physical: PhysicalProperties): boolean {
+	// If functional is explicitly set, use that value
+	if (physical.functional !== undefined) {
+		return physical.functional;
+	}
+	// Otherwise, functional = deterministic && readonly
+	return (physical.deterministic !== false) && (physical.readonly !== false);
 }

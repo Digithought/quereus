@@ -600,7 +600,7 @@ File `src/runtime/async-util.ts`
 API  
 ```
 export function mapRows<T extends Row,R>(src: AsyncIterable<T>, fn:(row:T)=>R): AsyncIterable<R>
-export function filterRows<T>(src: AsyncIterable<T>, pred:(row:T)=> boolean | Promise<boolean>): AsyncIterable<T>
+export function filterRows<T>(src: AsyncIterable<T>, pred:(row:T)=> MaybePromise<boolean>): AsyncIterable<T>
 export function tee<T>(src: AsyncIterable<T>): [AsyncIterable<T>,AsyncIterable<T>]
 export function buffered<T>(src:AsyncIterable<T>, max:number): AsyncIterable<T>
 ```
@@ -803,160 +803,31 @@ getChildren(): readonly [RelationalPlanNode, ScalarPlanNode] {
 }
 ```
 
-### Phase 3 – Polishing
+## Remaining Development Areas
 
-Phase 3 ("Polish") turns the optimiser/runtime into a production-grade substrate that is safe to extend and easy to debug.  Below is a drill-down for every Phase 3 item: purpose, API changes, reference implementation sketch, and acceptance tests.
+While the core Titan optimizer architecture is complete with Phases 0-3 implemented, several areas remain for future development:
 
-────────────────────────────────────────
-1. Planner Enhancements
-────────────────────────────────────────
-1.3  Aggressive constant-folding utility
----------------------------------------
-Goal  
- Evaluate *deterministic* scalar sub-trees at plan time so later rules see Literals and simpler predicates.
+### Advanced Optimization Rules
+- **Predicate Pushdown**: Push filter predicates closer to data sources
+- **Join Reordering**: Cost-based join order optimization using cardinality estimates  
+- **Subquery Optimization**: Transform correlated subqueries to joins where beneficial
+- **Aggregate Pushdown**: Push aggregations below joins when semantically valid
 
-Public API  
-```ts
-// src/optimizer/folding.ts
-export function tryFold(node: ScalarPlanNode,
-                        opts?: { allowNonDeterministic?: false }): ScalarPlanNode;
-```
+### Access Path Infrastructure  
+- **Physical Access Nodes**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` for optimal data access
+- **Access Path Selection**: Cost-based selection between scan strategies based on VTab capabilities
+- **Index Utilization**: Enhanced integration with VTab `getBestAccessPlan` for index optimization
 
-Algorithm  
-1. DFS walk.  
-2. A node is foldable when:  
-   • Every child is LiteralNode, **and**  
-   • node.getType().isReadOnly && (opts.allowNonDeterministic ? true : node.physical?.deterministic !== false).  
-3. Evaluate via small interpreter (`evalScalar(node)` lives in util, uses same coercion helpers as runtime).  
-4. Replace with LiteralNode carrying value & inferred type.
+### Performance & Tooling
+- **Plan Validation**: Runtime tree validation to catch optimizer bugs early
+- **Execution Metrics**: Row-level telemetry for verifying cardinality estimates  
+- **ESLint Rules**: Prevent physical nodes in builder code, enforce conventions
+- **Enhanced Debugging**: Standardized debug namespaces and logging patterns
 
-Integration Points  
-• Builder: immediately fold in ValuesNode, Insert VALUES, default expressions.  
-• Optimiser rule hooks: a tiny rule `FoldScalars` registered for *all* ScalarPlanNode types; runs first so subsequent rules work on folded tree.
-
-Tests  
-• `SELECT 1+2*3` → literal 7.  
-• Non-deterministic e.g. `random()` not folded unless option set.
-
-1.4  Physical-property skeleton
-------------------------------
-Why  
-Rules shouldn't keep checking "if (child.physical)"
-
-Implementation  
-Add in `PlanNode` ctor:
-```ts
-if (!this.physical) this.physical = { deterministic: true, readonly: true };
-```
-and ensure builders never override with `undefined`.
-
-Acceptance  
-`expect(every node.physical).toBeDefined()` in plan validator (see 2.5).
-
-────────────────────────────────────────
-2. Optimiser Core
-────────────────────────────────────────
-2.5  Plan validator pass
-------------------------
-Purpose  
-Hard fail before emit if the tree violates invariants; catches rule bugs early.
-
-API  
-```ts
-export function validatePhysicalTree(root: PlanNode): void;
-/* throws QuereusError with path to offending node */
-```
-
-Checks  
-1. `node.physical` present.  
-2. For every RelationalPlanNode:  
-   • `getAttributes()` non-empty iff relation has columns.  
-   • All `attribute.id` are unique across *entire* tree.  
-3. For every ColumnReferenceNode: its `attributeId` appears in some ancestor's RowDescriptor (build map via upward traversal).  
-4. No logical-only PlanNodeType present (`Aggregate`, `Join`, etc.).  
-5. Optionally: `physical.ordering` indices < column count.
-
-Hook  
-Called automatically at the end of `Optimizer.optimize()` when `DEBUG_VALIDATE_PLAN` env or unconditionally in test mode.
-
-────────────────────────────────────────
-3. Runtime / Emitters
-────────────────────────────────────────
-3.4  Execution metrics hook
----------------------------
-Goal  
-Cheap row-level telemetry to verify optimiser row-count assumptions.
-
-Design  
-• Extend `Instruction` interface with optional counters field (filled by a wrapper).  
-```ts
-interface InstructionRuntimeStats {
-  in:  number;
-  out: number;
-  elapsedNs: bigint;
-}
-```
-• Build flag or env `QUEREUS_RUNTIME_STATS`; when on, Scheduler wraps each `run` call:
-
-```ts
-const start = process.hrtime.bigint();
-const result = await fn(...);
-stats.out += (isIterable(result) ? /*count rows*/ : 1);
-stats.elapsedNs += process.hrtime.bigint() - start;
-```
-• At program end emit aggregate table when `DEBUG` contains `quereus:runtime:stats`.
-
-Emitters only need to label their instructions (`note`) correctly.
-
-Unit test  
-Run a simple query, assert stats JSON has `in/out`.
-
-────────────────────────────────────────
-4. Tooling & Dev-Practices
-────────────────────────────────────────
-4.3  ESLint rule: "no-physical-in-builder"
------------------------------------------
-Quick custom eslint rule in `tools/eslint-plugin-quereus`:
-
-```js
-module.exports = {
-  meta:{ type:'problem', docs:{}, schema:[] },
-  create(ctx){
-    return {
-      'NewExpression[callee.name=/.*Node$/]'(node){
-        const file = ctx.getFilename();
-        if (file.includes('/planner/building/') &&
-            /Node$/.test(node.callee.name) &&
-            physicalNodeSet.has(node.callee.name)) {
-          ctx.report(node, `Physical node '${node.callee.name}' must be created in optimiser rules, not builder.`);
-        }
-      }
-    };
-  }
-};
-```
-
-Add to CI lint step.
-
-4.5  Debug namespace conventions
---------------------------------
-Reserve namespaces:  
-• `quereus:optimizer:rule:<RuleName>` – rule entry/exit log.  
-• `quereus:optimizer:validate` – validator failures.  
-• `quereus:runtime:stats` – metrics dump.  
-
-Provide `createLogger` wrappers:  
-```ts
-export const ruleLog = (rule: string) => createLogger(`optimizer:rule:${rule}`);
-```
-
-Dev-doc update with examples.
-
-Once these are merged, new optimisation rules can rely on:
-• guaranteed `physical` presence,  
-• literal folding done,  
-• fast failure when invariants break,  
-• cheap runtime feedback to tune heuristics.
+### Statistics & Costing
+- **Advanced Statistics**: Move beyond naive heuristics to VTab-supplied or ANALYZE-based stats
+- **Sophisticated Cost Models**: Better formulas for complex operations and join algorithms
+- **Adaptive Optimization**: Runtime feedback loops for cost model refinement
 
 ## Guiding principles
 
@@ -1053,3 +924,123 @@ E.  Human factors
     • Are cost/row estimates reasonable?  
     • Does it add or update tests?  
     • If removing a rule, does another rule subsume its behaviour?
+
+## Phase 3 – Constant Folding ✅ COMPLETED
+
+Phase 3 implements comprehensive constant folding and expression simplification at the optimizer level, enabling better cost estimates and runtime performance by evaluating constant expressions at plan time.
+
+### Implementation Overview
+
+Phase 3 delivers a complete constant folding system with:
+
+**Functional Safety System:**
+- `functional` flag in `PhysicalProperties` indicating fold-safety (`pure` AND `deterministic`)
+- Helper `isFunctional(node)` for checking fold eligibility
+- Default logic: `functional = deterministic && readonly` if omitted
+
+**Two-Phase Algorithm:**
+1. **Bottom-up Classification** (`const-pass.ts`): DFS assigns `ConstInfo` to every node
+   - `const`: Literal values that can be folded immediately
+   - `dep`: Depends on specific attribute IDs (columns)
+   - `non-const`: Cannot be folded (side effects, non-deterministic)
+
+2. **Top-down Propagation**: Carries known constant attributes down the tree
+   - When dependencies are satisfied, expressions are folded and attributes marked constant
+   - Converges in single pass as constant set only grows
+
+**Runtime-Based Evaluation:**
+- Uses existing scheduler/emitter infrastructure for evaluation
+- Handles `MaybePromise<SqlValue>` to support async subqueries
+- No special interpreter needed - reuses production evaluation logic
+
+### Key Technical Achievements
+
+**Expression Boundary Optimization:**
+- Rules target expression-producing nodes (Project, Filter, Aggregate, etc.)
+- Triggers only where folding provides maximum benefit
+- Avoids per-node overhead on non-expression nodes
+
+**Generic Tree Walking:**
+- Uses `getProducingExprs(): Map<number, ScalarPlanNode>` interface
+- Eliminates node-type-specific knowledge from folding logic
+- Extensible to new expression-producing node types
+
+**Promise Integration:**
+- `LiteralExpr.value: MaybePromise<SqlValue>` stores promises directly
+- Scheduler handles awaiting when needed
+- Enables folding of constant subqueries that return promises
+
+**Database Access:**
+- Optimizer receives database context for full expression evaluation
+- Supports complex expressions requiring schema/function access
+- Maintains clean separation between optimizer and runtime
+
+### Architecture Benefits
+
+**Before Phase 3:**
+- Constant expressions evaluated repeatedly at runtime
+- Complex dependency tracking in ad-hoc folding utilities
+- Limited expression simplification capabilities
+
+**After Phase 3:**
+- Constants folded once at plan time with cached results
+- Systematic dependency resolution with convergence guarantees  
+- Runtime evaluation enables full SQL expression folding
+- Clean integration with existing optimizer rule system
+
+### Implementation Status
+
+✅ **Functional Safety Infrastructure**: Complete with `isFunctional()` helper
+✅ **Const-Pass Framework**: Bottom-up classification and top-down propagation
+✅ **Runtime-Based Evaluator**: Uses production scheduler for evaluation
+✅ **Optimizer Rule Integration**: Expression boundary targeting with rule registration
+✅ **Generic Tree Rewriting**: Eliminates node-type-specific folding logic
+✅ **Promise Support**: Async subquery constant folding via `MaybePromise<SqlValue>`
+✅ **Database Integration**: Full expression evaluation with schema access
+
+**Technical Reference**: See [Constant Folding Design Document](optimizer-const.md) for detailed implementation specifications.
+
+**Next Steps**: Phase 3 provides the foundation for advanced expression optimization and enables more sophisticated cost-based optimization decisions.
+
+## Current Implementation Status Summary
+
+**Titan Optimizer Implementation Status:**
+*   ✅ **Phase 0 - Groundwork**: Foundational infrastructure complete with cost models, constraint analysis, shared caching utilities, and development standards
+*   ✅ **xBestIndex Refactor**: Modern type-safe BestAccessPlan API replacing legacy SQLite-style interfaces  
+*   ✅ **Phase 1 - Core Framework**: Complete rule registration system, trace framework, physical property utilities, statistics provider abstraction, emitter metadata, and golden plan test harness
+*   ✅ **Phase 2 - Cache & Visualize**: Intelligent materialization advisory, async stream utilities, and PlanViz CLI tool for visual plan inspection
+*   ✅ **Phase 2.5 - Generic Tree Rewriting**: Abstract `withChildren()` method eliminating manual node handling and preserving attribute IDs
+*   ✅ **Phase 3 - Constant Folding**: Functional safety flags, runtime-based evaluation, and expression boundary optimization
+*   🔄 **Phase 1.5 - Access Path Selection**: Seek/range scan infrastructure and access path selection rules  
+*   📋 **Upcoming**: Advanced optimization rules, join algorithms, and performance tooling
+
+### Rule System Modernization ✅ COMPLETED
+
+As part of Phase 3, the optimizer rule system was significantly modernized:
+
+**Architecture Improvements:**
+- **Context-Based Rules**: Rule signatures changed from `(node, optimizer)` to `(node, context)` providing richer context access
+- **Framework-Managed Children**: Rules no longer manually optimize children - framework handles via `optimizeChildren()`
+- **Framework-Managed Properties**: Rules no longer manually set physical properties - framework computes via `markPhysical()` + `getPhysical()`
+- **Rule Elimination**: Removed redundant rules that only set properties without transformation
+
+**Deleted Redundant Rules:**
+- `ruleProjectOptimization` - No transformation needed, framework handles properties
+- `ruleFilterOptimization` - No transformation needed, framework handles properties  
+- `ruleSortOptimization` - No transformation needed, framework handles properties
+
+**Enhanced Framework:**
+- Generic `optimizeChildren()` uses `withChildren()` for robust tree rewriting
+- Physical properties computed from children via node-specific `getPhysical()` methods
+- Proper inheritance of `readonly`, `deterministic` flags from children
+- Attribute ID preservation guaranteed across all transformations
+
+**Current Rule Inventory:**
+- `ruleAggregateStreaming` - Transforms `AggregateNode` → `StreamAggregateNode` + optional `SortNode`
+- `ruleSelectAccessPath` - Transforms `TableScanNode` → physical access nodes
+- `ruleCteOptimization` - Adds intelligent caching to CTEs
+- `ruleConstantFolding` - Folds constant expressions at expression boundaries
+- `ruleMaterializationAdvisory` - Global caching analysis and injection
+- `ruleMarkPhysical` - Fallback for nodes needing no transformation
+
+This modernization eliminates maintenance burden, prevents regressions, and provides a clean foundation for future optimization rules.

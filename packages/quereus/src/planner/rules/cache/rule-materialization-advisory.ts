@@ -8,12 +8,12 @@
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
-import type { Optimizer } from '../../optimizer.js';
+import type { OptContext } from '../../framework/context.js';
 import { MaterializationAdvisory } from '../../cache/materialization-advisory.js';
 
 const log = createLogger('optimizer:rule:materialization-advisory');
 
-export function ruleMaterializationAdvisory(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+export function ruleMaterializationAdvisory(node: PlanNode, context: OptContext): PlanNode | null {
 	// This is a global rule that analyzes the entire tree
 	// It should only be applied to root nodes to avoid duplicate analysis
 
@@ -31,7 +31,7 @@ export function ruleMaterializationAdvisory(node: PlanNode, optimizer: Optimizer
 
 	try {
 		// Create advisory with current tuning parameters
-		const advisory = new MaterializationAdvisory(optimizer.tuning);
+		const advisory = new MaterializationAdvisory(context.tuning);
 
 		// Analyze the tree for caching opportunities
 		const recommendations = advisory.analyzeTree(node);

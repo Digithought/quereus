@@ -1,7 +1,7 @@
 import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { Row } from '../common/types.js';
+import type { MaybePromise, Row } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
 import type { RowOp } from '../parser/ast.js';
@@ -69,7 +69,7 @@ export abstract class VirtualTable {
 	 * If implemented, this enables proper transaction isolation for this table.
 	 * @returns A new VirtualTableConnection instance
 	 */
-	createConnection?(): VirtualTableConnection | Promise<VirtualTableConnection>;
+	createConnection?(): MaybePromise<VirtualTableConnection>;
 
 	/**
 	 * (Optional) Gets the current connection for this table instance.

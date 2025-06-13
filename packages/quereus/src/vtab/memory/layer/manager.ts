@@ -17,6 +17,7 @@ import { scanBaseLayer } from './base-cursor.js';
 import { scanTransactionLayer } from './transaction-cursor.js';
 import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFunctions } from '../utils/primary-key.js';
 import { createMemoryTableLoggers } from '../utils/logging.js';
+import { getSyncLiteral } from '../../../parser/utils.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
@@ -507,7 +508,7 @@ export class MemoryTableManager {
 			const defaultConstraint = columnDefAst.constraints.find(c => c.type === 'default');
 			if (defaultConstraint && defaultConstraint.expr) {
 				if (defaultConstraint.expr.type === 'literal') {
-					defaultValue = (defaultConstraint.expr as LiteralExpr).value;
+					defaultValue = getSyncLiteral(defaultConstraint.expr as LiteralExpr);
 				} else {
 					logger.warn('Add Column', this._tableName, 'Default for new col is expr; existing rows get NULL.', { columnName: newColumnSchema.name });
 				}

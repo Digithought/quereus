@@ -8,7 +8,7 @@
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
-import type { Optimizer } from '../../optimizer.js';
+import type { OptContext } from '../../framework/context.js';
 import { AggregateNode } from '../../nodes/aggregate-node.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
@@ -16,7 +16,7 @@ import { PlanNode as BasePlanNode } from '../../nodes/plan-node.js';
 
 const log = createLogger('optimizer:rule:aggregate-streaming');
 
-export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+export function ruleAggregateStreaming(node: PlanNode, context: OptContext): PlanNode | null {
 	// Guard: only apply to AggregateNode
 	if (!(node instanceof AggregateNode)) {
 		return null;
@@ -24,8 +24,8 @@ export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): Pl
 
 	log('Applying aggregate streaming rule to node %s', node.id);
 
-	// Optimize the source first
-	const optimizedSource = optimizer.optimizeNode(node.source) as RelationalPlanNode;
+	// Source is already optimized by framework
+	const source = node.source;
 
 	// For now, always use StreamAggregate
 	// TODO: Check if source is ordered on groupBy columns
@@ -41,15 +41,7 @@ export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): Pl
 			nulls: undefined
 		}));
 
-		const sortNode = new SortNode(node.scope, optimizedSource, sortKeys);
-
-		// Set physical properties for sort
-		BasePlanNode.setDefaultPhysical(sortNode, {
-			ordering: node.groupBy.map((_, idx) => ({ column: idx, desc: false })),
-			estimatedRows: optimizedSource.estimatedRows,
-			deterministic: true,
-			readonly: true
-		});
+		const sortNode = new SortNode(node.scope, source, sortKeys);
 
 		const result = new StreamAggregateNode(
 			node.scope,
@@ -60,12 +52,8 @@ export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): Pl
 			node.getAttributes() // **CRITICAL**: Preserve original attribute IDs
 		);
 
-		// Set physical properties for stream aggregate
-		BasePlanNode.setDefaultPhysical(result, {
-			estimatedRows: optimizedSource.estimatedRows ? Math.ceil(optimizedSource.estimatedRows / 10) : undefined,
-			deterministic: true,
-			readonly: true
-		});
+		// Let framework set physical properties via markPhysical()
+		// Both SortNode and StreamAggregateNode have getPhysical() methods
 
 		log('Transformed AggregateNode to StreamAggregateNode with sort');
 		return result;
@@ -73,19 +61,15 @@ export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): Pl
 		// No GROUP BY - can stream aggregate without sorting
 		const result = new StreamAggregateNode(
 			node.scope,
-			optimizedSource,
+			source,
 			node.groupBy,
 			node.aggregates,
 			undefined, // estimatedCostOverride
 			node.getAttributes() // **CRITICAL**: Preserve original attribute IDs
 		);
 
-		// Set physical properties
-		BasePlanNode.setDefaultPhysical(result, {
-			estimatedRows: 1, // No GROUP BY means single row result
-			deterministic: true,
-			readonly: true
-		});
+		// Let framework set physical properties via markPhysical()
+		// StreamAggregateNode has getPhysical() method
 
 		log('Transformed AggregateNode to StreamAggregateNode without sort');
 		return result;

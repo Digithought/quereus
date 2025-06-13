@@ -12,7 +12,7 @@ This document establishes coding conventions and best practices for developing o
 ### Rule Function Signature
 All rules must be pure functions with this exact signature:
 ```typescript
-type OptimizationRule = (node: PlanNode, optimizer: Optimizer) => PlanNode | null;
+type RuleFn = (node: PlanNode, context: OptContext) => PlanNode | null;
 ```
 
 **Key principles:**
@@ -20,13 +20,14 @@ type OptimizationRule = (node: PlanNode, optimizer: Optimizer) => PlanNode | nul
 - Return a new `PlanNode` if transformation was applied
 - **Never mutate** the incoming `PlanNode` - always create new instances
 - Rules must be deterministic and side-effect free
+- **NEW**: Access optimizer via `context.optimizer`, database via `context.db`, tuning via `context.tuning`
 
 ## Rule Implementation Guidelines
 
 ### 1. Guard Clauses First
 Start every rule with type and applicability checks:
 ```typescript
-export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+export function ruleAggregateStreaming(node: PlanNode, context: OptContext): PlanNode | null {
 	// Guard: only apply to AggregateNode
 	if (!(node instanceof AggregateNode)) {
 		return null;
@@ -47,7 +48,7 @@ When creating new nodes, **always preserve original attribute IDs**:
 // ✅ CORRECT - preserve attributes from original node
 return new StreamAggregateNode(
 	node.scope,
-	optimizedSource,
+	source, // Source already optimized by framework
 	node.groupBy,
 	node.aggregates,
 	undefined, // estimatedCostOverride
@@ -57,46 +58,87 @@ return new StreamAggregateNode(
 // ❌ WRONG - creates new attribute IDs
 return new StreamAggregateNode(
 	node.scope,
-	optimizedSource,
+	source,
 	node.groupBy,
 	node.aggregates
 ); // Missing attribute preservation
 ```
 
-### 3. Cost and Row Estimation
-Use the cost helpers and row estimators:
+### 3. Framework Handles Children and Properties
+**IMPORTANT**: The framework now handles child optimization and physical properties automatically:
+
+```typescript
+// ✅ CORRECT - let framework handle children and properties
+export function ruleMyTransformation(node: PlanNode, context: OptContext): PlanNode | null {
+	if (!(node instanceof MyNode)) return null;
+	
+	// Source is already optimized by framework - just use it
+	const result = new TransformedNode(node.scope, node.source, node.params);
+	
+	// Framework will set physical properties via markPhysical()
+	return result;
+}
+
+// ❌ WRONG - manually optimizing children (redundant)
+export function badRule(node: PlanNode, context: OptContext): PlanNode | null {
+	const optimizedSource = context.optimizer.optimizeNode(node.source, context); // Don't do this!
+	return new TransformedNode(node.scope, optimizedSource, node.params);
+}
+
+// ❌ WRONG - manually setting physical properties (bypasses framework)
+export function badRule(node: PlanNode, context: OptContext): PlanNode | null {
+	const result = new TransformedNode(node.scope, node.source, node.params);
+	PlanNode.setDefaultPhysical(result, { /* properties */ }); // Don't do this!
+	return result;
+}
+```
+
+### 4. Cost and Row Estimation (Optional)
+Rules may use cost helpers for decision-making, but framework handles physical properties:
 ```typescript
 import { sortCost, aggregateCost } from '../../cost/index.js';
 import { getRowEstimate } from '../../stats/basic-estimates.js';
 
-// Estimate costs using helpers
-const inputRows = getRowEstimate(node.source, optimizer.tuning);
+// Use for rule decisions, not for setting properties
+const inputRows = getRowEstimate(node.source, context.tuning);
 const sortCostEstimate = sortCost(inputRows);
-const aggCostEstimate = aggregateCost(inputRows, outputRows);
+
+if (sortCostEstimate > context.tuning.maxSortCost) {
+	return null; // Don't apply this transformation
+}
 ```
 
-### 4. Physical Properties
-Set physical properties on transformed nodes:
+### 5. Physical Properties (Framework Managed)
+**DO NOT manually set physical properties** - the framework handles this automatically:
+
 ```typescript
-const transformedNode = new SortNode(node.scope, optimizedSource, sortKeys);
+// ✅ CORRECT - let framework compute properties
+const transformedNode = new SortNode(node.scope, node.source, sortKeys);
+return transformedNode; // Framework will call markPhysical()
 
-// Use the helper to set default physical properties
-PlanNode.setDefaultPhysical(transformedNode, {
-	ordering: sortKeys.map((key, idx) => ({ column: idx, desc: key.direction === 'desc' })),
-	estimatedRows: inputRows
-});
-
+// ❌ WRONG - manually setting properties (bypasses framework logic)
+const transformedNode = new SortNode(node.scope, node.source, sortKeys);
+PlanNode.setDefaultPhysical(transformedNode, { /* properties */ }); // Don't do this!
 return transformedNode;
 ```
 
-### 5. Logging and Debugging
+**How Properties Are Computed:**
+- Framework calls `optimizeChildren()` first
+- Then applies rules to get transformed node
+- Finally calls `markPhysical()` which:
+  - Collects properties from all children
+  - Calls node's `getPhysical(childrenProperties)` if implemented
+  - Computes inheritance of `readonly`, `deterministic` flags
+  - Sets final properties on the node
+
+### 6. Logging and Debugging
 Use consistent logging patterns:
 ```typescript
 import { createLogger } from '../../../common/logger.js';
 
 const log = createLogger('optimizer:rule:aggregate-streaming');
 
-export function ruleAggregateStreaming(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+export function ruleAggregateStreaming(node: PlanNode, context: OptContext): PlanNode | null {
 	if (!(node instanceof AggregateNode)) return null;
 
 	log('Applying aggregate streaming rule to node %s', node.id);
@@ -124,7 +166,7 @@ describe('ruleAggregateStreaming', () => {
 	it('should transform AggregateNode with GROUP BY to StreamAggregateNode', () => {
 		// Test positive case
 		const aggregate = new AggregateNode(/* ... */);
-		const result = ruleAggregateStreaming(aggregate, mockOptimizer);
+		const result = ruleAggregateStreaming(aggregate, mockContext);
 		
 		expect(result).to.be.instanceOf(StreamAggregateNode);
 		expect(result?.getAttributes()).to.deep.equal(aggregate.getAttributes());
@@ -133,7 +175,7 @@ describe('ruleAggregateStreaming', () => {
 	it('should return null for non-AggregateNode', () => {
 		// Test guard clause
 		const filter = new FilterNode(/* ... */);
-		const result = ruleAggregateStreaming(filter, mockOptimizer);
+		const result = ruleAggregateStreaming(filter, mockContext);
 		
 		expect(result).to.be.null;
 	});
@@ -141,7 +183,7 @@ describe('ruleAggregateStreaming', () => {
 	it('should return null for AggregateNode without GROUP BY', () => {
 		// Test precondition
 		const aggregate = new AggregateNode(/* groupBy: [] */);
-		const result = ruleAggregateStreaming(aggregate, mockOptimizer);
+		const result = ruleAggregateStreaming(aggregate, mockContext);
 		
 		expect(result).to.be.null;
 	});
@@ -232,7 +274,7 @@ export function expensiveRule(node: PlanNode, optimizer: Optimizer): PlanNode | 
 ### ❌ Mutating Input Nodes
 ```typescript
 // WRONG - mutates input
-function badRule(node: AggregateNode, optimizer: Optimizer): PlanNode | null {
+function badRule(node: AggregateNode, context: OptContext): PlanNode | null {
 	node.physical = { /* ... */ }; // Mutates input!
 	return node;
 }
@@ -244,11 +286,30 @@ function badRule(node: AggregateNode, optimizer: Optimizer): PlanNode | null {
 return new ProjectNode(scope, source, projections); // Uses new attribute IDs
 ```
 
+### ❌ Manually Optimizing Children
+```typescript
+// WRONG - framework already handles this
+function badRule(node: PlanNode, context: OptContext): PlanNode | null {
+	const optimizedSource = context.optimizer.optimizeNode(node.source, context); // Redundant!
+	return new TransformedNode(scope, optimizedSource, params);
+}
+```
+
+### ❌ Manually Setting Physical Properties
+```typescript
+// WRONG - bypasses framework logic  
+function badRule(node: PlanNode, context: OptContext): PlanNode | null {
+	const result = new TransformedNode(scope, node.source, params);
+	PlanNode.setDefaultPhysical(result, { /* properties */ }); // Framework handles this!
+	return result;
+}
+```
+
 ### ❌ Side Effects
 ```typescript
 // WRONG - has side effects
-function badRule(node: PlanNode, optimizer: Optimizer): PlanNode | null {
-	optimizer.tuning.defaultRowEstimate = 5000; // Mutates optimizer state!
+function badRule(node: PlanNode, context: OptContext): PlanNode | null {
+	context.tuning.defaultRowEstimate = 5000; // Mutates context state!
 	return transformedNode;
 }
 ```
@@ -256,7 +317,7 @@ function badRule(node: PlanNode, optimizer: Optimizer): PlanNode | null {
 ### ❌ Non-Deterministic Rules
 ```typescript
 // WRONG - non-deterministic
-function badRule(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+function badRule(node: PlanNode, context: OptContext): PlanNode | null {
 	if (Math.random() > 0.5) { // Non-deterministic!
 		return transformedNode;
 	}
@@ -278,13 +339,13 @@ Use this template for new rules:
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
-import type { Optimizer } from '../../optimizer.js';
+import type { OptContext } from '../../framework/context.js';
 import { InputNodeType } from '../../nodes/input-node.js';
 import { OutputNodeType } from '../../nodes/output-node.js';
 
 const log = createLogger('optimizer:rule:<rule-name>');
 
-export function rule<RuleName>(node: PlanNode, optimizer: Optimizer): PlanNode | null {
+export function rule<RuleName>(node: PlanNode, context: OptContext): PlanNode | null {
 	// Guard: node type check
 	if (!(node instanceof InputNodeType)) {
 		return null;
@@ -297,22 +358,17 @@ export function rule<RuleName>(node: PlanNode, optimizer: Optimizer): PlanNode |
 
 	log('Applying <rule-name> rule to node %s', node.id);
 
-	// Optimization logic here
-	const optimizedSource = optimizer.optimizeNode(node.source);
-	
+	// Source is already optimized by framework - just use it
 	// Create transformed node
 	const result = new OutputNodeType(
 		node.scope,
-		optimizedSource,
+		node.source, // Already optimized by framework
 		// ... other parameters
 		node.getAttributes() // Preserve attribute IDs
 	);
 
-	// Set physical properties
-	PlanNode.setDefaultPhysical(result, {
-		// ... properties specific to this transformation
-	});
-
+	// Framework will set physical properties automatically via markPhysical()
+	
 	log('Transformed %s to %s', node.nodeType, result.nodeType);
 	return result;
 }

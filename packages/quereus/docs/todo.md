@@ -1,87 +1,87 @@
 ## Project TODO List & Future Work
 
-This list reflects the **current state** of Quereus - a surprisingly complete SQL query processor with the Titan runtime. Most core SQL features are now implemented and working!
+This list reflects the **current state** of Quereus - a feature-complete SQL query processor with a modern Titan optimizer architecture. The core infrastructure is solid and most foundational work is complete!
+
+## 🔄 Current Development Focus
 
 **Core SQL Features**
-- [ ] **OLD/NEW on RETURNS**
+- [ ] **OLD/NEW on RETURNS**: Support for RETURNING clause references
 
-**Type Coercion**
-- [ ] **ORDER BY**: Enhanced numeric sorting of string columns using coercion
+**Query Optimization (Next Priority)**
+- [ ] **Phase 1.5 - Access Path Selection**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` physical access infrastructure
+- [ ] **Predicate Pushdown**: Advanced filter predicate optimization closer to data sources
+- [ ] **Join Reordering**: Cost-based join order optimization using cardinality estimates
+- [ ] **Subquery Optimization**: Transform correlated subqueries to joins where beneficial
 
-**Query Planning**
-- [ ] **Cost-Based Optimization**: Better cost estimates for plan selection
-- [ ] **Join Reordering**: Optimize join order based on statistics
-
-**JOIN Operations** 
-- [ ] **JOIN Optimization**: Join reordering and algorithm selection
-
-**Window Functions**
-- [ ] **LAG/LEAD**: Offset functions (Phase 2)
-- [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions (Phase 2)
-- [ ] **RANGE BETWEEN**: Range-based window frames (Phase 3)
-- [ ] **NTILE**: N-tile distribution functions
+**Window Functions (Remaining)**
+- [ ] **LAG/LEAD**: Offset functions
+- [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions  
+- [ ] **RANGE BETWEEN**: Range-based window frames
 - [ ] **PERCENT_RANK/CUME_DIST**: Statistical ranking functions
 
-**Query Optimization Enhancements**
-- [ ] **Cost-Based Planning**: Implement sophisticated cost models and statistics
-- [ ] **Join Optimization**: Join reordering based on cardinality estimates
-- [ ] **Index Selection**: Enhanced `TableSeekNode` for optimal index usage
-- [ ] **Predicate Pushdown**: Advanced predicate pushdown optimizations
-- [ ] **Constant Folding**: Compile-time evaluation of constant expressions
+**Type Coercion Enhancements**
+- [ ] **ORDER BY**: Enhanced numeric sorting of string columns using coercion
 
-**Performance & Scalability**
+## 📋 Future Development Areas
+
+**Optimizer Enhancements (Near-term)**
+- [ ] **Advanced Statistics**: Move beyond naive heuristics to VTab-supplied or ANALYZE-based stats
+- [ ] **Sophisticated Cost Models**: Better formulas for complex operations and join algorithms  
+- [ ] **Plan Validation**: Runtime tree validation to catch optimizer bugs early
+- [ ] **Execution Metrics**: Row-level telemetry for verifying cardinality estimates
+
+**Schema & DDL Enhancements**
+- [ ] **Foreign Key Constraints**: REFERENCES constraints with cascading actions
+- [ ] **Computed Columns**: Columns with derived values
+- [ ] **ALTER TABLE**: More comprehensive ALTER TABLE operations
+- [ ] **Materialized Views**: Views with cached results
+
+**Performance & Scalability (Medium-term)**
 - [ ] **Memory Pooling**: Reduce allocation overhead in hot paths
 - [ ] **Query Caching**: Result caching and invalidation strategies
 - [ ] **Streaming Execution**: Better streaming support for large result sets
 - [ ] **Parallel Execution**: Multi-threaded query execution for CPU-bound operations
 
-**Schema & DDL Enhancements**
-- [ ] **Foreign Key Constraints**: REFERENCES constraints with cascading actions
-- [ ] **Computed Columns**: Columns with derived values
-- [ ] **Schema Versioning**: Track schema changes and invalidate plans
-- [ ] **ALTER TABLE**: More comprehensive ALTER TABLE operations
-- [ ] **Materialized Views**: Views with cached results
-
-**Error Handling & Diagnostics**
-- [ ] **Query Explain**: Enhanced EXPLAIN capabilities for query analysis
+**Developer Experience & Tooling**
+- [ ] **Enhanced EXPLAIN**: More detailed query plan analysis capabilities
 - [ ] **Performance Profiling**: Detailed execution timing and resource usage
-- [ ] **Plan Visualization**: Tools to visualize and debug query plans
+- [ ] **ESLint Rules**: Prevent physical nodes in builder code, enforce conventions
+- [ ] **Virtual Table Development Guide**: Best practices for creating custom vtab modules
 
-**Testing & Reliability**
+**Testing & Quality (Ongoing)**
 - [ ] **Stress Testing**: Large dataset and concurrent operation testing
 - [ ] **Fuzzing**: Automated testing with random SQL generation
 - [ ] **Performance Benchmarks**: Regression testing for performance
-- [ ] **Compatibility Testing**: Cross-platform and environment testing
+- [ ] **Cross-platform Testing**: Browser, Node.js, React Native environments
 
-**Documentation & Tooling**
-- [ ] **API Documentation**: Comprehensive API documentation with examples
-- [ ] **Query Optimization Guide**: Best practices for query performance
-- [ ] **Virtual Table Development**: Guide for creating custom vtab modules
-- [ ] **Migration Tools**: Tools for importing data from other databases
-
-**Advanced Features**
+**Advanced Features (Long-term Vision)**
 - [ ] **Distributed Queries**: Query federation across multiple data sources
 - [ ] **Real-time Queries**: Streaming query execution over live data
 - [ ] **Graph Queries**: Graph traversal and pattern matching capabilities
 - [ ] **Machine Learning Integration**: Built-in ML functions and operators
 
 **Ecosystem Integration**
-- [ ] **Module Development**: Interfaces to PostgreSQL, MySQL, SQLite, etc.
+- [ ] **Database Connectors**: Interfaces to PostgreSQL, MySQL, SQLite, etc.
 - [ ] **ORM Adapters**: Integration with TypeScript/JavaScript ORMs
 - [ ] **Cloud Platform**: Cloud-native deployment and scaling options
-- [ ] **Data Connectors**: Standard connectors for popular data sources
-
-**Performance & Scale**
-- [ ] **Columnar Storage**: Column-oriented storage for analytical workloads
-- [ ] **Compression**: Data compression algorithms for memory efficiency
-- [ ] **Tiered Storage**: Hot/warm/cold data tiering strategies
-- [ ] **Distributed Execution**: Multi-node query execution
+- [ ] **Data Pipeline Integration**: Standard connectors for ETL workflows
 
 ---
 
-**Legend:**
-- `[ ]`: Not Started
-- `[P]`: Partially Implemented / In Progress  
-- `[X]`: Completed ✅
+## 📊 Project Status Summary
 
-**Next Phase Focus:** The primary development focus should shift from implementing missing core SQL features (which are now largely complete) to **optimization, performance, and advanced features**. The engine has a solid foundation and can handle complex SQL workloads effectively.
+**✅ Core Foundation: COMPLETE**
+- SQL parser, planner, runtime, and optimizer architecture
+- Complex query support (joins, subqueries, CTEs, window functions)
+- Comprehensive constraint system and transaction support
+- Modern optimizer with constant folding and intelligent caching
+
+**🔄 Current Focus: OPTIMIZATION & POLISH**  
+- The engine handles complex SQL workloads effectively
+- Development focus has shifted from core features to optimization and performance
+- Foundation is solid for building advanced features and ecosystem integrations
+
+**🎯 Strategic Priority: ACCESS PATH OPTIMIZATION**
+- Optimizer Phase 1.5 access path selection is the immediate next milestone
+- Will unlock significant performance improvements for data-intensive workloads
+- Builds on the robust optimizer framework completed in Phases 0-3

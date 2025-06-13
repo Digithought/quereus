@@ -1,6 +1,10 @@
-# Titan Optimizer – Constant Folding & Constant-Dependency Resolution
+# Titan Optimizer – Constant Folding & Constant-Dependency Resolution ✅ IMPLEMENTED
 
-This document describes the **design, data-flow, and implementation guidance** for the constant-folding stage of the Titan optimizer.  It is written for engineers who are already familiar with the main `README.md`, `docs/runtime.md`, and `docs/titan-optimizer.md`.  The goal is to make any scalar (and later, relational) sub-tree that is *functionally* constant collapse to a `LiteralNode` or a pre-materialised `ValuesNode`, using **one single evaluation engine** – the existing runtime.
+This document describes the **design, data-flow, and implementation** of the constant-folding stage of the Titan optimizer.  It is written for engineers who are already familiar with the main `README.md`, `docs/runtime.md`, and `docs/titan-optimizer.md`.  
+
+**Implementation Status: ✅ COMPLETED** - This design has been fully implemented as part of Phase 3 of the Titan optimizer. See [Phase 3 - Constant Folding](titan-optimizer.md#phase-3--constant-folding--completed) for implementation status.
+
+The goal is to make any scalar (and later, relational) sub-tree that is *functionally* constant collapse to a `LiteralNode` or a pre-materialised `ValuesNode`, using **one single evaluation engine** – the existing runtime.
 
 ---
 ## 1. Definitions

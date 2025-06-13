@@ -19,7 +19,7 @@ type RuntimeValue = SqlValue | Row | AsyncIterable<Row> | ((ctx: RuntimeContext)
 ### OutputValue
 Output types that instructions can produce:
 ```typescript
-type OutputValue = RuntimeValue | Promise<RuntimeValue>;
+type OutputValue = MaybePromise<RuntimeValue>;
 ```
 
 ### TypeClasses

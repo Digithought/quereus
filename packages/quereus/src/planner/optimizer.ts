@@ -37,13 +37,12 @@ import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js'
 // Core optimization rules
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
 // Constraint rules removed - now handled in builders for correctness
-import { ruleSortOptimization } from './rules/physical/rule-sort-optimization.js';
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
-import { ruleProjectOptimization } from './rules/physical/rule-project-optimization.js';
-import { ruleFilterOptimization } from './rules/physical/rule-filter-optimization.js';
 import { ruleMarkPhysical } from './rules/physical/rule-mark-physical.js';
 // Phase 3 rules
+import { ruleConstantFolding } from './rules/rewrite/rule-constant-folding.js';
 import { validatePhysicalTree } from './validation/plan-validator.js';
+import { Database } from '../core/database.js';
 
 const log = createLogger('optimizer');
 
@@ -52,7 +51,6 @@ const log = createLogger('optimizer');
  */
 export class Optimizer {
 	private readonly stats: StatsProvider;
-	private context?: OptContext;
 
 	constructor(
 		public readonly tuning: OptimizerTuning = DEFAULT_TUNING,
@@ -77,6 +75,28 @@ export class Optimizer {
 
 		const toRegister = [];
 
+		// Phase 3 rules - constant folding
+		// Register for multiple node types that commonly have expressions
+		const constantFoldingNodeTypes = [
+			PlanNodeType.Project,    // Projection expressions
+			PlanNodeType.Filter,     // Predicate expressions
+			PlanNodeType.Window,     // Window function expressions
+			PlanNodeType.Aggregate,  // Aggregate expressions
+			PlanNodeType.Sort,       // Sort key expressions
+			PlanNodeType.Values,     // Literal values in VALUES clauses
+			PlanNodeType.Join        // Join condition expressions
+		];
+		
+		for (const nodeType of constantFoldingNodeTypes) {
+			toRegister.push(createRule(
+				`constant-folding-${nodeType.toLowerCase()}`,
+				nodeType,
+				'rewrite',
+				ruleConstantFolding,
+				10 // Very high priority - should run first to help other rules
+			));
+		}
+
 		// Core optimization rules (converted from old system)
 		toRegister.push(createRule(
 			'aggregate-streaming',
@@ -87,14 +107,6 @@ export class Optimizer {
 		));
 
 		// Constraint rules removed - now handled directly in builders for correctness
-
-		toRegister.push(createRule(
-			'sort-optimization',
-			PlanNodeType.Sort,
-			'impl',
-			ruleSortOptimization,
-			60 // Medium priority - optimization only
-		));
 
 		toRegister.push(createRule(
 			'cte-optimization',
@@ -165,18 +177,18 @@ export class Optimizer {
 	/**
 	 * Optimize a plan tree by applying transformation rules
 	 */
-	optimize(plan: PlanNode): PlanNode {
+	optimize(plan: PlanNode, db: Database): PlanNode {
 		log('Starting optimization of plan', plan.nodeType);
 
 		// Clear rule tracking from previous runs
 		clearVisitedRules();
 
 		// Create optimization context
-		this.context = createOptContext(this, this.stats, this.tuning);
+		const context = createOptContext(this, this.stats, this.tuning, db);
 
 		tracePhaseStart('optimization');
 		try {
-			const result = this.optimizeNode(plan);
+			const result = this.optimizeNode(plan, context);
 
 			// Phase 3: Validate the physical plan before returning
 			if (this.tuning.debug.validatePlan) {
@@ -193,25 +205,24 @@ export class Optimizer {
 			return result;
 		} finally {
 			tracePhaseEnd('optimization');
-			this.context = undefined;
 		}
 	}
 
-	optimizeNode(node: PlanNode): PlanNode {
+	optimizeNode(node: PlanNode, context: OptContext): PlanNode {
 		traceNodeStart(node);
 
 		// If already physical, just recurse on children
 		if (node.physical) {
-			const result = this.optimizeChildren(node);
+			const result = this.optimizeChildren(node, context);
 			traceNodeEnd(node, result);
 			return result;
 		}
 
 		// First optimize all children
-		const optimizedNode = this.optimizeChildren(node);
+		const optimizedNode = this.optimizeChildren(node, context);
 
 		// Apply rules
-		const rulesApplied = applyRules(optimizedNode, this);
+		const rulesApplied = applyRules(optimizedNode, context);
 
 		if (rulesApplied !== optimizedNode) {
 			// Rules transformed the node
@@ -235,10 +246,10 @@ export class Optimizer {
 		}
 	}
 
-	private optimizeChildren(node: PlanNode): PlanNode {
+	private optimizeChildren(node: PlanNode, context: OptContext): PlanNode {
 		// Generic tree walk using withChildren
 		const originalChildren = node.getChildren();
-		const optimizedChildren = originalChildren.map(child => this.optimizeNode(child));
+		const optimizedChildren = originalChildren.map(child => this.optimizeNode(child, context));
 
 		// Check if any children changed
 		const childrenChanged = optimizedChildren.some((child, i) => child !== originalChildren[i]);
@@ -261,12 +272,7 @@ export class Optimizer {
 		return this.stats;
 	}
 
-	/**
-	 * Get the current optimization context
-	 */
-	getContext(): OptContext | undefined {
-		return this.context;
-	}
+
 
 	// Constraint-related methods removed - constraints now handled in builders
 
@@ -323,47 +329,5 @@ export class Optimizer {
 		return !needsTransformation.has(node.nodeType);
 	}
 
-	private optimizeJoinCaching(node: JoinNode): RelationalPlanNode {
-		// For nested loop joins, caching the right side can provide significant benefits
-		// when the right side will be scanned multiple times (once per left row)
 
-		const leftSize = node.left.estimatedRows ?? this.tuning.defaultRowEstimate;
-		const rightSize = node.right.estimatedRows ?? this.tuning.defaultRowEstimate;
-
-		// Heuristic: For nested loop joins, we almost always want to cache the right side
-		// unless it's obviously too large or already cached
-		const shouldCacheRight = node.right.nodeType !== PlanNodeType.Cache &&
-								// Always cache for small/medium datasets or when estimates are missing
-								(leftSize === 0 || leftSize > this.tuning.join.minLeftRowsForCaching ||
-								 rightSize === 0 || rightSize < this.tuning.join.maxRightRowsForCaching);
-
-		let optimizedLeft = this.optimizeNode(node.left) as RelationalPlanNode;
-		let optimizedRight = this.optimizeNode(node.right) as RelationalPlanNode;
-
-		if (shouldCacheRight) {
-			log('Adding cache to right side of join (left rows: %d, right rows: %d)',
-				leftSize, rightSize);
-			// Inject cache with appropriate threshold
-			const cacheThreshold = rightSize > 0 ?
-				Math.min(rightSize * this.tuning.join.cacheThresholdMultiplier, this.tuning.join.maxCacheThreshold) :
-				this.tuning.join.maxCacheThreshold;
-			optimizedRight = new CacheNode(
-				optimizedRight.scope,
-				optimizedRight,
-				'memory',
-				cacheThreshold
-			);
-		}
-
-		// Use withChildren to rebuild the join with optimized children
-		const newChildren = node.condition ?
-			[optimizedLeft, optimizedRight, node.condition] :
-			[optimizedLeft, optimizedRight];
-
-		if (optimizedLeft !== node.left || optimizedRight !== node.right) {
-			return node.withChildren(newChildren) as RelationalPlanNode;
-		}
-
-		return node;
-	}
 }

@@ -221,7 +221,7 @@ export class Database {
 
 					if (plan.statements.length === 0) continue; // No-op for this AST
 
-					const optimizedPlan = this.optimizer.optimize(plan) as BlockNode;
+					const optimizedPlan = this.optimizer.optimize(plan, this) as BlockNode;
 
 					const emissionContext = new EmissionContext(this);
 					const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
@@ -613,7 +613,7 @@ export class Database {
 
 		if (plan.statements.length === 0) return plan; // No-op for this AST
 
-		return this.optimizer.optimize(plan) as BlockNode;
+		return this.optimizer.optimize(plan, this) as BlockNode;
 	}
 
 	/**
