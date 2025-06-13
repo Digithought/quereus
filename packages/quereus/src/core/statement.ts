@@ -197,6 +197,7 @@ export class Statement {
 				params: this.boundArgs,
 				context: new Map(),
 				tableContexts: new Map(),
+				enableMetrics: this.db.getOption('runtime_metrics'),
 			};
 
 			const results = await scheduler.run(runtimeCtx);
@@ -411,7 +412,8 @@ export class Statement {
 				params: this.boundArgs,
 				context: new Map(),
 				tableContexts: new Map(),
-				tracer: tracer
+				tracer: tracer,
+				enableMetrics: this.db.getOption('runtime_metrics'),
 			};
 
 			const results = await scheduler.run(runtimeCtx);

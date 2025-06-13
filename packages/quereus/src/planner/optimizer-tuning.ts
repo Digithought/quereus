@@ -47,6 +47,12 @@ export interface OptimizerTuning {
 		/** Whether spill caching is enabled */
 		readonly spillEnabled: boolean;
 	};
+
+	/** Development and debugging options */
+	readonly debug: {
+		/** Whether to validate physical plans before emission */
+		readonly validatePlan: boolean;
+	};
 }
 
 /**
@@ -74,5 +80,8 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		spillThreshold: 100000,
 		maxSpillBuffer: 10000,
 		spillEnabled: true
+	},
+	debug: {
+		validatePlan: false // Default to disabled in production
 	}
 };

@@ -19,6 +19,9 @@ import { JoinNode } from './nodes/join-node.js';
 import { CacheNode } from './nodes/cache-node.js';
 import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 
+// Re-export for convenience
+export { DEFAULT_TUNING };
+
 import { ReturningNode } from './nodes/returning-node.js';
 import { SinkNode } from './nodes/sink-node.js';
 import { quereusError } from '../common/errors.js';
@@ -39,6 +42,8 @@ import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleProjectOptimization } from './rules/physical/rule-project-optimization.js';
 import { ruleFilterOptimization } from './rules/physical/rule-filter-optimization.js';
 import { ruleMarkPhysical } from './rules/physical/rule-mark-physical.js';
+// Phase 3 rules
+import { validatePhysicalTree } from './validation/plan-validator.js';
 
 const log = createLogger('optimizer');
 
@@ -172,6 +177,19 @@ export class Optimizer {
 		tracePhaseStart('optimization');
 		try {
 			const result = this.optimizeNode(plan);
+
+			// Phase 3: Validate the physical plan before returning
+			if (this.tuning.debug.validatePlan) {
+				log('Running plan validation');
+				try {
+					validatePhysicalTree(result);
+					log('Plan validation passed');
+				} catch (error) {
+					log('Plan validation failed: %s', error);
+					throw error;
+				}
+			}
+
 			return result;
 		} finally {
 			tracePhaseEnd('optimization');

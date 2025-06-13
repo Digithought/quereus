@@ -18,6 +18,8 @@ export type RuntimeContext = {
 	tracer?: InstructionTracer;
 	/** Active connection for the current transaction context */
 	activeConnection?: VirtualTableConnection;
+	/** Whether to collect runtime execution metrics */
+	enableMetrics: boolean;
 };
 
 export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue;
@@ -31,7 +33,23 @@ export type Instruction = {
 	programs?: Scheduler[];
 	/** Optional emission context for schema validation */
 	emissionContext?: EmissionContext;
+	/** Optional runtime statistics collected during execution */
+	runtimeStats?: InstructionRuntimeStats;
 };
+
+/**
+ * Runtime statistics for instruction execution
+ */
+export interface InstructionRuntimeStats {
+	/** Number of input values/rows processed */
+	in: number;
+	/** Number of output values/rows produced */
+	out: number;
+	/** Total execution time in nanoseconds */
+	elapsedNs: bigint;
+	/** Number of times this instruction was executed */
+	executions: number;
+}
 
 /** * Trace event for instruction execution. */
 export interface InstructionTraceEvent {

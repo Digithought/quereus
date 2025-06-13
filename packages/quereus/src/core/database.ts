@@ -28,8 +28,9 @@ import { registerEmitters } from '../runtime/register.js';
 import { serializePlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
 import { EmissionContext } from '../runtime/emission-context.js';
-import { Optimizer } from '../planner/optimizer.js';
+import { Optimizer, DEFAULT_TUNING } from '../planner/optimizer.js';
 import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-functions.js';
+import { DatabaseOptionsManager } from './database-options.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -48,9 +49,11 @@ export class Database {
 	private inTransaction = false;
 	private activeConnections = new Map<string, VirtualTableConnection>();
 	public readonly optimizer: Optimizer;
+	public readonly options: DatabaseOptionsManager;
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
+		this.options = new DatabaseOptionsManager();
 		log("Database instance created.");
 
 		// Register built-in functions
@@ -64,8 +67,6 @@ export class Database {
 
 		this.schemaManager.registerModule('memory', new MemoryTableModule());
 
-
-
 		// Register built-in collations
 		this.registerDefaultCollations();
 
@@ -74,8 +75,60 @@ export class Database {
 
 		registerEmitters();
 
-		// After schema manager initialization
-		this.optimizer = new Optimizer();
+		// Initialize optimizer with default tuning
+		this.optimizer = new Optimizer(DEFAULT_TUNING);
+
+		// Set up option change listeners
+		this.setupOptionListeners();
+	}
+
+	/** @internal Set up listeners for option changes */
+	private setupOptionListeners(): void {
+		// Register core database options with their change handlers
+		this.options.registerOption('runtime_stats', {
+			type: 'boolean',
+			defaultValue: false,
+			aliases: ['runtime_metrics'],
+			description: 'Enable runtime execution statistics collection'
+			// No onChange needed - consumed directly when creating RuntimeContext
+		});
+
+		this.options.registerOption('validate_plan', {
+			type: 'boolean',
+			defaultValue: false,
+			aliases: ['plan_validation'],
+			description: 'Enable plan validation before execution',
+			onChange: (event) => {
+				const newTuning = {
+					...this.optimizer.tuning,
+					debug: {
+						...this.optimizer.tuning.debug,
+						validatePlan: event.newValue as boolean
+					}
+				};
+				// Recreate optimizer with new tuning
+				(this as any).optimizer = new Optimizer(newTuning);
+				log('Optimizer recreated with validate_plan = %s', event.newValue);
+			}
+		});
+
+		this.options.registerOption('default_vtab_module', {
+			type: 'string',
+			defaultValue: 'memory',
+			description: 'Default virtual table module name',
+			onChange: (event) => {
+				this.schemaManager.setDefaultVTabModuleName(event.newValue as string);
+			}
+		});
+
+		this.options.registerOption('default_vtab_args', {
+			type: 'object',
+			defaultValue: {},
+			description: 'Default virtual table module arguments',
+			onChange: (event) => {
+				this.schemaManager.setDefaultVTabArgs(event.newValue as Record<string, any>);
+			}
+		});
 	}
 
 	/** @internal Registers default built-in SQL functions */
@@ -181,6 +234,7 @@ export class Database {
 						params: params ?? {},
 						context: new Map(),
 						tableContexts: new Map(),
+						enableMetrics: this.options.getBooleanOption('runtime_stats'),
 					};
 
 					void await scheduler.run(runtimeCtx);
@@ -440,6 +494,26 @@ export class Database {
 	getDefaultVtabModule(): { name: string; args: Record<string, SqlValue> } {
 		this.checkOpen();
 		return this.schemaManager.getDefaultVTabModule();
+	}
+
+	/**
+	 * Set database configuration options
+	 * @param option The option name
+	 * @param value The option value
+	 */
+	setOption(option: string, value: any): void {
+		this.checkOpen();
+		this.options.setOption(option, value);
+	}
+
+	/**
+	 * Get database configuration option value
+	 * @param option The option name
+	 * @returns The option value
+	 */
+	getOption(option: string): any {
+		this.checkOpen();
+		return this.options.getOption(option);
 	}
 
 	/**

@@ -1,6 +1,9 @@
-import type { Instruction, RuntimeContext } from "./types.js";
+import type { Instruction, RuntimeContext, InstructionRuntimeStats } from "./types.js";
 import type { OutputValue, RuntimeValue, Row } from "../common/types.js";
 import { isAsyncIterable } from "./utils.js";
+import { createLogger } from "../common/logger.js";
+
+const log = createLogger('runtime:metrics');
 
 type ResultDestination = number | null;
 
@@ -67,8 +70,10 @@ export class Scheduler {
 		}
 	}
 
-	run(ctx: RuntimeContext): OutputValue {
-		if (!ctx.tracer) {
+		run(ctx: RuntimeContext): OutputValue {
+		if (ctx.enableMetrics) {
+			return this.runWithMetrics(ctx);
+		} else if (!ctx.tracer) {
 			return this.runOptimized(ctx);
 		} else {
 			return this.runWithTracing(ctx);
@@ -266,5 +271,218 @@ export class Scheduler {
 		}
 
 		return output as OutputValue;
+	}
+
+	private runWithMetrics(ctx: RuntimeContext): OutputValue {
+		// Initialize metrics for all instructions
+		for (const instruction of this.instructions) {
+			if (!instruction.runtimeStats) {
+				instruction.runtimeStats = {
+					in: 0,
+					out: 0,
+					elapsedNs: 0n,
+					executions: 0
+				};
+			}
+		}
+
+		// Argument lists for each instruction.
+		const instrArgs = new Array(this.instructions.length).fill(null).map(() => [] as OutputValue[] | undefined);
+		// Running output
+		let output: OutputValue | undefined;
+
+		// Run synchronously until we hit a promise
+		for (let i = 0; i < this.instructions.length; ++i) {
+			const instruction = this.instructions[i];
+			let args = instrArgs[i]!;
+			instrArgs[i] = undefined; // Clear args as we go to minimize memory usage.
+
+			// Run with metrics collection
+			output = this.runInstructionWithMetrics(instruction, ctx, args as RuntimeValue[]);
+
+			// If the instruction returned a promise, switch to async mode for rest of instructions
+			if (output instanceof Promise) {
+				return this.runAsyncWithMetrics(ctx, instrArgs, i, output);
+			}
+
+			// Store synchronous output
+			const destination = this.destinations[i];
+			if (destination !== null) {
+				instrArgs[destination]!.push(output);
+			}
+		}
+
+		// Log aggregate metrics if debugging is enabled
+		this.logAggregateMetrics();
+
+		return output as OutputValue;
+	}
+
+	private async runAsyncWithMetrics(
+		ctx: RuntimeContext,
+		instrArgs: (OutputValue[] | undefined)[],
+		startIndex: number,
+		pendingOutput: OutputValue
+	): Promise<RuntimeValue> {
+		// Instruction indexes that have promise arguments
+		const hasPromise: boolean[] = [];
+
+		let output: OutputValue | undefined = pendingOutput;
+
+		// Store the output from the transition instruction
+		const transitionDestination = this.destinations[startIndex];
+		if (transitionDestination !== null) {
+			instrArgs[transitionDestination]!.push(output);
+			hasPromise[transitionDestination] = true;
+		}
+
+		// Continue with remaining instructions asynchronously
+		for (let i = startIndex + 1; i < this.instructions.length; ++i) {
+			const instruction = this.instructions[i];
+			let args = instrArgs[i]!;
+			instrArgs[i] = undefined;
+
+			// Resolve any promise arguments
+			if (hasPromise[i]) {
+				args = await Promise.all(args);
+			}
+
+			// Run with metrics collection
+			output = await this.runInstructionWithMetricsAsync(instruction, ctx, args as RuntimeValue[]);
+
+			// Store the output
+			const destination = this.destinations[i];
+			if (destination !== null) {
+				instrArgs[destination]!.push(output);
+				if (output instanceof Promise) {
+					hasPromise[destination] = true;
+				}
+			}
+		}
+
+		// Log aggregate metrics if debugging is enabled
+		this.logAggregateMetrics();
+
+		return output as OutputValue;
+	}
+
+	private runInstructionWithMetrics(instruction: Instruction, ctx: RuntimeContext, args: RuntimeValue[]): OutputValue {
+		const stats = instruction.runtimeStats!;
+		const start = process.hrtime.bigint();
+
+		stats.executions++;
+		stats.in += this.countInputs(args);
+
+		try {
+			const result = instruction.run(ctx, ...args);
+
+			if (result instanceof Promise) {
+				// Handle async results separately
+				return result.then(resolved => {
+					stats.out += this.countOutputs(resolved);
+					stats.elapsedNs += process.hrtime.bigint() - start;
+					return resolved;
+				}).catch(error => {
+					stats.elapsedNs += process.hrtime.bigint() - start;
+					throw error;
+				});
+			} else {
+				// Sync result
+				stats.out += this.countOutputs(result);
+				stats.elapsedNs += process.hrtime.bigint() - start;
+				return result;
+			}
+		} catch (error) {
+			stats.elapsedNs += process.hrtime.bigint() - start;
+			throw error;
+		}
+	}
+
+	private async runInstructionWithMetricsAsync(instruction: Instruction, ctx: RuntimeContext, args: RuntimeValue[]): Promise<OutputValue> {
+		const stats = instruction.runtimeStats!;
+		const start = process.hrtime.bigint();
+
+		stats.executions++;
+		stats.in += this.countInputs(args);
+
+		try {
+			const result = instruction.run(ctx, ...args);
+			const resolved = result instanceof Promise ? await result : result;
+
+			stats.out += this.countOutputs(resolved);
+			stats.elapsedNs += process.hrtime.bigint() - start;
+
+			return resolved;
+		} catch (error) {
+			stats.elapsedNs += process.hrtime.bigint() - start;
+			throw error;
+		}
+	}
+
+	private countInputs(args: RuntimeValue[]): number {
+		let count = 0;
+		for (const arg of args) {
+			if (Array.isArray(arg)) {
+				count += arg.length; // Count array elements
+			} else if (isAsyncIterable(arg)) {
+				count += 1; // Count iterables as 1 (we can't know size without consuming)
+			} else {
+				count += 1; // Count other values as 1
+			}
+		}
+		return count;
+	}
+
+	private countOutputs(result: OutputValue): number {
+		if (Array.isArray(result)) {
+			return result.length;
+		} else if (isAsyncIterable(result)) {
+			return 1; // Count iterables as 1 (we can't know size without consuming)
+		} else {
+			return 1;
+		}
+	}
+
+	private logAggregateMetrics(): void {
+		if (!log.enabled && !log.extend('stats').enabled) {
+			return;
+		}
+
+		const statsLog = log.extend('stats');
+		statsLog('Execution metrics summary:');
+
+		let totalTime = 0n;
+		for (let i = 0; i < this.instructions.length; i++) {
+			const instruction = this.instructions[i];
+			const stats = instruction.runtimeStats;
+			if (stats) {
+				const elapsedMs = Number(stats.elapsedNs) / 1_000_000;
+				totalTime += stats.elapsedNs;
+
+				statsLog('  [%d] %s: %d exec, %d in, %d out, %.2fms',
+					i,
+					instruction.note || 'unknown',
+					stats.executions,
+					stats.in,
+					stats.out,
+					elapsedMs
+				);
+			}
+		}
+
+		const totalMs = Number(totalTime) / 1_000_000;
+		statsLog('Total execution time: %.2fms', totalMs);
+	}
+
+	/**
+	 * Get runtime statistics for all instructions
+	 */
+	getMetrics(): InstructionRuntimeStats[] {
+		return this.instructions.map(instr => instr.runtimeStats || {
+			in: 0,
+			out: 0,
+			elapsedNs: 0n,
+			executions: 0
+		});
 	}
 }

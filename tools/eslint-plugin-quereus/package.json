@@ -1,0 +1,12 @@
+{
+  "name": "eslint-plugin-quereus",
+  "version": "1.0.0",
+  "description": "ESLint rules for Quereus development",
+  "main": "index.js",
+  "keywords": ["eslint", "eslintplugin", "quereus"],
+  "author": "Quereus Team",
+  "license": "MIT",
+  "peerDependencies": {
+    "eslint": ">=7.0.0"
+  }
+}
