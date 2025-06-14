@@ -66,7 +66,7 @@ function validateReturningExpression(expr: AST.Expression, operationType: 'INSER
 		}
 		// Other expression types (literal, parameter) don't need validation
 	}
-	
+
 	checkExpression(expr);
 }
 
@@ -195,11 +195,11 @@ export function buildUpdateStmt(
       // Infer alias from column name if not explicitly provided
       let alias = rc.alias;
       if (!alias && rc.expr.type === 'column') {
-        // For qualified column references like NEW.id or OLD.id, preserve the full qualified name
+        // For qualified column references like NEW.id or OLD.id, normalize to lowercase
         if (rc.expr.table) {
-          alias = `${rc.expr.table}.${rc.expr.name}`;
+          alias = `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`;
         } else {
-          alias = rc.expr.name;
+          alias = rc.expr.name.toLowerCase();
         }
       }
 

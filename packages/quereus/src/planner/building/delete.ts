@@ -65,7 +65,7 @@ function validateReturningExpression(expr: AST.Expression, operationType: 'INSER
 		}
 		// Other expression types (literal, parameter) don't need validation
 	}
-	
+
 	checkExpression(expr);
 }
 
@@ -198,20 +198,20 @@ export function buildDeleteStmt(
       // Infer alias from column name if not explicitly provided
       let alias = rc.alias;
       if (!alias && rc.expr.type === 'column') {
-        // For qualified column references like OLD.id, preserve the full qualified name
+        // For qualified column references like OLD.id, normalize to lowercase
         if (rc.expr.table) {
-          alias = `${rc.expr.table}.${rc.expr.name}`;
+          alias = `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`;
         } else {
-          alias = rc.expr.name;
+          alias = rc.expr.name.toLowerCase();
         }
       }
 
       // Validate that NEW references are not used in DELETE RETURNING
       validateReturningExpression(rc.expr, 'DELETE');
 
-      return { 
-        node: buildExpression({ ...deleteCtx, scope: returningScope }, rc.expr) as ScalarPlanNode, 
-        alias: alias 
+      return {
+        node: buildExpression({ ...deleteCtx, scope: returningScope }, rc.expr) as ScalarPlanNode,
+        alias: alias
       };
     });
 
