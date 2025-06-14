@@ -2403,7 +2403,13 @@ export class Parser {
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			this.consume(TokenType.LPAREN, "Expected '(' before PRIMARY KEY columns.");
-			const columns = this.identifierListWithDirection();
+			
+			// Handle empty PRIMARY KEY () for singleton tables (Third Manifesto feature)
+			let columns: { name: string; direction?: 'asc' | 'desc' }[] = [];
+			if (!this.check(TokenType.RPAREN)) {
+				columns = this.identifierListWithDirection();
+			}
+			
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous();
