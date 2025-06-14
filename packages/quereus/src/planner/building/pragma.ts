@@ -3,9 +3,11 @@ import * as AST from '../../parser/ast.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import { PragmaPlanNode } from '../nodes/pragma.js';
+import { SinkNode } from '../nodes/sink-node.js';
 import { getSyncLiteral } from '../../parser/utils.js';
+import type { PlanNode } from '../nodes/plan-node.js';
 
-export function buildPragmaStmt(ctx: PlanningContext, stmt: AST.PragmaStmt): PragmaPlanNode {
+export function buildPragmaStmt(ctx: PlanningContext, stmt: AST.PragmaStmt): PlanNode {
 	const pragmaName = stmt.name.toLowerCase();
 
 	let value: SqlValue | undefined;
@@ -19,5 +21,13 @@ export function buildPragmaStmt(ctx: PlanningContext, stmt: AST.PragmaStmt): Pra
 		}
 	}
 
-	return new PragmaPlanNode(ctx.scope, pragmaName, stmt, value);
+	const pragmaNode = new PragmaPlanNode(ctx.scope, pragmaName, stmt, value);
+
+	// If this is a setting operation (has a value), wrap with SinkNode to ensure execution
+	if (value !== undefined) {
+		return new SinkNode(ctx.scope, pragmaNode, 'pragma-set');
+	}
+
+	// Reading operation - return the PRAGMA node directly
+	return pragmaNode;
 }

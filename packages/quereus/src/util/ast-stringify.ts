@@ -657,6 +657,10 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				s += 'not null';
 				s += conflictToString(c.onConflict);
 				break;
+			case 'null':
+				s += 'null';
+				s += conflictToString(c.onConflict);
+				break;
 			case 'unique':
 				s += 'unique';
 				s += conflictToString(c.onConflict);

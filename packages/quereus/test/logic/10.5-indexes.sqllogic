@@ -62,7 +62,7 @@ SELECT id FROM unique_test WHERE email = 'alice@example.com';
 → [{"id":1}]
 
 -- Test index on NULL values
-CREATE TABLE null_test (id INTEGER PRIMARY KEY, optional_field TEXT);
+CREATE TABLE null_test (id INTEGER PRIMARY KEY, optional_field TEXT NULL);
 INSERT INTO null_test VALUES (1, 'value1'), (2, NULL), (3, 'value3'), (4, NULL);
 
 CREATE INDEX idx_optional ON null_test (optional_field);

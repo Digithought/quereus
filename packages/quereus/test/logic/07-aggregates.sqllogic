@@ -2,7 +2,7 @@
 
 PRAGMA default_vtab_module='memory';
 
-CREATE TABLE agg_t (id INTEGER PRIMARY KEY, grp TEXT, val INTEGER);
+CREATE TABLE agg_t (id INTEGER PRIMARY KEY, grp TEXT, val INTEGER NULL);
 INSERT INTO agg_t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'a', 30), (4, 'b', 40), (5, 'c', 50), (6, 'a', null);
 
 -- Basic aggregates
@@ -30,7 +30,7 @@ SELECT sum(val) FROM agg_t HAVING sum(val) > 100;
 → [{"sum(val)":150}]
 
 -- Aggregate with empty input
-CREATE TABLE empty_agg(x);
+CREATE TABLE empty_agg(x NULL);
 SELECT count(*), sum(x) FROM empty_agg;
 → [{"count(*)":0,"sum(x)":null}]
 DROP TABLE empty_agg;
@@ -51,7 +51,7 @@ SELECT count(distinct val) FROM agg_t WHERE grp = 'c';
 DROP TABLE agg_t;
 
 -- Test aggregate function commutativity (order independence)
-CREATE TABLE agg_order_test (id INTEGER PRIMARY KEY, val REAL);
+CREATE TABLE agg_order_test (id INTEGER PRIMARY KEY, val REAL NULL);
 INSERT INTO agg_order_test VALUES (1, 1), (2, 2), (3, 3), (4, null), (5, 4.5), (6, -1);
 
 SELECT SUM(val), COUNT(val), MAX(val), MIN(val) FROM agg_order_test;

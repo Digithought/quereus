@@ -80,7 +80,7 @@ FROM sales ORDER BY product, amount;
 CREATE TABLE sales_with_nulls (
     id INTEGER PRIMARY KEY,
     product TEXT,
-    amount NUMERIC
+    amount NUMERIC NULL
 );
 
 INSERT INTO sales_with_nulls VALUES

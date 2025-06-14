@@ -133,7 +133,8 @@ To add logging within a module:
 
 ## Major variations from SQLite
 
-*   Uses `CREATE TABLE ... USING module(...)` syntax.
+*   Uses `CREATE TABLE ... USING module(...)` syntax (no CREATE VIRTUAL TABLE).
+*   **Default NOT NULL Columns**: Following Third Manifesto principles, columns default to NOT NULL unless explicitly specified otherwise. This behavior can be controlled via `pragma default_column_nullability = 'nullable'` to restore SQL standard behavior. This design choice helps avoid the "billion-dollar mistake" of NULL by default.
 *   `PRAGMA default_vtab_module` can be used.
 *   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions.
 *   Async core execution.

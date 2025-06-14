@@ -550,7 +550,11 @@ export class SchemaManager {
 		const astColumnsToProcess = stmt.columns || [];
 		const astConstraintsToProcess = stmt.constraints;
 
-		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef));
+		// Get default nullability setting from database options
+		const defaultNullability = this.db.options.getStringOption('default_column_nullability');
+		const defaultNotNull = defaultNullability === 'not_null';
+
+		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef, defaultNotNull));
 		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess);
 
 		const finalColumnSchemas = preliminaryColumnSchemas.map((col, idx) => {

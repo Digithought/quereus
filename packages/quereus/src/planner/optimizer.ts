@@ -86,7 +86,7 @@ export class Optimizer {
 			PlanNodeType.Values,     // Literal values in VALUES clauses
 			PlanNodeType.Join        // Join condition expressions
 		];
-		
+
 		for (const nodeType of constantFoldingNodeTypes) {
 			toRegister.push(createRule(
 				`constant-folding-${nodeType.toLowerCase()}`,

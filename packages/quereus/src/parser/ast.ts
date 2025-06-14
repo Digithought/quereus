@@ -11,7 +11,7 @@ export interface AstNode {
 	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select'
 		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit'
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
-		| 'collate' | 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
+		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource' | 'case' | 'in' | 'exists' | 'values';
 	loc?: {
@@ -344,7 +344,7 @@ export type RowOp = 'insert' | 'update' | 'delete';
 
 // Column constraint (PRIMARY KEY, NOT NULL, etc.)
 export interface ColumnConstraint extends AstNode {
-	type: 'primaryKey' | 'notNull' | 'unique' | 'check' | 'default' | 'foreignKey' | 'collate' | 'generated';
+	type: 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'collate' | 'generated';
 	name?: string;
 	expr?: Expression;          // For CHECK or DEFAULT
 	operations?: RowOp[];       // ADDED: For CHECK ON (...)

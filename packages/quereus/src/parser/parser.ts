@@ -1809,7 +1809,8 @@ export class Parser {
 			if (this.matchKeyword('(')) {
 				while (!this.match(TokenType.RPAREN)) {
 					const nameValue = this.nameValueItem("module argument");
-					moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? getSyncLiteral(nameValue.value) : nameValue.value.name;
+					moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
+						? getSyncLiteral(nameValue.value) : nameValue.name;
 					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
 						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
 					}
@@ -2090,7 +2091,7 @@ export class Parser {
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
 	}
 
-	private nameValueItem(context: string): { name: string, value: AST.IdentifierExpr | AST.LiteralExpr } {
+	private nameValueItem(context: string): { name: string, value?: AST.IdentifierExpr | AST.LiteralExpr } {
 		const name = this.consumeIdentifier(`Expected ${context} name.`);
 
 		let value: AST.LiteralExpr | AST.IdentifierExpr | undefined;
@@ -2120,9 +2121,8 @@ export class Parser {
 			} else {
 				throw this.error(this.peek(), `Expected ${context} value (identifier, string, number, or NULL).`);
 			}
-		} else {
-			throw this.error(this.peek(), `Expected '=' after ${context} name.`);
 		}
+		// If no '=' is found, value remains undefined (reading mode)
 
 		return { name: name.toLowerCase(), value };
 	}
@@ -2298,6 +2298,7 @@ export class Parser {
 		return this.check(TokenType.CONSTRAINT) ||
 			this.check(TokenType.PRIMARY) ||
 			this.check(TokenType.NOT) ||
+			this.check(TokenType.NULL) ||
 			this.check(TokenType.UNIQUE) ||
 			this.check(TokenType.CHECK) ||
 			this.check(TokenType.DEFAULT) ||
@@ -2332,6 +2333,11 @@ export class Parser {
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
 			return { type: 'notNull', name, onConflict, loc: _createLoc(startToken, endToken) };
+		} else if (this.match(TokenType.NULL)) {
+			endToken = this.previous();
+			const onConflict = this.parseConflictClause();
+			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
+			return { type: 'null', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.UNIQUE)) {
 			endToken = this.previous();
 			const onConflict = this.parseConflictClause();

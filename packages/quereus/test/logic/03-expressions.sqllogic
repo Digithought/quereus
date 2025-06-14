@@ -2,7 +2,7 @@
 
 PRAGMA default_vtab_module='memory';
 
-CREATE TABLE expr_t (i INTEGER PRIMARY KEY, n NUMERIC, t TEXT, b BLOB);
+CREATE TABLE expr_t (i INTEGER PRIMARY KEY, n NUMERIC, t TEXT NULL, b BLOB NULL);
 INSERT INTO expr_t VALUES (1, 10.5, 'hello', x'01ff'), (2, -5, 'world', x'02'), (3, 0, null, null);
 -- No expected output for setup
 
@@ -78,7 +78,7 @@ SELECT 3 BETWEEN 2 and 6 AS isbetwixt, 'a' between 'f' and 'z' AS notbetwixt;
 → [{"isbetwixt":1,"notbetwixt":0}]
 
 -- Expression evaluation consistency across contexts
-CREATE TABLE expr_context_test (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c INTEGER);
+CREATE TABLE expr_context_test (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c INTEGER NULL);
 INSERT INTO expr_context_test VALUES (1, 5, 3, null), (2, -2, 4, 7), (3, 0, 1, 0);
 
 -- Test that expressions evaluate consistently across SELECT, WHERE, HAVING

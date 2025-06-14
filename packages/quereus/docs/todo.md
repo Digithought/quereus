@@ -6,6 +6,9 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 
 **Core SQL Features**
 - [ ] **OLD/NEW on RETURNS**: Support for RETURNING clause references
+- [ ] Default nullability to `not null` and document
+- [ ] Values in "select" locations (e.g. views)
+- [ ] Expression-based functions
 
 **Query Optimization (Next Priority)**
 - [ ] **Phase 1.5 - Access Path Selection**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` physical access infrastructure

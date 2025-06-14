@@ -20,7 +20,7 @@ DROP TABLE t_basic;
 CREATE TABLE t_notnull (
     id INTEGER PRIMARY KEY,
     req TEXT NOT NULL,
-    opt TEXT
+    opt TEXT NULL
 );
 
 -- Insert valid row

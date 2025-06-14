@@ -39,7 +39,7 @@ CREATE TABLE types_test (
     real_val REAL,
     text_val TEXT,
     blob_val BLOB,
-    null_val
+    null_val NULL
 );
 
 INSERT INTO types_test VALUES

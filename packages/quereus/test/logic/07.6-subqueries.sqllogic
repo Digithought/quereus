@@ -4,7 +4,7 @@ PRAGMA default_vtab_module='memory';
 
 -- Setup tables
 CREATE TABLE outer_t (id INTEGER PRIMARY KEY, grp TEXT);
-CREATE TABLE inner_t (id INTEGER PRIMARY KEY, val INTEGER, outer_id INTEGER);
+CREATE TABLE inner_t (id INTEGER PRIMARY KEY, val INTEGER, outer_id INTEGER NULL);
 
 INSERT INTO outer_t VALUES (1, 'A'), (2, 'B'), (3, 'A');
 INSERT INTO inner_t VALUES (10, 100, 1), (20, 200, 2), (30, 300, 1), (40, 400, 3), (50, 500, null);

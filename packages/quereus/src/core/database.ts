@@ -129,6 +129,20 @@ export class Database {
 				this.schemaManager.setDefaultVTabArgs(event.newValue as Record<string, any>);
 			}
 		});
+
+		this.options.registerOption('default_column_nullability', {
+			type: 'string',
+			defaultValue: 'not_null',
+			aliases: ['column_nullability_default', 'nullable_default'],
+			description: 'Default nullability for columns: "nullable" (SQL standard) or "not_null" (Third Manifesto)',
+			onChange: (event) => {
+				const value = event.newValue as string;
+				if (value !== 'nullable' && value !== 'not_null') {
+					throw new QuereusError(`Invalid default_column_nullability value: ${value}. Must be "nullable" or "not_null"`, StatusCode.ERROR);
+				}
+				log('Default column nullability changed to: %s', value);
+			}
+		});
 	}
 
 	/** @internal Registers default built-in SQL functions */
