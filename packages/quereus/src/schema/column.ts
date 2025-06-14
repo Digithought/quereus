@@ -25,15 +25,17 @@ export interface ColumnSchema {
 
 /**
  * Creates a default ColumnSchema with basic properties
+ * Following Third Manifesto principles, columns default to NOT NULL unless explicitly specified otherwise
  *
  * @param name The name for the column
+ * @param defaultNotNull Whether columns should be NOT NULL by default (defaults to true for Third Manifesto compliance)
  * @returns A new column schema with default values
  */
-export function createDefaultColumnSchema(name: string): ColumnSchema {
+export function createDefaultColumnSchema(name: string, defaultNotNull: boolean = true): ColumnSchema {
 	return {
 		name: name,
 		affinity: SqlDataType.TEXT,
-		notNull: false,
+		notNull: defaultNotNull, // Third Manifesto: default to NOT NULL
 		primaryKey: false,
 		pkOrder: 0,
 		defaultValue: null,

@@ -500,7 +500,12 @@ export class MemoryTableManager {
 		const originalManagerSchema = this.tableSchema;
 		try {
 			await this.ensureSchemaChangeSafety();
-			const newColumnSchema = columnDefToSchema(columnDefAst);
+			
+			// Get default nullability setting from database options
+			const defaultNullability = this.db.options.getStringOption('default_column_nullability');
+			const defaultNotNull = defaultNullability === 'not_null';
+			
+			const newColumnSchema = columnDefToSchema(columnDefAst, defaultNotNull);
 			if (this.tableSchema.columns.some(c => c.name.toLowerCase() === newColumnSchema.name.toLowerCase())) {
 				throw new QuereusError(`Duplicate column name: ${newColumnSchema.name}`, StatusCode.ERROR);
 			}
@@ -513,8 +518,8 @@ export class MemoryTableManager {
 					logger.warn('Add Column', this._tableName, 'Default for new col is expr; existing rows get NULL.', { columnName: newColumnSchema.name });
 				}
 			}
-			const notNullConstraint = columnDefAst.constraints.find(c => c.type === 'notNull');
-			if (notNullConstraint && defaultValue === null && !(defaultConstraint?.expr?.type ==='literal')) {
+			// Check for NOT NULL constraint (could be explicit or from default behavior)
+			if (newColumnSchema.notNull && defaultValue === null && !(defaultConstraint?.expr?.type ==='literal')) {
 				throw new QuereusError(`Cannot add NOT NULL col '${newColumnSchema.name}' without DEFAULT.`, StatusCode.CONSTRAINT);
 			}
 			const updatedColumnsSchema: ReadonlyArray<ColumnSchema> = Object.freeze([...this.tableSchema.columns, newColumnSchema]);
@@ -607,7 +612,11 @@ export class MemoryTableManager {
 				throw new QuereusError(`Target name '${newColumnName}' already exists.`, StatusCode.ERROR);
 			}
 
-			const newColumnSchemaAtIndex = columnDefToSchema(newColumnDefAst);
+			// Get default nullability setting from database options
+			const defaultNullability = this.db.options.getStringOption('default_column_nullability');
+			const defaultNotNull = defaultNullability === 'not_null';
+
+			const newColumnSchemaAtIndex = columnDefToSchema(newColumnDefAst, defaultNotNull);
 			const updatedCols = this.tableSchema.columns.map((c, i) => i === colIndex ? newColumnSchemaAtIndex : c);
 			const updatedIndexes = (this.tableSchema.indexes || []).map(idx => ({
 				...idx,

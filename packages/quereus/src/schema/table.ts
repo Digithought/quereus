@@ -86,13 +86,14 @@ export function getPrimaryKeyIndices(pkDef: ReadonlyArray<PrimaryKeyColumnDefini
  * Converts a parsed ColumnDef AST node into a runtime ColumnSchema object
  *
  * @param def Column definition AST node
+ * @param defaultNotNull Whether columns should be NOT NULL by default (Third Manifesto approach)
  * @returns A runtime ColumnSchema object
  */
-export function columnDefToSchema(def: ColumnDef): ColumnSchema {
+export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true): ColumnSchema {
 	const schema: Partial<ColumnSchema> & { name: string } = {
 		name: def.name,
 		affinity: getAffinity(def.dataType),
-		notNull: false,
+		notNull: defaultNotNull, // Default based on Third Manifesto principles
 		primaryKey: false,
 		pkOrder: 0,
 		defaultValue: null,
@@ -101,6 +102,7 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 	};
 
 	let pkConstraint: Extract<ColumnConstraint, { type: 'primaryKey' }> | undefined;
+	let hasExplicitNullability = false;
 
 	for (const constraint of def.constraints ?? []) {
 		switch (constraint.type) {
@@ -110,6 +112,7 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 				break;
 			case 'notNull':
 				schema.notNull = true;
+				hasExplicitNullability = true;
 				break;
 			case 'unique':
 				break;
@@ -125,11 +128,16 @@ export function columnDefToSchema(def: ColumnDef): ColumnSchema {
 		}
 	}
 
-	// PK implies NOT NULL
+	// PK implies NOT NULL (always, regardless of default)
 	if (schema.primaryKey) {
 		schema.notNull = true;
 	}
 
+	// If no explicit nullability constraint and default is nullable, 
+	// we need to check if there's an explicit NULL declaration
+	// Note: SQL doesn't have explicit NULL constraints in standard syntax,
+	// so this primarily affects the default behavior
+	
 	// Assign a default pkOrder if it's a PK but order isn't specified elsewhere
 	if (schema.primaryKey && schema.pkOrder === 0) {
 		schema.pkOrder = 1;
@@ -166,14 +174,15 @@ export interface IndexSchema {
  * @param name Table name
  * @param columns Array of column name and type objects
  * @param pkColNames Optional array of primary key column names
+ * @param defaultNotNull Whether columns should be NOT NULL by default (defaults to true for Third Manifesto compliance)
  * @returns A frozen TableSchema object
  */
-export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[]): Readonly<TableSchema> {
+export function createBasicSchema(name: string, columns: { name: string, type: string }[], pkColNames?: string[], defaultNotNull: boolean = true): Readonly<TableSchema> {
 	const columnSchemas = columns.map(c => columnDefToSchema({
 		name: c.name,
 		dataType: c.type,
 		constraints: []
-	}));
+	}, defaultNotNull));
 	const columnIndexMap = buildColumnIndexMap(columnSchemas);
 	const pkDef = pkColNames
 		? pkColNames.map(pkName => {

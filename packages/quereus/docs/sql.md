@@ -4,12 +4,22 @@
 
 Quereus is a lightweight, TypeScript-native SQL engine inspired by SQLite, with a focus on in-memory data processing and extensibility via the virtual table (VTab) interface. It supports a rich subset of SQL for querying, manipulating, and joining data from virtual tables, with async operations and modern JavaScript/TypeScript idioms. Quereus is designed for use in Node.js, browsers, and other JS environments, and does not provide persistent file storage by default.
 
+**🚨 IMPORTANT: Key Departure from SQL Standard**
+
+Quereus follows [The Third Manifesto](https://www.dcs.warwick.ac.uk/~hugh/TTM/DTATRM.pdf) principles and **defaults columns to NOT NULL** unless explicitly specified otherwise. This is contrary to standard SQL where columns are nullable by default. This behavior can be controlled via the `default_column_nullability` pragma:
+
+- **Default behavior**: `pragma default_column_nullability = 'not_null'`
+- **SQL standard behavior**: `pragma default_column_nullability = 'nullable'`
+
+This design choice helps avoid the "billion-dollar mistake" of NULL by default while still allowing NULLs when explicitly needed.
+
 Key features:
 - **Virtual Table Centric:** All data access is via virtual tables, which can be backed by memory, JSON, or custom sources.
 - **In-Memory Focus:** No built-in file storage; all tables are transient unless a VTab module provides persistence.
 - **Rich SQL Subset:** Supports select, insert, update, delete, CTEs, joins, aggregates, subqueries, and more.
 - **Extensible:** Register custom functions, collations, and virtual table modules.
 - **Asynchronous:** Database operations are async/await compatible, allowing non-blocking I/O.
+- **Third Manifesto Aligned:** Embraces principles like default NOT NULL columns and key-based addressing.
 
 ## 2. SQL Statement Reference
 
@@ -1851,6 +1861,52 @@ pragma default_vtab_args = '["create table x(id integer primary key, data text)"
 pragma default_vtab_args;
 ```
 
+#### 9.2.3 default_column_nullability
+
+**🚨 IMPORTANT: Departure from SQL Standard**
+
+Sets or queries the default nullability behavior for columns. This is a significant departure from the SQL standard, aligning with [The Third Manifesto](https://www.dcs.warwick.ac.uk/~hugh/TTM/DTATRM.pdf) principles which advocate against NULL by default.
+
+**Values:**
+- `'not_null'` (default): Columns are NOT NULL by default unless explicitly declared otherwise
+- `'nullable'`: Standard SQL behavior - columns are nullable by default unless explicitly declared NOT NULL
+
+```sql
+-- Set to Third Manifesto behavior (default in Quereus)
+pragma default_column_nullability = 'not_null';
+
+-- Set to SQL standard behavior  
+pragma default_column_nullability = 'nullable';
+
+-- Query current setting
+pragma default_column_nullability;
+```
+
+**Rationale:**
+The Third Manifesto argues that NULL is fundamentally problematic in relational theory and that non-nullable types should be the default. Quereus follows this principle to avoid the "billion-dollar mistake" of NULL by default, while still allowing NULLs when explicitly needed.
+
+**Examples:**
+
+```sql
+-- With default_column_nullability = 'not_null' (Quereus default)
+create table users (
+  id integer primary key,
+  name text,           -- Implicitly NOT NULL
+  email text,          -- Implicitly NOT NULL  
+  bio text             -- Implicitly NOT NULL
+);
+
+-- With default_column_nullability = 'nullable' (SQL standard)
+create table users (
+  id integer primary key,
+  name text,           -- Allows NULL
+  email text not null, -- Explicitly NOT NULL
+  bio text             -- Allows NULL
+);
+```
+
+**Note:** Primary key columns are always NOT NULL regardless of this setting, as required by relational theory.
+
 ### 9.3 Examples
 
 ```sql
@@ -1858,10 +1914,13 @@ pragma default_vtab_args;
 pragma default_vtab_module = 'memory';
 pragma default_vtab_args = '[]';
 
--- Create a table using the default module
+-- Set Third Manifesto-aligned nullability (default)
+pragma default_column_nullability = 'not_null';
+
+-- Create a table using the default module and nullability
 create table simple_cache (
   key text primary key,
-  value text
+  value text              -- NOT NULL by default with 'not_null' setting
 );
 -- Equivalent to: CREATE TABLE simple_cache (...) USING memory;
 ```
