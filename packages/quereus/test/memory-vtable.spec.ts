@@ -8,6 +8,7 @@ import type { FilterInfo } from "../src/vtab/filter-info.js";
 import type { IndexInfo } from "../src/vtab/index-info.js";
 import { StatusCode, SqlDataType } from "../src/common/types.js";
 import { IndexConstraintOp, ConflictResolution } from "../src/common/constants.js";
+import type * as AST from "../src/parser/ast.js";
 
 describe("Memory VTable Module", () => {
 	let db: Database;
@@ -578,10 +579,10 @@ describe("Memory VTable Module", () => {
 
 		it("should drop columns", async () => {
 			// First add a column to drop
-			const columnDef = {
+			const columnDef: AST.ColumnDef = {
 				name: 'temp_col',
 				dataType: 'TEXT',
-				constraints: []
+				constraints: [{ type: 'null' as const }]
 			};
 
 			await table.xAlterSchema({ type: 'addColumn', columnDef });
