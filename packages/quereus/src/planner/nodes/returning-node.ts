@@ -56,8 +56,15 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       if (proj.alias) {
         baseName = proj.alias;
       } else if (proj.node instanceof ColumnReferenceNode) {
-        // For column references, use the unqualified column name
-        baseName = proj.node.expression.name;
+        // For column references, check if there's a table qualifier (like NEW or OLD)
+        const expr = proj.node.expression;
+        if (expr.table) {
+          // Use qualified name for NEW.id, OLD.id, etc.
+          baseName = `${expr.table}.${expr.name}`;
+        } else {
+          // Use the unqualified column name
+          baseName = expr.name;
+        }
       } else {
         // For expressions, use the string representation
         baseName = expressionToString(proj.node.expression);
