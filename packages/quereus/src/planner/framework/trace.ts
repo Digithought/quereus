@@ -6,6 +6,7 @@
 import { createLogger } from '../../common/logger.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import type { RuleHandle } from './registry.js';
+import { isDebugEnabled, isFeatureEnabled } from '../../util/environment.js';
 
 const log = createLogger('optimizer:framework:trace');
 
@@ -180,12 +181,12 @@ class TraceRegistry {
 		const hooks: TraceHook[] = [];
 
 		// Enable debug tracing if debug logging is enabled
-		if (process.env.DEBUG?.includes('quereus:optimizer')) {
+		if (isDebugEnabled('optimizer')) {
 			hooks.push(new DebugTraceHook());
 		}
 
 		// Enable performance tracing if requested
-		if (process.env.QUEREUS_OPTIMIZER_PERF === 'true') {
+		if (isFeatureEnabled('QUEREUS_OPTIMIZER_PERF')) {
 			hooks.push(new PerformanceTraceHook());
 		}
 

@@ -6,6 +6,7 @@ import { emitCallFromPlan } from '../emitters.js';
 import { createLogger } from '../../common/logger.js';
 import { streamWithCache, createCacheState, type SharedCacheConfig } from '../cache/shared-cache.js';
 import { buffered, traced } from '../async-util.js';
+import { isDebugEnabled } from '../../util/environment.js';
 
 const log = createLogger('runtime:emit:cache');
 
@@ -48,7 +49,7 @@ export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 		}
 
 		// Optional: Add tracing in debug mode
-		if (process.env.DEBUG?.includes('quereus:runtime:cache')) {
+		if (isDebugEnabled('runtime:cache')) {
 			sourceIterable = traced(sourceIterable, `cache-${plan.id}`,
 				(row, index) => `row ${index}: [${row.length} columns]`);
 		}
