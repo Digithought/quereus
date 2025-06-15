@@ -20,6 +20,19 @@ INSERT INTO users (id, name, email) VALUES
     (2, 'Bob', 'bob@example.com'),
     (3, 'Charlie', 'charlie@example.com');
 
+-- Test 0: INSERT from SELECT, TVF, CTE
+insert into audit_log (action, user_id)
+   select 'user_created', 0;
+-- error: NOT NULL constraint failed: audit_log.id
+
+insert into audit_log (id, action, user_id)
+	SELECT key, 'cte_source', value FROM json_each('[0]') where key is not null;
+
+insert into audit_log (id, action, user_id)
+   select 1, 'test_entry', 0;
+
+delete from audit_log;
+
 -- Test 1: INSERT ... RETURNING as table source
 SELECT new_user.id, new_user.name, 'created' as status
 FROM (
@@ -61,8 +74,8 @@ SELECT count(*) as remaining FROM users WHERE name = 'Charlie';
 → [{ "remaining": 0 }]
 
 -- Test 4: INSERT from mutating subquery (full orthogonality)
-INSERT INTO audit_log (action, user_id)
-SELECT 'user_created', new_user.id
+INSERT INTO audit_log (id, action, user_id)
+SELECT 2, 'user_created', new_user.id
 FROM (
     INSERT INTO users (id, name, email)
     VALUES (5, 'Eve', 'eve@example.com')
