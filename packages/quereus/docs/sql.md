@@ -89,6 +89,7 @@ The insert statement adds new rows to a table.
 [ with [recursive] with_clause[,...] ]
   insert into table_name [(column [, column...])]
   { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
+  [ returning expr [, expr...] ]
 ```
 
 **Options:**
@@ -97,6 +98,7 @@ The insert statement adds new rows to a table.
 - `column`: Optional list of columns to insert into
 - `values`: A list of value sets to insert
 - `select_statement`: A select query whose results are inserted
+- `returning`: Returns specified expressions from the inserted rows
 
 **Examples:**
 ```sql
@@ -113,6 +115,19 @@ insert into products (name, price, category)
 -- Insert from select
 insert into active_users (id, name, email)
   select id, name, email from users where last_login > date('now', '-30 days');
+
+-- INSERT with RETURNING clause
+insert into users (name, email) 
+  values ('Alice', 'alice@example.com')
+  returning id, name, datetime('now') as created_at;
+
+-- INSERT with RETURNING used in a larger query
+select 'User created: ' || new_user.name as message
+from (
+  insert into users (name, email) 
+  values ('Bob', 'bob@example.com')
+  returning name
+) as new_user;
 
 -- With CTE
 with recent_orders as (
@@ -134,6 +149,7 @@ The update statement modifies existing rows in a table.
   update table_name
     set column = expr [, column = expr...]
     [ where condition ]
+    [ returning expr [, expr...] ]
 ```
 
 **Options:**
@@ -141,6 +157,7 @@ The update statement modifies existing rows in a table.
 - `table_name`: Table to be updated
 - `set`: Column assignments with new values
 - `where`: Optional condition to specify which rows to update
+- `returning`: Returns specified expressions from the updated rows
 
 **Examples:**
 ```sql
@@ -152,6 +169,21 @@ update products
   set price = price * 1.1, 
       updated_at = datetime('now')
   where category = 'Electronics';
+
+-- UPDATE with RETURNING clause
+update users 
+  set last_login = datetime('now')
+  where id = 42
+  returning id, name, last_login;
+
+-- UPDATE with RETURNING used as table source
+select 'Updated: ' || updated.name || ' to ' || updated.new_status as message
+from (
+  update users 
+  set status = 'premium', updated_at = datetime('now')
+  where subscription_type = 'paid'
+  returning name, status as new_status
+) as updated;
 
 -- Update with expression
 update orders
@@ -184,17 +216,33 @@ The delete statement removes rows from a table.
 [ with [recursive] with_clause[,...] ]
 delete from table_name
 [ where condition ]
+[ returning expr [, expr...] ]
 ```
 
 **Options:**
 - `with clause`: Common Table Expressions for use in the delete
 - `table_name`: Table to delete from
 - `where`: Optional condition to specify which rows to delete
+- `returning`: Returns specified expressions from the deleted rows
 
 **Examples:**
 ```sql
 -- Simple delete
 delete from users where status = 'deactivated';
+
+-- DELETE with RETURNING clause
+delete from users 
+  where last_login < date('now', '-365 days')
+  returning id, name, email;
+
+-- DELETE with RETURNING used for audit logging
+insert into deleted_users_audit (user_id, name, deleted_at)
+select deleted.id, deleted.name, datetime('now')
+from (
+  delete from users 
+  where status = 'spam'
+  returning id, name
+) as deleted;
 
 -- Delete with subquery
 delete from products
@@ -322,8 +370,17 @@ table_reference:
   table_name [as alias]
 | function_name ([arg[,...]]) [as alias]
 | (select_statement) as alias
+| (mutating_statement) as alias
 | table_reference join_type join table_reference [join_specification]
 ```
+
+**Mutating Statements:**
+Quereus supports **relational orthogonality** - any statement that results in a relation can be used anywhere that expects a relation value. This includes:
+- `(INSERT ... RETURNING ...) AS alias`
+- `(UPDATE ... RETURNING ...) AS alias` 
+- `(DELETE ... RETURNING ...) AS alias`
+
+This allows for powerful compositions where the results of data modifications can be immediately used in queries.
 
 **Join Types:**
 - `[inner] join`: Matches rows when join condition is true
@@ -373,6 +430,33 @@ from (
   group by department
 ) as avg_dept
 where avg_dept.avg_salary > 50000;
+
+-- Mutating subquery: INSERT with RETURNING as table source
+select new_user.id, new_user.name, 'created' as status
+from (
+  insert into users (name, email) 
+  values ('Alice', 'alice@example.com')
+  returning id, name
+) as new_user;
+
+-- Mutating subquery: UPDATE with RETURNING in JOIN
+select u.name, updated.old_email, updated.new_email
+from users u
+join (
+  update user_profiles 
+  set email = lower(email)
+  where email != lower(email)
+  returning user_id, email as old_email, lower(email) as new_email
+) as updated on u.id = updated.user_id;
+
+-- Mutating subquery: DELETE with RETURNING for audit trail
+insert into audit_log (action, deleted_user_id, deleted_name)
+select 'user_deleted', deleted.id, deleted.name
+from (
+  delete from users 
+  where last_login < date('now', '-365 days')
+  returning id, name
+) as deleted;
 
 -- Table-valued function
 select key, value 
@@ -2178,6 +2262,7 @@ from_clause        = "from" table_or_subquery { "," table_or_subquery } ;
 
 table_or_subquery  = table_name [ [ "as" ] table_alias ] 
                    | "(" select_stmt ")" [ "as" ] table_alias
+                   | "(" ( insert_stmt | update_stmt | delete_stmt ) ")" [ "as" ] table_alias
                    | function_name "(" [ expr { "," expr } ] ")" [ [ "as" ] table_alias ]
                    | join_clause ;
 
@@ -2204,17 +2289,20 @@ limit_clause       = "limit" expr [ ( "offset" expr ) | ( "," expr ) ] ;
 
 /* INSERT statement */
 insert_stmt        = "insert" [ "into" ] table_name [ "(" column_name { "," column_name } ")" ]
-                     ( values_clause | select_stmt ) ;
+                     ( values_clause | select_stmt )
+                     [ "returning" expr { "," expr } ] ;
 
 values_clause      = "values" "(" expr { "," expr } ")" { "," "(" expr { "," expr } ")" } ;
 
 /* UPDATE statement */
 update_stmt        = "update" table_name 
                      "set" column_name "=" expr { "," column_name "=" expr }
-                     [ where_clause ] ;
+                     [ where_clause ]
+                     [ "returning" expr { "," expr } ] ;
 
 /* DELETE statement */
-delete_stmt        = "delete" "from" table_name [ where_clause ] ;
+delete_stmt        = "delete" "from" table_name [ where_clause ]
+                     [ "returning" expr { "," expr } ] ;
 
 /* CREATE TABLE statement */
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]

@@ -22,7 +22,10 @@ export interface PhysicalProperties {
    */
   uniqueKeys?: number[][];
 
-  /** Whether this node's output is read-only (cannot be mutated) */
+  /**
+   * Whether this node is read-only (does not mutate external state).
+   * false = has side effects, true = pure/read-only
+   */
   readonly?: boolean;
 
   /**
@@ -32,18 +35,22 @@ export interface PhysicalProperties {
   deterministic?: boolean;
 
   /**
+   * Whether this node is idempotent - calling twice in same transaction
+   * leaves state as if called once. Only meaningful for non-readonly nodes.
+   * Examples: INSERT with IGNORE, UPDATE with same values
+   */
+  idempotent?: boolean;
+
+  /**
    * Whether this node produces a constant result (independent of input rows).
    * Examples: literal values, deterministic functions of constants
    */
   constant?: boolean;
-
-  /**
-   * Whether this node is functional (pure and deterministic).
-   * A functional node is safe to fold during constant folding.
-   * Defaults to (deterministic && readonly) if omitted.
-   */
-  functional?: boolean;
 }
+
+// Derived properties (computed, not stored):
+// functional = deterministic && readonly (safe for constant folding)
+// sideEffects = !readonly (mutates external state)
 
 /**
  * Default physical properties for plan nodes
@@ -51,8 +58,8 @@ export interface PhysicalProperties {
 export const DEFAULT_PHYSICAL: PhysicalProperties = {
 	deterministic: true,
 	readonly: true,
+	idempotent: true, // Default true for readonly nodes
 	constant: false,
-	// functional will be computed as deterministic && readonly if omitted
 } as const;
 
 /**
@@ -191,11 +198,20 @@ export abstract class PlanNode {
       // Merge with existing properties, giving precedence to existing values
       node.physical = { ...DEFAULT_PHYSICAL, ...node.physical, ...propsOverride };
     }
+  }
 
-    // Ensure functional property is computed if not explicitly set
-    if (node.physical.functional === undefined) {
-      node.physical.functional = (node.physical.deterministic !== false) && (node.physical.readonly !== false);
-    }
+  /**
+   * Check if a node is functional (pure and deterministic), safe for constant folding
+   */
+  public static isFunctional(physical: PhysicalProperties): boolean {
+    return (physical.deterministic !== false) && (physical.readonly !== false);
+  }
+
+  /**
+   * Check if a node has side effects (mutates external state)
+   */
+  public static hasSideEffects(physical: PhysicalProperties): boolean {
+    return physical.readonly === false;
   }
 }
 

@@ -130,6 +130,14 @@ export function propagateReadonlyFlag(children: PhysicalProperties[]): boolean {
 }
 
 /**
+ * Propagate idempotent flag from children to parent
+ */
+export function propagateIdempotentFlag(children: PhysicalProperties[]): boolean {
+	// A node is idempotent if all its children are idempotent
+	return children.length === 0 || children.every(child => child.idempotent !== false);
+}
+
+/**
  * Estimate result rows for common operations
  */
 export function estimateResultRows(
@@ -316,26 +324,6 @@ export function mergePhysicalProperties(
 		readonly: overrides.readonly ?? propagateReadonlyFlag(children),
 		deterministic: overrides.deterministic ?? propagateDeterministicFlag(children),
 		constant: overrides.constant ?? propagateConstantFlag(children),
-		functional: overrides.functional ?? propagateFunctionalFlag(children)
+		idempotent: overrides.idempotent ?? propagateIdempotentFlag(children)
 	};
-}
-
-/**
- * Propagate functional flag from children to parent
- */
-export function propagateFunctionalFlag(children: PhysicalProperties[]): boolean {
-	// A node is functional if all its children are functional
-	return children.length === 0 || children.every(child => isFunctional(child));
-}
-
-/**
- * Check if a node is functional (pure and deterministic), safe to fold during constant folding
- */
-export function isFunctional(physical: PhysicalProperties): boolean {
-	// If functional is explicitly set, use that value
-	if (physical.functional !== undefined) {
-		return physical.functional;
-	}
-	// Otherwise, functional = deterministic && readonly
-	return (physical.deterministic !== false) && (physical.readonly !== false);
 }

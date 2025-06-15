@@ -1,0 +1,126 @@
+-- 44-orthogonality.sqllogic - Testing relational orthogonality with mutating subqueries
+
+-- Setup test tables
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE
+);
+
+CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY,
+    action TEXT NOT NULL,
+    user_id INTEGER,
+    timestamp TEXT DEFAULT 'now'
+);
+
+-- Insert initial test data
+INSERT INTO users (id, name, email) VALUES
+    (1, 'Alice', 'alice@example.com'),
+    (2, 'Bob', 'bob@example.com'),
+    (3, 'Charlie', 'charlie@example.com');
+
+-- Test 1: INSERT ... RETURNING as table source
+SELECT new_user.id, new_user.name, 'created' as status
+FROM (
+    INSERT INTO users (id, name, email)
+    VALUES (4, 'David', 'david@example.com')
+    RETURNING id, name
+) AS new_user;
+→ [{ "id": 4, "name": "David", "status": "created" }]
+
+-- Verify the INSERT actually happened
+SELECT name FROM users WHERE id = 4;
+→ [{ "name": "David" }]
+
+-- Test 2: UPDATE ... RETURNING as table source
+SELECT updated.id, updated.name, updated.email, 'modified' as status
+FROM (
+    UPDATE users
+    SET email = 'alice.updated@example.com'
+    WHERE name = 'Alice'
+    RETURNING id, name, email
+) AS updated;
+→ [{ "id": 1, "name": "Alice", "email": "alice.updated@example.com", "status": "modified" }]
+
+-- Verify the UPDATE actually happened
+SELECT email FROM users WHERE name = 'Alice';
+→ [{ "email": "alice.updated@example.com" }]
+
+-- Test 3: DELETE ... RETURNING as table source
+SELECT deleted.id, deleted.name, 'removed' as status
+FROM (
+    DELETE FROM users
+    WHERE name = 'Charlie'
+    RETURNING id, name
+) AS deleted;
+→ [{ "id": 3, "name": "Charlie", "status": "removed" }]
+
+-- Verify the DELETE actually happened
+SELECT count(*) as remaining FROM users WHERE name = 'Charlie';
+→ [{ "remaining": 0 }]
+
+-- Test 4: INSERT from mutating subquery (full orthogonality)
+INSERT INTO audit_log (action, user_id)
+SELECT 'user_created', new_user.id
+FROM (
+    INSERT INTO users (id, name, email)
+    VALUES (5, 'Eve', 'eve@example.com')
+    RETURNING id
+) AS new_user;
+
+-- Verify both the INSERT and the audit log
+SELECT name FROM users WHERE id = 5;
+→ [{ "name": "Eve" }]
+
+SELECT action, user_id FROM audit_log WHERE action = 'user_created';
+→ [{ "action": "user_created", "user_id": 5 }]
+
+-- Test 5: JOIN with mutating subquery
+SELECT u.name, updated.email as new_email
+FROM users u
+JOIN (
+    UPDATE users
+    SET email = name || '@company.com'
+    WHERE email LIKE '%@example.com'
+    RETURNING id, email
+) AS updated ON u.id = updated.id;
+→ [
+    { "name": "Alice", "new_email": "Alice@company.com" },
+    { "name": "Bob", "new_email": "Bob@company.com" },
+    { "name": "David", "new_email": "David@company.com" },
+    { "name": "Eve", "new_email": "Eve@company.com" }
+]
+
+-- Test 6: Multiple column aliases in mutating subquery
+SELECT u.user_id, u.user_name, u.user_email
+FROM (
+    INSERT INTO users (id, name, email)
+    VALUES (6, 'Frank', 'frank@example.com')
+    RETURNING id, name, email
+) AS u(user_id, user_name, user_email);
+→ [{ "user_id": 6, "user_name": "Frank", "user_email": "frank@example.com" }]
+
+-- Test 7: Nested mutating subqueries (complex orthogonality)
+SELECT outer_result.total_created
+FROM (
+    SELECT count(*) as total_created
+    FROM (
+        INSERT INTO users (id, name, email)
+        VALUES (7, 'Grace', 'grace@example.com')
+        RETURNING id
+    ) AS inner_insert
+) AS outer_result;
+→ [{ "total_created": 1 }]
+
+-- Test 8: Error case - mutating subquery without RETURNING
+-- This should fail at parse/plan time
+SELECT * FROM (
+    INSERT INTO users (id, name, email)
+    VALUES (8, 'Invalid', 'invalid@example.com')
+) AS invalid_subquery;
+-- error: Mutating subqueries must have a RETURNING clause to be used as table sources
+
+-- Cleanup
+DROP TABLE audit_log;
+DROP TABLE users;

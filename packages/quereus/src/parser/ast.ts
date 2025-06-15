@@ -13,7 +13,7 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource' | 'case' | 'in' | 'exists' | 'values';
+		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -298,7 +298,7 @@ export type ResultColumn =
 	| ResultColumnExpr;
 
 // FROM clause item (table, join, function call, or subquery)
-export type FromClause = TableSource | JoinClause | FunctionSource | SubquerySource;
+export type FromClause = TableSource | JoinClause | FunctionSource | SubquerySource | MutatingSubquerySource;
 
 // Table source in FROM clause
 export interface TableSource extends AstNode {
@@ -307,12 +307,20 @@ export interface TableSource extends AstNode {
 	alias?: string;
 }
 
-// --- Add SubquerySource type --- Needed before FromClause use
+// Subquery source in FROM clause: (SELECT ...) AS alias
 export interface SubquerySource extends AstNode {
-	type: 'subquerySource'; // Distinct type for FROM clause subqueries
+	type: 'subquerySource';
 	subquery: SelectStmt | ValuesStmt;
-	alias: string; // Subqueries in FROM MUST have an alias
-	columns?: string[]; // Optional column names for the alias: AS alias(col1, col2, ...)
+	alias: string;
+	columns?: string[]; // Optional column list: AS alias(col1, col2, ...)
+}
+
+// Mutating subquery source in FROM clause: (INSERT/UPDATE/DELETE ... RETURNING ...) AS alias
+export interface MutatingSubquerySource extends AstNode {
+	type: 'mutatingSubquerySource';
+	stmt: InsertStmt | UpdateStmt | DeleteStmt; // Must have RETURNING clause
+	alias: string;
+	columns?: string[]; // Optional column list: AS alias(col1, col2, ...)
 }
 
 // JOIN clause in FROM

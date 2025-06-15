@@ -301,13 +301,14 @@ export class Parser {
 
 		// Parse the table reference
 		const table = this.tableIdentifier();
+		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		// Parse column list if provided
 		let columns: string[] | undefined;
 		if (this.match(TokenType.LPAREN)) {
 			columns = [];
 			do {
-				if (!this.check(TokenType.IDENTIFIER)) {
+				if (!this.checkIdentifierLike(contextualKeywords)) {
 					throw this.error(this.peek(), "Expected column name.");
 				}
 				columns.push(this.advance().lexeme);
@@ -626,14 +627,17 @@ export class Parser {
 		const startToken = this.peek();
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
-		// Check for subquery: ( SELECT ... or ( VALUES ...
+		// Check for subquery: ( SELECT ... or ( VALUES ... or ( INSERT/UPDATE/DELETE ...
 		if (this.check(TokenType.LPAREN)) {
 			// Look ahead to see if this is a subquery
 			const lookahead = this.current + 1;
-			if (lookahead < this.tokens.length &&
-				(this.tokens[lookahead].type === TokenType.SELECT ||
-				 this.tokens[lookahead].type === TokenType.VALUES)) {
-				return this.subquerySource(startToken, withClause);
+			if (lookahead < this.tokens.length) {
+				const nextTokenType = this.tokens[lookahead].type;
+				if (nextTokenType === TokenType.SELECT || nextTokenType === TokenType.VALUES) {
+					return this.subquerySource(startToken, withClause);
+				} else if (nextTokenType === TokenType.INSERT || nextTokenType === TokenType.UPDATE || nextTokenType === TokenType.DELETE) {
+					return this.mutatingSubquerySource(startToken, withClause);
+				}
 			}
 		}
 
@@ -706,6 +710,77 @@ export class Parser {
 		return {
 			type: 'subquerySource',
 			subquery,
+			alias,
+			columns,
+			loc: _createLoc(startToken, endToken),
+		};
+	}
+
+	/** Parses a mutating subquery source: (INSERT/UPDATE/DELETE ... RETURNING ...) AS alias */
+	private mutatingSubquerySource(startToken: Token, withClause?: AST.WithClause): AST.MutatingSubquerySource {
+		this.consume(TokenType.LPAREN, "Expected '(' before mutating subquery.");
+
+		let stmt: AST.InsertStmt | AST.UpdateStmt | AST.DeleteStmt;
+
+		if (this.check(TokenType.INSERT)) {
+			const insertToken = this.advance();
+			stmt = this.insertStatement(insertToken, withClause);
+		} else if (this.check(TokenType.UPDATE)) {
+			const updateToken = this.advance();
+			stmt = this.updateStatement(updateToken, withClause);
+		} else if (this.check(TokenType.DELETE)) {
+			const deleteToken = this.advance();
+			stmt = this.deleteStatement(deleteToken, withClause);
+		} else {
+			throw this.error(this.peek(), "Expected 'INSERT', 'UPDATE', or 'DELETE' in mutating subquery.");
+		}
+
+		// Validate that the statement has a RETURNING clause
+		if (!stmt.returning || stmt.returning.length === 0) {
+			throw this.error(this.previous(), "Mutating subqueries must have a RETURNING clause to be used as table sources.");
+		}
+
+		this.consume(TokenType.RPAREN, "Expected ')' after mutating subquery.");
+
+		// Parse optional alias for mutating subquery
+		let alias: string;
+		let columns: string[] | undefined;
+
+		if (this.match(TokenType.AS)) {
+			if (!this.checkIdentifierLike([])) {
+				throw this.error(this.peek(), "Expected alias after 'AS'.");
+			}
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+		} else if (this.checkIdentifierLike([]) &&
+			!this.checkNext(1, TokenType.DOT) &&
+			!this.checkNext(1, TokenType.COMMA) &&
+			!this.isJoinToken() &&
+			!this.isEndOfClause()) {
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+		} else {
+			// Generate a default alias if none provided
+			alias = `mutating_subquery_${startToken.startOffset}`;
+		}
+
+		// Parse optional column list after alias: AS alias(col1, col2, ...)
+		if (this.match(TokenType.LPAREN)) {
+			columns = [];
+			const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
+
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in alias column list."));
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
+		}
+
+		const endToken = this.previous();
+		return {
+			type: 'mutatingSubquerySource',
+			stmt,
 			alias,
 			columns,
 			loc: _createLoc(startToken, endToken),
@@ -2403,13 +2478,13 @@ export class Parser {
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			this.consume(TokenType.LPAREN, "Expected '(' before PRIMARY KEY columns.");
-			
+
 			// Handle empty PRIMARY KEY () for singleton tables (Third Manifesto feature)
 			let columns: { name: string; direction?: 'asc' | 'desc' }[] = [];
 			if (!this.check(TokenType.RPAREN)) {
 				columns = this.identifierListWithDirection();
 			}
-			
+
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous();

@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -26,6 +26,19 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
   getAttributes(): Attribute[] {
     // DELETE produces the same attributes as its source
     return this.source.getAttributes();
+  }
+
+  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+    const sourcePhysical = childrenPhysical[0];
+
+    return {
+      estimatedRows: sourcePhysical?.estimatedRows,
+      uniqueKeys: sourcePhysical?.uniqueKeys,
+      readonly: false, // DELETE has side effects
+      deterministic: true, // Same input always produces same result
+      idempotent: true, // DELETE is idempotent (deleting same row twice has same effect)
+      constant: false // Never constant
+    };
   }
 
   getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {

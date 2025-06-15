@@ -1,19 +1,18 @@
 /**
  * Constant folding analysis for the Titan optimizer
- * 
+ *
  * This module implements the two-phase constant folding algorithm:
  * 1. Bottom-up classification: Assign ConstInfo to every node during post-order DFS
  * 2. Top-down propagation: Walk relational tree carrying known constant attributes
- * 
+ *
  * The goal is to collapse functionally constant sub-trees to LiteralNode or ValuesNode
  * using the existing runtime as the evaluation engine.
  */
 
-import type { PlanNode, ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type ScalarPlanNode, type RelationalPlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { SqlValue, MaybePromise } from '../../common/types.js';
 import { LiteralNode } from '../nodes/scalar.js';
-import { isFunctional } from '../framework/physical-utils.js';
 import { createLogger } from '../../common/logger.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -79,7 +78,7 @@ export function classifyConstants(root: PlanNode, ctx: ConstFoldingContext): voi
 	const constInfo = classifyNode(root, ctx);
 	ctx.constInfo.set(root.id, constInfo);
 
-	log('Classified node %s (%s): %s', root.id, root.nodeType, 
+	log('Classified node %s (%s): %s', root.id, root.nodeType,
 		constInfo.kind === 'const' ? `const(${constInfo.value})` :
 		constInfo.kind === 'dep' ? `dep([${Array.from(constInfo.deps).join(',')}])` :
 		'non-const');
@@ -117,14 +116,14 @@ function classifyScalarNode(node: ScalarPlanNode, ctx: ConstFoldingContext): Con
 
 	// Rule 3: Other scalar nodes - check if functional and inspect children
 	// First check if node is functional (safe to fold)
-	if (!isFunctional(node.physical || { deterministic: true, readonly: true })) {
+	if (!PlanNode.isFunctional(node.physical || { deterministic: true, readonly: true })) {
 		return { kind: 'non-const' };
 	}
 
 	// Inspect children
 	const children = node.getChildren();
 	const childConstInfos: ConstInfo[] = [];
-	
+
 	for (const child of children) {
 		const childInfo = ctx.constInfo.get(child.id);
 		if (!childInfo) {
@@ -189,10 +188,10 @@ function propagateConstants(
 	if (node.getProducingExprs) {
 		const producingExprs = node.getProducingExprs();
 		const newExpressions = new Map<number, ScalarPlanNode>();
-		
+
 		for (const [attrId, expr] of producingExprs) {
 			const exprInfo = ctx.constInfo.get(expr.id);
-			
+
 			if (exprInfo?.kind === 'const') {
 				// Expression is constant - replace with literal
 				const literalExpr = { type: 'literal' as const, value: exprInfo.value };
@@ -217,7 +216,7 @@ function propagateConstants(
 				}
 			}
 		}
-		
+
 		// If we made changes, rebuild the node with new expressions
 		if (hasChanges) {
 			// For ProjectNode specifically (the most common case)
@@ -230,7 +229,7 @@ function propagateConstants(
 					}
 					return proj;
 				});
-				
+
 				node = node.withChildren([
 					...node.getRelations(),
 					...newProjections.map((p: any) => p.node)
@@ -244,7 +243,7 @@ function propagateConstants(
 	const updatedKnownAttrs = new Set([...knownConstAttrs, ...newlyConstAttrs]);
 	const childRelations = node.getRelations();
 	const newChildRelations: RelationalPlanNode[] = [];
-	
+
 	for (const child of childRelations) {
 		// Translate known constant attributes through this node's mapping
 		// For simplicity, we pass through all known attributes
@@ -273,10 +272,10 @@ export function foldScalars(
 	evaluateExpression: (expr: ScalarPlanNode) => MaybePromise<SqlValue>
 ): ScalarPlanNode {
 	const ctx = createConstFoldingContext(evaluateExpression);
-	
+
 	// Classify the expression tree
 	classifyConstants(expr, ctx);
-	
+
 	// Check if the root expression can be folded
 	const rootInfo = ctx.constInfo.get(expr.id);
 	if (rootInfo?.kind === 'const') {
@@ -300,4 +299,4 @@ function isSubsetOf<T>(setA: Set<T>, setB: Set<T>): boolean {
 		}
 	}
 	return true;
-} 
+}

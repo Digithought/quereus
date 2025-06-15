@@ -21,6 +21,7 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 - `10.5-indexes.sqllogic` - INDEX functionality (CREATE INDEX, UNIQUE indexes, IF NOT EXISTS)
 - `11-joins.sqllogic` - JOIN operations (INNER, LEFT, CROSS, multiple JOINs)
 - `12-empty-primary-key.sqllogic` - Empty PRIMARY KEY () support (Third Manifesto singleton tables)
+- `44-orthogonality-minimal.sqllogic` - Relational orthogonality with mutating subqueries (INSERT/UPDATE/DELETE ... RETURNING as table sources)
 
 ### ⚠️ In progress
 - (No tests currently in progress)
