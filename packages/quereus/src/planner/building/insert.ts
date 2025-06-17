@@ -19,6 +19,7 @@ import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
+import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
@@ -160,14 +161,41 @@ export function buildInsertStmt(
 	// Update targetColumns to reflect all table columns since we've expanded the source
 	const finalTargetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
 
+	// Create OLD/NEW attributes for INSERT (OLD = all NULL, NEW = actual values)
+	const oldAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+		id: PlanNode.nextAttrId(),
+		name: col.name,
+		type: {
+			typeClass: 'scalar' as const,
+			affinity: col.affinity,
+			nullable: true, // OLD values are always NULL for INSERT
+			isReadOnly: false
+		},
+		sourceRelation: `OLD.${tableReference.tableSchema.name}`
+	}));
+
+	const newAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+		id: PlanNode.nextAttrId(),
+		name: col.name,
+		type: {
+			typeClass: 'scalar' as const,
+			affinity: col.affinity,
+			nullable: !col.notNull,
+			isReadOnly: false
+		},
+		sourceRelation: `NEW.${tableReference.tableSchema.name}`
+	}));
+
+	const { oldRowDescriptor, newRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+
 	// Always inject ConstraintCheckNode for INSERT operations
 	const constraintCheckNode = new ConstraintCheckNode(
 		ctx.scope,
 		expandedSourceNode,
 		tableReference,
 		RowOp.INSERT,
-		undefined, // oldRowDescriptor - not needed for INSERT
-		undefined  // newRowDescriptor - not needed for non-returning inserts
+		oldRowDescriptor,
+		newRowDescriptor
 	);
 
 	const insertNode = new InsertNode(
@@ -181,53 +209,39 @@ export function buildInsertStmt(
 	const resultNode: RelationalPlanNode = insertNode;
 
 	if (stmt.returning && stmt.returning.length > 0) {
-		// For RETURNING, create a fresh set of attribute IDs that will be used
-		// consistently in both the newRowDescriptor and the RETURNING projections
-		const newRowDescriptor: RowDescriptor = [];
+		// Create returning scope with OLD/NEW attribute access
 		const returningScope = new RegisteredScope(ctx.scope);
 
-		// Create one attribute ID per table column, ensuring they're used consistently
-		const columnAttributeIds: number[] = [];
-		tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
-			const attributeId = PlanNode.nextAttrId();
-			columnAttributeIds[columnIndex] = attributeId;
-			newRowDescriptor[attributeId] = columnIndex;
-
-			// Register the unqualified column name in the RETURNING scope
-			returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) => {
-				return new ColumnReferenceNode(
-					s,
-					exp as AST.ColumnExpr,
-					{
-						typeClass: 'scalar',
-						affinity: tableColumn.affinity,
-						nullable: !tableColumn.notNull,
-						isReadOnly: false
-					},
-					attributeId,
-					columnIndex
-				);
-			});
-
-			// Also register the table-qualified form (table.column)
-			const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
-			returningScope.registerSymbol(tblQualified, (exp, s) =>
-				new ColumnReferenceNode(
-					s,
-					exp as AST.ColumnExpr,
-					{
-						typeClass: 'scalar',
-						affinity: tableColumn.affinity,
-						nullable: !tableColumn.notNull,
-						isReadOnly: false
-					},
-					attributeId,
-					columnIndex
-				)
+		// Register OLD.* symbols (always NULL for INSERT)
+		oldAttributes.forEach((attr, columnIndex) => {
+			const tableColumn = tableReference.tableSchema.columns[columnIndex];
+			returningScope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
 			);
 		});
 
-		// Build RETURNING projections in the table column context
+		// Register NEW.* symbols and unqualified column names (default to NEW)
+		newAttributes.forEach((attr, columnIndex) => {
+			const tableColumn = tableReference.tableSchema.columns[columnIndex];
+
+			// NEW.column
+			returningScope.registerSymbol(`new.${tableColumn.name.toLowerCase()}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+
+			// Unqualified column (defaults to NEW)
+			returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+
+			// Table-qualified form (table.column -> NEW)
+			const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
+			returningScope.registerSymbol(tblQualified, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+		});
+
+		// Build RETURNING projections in the OLD/NEW context
 		const returningProjections = stmt.returning.map(rc => {
 			// TODO: Support RETURNING *
 			if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
@@ -244,27 +258,7 @@ export function buildInsertStmt(
 			};
 		});
 
-		// Always inject ConstraintCheckNode for INSERT operations (even with RETURNING)
-		const constraintCheckNodeWithDescriptor = new ConstraintCheckNode(
-			ctx.scope,
-			expandedSourceNode,
-			tableReference,
-			RowOp.INSERT,
-			undefined, // oldRowDescriptor - not needed for INSERT
-			newRowDescriptor
-		);
-
-		// Create a new InsertNode with the row descriptor
-		const insertNodeWithDescriptor = new InsertNode(
-			ctx.scope,
-			tableReference,
-			finalTargetColumns, // Use final target columns (all table columns)
-			constraintCheckNodeWithDescriptor, // Use constraint-checked rows as source
-			stmt.onConflict,
-			newRowDescriptor
-		);
-
-		return new ReturningNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
+		return new ReturningNode(ctx.scope, insertNode, returningProjections);
 	}
 
 	return new SinkNode(ctx.scope, resultNode, 'insert');
