@@ -4,7 +4,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { buildRowDescriptor, composeOldNewRow } from '../../util/row-descriptor.js';
 
 export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
@@ -49,18 +49,13 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 					updatedRow[targetColIdx] = assignmentValues[i];
 				}
 
-				// For UPDATE operations, we need to provide both OLD and NEW row data to constraint checking
-				// Store both in a special structure that constraint checking can access
-				const updateRowData = {
-					oldRow: sourceRow,
-					newRow: updatedRow,
-					isUpdateOperation: true
-				};
+				// Create flat row with OLD (source) and NEW (updated) values for constraint checking
+				const flatRow = composeOldNewRow(sourceRow, updatedRow, tableSchema.columns.length);
 
-				// Yield the updated row with attached old row metadata
+				// Yield the flat row for constraint checking
 				// NOTE: UpdateNode only transforms rows - it does NOT execute the actual update
 				// The UpdateExecutorNode is responsible for calling vtab.xUpdate
-				yield Object.assign([...updatedRow], { __updateRowData: updateRowData });
+				yield flatRow;
 			} finally {
 				// Clean up row context
 				rctx.context.delete(sourceRowDescriptor);

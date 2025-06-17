@@ -6,6 +6,7 @@ import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import { getVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
+import { extractOldRowFromFlat } from '../../util/row-descriptor.js';
 
 const log = createLogger('runtime:emit:delete');
 const errorLog = log.extend('error');
@@ -15,21 +16,24 @@ export function emitDelete(plan: DeleteNode, ctx: EmissionContext): Instruction 
 	// Pre-calculate primary key column indices from schema
 	const pkColumnIndicesInSchema = tableSchema.primaryKeyDefinition.map(pkColDef => pkColDef.index);
 
-	// Always yield the deleted rows - consumers decide if they want them
-	async function* run(ctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>): AsyncIterable<Row> {
+		// Always yield the deleted rows - consumers decide if they want them
+	async function* run(ctx: RuntimeContext, flatRowsIterable: AsyncIterable<Row>): AsyncIterable<Row> {
 		const vtab = await getVTable(ctx, tableSchema);
 		try {
-			for await (const sourceRow of sourceRowsIterable) {
+			for await (const flatRow of flatRowsIterable) {
+				// Extract OLD values from flat row (DELETE operations have OLD=actual data, NEW=NULL)
+				const oldRow = extractOldRowFromFlat(flatRow, tableSchema.columns.length);
+
 				const keyValues: SqlValue[] = [];
 				for (const pkColIdx of pkColumnIndicesInSchema) {
-					if (pkColIdx >= sourceRow.length) {
-						throw new QuereusError(`PK column index ${pkColIdx} out of bounds for source row length ${sourceRow.length} in DELETE on '${tableSchema.name}'.`, StatusCode.INTERNAL);
+					if (pkColIdx >= oldRow.length) {
+						throw new QuereusError(`PK column index ${pkColIdx} out of bounds for OLD row length ${oldRow.length} in DELETE on '${tableSchema.name}'.`, StatusCode.INTERNAL);
 					}
-					keyValues.push(sourceRow[pkColIdx]);
+					keyValues.push(oldRow[pkColIdx]);
 				}
 
-				// Yield the row *before* deletion for RETURNING
-				yield sourceRow;
+				// Yield the flat row for RETURNING to access OLD/NEW values
+				yield flatRow;
 
 				// Perform the deletion
 				await vtab.xUpdate!('delete', undefined, keyValues);

@@ -13,6 +13,7 @@ import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
+import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -40,22 +41,41 @@ export function buildDeleteStmt(
     sourceNode = new FilterNode(deleteCtx.scope, sourceNode, filterExpression);
   }
 
-  // Always inject ConstraintCheckNode for DELETE operations
-  // Create oldRowDescriptor for constraint checking with OLD references
-  const oldRowDescriptor: RowDescriptor = [];
-  tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
-    const oldAttributeId = PlanNode.nextAttrId();
-    oldRowDescriptor[oldAttributeId] = columnIndex;
-  });
+  // Create OLD/NEW attributes for DELETE (OLD = actual values being deleted, NEW = all NULL)
+  const oldAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+    id: PlanNode.nextAttrId(),
+    name: col.name,
+    type: {
+      typeClass: 'scalar' as const,
+      affinity: col.affinity,
+      nullable: !col.notNull,
+      isReadOnly: false
+    },
+    sourceRelation: `OLD.${tableReference.tableSchema.name}`
+  }));
 
-  // Checks constraints (like foreign key references) before deletion
+  const newAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+    id: PlanNode.nextAttrId(),
+    name: col.name,
+    type: {
+      typeClass: 'scalar' as const,
+      affinity: col.affinity,
+      nullable: true, // NEW values are always NULL for DELETE
+      isReadOnly: false
+    },
+    sourceRelation: `NEW.${tableReference.tableSchema.name}`
+  }));
+
+  const { oldRowDescriptor, newRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+
+  // Always inject ConstraintCheckNode for DELETE operations
   const constraintCheckNode = new ConstraintCheckNode(
     deleteCtx.scope,
     sourceNode,
     tableReference,
     RowOp.DELETE,
-    oldRowDescriptor, // oldRowDescriptor - needed for OLD references in DELETE constraints
-    undefined  // newRowDescriptor - not needed for DELETE
+    oldRowDescriptor,
+    newRowDescriptor
   );
 
   const deleteNode = new DeleteNode(
@@ -67,13 +87,56 @@ export function buildDeleteStmt(
   const resultNode: RelationalPlanNode = deleteNode;
 
   if (stmt.returning && stmt.returning.length > 0) {
-    const returningProjections = stmt.returning.map(rc => {
-			// TODO: RETURNING *
-      if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
-      return { node: buildExpression(deleteCtx, rc.expr) as ScalarPlanNode, alias: rc.alias };
+    // Create returning scope with OLD/NEW attribute access
+    const returningScope = new RegisteredScope(deleteCtx.scope);
+
+    // Register OLD.* symbols (actual values being deleted)
+    oldAttributes.forEach((attr, columnIndex) => {
+      const tableColumn = tableReference.tableSchema.columns[columnIndex];
+      returningScope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
+        new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+      );
     });
-    // Similar to UPDATE, using sourceNode (the filtered rows to be deleted) as a stand-in for RETURNING.
-    // The emitter needs to provide the *actual* deleted rows.
+
+    // Register NEW.* symbols (always NULL for DELETE) and unqualified column names (default to OLD for DELETE)
+    newAttributes.forEach((attr, columnIndex) => {
+      const tableColumn = tableReference.tableSchema.columns[columnIndex];
+
+      // NEW.column (always NULL for DELETE)
+      returningScope.registerSymbol(`new.${tableColumn.name.toLowerCase()}`, (exp, s) =>
+        new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+      );
+
+      // Unqualified column (defaults to OLD for DELETE)
+      const oldAttr = oldAttributes[columnIndex];
+      returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) =>
+        new ColumnReferenceNode(s, exp as AST.ColumnExpr, oldAttr.type, oldAttr.id, columnIndex)
+      );
+
+      // Table-qualified form (table.column -> OLD for DELETE)
+      const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
+      returningScope.registerSymbol(tblQualified, (exp, s) =>
+        new ColumnReferenceNode(s, exp as AST.ColumnExpr, oldAttr.type, oldAttr.id, columnIndex)
+      );
+    });
+
+    // Build RETURNING projections in the OLD/NEW context
+    const returningProjections = stmt.returning.map(rc => {
+      // TODO: Support RETURNING *
+      if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
+
+      // Infer alias from column name if not explicitly provided
+      let alias = rc.alias;
+      if (!alias && rc.expr.type === 'column') {
+        alias = rc.expr.name;
+      }
+
+      return {
+        node: buildExpression({ ...deleteCtx, scope: returningScope }, rc.expr) as ScalarPlanNode,
+        alias: alias
+      };
+    });
+
     return new ReturningNode(deleteCtx.scope, resultNode, returningProjections);
   }
 

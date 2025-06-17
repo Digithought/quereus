@@ -14,7 +14,7 @@ import { GlobalScope } from '../../planner/scopes/global.js';
 import { RegisteredScope } from '../../planner/scopes/registered.js';
 import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
 import * as AST from '../../parser/ast.js';
-import { buildRowDescriptor, composeOldNewRow, extractNewRowFromFlat } from '../../util/row-descriptor.js';
+import { buildRowDescriptor, composeOldNewRow } from '../../util/row-descriptor.js';
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
 	// Get the table schema to access constraints
@@ -131,39 +131,27 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	const constraintMetadata = checkConstraintData.map(item => item.constraint);
 	const checkEvaluators = checkConstraintData.map(item => item.evaluator);
 
-	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>, ...evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
+		async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>, ...evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		if (!inputRows) {
 			return;
 		}
 
-		for await (const row of inputRows) {
-			// For INSERT: row contains NEW values, OLD values are NULL
-			// For UPDATE: row contains NEW values, need to extract OLD values from metadata
-			// For DELETE: row contains OLD values, NEW values are NULL
-
-			let oldRow: Row | null = null;
-			let newRow: Row | null = null;
+		for await (const inputRow of inputRows) {
+			// Convert input row to flat format based on operation type
+			let flatRow: Row;
 
 			if (plan.operation === RowOp.INSERT) {
-				oldRow = null; // OLD values are all NULL for INSERT
-				newRow = row;  // NEW values are the inserted row
-			} else if (plan.operation === RowOp.UPDATE) {
-				const updateRowData = (row as any).__updateRowData;
-				if (updateRowData?.isUpdateOperation) {
-					oldRow = updateRowData.oldRow;
-					newRow = updateRowData.newRow;
-				} else {
-					// Fallback: treat as new row
-					oldRow = null;
-					newRow = row;
-				}
+				// INSERT: input is regular row, convert to flat [NULL..., inputRow...]
+				flatRow = composeOldNewRow(null, inputRow, tableSchema.columns.length);
 			} else if (plan.operation === RowOp.DELETE) {
-				oldRow = row;  // OLD values are the row being deleted
-				newRow = null; // NEW values are all NULL for DELETE
+				// DELETE: input is regular row, convert to flat [inputRow..., NULL...]
+				flatRow = composeOldNewRow(inputRow, null, tableSchema.columns.length);
+			} else if (plan.operation === RowOp.UPDATE) {
+				// UPDATE: input should already be flat row from UPDATE emitter
+				flatRow = inputRow;
+			} else {
+				throw new QuereusError(`Unsupported operation in constraint check: ${plan.operation}`, StatusCode.INTERNAL);
 			}
-
-			// Create flat row with OLD and NEW values
-			const flatRow = composeOldNewRow(oldRow, newRow, tableSchema.columns.length);
 
 			// Set up single flat context
 			rctx.context.set(flatRowDescriptor, () => flatRow);
@@ -172,25 +160,9 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 				// Check all constraints that apply to this operation
 				await checkConstraints(rctx, plan, tableSchema, flatRow, constraintMetadata, evaluatorFunctions);
 
-				// If all constraints pass, yield the appropriate row
-				if (plan.operation === RowOp.UPDATE && newRow) {
-					// For UPDATE, yield NEW row values with OLD row key information
-					const resultRow = [...newRow];
-					if (oldRow) {
-						Object.defineProperty(resultRow, '__oldRowKeyValues', {
-							value: oldRow,
-							enumerable: false,
-							writable: false
-						});
-					}
-					yield resultRow;
-				} else if (plan.operation === RowOp.INSERT && newRow) {
-					// For INSERT, yield NEW row values
-					yield newRow;
-				} else if (plan.operation === RowOp.DELETE && oldRow) {
-					// For DELETE, yield OLD row values
-					yield oldRow;
-				}
+				// If all constraints pass, yield the flat row for downstream processing
+				// All downstream operations (INSERT executor, DELETE executor, RETURNING) expect flat rows
+				yield flatRow;
 			} finally {
 				// Clean up flat context
 				rctx.context.delete(flatRowDescriptor);

@@ -6,12 +6,15 @@ import { StatusCode, type SqlValue, type Row, SqlDataType } from '../../common/t
 import { getVTable, disconnectVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 import { applyIntegerAffinity, applyRealAffinity, applyNumericAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity.js';
+import { extractNewRowFromFlat } from '../../util/row-descriptor.js';
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 
-	// This function processes a single row and conditionally yields it for RETURNING
-	async function* processAndYieldRow(vtab: any, rowToInsert: Row): AsyncIterable<Row> {
+			// This function processes a single row and conditionally yields it for RETURNING
+	async function* processAndYieldRow(vtab: any, flatRow: Row): AsyncIterable<Row> {
+		// Extract NEW values from flat row (INSERT operations have OLD=NULL, NEW=actual values)
+		const rowToInsert = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
 		const valuesForXUpdate: SqlValue[] = new Array(tableSchema.columns.length + 1).fill(null);
 		valuesForXUpdate[0] = null; // Placeholder for key, null for INSERT with xUpdate
 
@@ -54,8 +57,8 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
 
 		await vtab.xUpdate!('insert', valuesForXUpdate.slice(1), null);
 
-		// Always yield the inserted row (even for non-RETURNING cases, as optimizer will filter)
-		yield valuesForXUpdate.slice(1) as Row;
+		// Yield the flat row for RETURNING to access OLD/NEW values
+		yield flatRow;
 	}
 
 	async function* run(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
@@ -63,8 +66,8 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
 		const vtab = await getVTable(ctx, tableSchema);
 
 		try {
-			for await (const row of sourceValue) {
-				for await (const insertedRow of processAndYieldRow(vtab, row)) {
+			for await (const flatRow of sourceValue) {
+				for await (const insertedRow of processAndYieldRow(vtab, flatRow)) {
 					yield insertedRow;
 				}
 			}
