@@ -47,7 +47,7 @@ function createRowExpansionProjection(
 	const projections: Projection[] = [];
 	const sourceAttributes = sourceNode.getAttributes();
 
-	tableSchema.columns.forEach((tableColumn: any, tableColIndex: number) => {
+	tableSchema.columns.forEach((tableColumn: any) => {
 		// Find if this table column is in the target columns
 		const targetColIndex = targetColumns.findIndex(tc =>
 			tc.name.toLowerCase() === tableColumn.name.toLowerCase()
@@ -178,7 +178,7 @@ export function buildInsertStmt(
 		stmt.onConflict
 	);
 
-	let resultNode: RelationalPlanNode = insertNode;
+	const resultNode: RelationalPlanNode = insertNode;
 
 	if (stmt.returning && stmt.returning.length > 0) {
 		// For RETURNING, create a fresh set of attribute IDs that will be used

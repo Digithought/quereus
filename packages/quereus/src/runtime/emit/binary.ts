@@ -211,7 +211,7 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
 		// SQL three-valued logic
 		switch (plan.expression.operator) {
-			case 'AND':
+			case 'AND': {
 				// NULL AND x -> NULL if x is true or NULL, otherwise 0
 				// 0 AND x -> 0
 				// 1 AND x -> x
@@ -220,8 +220,9 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 				}
 				if (!v1) return 0;
 				return v2 === null ? null : (v2 ? 1 : 0);
+			}
 
-			case 'OR':
+			case 'OR': {
 				// NULL OR x -> NULL if x is false or NULL, otherwise 1
 				// 1 OR x -> 1
 				// 0 OR x -> x
@@ -230,8 +231,9 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 				}
 				if (v1) return 1;
 				return v2 === null ? null : (v2 ? 1 : 0);
+			}
 
-			case 'XOR':
+			case 'XOR': {
 				// NULL XOR x -> NULL
 				// x XOR NULL -> NULL
 				// 0 XOR 0 -> 0
@@ -242,6 +244,7 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 				const b1 = v1 ? 1 : 0;
 				const b2 = v2 ? 1 : 0;
 				return b1 !== b2 ? 1 : 0;
+			}
 
 			default:
 				throw new QuereusError(`Unsupported logical operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);

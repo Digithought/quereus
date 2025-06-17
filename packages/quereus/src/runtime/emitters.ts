@@ -2,7 +2,7 @@ import { QuereusError } from "../common/errors.js";
 import type { PlanNode } from "../planner/nodes/plan-node.js";
 import type { PlanNodeType } from "../planner/nodes/plan-node-type.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "./types.js";
-import { StatusCode, type OutputValue, type RuntimeValue } from '../common/types.js';
+import { StatusCode, type OutputValue } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 import { Scheduler } from "./scheduler.js";
 import type { EmissionContext } from "./emission-context.js";
@@ -77,7 +77,7 @@ export function emitPlanNode(plan: PlanNode, ctx: EmissionContext): Instruction 
 export function emitCall(root: Instruction): Instruction {
 	const program = new Scheduler(root);
 
-	function run(ctx: RuntimeContext): OutputValue {
+	function run(_ctx: RuntimeContext): OutputValue {
 		return (innerCtx: RuntimeContext) => program.run(innerCtx);
 	}
 

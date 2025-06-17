@@ -3,7 +3,7 @@ import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js'; // Adjust path as needed
 import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
 import { safeJsonStringify } from '../src/util/serialization.js';
-import type { SqlParameters, SqlValue } from '../src/common/types.js'; // Import SqlParameters
+import type { SqlValue } from '../src/common/types.js'; // Import SqlParameters
 
 describe('Property-Based Tests', () => {
 	let db: Database;
@@ -225,14 +225,13 @@ describe('Property-Based Tests', () => {
 				// - Objects/arrays: returned as JSON strings
 				// - Booleans: converted to integers (1/0)
 				// - Numbers/strings/null: returned as-is
-				let expectedRetrieved = originalValue;
 
 				if (typeof retrievedValueParsed === 'string' && (typeof originalValue === 'object' && originalValue !== null)) {
 					// Objects and arrays are returned as JSON strings - parse them for comparison
 					try {
 						const parsedRetrieved = JSON.parse(retrievedValueParsed);
 						const isEqual = deepEqualIgnoringZeroSign(parsedRetrieved, originalValue);
-						expect(isEqual,
+						void expect(isEqual,
 							`JSON roundtrip mismatch after parsing string result.\nOriginal: ${safeJsonStringify(originalValue)}\nRetrieved (raw): ${safeJsonStringify(retrievedValueParsed)}\nRetrieved (parsed): ${safeJsonStringify(parsedRetrieved)}`
 						).to.be.true;
 					} catch (parseError) {
@@ -241,13 +240,13 @@ describe('Property-Based Tests', () => {
 				} else if (typeof originalValue === 'boolean' && typeof retrievedValueParsed === 'number') {
 					// Booleans are converted to integers by json_extract (SQLite compatibility)
 					const expectedInteger = originalValue ? 1 : 0;
-					expect(retrievedValueParsed).to.equal(expectedInteger,
+					void expect(retrievedValueParsed).to.equal(expectedInteger,
 						`JSON boolean roundtrip mismatch.\nOriginal boolean: ${originalValue}\nExpected integer: ${expectedInteger}\nRetrieved: ${retrievedValueParsed}`
 					);
 				} else {
 					// For other scalars (numbers, strings, null), use zero-sign-aware comparison
 					const isEqual = deepEqualIgnoringZeroSign(retrievedValueParsed, originalValue);
-					expect(isEqual,
+					void expect(isEqual,
 						`JSON roundtrip mismatch.\nOriginal: ${safeJsonStringify(originalValue)} (type: ${typeof originalValue})\nRetrieved: ${safeJsonStringify(retrievedValueParsed)} (type: ${typeof retrievedValueParsed})`
 					).to.be.true;
 				}
@@ -299,7 +298,7 @@ describe('Property-Based Tests', () => {
 						selectResult = row.result;
 						break;
 					}
-				} catch (e) {
+				} catch {
 					selectFailed = true;
 				}
 
@@ -309,7 +308,7 @@ describe('Property-Based Tests', () => {
 						whereResult = row.result;
 						break;
 					}
-				} catch (e) {
+				} catch {
 					whereFailed = true;
 				}
 
@@ -324,7 +323,7 @@ describe('Property-Based Tests', () => {
 					if (selectResult === null) {
 						// If SELECT returns null, WHERE with self-comparison should return no rows (undefined)
 						// This is actually correct behavior - NULL != NULL in SQL
-						expect(whereResult).to.be.undefined;
+						void expect(whereResult).to.be.undefined;
 					} else {
 						// For non-null results, they should match exactly
 						expect(selectResult).to.equal(whereResult,

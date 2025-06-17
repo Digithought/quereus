@@ -1003,7 +1003,7 @@ export class Parser {
 	 * Parse IS NULL / IS NOT NULL expressions
 	 */
 	private isNull(): AST.Expression {
-		let expr = this.equality();
+		const expr = this.equality();
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		if (this.match(TokenType.IS)) {
@@ -1747,7 +1747,7 @@ export class Parser {
 	// --- Statement Parsing Stubs ---
 
 	/** @internal */
-	private updateStatement(startToken: Token, withClause?: AST.WithClause): AST.UpdateStmt {
+	private updateStatement(startToken: Token, _withClause?: AST.WithClause): AST.UpdateStmt {
 		const table = this.tableIdentifier();
 		this.consume(TokenType.SET, "Expected 'SET' after table name in UPDATE.");
 		const assignments: { column: string; value: AST.Expression }[] = [];
@@ -1771,7 +1771,7 @@ export class Parser {
 	}
 
 	/** @internal */
-	private deleteStatement(startToken: Token, withClause?: AST.WithClause): AST.DeleteStmt {
+	private deleteStatement(startToken: Token, _withClause?: AST.WithClause): AST.DeleteStmt {
 		this.matchKeyword('FROM');
 		const table = this.tableIdentifier();
 		let where: AST.Expression | undefined;
@@ -1834,7 +1834,7 @@ export class Parser {
 	 * Parse CREATE TABLE statement
 	 * @returns AST for CREATE TABLE
 	 */
-	private createTableStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt {
+	private createTableStatement(startToken: Token, _withClause?: AST.WithClause): AST.CreateTableStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
@@ -1878,7 +1878,7 @@ export class Parser {
 		}
 
 		let moduleName: string | undefined;
-		let moduleArgs: Record<string, SqlValue> = {};
+		const moduleArgs: Record<string, SqlValue> = {};
 		if (this.matchKeyword('USING')) {
 			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
 			if (this.matchKeyword('(')) {
@@ -1911,7 +1911,7 @@ export class Parser {
 	 * @param isUnique Flag indicating if UNIQUE keyword was already parsed
 	 * @returns AST for CREATE INDEX
 	 */
-	private createIndexStatement(startToken: Token, isUnique = false, withClause?: AST.WithClause): AST.CreateIndexStmt {
+	private createIndexStatement(startToken: Token, isUnique = false, _withClause?: AST.WithClause): AST.CreateIndexStmt {
 		if (!isUnique && this.peekKeyword('UNIQUE')) {
 			isUnique = true;
 			this.advance();
@@ -1955,7 +1955,7 @@ export class Parser {
 	 * Parse CREATE VIEW statement
 	 * @returns AST for CREATE VIEW
 	 */
-	private createViewStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateViewStmt {
+	private createViewStatement(startToken: Token, _withClause?: AST.WithClause): AST.CreateViewStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
@@ -2004,7 +2004,7 @@ export class Parser {
 	 * Parse DROP statement
 	 * @returns AST for DROP statement
 	 */
-	private dropStatement(startToken: Token, withClause?: AST.WithClause): AST.DropStmt {
+	private dropStatement(startToken: Token, _withClause?: AST.WithClause): AST.DropStmt {
 		let objectType: 'table' | 'view' | 'index' | 'trigger';
 
 		if (this.peekKeyword('TABLE')) {
@@ -2041,7 +2041,7 @@ export class Parser {
 	 * Parse ALTER TABLE statement
 	 * @returns AST for ALTER TABLE statement
 	 */
-	private alterTableStatement(startToken: Token, withClause?: AST.WithClause): AST.AlterTableStmt {
+	private alterTableStatement(startToken: Token, _withClause?: AST.WithClause): AST.AlterTableStmt {
 		this.consumeKeyword('TABLE', "Expected 'TABLE' after ALTER.");
 
 		const table = this.tableIdentifier();
@@ -2093,7 +2093,7 @@ export class Parser {
 	 * Parse BEGIN statement
 	 * @returns AST for BEGIN statement
 	 */
-	private beginStatement(startToken: Token, withClause?: AST.WithClause): AST.BeginStmt {
+	private beginStatement(startToken: Token, _withClause?: AST.WithClause): AST.BeginStmt {
 		let mode: 'deferred' | 'immediate' | 'exclusive' | undefined;
 		if (this.peekKeyword('DEFERRED')) {
 			this.advance();
@@ -2115,7 +2115,7 @@ export class Parser {
 	 * Parse COMMIT statement
 	 * @returns AST for COMMIT statement
 	 */
-	private commitStatement(startToken: Token, withClause?: AST.WithClause): AST.CommitStmt {
+	private commitStatement(startToken: Token, _withClause?: AST.WithClause): AST.CommitStmt {
 		this.matchKeyword('TRANSACTION');
 		return { type: 'commit', loc: _createLoc(startToken, this.previous()) };
 	}
@@ -2124,7 +2124,7 @@ export class Parser {
 	 * Parse ROLLBACK statement
 	 * @returns AST for ROLLBACK statement
 	 */
-	private rollbackStatement(startToken: Token, withClause?: AST.WithClause): AST.RollbackStmt {
+	private rollbackStatement(startToken: Token, _withClause?: AST.WithClause): AST.RollbackStmt {
 		this.matchKeyword('TRANSACTION');
 
 		let savepoint: string | undefined;
@@ -2142,7 +2142,7 @@ export class Parser {
 	 * Parse SAVEPOINT statement
 	 * @returns AST for SAVEPOINT statement
 	 */
-	private savepointStatement(startToken: Token, withClause?: AST.WithClause): AST.SavepointStmt {
+	private savepointStatement(startToken: Token, _withClause?: AST.WithClause): AST.SavepointStmt {
 		const name = this.consumeIdentifier("Expected savepoint name after SAVEPOINT.");
 		return { type: 'savepoint', name, loc: _createLoc(startToken, this.previous()) };
 	}
@@ -2151,7 +2151,7 @@ export class Parser {
 	 * Parse RELEASE statement
 	 * @returns AST for RELEASE statement
 	 */
-	private releaseStatement(startToken: Token, withClause?: AST.WithClause): AST.ReleaseStmt {
+	private releaseStatement(startToken: Token, _withClause?: AST.WithClause): AST.ReleaseStmt {
 		this.matchKeyword('SAVEPOINT');
 		const name = this.consumeIdentifier("Expected savepoint name after RELEASE [SAVEPOINT].");
 		return { type: 'release', savepoint: name, loc: _createLoc(startToken, this.previous()) };
@@ -2161,7 +2161,7 @@ export class Parser {
 	 * Parse PRAGMA statement
 	 * @returns AST for PRAGMA statement
 	 */
-	private pragmaStatement(startToken: Token, withClause?: AST.WithClause): AST.PragmaStmt {
+	private pragmaStatement(startToken: Token, _withClause?: AST.WithClause): AST.PragmaStmt {
 		const nameValue = this.nameValueItem("pragma");
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
 	}

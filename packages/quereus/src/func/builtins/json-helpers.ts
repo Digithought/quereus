@@ -15,7 +15,7 @@ export function safeJsonParse(jsonString: SqlValue): any | null {
 	}
 	try {
 		return JSON.parse(jsonString);
-	} catch (e) {
+	} catch {
 		return null;
 	}
 }
@@ -92,10 +92,10 @@ export function resolveJsonPathForModify(
 			if (!Number.isInteger(index) || index < 0) return null;
 
 			if (!Array.isArray(current)) {
-				if (!createParents || parent === null || typeof finalKey === null) {
+				if (!createParents || parent === null || finalKey === null) {
 					return { parent, key: index, value: undefined, exists: false };
 				}
-				let newParentArray: any[] = [];
+				const newParentArray: any[] = [];
 				if (Array.isArray(parent) && typeof finalKey === 'number') {
 					log(`JSON Path: Creating intermediate array for index %d`, finalKey);
 					parent[finalKey] = newParentArray;
@@ -150,7 +150,7 @@ export function prepareJsonValue(value: SqlValue): any {
 	if (typeof value === 'string') {
 		try {
 			return JSON.parse(value);
-		} catch (e) {
+		} catch {
 			return value;
 		}
 	}

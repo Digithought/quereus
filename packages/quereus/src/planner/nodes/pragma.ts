@@ -68,7 +68,7 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 		return [];
 	}
 
-	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+	withChildren(_newChildren: readonly PlanNode[]): PlanNode {
 		return new PragmaPlanNode(this.scope, this.pragmaName, this.statementAst, this.value);
 	}
 

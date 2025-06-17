@@ -20,6 +20,7 @@ INSERT INTO users (id, name, email) VALUES
     (2, 'Bob', 'bob@example.com'),
     (3, 'Charlie', 'charlie@example.com');
 
+-- run
 -- Test 0: INSERT from SELECT, TVF, CTE
 insert into audit_log (action, user_id)
    select 'user_created', 0;

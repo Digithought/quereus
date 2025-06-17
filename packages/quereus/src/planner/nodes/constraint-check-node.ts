@@ -3,7 +3,7 @@ import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor }
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
-import type { TableSchema, RowOp } from '../../schema/table.js';
+import type { RowOp } from '../../schema/table.js';
 
 /**
  * Represents constraint checking for DML operations.

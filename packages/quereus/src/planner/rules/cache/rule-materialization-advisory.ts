@@ -64,8 +64,3 @@ export function ruleMaterializationAdvisory(node: PlanNode, context: OptContext)
 		return null;
 	}
 }
-
-function meetsPreConditions(node: PlanNode): boolean {
-	// All nodes can potentially benefit from materialization analysis
-	return true;
-}

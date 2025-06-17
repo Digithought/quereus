@@ -232,8 +232,8 @@ export class MaterializationAdvisory {
 	 * Recreate a node with new relational children
 	 * This is a simplified version - in practice, would need comprehensive node cloning
 	 */
-	private recreateNodeWithNewRelations(node: PlanNode, newRelations: RelationalPlanNode[]): PlanNode {
-		// This is a simplified implementation
+	private recreateNodeWithNewRelations(node: PlanNode, _newRelations: RelationalPlanNode[]): PlanNode {
+		// TODO: This is a simplified implementation
 		// In practice, would need to handle all node types properly
 
 		// For now, just return the original node

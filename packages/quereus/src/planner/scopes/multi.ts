@@ -18,7 +18,7 @@ export class MultiScope extends BaseScope {
 		super();
 	}
 
-	registerSymbol(symbolKey: string, getReference: (expression: AST.Expression, currentScope: Scope) => PlanNode): void {
+	registerSymbol(_symbolKey: string, _getReference: (expression: AST.Expression, currentScope: Scope) => PlanNode): void {
 		throw new QuereusError('MultiScope does not support registering symbols.', StatusCode.ERROR);
 	}
 

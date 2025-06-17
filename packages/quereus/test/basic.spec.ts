@@ -20,9 +20,9 @@ describe(`Basic query`, () => {
 		// Update expectations based on what schema() actually returns.
 		// For example, it might return more than one row.
 		// This is a placeholder assertion.
-		expect(resultRows.length).to.be.greaterThan(0);
+		void expect(resultRows.length).to.be.greaterThan(0);
 		const schemaEntry = resultRows.find(r => r.name === 'upper' && r.type === 'function');
-		expect(schemaEntry).to.exist;
+		void expect(schemaEntry).to.exist;
 	});
 
 	it('should create a simple table', async () => {
@@ -32,9 +32,9 @@ describe(`Basic query`, () => {
 		for await (const row of db.eval(`select * from schema()`)) {
 			resultRows.push(row);
 		}
-		expect(resultRows.length).to.be.greaterThan(0);
+		void expect(resultRows.length).to.be.greaterThan(0);
 		const schemaEntry = resultRows.find(r => r.name === 't' && r.type === 'table');
-		expect(schemaEntry).to.exist;
+		void expect(schemaEntry).to.exist;
 	});
 
 	describe('Parameter binding', () => {
@@ -54,10 +54,10 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all([2, "Bob"])) {
 				rows1.push(row);
 			}
-			expect(rows1).to.have.length(1);
-			expect(rows1[0].id).to.equal(2);
-			expect(rows1[0].name).to.equal("Bob");
-			expect(rows1[0].value).to.equal(200.7);
+			void expect(rows1).to.have.length(1);
+			void expect(rows1[0].id).to.equal(2);
+			void expect(rows1[0].name).to.equal("Bob");
+			void expect(rows1[0].value).to.equal(200.7);
 
 			await stmt.finalize();
 		});
@@ -70,10 +70,10 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all({1: 3, 2: "Charlie"})) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(3);
-			expect(rows[0].name).to.equal("Charlie");
-			expect(rows[0].value).to.equal(300.9);
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(3);
+			void expect(rows[0].name).to.equal("Charlie");
+			void expect(rows[0].value).to.equal(300.9);
 
 			await stmt.finalize();
 		});
@@ -86,10 +86,10 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all({user_id: 1, user_name: "Alice"})) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(1);
-			expect(rows[0].name).to.equal("Alice");
-			expect(rows[0].value).to.equal(100.5);
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(1);
+			void expect(rows[0].name).to.equal("Alice");
+			void expect(rows[0].value).to.equal(100.5);
 
 			await stmt.finalize();
 		});
@@ -102,9 +102,9 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all({1: 1, max_value: 250})) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(2);
-			expect(rows[0].name).to.equal("Bob");
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(2);
+			void expect(rows[0].name).to.equal("Bob");
 
 			await stmt.finalize();
 		});
@@ -118,9 +118,9 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all()) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(2);
-			expect(rows[0].name).to.equal("Bob");
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(2);
+			void expect(rows[0].name).to.equal("Bob");
 
 			await stmt.finalize();
 		});
@@ -134,8 +134,8 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all()) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(3);
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(3);
 
 			await stmt.finalize();
 		});
@@ -149,8 +149,8 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all()) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(1);
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(1);
 
 			await stmt.finalize();
 		});
@@ -160,9 +160,9 @@ describe(`Basic query`, () => {
 			for await (const row of db.eval('SELECT * FROM test_params WHERE id = ? AND name = ?', [2, "Bob"])) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(2);
-			expect(rows[0].name).to.equal("Bob");
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(2);
+			void expect(rows[0].name).to.equal("Bob");
 		});
 
 		it('should handle null parameters', async () => {
@@ -172,7 +172,7 @@ describe(`Basic query`, () => {
 			for await (const row of stmt.all([null])) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(0); // No matches for NULL name
+			void expect(rows).to.have.length(0); // No matches for NULL name
 
 			await stmt.finalize();
 		});
@@ -189,10 +189,10 @@ describe(`Basic query`, () => {
 			for await (const row of selectStmt.all([42, true])) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(1);
-			expect(rows[0].id).to.equal(42);
-			expect(rows[0].flag).to.equal(true);
-			expect(rows[0].data).to.be.instanceof(Uint8Array);
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(42);
+			void expect(rows[0].flag).to.equal(true);
+			void expect(rows[0].data).to.be.instanceof(Uint8Array);
 
 			await selectStmt.finalize();
 		});

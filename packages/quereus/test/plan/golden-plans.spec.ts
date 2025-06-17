@@ -9,7 +9,6 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Database } from '../../src/core/database.js';
 import { serializePlanTree } from '../../src/planner/debug.js';
-import type { PlanNode } from '../../src/planner/nodes/plan-node.js';
 
 const UPDATE_PLANS = process.env.UPDATE_PLANS === 'true';
 
@@ -82,7 +81,7 @@ async function findTestCases(): Promise<PlanTestCase[]> {
 					});
 				}
 			}
-		} catch (error) {
+		} catch {
 			// Directory might not exist yet
 		}
 	}

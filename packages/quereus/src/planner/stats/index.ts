@@ -83,7 +83,7 @@ export class NaiveStatsProvider implements StatsProvider {
 		return selectivity;
 	}
 
-	joinSelectivity(leftTable: TableSchema, rightTable: TableSchema, joinCondition: ScalarPlanNode): number | undefined {
+	joinSelectivity(leftTable: TableSchema, rightTable: TableSchema, _joinCondition: ScalarPlanNode): number | undefined {
 		// Default join selectivity based on table sizes
 		const leftRows = this.tableRows(leftTable) ?? this.defaultTableRows;
 		const rightRows = this.tableRows(rightTable) ?? this.defaultTableRows;

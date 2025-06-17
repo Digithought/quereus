@@ -1,7 +1,7 @@
 import type { RecursiveCTENode } from '../../planner/nodes/recursive-cte-node.js';
-import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
+import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { emitCallFromPlan, emitPlanNode, createValidatedInstruction } from '../emitters.js';
+import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import { BTree } from 'inheritree';

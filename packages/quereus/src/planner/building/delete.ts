@@ -64,7 +64,7 @@ export function buildDeleteStmt(
     constraintCheckNode, // Use constraint-checked rows as source
   );
 
-  let resultNode: RelationalPlanNode = deleteNode;
+  const resultNode: RelationalPlanNode = deleteNode;
 
   if (stmt.returning && stmt.returning.length > 0) {
     const returningProjections = stmt.returning.map(rc => {

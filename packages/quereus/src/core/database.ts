@@ -48,6 +48,7 @@ export class Database {
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
 	private activeConnections = new Map<string, VirtualTableConnection>();
+	private inImplicitTransaction = false; // Track if we're in an implicit transaction
 	public readonly optimizer: Optimizer;
 	public readonly options: DatabaseOptionsManager;
 
@@ -220,10 +221,7 @@ export class Database {
 		let executionError: Error | null = null;
 		try {
 			if (needsImplicitTransaction) {
-				debugLog("Exec: Starting implicit transaction for multi-statement block.");
-				await this.execSimple("BEGIN DEFERRED TRANSACTION"); // This will use new Statement logic
-				this.inTransaction = true;
-				this.isAutocommit = false;
+				await this.beginImplicitTransaction();
 			}
 
 			for (let i = 0; i < batch.length; i++) {
@@ -265,17 +263,12 @@ export class Database {
 			if (needsImplicitTransaction) {
 				try {
 					if (executionError) {
-						debugLog("Exec: Rolling back implicit transaction due to error.", executionError);
-						await this.execSimple("ROLLBACK");
+						await this.rollbackImplicitTransaction();
 					} else {
-						debugLog("Exec: Committing implicit transaction.");
-						await this.execSimple("COMMIT");
+						await this.commitImplicitTransaction();
 					}
 				} catch (txError) {
 					errorLog(`Error during implicit transaction ${executionError ? 'rollback' : 'commit'}: %O`, txError);
-				} finally {
-					this.inTransaction = false;
-					this.isAutocommit = true;
 				}
 			}
 		}
@@ -693,9 +686,21 @@ export class Database {
 	 * @internal Registers an active VirtualTable connection for transaction management.
 	 * @param connection The connection to register
 	 */
-	registerConnection(connection: VirtualTableConnection): void {
+	async registerConnection(connection: VirtualTableConnection): Promise<void> {
 		this.activeConnections.set(connection.connectionId, connection);
 		debugLog(`Registered connection ${connection.connectionId} for table ${connection.tableName}`);
+
+		// If we're already in a transaction (implicit or explicit),
+		// start a transaction on this new connection
+		if (this.inTransaction) {
+			try {
+				await connection.begin();
+				debugLog(`Started transaction on newly registered connection ${connection.connectionId}`);
+			} catch (error) {
+				errorLog(`Error starting transaction on newly registered connection ${connection.connectionId}: %O`, error);
+				// Don't throw here - just log the error to avoid breaking connection registration
+			}
+		}
 	}
 
 	/**
@@ -705,6 +710,12 @@ export class Database {
 	unregisterConnection(connectionId: string): void {
 		const connection = this.activeConnections.get(connectionId);
 		if (connection) {
+			// Don't disconnect during implicit transactions - let the transaction coordinate
+			if (this.inImplicitTransaction) {
+				debugLog(`Deferring disconnect of connection ${connectionId} until implicit transaction completes`);
+				return;
+			}
+
 			this.activeConnections.delete(connectionId);
 			debugLog(`Unregistered connection ${connectionId} for table ${connection.tableName}`);
 		}
@@ -774,6 +785,83 @@ export class Database {
 				await stmt.finalize();
 			}
 		}
+	}
+
+	/**
+	 * Begin an implicit transaction and coordinate with virtual table connections
+	 */
+	private async beginImplicitTransaction(): Promise<void> {
+		debugLog("Database: Starting implicit transaction for multi-statement block.");
+
+		this.inImplicitTransaction = true;
+
+		// Begin transaction on all active connections first
+		const connections = this.getAllConnections();
+		for (const connection of connections) {
+			try {
+				await connection.begin();
+			} catch (error) {
+				errorLog(`Error beginning transaction on connection ${connection.connectionId}: %O`, error);
+				throw error;
+			}
+		}
+
+		// Then set database state
+		this.inTransaction = true;
+		this.isAutocommit = false;
+	}
+
+	/**
+	 * Commit an implicit transaction and coordinate with virtual table connections
+	 */
+	private async commitImplicitTransaction(): Promise<void> {
+		debugLog("Database: Committing implicit transaction.");
+
+		// Commit all active connections first
+		const connections = this.getAllConnections();
+		const commitPromises = connections.map(async (connection) => {
+			try {
+				await connection.commit();
+			} catch (error) {
+				errorLog(`Error committing transaction on connection ${connection.connectionId}: %O`, error);
+				throw error;
+			}
+		});
+
+		await Promise.all(commitPromises);
+
+		// Reset database state
+		this.inTransaction = false;
+		this.isAutocommit = true;
+		this.inImplicitTransaction = false;
+
+		// DON'T disconnect connections after successful commit - leave them for subsequent queries
+		// The data in committed connections should be visible to future operations
+	}
+
+	/**
+	 * Rollback an implicit transaction and coordinate with virtual table connections
+	 */
+	private async rollbackImplicitTransaction(): Promise<void> {
+		debugLog("Database: Rolling back implicit transaction.");
+
+		// Rollback all active connections
+		const connections = this.getAllConnections();
+		const rollbackPromises = connections.map(async (connection) => {
+			try {
+				await connection.rollback();
+			} catch (error) {
+				errorLog(`Error rolling back transaction on connection ${connection.connectionId}: %O`, error);
+				// Don't throw here - we want to rollback as many as possible
+			}
+		});
+
+		await Promise.allSettled(rollbackPromises);
+
+		// Reset database state
+		this.inTransaction = false;
+		this.isAutocommit = true;
+		this.inImplicitTransaction = false;
 	}
 }
 

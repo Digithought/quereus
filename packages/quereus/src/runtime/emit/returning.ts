@@ -4,10 +4,7 @@ import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-
-const log = createLogger('runtime:emit:returning');
 
 export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instruction {
 	// Find row descriptor from the executor

@@ -4,7 +4,6 @@
  */
 
 import type { Row } from '../../common/types.js';
-import type { RuntimeContext } from '../types.js';
 import { createLogger } from '../../common/logger.js';
 
 const log = createLogger('runtime:cache:shared');

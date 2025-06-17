@@ -4,7 +4,6 @@ import { SqlDataType } from '../../common/types.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { ViewSchema } from '../../schema/view.js';
-import type * as AST from '../../parser/ast.js';
 import { Cached } from '../../util/cached.js';
 
 /**
@@ -32,7 +31,7 @@ export class ViewReferenceNode extends PlanNode implements ZeroAryRelationalNode
 		// In a full implementation, this should be derived from the planned SELECT
 		// For simplicity, we'll assume the view has been planned elsewhere and use column names
 		const viewColumns = this.viewSchema.columns || [];
-		return viewColumns.map((columnName: string, index: number) => ({
+		return viewColumns.map((columnName: string) => ({
 			id: PlanNode.nextAttrId(),
 			name: columnName,
 			type: {

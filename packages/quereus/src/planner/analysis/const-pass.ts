@@ -14,8 +14,6 @@ import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { SqlValue, MaybePromise } from '../../common/types.js';
 import { LiteralNode } from '../nodes/scalar.js';
 import { createLogger } from '../../common/logger.js';
-import { quereusError } from '../../common/errors.js';
-import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('optimizer:folding');
 

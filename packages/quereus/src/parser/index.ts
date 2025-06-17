@@ -4,9 +4,8 @@ export * from './ast.js';
 export * from './parser.js';
 export * from './lexer.js';
 
-import { Parser, ParseError } from './parser.js';
+import { Parser } from './parser.js';
 import type { SelectStmt, InsertStmt } from './ast.js';
-import { TokenType } from './lexer.js';
 
 /**
  * Parse a SQL SELECT statement

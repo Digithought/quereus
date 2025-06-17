@@ -3,7 +3,7 @@ import type { TransactionNode } from '../../planner/nodes/transaction-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { SqlValue } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
-import { QuereusError, quereusError } from '../../common/errors.js';
+import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('runtime:emit:transaction');
@@ -19,13 +19,13 @@ function hashSavepointName(name: string): number {
 	return Math.abs(hash);
 }
 
-export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): Instruction {
+export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): Instruction {
 	// Select the operation function at emit time
 	let run: (ctx: RuntimeContext) => Promise<SqlValue | undefined>;
 	let note: string;
 
 	switch (plan.operation) {
-		case 'begin':
+		case 'begin': {
 			run = async (rctx: RuntimeContext) => {
 				const connections = rctx.db.getAllConnections();
 				log(`BEGIN: Found ${connections.length} active connections`);
@@ -43,8 +43,8 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 			};
 			note = `BEGIN ${plan.mode || 'DEFERRED'}`;
 			break;
-
-		case 'commit':
+		}
+		case 'commit': {
 			run = async (rctx: RuntimeContext) => {
 				const connections = rctx.db.getAllConnections();
 				log(`COMMIT: Found ${connections.length} active connections`);
@@ -62,8 +62,9 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 			};
 			note = 'COMMIT';
 			break;
+		}
 
-		case 'rollback':
+		case 'rollback': {
 			if (plan.savepoint) {
 				const savepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
 				run = async (rctx: RuntimeContext) => {
@@ -101,8 +102,9 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 				note = 'ROLLBACK';
 			}
 			break;
+		}
 
-		case 'savepoint':
+		case 'savepoint': {
 			if (!plan.savepoint) {
 				quereusError('Savepoint name is required for SAVEPOINT operation', StatusCode.MISUSE);
 			}
@@ -124,8 +126,9 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 			};
 			note = `SAVEPOINT ${plan.savepoint}`;
 			break;
+		}
 
-		case 'release':
+		case 'release': {
 			if (!plan.savepoint) {
 				quereusError('Savepoint name is required for RELEASE operation', StatusCode.MISUSE);
 			}
@@ -147,6 +150,7 @@ export function emitTransaction(plan: TransactionNode, ctx: EmissionContext): In
 			};
 			note = `RELEASE SAVEPOINT ${plan.savepoint}`;
 			break;
+		}
 
 		default:
 			quereusError(

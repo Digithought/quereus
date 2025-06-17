@@ -4,10 +4,7 @@ import { compareSqlValues } from '../../util/comparison.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from './types.js';
 import type { IndexColumnSchema as IndexColumnSpec } from '../../schema/table.js'; // Renamed for clarity
 import type { ColumnSchema } from '../../schema/column.js';
-import { createMemoryTableLoggers } from './utils/logging.js';
 import { quereusError } from '../../common/errors.js';
-
-const logger = createMemoryTableLoggers('index');
 
 /** Definition for creating a memory index (matches IndexSchema columns usually) */
 export interface IndexSpec {

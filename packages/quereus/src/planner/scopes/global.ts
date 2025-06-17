@@ -13,7 +13,7 @@ export class GlobalScope extends BaseScope {
 		super();
 	}
 
-	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
+	resolveSymbol(symbolKey: string, _expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		if (symbolKey.includes('/')) {// Function: [schema.]name/nArgs
 			const [name, nArgsStr] = symbolKey.split('/');
 			const nArgs = parseInt(nArgsStr);

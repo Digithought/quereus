@@ -1,6 +1,6 @@
 /**
  * Runtime-based expression evaluator for constant folding
- * 
+ *
  * This module provides evaluation of constant expressions using the existing runtime
  * through a mini-scheduler, avoiding the need for a separate expression interpreter.
  */
@@ -13,8 +13,6 @@ import { EmissionContext } from '../../runtime/emission-context.js';
 import { Scheduler } from '../../runtime/scheduler.js';
 import type { RuntimeContext } from '../../runtime/types.js';
 import { createLogger } from '../../common/logger.js';
-import { quereusError } from '../../common/errors.js';
-import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('optimizer:folding:eval');
 

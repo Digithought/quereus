@@ -3,12 +3,9 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan } from '../emitters.js';
-import { createLogger } from '../../common/logger.js';
 import { streamWithCache, createCacheState, type SharedCacheConfig } from '../cache/shared-cache.js';
 import { buffered, traced } from '../async-util.js';
 import { isDebugEnabled } from '../../util/environment.js';
-
-const log = createLogger('runtime:emit:cache');
 
 /**
  * Usage example for other emitters needing caching (NLJ inner caching, CTE materialization):

@@ -9,7 +9,7 @@ import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-
  * Base interface for module-specific configuration passed to xCreate/xConnect.
  * Modules should define their own interface extending this if they need options.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-interface, @typescript-eslint/no-empty-object-type
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface BaseModuleConfig {}
 
 /**

@@ -137,7 +137,7 @@ function buildRecursiveCTE(
 	const baseCaseQuery = buildSelectStmt(ctx, baseCaseStmt) as RelationalPlanNode;
 
 	// Determine materialization strategy (recursive CTEs should typically be materialized)
-	let materializationHint = cte.materializationHint || 'materialized';
+	const materializationHint = cte.materializationHint || 'materialized';
 
 	// Create the final recursive CTE node first (so we have the tableDescriptor)
 	const recursiveCTENode = new RecursiveCTENode(

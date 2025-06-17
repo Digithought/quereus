@@ -4,8 +4,8 @@ import type { LiteralNode } from "../../planner/nodes/scalar.js";
 import { safeJsonStringify } from "../../util/serialization.js";
 import type { EmissionContext } from "../emission-context.js";
 
-export function emitLiteral(plan: LiteralNode, ctx: EmissionContext): Instruction {
-	function run(ctx: RuntimeContext): MaybePromise<SqlValue> {
+export function emitLiteral(plan: LiteralNode, _ctx: EmissionContext): Instruction {
+	function run(_rctx: RuntimeContext): MaybePromise<SqlValue> {
 		return plan.expression.value;
 	}
 

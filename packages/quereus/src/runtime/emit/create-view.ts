@@ -5,7 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 import type { ViewSchema } from '../../schema/view.js';
 
-export function emitCreateView(plan: CreateViewNode, ctx: EmissionContext): Instruction {
+export function emitCreateView(plan: CreateViewNode, _ctx: EmissionContext): Instruction {
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
 		// Check if view already exists
 		const existingView = rctx.db.schemaManager.getView(plan.schemaName, plan.viewName);

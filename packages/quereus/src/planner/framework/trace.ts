@@ -87,7 +87,7 @@ export class PerformanceTraceHook implements TraceHook {
 		this.ruleStartTimes.set(key, performance.now());
 	}
 
-	onRuleEnd(handle: RuleHandle, before: PlanNode, after: PlanNode | null): void {
+	onRuleEnd(handle: RuleHandle, before: PlanNode, _after: PlanNode | null): void {
 		const key = `${handle.id}:${before.id}`;
 		const startTime = this.ruleStartTimes.get(key);
 		if (startTime !== undefined) {

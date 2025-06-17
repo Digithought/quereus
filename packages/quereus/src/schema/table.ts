@@ -2,7 +2,7 @@ import type { ColumnSchema } from './column.js';
 import type { VirtualTableModule } from '../vtab/module.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
-import { type ColumnDef, type ColumnConstraint, type TableConstraint } from '../parser/ast.js';
+import { type ColumnDef, type TableConstraint } from '../parser/ast.js';
 import { getAffinity } from '../common/type-inference.js';
 import { SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
@@ -101,22 +101,16 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 		generated: false,
 	};
 
-	let pkConstraint: Extract<ColumnConstraint, { type: 'primaryKey' }> | undefined;
-	let hasExplicitNullability = false;
-
 	for (const constraint of def.constraints ?? []) {
 		switch (constraint.type) {
 			case 'primaryKey':
 				schema.primaryKey = true;
-				pkConstraint = constraint as Extract<ColumnConstraint, { type: 'primaryKey' }>;
 				break;
 			case 'notNull':
 				schema.notNull = true;
-				hasExplicitNullability = true;
 				break;
 			case 'null':
 				schema.notNull = false;
-				hasExplicitNullability = true;
 				break;
 			case 'unique':
 				break;

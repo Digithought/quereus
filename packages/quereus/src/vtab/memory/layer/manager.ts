@@ -82,28 +82,25 @@ export class MemoryTableManager {
 
 	public async disconnect(connectionId: number): Promise<void> {
 		const connection = this.connections.get(connectionId);
-		if (connection) {
-			if (connection.pendingTransactionLayer) {
-				if (this.db.getAutocommit()) {
-					logger.warn('Disconnect', this._tableName, 'Auto-committing pending transaction', { connectionId });
-					try {
-						await this.commitTransaction(connection);
-					} catch (err: any) {
-						logger.error('Disconnect', this._tableName, 'Implicit commit failed', { connectionId, error: err.message });
-					}
-				} else {
-					logger.warn('Disconnect', this._tableName, 'Rolling back pending transaction', { connectionId });
-					connection.rollback();
-				}
-			}
-			this.connections.delete(connectionId);
-			this.tryCollapseLayers().catch(err => {
-				logger.error('Disconnect', this._tableName, 'Layer collapse failed', err);
-			});
+		if (!connection) return;
+
+		// If the connection still has an un-committed pending layer, defer
+		// disconnect until the layer is either committed or rolled back by the
+		// transaction coordinator.  This avoids accidental rollback during
+		// implicit transactions.
+		if (connection.pendingTransactionLayer && !connection.pendingTransactionLayer.isCommitted()) {
+			logger.debugLog(`[Disconnect] Deferring disconnect of connection ${connectionId} while transaction pending for ${this._tableName}`);
+			return;
 		}
+
+		// No pending changes – safe to remove immediately.
+		this.connections.delete(connectionId);
+
+		// Attempt fast layer-collapse in the background (best-effort)
+		void this.tryCollapseLayers().catch(err => {
+			logger.error('Disconnect', this._tableName, 'Layer collapse failed', err);
+		});
 	}
-
-
 
 	public async commitTransaction(connection: MemoryTableConnection): Promise<void> {
 		if (this.isReadOnly) {
@@ -214,7 +211,7 @@ export class MemoryTableManager {
 
 			// Trigger garbage collection of unreferenced layers
 			if (collapsedCount > 0) {
-				this.cleanupUnreferencedLayers();
+				void this.cleanupUnreferencedLayers();
 				logger.operation('Collapse Layers', this._tableName, { collapsedCount, iterations });
 			} else {
 				logger.debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: ${this._currentCommittedLayer.getLayerId()}`);
@@ -277,7 +274,7 @@ export class MemoryTableManager {
 		if (typeof global !== 'undefined' && global.gc) {
 			try {
 				global.gc();
-			} catch (e) {
+			} catch {
 				// Ignore errors - gc() might not be available
 			}
 		}
@@ -334,9 +331,10 @@ export class MemoryTableManager {
 				case 'delete':
 					result = await this.performDelete(targetLayer, oldKeyValues);
 					break;
-				default:
+				default: {
 					const exhaustiveCheck: never = operation;
 					throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
+				}
 			}
 
 			// Auto-commit if we weren't already in an explicit transaction
@@ -357,7 +355,7 @@ export class MemoryTableManager {
 		}
 	}
 
-	private validateMutationPermissions(operation: 'insert' | 'update' | 'delete'): void {
+	private validateMutationPermissions(_operation: 'insert' | 'update' | 'delete'): void {
 		if (this.isReadOnly) {
 			throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
 		}
@@ -365,7 +363,10 @@ export class MemoryTableManager {
 
 	private ensureTransactionLayer(connection: MemoryTableConnection): void {
 		if (!connection.pendingTransactionLayer) {
-			connection.begin();
+			// Lazily create a new TransactionLayer based on the current committed layer
+			connection.pendingTransactionLayer = new TransactionLayer(this._currentCommittedLayer);
+			// If this method is called from a DML statement outside an explicit BEGIN, the
+			// transaction is auto-created (autocommit mode).  Leave explicitTransaction flag as-is.
 		}
 	}
 

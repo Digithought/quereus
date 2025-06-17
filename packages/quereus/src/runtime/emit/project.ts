@@ -8,7 +8,7 @@ import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
-	const projectionFuncs = plan.projections.map((projection, index) => {
+	const projectionFuncs = plan.projections.map((projection) => {
 		return emitCallFromPlan(projection.node, ctx);
 	});
 

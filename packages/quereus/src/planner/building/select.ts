@@ -18,7 +18,6 @@ import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { ValuesNode } from '../nodes/values-node.js';
-import { PlanNodeType } from '../nodes/plan-node-type.js';
 
 // Import decomposed functionality
 import { buildWithContext } from './select-context.js';
@@ -86,7 +85,7 @@ export function buildSelectStmt(
 	}
 
 	// Build projections based on the SELECT list
-	let projections: Projection[] = [];
+	const projections: Projection[] = [];
 
 	// Analyze SELECT columns
 	const {
@@ -331,8 +330,6 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		throw new QuereusError(`Unsupported FROM clause type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 	}
 
-	// Update the context with the new scope and store columnScope on the node
-	const newContext = { ...parentContext, scope: columnScope };
 	(fromTable as any).columnScope = columnScope;
 	return fromTable;
 }

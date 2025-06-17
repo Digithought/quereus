@@ -1,8 +1,7 @@
 import { BTree } from 'inheritree';
 import type { TableSchema } from '../../../schema/table.js';
-import { compareSqlValues } from '../../../util/comparison.js';
 import { MemoryIndex } from '../index.js';
-import type { SqlValue, Row } from '../../../common/types.js';
+import type { Row } from '../../../common/types.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
 import { createLogger } from '../../../common/logger.js';

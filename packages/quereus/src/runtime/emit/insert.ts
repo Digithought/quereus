@@ -3,10 +3,9 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row, SqlDataType } from '../../common/types.js';
-import { getVTableConnection, getVTable, disconnectVTable } from '../utils.js';
+import { getVTable, disconnectVTable } from '../utils.js';
 import type { EmissionContext } from '../emission-context.js';
 import { applyIntegerAffinity, applyRealAffinity, applyNumericAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity.js';
-import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
@@ -60,9 +59,6 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
 	}
 
 	async function* run(ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
-		// Get or create a connection for this table to ensure transaction consistency
-		const connection = await getVTableConnection(ctx, tableSchema);
-
 		// Create a VirtualTable instance for the actual operations
 		const vtab = await getVTable(ctx, tableSchema);
 

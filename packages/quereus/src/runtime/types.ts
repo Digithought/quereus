@@ -1,4 +1,4 @@
-import type { RuntimeValue, SqlParameters, OutputValue, Row, SqlValue } from "../common/types.js";
+import type { RuntimeValue, SqlParameters, OutputValue, Row } from "../common/types.js";
 import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
 import type { RowDescriptor, RowGetter, TableDescriptor, TableGetter } from "../planner/nodes/plan-node.js";

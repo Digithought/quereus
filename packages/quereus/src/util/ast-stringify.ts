@@ -93,7 +93,7 @@ export function astToString(node: AST.AstNode): string {
 // Helper to stringify expressions (extended from original)
 export function expressionToString(expr: AST.Expression): string {
 	switch (expr.type) {
-		case 'literal':
+		case 'literal': {
 			// Prefer original lexeme for numbers if available and different
 			if ((typeof expr.value === 'number' || typeof expr.value === 'bigint') && expr.lexeme && expr.lexeme !== String(expr.value)) {
 				return expr.lexeme;
@@ -107,15 +107,17 @@ export function expressionToString(expr: AST.Expression): string {
 				return `x'${hex}'`;
 			}
 			return String(expr.value);
+		}
 
-		case 'identifier':
+		case 'identifier': {
 			let identStr = quoteIdentifierIfNeeded(expr.name);
 			if (expr.schema) {
 				identStr = `${quoteIdentifierIfNeeded(expr.schema)}.${identStr}`;
 			}
 			return identStr;
+		}
 
-		case 'column':
+		case 'column': {
 			let colStr = quoteIdentifierIfNeeded(expr.name);
 			if (expr.table) {
 				colStr = `${quoteIdentifierIfNeeded(expr.table)}.${colStr}`;
@@ -124,8 +126,9 @@ export function expressionToString(expr: AST.Expression): string {
 				}
 			}
 			return colStr;
+		}
 
-		case 'binary':
+		case 'binary': {
 			const leftStr = needsParens(expr.left, expr.operator, 'left')
 				? `(${expressionToString(expr.left)})`
 				: expressionToString(expr.left);
@@ -133,8 +136,9 @@ export function expressionToString(expr: AST.Expression): string {
 				? `(${expressionToString(expr.right)})`
 				: expressionToString(expr.right);
 			return `${leftStr} ${expr.operator.toLowerCase()} ${rightStr}`;
+		}
 
-		case 'unary':
+		case 'unary': {
 			const exprStr = expr.expr.type === 'binary'
 				? `(${expressionToString(expr.expr)})`
 				: expressionToString(expr.expr);
@@ -145,19 +149,21 @@ export function expressionToString(expr: AST.Expression): string {
 				return `${expr.operator.toLowerCase()} ${exprStr}`;
 			}
 			return `${expr.operator.toLowerCase()}${exprStr}`;
+		}
 
-		case 'function':
+		case 'function': {
 			if (expr.name.toLowerCase() === 'count' && expr.args.length === 0) {
 				return 'count(*)';
 			}
 			const argsStr = expr.args.map(arg => expressionToString(arg)).join(', ');
 			const distinctStr = expr.distinct ? 'distinct ' : '';
 			return `${expr.name.toLowerCase()}(${distinctStr}${argsStr})`;
+		}
 
 		case 'cast':
 			return `cast(${expressionToString(expr.expr)} as ${expr.targetType.toLowerCase()})`;
 
-		case 'parameter':
+		case 'parameter': {
 			if (expr.index !== undefined) {
 				return '?';
 			} else if (expr.name) {
@@ -166,6 +172,7 @@ export function expressionToString(expr: AST.Expression): string {
 					: `:${expr.name}`;
 			}
 			return '?';
+		}
 
 		case 'subquery':
 			return `(${selectToString(expr.query)})`;
@@ -173,7 +180,7 @@ export function expressionToString(expr: AST.Expression): string {
 		case 'collate':
 			return `${expressionToString(expr.expr)} collate ${expr.collation.toLowerCase()}`;
 
-		case 'case':
+		case 'case': {
 			// TODO: preserve and emit with original case
 			let caseStr = 'case';
 			if (expr.baseExpr) {
@@ -187,13 +194,15 @@ export function expressionToString(expr: AST.Expression): string {
 			}
 			caseStr += ' end';
 			return caseStr;
+		}
 
-		case 'windowFunction':
+		case 'windowFunction': {
 			let winStr = expressionToString(expr.function);
 			if (expr.window) {
 				winStr += ` over (${windowDefinitionToString(expr.window)})`;
 			}
 			return winStr;
+		}
 
 		default:
 			return '[unknown_expr]';
@@ -368,15 +377,16 @@ function withClauseToString(withClause: AST.WithClause): string {
 
 function fromClauseToString(from: AST.FromClause): string {
 	switch (from.type) {
-		case 'table':
+		case 'table': {
 			let tableStr = quoteIdentifierIfNeeded(from.table.name);
 			if (from.table.schema) {
 				tableStr = `${quoteIdentifierIfNeeded(from.table.schema)}.${tableStr}`;
 			}
 			if (from.alias) tableStr += ` as ${quoteIdentifierIfNeeded(from.alias)}`;
 			return tableStr;
+		}
 
-		case 'subquerySource':
+		case 'subquerySource': {
 			let subqueryStr: string;
 			if (from.subquery.type === 'select') {
 				subqueryStr = selectToString(from.subquery);
@@ -394,8 +404,9 @@ function fromClauseToString(from: AST.FromClause): string {
 			}
 
 			return `(${subqueryStr}) ${aliasStr}`;
+		}
 
-		case 'functionSource':
+		case 'functionSource': {
 			const args = from.args.map(expressionToString).join(', ');
 			// Check if from.name is a function expression or identifier expression
 			let funcName: string;
@@ -409,8 +420,9 @@ function fromClauseToString(from: AST.FromClause): string {
 			let funcStr = `${funcName}(${args})`;
 			if (from.alias) funcStr += ` as ${quoteIdentifierIfNeeded(from.alias)}`;
 			return funcStr;
+		}
 
-		case 'join':
+		case 'join': {
 			const leftStr = fromClauseToString(from.left);
 			const rightStr = fromClauseToString(from.right);
 			let joinStr = `${leftStr} ${from.joinType.toLowerCase()} join ${rightStr}`;
@@ -420,6 +432,7 @@ function fromClauseToString(from: AST.FromClause): string {
 				joinStr += ` using (${from.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
 			}
 			return joinStr;
+		}
 
 		default:
 			return '[unknown_from]';

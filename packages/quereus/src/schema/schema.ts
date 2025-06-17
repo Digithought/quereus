@@ -1,14 +1,11 @@
 import type { TableSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { getFunctionKey } from './function.js';
-import { SqlDataType } from '../common/types.js';
 import type { ViewSchema } from './view.js';
 import { quereusError, QuereusError } from '../common/errors.js';
-import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:schema');
-const errorLog = log.extend('error');
 
 /**
  * Represents a single database schema (e.g., "main", "temp").

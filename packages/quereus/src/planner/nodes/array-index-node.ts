@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type ScalarPlanNode, type ZeroAryScalarNode } from './plan-node.js';
+import { PlanNode, type ZeroAryScalarNode } from './plan-node.js';
 import type { ScalarType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import type * as AST from '../../parser/ast.js';

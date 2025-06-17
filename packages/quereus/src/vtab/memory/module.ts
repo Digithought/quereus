@@ -85,9 +85,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		// Get table size estimate for cost calculations
 		const estimatedTableSize = request.estimatedRows ?? 1000;
 
-		// Build column metadata
-		const columns = this.buildColumnMetadata(tableInfo);
-
 		// Find the best access strategy
 		const bestPlan = this.findBestAccessPlan(tableInfo, request, estimatedTableSize);
 
@@ -317,7 +314,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return StatusCode.OK;
 	}
 
-	private createPlanningContext(tableInfo: TableSchema, indexInfo: IndexInfo) {
+	private createPlanningContext(_tableInfo: TableSchema, _indexInfo: IndexInfo) {
 		return {
 			// Plan type constants
 			PLAN_TYPE_FULL_ASC: 0,

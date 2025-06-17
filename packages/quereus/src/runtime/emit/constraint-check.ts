@@ -143,9 +143,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			return;
 		}
 
-		let rowCount = 0;
 		for await (const row of inputRows) {
-			rowCount++;
 			// Clear any existing contexts to ensure constraint expressions resolve to the correct row
 			rctx.context.clear();
 
@@ -268,10 +266,10 @@ async function checkNotNullConstraints(
 }
 
 async function checkPrimaryKeyConstraints(
-	rctx: RuntimeContext,
-	plan: ConstraintCheckNode,
-	tableSchema: any,
-	row: Row
+	_rctx: RuntimeContext,
+	_plan: ConstraintCheckNode,
+	_tableSchema: any,
+	_row: Row
 ): Promise<void> {
 	// Primary Key constraints are enforced at the VTable level for now
 	// This is simpler and more efficient than trying to implement it at the engine level

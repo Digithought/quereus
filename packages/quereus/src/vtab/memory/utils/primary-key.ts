@@ -37,10 +37,10 @@ export function createPrimaryKeyFunctions(schema: TableSchema): PrimaryKeyFuncti
  */
 function createSingletonPrimaryKeyFunctions(): PrimaryKeyFunctions {
 	return {
-		extractFromRow: (row: Row): BTreeKeyForPrimary => {
+		extractFromRow: (): BTreeKeyForPrimary => {
 			return [];
 		},
-		compare: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
+		compare: (): number => {
 			return 0;	// Always equal
 		}
 	};

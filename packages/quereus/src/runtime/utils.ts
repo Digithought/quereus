@@ -60,7 +60,7 @@ export async function getVTableConnection(ctx: RuntimeContext, tableSchema: Tabl
 	}
 
 	// Register the connection with the database
-	ctx.db.registerConnection(connection);
+	await ctx.db.registerConnection(connection);
 
 	// Set as the active connection in the runtime context if none is set
 	if (!ctx.activeConnection) {

@@ -1,4 +1,4 @@
-import type { SqlValue, Row } from '../../common/types.js';
+import type { SqlValue } from '../../common/types.js';
 
 /** Key type used in B-Trees (primary key or index key part) */
 export type BTreeKey = BTreeKeyForPrimary | BTreeKeyForIndex;

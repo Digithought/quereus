@@ -3,7 +3,7 @@ import type { Scope } from '../scopes/scope.js';
 import type { BaseType, RelationType, ScalarType } from '../../common/datatype.js';
 import type { Expression } from '../../parser/ast.js';
 import type { Row } from '../../common/types.js';
-import { quereusError, QuereusError } from '../../common/errors.js';
+import { quereusError } from '../../common/errors.js';
 
 /**
  * Physical properties that execution nodes can provide or require
@@ -86,7 +86,7 @@ export type RowDescriptor = number[]; // attributeId → columnIndex
  */
 export type RowGetter = () => Row;
 
-
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export type TableDescriptor = {
 	// Just using the object's identity for now
 };
