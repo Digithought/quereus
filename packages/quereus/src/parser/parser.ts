@@ -991,11 +991,12 @@ export class Parser {
 		while (this.match(
 			TokenType.LESS, TokenType.LESS_EQUAL,
 			TokenType.GREATER, TokenType.GREATER_EQUAL,
-			TokenType.BETWEEN, TokenType.IN, TokenType.NOT
+			TokenType.BETWEEN, TokenType.IN, TokenType.NOT,
+			TokenType.LIKE
 		)) {
 			const operatorToken = this.previous();
 
-			// Handle NOT IN and NOT BETWEEN
+			// Handle NOT IN, NOT BETWEEN, and NOT LIKE
 			if (operatorToken.type === TokenType.NOT) {
 				const notStartToken = operatorToken;
 				if (this.match(TokenType.IN)) {
@@ -1078,11 +1079,44 @@ export class Parser {
 						expr: betweenExpr,
 						loc: _createLoc(notStartToken, endToken),
 					};
+				} else if (this.match(TokenType.LIKE)) {
+					// NOT LIKE
+					const pattern = this.term();
+					const endToken = this.previous(); // End token is end of pattern expr
+
+					// Create the LIKE expression as a binary expression, then wrap in NOT
+					const likeExpr: AST.BinaryExpr = {
+						type: 'binary',
+						operator: 'LIKE',
+						left: expr,
+						right: pattern,
+						loc: _createLoc(startToken, endToken),
+					};
+
+					expr = {
+						type: 'unary',
+						operator: 'NOT',
+						expr: likeExpr,
+						loc: _createLoc(notStartToken, endToken),
+					};
 				} else {
 					// Put back the NOT token and break out of the loop
 					this.current--;
 					break;
 				}
+			} else if (operatorToken.type === TokenType.LIKE) {
+				// Parse LIKE expression: expr LIKE pattern
+				const pattern = this.term();
+				const endToken = this.previous(); // End token is end of pattern expr
+
+				// Create the LIKE expression as a binary expression
+				expr = {
+					type: 'binary',
+					operator: 'LIKE',
+					left: expr,
+					right: pattern,
+					loc: _createLoc(startToken, endToken),
+				};
 			} else if (operatorToken.type === TokenType.BETWEEN) {
 				// Parse BETWEEN expression: expr BETWEEN low AND high
 				const low = this.term();

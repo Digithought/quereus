@@ -1,6 +1,7 @@
 import { createAggregateFunction, createScalarFunction, createTableValuedFunction } from '../registration.js';
 import type { Row, SqlValue } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
+import { simpleLike, simpleGlob } from '../../util/patterns.js';
 
 const log = createLogger('func:builtins:scalar');
 const warnLog = log.extend('warn');
@@ -97,19 +98,6 @@ export const substringFunc = createScalarFunction(
 	}
 );
 
-// --- Simple LIKE implementation ---
-function simpleLike(pattern: string, text: string): boolean {
-	const escapedPattern = pattern.replace(/[.*+^${}()|[\]\\]/g, '\\$&');
-	const regexPattern = escapedPattern.replace(/%/g, '.*').replace(/_/g, '.');
-	try {
-		const regex = new RegExp(`^${regexPattern}$`);
-		return regex.test(text);
-	} catch (e) {
-		errorLog('Invalid LIKE pattern converted to regex: ^%s$, %O', regexPattern, e);
-		return false;
-	}
-}
-
 export const likeFunc = createScalarFunction(
 	{ name: 'like', numArgs: 2, deterministic: true },
 	(pattern: SqlValue, text: SqlValue): SqlValue => {
@@ -117,21 +105,6 @@ export const likeFunc = createScalarFunction(
 		return simpleLike(String(pattern), String(text)) ? 1 : 0;
 	}
 );
-
-// --- Simple GLOB implementation ---
-function simpleGlob(pattern: string, text: string): boolean {
-	const escapedPattern = pattern.replace(/[.*+^${}()|[\]\\]/g, '\\$&');
-	const regexPattern = escapedPattern
-		.replace(/\\\*/g, '.*')
-		.replace(/\\\?/g, '.');
-	try {
-		const regex = new RegExp(`^${regexPattern}$`);
-		return regex.test(text);
-	} catch (e) {
-		errorLog('Invalid GLOB pattern converted to regex: ^%s$, %O', regexPattern, e);
-		return false;
-	}
-}
 
 export const globFunc = createScalarFunction(
 	{ name: 'glob', numArgs: 2, deterministic: true },

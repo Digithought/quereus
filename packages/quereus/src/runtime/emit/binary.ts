@@ -6,6 +6,7 @@ import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
 import { compareSqlValuesFast, resolveCollation } from "../../util/comparison.js";
 import { coerceForComparison, coerceToNumberForArithmetic } from "../../util/coercion.js";
+import { simpleLike } from "../../util/patterns.js";
 import type { EmissionContext } from "../emission-context.js";
 
 export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
@@ -33,6 +34,8 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 			return emitLogicalOp(plan, ctx);
 		case 'BETWEEN':
 			return emitBetweenOp(plan, ctx);
+		case 'LIKE':
+			return emitLikeOp(plan, ctx);
 		// TODO: emitBitwise
 		default:
 			throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
@@ -255,6 +258,31 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 		params: [leftExpr, rightExpr],
 		run: run as InstructionRun,
 		note: `${plan.expression.operator}(logical)`
+	};
+}
+
+export function emitLikeOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
+	function run(ctx: RuntimeContext, text: SqlValue, pattern: SqlValue): SqlValue {
+		// SQL LIKE logic: text LIKE pattern
+		// NULL handling: if either operand is NULL, result is NULL
+		if (text === null || pattern === null) {
+			return null;
+		}
+
+		// Convert both operands to strings and perform LIKE matching
+		const textStr = String(text);
+		const patternStr = String(pattern);
+		
+		return simpleLike(patternStr, textStr) ? 1 : 0;
+	}
+
+	const leftExpr = emitPlanNode(plan.left, ctx);
+	const rightExpr = emitPlanNode(plan.right, ctx);
+
+	return {
+		params: [leftExpr, rightExpr],
+		run: run as InstructionRun,
+		note: 'LIKE(like)'
 	};
 }
 

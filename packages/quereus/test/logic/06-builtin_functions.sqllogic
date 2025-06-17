@@ -12,6 +12,37 @@ SELECT typeof(1), typeof(1.5), typeof('text'), typeof(x'01'), typeof(null), type
 SELECT like('abc%', 'abcde'), glob('a*c', 'abbbc');
 → [{"like('abc%', 'abcde')":1,"glob('a*c', 'abbbc')":1}]
 
+-- LIKE Operator Tests
+PRAGMA default_vtab_module='memory';
+CREATE TABLE like_test (id INT, name TEXT);
+INSERT INTO like_test VALUES (1, 'apple'), (2, 'berry'), (3, 'citrus'), (4, 'orange');
+
+-- Test basic LIKE operator
+SELECT * FROM like_test WHERE name LIKE 'a%' ORDER BY id;
+→ [{"id":1,"name":"apple"}]
+
+-- Test NOT LIKE operator  
+SELECT * FROM like_test WHERE name NOT LIKE '%a%' ORDER BY id;
+→ [{"id":2,"name":"berry"},{"id":3,"name":"citrus"}]
+
+-- Test underscore wildcard
+SELECT * FROM like_test WHERE name LIKE '_ra%' ORDER BY id;
+→ [{"id":4,"name":"orange"}]
+
+-- Test literal matching
+SELECT * FROM like_test WHERE name LIKE 'apple';
+→ [{"id":1,"name":"apple"}]
+
+-- Test LIKE with NULL
+SELECT * FROM like_test WHERE NULL LIKE 'a%';
+→ []
+
+-- Test pattern with NULL
+SELECT * FROM like_test WHERE 'apple' LIKE NULL;
+→ []
+
+DROP TABLE like_test;
+
 -- Date/Time Functions (output format depends on default build)
 SELECT date('now') IS NOT NULL;
 → [1]
