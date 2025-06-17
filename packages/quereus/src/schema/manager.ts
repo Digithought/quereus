@@ -576,7 +576,7 @@ export class SchemaManager {
 			colDef.constraints?.forEach(con => {
 				if (con.type === 'check' && con.expr) {
 					checkConstraintsSchema.push({
-						name: con.name,
+						name: con.name ?? `_check_${colDef.name}`,
 						expr: con.expr,
 						operations: opsToMask(con.operations)
 					});

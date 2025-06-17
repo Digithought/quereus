@@ -5,7 +5,9 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
-import type { RowConstraintSchema } from '../../schema/table.js';
+import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
+import type { ColumnSchema } from '../../schema/column.js';
+import type { Attribute } from '../../planner/nodes/plan-node.js';
 import { RowOp } from '../../schema/table.js';
 import { buildExpression } from '../../planner/building/expression.js';
 import { GlobalScope } from '../../planner/scopes/global.js';
@@ -67,11 +69,13 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			const sourceAttributes = plan.source.getAttributes();
 			const sourceType = plan.source.getType();
 
+
+
 			// Map table columns to source columns by matching names
-			tableSchema.columns.forEach((tableColumn: any, tableColIndex: number) => {
+			tableSchema.columns.forEach((tableColumn: ColumnSchema, tableColIndex: number) => {
 				// Find the corresponding source column by name
 				let sourceColumnIndex = -1;
-				let sourceAttr: any = null;
+				let sourceAttr: Attribute | null = null;
 
 				for (let i = 0; i < sourceType.columns.length; i++) {
 					if (sourceType.columns[i].name.toLowerCase() === tableColumn.name.toLowerCase()) {
@@ -143,30 +147,45 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			return;
 		}
 
-		for await (const row of inputRows) {
-			// Clear any existing contexts to ensure constraint expressions resolve to the correct row
-			rctx.context.clear();
-
+				for await (const row of inputRows) {
 			// Extract update metadata if this is an UPDATE operation
 			const updateRowData = (row as any).__updateRowData;
 			const isUpdateOperation = updateRowData?.isUpdateOperation;
 
 			// Set up the primary source context to point to the appropriate row
-			rctx.context.set(sourceRowDescriptor, () => row);
+			// For UPDATE operations, constraints should be evaluated against NEW values
+			const contextRow = (plan.operation === RowOp.UPDATE && isUpdateOperation)
+				? updateRowData.newRow
+				: row;
+			rctx.context.set(sourceRowDescriptor, () => contextRow);
 
 			try {
-				// Set up OLD and NEW row contexts if available
+				// Set up OLD and NEW row contexts if available (only if they have different attribute IDs)
 				if (plan.operation === RowOp.UPDATE && isUpdateOperation) {
 					if (plan.oldRowDescriptor && Object.keys(plan.oldRowDescriptor).length > 0) {
-						rctx.context.set(plan.oldRowDescriptor, () => updateRowData.oldRow); // OLD values
+						// Only set OLD context if it uses different attribute IDs than source
+						const hasConflict = Object.keys(plan.oldRowDescriptor).some(attrId =>
+							sourceRowDescriptor[parseInt(attrId)] !== undefined);
+						if (!hasConflict) {
+							rctx.context.set(plan.oldRowDescriptor, () => updateRowData.oldRow); // OLD values
+						}
 					}
 					if (plan.newRowDescriptor && Object.keys(plan.newRowDescriptor).length > 0) {
-						rctx.context.set(plan.newRowDescriptor, () => updateRowData.newRow); // NEW values
+						// Only set NEW context if it uses different attribute IDs than source
+						const hasConflict = Object.keys(plan.newRowDescriptor).some(attrId =>
+							sourceRowDescriptor[parseInt(attrId)] !== undefined);
+						if (!hasConflict) {
+							rctx.context.set(plan.newRowDescriptor, () => updateRowData.newRow); // NEW values
+						}
 					}
 				} else if (plan.operation === RowOp.DELETE) {
 					// For DELETE operations, the current row IS the OLD row
 					if (plan.oldRowDescriptor && Object.keys(plan.oldRowDescriptor).length > 0) {
-						rctx.context.set(plan.oldRowDescriptor, () => row); // OLD values are the current row being deleted
+						const hasConflict = Object.keys(plan.oldRowDescriptor).some(attrId =>
+							sourceRowDescriptor[parseInt(attrId)] !== undefined);
+						if (!hasConflict) {
+							rctx.context.set(plan.oldRowDescriptor, () => row); // OLD values are the current row being deleted
+						}
 					}
 				}
 
@@ -220,7 +239,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 async function checkConstraints(
 	rctx: RuntimeContext,
 	plan: ConstraintCheckNode,
-	tableSchema: any,
+	tableSchema: TableSchema,
 	row: Row,
 	constraintMetadata: Array<RowConstraintSchema>,
 	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
@@ -238,7 +257,7 @@ async function checkConstraints(
 async function checkNotNullConstraints(
 	rctx: RuntimeContext,
 	plan: ConstraintCheckNode,
-	tableSchema: any,
+	tableSchema: TableSchema,
 	row: Row
 ): Promise<void> {
 	// For INSERT operations, check NOT NULL on new values
@@ -268,7 +287,7 @@ async function checkNotNullConstraints(
 async function checkPrimaryKeyConstraints(
 	_rctx: RuntimeContext,
 	_plan: ConstraintCheckNode,
-	_tableSchema: any,
+	_tableSchema: TableSchema,
 	_row: Row
 ): Promise<void> {
 	// Primary Key constraints are enforced at the VTable level for now
@@ -280,7 +299,7 @@ async function checkPrimaryKeyConstraints(
 async function checkCheckConstraints(
 	rctx: RuntimeContext,
 	plan: ConstraintCheckNode,
-	tableSchema: any,
+	tableSchema: TableSchema,
 	constraintMetadata: Array<RowConstraintSchema>,
 	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
 ): Promise<void> {
@@ -289,9 +308,11 @@ async function checkCheckConstraints(
 		const constraint = constraintMetadata[i];
 		const evaluator = evaluatorFunctions[i];
 
+		console.log(`Checking constraint ${i}: ${constraint.name || 'unnamed'}`);
 		try {
 			// Use the evaluator function to get the constraint result
 			const result = evaluator(rctx) as SqlValue;
+			console.log(`Constraint ${constraint.name || 'unnamed'} evaluated to:`, result);
 
 			// CHECK constraint passes if result is truthy or NULL
 			// It fails only if result is false or 0 (SQLite-style numeric boolean)
@@ -300,10 +321,13 @@ async function checkCheckConstraints(
 				// IMPORTANT: Use the original index from the full tableSchema.checkConstraints array
 				// not the filtered index, to get the correct constraint name
 				const constraintName = constraint.name || generateDefaultConstraintName(tableSchema, constraint);
+				console.log(`Constraint ${constraintName} FAILED`);
 				throw new QuereusError(
 					`CHECK constraint failed: ${constraintName}`,
 					StatusCode.CONSTRAINT
 				);
+			} else {
+				console.log(`Constraint ${constraint.name || 'unnamed'} PASSED`);
 			}
 		} catch (error) {
 			if (error instanceof QuereusError && error.message.includes('CHECK constraint failed')) {
@@ -319,7 +343,7 @@ function shouldCheckConstraint(constraint: RowConstraintSchema, operation: RowOp
 	return (constraint.operations & operation) !== 0;
 }
 
-function generateDefaultConstraintName(tableSchema: any, constraint: RowConstraintSchema): string {
+function generateDefaultConstraintName(tableSchema: TableSchema, constraint: RowConstraintSchema): string {
 	// Find the index of this constraint in the original array to get the correct constraint number
 	const originalIndex = tableSchema.checkConstraints.findIndex((c: RowConstraintSchema) => c === constraint);
 	return `check_${originalIndex >= 0 ? originalIndex : 'unknown'}`;
