@@ -1955,7 +1955,7 @@ export class Parser {
 	 * Parse CREATE VIEW statement
 	 * @returns AST for CREATE VIEW
 	 */
-	private createViewStatement(startToken: Token, _withClause?: AST.WithClause): AST.CreateViewStmt {
+	private createViewStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateViewStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;

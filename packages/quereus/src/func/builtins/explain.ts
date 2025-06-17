@@ -6,6 +6,7 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { safeJsonStringify } from "../../util/serialization.js";
+import { InstructionTraceEvent } from "../../runtime/types.js";
 
 // Query plan explanation function (table-valued function)
 export const queryPlanFunc = createIntegratedTableValuedFunction(

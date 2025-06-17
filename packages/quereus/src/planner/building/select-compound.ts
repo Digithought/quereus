@@ -27,7 +27,7 @@ export function buildCompoundSelect(
 	}
 
 	// Build left side by cloning the statement without compound and stripping ORDER BY/LIMIT/OFFSET that belong to outer query
-	const { _compound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt as any;
+	const { compound: _outerCompound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt as any;
 
 	// Also strip ORDER BY/LIMIT/OFFSET from the right side - they should only apply to the final compound result
 	const { orderBy: _rightOrderBy, limit: _rightLimit, offset: _rightOffset, ...rightCore } = stmt.compound.select as any;
