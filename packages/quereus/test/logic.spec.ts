@@ -264,8 +264,146 @@ describe('SQL Logic Tests', () => {
 				const lines = content.split(/\r?\n/);
 				let currentSql = '';
 				let expectedResultJson: string | null = null;
-				let expectedErrorSubstring: string | null = null; // <-- Store expected error
+				let expectedErrorSubstring: string | null = null;
 				let lineNumber = 0;
+
+				/**
+				 * Resets the current state for the next SQL block
+				 */
+				const resetState = () => {
+					currentSql = '';
+					expectedResultJson = null;
+					expectedErrorSubstring = null;
+				};
+
+				/**
+				 * Executes SQL expecting an error with the given substring
+				 */
+				const executeExpectingError = async (sqlBlock: string, errorSubstring: string, lineNum: number) => {
+					if (DIAG_CONFIG.verbose) {
+						console.log(`Executing block (expect error "${errorSubstring}"):\n${sqlBlock}`);
+					}
+
+					try {
+						await db.exec(sqlBlock);
+						const baseError = new Error(`[${file}:${lineNum}] Expected error matching "${errorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
+						const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
+						throw new Error(`${baseError.message}${diagnostics}`);
+					} catch (actualError: any) {
+						expect(actualError.message.toLowerCase()).to.include(errorSubstring.toLowerCase(),
+							`[${file}:${lineNum}] Block: ${sqlBlock}\nExpected error containing: "${errorSubstring}"\nActual error: "${actualError.message}"`
+						);
+
+						// Show location information if available
+						const locationInfo = formatLocationInfo(actualError, sqlBlock);
+						if (DIAG_CONFIG.verbose && locationInfo) {
+							console.log(`   -> Error location: ${locationInfo}`);
+						}
+						if (DIAG_CONFIG.verbose) {
+							console.log(`   -> Caught expected error: ${actualError.message}`);
+						}
+					}
+				};
+
+				/**
+				 * Executes SQL expecting specific results
+				 */
+				const executeExpectingResults = async (sqlBlock: string, expectedJson: string, lineNum: number) => {
+					if (DIAG_CONFIG.verbose) {
+						console.log(`Executing block (expect results):\n${sqlBlock}`);
+					}
+
+					// Split into setup statements and final query
+					const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
+
+					// Execute all but the last statement as setup
+					if (statements.length > 1) {
+						for (let i = 0; i < statements.length - 1; i++) {
+							const statement = statements[i].trim();
+							if (statement.length > 0) {
+								if (DIAG_CONFIG.verbose) {
+									console.log(`  -> Executing setup statement: ${statement}`);
+								}
+								await db.exec(statement);
+							}
+						}
+					}
+
+					// Execute the final statement with tracing
+					const lastStatement = statements[statements.length - 1];
+					if (DIAG_CONFIG.verbose) {
+						console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
+					}
+
+					let executionResult: { results: Record<string, any>[], traceEvents: any[] };
+					if (lastStatement) {
+						executionResult = await executeWithTracing(db, lastStatement);
+					} else {
+						executionResult = { results: [], traceEvents: [] };
+					}
+
+					const actualResult = executionResult.results;
+
+					// Parse expected results
+					let expectedResult: any;
+					try {
+						expectedResult = JSON.parse(expectedJson);
+					} catch (jsonError: any) {
+						throw new Error(`[${file}:${lineNum}] Invalid expected JSON: ${jsonError.message} - JSON: ${expectedJson}`);
+					}
+
+					// Compare row counts
+					if (actualResult.length !== expectedResult.length) {
+						const baseError = new Error(`[${file}:${lineNum}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}\nBlock:\n${sqlBlock}`);
+						const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
+						const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
+						throw new Error(`${baseError.message}${diagnostics}${traceInfo}`);
+					}
+
+					// Compare each row
+					for (let i = 0; i < actualResult.length; i++) {
+						try {
+							expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNum}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
+						} catch (matchError: any) {
+							const error = matchError instanceof Error ? matchError : new Error(String(matchError));
+							const diagnostics = generateDiagnostics(db, sqlBlock, error);
+							const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
+							throw new Error(`${error.message}${diagnostics}${traceInfo}`);
+						}
+					}
+
+					if (DIAG_CONFIG.verbose) {
+						console.log("   -> Results match!");
+					}
+				};
+
+				/**
+				 * Executes SQL without expecting specific results or errors (for setup)
+				 */
+				const executeSetup = async (sqlBlock: string, lineNum: number) => {
+					if (DIAG_CONFIG.verbose) {
+						console.log(`Executing setup block:\n${sqlBlock}`);
+					}
+
+					try {
+						await db.exec(sqlBlock);
+						if (DIAG_CONFIG.verbose) {
+							console.log("   -> Setup completed successfully");
+						}
+					} catch (error: any) {
+						let errorMessage = `[${file}:${lineNum}] Failed executing setup SQL: ${sqlBlock} - Error: ${error.message}`;
+
+						// Add location information if available
+						const locationInfo = formatLocationInfo(error, sqlBlock);
+						if (locationInfo) {
+							errorMessage += locationInfo;
+						}
+
+						const baseError = new Error(errorMessage);
+						const diagnostics = generateDiagnostics(db, sqlBlock, error);
+						throw new Error(`${baseError.message}${diagnostics}`);
+					}
+				};
 
 				for (const line of lines) {
 					lineNumber++;
@@ -273,168 +411,56 @@ describe('SQL Logic Tests', () => {
 
 					if (trimmedLine === '') continue; // Skip empty lines
 
-					// Check for full-line comments, including error expectation
+					// Handle comment lines
 					if (trimmedLine.startsWith('--')) {
 						if (trimmedLine.toLowerCase().startsWith('-- error:')) {
+							// Set error expectation and execute immediately
 							expectedErrorSubstring = trimmedLine.substring(9).trim();
 
-							// If we have accumulated SQL and now have an error expectation, execute the block immediately
-							const sqlBlock = currentSql.trim();
-							if (sqlBlock && expectedErrorSubstring !== null) {
-								if (DIAG_CONFIG.verbose) {
-									console.log(`Executing block (expect error "${expectedErrorSubstring}"):\n${sqlBlock}`);
-								}
-								try {
-									await db.exec(sqlBlock);
-									const baseError = new Error(`[${file}:${lineNumber}] Expected error matching "${expectedErrorSubstring}" but SQL block executed successfully.\nBlock: ${sqlBlock}`);
-									const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
-									throw new Error(`${baseError.message}${diagnostics}`);
-								} catch (actualError: any) {
-									expect(actualError.message.toLowerCase()).to.include(expectedErrorSubstring.toLowerCase(),
-										`[${file}:${lineNumber}] Block: ${sqlBlock}\nExpected error containing: "${expectedErrorSubstring}"\nActual error: "${actualError.message}"`
-									);
-
-									// Show location information if available
-									const locationInfo = formatLocationInfo(actualError, sqlBlock);
-									if (DIAG_CONFIG.verbose && locationInfo) {
-										console.log(`   -> Error location: ${locationInfo}`);
-									}
-									if (DIAG_CONFIG.verbose) {
-										console.log(`   -> Caught expected error: ${actualError.message}`);
-									}
-								}
-
-								// Reset for the next block
-								currentSql = '';
-								expectedResultJson = null;
-								expectedErrorSubstring = null;
+							if (currentSql.trim()) {
+								await executeExpectingError(currentSql.trim(), expectedErrorSubstring, lineNumber);
+								resetState();
+							}
+						} else if (trimmedLine.toLowerCase() === '-- run') {
+							// Run accumulated SQL as setup immediately
+							if (currentSql.trim()) {
+								await executeSetup(currentSql.trim(), lineNumber);
+								resetState();
 							}
 						}
-						continue; // Skip full comment lines
+						continue; // Skip all comment lines
 					}
 
-					// --- Refined Comment/SQL Handling ---
-					let sqlPart = line;
-
-					// Check for result marker first
+					// Handle result marker
 					if (trimmedLine.startsWith('→')) {
 						expectedResultJson = trimmedLine.substring(1).trim();
-						sqlPart = ''; // Line with marker doesn't contribute SQL
+
+						// Execute immediately with result expectation
+						if (currentSql.trim()) {
+							await executeExpectingResults(currentSql.trim(), expectedResultJson, lineNumber);
+							resetState();
+						}
+						continue; // Don't add to SQL
 					}
 
-					// Strip trailing comment from the potential SQL part
+					// Process SQL line
+					let sqlPart = line;
+
+					// Strip trailing comment from the SQL part
 					const commentIndex = sqlPart.indexOf('--');
 					if (commentIndex !== -1) {
 						sqlPart = sqlPart.substring(0, commentIndex);
 					}
 
-					// Accumulate the potentially stripped SQL part
+					// Accumulate SQL
 					if (sqlPart.trim() !== '') {
 						currentSql += sqlPart + '\n';
 					}
-					// --- End Refined Handling ---
-
-					// Execute when we have a full SQL block AND expected results (errors are now handled immediately above)
-					const sqlBlock = currentSql.trim(); // Keep sqlBlock variable
-					if (sqlBlock && expectedResultJson !== null) {
-
-						if (DIAG_CONFIG.verbose) {
-							console.log(`Executing block (expect results):\n${sqlBlock}`);
-						}
-
-						// db.eval now handles parsing the whole sqlBlock.
-						// If sqlBlock has multiple statements, db.eval will execute the first one
-						// and is intended for single result-producing queries.
-						// For logic tests with setup statements, we need to ensure setup is run first.
-
-						const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
-						if (statements.length > 1) {
-							for (let i = 0; i < statements.length - 1; i++) {
-								const statement = statements[i].trim();
-								if (statement.length > 0) {
-									if (DIAG_CONFIG.verbose) {
-										console.log(`  -> Executing setup statement: ${statement}`);
-									}
-									await db.exec(statement); // exec is for side-effects
-								}
-							}
-						}
-
-						const lastStatement = statements[statements.length - 1];
-						if (DIAG_CONFIG.verbose) {
-							console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
-						}
-
-						let executionResult: { results: Record<string, any>[], traceEvents: any[] };
-						if (lastStatement) {
-							executionResult = await executeWithTracing(db, lastStatement);
-						} else {
-							executionResult = { results: [], traceEvents: [] };
-						}
-
-						const actualResult = executionResult.results;
-
-						let expectedResult: any;
-						try {
-							expectedResult = JSON.parse(expectedResultJson);
-						} catch (jsonError: any) {
-							throw new Error(`[${file}:${lineNumber}] Invalid expected JSON: ${jsonError.message} - JSON: ${expectedResultJson}`);
-						}
-
-						if (actualResult.length !== expectedResult.length) {
-							const baseError = new Error(`[${file}:${lineNumber}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}\nBlock:\n${sqlBlock}`);
-							const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
-							const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
-							throw new Error(`${baseError.message}${diagnostics}${traceInfo}`);
-						}
-						for (let i = 0; i < actualResult.length; i++) {
-							try {
-								expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNumber}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
-							} catch (matchError: any) {
-								const error = matchError instanceof Error ? matchError : new Error(String(matchError));
-								const diagnostics = generateDiagnostics(db, sqlBlock, error);
-								const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
-								throw new Error(`${error.message}${diagnostics}${traceInfo}`);
-							}
-						}
-						if (DIAG_CONFIG.verbose) {
-							console.log("   -> Results match!");
-						}
-
-						// Reset for the next block
-						currentSql = '';
-						expectedResultJson = null;
-						expectedErrorSubstring = null;
-					}
 				}
 
-				// Process any remaining SQL at the end of the file (that doesn't expect results or errors)
-				const finalSql = currentSql.trim();
-				if (finalSql) {
-					if (expectedErrorSubstring !== null || expectedResultJson !== null) {
-						// This shouldn't happen if logic is correct, but check anyway
-						console.warn(`[${file}] Dangling SQL block at end of file with expectation: ${finalSql}`);
-					}
-					try {
-						if (DIAG_CONFIG.verbose) {
-							console.log(`Executing (final, no results expected): ${finalSql}`);
-						}
-						await db.exec(finalSql);
-					} catch (error: any) {
-						// If the final block was actually expected to error, this catch is wrong.
-						// The loop structure assumes errors/results are declared *before* the SQL.
-						let errorMessage = `[${file}:${lineNumber}] Failed executing final SQL: ${finalSql} - Error: ${error.message}`;
-
-						// Add location information if available
-						const locationInfo = formatLocationInfo(error, finalSql);
-						if (locationInfo) {
-							errorMessage += locationInfo;
-						}
-
-						const baseError = new Error(errorMessage);
-						const diagnostics = generateDiagnostics(db, finalSql, error); // Pass original error for diagnostics
-						throw new Error(`${baseError.message}${diagnostics}`);
-					}
+				// Process any remaining SQL at the end of the file (treat as setup)
+				if (currentSql.trim()) {
+					await executeSetup(currentSql.trim(), lineNumber);
 				}
 			});
 		});

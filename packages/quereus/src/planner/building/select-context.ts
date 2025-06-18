@@ -28,7 +28,7 @@ export function buildWithContext(
 	cteNodes: Map<string, CTEPlanNode>;
 } {
 	// Start with parent CTEs
-	let cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs);
+	const cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs);
 	let contextWithCTEs = ctx;
 
 	if (stmt.withClause) {

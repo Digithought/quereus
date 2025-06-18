@@ -645,6 +645,71 @@ This design aligns with Third Manifesto principles:
 - **Algebraic Foundation**: Operations preserve or transform bag/set properties predictably
 - **Optimization Enabling**: Type information guides query optimization decisions
 
+## Mutation Operations: Always-Present OLD/NEW Model
+
+Quereus implements a uniform OLD/NEW attribute model for all mutation operations (INSERT, UPDATE, DELETE) that eliminates conditional context management and provides consistent symbol resolution.
+
+### Core Design
+
+**Always-Present Attributes**: Every mutation operation has both OLD and NEW attributes for every table column, regardless of operation type:
+- **INSERT**: OLD attributes are constant NULL, NEW attributes contain inserted values
+- **UPDATE**: OLD attributes contain pre-update values, NEW attributes contain post-update values  
+- **DELETE**: OLD attributes contain deleted values, NEW attributes are constant NULL
+
+**Flat Row Composition**: At runtime, mutation contexts use a flat row format:
+```
+[oldCol0, oldCol1, ..., oldColN, newCol0, newCol1, ..., newColN]
+```
+
+### Planning Phase
+
+During statement building, mutation operations generate:
+- `oldRowDescriptor`: Maps OLD attribute IDs to indices 0..n-1 in flat row
+- `newRowDescriptor`: Maps NEW attribute IDs to indices n..2n-1 in flat row
+- Layered scope registration where unqualified column references default to the meaningful values:
+  - INSERT/UPDATE: NEW attributes (since OLD may be NULL/irrelevant)
+  - DELETE: OLD attributes (since NEW is always NULL)
+
+### Runtime Execution
+
+**Context Setup**: Single flat context eliminates attribute ID collisions:
+```typescript
+const flatRow = composeOldNewRow(oldRow, newRow, columnCount);
+rctx.context.set(flatRowDescriptor, () => flatRow);
+```
+
+**Symbol Resolution**: Column references resolve deterministically:
+- Unqualified `column` → NEW.column (INSERT/UPDATE) or OLD.column (DELETE)
+- Qualified `OLD.column` → OLD section of flat row
+- Qualified `NEW.column` → NEW section of flat row
+
+**Constraint Evaluation**: All constraints (CHECK, NOT NULL) evaluate against the flat row context without conditional logic.
+
+### Benefits
+
+- **Eliminates Context Conflicts**: Single flat descriptor prevents attribute ID collisions
+- **Simplifies Emitters**: No conditional OLD/NEW context setup across mutation types
+- **Consistent Symbol Space**: OLD/NEW always available, always defined for all operations
+- **Easier Reasoning**: Users can reliably reference OLD/NEW in any mutation context
+- **Future-Proof**: Supports triggers, defaults, and other features that need OLD/NEW access
+
+### Migration from Conditional Model
+
+The previous model used conditional OLD/NEW descriptors with metadata properties:
+```typescript
+// OLD MODEL - conditional contexts
+if (plan.oldRowDescriptor) {
+  rctx.context.set(plan.oldRowDescriptor, () => updateData.oldRow);
+}
+// Plus hidden __updateRowData properties
+
+// NEW MODEL - always-present flat context  
+const flatRow = composeOldNewRow(oldRow, newRow, columnCount);
+rctx.context.set(flatRowDescriptor, () => flatRow);
+```
+
+This eliminates the break-fix cycle where attribute ID conflicts caused unpredictable column resolution behavior.
+
 ## Common Patterns
 
 ### Row Processing with Context

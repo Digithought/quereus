@@ -301,13 +301,14 @@ export class Parser {
 
 		// Parse the table reference
 		const table = this.tableIdentifier();
+		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		// Parse column list if provided
 		let columns: string[] | undefined;
 		if (this.match(TokenType.LPAREN)) {
 			columns = [];
 			do {
-				if (!this.checkIdentifierLike(['key', 'action', 'set', 'default', 'check', 'unique', 'like'])) {
+				if (!this.checkIdentifierLike(contextualKeywords)) {
 					throw this.error(this.peek(), "Expected column name.");
 				}
 				columns.push(this.advance().lexeme);
@@ -626,14 +627,17 @@ export class Parser {
 		const startToken = this.peek();
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
-		// Check for subquery: ( SELECT ... or ( VALUES ...
+		// Check for subquery: ( SELECT ... or ( VALUES ... or ( INSERT/UPDATE/DELETE ...
 		if (this.check(TokenType.LPAREN)) {
 			// Look ahead to see if this is a subquery
 			const lookahead = this.current + 1;
-			if (lookahead < this.tokens.length &&
-				(this.tokens[lookahead].type === TokenType.SELECT ||
-				 this.tokens[lookahead].type === TokenType.VALUES)) {
-				return this.subquerySource(startToken, withClause);
+			if (lookahead < this.tokens.length) {
+				const nextTokenType = this.tokens[lookahead].type;
+				if (nextTokenType === TokenType.SELECT || nextTokenType === TokenType.VALUES) {
+					return this.subquerySource(startToken, withClause);
+				} else if (nextTokenType === TokenType.INSERT || nextTokenType === TokenType.UPDATE || nextTokenType === TokenType.DELETE) {
+					return this.mutatingSubquerySource(startToken, withClause);
+				}
 			}
 		}
 
@@ -706,6 +710,77 @@ export class Parser {
 		return {
 			type: 'subquerySource',
 			subquery,
+			alias,
+			columns,
+			loc: _createLoc(startToken, endToken),
+		};
+	}
+
+	/** Parses a mutating subquery source: (INSERT/UPDATE/DELETE ... RETURNING ...) AS alias */
+	private mutatingSubquerySource(startToken: Token, withClause?: AST.WithClause): AST.MutatingSubquerySource {
+		this.consume(TokenType.LPAREN, "Expected '(' before mutating subquery.");
+
+		let stmt: AST.InsertStmt | AST.UpdateStmt | AST.DeleteStmt;
+
+		if (this.check(TokenType.INSERT)) {
+			const insertToken = this.advance();
+			stmt = this.insertStatement(insertToken, withClause);
+		} else if (this.check(TokenType.UPDATE)) {
+			const updateToken = this.advance();
+			stmt = this.updateStatement(updateToken, withClause);
+		} else if (this.check(TokenType.DELETE)) {
+			const deleteToken = this.advance();
+			stmt = this.deleteStatement(deleteToken, withClause);
+		} else {
+			throw this.error(this.peek(), "Expected 'INSERT', 'UPDATE', or 'DELETE' in mutating subquery.");
+		}
+
+		// Validate that the statement has a RETURNING clause
+		if (!stmt.returning || stmt.returning.length === 0) {
+			throw this.error(this.previous(), "Mutating subqueries must have a RETURNING clause to be used as table sources.");
+		}
+
+		this.consume(TokenType.RPAREN, "Expected ')' after mutating subquery.");
+
+		// Parse optional alias for mutating subquery
+		let alias: string;
+		let columns: string[] | undefined;
+
+		if (this.match(TokenType.AS)) {
+			if (!this.checkIdentifierLike([])) {
+				throw this.error(this.peek(), "Expected alias after 'AS'.");
+			}
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+		} else if (this.checkIdentifierLike([]) &&
+			!this.checkNext(1, TokenType.DOT) &&
+			!this.checkNext(1, TokenType.COMMA) &&
+			!this.isJoinToken() &&
+			!this.isEndOfClause()) {
+			const aliasToken = this.advance();
+			alias = aliasToken.lexeme;
+		} else {
+			// Generate a default alias if none provided
+			alias = `mutating_subquery_${startToken.startOffset}`;
+		}
+
+		// Parse optional column list after alias: AS alias(col1, col2, ...)
+		if (this.match(TokenType.LPAREN)) {
+			columns = [];
+			const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
+
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in alias column list."));
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
+		}
+
+		const endToken = this.previous();
+		return {
+			type: 'mutatingSubquerySource',
+			stmt,
 			alias,
 			columns,
 			loc: _createLoc(startToken, endToken),
@@ -928,7 +1003,7 @@ export class Parser {
 	 * Parse IS NULL / IS NOT NULL expressions
 	 */
 	private isNull(): AST.Expression {
-		let expr = this.equality();
+		const expr = this.equality();
 		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		if (this.match(TokenType.IS)) {
@@ -1706,7 +1781,7 @@ export class Parser {
 	// --- Statement Parsing Stubs ---
 
 	/** @internal */
-	private updateStatement(startToken: Token, withClause?: AST.WithClause): AST.UpdateStmt {
+	private updateStatement(startToken: Token, _withClause?: AST.WithClause): AST.UpdateStmt {
 		const table = this.tableIdentifier();
 		this.consume(TokenType.SET, "Expected 'SET' after table name in UPDATE.");
 		const assignments: { column: string; value: AST.Expression }[] = [];
@@ -1730,7 +1805,7 @@ export class Parser {
 	}
 
 	/** @internal */
-	private deleteStatement(startToken: Token, withClause?: AST.WithClause): AST.DeleteStmt {
+	private deleteStatement(startToken: Token, _withClause?: AST.WithClause): AST.DeleteStmt {
 		this.matchKeyword('FROM');
 		const table = this.tableIdentifier();
 		let where: AST.Expression | undefined;
@@ -1793,7 +1868,7 @@ export class Parser {
 	 * Parse CREATE TABLE statement
 	 * @returns AST for CREATE TABLE
 	 */
-	private createTableStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt {
+	private createTableStatement(startToken: Token, _withClause?: AST.WithClause): AST.CreateTableStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
@@ -1837,7 +1912,7 @@ export class Parser {
 		}
 
 		let moduleName: string | undefined;
-		let moduleArgs: Record<string, SqlValue> = {};
+		const moduleArgs: Record<string, SqlValue> = {};
 		if (this.matchKeyword('USING')) {
 			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
 			if (this.matchKeyword('(')) {
@@ -1870,7 +1945,7 @@ export class Parser {
 	 * @param isUnique Flag indicating if UNIQUE keyword was already parsed
 	 * @returns AST for CREATE INDEX
 	 */
-	private createIndexStatement(startToken: Token, isUnique = false, withClause?: AST.WithClause): AST.CreateIndexStmt {
+	private createIndexStatement(startToken: Token, isUnique = false, _withClause?: AST.WithClause): AST.CreateIndexStmt {
 		if (!isUnique && this.peekKeyword('UNIQUE')) {
 			isUnique = true;
 			this.advance();
@@ -1963,7 +2038,7 @@ export class Parser {
 	 * Parse DROP statement
 	 * @returns AST for DROP statement
 	 */
-	private dropStatement(startToken: Token, withClause?: AST.WithClause): AST.DropStmt {
+	private dropStatement(startToken: Token, _withClause?: AST.WithClause): AST.DropStmt {
 		let objectType: 'table' | 'view' | 'index' | 'trigger';
 
 		if (this.peekKeyword('TABLE')) {
@@ -2000,7 +2075,7 @@ export class Parser {
 	 * Parse ALTER TABLE statement
 	 * @returns AST for ALTER TABLE statement
 	 */
-	private alterTableStatement(startToken: Token, withClause?: AST.WithClause): AST.AlterTableStmt {
+	private alterTableStatement(startToken: Token, _withClause?: AST.WithClause): AST.AlterTableStmt {
 		this.consumeKeyword('TABLE', "Expected 'TABLE' after ALTER.");
 
 		const table = this.tableIdentifier();
@@ -2052,7 +2127,7 @@ export class Parser {
 	 * Parse BEGIN statement
 	 * @returns AST for BEGIN statement
 	 */
-	private beginStatement(startToken: Token, withClause?: AST.WithClause): AST.BeginStmt {
+	private beginStatement(startToken: Token, _withClause?: AST.WithClause): AST.BeginStmt {
 		let mode: 'deferred' | 'immediate' | 'exclusive' | undefined;
 		if (this.peekKeyword('DEFERRED')) {
 			this.advance();
@@ -2074,7 +2149,7 @@ export class Parser {
 	 * Parse COMMIT statement
 	 * @returns AST for COMMIT statement
 	 */
-	private commitStatement(startToken: Token, withClause?: AST.WithClause): AST.CommitStmt {
+	private commitStatement(startToken: Token, _withClause?: AST.WithClause): AST.CommitStmt {
 		this.matchKeyword('TRANSACTION');
 		return { type: 'commit', loc: _createLoc(startToken, this.previous()) };
 	}
@@ -2083,7 +2158,7 @@ export class Parser {
 	 * Parse ROLLBACK statement
 	 * @returns AST for ROLLBACK statement
 	 */
-	private rollbackStatement(startToken: Token, withClause?: AST.WithClause): AST.RollbackStmt {
+	private rollbackStatement(startToken: Token, _withClause?: AST.WithClause): AST.RollbackStmt {
 		this.matchKeyword('TRANSACTION');
 
 		let savepoint: string | undefined;
@@ -2101,7 +2176,7 @@ export class Parser {
 	 * Parse SAVEPOINT statement
 	 * @returns AST for SAVEPOINT statement
 	 */
-	private savepointStatement(startToken: Token, withClause?: AST.WithClause): AST.SavepointStmt {
+	private savepointStatement(startToken: Token, _withClause?: AST.WithClause): AST.SavepointStmt {
 		const name = this.consumeIdentifier("Expected savepoint name after SAVEPOINT.");
 		return { type: 'savepoint', name, loc: _createLoc(startToken, this.previous()) };
 	}
@@ -2110,7 +2185,7 @@ export class Parser {
 	 * Parse RELEASE statement
 	 * @returns AST for RELEASE statement
 	 */
-	private releaseStatement(startToken: Token, withClause?: AST.WithClause): AST.ReleaseStmt {
+	private releaseStatement(startToken: Token, _withClause?: AST.WithClause): AST.ReleaseStmt {
 		this.matchKeyword('SAVEPOINT');
 		const name = this.consumeIdentifier("Expected savepoint name after RELEASE [SAVEPOINT].");
 		return { type: 'release', savepoint: name, loc: _createLoc(startToken, this.previous()) };
@@ -2120,7 +2195,7 @@ export class Parser {
 	 * Parse PRAGMA statement
 	 * @returns AST for PRAGMA statement
 	 */
-	private pragmaStatement(startToken: Token, withClause?: AST.WithClause): AST.PragmaStmt {
+	private pragmaStatement(startToken: Token, _withClause?: AST.WithClause): AST.PragmaStmt {
 		const nameValue = this.nameValueItem("pragma");
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
 	}
@@ -2437,7 +2512,13 @@ export class Parser {
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			this.consume(TokenType.LPAREN, "Expected '(' before PRIMARY KEY columns.");
-			const columns = this.identifierListWithDirection();
+
+			// Handle empty PRIMARY KEY () for singleton tables (Third Manifesto feature)
+			let columns: { name: string; direction?: 'asc' | 'desc' }[] = [];
+			if (!this.check(TokenType.RPAREN)) {
+				columns = this.identifierListWithDirection();
+			}
+
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous();

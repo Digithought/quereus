@@ -4,7 +4,6 @@ import type { WindowFunctionCallNode } from './window-function.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { SqlDataType } from '../../common/types.js';
 import type * as AST from '../../parser/ast.js';
 
 export interface WindowSpec {
@@ -65,7 +64,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 
 			// Preserve source attributes and add window function attributes
 			const sourceAttrs = this.source.getAttributes();
-			const windowAttrs = this.functions.map((func, index) => ({
+			const windowAttrs = this.functions.map((func) => ({
 				id: PlanNode.nextAttrId(),
 				name: func.alias || func.functionName.toLowerCase(),
 				type: func.getType(),
@@ -117,7 +116,6 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		const newOrderByExpressions = newChildren.slice(childIndex, childIndex + this.orderByExpressions.length) as ScalarPlanNode[];
 		childIndex += this.orderByExpressions.length;
 
-		const nonNullFunctionArgs = this.functionArguments.filter(arg => arg !== null);
 		const newNonNullFunctionArgs = newChildren.slice(childIndex) as ScalarPlanNode[];
 
 		// Rebuild function arguments array preserving null positions
@@ -167,10 +165,10 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 
 	override toString(): string {
 		const partitionClause = this.windowSpec.partitionBy.length > 0
-			? `PARTITION BY ${this.windowSpec.partitionBy.map(e => '...').join(', ')}`
+			? `PARTITION BY ${this.windowSpec.partitionBy.map(_e => '...').join(', ')}`
 			: '';
 		const orderClause = this.windowSpec.orderBy.length > 0
-			? `ORDER BY ${this.windowSpec.orderBy.map(o => '...').join(', ')}`
+			? `ORDER BY ${this.windowSpec.orderBy.map(_o => '...').join(', ')}`
 			: '';
 		const clauses = [partitionClause, orderClause].filter(c => c).join(' ');
 		const funcNames = this.functions.map(f => f.functionName).join(', ');

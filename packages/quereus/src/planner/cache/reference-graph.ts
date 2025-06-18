@@ -4,7 +4,7 @@
  */
 
 import { createLogger } from '../../common/logger.js';
-import type { PlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
+import type { PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { JoinNode } from '../nodes/join-node.js';
 import type { OptimizerTuning } from '../optimizer-tuning.js';

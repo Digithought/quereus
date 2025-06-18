@@ -2,7 +2,6 @@ import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attri
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
-import type * as AST from '../../parser/ast.js';
 import { Cached } from '../../util/cached.js';
 
 /**

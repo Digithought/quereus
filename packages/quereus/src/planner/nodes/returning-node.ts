@@ -50,7 +50,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     const columnNames: string[] = [];
     const nameCount = new Map<string, number>();
 
-    const columns = this.projections.map((proj, index) => {
+    const columns = this.projections.map((proj) => {
       // Determine base column name
       let baseName: string;
       if (proj.alias) {

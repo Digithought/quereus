@@ -29,7 +29,7 @@ export function buildWindowPhase(
 	const windowGroups = groupWindowFunctionsBySpec(windowFunctions);
 
 	// Create WindowNode for each unique window specification
-	for (const [windowSpecKey, functions] of windowGroups) {
+	for (const [_windowSpecKey, functions] of windowGroups) {
 		const firstFunc = functions[0];
 		const windowSpec: WindowSpec = {
 			partitionBy: firstFunc.func.expression.window?.partitionBy || [],
@@ -224,23 +224,6 @@ function findWindowFunctionIndex(
 	});
 
 	return matchingWindowFuncIndex >= 0 ? sourceColumnCount + matchingWindowFuncIndex : -1;
-}
-
-/**
- * Finds the index of a source column in the window output
- */
-function findSourceColumnIndex(
-	column: AST.ResultColumnExpr,
-	windowType: any,
-	sourceColumnCount: number
-): number {
-	return windowType.columns.findIndex((col: any, index: number) => {
-		if (index >= sourceColumnCount) return false; // Skip window function columns
-		if (column.expr.type === 'column') {
-			return col.name.toLowerCase() === column.expr.name.toLowerCase();
-		}
-		return false;
-	});
 }
 
 /**

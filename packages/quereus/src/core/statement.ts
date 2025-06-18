@@ -5,7 +5,6 @@ import type { Database } from './database.js';
 import { isRelationType, type ColumnDef, type ScalarType } from '../common/datatype.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import type { Statement as ASTStatement } from '../parser/ast.js';
-import { buildBlock } from '../planner/building/block.js';
 import type { BlockNode } from '../planner/nodes/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
@@ -338,7 +337,7 @@ export class Statement {
 	getColumnDefs(): DeepReadonly<ColumnDef>[] {
 		if (!this.plan) {
 			if (this.astBatchIndex >=0 && this.astBatchIndex < this.astBatch.length && this.needsCompile) {
-				try { this.compile(); } catch(e) { /*ignore compile error for _getColumnDefs, return empty */}
+				try { this.compile(); } catch { /*ignore compile error for _getColumnDefs, return empty */}
 			}
 			if (!this.plan) return [];
 		}

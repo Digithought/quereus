@@ -46,7 +46,7 @@ function parseToTemporal(timeVal: SqlValue, isUnixEpoch = false): Temporal.Zoned
 							const instant = Temporal.Instant.fromEpochMilliseconds(timeVal * 1000);
 							return instant.toZonedDateTimeISO('UTC');
 						}
-					} catch {}
+					} catch { /* continue */ }
 					// Try milliseconds if seconds failed or out of range
 					try {
 						// Reasonable range check for milliseconds (approx 1900-3000 AD)
@@ -54,7 +54,7 @@ function parseToTemporal(timeVal: SqlValue, isUnixEpoch = false): Temporal.Zoned
 							const instant = Temporal.Instant.fromEpochMilliseconds(timeVal);
 							return instant.toZonedDateTimeISO('UTC');
 						}
-					} catch {}
+					} catch { /* continue */ }
 					return null; // Unrecognized number format
 				}
 			}
@@ -78,19 +78,19 @@ function parseToTemporal(timeVal: SqlValue, isUnixEpoch = false): Temporal.Zoned
 			}
 			const zdt = Temporal.ZonedDateTime.from(trimmedVal);
 			return zdt;
-		} catch {}
+		} catch { /* continue */ }
 
 		// Attempt direct parsing with Temporal.PlainDateTime (ISO format without timezone)
 		try {
 			const pdt = Temporal.PlainDateTime.from(trimmedVal.replace(' ','T'));
 			return pdt.toZonedDateTime('UTC');
-		} catch {}
+		} catch { /* continue */ }
 
 		// Attempt direct parsing with Temporal.PlainDate (YYYY-MM-DD)
 		try {
 			const pd = Temporal.PlainDate.from(trimmedVal);
 			return pd.toZonedDateTime('UTC'); // Defaults to 00:00:00 UTC
-		} catch {}
+		} catch { /* continue */ }
 
 		// Attempt direct parsing with Temporal.PlainTime (HH:MM:SS.SSS)
 		try {
@@ -106,7 +106,7 @@ function parseToTemporal(timeVal: SqlValue, isUnixEpoch = false): Temporal.Zoned
 				microsecond: pt.microsecond,
 				nanosecond: pt.nanosecond,
 			 }).toZonedDateTime('UTC');
-		} catch {}
+		} catch { /* continue */ }
 
 		// --- Fallback Manual Parsing for SQLite Lenient Formats ---
 
@@ -383,9 +383,10 @@ export const strftimeFunc = createScalarFunction(
 					case '%H': return finalDt.hour.toString().padStart(2, '0');
 					case '%M': return finalDt.minute.toString().padStart(2, '0');
 					case '%S': return finalDt.second.toString().padStart(2, '0');
-					case '%f': // SQLite %f is .SSS
+					case '%f': { // SQLite %f is .SSS
 						const msStr = finalDt.millisecond.toString().padStart(3,'0');
 						return `.${msStr}`;
+					}
 					case '%s': return Math.floor(finalDt.epochMilliseconds / 1000).toString();
 					case '%I': return (finalDt.hour % 12 || 12).toString().padStart(2, '0'); // 12-hour clock
 					case '%k': return finalDt.hour.toString().padStart(2, ' '); // 24-hour, space padded
@@ -394,12 +395,13 @@ export const strftimeFunc = createScalarFunction(
 					case '%P': return finalDt.hour < 12 ? 'am' : 'pm';
 					case '%T': return `${finalDt.hour.toString().padStart(2, '0')}:${finalDt.minute.toString().padStart(2, '0')}:${finalDt.second.toString().padStart(2, '0')}`;
 					case '%R': return `${finalDt.hour.toString().padStart(2, '0')}:${finalDt.minute.toString().padStart(2, '0')}`;
-					case '%r': // 12-hour time hh:mm:ss AM/PM
+					case '%r': { // 12-hour time hh:mm:ss AM/PM
 						const hour12 = (finalDt.hour % 12 || 12).toString().padStart(2, '0');
 						const min = finalDt.minute.toString().padStart(2, '0');
 						const sec = finalDt.second.toString().padStart(2, '0');
 						const ampm = finalDt.hour < 12 ? 'AM' : 'PM';
 						return `${hour12}:${min}:${sec} ${ampm}`;
+					}
 
 					// Weekday / Week Number
 					case '%w': return (finalDt.dayOfWeek % 7).toString(); // 0=Sunday..6=Saturday (SQLite)
@@ -415,17 +417,18 @@ export const strftimeFunc = createScalarFunction(
 						return (finalDt.yearOfWeek ?? finalDt.year).toString().padStart(4, '0');
 
 					// Julian Day
-					case '%J':
+					case '%J': {
 						const epochMillis = finalDt.toInstant().epochMilliseconds;
 						const jd = (epochMillis / MILLIS_PER_DAY) + JULIAN_DAY_UNIX_EPOCH;
 						return jd.toString();
-
+					}
 					// Timezone
-					case '%z': // +hhmm or -hhmm
+					case '%z': { // +hhmm or -hhmm
 						const offsetStr = finalDt.offset;
 						const sign = offsetStr.startsWith('-') ? '-' : '+';
 						const parts = offsetStr.substring(1).split(':');
 						return `${sign}${parts[0].padStart(2, '0')}${parts[1]?.padStart(2, '0') ?? '00'}`;
+					}
 					case '%:z': // +hh:mm or -hh:mm
 						return finalDt.offset;
 					// case '%Z': // Timezone name - Complex, depends on available data. Skip for now.

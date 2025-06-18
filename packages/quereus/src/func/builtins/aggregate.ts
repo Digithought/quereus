@@ -1,5 +1,4 @@
 import { createLogger } from '../../common/logger.js';
-import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createAggregateFunction } from '../registration.js';
 import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
@@ -218,7 +217,6 @@ export const varSampFunc = createAggregateFunction(
 	statReducer,
 	(acc: StatAccumulator): number | null => {
 		if (acc.count <= 1) return null; // NULL if count is 0 or 1
-		const avg = acc.sum / acc.count;
 		// Sample variance: (sumSq - n*avg^2) / (n-1) == (sumSq - sum*sum/n) / (n-1)
 		const variance = (acc.sumSq - (acc.sum * acc.sum) / acc.count) / (acc.count - 1);
 		return variance;

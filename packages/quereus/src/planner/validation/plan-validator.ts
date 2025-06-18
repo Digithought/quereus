@@ -3,7 +3,7 @@
  * Validates that a plan tree meets all invariants before emission
  */
 
-import type { PlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -150,11 +150,29 @@ function validatePhysicalProperties(node: PlanNode, nodePath: string): void {
 		);
 	}
 
+	if (physical.idempotent !== undefined && typeof physical.idempotent !== 'boolean') {
+		throw new QuereusError(
+			`Node ${node.nodeType} has invalid idempotent flag: ${physical.idempotent}`,
+			StatusCode.INTERNAL
+		);
+	}
+
 	if (physical.estimatedRows !== undefined && physical.estimatedRows < 0) {
 		throw new QuereusError(
 			`Node ${node.nodeType} has negative estimated rows: ${physical.estimatedRows}`,
 			StatusCode.INTERNAL
 		);
+	}
+
+	// Validate side effect consistency for DML nodes
+	if (PlanNode.hasSideEffects(physical)) {
+		// Nodes with side effects should not be constant
+		if (physical.constant === true) {
+			throw new QuereusError(
+				`Node ${node.nodeType} has side effects but is marked as constant`,
+				StatusCode.INTERNAL
+			);
+		}
 	}
 }
 

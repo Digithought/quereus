@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ScalarPlanNode } from './plan-node.js';
@@ -116,5 +116,18 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     }
 
     return props;
+  }
+
+  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+    const sourcePhysical = childrenPhysical[0];
+
+    return {
+      estimatedRows: sourcePhysical?.estimatedRows,
+      uniqueKeys: sourcePhysical?.uniqueKeys,
+      readonly: false, // UPDATE has side effects
+      deterministic: true, // Same input always produces same result
+      idempotent: false, // UPDATE is generally not idempotent (could update same row multiple times)
+      constant: false // Never constant
+    };
   }
 }

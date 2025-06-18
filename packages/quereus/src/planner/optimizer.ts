@@ -1,29 +1,11 @@
 import { createLogger } from '../common/logger.js';
-import { PlanNode, type RelationalPlanNode, type PhysicalProperties } from './nodes/plan-node.js';
+import { PlanNode, type PhysicalProperties } from './nodes/plan-node.js';
 import { PlanNodeType } from './nodes/plan-node-type.js';
-import { BlockNode } from './nodes/block.js';
-import { AggregateNode } from './nodes/aggregate-node.js';
-import { SortNode } from './nodes/sort.js';
-import { FilterNode } from './nodes/filter.js';
-import { DistinctNode } from './nodes/distinct-node.js';
-import { SetOperationNode } from './nodes/set-operation-node.js';
-import { ProjectNode } from './nodes/project-node.js';
-import { LimitOffsetNode } from './nodes/limit-offset.js';
-import { WindowNode } from './nodes/window-node.js';
-import { InsertNode } from './nodes/insert-node.js';
-import { UpdateNode } from './nodes/update-node.js';
-import { UpdateExecutorNode } from './nodes/update-executor-node.js';
-import { DeleteNode } from './nodes/delete-node.js';
-import { ConstraintCheckNode } from './nodes/constraint-check-node.js';
-import { JoinNode } from './nodes/join-node.js';
-import { CacheNode } from './nodes/cache-node.js';
 import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 
 // Re-export for convenience
 export { DEFAULT_TUNING };
 
-import { ReturningNode } from './nodes/returning-node.js';
-import { SinkNode } from './nodes/sink-node.js';
 import { quereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { applyRules, clearVisitedRules, registerRules, createRule } from './framework/registry.js';

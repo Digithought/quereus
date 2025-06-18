@@ -181,7 +181,7 @@ function isAndExpression(expr: ScalarPlanNode): boolean {
 /**
  * Get children of binary expression
  */
-function getBinaryExpressionChildren(expr: ScalarPlanNode): {
+function getBinaryExpressionChildren(_expr: ScalarPlanNode): {
 	left: ScalarPlanNode;
 	right: ScalarPlanNode;
 } | null {
@@ -206,7 +206,7 @@ function isLiteralConstant(node: ScalarPlanNode): boolean {
 /**
  * Get literal value from literal node
  */
-function getLiteralValue(node: ScalarPlanNode): SqlValue {
+function getLiteralValue(_node: ScalarPlanNode): SqlValue {
 	// Simplified - would need actual implementation
 	return null;
 }
@@ -246,7 +246,7 @@ export function createResidualFilter(
 	if (handledConstraints.length === 0) {
 		// Return a simple function that evaluates the original predicate
 		// This is a placeholder - real implementation would need to compile the predicate
-		return (row: any) => true;
+		return (_row: any) => true;
 	}
 
 	// For now, return undefined to indicate no residual filter

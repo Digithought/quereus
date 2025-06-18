@@ -6,7 +6,7 @@ import { type Scope, Ambiguous } from './scope.js';
 
 /** Scope that contains no symbols.  */
 export class EmptyScope implements Scope {
-	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
+	resolveSymbol(_symbolKey: string, _expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		return undefined;
 	}
 
@@ -14,7 +14,7 @@ export class EmptyScope implements Scope {
 		return [];
 	}
 
-	addReference(reference: PlanNode): void {
+	addReference(_reference: PlanNode): void {
 		throw new QuereusError('EmptyScope does not support adding references.', StatusCode.MISUSE);
 	}
 

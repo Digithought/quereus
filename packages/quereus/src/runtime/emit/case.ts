@@ -16,7 +16,7 @@ export function emitCaseExpr(plan: CaseExprNode, ctx: EmissionContext): Instruct
 		const baseValue = args[argIndex++];
 
 		// Evaluate WHEN/THEN clauses
-		for (const clause of plan.whenThenClauses) {
+		for (const _clause of plan.whenThenClauses) {
 			const whenValue = args[argIndex++];
 			const thenValue = args[argIndex++];
 
@@ -44,7 +44,7 @@ export function emitCaseExpr(plan: CaseExprNode, ctx: EmissionContext): Instruct
 		let argIndex = 0;
 
 		// Evaluate WHEN/THEN clauses
-		for (const clause of plan.whenThenClauses) {
+		for (const _clause of plan.whenThenClauses) {
 			const whenValue = args[argIndex++];
 			const thenValue = args[argIndex++];
 

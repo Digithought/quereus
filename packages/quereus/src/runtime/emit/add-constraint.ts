@@ -9,10 +9,10 @@ import { opsToMask } from '../../schema/table.js';
 
 const log = createLogger('runtime:emit:add-constraint');
 
-export function emitAddConstraint(plan: AddConstraintNode, ctx: EmissionContext): Instruction {
+export function emitAddConstraint(plan: AddConstraintNode, _ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 
-	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+	async function run(_rctx: RuntimeContext): Promise<SqlValue> {
 		// Convert the AST constraint to a schema constraint object
 		const constraint = plan.constraint;
 

@@ -3,11 +3,9 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan } from '../emitters.js';
-import { createLogger } from '../../common/logger.js';
 import { streamWithCache, createCacheState, type SharedCacheConfig } from '../cache/shared-cache.js';
 import { buffered, traced } from '../async-util.js';
-
-const log = createLogger('runtime:emit:cache');
+import { isDebugEnabled } from '../../util/environment.js';
 
 /**
  * Usage example for other emitters needing caching (NLJ inner caching, CTE materialization):
@@ -48,7 +46,7 @@ export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 		}
 
 		// Optional: Add tracing in debug mode
-		if (process.env.DEBUG?.includes('quereus:runtime:cache')) {
+		if (isDebugEnabled('runtime:cache')) {
 			sourceIterable = traced(sourceIterable, `cache-${plan.id}`,
 				(row, index) => `row ${index}: [${row.length} columns]`);
 		}

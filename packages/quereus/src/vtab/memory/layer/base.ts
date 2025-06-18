@@ -50,7 +50,7 @@ export class BaseLayer implements Layer {
 		this.primaryKeyFunctions = createPrimaryKeyFunctions(this.tableSchema);
 	}
 
-	public async rebuildAllSecondaryIndexes(): Promise<void> {
+	public rebuildAllSecondaryIndexes(): void {
 		this.clearExistingSecondaryIndexes();
 
 		if (!this.hasSecondaryIndexes()) {
@@ -190,7 +190,7 @@ export class BaseLayer implements Layer {
 		// Create new primary tree with the updated schema and migrate data
 		this.recreatePrimaryTreeWithNewColumn(oldPrimaryTree, defaultValue);
 
-		await this.rebuildAllSecondaryIndexes();
+		this.rebuildAllSecondaryIndexes();
 	}
 
 	private recreatePrimaryTreeWithNewColumn(

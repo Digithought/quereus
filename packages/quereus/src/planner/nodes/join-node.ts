@@ -4,7 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { SqlDataType, StatusCode } from '../../common/types.js';
+import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';

@@ -1,4 +1,4 @@
-import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type TableDescriptor } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
@@ -66,7 +66,6 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 	}
 
 	private buildType(): RelationType {
-		const baseCaseType = this.baseCaseQuery.getType();
 		return {
 			typeClass: 'relation',
 			isReadOnly: false,

@@ -3,7 +3,6 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { createLogger } from '../../common/logger.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';

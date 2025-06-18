@@ -4,11 +4,8 @@ import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
 import type { Row } from '../../../common/types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
-import { createLogger } from '../../../common/logger.js';
 import { QuereusError } from '../../../common/errors.js';
 import { safeIterate } from './safe-iterate.js';
-
-const log = createLogger('vtab:memory:layer:tx-cursor');
 
 export async function* scanTransactionLayer(
 	layer: TransactionLayer,
@@ -24,7 +21,6 @@ export async function* scanTransactionLayer(
 		// For index keys, we need the comparator for that specific index
 		let comparator;
 		if (isIndexKey && plan.indexName !== 'primary') {
-			const index = layer.getSecondaryIndexTree(plan.indexName!);
 			// We can get the comparator from the MemoryIndex, but this is simplified for now
 			// In practice, we'd need access to the MemoryIndex's compareKeys method
 			comparator = (a: any, b: any) => compareSqlValues(a, b); // Simplified

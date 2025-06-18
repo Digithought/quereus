@@ -5,14 +5,14 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
-export function emitWindowFunctionCall(plan: WindowFunctionCallNode, ctx: EmissionContext): Instruction {
+export function emitWindowFunctionCall(plan: WindowFunctionCallNode, _ctx: EmissionContext): Instruction {
 	const functionName = plan.functionName.toLowerCase();
 
 	if (functionName === 'row_number') {
 		// For ROW_NUMBER(), use a simple counter that resets for each query execution
 		let rowCounter = 0;
 
-		function run(rctx: RuntimeContext): SqlValue {
+		function run(_rctx: RuntimeContext): SqlValue {
 			return ++rowCounter;
 		}
 
@@ -27,7 +27,7 @@ export function emitWindowFunctionCall(plan: WindowFunctionCallNode, ctx: Emissi
 		// For RANK() and DENSE_RANK(), use simple counter for now
 		let rowCounter = 0;
 
-		function run(rctx: RuntimeContext): SqlValue {
+		function run(_rctx: RuntimeContext): SqlValue {
 			return ++rowCounter;
 		}
 

@@ -1,8 +1,9 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ConflictResolution } from '../../common/constants.js';
+import { ConflictResolution as CR } from '../../common/constants.js';
 import type { ColumnDef, RelationType } from '../../common/datatype.js';
 
 /**
@@ -53,6 +54,19 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
 
     // INSERT produces the same attributes as its source (for non-RETURNING cases)
     return this.source.getAttributes();
+  }
+
+  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+    const sourcePhysical = childrenPhysical[0];
+
+    return {
+      estimatedRows: sourcePhysical?.estimatedRows,
+      uniqueKeys: sourcePhysical?.uniqueKeys,
+      readonly: false, // INSERT has side effects
+      deterministic: true, // Same input always produces same result
+      idempotent: this.onConflict === CR.IGNORE, // Only idempotent with IGNORE conflict resolution
+      constant: false // Never constant
+    };
   }
 
   override getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {

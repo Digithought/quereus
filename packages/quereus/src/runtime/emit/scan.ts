@@ -6,7 +6,7 @@ import type { BaseModuleConfig } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
 import { createValidatedInstruction } from "../emitters.js";
-import { getVTableConnection, disconnectVTable } from "../utils.js";
+import { disconnectVTable } from "../utils.js";
 import { buildRowDescriptor } from "../../util/row-descriptor.js";
 
 export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruction {
@@ -25,9 +25,6 @@ export function emitSeqScan(plan: TableScanNode, ctx: EmissionContext): Instruct
 	const moduleKey = `vtab_module:${tableSchema.vtabModuleName}`;
 
 	async function* run(runtimeCtx: RuntimeContext): AsyncIterable<Row> {
-		// Get or create a connection for this table
-		const connection = await getVTableConnection(runtimeCtx, tableSchema);
-
 		// Use the captured module info instead of doing a fresh lookup
 		const capturedModuleInfo = ctx.getCapturedSchemaObject<{ module: any, auxData?: unknown }>(moduleKey);
 		if (!capturedModuleInfo) {

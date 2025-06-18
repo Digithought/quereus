@@ -1,5 +1,5 @@
-import type { ScalarType } from '../common/datatype';
-import { type SqlParameters, type SqlValue, SqlDataType } from '../common/types';
+import type { ScalarType } from '../common/datatype.js';
+import { type SqlParameters, type SqlValue, SqlDataType } from '../common/types.js';
 
 export function getParameterTypeHints(params: SqlParameters | undefined): Map<string | number, ScalarType> | undefined {
 	let results: Map<string | number, ScalarType> | undefined;

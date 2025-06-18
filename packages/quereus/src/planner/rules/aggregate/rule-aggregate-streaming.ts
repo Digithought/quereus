@@ -7,16 +7,15 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
+import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { AggregateNode } from '../../nodes/aggregate-node.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
-import { PlanNode as BasePlanNode } from '../../nodes/plan-node.js';
 
 const log = createLogger('optimizer:rule:aggregate-streaming');
 
-export function ruleAggregateStreaming(node: PlanNode, context: OptContext): PlanNode | null {
+export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): PlanNode | null {
 	// Guard: only apply to AggregateNode
 	if (!(node instanceof AggregateNode)) {
 		return null;
@@ -74,9 +73,4 @@ export function ruleAggregateStreaming(node: PlanNode, context: OptContext): Pla
 		log('Transformed AggregateNode to StreamAggregateNode without sort');
 		return result;
 	}
-}
-
-function meetsPreConditions(node: AggregateNode): boolean {
-	// All aggregate nodes need physical implementation
-	return true;
 }

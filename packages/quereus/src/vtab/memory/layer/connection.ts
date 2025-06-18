@@ -28,30 +28,20 @@ export class MemoryTableConnection {
 		this.readLayer = initialReadLayer;
 	}
 
-	/** Begins a transaction by creating a new pending layer */
+	/** Begins a transaction by marking explicitTransaction. The pending layer is created lazily on first mutation */
 	begin(): void {
 		if (this.pendingTransactionLayer) {
-			// If there's already a pending transaction, handle based on type
-			if (!this.explicitTransaction) {
-				// This is an auto-created transaction from mutations
-				// We need to preserve it but mark the new one as explicit
-				warnLog(`Connection %d: BEGIN called with auto-transaction pending. Converting to explicit.`, this.connectionId);
-				this.explicitTransaction = true;
-				return;
-			} else {
-				// Nested explicit transactions - SQL standard behavior is to treat as no-op
-				warnLog(`Connection %d: BEGIN called while already in explicit transaction. Treating as no-op.`, this.connectionId);
-				return;
-			}
+			// Already in transaction – same SQLite semantics: BEGIN is a no-op
+			this.explicitTransaction = true; // upgrade auto txn to explicit
+			return;
 		}
 
-		// Create TransactionLayer based on the manager's current committed layer
-		// This ensures the parent check in commitTransaction will pass
-		this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
-		this.explicitTransaction = true; // Mark as explicitly started
+		// Do NOT create a TransactionLayer yet.  It will be created lazily by
+		// ensureTransactionLayer() on the first data-mutation, so its parent
+		// will always be the then-current committed layer.
+		this.explicitTransaction = true;
 
-		debugLog(`Connection %d: Started explicit transaction with layer %d`,
-			this.connectionId, this.pendingTransactionLayer.getLayerId());
+		debugLog(`Connection %d: BEGIN (lazy layer creation)`, this.connectionId);
 	}
 
 	/** Commits the current transaction */
@@ -98,8 +88,9 @@ export class MemoryTableConnection {
 		}
 
 		if (!this.pendingTransactionLayer) {
-			// Quereus treats SAVEPOINT outside a transaction as an implicit BEGIN + SAVEPOINT
-			this.begin();
+			// Start an implicit transaction and create a fresh layer immediately so the savepoint has something to snapshot
+			this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
+			// Not marking explicitTransaction; this is still auto-txn unless caller ran BEGIN earlier.
 		}
 
 		if (!this.pendingTransactionLayer) {
@@ -112,8 +103,9 @@ export class MemoryTableConnection {
 		// Store the snapshot as the savepoint
 		this.savepoints.set(savepointIndex, savepointLayer);
 
-		// Continue using the current layer for future operations
-		// Future changes will only affect this layer, not the snapshot
+		// A SAVEPOINT implicitly puts the connection into explicit-transaction mode
+		// so that subsequent statements do NOT auto-commit and invalidate the savepoint.
+		this.explicitTransaction = true;
 	}
 
 	/**

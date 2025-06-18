@@ -203,12 +203,13 @@ export function buildUpdateStmt(
         }
       }
 
-      // Validate RETURNING expression (UPDATE supports both NEW and OLD)
-      validateReturningExpression(rc.expr, 'UPDATE');
+      const columnIndex = tableReference.tableSchema.columns.findIndex(col => col.name.toLowerCase() === (rc.expr.type === 'column' ? rc.expr.name.toLowerCase() : ''));
+      const projAttributeId = rc.expr.type === 'column' && columnIndex !== -1 ? columnAttributeIds[columnIndex] : undefined;
 
       return {
         node: buildExpression({ ...updateCtx, scope: returningScope }, rc.expr) as ScalarPlanNode,
-        alias: alias
+        alias: alias,
+        attributeId: projAttributeId
       };
     });
 

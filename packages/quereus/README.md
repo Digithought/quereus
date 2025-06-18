@@ -125,6 +125,7 @@ To add logging within a module:
 *   **Federated / VTab-Centric**: All tables are virtual tables.
 *   **Async Core**: Core operations are asynchronous. Cursors are `AsyncIterable<Row>`.
 *   **Key-Based Addressing**: Rows are identified by their defined Primary Key. No separate implicit `rowid`.
+*   **Relational Orthogonality**: Any statement that results in a relation can be used anywhere that expects a relation value, including mutating statements with RETURNING clauses.
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
 *   **Object-Based API**: Uses classes (`Database`, `Statement`) to represent resources with lifecycles, rather than handles.
 *   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Emission of schema SQL export is supported.
@@ -153,6 +154,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Advanced window functions** - Ranking, aggregates, and frame specifications
 *   **Full constraint system** - NOT NULL, CHECK constraints with operation-specific triggers  
 *   **Comprehensive subqueries** - Scalar, correlated, EXISTS, and IN subqueries
+*   **Relational orthogonality** - INSERT/UPDATE/DELETE with RETURNING can be used as table sources
 *   **Complete set operations** - UNION, INTERSECT, EXCEPT with proper deduplication
 *   **Robust transaction support** - Multi-level savepoints and rollback
 *   **Rich built-in function library** - Scalar, aggregate, window, JSON, and date/time functions

@@ -58,7 +58,7 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	/** Ensures the connection to the manager is established */
-	private ensureConnection(): MemoryTableConnection {
+	private async ensureConnection(): Promise<MemoryTableConnection> {
 		if (!this.connection) {
 			// Check if there's already an active connection for this table in the database
 			const existingConnections = this.db.getConnectionsForTable(this.tableName);
@@ -72,7 +72,7 @@ export class MemoryTable extends VirtualTable {
 
 				// Create a VirtualTableConnection wrapper and register it with the database
 				const vtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
-				this.db.registerConnection(vtabConnection);
+				await this.db.registerConnection(vtabConnection);
 
 				logger.debugLog(`ensureConnection: Created and registered new connection ${this.connection.connectionId} for table ${this.tableName}`);
 			}
@@ -102,7 +102,7 @@ export class MemoryTable extends VirtualTable {
 
 	// New xQuery method for direct async iteration
 	async* xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
-		const conn = this.ensureConnection();
+		const conn = await this.ensureConnection();
 		logger.debugLog(`xQuery using connection ${conn.connectionId} (pending: ${conn.pendingTransactionLayer?.getLayerId()}, read: ${conn.readLayer.getLayerId()})`);
 		const currentSchema = this.manager.tableSchema;
 		if (!currentSchema) {
@@ -127,7 +127,7 @@ export class MemoryTable extends VirtualTable {
 		values: Row | undefined,
 		oldKeyValues?: Row
 	): Promise<Row | undefined> {
-		const conn = this.ensureConnection();
+		const conn = await this.ensureConnection();
 		// Delegate mutation to the manager.
 		// This assumes manager.performMutation will be updated to this signature and logic.
 		return this.manager.performMutation(conn, operation, values, oldKeyValues);
@@ -135,7 +135,7 @@ export class MemoryTable extends VirtualTable {
 
 	/** Begins a transaction for this connection */
 	async xBegin(): Promise<void> {
-		this.ensureConnection().begin();
+		(await this.ensureConnection()).begin();
 	}
 
 	/** Commits this connection's transaction */
@@ -171,7 +171,7 @@ export class MemoryTable extends VirtualTable {
 
 	// --- Savepoint operations ---
 	async xSavepoint(savepointIndex: number): Promise<void> {
-		const conn = this.ensureConnection();
+		const conn = await this.ensureConnection();
 		conn.createSavepoint(savepointIndex);
 	}
 
@@ -226,7 +226,7 @@ export class MemoryTable extends VirtualTable {
 	async xDisconnect(): Promise<void> {
 		if (this.connection) {
 			// Manager handles cleanup and potential layer collapse trigger
-			this.manager.disconnect(this.connection.connectionId);
+			await this.manager.disconnect(this.connection.connectionId);
 			this.connection = null; // Clear connection reference on this instance
 		}
 	}

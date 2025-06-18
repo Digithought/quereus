@@ -1,5 +1,5 @@
 import type { BaseType, ScalarType, RelationType } from '../../common/datatype.js';
-import { PlanNode, type RelationalPlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute } from './plan-node.js';
+import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { Scope } from '../scopes/scope.js';
@@ -28,7 +28,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		this.typeCache = new Cached(() => relationTypeFromTableSchema(tableSchema));
 		this.attributesCache = new Cached(() => {
 			// Create attributes from table schema columns
-			return this.tableSchema.columns.map((column, index) => ({
+			return this.tableSchema.columns.map((column) => ({
 				id: PlanNode.nextAttrId(),
 				name: column.name,
 				type: {

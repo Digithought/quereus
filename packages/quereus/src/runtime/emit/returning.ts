@@ -4,25 +4,46 @@ import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 
-const log = createLogger('runtime:emit:returning');
-
 export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instruction {
-	// Find row descriptors from the executor
-	let newRowDescriptor: RowDescriptor = [];
-	let oldRowDescriptor: RowDescriptor = [];
-	let sourceRowDescriptor: RowDescriptor = [];
+	// Build flat row descriptor from OLD/NEW descriptors if available
+	let rowDescriptor: RowDescriptor = [];
 
-	// Try to get row descriptors from various sources
 	const executor = plan.executor as any;
-	
-	// Get NEW row descriptor if available
-	if (executor.newRowDescriptor && Object.keys(executor.newRowDescriptor).length > 0) {
-		newRowDescriptor = executor.newRowDescriptor;
-	} else if (executor.source?.newRowDescriptor && Object.keys(executor.source.newRowDescriptor).length > 0) {
-		newRowDescriptor = executor.source.newRowDescriptor;
+
+	// Check if this is a mutation operation with OLD/NEW descriptors
+	if (executor.oldRowDescriptor || executor.newRowDescriptor) {
+		// Build flat row descriptor: OLD attributes at 0..n-1, NEW attributes at n..2n-1
+		if (executor.oldRowDescriptor) {
+			for (const attrIdStr in executor.oldRowDescriptor) {
+				const attrId = parseInt(attrIdStr);
+				const columnIndex = executor.oldRowDescriptor[attrId];
+				if (columnIndex !== undefined) {
+					rowDescriptor[attrId] = columnIndex; // OLD section: 0..n-1
+				}
+			}
+		}
+
+				if (executor.newRowDescriptor) {
+			// Determine table column count from one of the descriptors
+			const tableColumnCount = executor.table ? executor.table.tableSchema.columns.length :
+				Math.max(
+					...Object.values(executor.oldRowDescriptor || {}).filter((v): v is number => typeof v === 'number'),
+					...Object.values(executor.newRowDescriptor || {}).filter((v): v is number => typeof v === 'number')
+				) + 1;
+
+			for (const attrIdStr in executor.newRowDescriptor) {
+				const attrId = parseInt(attrIdStr);
+				const columnIndex = executor.newRowDescriptor[attrId];
+				if (columnIndex !== undefined) {
+					rowDescriptor[attrId] = tableColumnCount + columnIndex; // NEW section: n..2n-1
+				}
+			}
+		}
+	} else {
+		// Fallback: create row descriptor from executor attributes for non-mutation operations
+		rowDescriptor = buildRowDescriptor(plan.executor.getAttributes());
 	}
 
 	// Get OLD row descriptor if available

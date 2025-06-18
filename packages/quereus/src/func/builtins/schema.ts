@@ -6,7 +6,6 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import type { FunctionSchema } from "../../schema/function.js";
-import type { TableSchema } from "../../schema/table.js";
 
 /**
  * Generates a function signature string for display
@@ -50,7 +49,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 						const columnsStr = tableSchema.columns.map((c: any) => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
 						const argsStr = Object.entries(tableSchema.vtabArgs ?? {}).map(([key, value]) => `${key}=${value}`).join(', ');
 						createSql = `create table "${tableSchema.name}" (${columnsStr}) using ${tableSchema.vtabModuleName}(${argsStr})`;
-					} catch (e) {
+					} catch {
 						createSql = null;
 					}
 

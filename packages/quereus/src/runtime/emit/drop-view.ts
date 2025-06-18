@@ -4,7 +4,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue } from '../../common/types.js';
 
-export function emitDropView(plan: DropViewNode, ctx: EmissionContext): Instruction {
+export function emitDropView(plan: DropViewNode, _ctx: EmissionContext): Instruction {
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
 		// Check if view exists
 		const existingView = rctx.db.schemaManager.getView(plan.schemaName, plan.viewName);

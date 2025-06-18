@@ -111,7 +111,7 @@ export class SchemaManager {
 			this.defaultVTabModuleName = lowerName;
 			log(`Default VTab module name set to: %s`, lowerName);
 		} else {
-			warnLog(`Setting default VTab module to \'${lowerName}\', which is not currently registered in SchemaManager. Ensure it gets registered.`);
+			warnLog(`Setting default VTab module to '${lowerName}', which is not currently registered in SchemaManager. Ensure it gets registered.`);
 			this.defaultVTabModuleName = lowerName;
 		}
 	}
@@ -375,7 +375,7 @@ export class SchemaManager {
 
 		// Process destruction asynchronously
 		if (destroyPromise) {
-			destroyPromise.then(() => log(`xDestroy completed for VTab %s.%s`, schemaName, tableName));
+			void destroyPromise.then(() => log(`xDestroy completed for VTab %s.%s`, schemaName, tableName));
 		}
 
 		return removed; // True if removed from schema, false if not found and ifExists was true.
@@ -576,7 +576,7 @@ export class SchemaManager {
 			colDef.constraints?.forEach(con => {
 				if (con.type === 'check' && con.expr) {
 					checkConstraintsSchema.push({
-						name: con.name,
+						name: con.name ?? `_check_${colDef.name}`,
 						expr: con.expr,
 						operations: opsToMask(con.operations)
 					});

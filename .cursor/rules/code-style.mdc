@@ -3,16 +3,16 @@ description:
 globs:
 alwaysApply: true
 ---
-Adhere to the single purpose principle within functions, and prefer a more expressive rather than imperative style.  `const` declarations are within the spirit of expressiveness, especially when clarifying the meaning of an expression, and of course for reuse.  Breaking sub-tasks into separate functions also makes for more self-documenting code.
+* Adhere to the single purpose principle within functions, and prefer a more expressive rather than imperative style.  `const` declarations are within the spirit of expressiveness, especially when clarifying the meaning of an expression, and of course for reuse.  Breaking sub-tasks into separate functions also makes for more self-documenting code.
 
-Don't add superfluous comments.  Don't add comments regarding changes being made (e.g. No "// added this").
+* Don't add superfluous comments.  Don't add comments regarding changes being made (e.g. No "// added this").
 
-ES Modules, so always include `.js` on imports
+* Prefix with `_` for unused arguments.
 
-This project uses @.editorconfig to enforce consistent coding styles across editors and IDEs.  Summary:
+* Enclose `case` blocks in braces if any consts/variables introduced.
 
-## TypeScript Files
-- Tab indentation
-- Single quotes for strings
+* Prefix intentional calls to unused promises (micro-tasks) with `void`.
 
-The complete configuration is defined in [.editorconfig](mdc:.editorconfig).
+* ES Modules, so always include `.js` on imports
+
+* This project uses @.editorconfig to enforce consistent coding styles across editors and IDEs.  Summary: Tab indentation,  Single quotes for strings.  The complete configuration is defined in [.editorconfig](mdc:.editorconfig).

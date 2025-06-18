@@ -5,7 +5,6 @@ import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { VoidNode } from '../nodes/plan-node.js';
-import { opsToMask } from '../../schema/table.js';
 
 export function buildAlterTableStmt(
   ctx: PlanningContext,
@@ -14,7 +13,7 @@ export function buildAlterTableStmt(
   const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   switch (stmt.action.type) {
-    case 'addConstraint':
+    case 'addConstraint': {
       // Convert RowOp[] (e.g., ['insert','update']) to bitmask understood by runtime.
       const operations = stmt.action.constraint.operations ?? ['insert','update'];
 
@@ -28,6 +27,7 @@ export function buildAlterTableStmt(
         tableReference,
         constraintWithBitmask
       );
+		}
 
     case 'renameTable':
     case 'renameColumn':

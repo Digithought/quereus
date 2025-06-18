@@ -8,7 +8,7 @@ import type { FilterInfo } from "../src/vtab/filter-info.js";
 import type { IndexInfo } from "../src/vtab/index-info.js";
 import { StatusCode, SqlDataType } from "../src/common/types.js";
 import { IndexConstraintOp, ConflictResolution } from "../src/common/constants.js";
-import { ColumnDef } from "../src/parser/ast.js";
+import type * as AST from "../src/parser/ast.js";
 
 describe("Memory VTable Module", () => {
 	let db: Database;
@@ -56,7 +56,7 @@ describe("Memory VTable Module", () => {
 	}
 
 	// Helper to create basic filter info for full table scan
-	function createFilterInfo(constraints: any[] = [], orderBy: any[] = []): FilterInfo {
+	function createFilterInfo(_constraints: any[] = [], _orderBy: any[] = []): FilterInfo {
 		return {
 			idxNum: 0,
 			idxStr: 'full_scan',
@@ -238,7 +238,7 @@ describe("Memory VTable Module", () => {
 			(rowWithConflictRes as any)._onConflict = ConflictResolution.IGNORE;
 
 			const result = await table.xUpdate('insert', rowWithConflictRes);
-			expect(result).to.be.undefined; // IGNORE should return undefined
+			void expect(result).to.be.undefined; // IGNORE should return undefined
 
 			// Verify original data unchanged
 			const rows = [];
@@ -246,8 +246,8 @@ describe("Memory VTable Module", () => {
 				rows.push(row);
 			}
 
-			expect(rows).to.have.length(1);
-			expect(rows[0][1]).to.equal('user@example.com');
+			void expect(rows).to.have.length(1);
+			void expect(rows[0][1]).to.equal('user@example.com');
 		});
 	});
 
@@ -579,18 +579,18 @@ describe("Memory VTable Module", () => {
 
 		it("should drop columns", async () => {
 			// First add a column to drop
-			const columnDef: ColumnDef = {
+			const columnDef: AST.ColumnDef = {
 				name: 'temp_col',
 				dataType: 'TEXT',
-				constraints: [{ type: 'null' }],
+				constraints: [{ type: 'null' as const }]
 			};
 
 			await table.xAlterSchema({ type: 'addColumn', columnDef });
 			await table.xAlterSchema({ type: 'dropColumn', columnName: 'temp_col' });
 
 			const schema = table.getSchema();
-			expect(schema?.columns).to.have.length(2);
-			expect(schema?.columns.find(c => c.name === 'temp_col')).to.be.undefined;
+			void expect(schema?.columns).to.have.length(2);
+			void expect(schema?.columns.find(c => c.name === 'temp_col')).to.be.undefined;
 		});
 
 		it("should rename columns", async () => {
@@ -606,16 +606,16 @@ describe("Memory VTable Module", () => {
 			});
 
 			const schema = table.getSchema();
-			expect(schema?.columns.find(c => c.name === 'full_name')).to.exist;
-			expect(schema?.columns.find(c => c.name === 'name')).to.be.undefined;
+			void expect(schema?.columns.find(c => c.name === 'full_name')).to.exist;
+			void expect(schema?.columns.find(c => c.name === 'name')).to.be.undefined;
 		});
 
 		it("should prevent dropping primary key columns", async () => {
 			try {
 				await table.xAlterSchema({ type: 'dropColumn', columnName: 'id' });
-				expect.fail("Should not allow dropping PK column");
+				void expect.fail("Should not allow dropping PK column");
 			} catch (error: any) {
-				expect(error.message).to.include('Cannot drop PK column');
+				void expect(error.message).to.include('Cannot drop PK column');
 			}
 		});
 	});
@@ -644,12 +644,12 @@ describe("Memory VTable Module", () => {
 				rows.push(row);
 			}
 
-			expect(rows).to.have.length(2);
-			expect(rows[0][1]).to.equal('hello');
-			expect(rows[0][2]).to.equal(3.14);
-			expect(rows[0][3]).to.deep.equal(blobData);
-			expect(rows[0][4]).to.be.null;
-			expect(rows[1][4]).to.equal('not null');
+			void expect(rows).to.have.length(2);
+			void expect(rows[0][1]).to.equal('hello');
+			void expect(rows[0][2]).to.equal(3.14);
+			void expect(rows[0][3]).to.deep.equal(blobData);
+			void expect(rows[0][4]).to.be.null;
+			void expect(rows[1][4]).to.equal('not null');
 		});
 
 		it("should handle NULL in composite primary keys", async () => {
@@ -668,9 +668,9 @@ describe("Memory VTable Module", () => {
 				rows.push(row);
 			}
 
-			expect(rows).to.have.length(2);
-			expect(rows[0][0]).to.be.null;
-			expect(rows[1][0]).to.equal('a');
+			void expect(rows).to.have.length(2);
+			void expect(rows[0][0]).to.be.null;
+			void expect(rows[1][0]).to.equal('a');
 		});
 
 		it("should handle empty table operations", async () => {
@@ -682,7 +682,7 @@ describe("Memory VTable Module", () => {
 			for await (const row of table.xQuery(createFilterInfo())) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(0);
+			void expect(rows).to.have.length(0);
 		});
 	});
 
@@ -694,14 +694,14 @@ describe("Memory VTable Module", () => {
 			};
 			const table = module.xCreate(db, schema);
 
-			expect(table.isReadOnly()).to.be.true;
+			void expect(table.isReadOnly()).to.be.true;
 
 			// Should be able to query empty table
 			const rows = [];
 			for await (const row of table.xQuery(createFilterInfo())) {
 				rows.push(row);
 			}
-			expect(rows).to.have.length(0);
+			void expect(rows).to.have.length(0);
 		});
 
 		it("should prevent modifications to read-only tables", async () => {

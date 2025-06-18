@@ -7,20 +7,20 @@ import { createLogger } from '../../common/logger.js';
 
 const log = createLogger('runtime:context:lookup');
 
-export function emitColumnReference(plan: ColumnReferenceNode, ctx: EmissionContext): Instruction {
-	function run(ctx: RuntimeContext): SqlValue {
+export function emitColumnReference(plan: ColumnReferenceNode, _ctx: EmissionContext): Instruction {
+	function run(rctx: RuntimeContext): SqlValue {
 		log('Looking up column %s (attr#%d)', plan.expression.name, plan.attributeId);
 
 		// Log available contexts for debugging
 		const availableContexts: string[] = [];
-		for (const [descriptor] of ctx.context.entries()) {
+		for (const [descriptor] of rctx.context.entries()) {
 			const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
 			availableContexts.push(`[attrs: ${attrs.join(',')}]`);
 		}
 		log('Available contexts: %O', availableContexts);
 
 		// Use deterministic lookup based on attribute ID
-		for (const [descriptor, rowGetter] of ctx.context.entries()) {
+		for (const [descriptor, rowGetter] of rctx.context.entries()) {
 			const columnIndex = descriptor[plan.attributeId];
 			if (columnIndex !== undefined) {
 				const row = rowGetter();

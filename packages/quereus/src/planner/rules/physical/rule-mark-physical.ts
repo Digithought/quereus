@@ -9,11 +9,10 @@
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
-import { PlanNode as BasePlanNode } from '../../nodes/plan-node.js';
 
 const log = createLogger('optimizer:rule:mark-physical');
 
-export function ruleMarkPhysical(node: PlanNode, context: OptContext): PlanNode | null {
+export function ruleMarkPhysical(node: PlanNode, _context: OptContext): PlanNode | null {
 	// This is a fallback rule - only apply if the node is not already physical
 	if (node.physical) {
 		return null; // Already physical

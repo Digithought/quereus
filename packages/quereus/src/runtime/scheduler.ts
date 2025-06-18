@@ -88,7 +88,7 @@ export class Scheduler {
 
 		// Run synchronously until we hit a promise
 		for (let i = 0; i < this.instructions.length; ++i) {
-			let args = instrArgs[i]!;	// Guaranteed not to contain promises
+			const args = instrArgs[i]!;	// Guaranteed not to contain promises
 			instrArgs[i] = undefined; // Clear args as we go to minimize memory usage.
 
 			output = this.instructions[i].run(ctx, ...(args as RuntimeValue[]));
@@ -161,7 +161,7 @@ export class Scheduler {
 		// Run synchronously until we hit a promise
 		for (let i = 0; i < this.instructions.length; ++i) {
 			const instruction = this.instructions[i];
-			let args = instrArgs[i]!;	// Guaranteed not to contain promises
+			const args = instrArgs[i]!;	// Guaranteed not to contain promises
 			instrArgs[i] = undefined; // Clear args as we go to minimize memory usage.
 
 
@@ -294,7 +294,7 @@ export class Scheduler {
 		// Run synchronously until we hit a promise
 		for (let i = 0; i < this.instructions.length; ++i) {
 			const instruction = this.instructions[i];
-			let args = instrArgs[i]!;
+			const args = instrArgs[i]!;
 			instrArgs[i] = undefined; // Clear args as we go to minimize memory usage.
 
 			// Run with metrics collection

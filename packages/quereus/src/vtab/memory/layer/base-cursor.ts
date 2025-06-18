@@ -1,6 +1,6 @@
 import type { ScanPlan } from './scan-plan.js';
 import type { BaseLayer } from './base.js';
-import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
+import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { StatusCode, type Row } from '../../../common/types.js';

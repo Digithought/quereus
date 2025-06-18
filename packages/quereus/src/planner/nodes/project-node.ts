@@ -43,7 +43,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			const columnNames: string[] = [];
 			const nameCount = new Map<string, number>();
 
-			const columns = this.projections.map((proj, index) => {
+			const columns = this.projections.map((proj) => {
 				// Determine base column name
 				let baseName: string;
 				if (proj.alias) {
@@ -141,7 +141,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 	getProducingExprs(): Map<number, ScalarPlanNode> {
 		const attributes = this.getAttributes();
 		const map = new Map<number, ScalarPlanNode>();
-		
+
 		for (let i = 0; i < this.projections.length; i++) {
 			const proj = this.projections[i];
 			const attr = attributes[i];
@@ -149,7 +149,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 				map.set(attr.id, proj.node);
 			}
 		}
-		
+
 		return map;
 	}
 

@@ -11,8 +11,7 @@ import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { TableScanNode } from '../../nodes/scan.js';
 import { SeqScanNode, IndexScanNode, IndexSeekNode } from '../../nodes/physical-access-nodes.js';
-import { extractConstraints } from '../../analysis/constraint-extractor.js';
-import { seqScanCost, indexScanCost, indexSeekCost } from '../../cost/index.js';
+import { seqScanCost } from '../../cost/index.js';
 import type { ColumnMeta, PredicateConstraint, BestAccessPlanRequest, BestAccessPlanResult, ConstraintOp } from '../../../vtab/best-access-plan.js';
 import { PlanNode as BasePlanNode } from '../../nodes/plan-node.js';
 
@@ -79,7 +78,7 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 /**
  * Extract predicate constraints from FilterInfo
  */
-function extractConstraintsFromFilterInfo(node: TableScanNode, tableSchema: any): PredicateConstraint[] {
+function extractConstraintsFromFilterInfo(node: TableScanNode, _tableSchema: any): PredicateConstraint[] {
 	const constraints: PredicateConstraint[] = [];
 
 	// Extract from FilterInfo.indexInfoOutput.aConstraint if available
@@ -106,7 +105,7 @@ function extractConstraintsFromFilterInfo(node: TableScanNode, tableSchema: any)
 /**
  * Map internal constraint op to public constraint op
  */
-function mapConstraintOp(internalOp: number): ConstraintOp {
+function mapConstraintOp(_internalOp: number): ConstraintOp {
 	// This mapping would need to be based on the actual constants used
 	// For now, assume equality - in a real implementation this would map
 	// from IndexConstraintOp constants to ConstraintOp

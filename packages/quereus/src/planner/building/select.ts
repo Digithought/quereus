@@ -27,6 +27,10 @@ import { buildAggregatePhase, buildFinalAggregateProjections } from './select-ag
 import { buildWindowPhase } from './select-window.js';
 import { buildFinalProjections, applyDistinct, applyOrderBy, applyLimitOffset } from './select-modifiers.js';
 
+import { buildInsertStmt } from './insert.js';
+import { buildUpdateStmt } from './update.js';
+import { buildDeleteStmt } from './delete.js';
+
 /**
  * Creates an initial logical query plan for a SELECT statement.
  *
@@ -81,7 +85,7 @@ export function buildSelectStmt(
 	}
 
 	// Build projections based on the SELECT list
-	let projections: Projection[] = [];
+	const projections: Projection[] = [];
 
 	// Analyze SELECT columns
 	const {
@@ -159,24 +163,22 @@ export function buildValuesStmt(
 }
 
 export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode> = new Map()): RelationalPlanNode {
-  let fromTable: RelationalPlanNode;
-  let columnScope: Scope;
+	let fromTable: RelationalPlanNode;
+	let columnScope: Scope;
 
 	if (fromClause.type === 'table') {
 		const tableName = fromClause.table.name.toLowerCase();
 
-		// First check if this is a CTE reference
-		const cteNode = cteNodes.get(tableName);
-		if (cteNode) {
-			// This is a CTE reference
+		// Check if this is a CTE reference
+		if (cteNodes.has(tableName)) {
+			const cteNode = cteNodes.get(tableName)!;
 			const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
-			fromTable = cteRefNode;
 
-			// Column scope for CTE - no parent needed since it only contains column symbols
-			const cteScope = new RegisteredScope();
-			const attributes = fromTable.getAttributes();
-			fromTable.getType().columns.forEach((c, i) => {
-				const attr = attributes[i];
+			// Create scope for CTE columns
+			const cteScope = new RegisteredScope(parentContext.scope);
+			const cteAttributes = cteNode.getAttributes();
+			cteNode.getType().columns.forEach((c, i) => {
+				const attr = cteAttributes[i];
 				cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
 			});
@@ -184,49 +186,42 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			if (fromClause.alias) {
 				columnScope = new AliasedScope(cteScope, tableName, fromClause.alias.toLowerCase());
 			} else {
-				// Even without an explicit alias, we need to support qualified column references using the CTE name
 				columnScope = new AliasedScope(cteScope, tableName, tableName);
 			}
+
+			fromTable = cteRefNode;
 		} else {
-			// Check if this is a view reference
+			// Check if this is a view
 			const schemaName = fromClause.table.schema || parentContext.db.schemaManager.getCurrentSchemaName();
 			const viewSchema = parentContext.db.schemaManager.getView(schemaName, fromClause.table.name);
 
 			if (viewSchema) {
-				// This is a view reference - expand it to the underlying SELECT statement
+				// Build the view's SELECT statement
 				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
 
-				// Column scope for view - no parent needed since it only contains column symbols
-				const viewScope = new RegisteredScope();
-				const attributes = fromTable.getAttributes();
-
-				// Use view column names if explicitly defined, otherwise use the SELECT output column names
-				const columnNames = viewSchema.columns || fromTable.getType().columns.map(c => c.name);
-
-				columnNames.forEach((columnName, i) => {
-					if (i < attributes.length) {
-						const attr = attributes[i];
-						const columnType = fromTable.getType().columns[i].type; // Use actual column type
-						viewScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
-							new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
-					}
+				// Create scope for view columns
+				const viewScope = new RegisteredScope(parentContext.scope);
+				const viewAttributes = fromTable.getAttributes();
+				fromTable.getType().columns.forEach((c, i) => {
+					const attr = viewAttributes[i];
+					viewScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
 				});
 
 				if (fromClause.alias) {
 					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
 				} else {
-					// Even without an explicit alias, we need to support qualified column references using the view name
 					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.table.name.toLowerCase());
 				}
 			} else {
-				// This is a regular table reference
+				// Regular table
 				fromTable = buildTableScan(fromClause, parentContext);
 
-				// Column scope for table - no parent needed since it only contains column symbols
-				const tableScope = new RegisteredScope();
-				const attributes = fromTable.getAttributes();
+				// Create scope for table columns
+				const tableScope = new RegisteredScope(parentContext.scope);
+				const tableAttributes = fromTable.getAttributes();
 				fromTable.getType().columns.forEach((c, i) => {
-					const attr = attributes[i];
+					const attr = tableAttributes[i];
 					tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
 						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
 				});
@@ -234,88 +229,108 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				if (fromClause.alias) {
 					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
 				} else {
-					// Even without an explicit alias, we need to support qualified column references using the table name
 					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.table.name.toLowerCase());
 				}
 			}
 		}
 
-		// Store the column scope for buildSelectStmt
-		(fromTable as any).columnScope = columnScope;
 	} else if (fromClause.type === 'functionSource') {
 		fromTable = buildTableFunctionCall(fromClause, parentContext);
 
-		// Column scope for function - no parent needed since it only contains column symbols
-		const functionScope = new RegisteredScope();
-		const attributes = fromTable.getAttributes();
+		// Create scope for function columns
+		const functionScope = new RegisteredScope(parentContext.scope);
+		const functionAttributes = fromTable.getAttributes();
 		fromTable.getType().columns.forEach((c, i) => {
-			const attr = attributes[i];
+			const attr = functionAttributes[i];
 			functionScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
 		});
 
 		if (fromClause.alias) {
-			// For table-valued functions, use empty string as parent name since columns are registered without qualifier
+			// Use the alias as the table name
 			columnScope = new AliasedScope(functionScope, '', fromClause.alias.toLowerCase());
 		} else {
-			columnScope = functionScope;
+			// Use the function name as the table name
+			columnScope = new AliasedScope(functionScope, '', fromClause.name.name.toLowerCase());
 		}
 
-		// Store the column scope for buildSelectStmt
-		(fromTable as any).columnScope = columnScope;
 	} else if (fromClause.type === 'subquerySource') {
-		// Build the subquery as a relational plan node
+		// Build the subquery
 		if (fromClause.subquery.type === 'select') {
 			fromTable = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
 		} else if (fromClause.subquery.type === 'values') {
 			fromTable = buildValuesStmt(parentContext, fromClause.subquery);
 		} else {
-			// Handle the case where subquery type is not recognized
 			const exhaustiveCheck: never = fromClause.subquery;
-			throw new QuereusError(
-				`Unsupported subquery type: ${(exhaustiveCheck as any).type}`,
-				StatusCode.UNSUPPORTED,
-				undefined,
-				(exhaustiveCheck as any).loc?.startLine,
-				(exhaustiveCheck as any).loc?.startColumn
-			);
+			throw new QuereusError(`Unsupported subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
 
-		// Column scope for subquery - no parent needed since it only contains column symbols
-		const subqueryScope = new RegisteredScope();
-		const attributes = fromTable.getAttributes();
+		// Create scope for subquery columns
+		const subqueryScope = new RegisteredScope(parentContext.scope);
+		const subqueryAttributes = fromTable.getAttributes();
 
-		// Use explicit column names from alias if provided, otherwise use subquery column names
+		// Use provided column names or infer from subquery
 		const columnNames = fromClause.columns || fromTable.getType().columns.map(c => c.name);
 
-		columnNames.forEach((columnName, i) => {
-			if (i < attributes.length) {
-				const attr = attributes[i];
-				const columnType = fromTable.getType().columns[i].type;
-				subqueryScope.registerSymbol(columnName.toLowerCase(), (exp, s) =>
+		columnNames.forEach((colName, i) => {
+			if (i < subqueryAttributes.length) {
+				const attr = subqueryAttributes[i];
+				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', affinity: 'TEXT', nullable: true, isReadOnly: true };
+				subqueryScope.registerSymbol(colName.toLowerCase(), (exp, s) =>
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
 			}
 		});
 
-		// Subqueries always have an alias (required by parser)
 		columnScope = new AliasedScope(subqueryScope, '', fromClause.alias.toLowerCase());
 
-		// Store the column scope for buildSelectStmt
-		(fromTable as any).columnScope = columnScope;
+	} else if (fromClause.type === 'mutatingSubquerySource') {
+		// Build the mutating subquery (DML with RETURNING)
+		let dmlNode: RelationalPlanNode;
+
+		if (fromClause.stmt.type === 'insert') {
+			// Build INSERT without SinkNode wrapper since we need the RETURNING results
+			dmlNode = buildInsertStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
+		} else if (fromClause.stmt.type === 'update') {
+			// Build UPDATE without SinkNode wrapper since we need the RETURNING results
+			dmlNode = buildUpdateStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
+		} else if (fromClause.stmt.type === 'delete') {
+			// Build DELETE without SinkNode wrapper since we need the RETURNING results
+			dmlNode = buildDeleteStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
+		} else {
+			const exhaustiveCheck: never = fromClause.stmt;
+			throw new QuereusError(`Unsupported mutating subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
+		}
+
+		fromTable = dmlNode;
+
+		// Create scope for mutating subquery columns
+		const mutatingScope = new RegisteredScope(parentContext.scope);
+		const mutatingAttributes = fromTable.getAttributes();
+
+		// Use provided column names or infer from RETURNING clause
+		const columnNames = fromClause.columns || fromTable.getType().columns.map(c => c.name);
+
+		columnNames.forEach((colName, i) => {
+			if (i < mutatingAttributes.length) {
+				const attr = mutatingAttributes[i];
+				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', affinity: 'TEXT', nullable: true, isReadOnly: false };
+				mutatingScope.registerSymbol(colName.toLowerCase(), (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
+			}
+		});
+
+		columnScope = new AliasedScope(mutatingScope, '', fromClause.alias.toLowerCase());
+
 	} else if (fromClause.type === 'join') {
 		// Handle JOIN clauses
 		return buildJoin(fromClause, parentContext, cteNodes);
 	} else {
 		// Handle the case where fromClause.type is not recognized
 		const exhaustiveCheck: never = fromClause;
-		throw new QuereusError(
-			`Unsupported FROM clause item type: ${(exhaustiveCheck as any).type}`,
-			StatusCode.UNSUPPORTED,
-			undefined,
-			(exhaustiveCheck as any).loc?.startLine,
-			(exhaustiveCheck as any).loc?.startColumn
-		);
+		throw new QuereusError(`Unsupported FROM clause type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 	}
+
+	(fromTable as any).columnScope = columnScope;
 	return fromTable;
 }
 

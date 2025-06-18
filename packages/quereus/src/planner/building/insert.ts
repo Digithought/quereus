@@ -6,9 +6,9 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildSelectStmt } from './select.js';
 import { buildWithClause } from './with.js';
-import { ValuesNode } from '../nodes/values-node.js'; // Assuming ValuesNode exists or will be created
+import { ValuesNode } from '../nodes/values-node.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
-import { buildExpression } from './expression.js'; // Assuming this will be created
+import { buildExpression } from './expression.js';
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
@@ -18,6 +18,90 @@ import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
+import { ProjectNode, type Projection } from '../nodes/project-node.js';
+import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
+
+/**
+ * Creates a uniform row expansion projection that maps any relational source
+ * to the target table's column structure, filling in defaults for omitted columns.
+ * This ensures INSERT works orthogonally with any relational source.
+ */
+function createRowExpansionProjection(
+	ctx: PlanningContext,
+	sourceNode: RelationalPlanNode,
+	targetColumns: ColumnDef[],
+	tableReference: any
+): RelationalPlanNode {
+	const tableSchema = tableReference.tableSchema;
+
+	// If we're inserting into all columns in table order, no expansion needed
+	if (targetColumns.length === tableSchema.columns.length) {
+		const allColumnsMatch = targetColumns.every((tc, i) =>
+			tc.name.toLowerCase() === tableSchema.columns[i].name.toLowerCase()
+		);
+		if (allColumnsMatch) {
+			return sourceNode; // Source already matches table structure
+		}
+	}
+
+	// Create projection expressions for each table column
+	const projections: Projection[] = [];
+	const sourceAttributes = sourceNode.getAttributes();
+
+	tableSchema.columns.forEach((tableColumn: any) => {
+		// Find if this table column is in the target columns
+		const targetColIndex = targetColumns.findIndex(tc =>
+			tc.name.toLowerCase() === tableColumn.name.toLowerCase()
+		);
+
+		if (targetColIndex >= 0) {
+			// This column is provided by the source - reference the source column
+			if (targetColIndex < sourceAttributes.length) {
+				const sourceAttr = sourceAttributes[targetColIndex];
+				// Create a column reference to the source attribute
+				const columnRef = new ColumnReferenceNode(
+					ctx.scope,
+					{ type: 'column', name: sourceAttr.name } as AST.ColumnExpr,
+					sourceAttr.type,
+					sourceAttr.id,
+					targetColIndex
+				);
+				projections.push({
+					node: columnRef,
+					alias: tableColumn.name
+				});
+			} else {
+				throw new QuereusError(
+					`Source has fewer columns than expected for INSERT target columns`,
+					StatusCode.ERROR
+				);
+			}
+		} else {
+			// This column is omitted - use default value or NULL
+			let defaultNode: ScalarPlanNode;
+			if (tableColumn.defaultValue !== undefined) {
+				// Use default value
+				if (typeof tableColumn.defaultValue === 'object' && tableColumn.defaultValue !== null && 'type' in tableColumn.defaultValue) {
+					// It's an AST.Expression - build it into a plan node
+					defaultNode = buildExpression(ctx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
+				} else {
+					// Literal default value
+					defaultNode = buildExpression(ctx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
+				}
+			} else {
+				// No default value - use NULL
+				defaultNode = buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode;
+			}
+			projections.push({
+				node: defaultNode,
+				alias: tableColumn.name
+			});
+		}
+	});
+
+	// Create projection node that expands source to table structure
+	return new ProjectNode(ctx.scope, sourceNode, projections);
+}
 
 /**
  * Validates that RETURNING expressions use appropriate NEW/OLD qualifiers for the operation type
@@ -90,10 +174,13 @@ export function buildInsertStmt(
 	}
 
 	let sourceNode: RelationalPlanNode;
+
 	if (stmt.values) {
+		// VALUES clause - build the VALUES node
 		const rows = stmt.values.map(rowExprs =>
 			rowExprs.map(expr => buildExpression(ctx, expr) as PlanNode as ScalarPlanNode)
 		);
+
 		// Check that there are the right number of columns in each row
 		rows.forEach(row => {
 			if (row.length !== targetColumns.length) {
@@ -101,56 +188,12 @@ export function buildInsertStmt(
 			}
 		});
 
-		// If we're only inserting into some columns, we need to expand the VALUES to include all table columns
-		// for constraint checking to work properly (omitted columns should be NULL/default)
-		if (stmt.columns && stmt.columns.length < tableReference.tableSchema.columns.length) {
-			// Expand each row to include all table columns
-			const expandedRows = rows.map(row => {
-				const expandedRow: ScalarPlanNode[] = [];
+		// Create VALUES node with target column names
+		const targetColumnNames = targetColumns.map(col => col.name);
+		sourceNode = new ValuesNode(ctx.scope, rows, targetColumnNames);
 
-				tableReference.tableSchema.columns.forEach((tableColumn, tableColIndex) => {
-					// Check if this column is in the target columns
-					const targetColIndex = targetColumns.findIndex(tc => tc.name.toLowerCase() === tableColumn.name.toLowerCase());
-
-					if (targetColIndex >= 0) {
-						// This column is provided in the VALUES - use the provided value
-						expandedRow.push(row[targetColIndex]);
-					} else {
-						// This column is omitted - use default value or NULL
-						let defaultNode: ScalarPlanNode;
-						if (tableColumn.defaultValue !== undefined) {
-							// Use default value
-							if (typeof tableColumn.defaultValue === 'object' && tableColumn.defaultValue !== null && 'type' in tableColumn.defaultValue) {
-								// It's an AST.Expression - build it into a plan node
-								defaultNode = buildExpression(ctx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
-							} else {
-								// Literal default value
-								defaultNode = buildExpression(ctx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
-							}
-						} else {
-							// No default value - use NULL
-							defaultNode = buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode;
-						}
-						expandedRow.push(defaultNode);
-					}
-				});
-
-				return expandedRow;
-			});
-
-			// Create column names array with all table column names
-			const tableColumnNames = tableReference.tableSchema.columns.map(col => col.name);
-			sourceNode = new ValuesNode(ctx.scope, expandedRows, tableColumnNames);
-			// Update targetColumns to reflect all table columns since we've expanded the VALUES
-			targetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
-		} else {
-			// Even for full column lists, provide proper column names to VALUES node
-			const tableColumnNames = targetColumns.map(col => col.name);
-			sourceNode = new ValuesNode(ctx.scope, rows, tableColumnNames);
-		}
 	} else if (stmt.select) {
-		// For INSERT ... SELECT, plan the SELECT statement
-		// Handle any WITH clause attached to the INSERT so its CTEs are visible to the SELECT
+		// SELECT clause - build the SELECT statement
 		let parentCtes: Map<string, CTEPlanNode> = new Map();
 		if (stmt.withClause) {
 			parentCtes = buildWithClause(ctx, stmt.withClause);
@@ -161,74 +204,74 @@ export function buildInsertStmt(
 		}
 		sourceNode = selectPlan as RelationalPlanNode;
 		checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
+
 	} else {
 		throw new QuereusError('INSERT statement must have a VALUES clause or a SELECT query.', StatusCode.ERROR);
 	}
 
+	// ORTHOGONAL ROW EXPANSION:
+	// Apply uniform row expansion to map any source to table structure with defaults
+	const expandedSourceNode = createRowExpansionProjection(ctx, sourceNode, targetColumns, tableReference);
+
+	// Update targetColumns to reflect all table columns since we've expanded the source
+	const finalTargetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
+
+	// Create OLD/NEW attributes for INSERT (OLD = all NULL, NEW = actual values)
+	const oldAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+		id: PlanNode.nextAttrId(),
+		name: col.name,
+		type: {
+			typeClass: 'scalar' as const,
+			affinity: col.affinity,
+			nullable: true, // OLD values are always NULL for INSERT
+			isReadOnly: false
+		},
+		sourceRelation: `OLD.${tableReference.tableSchema.name}`
+	}));
+
+	const newAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+		id: PlanNode.nextAttrId(),
+		name: col.name,
+		type: {
+			typeClass: 'scalar' as const,
+			affinity: col.affinity,
+			nullable: !col.notNull,
+			isReadOnly: false
+		},
+		sourceRelation: `NEW.${tableReference.tableSchema.name}`
+	}));
+
+	const { oldRowDescriptor, newRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+
 	// Always inject ConstraintCheckNode for INSERT operations
 	const constraintCheckNode = new ConstraintCheckNode(
 		ctx.scope,
-		sourceNode,
+		expandedSourceNode,
 		tableReference,
 		RowOp.INSERT,
-		undefined, // oldRowDescriptor - not needed for INSERT
-		undefined  // newRowDescriptor - not needed for non-returning inserts
+		oldRowDescriptor,
+		newRowDescriptor
 	);
 
 	const insertNode = new InsertNode(
 		ctx.scope,
 		tableReference,
-		targetColumns,
+		finalTargetColumns, // Use final target columns (all table columns)
 		constraintCheckNode, // Use constraint-checked rows as source
 		stmt.onConflict
 	);
 
-	let resultNode: RelationalPlanNode = insertNode;
+	const resultNode: RelationalPlanNode = insertNode;
 
 	if (stmt.returning && stmt.returning.length > 0) {
-		// For RETURNING, create a fresh set of attribute IDs that will be used
-		// consistently in both the newRowDescriptor and the RETURNING projections
-		const newRowDescriptor: RowDescriptor = [];
+		// Create returning scope with OLD/NEW attribute access
 		const returningScope = new RegisteredScope(ctx.scope);
 
-		// Create one attribute ID per table column, ensuring they're used consistently
-		const columnAttributeIds: number[] = [];
-		tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
-			const attributeId = PlanNode.nextAttrId();
-			columnAttributeIds[columnIndex] = attributeId;
-			newRowDescriptor[attributeId] = columnIndex;
-
-			// Register the unqualified column name in the RETURNING scope
-			returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) => {
-				return new ColumnReferenceNode(
-					s,
-					exp as AST.ColumnExpr,
-					{
-						typeClass: 'scalar',
-						affinity: tableColumn.affinity,
-						nullable: !tableColumn.notNull,
-						isReadOnly: false
-					},
-					attributeId,
-					columnIndex
-				);
-			});
-
-			// Also register the table-qualified form (table.column)
-			const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
-			returningScope.registerSymbol(tblQualified, (exp, s) =>
-				new ColumnReferenceNode(
-					s,
-					exp as AST.ColumnExpr,
-					{
-						typeClass: 'scalar',
-						affinity: tableColumn.affinity,
-						nullable: !tableColumn.notNull,
-						isReadOnly: false
-					},
-					attributeId,
-					columnIndex
-				)
+		// Register OLD.* symbols (always NULL for INSERT)
+		oldAttributes.forEach((attr, columnIndex) => {
+			const tableColumn = tableReference.tableSchema.columns[columnIndex];
+			returningScope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
 			);
 
 			// Register NEW.column for INSERT RETURNING (NEW values are the inserted values)
@@ -248,7 +291,28 @@ export function buildInsertStmt(
 			);
 		});
 
-		// Build RETURNING projections in the table column context
+		// Register NEW.* symbols and unqualified column names (default to NEW)
+		newAttributes.forEach((attr, columnIndex) => {
+			const tableColumn = tableReference.tableSchema.columns[columnIndex];
+
+			// NEW.column
+			returningScope.registerSymbol(`new.${tableColumn.name.toLowerCase()}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+
+			// Unqualified column (defaults to NEW)
+			returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+
+			// Table-qualified form (table.column -> NEW)
+			const tblQualified = `${tableReference.tableSchema.name.toLowerCase()}.${tableColumn.name.toLowerCase()}`;
+			returningScope.registerSymbol(tblQualified, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+		});
+
+		// Build RETURNING projections in the OLD/NEW context
 		const returningProjections = stmt.returning.map(rc => {
 			// TODO: Support RETURNING *
 			if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
@@ -273,27 +337,7 @@ export function buildInsertStmt(
 			};
 		});
 
-		// Always inject ConstraintCheckNode for INSERT operations (even with RETURNING)
-		const constraintCheckNodeWithDescriptor = new ConstraintCheckNode(
-			ctx.scope,
-			sourceNode,
-			tableReference,
-			RowOp.INSERT,
-			undefined, // oldRowDescriptor - not needed for INSERT
-			newRowDescriptor
-		);
-
-		// Create a new InsertNode with the row descriptor
-		const insertNodeWithDescriptor = new InsertNode(
-			ctx.scope,
-			tableReference,
-			targetColumns,
-			constraintCheckNodeWithDescriptor, // Use constraint-checked rows as source
-			stmt.onConflict,
-			newRowDescriptor
-		);
-
-		return new ReturningNode(ctx.scope, insertNodeWithDescriptor, returningProjections);
+		return new ReturningNode(ctx.scope, insertNode, returningProjections);
 	}
 
 	return new SinkNode(ctx.scope, resultNode, 'insert');

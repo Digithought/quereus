@@ -8,8 +8,8 @@ import { ScalarSubqueryNode, InNode, ExistsNode } from '../nodes/subquery.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
-import { StatusCode, SqlDataType } from '../../common/types.js';
-import type { RelationType, ScalarType } from '../../common/datatype.js';
+import { StatusCode } from '../../common/types.js';
+import type { RelationType } from '../../common/datatype.js';
 import { resolveColumn, resolveParameter, resolveFunction } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt } from './select.js';
@@ -20,27 +20,36 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
   switch (expr.type) {
     case 'literal':
       return new LiteralNode(ctx.scope, expr);
-    case 'column':
+
+    case 'column': {
       const colResolution = resolveColumn(ctx.scope, expr, ctx.db.schemaManager.getCurrentSchemaName());
 
       if (!colResolution || colResolution === Ambiguous) {
         throw new QuereusError(`Column not found: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
       return colResolution as ScalarPlanNode;
-    case 'parameter':
+		}
+
+		case 'parameter': {
       const paramResolution = resolveParameter(ctx.scope, expr);
       if (!paramResolution || paramResolution === Ambiguous) {
         throw new QuereusError(`Parameter not found: ${expr.name ?? expr.index}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
       return paramResolution as ScalarPlanNode;
-    case 'unary':
+		}
+
+		case 'unary': {
       const operand = buildExpression(ctx, expr.expr, allowAggregates);
       return new UnaryOpNode(ctx.scope, expr, operand);
-    case 'binary':
+		}
+
+		case 'binary': {
       const left = buildExpression(ctx, expr.left, allowAggregates);
       const right = buildExpression(ctx, expr.right, allowAggregates);
       return new BinaryOpNode(ctx.scope, expr, left, right);
-    case 'case':
+		}
+
+    case 'case': {
       // Build base expression if present
       const baseExpr = expr.baseExpr ? buildExpression(ctx, expr.baseExpr, allowAggregates) : undefined;
 
@@ -54,13 +63,19 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
       const elseExpr = expr.elseExpr ? buildExpression(ctx, expr.elseExpr, allowAggregates) : undefined;
 
       return new CaseExprNode(ctx.scope, expr, baseExpr, whenThenClauses, elseExpr);
-    case 'cast':
+		}
+
+    case 'cast': {
       const castOperand = buildExpression(ctx, expr.expr, allowAggregates);
       return new CastNode(ctx.scope, expr, castOperand);
-    case 'collate':
+    }
+
+    case 'collate': {
       const collateOperand = buildExpression(ctx, expr.expr, allowAggregates);
       return new CollateNode(ctx.scope, expr, collateOperand);
-    case 'function':
+    }
+
+		case 'function': {
       // In HAVING context, check if this function matches an existing aggregate
       if (ctx.aggregates && ctx.aggregates.length > 0) {
         // Try to find a matching aggregate
@@ -139,7 +154,9 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
         const args = expr.args.map(arg => buildExpression(ctx, arg, allowAggregates));
         return new ScalarFunctionCallNode(ctx.scope, expr, functionSchema.returnType, args);
       }
-    case 'subquery':
+		}
+
+    case 'subquery': {
        // For scalar subqueries, create a context that allows correlation
        // The buildSelectStmt will create the proper scope chain with subquery tables taking precedence
        const subqueryContext = { ...ctx };
@@ -153,7 +170,9 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          throw new QuereusError('Scalar subquery must return exactly one column', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
        return new ScalarSubqueryNode(ctx.scope, expr, subqueryPlan as RelationalPlanNode);
-    case 'windowFunction':
+		}
+
+		case 'windowFunction': {
        // Window functions are handled by creating a WindowFunctionCallNode
        // First validate that this is a registered window function
        const windowSchema = resolveWindowFunction(expr.function.name);
@@ -178,7 +197,9 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          expr.function.name,
          expr.function.distinct ?? false
        );
-    case 'in':
+		}
+
+		case 'in': {
        // Build the left expression
        const leftExpr = buildExpression(ctx, expr.expr, allowAggregates);
 
@@ -204,7 +225,9 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        } else {
          throw new QuereusError('IN expression must have either values or subquery', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
-    case 'exists':
+		}
+
+    case 'exists': {
        // Build the EXISTS subquery
        const existsSubqueryContext = { ...ctx };
        const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery);
@@ -212,7 +235,9 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          throw new QuereusError('EXISTS subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
        return new ExistsNode(ctx.scope, expr, existsSubqueryPlan as RelationalPlanNode);
-    default:
+		}
+
+		default:
       throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED, undefined, expr.loc?.start.line, expr.loc?.start.column);
   }
 }

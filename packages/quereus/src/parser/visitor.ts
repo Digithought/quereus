@@ -44,10 +44,9 @@ export interface AstVisitorCallbacks {
 export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitorCallbacks): void {
 	if (!node) return;
 
-	let proceed = true;
 	if (callbacks.enterNode) {
 		const result = callbacks.enterNode(node);
-		if (proceed = (result !== false)) return; // Stop if enterNode returns false
+		if (result !== false) return; // Stop if enterNode returns false
 	}
 
 	// Call specific visitor if defined
@@ -55,7 +54,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 	if (callbacks[specificVisitorKey]) {
 		const specificVisitor = callbacks[specificVisitorKey] as (n: any) => void | boolean;
 		const result = specificVisitor(node);
-		if (proceed = (result !== false)) return; // Stop if specific visitor returns false
+		if (result !== false) return; // Stop if specific visitor returns false
 	}
 
 	// Recursively traverse children based on node type

@@ -37,10 +37,10 @@ export function createPrimaryKeyFunctions(schema: TableSchema): PrimaryKeyFuncti
  */
 function createSingletonPrimaryKeyFunctions(): PrimaryKeyFunctions {
 	return {
-		extractFromRow: (row: Row): BTreeKeyForPrimary => {
+		extractFromRow: (): BTreeKeyForPrimary => {
 			return [];
 		},
-		compare: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
+		compare: (): number => {
 			return 0;	// Always equal
 		}
 	};
@@ -143,7 +143,8 @@ export function buildPrimaryKeyFromValues(
 	pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>
 ): BTreeKeyForPrimary {
 	if (pkDefinition.length === 0) {
-		throw new QuereusError("Cannot build primary key: no primary key definition.", StatusCode.INTERNAL);
+		// Empty primary key definition means singleton table - return empty array
+		return [];
 	}
 
 	if (keyValues.length !== pkDefinition.length) {

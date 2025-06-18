@@ -4,7 +4,7 @@ import type { PlanningContext } from '../planning-context.js';
 import { AggregateNode } from '../nodes/aggregate-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
-import { ProjectNode, type Projection } from '../nodes/project-node.js';
+import { type Projection } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';

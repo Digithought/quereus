@@ -52,15 +52,6 @@ function compareDistinctValues(a: SqlValue | SqlValue[], b: SqlValue | SqlValue[
 }
 
 /**
- * Creates a group key from an array of values that can be used as a Map key
- */
-function createGroupKey(values: SqlValue[]): string {
-	// Use JSON.stringify to create a stable key from the group values
-	// This handles nulls, numbers, strings, etc. properly
-	return JSON.stringify(values);
-}
-
-/**
  * Find the source relation node that column references should use as their context key.
  * This traverses up the tree to find the original table scan or similar node.
  */
@@ -269,7 +260,6 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			}
 
 			// Set up combined context for the result row (includes both output and source attributes)
-			const lastSourceRow = sourceRows[Symbol.asyncIterator] ? undefined : undefined; // We need to track this
 			ctx.context.set(outputRowDescriptor, () => resultRow);
 			logContextPush(outputRowDescriptor, 'output-row');
 			// Note: For no GROUP BY case, we can't preserve source row context since we processed multiple rows

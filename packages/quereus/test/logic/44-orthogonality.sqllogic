@@ -96,7 +96,7 @@ FROM users u
 JOIN (
     UPDATE users
     SET email = name || '@company.com'
-    WHERE email like '%@example.com'
+    WHERE email LIKE '%@example.com'
     RETURNING id, email
 ) AS updated ON u.id = updated.id;
 → [

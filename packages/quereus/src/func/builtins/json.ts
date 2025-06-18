@@ -3,7 +3,6 @@ import type { Operation } from 'fast-json-patch';
 const { applyPatch } = fastJsonPatch;
 
 import { createLogger } from '../../common/logger.js';
-import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
 import { createScalarFunction, createAggregateFunction } from '../registration.js';
 import { safeJsonParse, resolveJsonPathForModify, prepareJsonValue, deepCopyJson, getJsonType } from './json-helpers.js';
@@ -80,7 +79,7 @@ export const jsonExtractFunc = createScalarFunction(
 			// Return arrays/objects as JSON strings
 			try {
 				return JSON.stringify(extractedValue);
-			} catch (e) {
+			} catch {
 				return null; // Should not happen for valid extracted JSON parts
 			}
 		} else {
@@ -114,7 +113,7 @@ export const jsonQuoteFunc = createScalarFunction(
 					// Handle arrays and plain objects by converting to JSON string
 					try {
 						return JSON.stringify(value);
-					} catch (e) {
+					} catch {
 						return null;
 					}
 				}
@@ -133,7 +132,7 @@ export const jsonArrayFunc = createScalarFunction(
 		const jsonCompatibleArgs = args.map(arg => prepareJsonValue(arg)); // Use helper
 		try {
 			return JSON.stringify(jsonCompatibleArgs);
-		} catch (e) {
+		} catch {
 			return null; // Should not happen with basic types
 		}
 	}
@@ -160,7 +159,7 @@ export const jsonObjectFunc = createScalarFunction(
 		}
 		try {
 			return JSON.stringify(obj);
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
@@ -229,12 +228,12 @@ export const jsonPatchFunc = createScalarFunction(
 export const jsonInsertFunc = createScalarFunction(
 	{ name: 'json_insert', numArgs: -1, deterministic: true },
 	(json: SqlValue, ...args: SqlValue[]): SqlValue => {
-		let data = safeJsonParse(json);
+		const data = safeJsonParse(json);
 		if (data === null && typeof json === 'string') return null; // Invalid JSON input
 		if (args.length === 0 || args.length % 2 !== 0) return null; // Need path/value pairs
 
 		// Work on a copy
-		let currentData = deepCopyJson(data);
+		const currentData = deepCopyJson(data);
 
 		for (let i = 0; i < args.length; i += 2) {
 			const pathVal = args[i];
@@ -269,7 +268,7 @@ export const jsonInsertFunc = createScalarFunction(
 
 		try {
 			return JSON.stringify(currentData);
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
@@ -279,7 +278,7 @@ export const jsonInsertFunc = createScalarFunction(
 export const jsonReplaceFunc = createScalarFunction(
 	{ name: 'json_replace', numArgs: -1, deterministic: true },
 	(json: SqlValue, ...args: SqlValue[]): SqlValue => {
-		let data = safeJsonParse(json);
+		const data = safeJsonParse(json);
 		if (data === null && typeof json === 'string') return null;
 		if (args.length === 0 || args.length % 2 !== 0) return null;
 
@@ -316,7 +315,7 @@ export const jsonReplaceFunc = createScalarFunction(
 
 		try {
 			return JSON.stringify(currentData);
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
@@ -326,7 +325,7 @@ export const jsonReplaceFunc = createScalarFunction(
 export const jsonSetFunc = createScalarFunction(
 	{ name: 'json_set', numArgs: -1, deterministic: true },
 	(json: SqlValue, ...args: SqlValue[]): SqlValue => {
-		let data = safeJsonParse(json);
+		const data = safeJsonParse(json);
 		if (data === null && typeof json === 'string') return null;
 		if (args.length === 0 || args.length % 2 !== 0) return null;
 
@@ -344,7 +343,7 @@ export const jsonSetFunc = createScalarFunction(
 
 			if (pathInfo === null) continue; // Ignore invalid paths
 
-			const { parent, key, exists } = pathInfo;
+			const { parent, key } = pathInfo;
 
 			if (parent === null && key === '') {
 				// Set the root value
@@ -373,7 +372,7 @@ export const jsonSetFunc = createScalarFunction(
 
 		try {
 			return JSON.stringify(currentData);
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
@@ -383,11 +382,11 @@ export const jsonSetFunc = createScalarFunction(
 export const jsonRemoveFunc = createScalarFunction(
 	{ name: 'json_remove', numArgs: -1, deterministic: true },
 	(json: SqlValue, ...paths: SqlValue[]): SqlValue => {
-		let data = safeJsonParse(json);
+		const data = safeJsonParse(json);
 		if (data === null && typeof json === 'string') return null; // Invalid JSON input
 		if (paths.length === 0) return JSON.stringify(data); // No paths means no change
 
-		let currentData = deepCopyJson(data);
+		const currentData = deepCopyJson(data);
 
 		for (const pathVal of paths) {
 			if (typeof pathVal !== 'string') return null; // Path must be string
@@ -415,7 +414,7 @@ export const jsonRemoveFunc = createScalarFunction(
 
 		try {
 			return JSON.stringify(currentData);
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
@@ -436,7 +435,7 @@ export const jsonGroupArrayFunc = createAggregateFunction(
 		try {
 			// Returns NULL if the group is empty, otherwise the JSON array string
 			return acc.length > 0 ? JSON.stringify(acc) : null;
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
@@ -460,30 +459,8 @@ export const jsonGroupObjectFunc = createAggregateFunction(
 		try {
 			// Returns NULL if the group is empty, otherwise the JSON object string
 			return Object.keys(acc).length > 0 ? JSON.stringify(acc) : null;
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
 );
-
-// Re-add the missing jsJsonPatch function implementation
-const jsJsonPatch = (jsonDoc: SqlValue, patchVal: SqlValue): string | null => {
-	const data = safeJsonParse(jsonDoc);
-	const patchData = safeJsonParse(patchVal);
-
-	if (data === null && typeof jsonDoc === 'string') return null; // Invalid target JSON
-	if (!Array.isArray(patchData)) return null; // Invalid patch JSON (must be array)
-
-	const patch = patchData as Operation[];
-	if (!patch.every(op => typeof op === 'object' && op !== null && 'op' in op && 'path' in op)) {
-		return null; // Invalid operation structure
-	}
-
-	try {
-		const result = applyPatch(data, patch, true).newDocument;
-		return JSON.stringify(result);
-	} catch (e: any) {
-		errorLog('json_patch failed: %s, %O', e?.message, e);
-		return null; // Return NULL on patch failure
-	}
-};

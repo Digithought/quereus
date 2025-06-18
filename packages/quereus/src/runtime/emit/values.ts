@@ -6,8 +6,8 @@ import { type SqlValue, type Row, StatusCode } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
 import type { EmissionContext } from '../emission-context.js';
 
-export function emitSingleRow(plan: SingleRowNode, ctx: EmissionContext): Instruction {
-	async function* run(ctx: RuntimeContext): AsyncIterable<Row> {
+export function emitSingleRow(_plan: SingleRowNode, _ctx: EmissionContext): Instruction {
+	async function* run(_rctx: RuntimeContext): AsyncIterable<Row> {
 		yield []; // Yield one empty row
 	}
 

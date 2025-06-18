@@ -1,6 +1,6 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type ScalarPlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
-import type { ColumnDef, RelationType, ScalarType } from '../../common/datatype.js';
+import { PlanNode, type RelationalPlanNode } from './plan-node.js';
+import type { ScalarType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { SqlDataType } from '../../common/types.js';
 

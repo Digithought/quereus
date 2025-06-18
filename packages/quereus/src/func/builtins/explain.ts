@@ -1,13 +1,12 @@
 import type { Row } from "../../common/types.js";
 import type { SqlValue } from "../../common/types.js";
 import { SqlDataType } from "../../common/types.js";
-import { createIntegratedTableValuedFunction, createTableValuedFunction } from "../registration.js";
+import { createIntegratedTableValuedFunction } from "../registration.js";
 import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
-import { Parser } from "../../parser/parser.js";
 import { safeJsonStringify } from "../../util/serialization.js";
-import type { InstructionTraceEvent } from "../../runtime/types.js";
+import { InstructionTraceEvent } from "../../runtime/types.js";
 
 // Query plan explanation function (table-valued function)
 export const queryPlanFunc = createIntegratedTableValuedFunction(
@@ -64,8 +63,8 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				let detail = 'Unknown operation';
 				let objectName: string | null = null;
 				let alias: string | null = null;
-				let estCost = node.estimatedCost || 1.0;
-				let estRows = (node as any).estimatedRows || 10;
+				const estCost = node.estimatedCost || 1.0;
+				const estRows = (node as any).estimatedRows || 10;
 
 				// Use node's toString() method for detail if available
 				if (typeof node.toString === 'function') {
@@ -643,7 +642,7 @@ export const schemaSizeFunc = createIntegratedTableValuedFunction(
 			rowConstraints: []
 		}
 	},
-	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
-		// Implementation of schemaSizeFunc
+	async function* (_db: Database, _sql: SqlValue): AsyncIterable<Row> {
+		// TODO: Implementation of schemaSizeFunc
 	}
 );

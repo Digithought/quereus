@@ -56,11 +56,12 @@ export class MemoryVirtualTableConnection implements VirtualTableConnection {
 	}
 
 	/** Disconnects and cleans up this connection */
-	disconnect(): void {
+	async disconnect(): Promise<void> {
 		log(`DISCONNECT connection ${this.connectionId}`);
 		// The MemoryTableConnection doesn't have a disconnect method,
 		// but we can clear any pending transaction state
 		if (this.memoryConnection.pendingTransactionLayer) {
+			log(`Rolling back pending transaction on disconnect for ${this.connectionId}`);
 			this.memoryConnection.rollback();
 		}
 	}

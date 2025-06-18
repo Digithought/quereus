@@ -7,7 +7,7 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
+import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { CTENode } from '../../nodes/cte-node.js';
 import { CacheNode } from '../../nodes/cache-node.js';

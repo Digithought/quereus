@@ -1,4 +1,4 @@
-import { MaybePromise } from "../common/types";
+import { MaybePromise } from "../common/types.js";
 
 /**
  * Generic interface for VirtualTable connections that support transactions.

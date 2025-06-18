@@ -62,7 +62,7 @@ function processValue(value: any): any {
 	if (isAstNode(value)) {
 		try {
 			return astToString(value);
-		} catch (error) {
+		} catch {
 			return `[AST:${value.type}]`; // Fallback if stringify fails
 		}
 	}
