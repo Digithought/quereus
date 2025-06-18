@@ -34,8 +34,12 @@ export function emitUpdateExecutor(plan: UpdateExecutorNode, ctx: EmissionContex
 			keyValues.push(oldRowKeyValues[pkColIdx]);
 		}
 
-		// Perform the actual update via xUpdate: update the row identified by keyValues to have the values in updatedRow
-		await vtab.xUpdate!('update', updatedRow, keyValues);
+		// Create a clean row without metadata to store in the virtual table
+		const cleanRowForVtab = updatedRow.slice() as Row;
+		// The virtual table should only get the pure row data, no metadata
+
+		// Perform the actual update via xUpdate: update the row identified by keyValues to have the values in cleanRowForVtab
+		await vtab.xUpdate!('update', cleanRowForVtab, keyValues);
 	}
 
 	// Always yield the updated rows - consumers decide if they want them
@@ -45,10 +49,17 @@ export function emitUpdateExecutor(plan: UpdateExecutorNode, ctx: EmissionContex
 		try {
 			for await (const updatedRow of updatedRowsIterable) {
 				await executeUpdate(vtab, updatedRow);
-				// Yield the updated row (strip metadata)
+				// Yield the updated row (preserve __updateRowData for RETURNING, only strip UpdateExecutor-specific metadata)
 				const cleanRow = updatedRow.slice() as Row;
-				delete (cleanRow as any).__oldRowKeyValues;
-				delete (cleanRow as any).__updateRowData;
+				delete (cleanRow as any).__oldRowKeyValues; // Remove UpdateExecutor-specific metadata
+				// Keep __updateRowData for RETURNING to access OLD/NEW values
+				if ((updatedRow as any).__updateRowData) {
+					Object.defineProperty(cleanRow, '__updateRowData', {
+						value: (updatedRow as any).__updateRowData,
+						enumerable: false,
+						writable: false
+					});
+				}
 				yield cleanRow;
 			}
 		} finally {

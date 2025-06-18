@@ -5,7 +5,8 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 ## 🔄 Current Development Focus
 
 **Core SQL Features**
-- [ ] **OLD/NEW on RETURNS**: Support for RETURNING clause references
+- [ ] **DELETE T FROM ...**: Allow specification of target alias for DML ops
+- [ ] **Orthogonal relational expressions**: allow any expression that results in a relational expression in a relational expressive context 
 - [ ] Default nullability to `not null` and document
 - [ ] Values in "select" locations (e.g. views)
 - [ ] Expression-based functions

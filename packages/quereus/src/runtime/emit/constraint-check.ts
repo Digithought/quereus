@@ -189,6 +189,13 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 							writable: false
 						});
 
+						// Preserve __updateRowData for RETURNING to access OLD/NEW values
+						Object.defineProperty(cleanUpdatedRow, '__updateRowData', {
+							value: updateRowData,
+							enumerable: false,
+							writable: false
+						});
+
 						yield cleanUpdatedRow;
 					} else {
 						yield row;

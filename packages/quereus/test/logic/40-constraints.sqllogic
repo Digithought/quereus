@@ -176,10 +176,10 @@ CREATE TABLE products (sku TEXT PRIMARY KEY, price REAL);
 CREATE TABLE inventory (loc TEXT, sku TEXT, qty INTEGER CHECK(qty >= 0) /* Simple check */,
     FOREIGN KEY (sku) REFERENCES products(sku));
 ALTER TABLE inventory ADD CONSTRAINT enough_stock CHECK ON UPDATE (
-        NEW.qty <= (SELECT sum(s.qty) FROM inventory s WHERE s.sku = NEW.sku)
+        new.qty <= (SELECT sum(s.qty) FROM inventory s WHERE s.sku = NEW.sku)
     );
 ALTER TABLE inventory ADD CONSTRAINT no_delete_if_positive CHECK ON DELETE (
-        OLD.qty <= 0
+        old.qty <= 0
     );
 
 INSERT INTO products VALUES ('A1', 10.0), ('B2', 20.0);

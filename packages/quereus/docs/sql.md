@@ -89,6 +89,7 @@ The insert statement adds new rows to a table.
 [ with [recursive] with_clause[,...] ]
   insert into table_name [(column [, column...])]
   { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
+  [ returning result_column [, result_column...] ]
 ```
 
 **Options:**
@@ -97,6 +98,7 @@ The insert statement adds new rows to a table.
 - `column`: Optional list of columns to insert into
 - `values`: A list of value sets to insert
 - `select_statement`: A select query whose results are inserted
+- `returning`: Optional clause to return values from inserted rows
 
 **Examples:**
 ```sql
@@ -114,6 +116,16 @@ insert into products (name, price, category)
 insert into active_users (id, name, email)
   select id, name, email from users where last_login > date('now', '-30 days');
 
+-- Insert with RETURNING clause
+insert into products (name, price, category) 
+  values ('Wireless Mouse', 39.99, 'Electronics')
+  returning id, name, price;
+
+-- Insert with NEW qualifier in RETURNING
+insert into audit_log (action, table_name, record_id) 
+  values ('INSERT', 'users', 123)
+  returning NEW.id, NEW.action, datetime('now') as timestamp;
+
 -- With CTE
 with recent_orders as (
   select * from orders where order_date > date('now', '-7 days')
@@ -121,7 +133,8 @@ with recent_orders as (
   insert into order_summary (order_id, customer, total)
     select id, customer_name, sum(price * quantity) 
     from recent_orders
-    group by id, customer_name;
+    group by id, customer_name
+    returning order_id, total;
 ```
 
 ### 2.3 UPDATE Statement
@@ -134,6 +147,7 @@ The update statement modifies existing rows in a table.
   update table_name
     set column = expr [, column = expr...]
     [ where condition ]
+    [ returning result_column [, result_column...] ]
 ```
 
 **Options:**
@@ -141,17 +155,26 @@ The update statement modifies existing rows in a table.
 - `table_name`: Table to be updated
 - `set`: Column assignments with new values
 - `where`: Optional condition to specify which rows to update
+- `returning`: Optional clause to return values from updated rows
 
 **Examples:**
 ```sql
 -- Simple update
 update users set status = 'inactive' where last_login < date('now', '-90 days');
 
--- Multi-column update
+-- Multi-column update with RETURNING
 update products 
   set price = price * 1.1, 
       updated_at = datetime('now')
-  where category = 'Electronics';
+  where category = 'Electronics'
+  returning id, name, price, updated_at;
+
+-- Update with OLD and NEW qualifiers
+update employees 
+  set salary = salary * 1.05 
+  where performance_rating >= 4
+  returning id, OLD.salary as old_salary, NEW.salary as new_salary, 
+           (NEW.salary - OLD.salary) as increase;
 
 -- Update with expression
 update orders
@@ -161,7 +184,8 @@ update orders
       when paid = 1 then 'completed' 
       else 'pending' 
     end
-  where order_date > date('now', '-30 days');
+  where order_date > date('now', '-30 days')
+  returning id, OLD.status, NEW.status, NEW.total;
 
 -- With CTE
 with discounted_items as (
@@ -172,7 +196,8 @@ with discounted_items as (
   update products
     set price = di.sale_price
     from discounted_items as di
-    where products.id = di.product_id;
+    where products.id = di.product_id
+    returning id, OLD.price as original_price, NEW.price as sale_price;
 ```
 
 ### 2.4 DELETE Statement
@@ -184,25 +209,28 @@ The delete statement removes rows from a table.
 [ with [recursive] with_clause[,...] ]
 delete from table_name
 [ where condition ]
+[ returning result_column [, result_column...] ]
 ```
 
 **Options:**
 - `with clause`: Common Table Expressions for use in the delete
 - `table_name`: Table to delete from
 - `where`: Optional condition to specify which rows to delete
+- `returning`: Optional clause to return values from deleted rows
 
 **Examples:**
 ```sql
 -- Simple delete
 delete from users where status = 'deactivated';
 
--- Delete with subquery
+-- Delete with RETURNING clause
 delete from products
   where id in (
     select product_id 
     from inventory 
     where stock = 0 and last_updated < date('now', '-180 days')
-  );
+  )
+  returning id, name, category;
 
 -- With CTE
 with old_orders as (
@@ -212,7 +240,91 @@ with old_orders as (
   where order_id in (select id from old_orders);
 ```
 
-### 2.5 CREATE TABLE Statement
+### 2.5 RETURNING Clause with NEW/OLD Qualifiers
+
+The RETURNING clause allows you to retrieve values from rows that were inserted, updated, or deleted in a DML operation. Quereus supports NEW and OLD qualifiers to distinguish between original and modified values.
+
+**Syntax:**
+```sql
+returning result_column [, result_column...]
+
+result_column:
+  { * | [qualifier.]column_name | expression } [ [ as ] alias ]
+
+qualifier:
+  { NEW | OLD }
+```
+
+#### 2.5.1 Operation-Specific Rules
+
+**INSERT Operations:**
+- `NEW`: References the inserted values ✅
+- `OLD`: Not allowed (will cause error) ❌
+- Unqualified columns: Default to NEW values
+
+**UPDATE Operations:**
+- `NEW`: References the updated values ✅
+- `OLD`: References the original values before update ✅
+- Unqualified columns: Default to NEW values
+
+**DELETE Operations:**
+- `OLD`: References the deleted values ✅
+- `NEW`: Not allowed (will cause error) ❌
+- Unqualified columns: Default to OLD values
+
+#### 2.5.3 Advanced RETURNING Examples
+
+**Audit Trail with UPDATE:**
+```sql
+-- Track all changes for audit purposes
+update customer_profiles 
+  set email = 'new.email@example.com', phone = '555-0123'
+  where customer_id = 42
+  returning 
+    customer_id,
+    OLD.email as old_email,
+    NEW.email as new_email,
+    OLD.phone as old_phone,
+    NEW.phone as new_phone,
+    datetime('now') as changed_at;
+```
+
+**Calculating Differences:**
+```sql
+-- Calculate price changes
+update inventory 
+  set quantity = quantity - 5, last_updated = datetime('now')
+  where product_id in (101, 102, 103)
+  returning 
+    product_id,
+    OLD.quantity as stock_before,
+    NEW.quantity as stock_after,
+    OLD.quantity - NEW.quantity as items_sold,
+    NEW.last_updated;
+```
+
+**Conditional RETURNING with CASE:**
+```sql
+-- Conditional logic in RETURNING clause
+update user_accounts 
+  set login_attempts = login_attempts + 1
+  where username = 'user123'
+  returning 
+    user_id,
+    username,
+    NEW.login_attempts,
+    case 
+      when NEW.login_attempts >= 5 then 'LOCKED'
+      when NEW.login_attempts >= 3 then 'WARNING'
+      else 'NORMAL'
+    end as account_status,
+    case
+      when OLD.login_attempts < 3 and NEW.login_attempts >= 3 then 'Security alert triggered'
+      else 'Login attempt recorded'
+    end as message;
+```
+
+### 2.6 CREATE TABLE Statement
 
 The create table statement defines a new table structure.  Note that all tables are "without rowid" implicitly.
 
@@ -2204,17 +2316,24 @@ limit_clause       = "limit" expr [ ( "offset" expr ) | ( "," expr ) ] ;
 
 /* INSERT statement */
 insert_stmt        = "insert" [ "into" ] table_name [ "(" column_name { "," column_name } ")" ]
-                     ( values_clause | select_stmt ) ;
+                     ( values_clause | select_stmt ) [ returning_clause ] ;
 
 values_clause      = "values" "(" expr { "," expr } ")" { "," "(" expr { "," expr } ")" } ;
 
 /* UPDATE statement */
 update_stmt        = "update" table_name 
                      "set" column_name "=" expr { "," column_name "=" expr }
-                     [ where_clause ] ;
+                     [ where_clause ] [ returning_clause ] ;
 
 /* DELETE statement */
-delete_stmt        = "delete" "from" table_name [ where_clause ] ;
+delete_stmt        = "delete" "from" table_name [ where_clause ] [ returning_clause ] ;
+
+/* RETURNING clause */
+returning_clause   = "returning" returning_column { "," returning_column } ;
+
+returning_column   = ( [ qualifier "." ] column_name | expr ) [ [ "as" ] column_alias ] ;
+
+qualifier          = "NEW" | "OLD" ;
 
 /* CREATE TABLE statement */
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
