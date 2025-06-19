@@ -82,18 +82,37 @@ export const EditorPanel: React.FC = () => {
       // Get selected text or full content from current editor state
       const selection = editor.getSelection();
       let sqlToExecute: string;
+      let selectionInfo: { isSelection: boolean; startLine: number; startColumn: number; endLine: number; endColumn: number; } | undefined;
 
       if (selection && !selection.isEmpty()) {
         const selectedText = editor.getModel()?.getValueInRange(selection);
         sqlToExecute = selectedText?.trim() || '';
+        
+        // Create selection info for error navigation
+        selectionInfo = {
+          isSelection: true,
+          startLine: selection.startLineNumber,
+          startColumn: selection.startColumn,
+          endLine: selection.endLineNumber,
+          endColumn: selection.endColumn,
+        };
       } else {
         // Get current full content from editor
         sqlToExecute = editor.getValue().trim();
+        
+        // When executing full content, selection starts from line 1
+        selectionInfo = {
+          isSelection: false,
+          startLine: 1,
+          startColumn: 1,
+          endLine: editor.getModel()?.getLineCount() || 1,
+          endColumn: 1,
+        };
       }
 
       if (!sqlToExecute) return;
 
-      await executeSQL(sqlToExecute);
+      await executeSQL(sqlToExecute, selectionInfo);
     } catch (error) {
       console.error('Execution error:', error);
     }

@@ -1,5 +1,5 @@
 import * as readline from 'readline';
-import { Database } from '@quereus/quereus';
+import { Database, formatErrorChain, unwrapError } from '@quereus/quereus';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 import { DotCommands } from './commands/dot-commands.js';
@@ -79,7 +79,7 @@ export class REPL {
             }
           }
         } catch (error) {
-          console.error('Command error:', error instanceof Error ? error.message : error);
+          this.printEnhancedError(error);
         }
         this.rl.prompt();
         return;
@@ -99,7 +99,7 @@ export class REPL {
           console.log('Query executed successfully\n');
         }
       } catch (error) {
-        console.error('SQL Error:', error instanceof Error ? error.message : error);
+        this.printEnhancedError(error);
       }
 
       this.rl.prompt();
@@ -235,5 +235,65 @@ Examples:
 
   close(): void {
     this.rl.close();
+  }
+
+  private printEnhancedError(error: any): void {
+    if (this.options.color) {
+      console.error(chalk.red('━'.repeat(60)));
+      console.error(chalk.red.bold('SQL ERROR'));
+      console.error(chalk.red('━'.repeat(60)));
+    } else {
+      console.error('━'.repeat(60));
+      console.error('SQL ERROR');
+      console.error('━'.repeat(60));
+    }
+
+    if (error instanceof Error) {
+      const errorChain = unwrapError(error);
+      
+      if (errorChain.length > 1) {
+        // Multiple errors in chain - show formatted chain
+        const formattedChain = formatErrorChain(errorChain, false);
+        if (this.options.color) {
+          // Colorize the error chain
+          const colorized = formattedChain
+            .replace(/^Error: (.*)$/gm, chalk.red.bold('Error: ') + chalk.red('$1'))
+            .replace(/^Caused by: (.*)$/gm, chalk.yellow.bold('Caused by: ') + chalk.yellow('$1'))
+            .replace(/\(at line (\d+), column (\d+)\)/g, chalk.cyan('(at line $1, column $2)'));
+          console.error(colorized);
+        } else {
+          console.error(formattedChain);
+        }
+      } else {
+        // Single error - use simpler format
+        const errorInfo = errorChain[0];
+        let message = errorInfo?.message || error.message;
+        
+        if (errorInfo?.line && errorInfo?.column) {
+          message += ` (at line ${errorInfo.line}, column ${errorInfo.column})`;
+        }
+        
+        if (this.options.color) {
+          console.error(chalk.red(message));
+        } else {
+          console.error(message);
+        }
+      }
+    } else {
+      // Fallback for non-Error objects
+      const message = typeof error === 'string' ? error : String(error);
+      if (this.options.color) {
+        console.error(chalk.red(message));
+      } else {
+        console.error(message);
+      }
+    }
+
+    if (this.options.color) {
+      console.error(chalk.red('━'.repeat(60)));
+    } else {
+      console.error('━'.repeat(60));
+    }
+    console.error('');
   }
 }

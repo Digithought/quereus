@@ -11,6 +11,7 @@ import {
 import type { SqlValue } from '@quereus/quereus';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Copy, Check } from 'lucide-react';
+import { EnhancedErrorDisplay } from './EnhancedErrorDisplay.js';
 
 type Row = Record<string, SqlValue>;
 
@@ -136,9 +137,11 @@ export const ResultsGrid: React.FC = () => {
   if (activeResult?.error) {
     return (
       <div className="p-4">
-        <div className="error-message">
-          <strong>Error:</strong> {activeResult.error}
-        </div>
+        <EnhancedErrorDisplay
+          error={activeResult.error}
+          errorChain={activeResult.errorChain}
+          selectionInfo={activeResult.selectionInfo}
+        />
       </div>
     );
   }

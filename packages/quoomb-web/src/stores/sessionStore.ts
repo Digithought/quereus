@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { subscribeWithSelector, persist } from 'zustand/middleware';
 import type { SqlValue } from '@quereus/quereus';
 import { QuereusWorkerAPI, PlanGraph, PluginRecord, PluginManifest } from '../worker/types.js';
-import { validatePluginUrl } from '@quereus/quereus';
+import { validatePluginUrl, ErrorInfo, unwrapError } from '@quereus/quereus';
 import { useSettingsStore } from './settingsStore.js';
 import * as Comlink from 'comlink';
 
@@ -11,6 +11,7 @@ export interface QueryResult {
   sql: string;
   results?: Record<string, SqlValue>[];
   error?: string;
+  errorChain?: ErrorInfo[];
   executionTime: number;
   timestamp: Date;
   queryPlan?: Record<string, SqlValue>[];
@@ -20,6 +21,14 @@ export interface QueryResult {
   planGraph?: PlanGraph;
   planMode: 'estimated' | 'actual';
   selectedNodeId?: string;
+  // Selection tracking for error navigation
+  selectionInfo?: {
+    isSelection: boolean;
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+  };
 }
 
 export interface Tab {
@@ -65,7 +74,7 @@ export interface SessionState {
 
   // Actions
   initializeSession: () => Promise<void>;
-  executeSQL: (sql: string) => Promise<void>;
+  executeSQL: (sql: string, selectionInfo?: { isSelection: boolean; startLine: number; startColumn: number; endLine: number; endColumn: number; }) => Promise<void>;
   fetchQueryPlan: (sql: string) => Promise<void>;
   fetchProgram: (sql: string) => Promise<void>;
   fetchTrace: (sql: string) => Promise<void>;
@@ -210,7 +219,7 @@ export const useSessionStore = create<SessionState>()(
           }
         },
 
-        executeSQL: async (sql: string) => {
+        executeSQL: async (sql: string, selectionInfo?: { isSelection: boolean; startLine: number; startColumn: number; endLine: number; endColumn: number; }) => {
           const { api, isConnected } = get();
 
           if (!api || !isConnected) {
@@ -237,6 +246,7 @@ export const useSessionStore = create<SessionState>()(
               executionTime,
               timestamp: new Date(),
               planMode: 'estimated',
+              selectionInfo,
             };
 
             set((state) => ({
@@ -249,14 +259,19 @@ export const useSessionStore = create<SessionState>()(
           } catch (error) {
             const executionTime = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            
+            // Unwrap error chain for enhanced error information
+            const errorChain = error instanceof Error ? unwrapError(error) : [];
 
             const queryResult: QueryResult = {
               id: resultId,
               sql,
               error: errorMessage,
+              errorChain,
               executionTime,
               timestamp: new Date(),
               planMode: 'estimated',
+              selectionInfo,
             };
 
             set((state) => ({

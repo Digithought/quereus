@@ -99,3 +99,91 @@ export function quereusError(
 		astNode?.loc?.start.column
 	);
 }
+
+/**
+ * Information about an error in the error chain
+ */
+export interface ErrorInfo {
+	message: string;
+	code?: number;
+	line?: number;
+	column?: number;
+	name: string;
+	stack?: string;
+}
+
+/**
+ * Recursively unwraps a QuereusError (or any Error) and its causes
+ * @param error The error to unwrap
+ * @returns Array of ErrorInfo objects, with the root error first
+ */
+export function unwrapError(error: Error): ErrorInfo[] {
+	const errorChain: ErrorInfo[] = [];
+	let currentError: Error | undefined = error;
+
+	while (currentError) {
+		const errorInfo: ErrorInfo = {
+			message: currentError.message,
+			name: currentError.name,
+			stack: currentError.stack,
+		};
+
+		// Add QuereusError-specific fields if available
+		if (currentError instanceof QuereusError) {
+			errorInfo.code = currentError.code;
+			errorInfo.line = currentError.line;
+			errorInfo.column = currentError.column;
+		}
+
+		errorChain.push(errorInfo);
+
+		// Move to the next error in the chain
+		currentError = (currentError as any).cause;
+	}
+
+	return errorChain;
+}
+
+/**
+ * Formats an error chain for display
+ * @param errorChain Array of ErrorInfo objects
+ * @param includeStack Whether to include stack traces
+ * @returns Formatted error message
+ */
+export function formatErrorChain(errorChain: ErrorInfo[], includeStack: boolean = false): string {
+	if (errorChain.length === 0) {
+		return 'Unknown error';
+	}
+
+	const lines: string[] = [];
+
+	errorChain.forEach((errorInfo, index) => {
+		const prefix = index === 0 ? 'Error' : `Caused by`;
+		let line = `${prefix}: ${errorInfo.message}`;
+
+		if (errorInfo.line !== undefined && errorInfo.column !== undefined) {
+			line += ` (at line ${errorInfo.line}, column ${errorInfo.column})`;
+		}
+
+		lines.push(line);
+
+		if (includeStack && errorInfo.stack) {
+			lines.push(errorInfo.stack);
+		}
+	});
+
+	return lines.join('\n');
+}
+
+/**
+ * Gets the primary error info (the first error in the chain)
+ * @param error The error to analyze
+ * @returns ErrorInfo for the primary error
+ */
+export function getPrimaryError(error: Error): ErrorInfo {
+	const chain = unwrapError(error);
+	return chain[0] || {
+		message: 'Unknown error',
+		name: 'Error',
+	};
+}
