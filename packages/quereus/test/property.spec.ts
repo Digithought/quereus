@@ -112,7 +112,7 @@ describe('Property-Based Tests', () => {
 		);
 
 		it('should compare values according to numeric affinity', async () => {
-			await db.exec('CREATE TABLE num_t (id INTEGER PRIMARY KEY, v ANY) USING memory'); // Use ANY type (has NUMERIC affinity)
+			await db.exec('CREATE TABLE num_t (id INTEGER PRIMARY KEY, v ANY null) USING memory'); // Use ANY type (has NUMERIC affinity)
 
 			await fc.assert(fc.asyncProperty(sqlValueArbitrary, sqlValueArbitrary, async (valA, valB) => {
 				// Insert values and let SQL apply type affinity conversion
@@ -274,7 +274,7 @@ describe('Property-Based Tests', () => {
 		);
 
 		it('should handle mixed type arithmetic consistently across contexts', async () => {
-			await db.exec('CREATE TABLE mixed_test (id INTEGER PRIMARY KEY, a ANY, b ANY) USING memory');
+			await db.exec('CREATE TABLE mixed_test (id INTEGER PRIMARY KEY, a ANY null, b ANY null) USING memory');
 
 			await fc.assert(fc.asyncProperty(complexValueArbitrary, complexValueArbitrary, async (valA, valB) => {
 				// Clear table and insert test values
