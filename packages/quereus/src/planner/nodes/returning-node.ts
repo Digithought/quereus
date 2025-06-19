@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { ScalarPlanNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -210,6 +210,19 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
         alias: proj.alias,
         expression: proj.node.toString()
       }))
+    };
+  }
+
+  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+    const executorPhysical = childrenPhysical[0];
+
+    return {
+      estimatedRows: executorPhysical?.estimatedRows,
+      uniqueKeys: executorPhysical?.uniqueKeys,
+      readonly: false, // RETURNING is part of a mutating operation
+      deterministic: executorPhysical?.deterministic ?? true,
+      idempotent: executorPhysical?.idempotent ?? false,
+      constant: false // Never constant
     };
   }
 }

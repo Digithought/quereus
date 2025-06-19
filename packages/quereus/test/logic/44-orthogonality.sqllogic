@@ -99,12 +99,7 @@ JOIN (
     WHERE email LIKE '%@example.com'
     RETURNING id, email
 ) AS updated ON u.id = updated.id;
-→ [
-    { "name": "Alice", "new_email": "Alice@company.com" },
-    { "name": "Bob", "new_email": "Bob@company.com" },
-    { "name": "David", "new_email": "David@company.com" },
-    { "name": "Eve", "new_email": "Eve@company.com" }
-]
+→ [{ "name": "Alice", "new_email": "Alice@company.com" }, { "name": "Bob", "new_email": "Bob@company.com" }, { "name": "David", "new_email": "David@company.com" }, { "name": "Eve", "new_email": "Eve@company.com" }]
 
 -- Test 6: Multiple column aliases in mutating subquery
 SELECT u.user_id, u.user_name, u.user_email

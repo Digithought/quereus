@@ -9,6 +9,11 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Database } from '../../src/core/database.js';
 import { serializePlanTree } from '../../src/planner/debug.js';
+import { fileURLToPath } from 'node:url';
+
+// ESM equivalent for __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const UPDATE_PLANS = process.env.UPDATE_PLANS === 'true';
 

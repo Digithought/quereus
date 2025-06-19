@@ -47,7 +47,7 @@ SELECT cast(x'01' as INTEGER);
 CREATE TABLE t_pk (id INTEGER PRIMARY KEY);
 INSERT INTO t_pk VALUES (1);
 INSERT INTO t_pk VALUES (1);
--- error: PRIMARY KEY constraint failed
+-- error: UNIQUE constraint failed: t_pk PK.
 DROP TABLE t_pk;
 
 -- Subquery Error: Multiple rows returned where one expected

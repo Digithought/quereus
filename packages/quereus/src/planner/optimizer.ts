@@ -20,6 +20,7 @@ import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js'
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
+import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
 import { ruleMarkPhysical } from './rules/physical/rule-mark-physical.js';
 // Phase 3 rules
 import { ruleConstantFolding } from './rules/rewrite/rule-constant-folding.js';
@@ -86,6 +87,15 @@ export class Optimizer {
 			'impl',
 			ruleAggregateStreaming,
 			40 // High priority - fundamental logical→physical transformation
+		));
+
+		// Mutating subquery cache injection - critical for correctness
+		toRegister.push(createRule(
+			'mutating-subquery-cache',
+			PlanNodeType.Join,
+			'rewrite',
+			ruleMutatingSubqueryCache,
+			20 // Very high priority - correctness fix to prevent multiple execution
 		));
 
 		// Constraint rules removed - now handled directly in builders for correctness

@@ -15,6 +15,7 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 				(newRow as any)._onConflict = plan.onConflict || 'abort';
 				await vtab.xUpdate!('insert', newRow);
 ```
+- [ ] Fix suppressed constant folding issue
 
 **Query Optimization (Next Priority)**
 - [ ] **Phase 1.5 - Access Path Selection**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` physical access infrastructure
