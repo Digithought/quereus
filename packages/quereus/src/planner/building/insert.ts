@@ -7,7 +7,7 @@ import { StatusCode } from '../../common/types.js';
 import { buildSelectStmt } from './select.js';
 import { buildWithClause } from './with.js';
 import { ValuesNode } from '../nodes/values-node.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { buildExpression } from './expression.js';
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
@@ -20,6 +20,7 @@ import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
+import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
@@ -209,15 +210,14 @@ export function buildInsertStmt(
 		throw new QuereusError('INSERT statement must have a VALUES clause or a SELECT query.', StatusCode.ERROR);
 	}
 
-	// ORTHOGONAL ROW EXPANSION:
-	// Apply uniform row expansion to map any source to table structure with defaults
+	// ORTHOGONAL ROW EXPANSION: Apply uniform row expansion to map any source to table structure with defaults
 	const expandedSourceNode = createRowExpansionProjection(ctx, sourceNode, targetColumns, tableReference);
 
 	// Update targetColumns to reflect all table columns since we've expanded the source
 	const finalTargetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
 
 	// Create OLD/NEW attributes for INSERT (OLD = all NULL, NEW = actual values)
-	const oldAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+	const oldAttributes = tableReference.tableSchema.columns.map((col) => ({
 		id: PlanNode.nextAttrId(),
 		name: col.name,
 		type: {
@@ -229,7 +229,7 @@ export function buildInsertStmt(
 		sourceRelation: `OLD.${tableReference.tableSchema.name}`
 	}));
 
-	const newAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+	const newAttributes = tableReference.tableSchema.columns.map((col) => ({
 		id: PlanNode.nextAttrId(),
 		name: col.name,
 		type: {
@@ -241,27 +241,36 @@ export function buildInsertStmt(
 		sourceRelation: `NEW.${tableReference.tableSchema.name}`
 	}));
 
-	const { oldRowDescriptor, newRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+	const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
 
-	// Always inject ConstraintCheckNode for INSERT operations
+	const insertNode = new InsertNode(
+		ctx.scope,
+		tableReference,
+		finalTargetColumns,
+		expandedSourceNode,
+		stmt.onConflict,
+		flatRowDescriptor
+	);
+
 	const constraintCheckNode = new ConstraintCheckNode(
 		ctx.scope,
-		expandedSourceNode,
+		insertNode,
 		tableReference,
 		RowOp.INSERT,
 		oldRowDescriptor,
 		newRowDescriptor
 	);
 
-	const insertNode = new InsertNode(
+	// Add DML executor node to perform the actual database insert operations
+	const dmlExecutorNode = new DmlExecutorNode(
 		ctx.scope,
+		constraintCheckNode,
 		tableReference,
-		finalTargetColumns, // Use final target columns (all table columns)
-		constraintCheckNode, // Use constraint-checked rows as source
+		'insert',
 		stmt.onConflict
 	);
 
-	const resultNode: RelationalPlanNode = insertNode;
+	const resultNode: RelationalPlanNode = dmlExecutorNode;
 
 	if (stmt.returning && stmt.returning.length > 0) {
 		// Create returning scope with OLD/NEW attribute access
@@ -272,22 +281,6 @@ export function buildInsertStmt(
 			const tableColumn = tableReference.tableSchema.columns[columnIndex];
 			returningScope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
-			);
-
-			// Register NEW.column for INSERT RETURNING (NEW values are the inserted values)
-			returningScope.registerSymbol(`new.${tableColumn.name.toLowerCase()}`, (exp, s) =>
-				new ColumnReferenceNode(
-					s,
-					exp as AST.ColumnExpr,
-					{
-						typeClass: 'scalar',
-						affinity: tableColumn.affinity,
-						nullable: !tableColumn.notNull,
-						isReadOnly: false
-					},
-					attributeId,
-					columnIndex
-				)
 			);
 		});
 
@@ -337,7 +330,7 @@ export function buildInsertStmt(
 			};
 		});
 
-		return new ReturningNode(ctx.scope, insertNode, returningProjections);
+		return new ReturningNode(ctx.scope, dmlExecutorNode, returningProjections);
 	}
 
 	return new SinkNode(ctx.scope, resultNode, 'insert');

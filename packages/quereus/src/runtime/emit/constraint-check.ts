@@ -7,14 +7,13 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type { ColumnSchema } from '../../schema/column.js';
-import type { Attribute, RowDescriptor } from '../../planner/nodes/plan-node.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { RowOp } from '../../schema/table.js';
 import { buildExpression } from '../../planner/building/expression.js';
 import { GlobalScope } from '../../planner/scopes/global.js';
 import { RegisteredScope } from '../../planner/scopes/registered.js';
 import { ColumnReferenceNode } from '../../planner/nodes/reference.js';
 import * as AST from '../../parser/ast.js';
-import { buildRowDescriptor, composeOldNewRow } from '../../util/row-descriptor.js';
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
 	// Get the table schema to access constraints
@@ -131,27 +130,13 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	const constraintMetadata = checkConstraintData.map(item => item.constraint);
 	const checkEvaluators = checkConstraintData.map(item => item.evaluator);
 
-		async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>, ...evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
+	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>, ...evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		if (!inputRows) {
 			return;
 		}
 
 		for await (const inputRow of inputRows) {
-			// Convert input row to flat format based on operation type
-			let flatRow: Row;
-
-			if (plan.operation === RowOp.INSERT) {
-				// INSERT: input is regular row, convert to flat [NULL..., inputRow...]
-				flatRow = composeOldNewRow(null, inputRow, tableSchema.columns.length);
-			} else if (plan.operation === RowOp.DELETE) {
-				// DELETE: input is regular row, convert to flat [inputRow..., NULL...]
-				flatRow = composeOldNewRow(inputRow, null, tableSchema.columns.length);
-			} else if (plan.operation === RowOp.UPDATE) {
-				// UPDATE: input should already be flat row from UPDATE emitter
-				flatRow = inputRow;
-			} else {
-				throw new QuereusError(`Unsupported operation in constraint check: ${plan.operation}`, StatusCode.INTERNAL);
-			}
+			const flatRow = inputRow;
 
 			// Set up single flat context
 			rctx.context.set(flatRowDescriptor, () => flatRow);

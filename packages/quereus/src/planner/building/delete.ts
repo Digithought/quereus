@@ -3,7 +3,7 @@ import type { PlanningContext } from '../planning-context.js';
 import { DeleteNode } from '../nodes/delete-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -14,61 +14,7 @@ import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
-
-/**
- * Validates that RETURNING expressions use appropriate NEW/OLD qualifiers for the operation type
- */
-function validateReturningExpression(expr: AST.Expression, operationType: 'INSERT' | 'UPDATE' | 'DELETE'): void {
-	function checkExpression(e: AST.Expression): void {
-		if (e.type === 'column') {
-			if (e.table?.toLowerCase() === 'old' && operationType === 'INSERT') {
-				throw new QuereusError(
-					'OLD qualifier cannot be used in INSERT RETURNING clause',
-					StatusCode.ERROR
-				);
-			}
-			if (e.table?.toLowerCase() === 'new' && operationType === 'DELETE') {
-				throw new QuereusError(
-					'NEW qualifier cannot be used in DELETE RETURNING clause',
-					StatusCode.ERROR
-				);
-			}
-		} else if (e.type === 'binary') {
-			checkExpression(e.left);
-			checkExpression(e.right);
-		} else if (e.type === 'unary') {
-			checkExpression(e.expr);
-		} else if (e.type === 'function') {
-			e.args.forEach(checkExpression);
-		} else if (e.type === 'case') {
-			if (e.baseExpr) checkExpression(e.baseExpr);
-			e.whenThenClauses.forEach(clause => {
-				checkExpression(clause.when);
-				checkExpression(clause.then);
-			});
-			if (e.elseExpr) checkExpression(e.elseExpr);
-		} else if (e.type === 'cast') {
-			checkExpression(e.expr);
-		} else if (e.type === 'collate') {
-			checkExpression(e.expr);
-		} else if (e.type === 'subquery') {
-			// Subqueries in RETURNING are complex - for now, we'll skip validation
-			// A full implementation would need to traverse the subquery's AST
-		} else if (e.type === 'in') {
-			checkExpression(e.expr);
-			if (e.values) {
-				e.values.forEach(checkExpression);
-			}
-		} else if (e.type === 'exists') {
-			// EXISTS subqueries are complex - skip validation for now
-		} else if (e.type === 'windowFunction') {
-			checkExpression(e.function);
-		}
-		// Other expression types (literal, parameter) don't need validation
-	}
-
-	checkExpression(expr);
-}
+import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -97,7 +43,7 @@ export function buildDeleteStmt(
   }
 
   // Create OLD/NEW attributes for DELETE (OLD = actual values being deleted, NEW = all NULL)
-  const oldAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+  const oldAttributes = tableReference.tableSchema.columns.map((col) => ({
     id: PlanNode.nextAttrId(),
     name: col.name,
     type: {
@@ -109,7 +55,7 @@ export function buildDeleteStmt(
     sourceRelation: `OLD.${tableReference.tableSchema.name}`
   }));
 
-  const newAttributes = tableReference.tableSchema.columns.map((col, index) => ({
+  const newAttributes = tableReference.tableSchema.columns.map((col) => ({
     id: PlanNode.nextAttrId(),
     name: col.name,
     type: {
@@ -121,7 +67,7 @@ export function buildDeleteStmt(
     sourceRelation: `NEW.${tableReference.tableSchema.name}`
   }));
 
-  const { oldRowDescriptor, newRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+  const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
 
   // Always inject ConstraintCheckNode for DELETE operations
   const constraintCheckNode = new ConstraintCheckNode(
@@ -136,10 +82,20 @@ export function buildDeleteStmt(
   const deleteNode = new DeleteNode(
     deleteCtx.scope,
     tableReference,
-    constraintCheckNode, // Use constraint-checked rows as source
+    constraintCheckNode,
+    oldRowDescriptor,
+    flatRowDescriptor
   );
 
-  const resultNode: RelationalPlanNode = deleteNode;
+  // Add DML executor node to perform the actual database delete operations
+  const dmlExecutorNode = new DmlExecutorNode(
+    deleteCtx.scope,
+    deleteNode,
+    tableReference,
+    'delete'
+  );
+
+  const resultNode: RelationalPlanNode = dmlExecutorNode;
 
   if (stmt.returning && stmt.returning.length > 0) {
     // Create returning scope with OLD/NEW attribute access
@@ -183,7 +139,10 @@ export function buildDeleteStmt(
       // Infer alias from column name if not explicitly provided
       let alias = rc.alias;
       if (!alias && rc.expr.type === 'column') {
-        alias = rc.expr.name;
+        // For qualified column references like OLD.id, normalize to lowercase
+        alias = rc.expr.table
+					? `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`
+					: rc.expr.name.toLowerCase();
       }
 
       return {
@@ -192,7 +151,7 @@ export function buildDeleteStmt(
       };
     });
 
-    return new ReturningNode(deleteCtx.scope, resultNode, returningProjections);
+    return new ReturningNode(deleteCtx.scope, dmlExecutorNode, returningProjections);
   }
 
 	return new SinkNode(deleteCtx.scope, resultNode, 'delete');

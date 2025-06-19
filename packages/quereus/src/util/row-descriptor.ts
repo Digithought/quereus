@@ -1,5 +1,6 @@
 import type { RowDescriptor, Attribute } from '../planner/nodes/plan-node.js';
 import type { Row } from '../common/types.js';
+import { SqlDataType } from '../common/types.js';
 
 /**
  * Utility to build a RowDescriptor (attributeId → columnIndex mapping)
@@ -77,4 +78,28 @@ export function extractNewRowFromFlat(flatRow: Row, columnCount: number): Row {
  */
 export function extractOldRowFromFlat(flatRow: Row, columnCount: number): Row {
 	return flatRow.slice(0, columnCount);
+}
+
+/**
+ * Helper to build Attribute array from flatRowDescriptor for DML nodes.
+ * This is used by UpdateNode and DeleteNode to expose their flat row layout.
+ */
+export function buildAttributesFromFlatDescriptor(flatRowDescriptor: RowDescriptor): Attribute[] {
+	const attributes: Attribute[] = [];
+	for (const attrIdStr in flatRowDescriptor) {
+		const attrId = parseInt(attrIdStr);
+		const index = flatRowDescriptor[attrId];
+		attributes[index] = {
+			id: attrId,
+			name: `attr_${attrId}`,
+			type: {
+				typeClass: 'scalar' as const,
+				affinity: SqlDataType.TEXT,
+				nullable: true,
+				isReadOnly: false
+			},
+			sourceRelation: 'unknown'
+		};
+	}
+	return attributes;
 }

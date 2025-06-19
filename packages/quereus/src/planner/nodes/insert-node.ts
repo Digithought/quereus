@@ -19,7 +19,7 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
     public readonly targetColumns: ColumnDef[],
     public readonly source: RelationalPlanNode, // Could be ValuesNode or output of a SELECT
 		public readonly onConflict?: ConflictResolution,
-    public readonly newRowDescriptor?: RowDescriptor, // For constraint checking
+    public readonly flatRowDescriptor?: RowDescriptor, // For flat OLD/NEW row output
   ) {
     super(scope);
   }
@@ -29,27 +29,36 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
 	}
 
   getAttributes(): Attribute[] {
-    // If we have a newRowDescriptor (for constraint checking/RETURNING),
-    // produce attributes that correspond to the table structure
-    if (this.newRowDescriptor && Object.keys(this.newRowDescriptor).length > 0) {
-      return this.table.tableSchema.columns.map((col, index) => {
-        // Find the attribute ID for this column from the newRowDescriptor
-        const attrId = Object.keys(this.newRowDescriptor!).find(id =>
-          this.newRowDescriptor![parseInt(id)] === index
-        );
+    // If we have a flatRowDescriptor, produce attributes that correspond to the flat OLD/NEW row structure
+    if (this.flatRowDescriptor && Object.keys(this.flatRowDescriptor).length > 0) {
+      // Create attributes for the flat row: OLD columns first, then NEW columns
+      const attributes: Attribute[] = [];
 
-        return {
-          id: attrId ? parseInt(attrId) : PlanNode.nextAttrId(),
+      // Add attributes for each position in the flat row
+      for (const attrIdStr in this.flatRowDescriptor) {
+        const attrId = parseInt(attrIdStr);
+        const flatIndex = this.flatRowDescriptor[attrId];
+
+        // Determine if this is OLD or NEW based on index
+        const tableColumnCount = this.table.tableSchema.columns.length;
+        const isOld = flatIndex < tableColumnCount;
+        const columnIndex = isOld ? flatIndex : flatIndex - tableColumnCount;
+        const col = this.table.tableSchema.columns[columnIndex];
+
+        attributes[flatIndex] = {
+          id: attrId,
           name: col.name,
           type: {
             typeClass: 'scalar',
             affinity: col.affinity,
-            nullable: !col.notNull,
+            nullable: isOld ? true : !col.notNull, // OLD values can be null, NEW follows column constraints
             isReadOnly: false
           },
-          sourceRelation: `${this.table.tableSchema.schemaName}.${this.table.tableSchema.name}`
+          sourceRelation: `${isOld ? 'OLD' : 'NEW'}.${this.table.tableSchema.name}`
         };
-      });
+      }
+
+      return attributes;
     }
 
     // INSERT produces the same attributes as its source (for non-RETURNING cases)
@@ -99,8 +108,8 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
       props.onConflict = this.onConflict;
     }
 
-    if (this.newRowDescriptor) {
-      props.hasNewRowDescriptor = true;
+    if (this.flatRowDescriptor) {
+      props.hasFlatRowDescriptor = true;
     }
 
     return props;

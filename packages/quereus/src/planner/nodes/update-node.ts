@@ -7,6 +7,7 @@ import type { ScalarPlanNode } from './plan-node.js';
 import type { ConflictResolution } from '../../common/constants.js';
 import type { RelationType } from '../../common/datatype.js';
 import { formatExpression } from '../../util/plan-formatter.js';
+import { buildAttributesFromFlatDescriptor } from '../../util/row-descriptor.js';
 
 export interface UpdateAssignment {
   targetColumn: AST.ColumnExpr; // Could be resolved ColumnReferenceNode or just index
@@ -24,9 +25,10 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     public readonly table: TableReferenceNode,
     public readonly assignments: ReadonlyArray<UpdateAssignment>,
     public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableScanNode
-		public readonly onConflict?: ConflictResolution,
-    public readonly oldRowDescriptor?: RowDescriptor, // For constraint checking
-    public readonly newRowDescriptor?: RowDescriptor, // For constraint checking
+		public readonly onConflict: ConflictResolution | undefined,
+    public readonly oldRowDescriptor: RowDescriptor, // For constraint checking
+    public readonly newRowDescriptor: RowDescriptor, // For constraint checking
+    public readonly flatRowDescriptor: RowDescriptor, // For flat OLD/NEW row attributes
   ) {
     super(scope);
   }
@@ -36,8 +38,7 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
 	}
 
   getAttributes(): Attribute[] {
-    // UPDATE produces the same attributes as its source
-    return this.source.getAttributes();
+    return buildAttributesFromFlatDescriptor(this.flatRowDescriptor);
   }
 
   getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {
@@ -81,7 +82,8 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
       this.source, // Source doesn't change via withChildren
       this.onConflict,
       this.oldRowDescriptor,
-      this.newRowDescriptor
+      this.newRowDescriptor,
+      this.flatRowDescriptor
     );
   }
 
@@ -105,14 +107,6 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
 
     if (this.onConflict) {
       props.onConflict = this.onConflict;
-    }
-
-    if (this.oldRowDescriptor) {
-      props.hasOldRowDescriptor = true;
-    }
-
-    if (this.newRowDescriptor) {
-      props.hasNewRowDescriptor = true;
     }
 
     return props;

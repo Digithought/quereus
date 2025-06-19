@@ -3,6 +3,7 @@ import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, 
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
+import { buildAttributesFromFlatDescriptor } from '../../util/row-descriptor.js';
 
 /**
  * Represents a DELETE statement in the logical query plan.
@@ -15,6 +16,7 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
     public readonly table: TableReferenceNode,
     public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableScanNode
     public readonly oldRowDescriptor?: RowDescriptor, // For constraint checking
+    public readonly flatRowDescriptor?: RowDescriptor,
   ) {
     super(scope);
   }
@@ -24,7 +26,10 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
 	}
 
   getAttributes(): Attribute[] {
-    // DELETE produces the same attributes as its source
+    if (this.flatRowDescriptor && Object.keys(this.flatRowDescriptor).length > 0) {
+      return buildAttributesFromFlatDescriptor(this.flatRowDescriptor);
+    }
+    // Fallback to source attributes for backward compatibility
     return this.source.getAttributes();
   }
 
@@ -71,8 +76,8 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
       schema: this.table.tableSchema.schemaName
     };
 
-    if (this.oldRowDescriptor) {
-      props.hasOldRowDescriptor = true;
+    if (this.flatRowDescriptor) {
+      props.hasFlatRowDescriptor = true;
     }
 
     return props;

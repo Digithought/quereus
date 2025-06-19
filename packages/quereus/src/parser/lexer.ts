@@ -336,7 +336,12 @@ export class Lexer {
 			case ';': this.addToken(TokenType.SEMICOLON); break;
 			case '+': this.addToken(TokenType.PLUS); break;
 			case '-':
-				if (this.match('>')) {
+				if (this.match('-')) {
+					// SQL-style line comment
+					while (this.peek() !== '\n' && !this.isAtEnd()) {
+						this.advance();
+					}
+				} else if (this.match('>')) {
 					this.addToken(TokenType.ARROW);
 				} else {
 					this.addToken(TokenType.MINUS);

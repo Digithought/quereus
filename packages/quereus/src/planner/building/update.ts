@@ -1,10 +1,10 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { UpdateNode, type UpdateAssignment } from '../nodes/update-node.js';
-import { UpdateExecutorNode } from '../nodes/update-executor-node.js';
+import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 import { buildTableReference, buildTableScan } from './table.js';
 import { buildExpression } from './expression.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type RowDescriptor } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -14,61 +14,7 @@ import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
-
-/**
- * Validates that RETURNING expressions use appropriate NEW/OLD qualifiers for the operation type
- */
-function validateReturningExpression(expr: AST.Expression, operationType: 'INSERT' | 'UPDATE' | 'DELETE'): void {
-	function checkExpression(e: AST.Expression): void {
-		if (e.type === 'column') {
-			if (e.table?.toLowerCase() === 'old' && operationType === 'INSERT') {
-				throw new QuereusError(
-					'OLD qualifier cannot be used in INSERT RETURNING clause',
-					StatusCode.ERROR
-				);
-			}
-			if (e.table?.toLowerCase() === 'new' && operationType === 'DELETE') {
-				throw new QuereusError(
-					'NEW qualifier cannot be used in DELETE RETURNING clause',
-					StatusCode.ERROR
-				);
-			}
-		} else if (e.type === 'binary') {
-			checkExpression(e.left);
-			checkExpression(e.right);
-		} else if (e.type === 'unary') {
-			checkExpression(e.expr);
-		} else if (e.type === 'function') {
-			e.args.forEach(checkExpression);
-		} else if (e.type === 'case') {
-			if (e.baseExpr) checkExpression(e.baseExpr);
-			e.whenThenClauses.forEach(clause => {
-				checkExpression(clause.when);
-				checkExpression(clause.then);
-			});
-			if (e.elseExpr) checkExpression(e.elseExpr);
-		} else if (e.type === 'cast') {
-			checkExpression(e.expr);
-		} else if (e.type === 'collate') {
-			checkExpression(e.expr);
-		} else if (e.type === 'subquery') {
-			// Subqueries in RETURNING are complex - for now, we'll skip validation
-			// A full implementation would need to traverse the subquery's AST
-		} else if (e.type === 'in') {
-			checkExpression(e.expr);
-			if (e.values) {
-				e.values.forEach(checkExpression);
-			}
-		} else if (e.type === 'exists') {
-			// EXISTS subqueries are complex - skip validation for now
-		} else if (e.type === 'windowFunction') {
-			checkExpression(e.function);
-		}
-		// Other expression types (literal, parameter) don't need validation
-	}
-
-	checkExpression(expr);
-}
+import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -105,22 +51,50 @@ export function buildUpdateStmt(
     };
   });
 
+  // Create OLD/NEW attributes for UPDATE (used for both RETURNING and non-RETURNING paths)
+  const oldAttributes = tableReference.tableSchema.columns.map((col) => ({
+    id: PlanNode.nextAttrId(),
+    name: col.name,
+    type: {
+      typeClass: 'scalar' as const,
+      affinity: col.affinity,
+      nullable: !col.notNull,
+      isReadOnly: false
+    },
+    sourceRelation: `OLD.${tableReference.tableSchema.name}`
+  }));
+
+  const newAttributes = tableReference.tableSchema.columns.map((col) => ({
+    id: PlanNode.nextAttrId(),
+    name: col.name,
+    type: {
+      typeClass: 'scalar' as const,
+      affinity: col.affinity,
+      nullable: !col.notNull,
+      isReadOnly: false
+    },
+    sourceRelation: `NEW.${tableReference.tableSchema.name}`
+  }));
+
+  const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+
   if (stmt.returning && stmt.returning.length > 0) {
     // For RETURNING, create coordinated attribute IDs like we do for INSERT
-    const newRowDescriptor: RowDescriptor = [];
-    const oldRowDescriptor: RowDescriptor = [];
     const returningScope = new RegisteredScope(updateCtx.scope);
 
     // Create consistent attribute IDs for all table columns (both NEW and OLD)
     const newColumnAttributeIds: number[] = [];
     const oldColumnAttributeIds: number[] = [];
+    newAttributes.forEach((attr, columnIndex) => {
+      newColumnAttributeIds[columnIndex] = attr.id;
+    });
+    oldAttributes.forEach((attr, columnIndex) => {
+      oldColumnAttributeIds[columnIndex] = attr.id;
+    });
+
     tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
-      const newAttributeId = PlanNode.nextAttrId();
-      const oldAttributeId = PlanNode.nextAttrId();
-      newColumnAttributeIds[columnIndex] = newAttributeId;
-      oldColumnAttributeIds[columnIndex] = oldAttributeId;
-      newRowDescriptor[newAttributeId] = columnIndex;
-      oldRowDescriptor[oldAttributeId] = columnIndex;
+      const newAttributeId = newAttributes[columnIndex].id;
+      const oldAttributeId = oldAttributes[columnIndex].id;
 
       // Register the unqualified column name in the RETURNING scope (defaults to NEW values)
       returningScope.registerSymbol(tableColumn.name.toLowerCase(), (exp, s) => {
@@ -204,7 +178,7 @@ export function buildUpdateStmt(
       }
 
       const columnIndex = tableReference.tableSchema.columns.findIndex(col => col.name.toLowerCase() === (rc.expr.type === 'column' ? rc.expr.name.toLowerCase() : ''));
-      const projAttributeId = rc.expr.type === 'column' && columnIndex !== -1 ? columnAttributeIds[columnIndex] : undefined;
+      const projAttributeId = rc.expr.type === 'column' && columnIndex !== -1 ? newColumnAttributeIds[columnIndex] : undefined;
 
       return {
         node: buildExpression({ ...updateCtx, scope: returningScope }, rc.expr) as ScalarPlanNode,
@@ -220,8 +194,9 @@ export function buildUpdateStmt(
       assignments,
       sourceNode,
       stmt.onConflict,
-      oldRowDescriptor, // oldRowDescriptor - needed for OLD references
-      newRowDescriptor
+      oldRowDescriptor,
+      newRowDescriptor,
+      flatRowDescriptor
     );
 
     // For returning, we still need to execute the update before projecting
@@ -231,14 +206,15 @@ export function buildUpdateStmt(
       updateNodeWithDescriptor,
       tableReference,
       RowOp.UPDATE,
-      oldRowDescriptor, // oldRowDescriptor - needed for OLD references in constraints and RETURNING
+      oldRowDescriptor,
       newRowDescriptor
     );
 
-    const updateExecutorNode = new UpdateExecutorNode(
+    const updateExecutorNode = new DmlExecutorNode(
       updateCtx.scope,
       constraintCheckNode,
-      tableReference
+      tableReference,
+      'update'
     );
 
     // Return the RETURNING results from the executed update
@@ -247,15 +223,6 @@ export function buildUpdateStmt(
 
   // Step 1: Create UpdateNode that produces updated rows (but doesn't execute them)
   // Create newRowDescriptor and oldRowDescriptor for constraint checking with NEW/OLD references
-  const newRowDescriptor: RowDescriptor = [];
-  const oldRowDescriptor: RowDescriptor = [];
-  tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {
-    const newAttributeId = PlanNode.nextAttrId();
-    const oldAttributeId = PlanNode.nextAttrId();
-    newRowDescriptor[newAttributeId] = columnIndex;
-    oldRowDescriptor[oldAttributeId] = columnIndex;
-  });
-
   const updateNode = new UpdateNode(
     updateCtx.scope,
     tableReference,
@@ -263,23 +230,25 @@ export function buildUpdateStmt(
     sourceNode,
     stmt.onConflict,
     oldRowDescriptor,
-    newRowDescriptor
+    newRowDescriptor,
+    flatRowDescriptor
   );
 
-  // Always inject ConstraintCheckNode for UPDATE operations (provides required metadata)
+  // Step 2: inject constraint checking AFTER update row generation
   const constraintCheckNode = new ConstraintCheckNode(
     updateCtx.scope,
     updateNode,
     tableReference,
     RowOp.UPDATE,
-    oldRowDescriptor, // oldRowDescriptor - needed for OLD references in constraints
-    newRowDescriptor  // newRowDescriptor - needed for NEW/OLD references in constraints
+    oldRowDescriptor,
+    newRowDescriptor
   );
 
-  const updateExecutorNode = new UpdateExecutorNode(
+  const updateExecutorNode = new DmlExecutorNode(
     updateCtx.scope,
     constraintCheckNode,
-    tableReference
+    tableReference,
+    'update'
   );
 
   return new SinkNode(updateCtx.scope, updateExecutorNode, 'update');

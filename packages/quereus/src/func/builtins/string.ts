@@ -5,7 +5,6 @@ import { simpleLike, simpleGlob } from '../../util/patterns.js';
 
 const log = createLogger('func:builtins:scalar');
 const warnLog = log.extend('warn');
-const errorLog = log.extend('error');
 
 // --- length(X) ---
 export const lengthFunc = createScalarFunction(

@@ -10,6 +10,11 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - [ ] Default nullability to `not null` and document
 - [ ] Values in "select" locations (e.g. views)
 - [ ] Expression-based functions
+- [ ] Make "on conflict" an argument of xUpdate, rather than _onConflict row voodoo:
+```ts
+				(newRow as any)._onConflict = plan.onConflict || 'abort';
+				await vtab.xUpdate!('insert', newRow);
+```
 
 **Query Optimization (Next Priority)**
 - [ ] **Phase 1.5 - Access Path Selection**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` physical access infrastructure

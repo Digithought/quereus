@@ -39,6 +39,21 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 		}
 
 		case 'unary': {
+      // Optimization: fold unary minus over numeric literals into negative literals
+      if (expr.operator === '-' && expr.expr.type === 'literal') {
+        const literalExpr = expr.expr as AST.LiteralExpr;
+        if (typeof literalExpr.value === 'number' || typeof literalExpr.value === 'bigint') {
+          // Create a new literal expression with the negated value
+          const negatedLiteral: AST.LiteralExpr = {
+            type: 'literal',
+            value: typeof literalExpr.value === 'bigint' ? -literalExpr.value : -literalExpr.value,
+            lexeme: literalExpr.lexeme ? `-${literalExpr.lexeme}` : undefined,
+            loc: expr.loc // Use the location of the entire unary expression
+          };
+          return new LiteralNode(ctx.scope, negatedLiteral);
+        }
+      }
+
       const operand = buildExpression(ctx, expr.expr, allowAggregates);
       return new UnaryOpNode(ctx.scope, expr, operand);
 		}
