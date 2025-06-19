@@ -1,6 +1,7 @@
 import React from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
-import { AlertCircle, CheckCircle, Clock, Info } from 'lucide-react';
+import { AlertCircle, CheckCircle, Clock, Info, AlertTriangle, XCircle } from 'lucide-react';
+import { EnhancedErrorDisplay } from './EnhancedErrorDisplay.js';
 
 type MessageType = 'info' | 'success' | 'warning' | 'error';
 
@@ -23,7 +24,7 @@ export const MessagesPanel: React.FC = () => {
     );
   }
 
-  const messages: Message[] = [
+  const infoMessages: Message[] = [
     {
       type: 'info',
       icon: Info,
@@ -36,14 +37,8 @@ export const MessagesPanel: React.FC = () => {
     },
   ];
 
-  if (activeResult.error) {
-    messages.push({
-      type: 'error',
-      icon: AlertCircle,
-      message: activeResult.error,
-    });
-  } else {
-    messages.push({
+  if (!activeResult.error) {
+    infoMessages.push({
       type: 'success',
       icon: CheckCircle,
       message: `Query completed successfully. ${activeResult.results?.length || 0} rows returned.`,
@@ -67,7 +62,17 @@ export const MessagesPanel: React.FC = () => {
     <div className="p-4 space-y-3">
       <h3 className="text-lg font-semibold mb-4">Messages</h3>
 
-      {messages.map((msg, index) => {
+      {/* Error display with enhanced information */}
+      {activeResult.error && (
+        <EnhancedErrorDisplay
+          error={activeResult.error}
+          errorChain={activeResult.errorChain}
+          selectionInfo={activeResult.selectionInfo}
+        />
+      )}
+
+      {/* Info messages */}
+      {infoMessages.map((msg, index) => {
         const Icon = msg.icon;
         return (
           <div

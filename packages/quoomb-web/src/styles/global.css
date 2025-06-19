@@ -281,3 +281,21 @@ textarea:focus {
   background-color: #064e3b;
   border-color: #047857;
 }
+
+/* Error highlighting styles for Monaco editor */
+.error-highlight {
+  background-color: rgba(239, 68, 68, 0.2) !important;
+  border: 1px solid rgb(239, 68, 68) !important;
+  border-radius: 3px !important;
+}
+
+.error-glyph {
+  background-color: rgb(239, 68, 68) !important;
+  color: white !important;
+}
+
+.error-glyph::before {
+  content: '⚠';
+  font-size: 12px;
+  line-height: 1;
+}
