@@ -6,6 +6,7 @@ import { Database } from '../src/core/database.js';
 import { QuereusError } from '../src/common/errors.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
 import { CollectingInstructionTracer } from '../src/runtime/types.js';
+import { formatPlanTree, formatPlanSummary, type PlanDisplayOptions } from '../src/planner/debug.js';
 
 config.truncateThreshold = 1000;
 config.includeStack = true;
@@ -19,18 +20,109 @@ const isInDist = __dirname.includes(path.join('dist', 'test'));
 const projectRoot = isInDist ? path.resolve(__dirname, '..', '..') : path.resolve(__dirname, '..');
 const logicTestDir = path.join(projectRoot, 'test', 'logic');
 
-// Diagnostic configuration from environment variables
-const DIAG_CONFIG = {
-	showPlan: process.env.QUEREUS_TEST_SHOW_PLAN === 'true',
-	showProgram: process.env.QUEREUS_TEST_SHOW_PROGRAM === 'true',
-	showStack: process.env.QUEREUS_TEST_SHOW_STACK === 'true',
-	showTrace: process.env.QUEREUS_TEST_SHOW_TRACE === 'true',
-	verbose: process.env.QUEREUS_TEST_VERBOSE === 'true'
-};
+/**
+ * Parse command line arguments for test diagnostics
+ */
+interface TestOptions {
+	showPlan: boolean;
+	showProgram: boolean;
+	showStack: boolean;
+	showTrace: boolean;
+	verbose: boolean;
+	planSummary: boolean;
+	expandNodes: string[];
+	planFullDetail: boolean;
+	maxPlanDepth?: number;
+}
 
-// Debug: check if verbose flag is working (remove this after testing)
-if (DIAG_CONFIG.verbose) {
-	console.log('VERBOSE MODE ENABLED');
+function parseTestOptions(): TestOptions {
+	const args = process.argv;
+	const options: TestOptions = {
+		showPlan: false,
+		showProgram: false,
+		showStack: false,
+		showTrace: false,
+		verbose: false,
+		planSummary: false,
+		expandNodes: [],
+		planFullDetail: false,
+		maxPlanDepth: undefined
+	};
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		
+		switch (arg) {
+			case '--show-plan':
+				options.showPlan = true;
+				break;
+			case '--show-program':
+				options.showProgram = true;
+				break;
+			case '--show-stack':
+				options.showStack = true; 
+				break;
+			case '--show-trace':
+				options.showTrace = true;
+				break;
+			case '--verbose':
+				options.verbose = true;
+				break;
+			case '--plan-summary':
+				options.planSummary = true;
+				break;
+			case '--plan-full-detail':
+				options.planFullDetail = true;
+				options.showPlan = true; // Implies show-plan
+				break;
+			case '--expand-nodes':
+				if (i + 1 < args.length) {
+					const nodeList = args[i + 1];
+					if (!nodeList.startsWith('--')) {
+						options.expandNodes = nodeList.split(',').map(s => s.trim());
+						options.showPlan = true; // Implies show-plan
+						i++; // Skip next argument since we consumed it
+					}
+				}
+				break;
+			case '--max-plan-depth':
+				if (i + 1 < args.length) {
+					const depth = parseInt(args[i + 1], 10);
+					if (!isNaN(depth) && depth > 0) {
+						options.maxPlanDepth = depth;
+						i++; // Skip next argument since we consumed it
+					}
+				}
+				break;
+		}
+	}
+
+	// Fall back to environment variables for backward compatibility
+	if (!hasAnyArgument(args)) {
+		options.showPlan = process.env.QUEREUS_TEST_SHOW_PLAN === 'true';
+		options.showProgram = process.env.QUEREUS_TEST_SHOW_PROGRAM === 'true';
+		options.showStack = process.env.QUEREUS_TEST_SHOW_STACK === 'true';
+		options.showTrace = process.env.QUEREUS_TEST_SHOW_TRACE === 'true';
+		options.verbose = process.env.QUEREUS_TEST_VERBOSE === 'true';
+	}
+
+	return options;
+}
+
+function hasAnyArgument(args: string[]): boolean {
+	const testFlags = [
+		'--show-plan', '--show-program', '--show-stack', '--show-trace', 
+		'--verbose', '--plan-summary', '--plan-full-detail', '--expand-nodes', '--max-plan-depth'
+	];
+	return args.some(arg => testFlags.includes(arg));
+}
+
+// Parse test options from command line
+const TEST_OPTIONS = parseTestOptions();
+
+// Debug: check if verbose flag is working
+if (TEST_OPTIONS.verbose) {
+	console.log('VERBOSE MODE ENABLED via command line arguments');
 }
 
 /**
@@ -67,7 +159,18 @@ function formatLocationInfo(error: any, sqlContext: string): string | null {
 /**
  * Generates configurable diagnostic information for failed tests.
  *
- * Environment variables to control output:
+ * Command line arguments to control output:
+ * - --verbose                     : Show execution progress during tests
+ * - --show-plan                   : Include concise query plan in diagnostics
+ * - --plan-full-detail            : Include full detailed query plan
+ * - --plan-summary                : Show one-line execution path summary
+ * - --expand-nodes node1,node2... : Expand specific nodes in concise plan
+ * - --max-plan-depth N            : Limit plan display to N levels deep
+ * - --show-program                : Include instruction program in diagnostics
+ * - --show-stack                  : Include full stack trace in diagnostics
+ * - --show-trace                  : Include execution trace in diagnostics
+ *
+ * Environment variables (for backward compatibility):
  * - QUEREUS_TEST_VERBOSE=true       : Show execution progress during tests
  * - QUEREUS_TEST_SHOW_PLAN=true     : Include query plan in diagnostics
  * - QUEREUS_TEST_SHOW_PROGRAM=true  : Include instruction program in diagnostics
@@ -84,31 +187,52 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
 	}
 
 	// Show configuration hint if no diagnostics are enabled
-	const anyDiagEnabled = Object.values(DIAG_CONFIG).some(v => v);
+	const anyDiagEnabled = TEST_OPTIONS.showPlan || TEST_OPTIONS.showProgram || TEST_OPTIONS.showStack || TEST_OPTIONS.showTrace || TEST_OPTIONS.planSummary;
 	if (!anyDiagEnabled) {
-		diagnostics.push('\nFor more detailed diagnostics, set environment variables:');
-		diagnostics.push('  QUEREUS_TEST_VERBOSE=true       - Show execution progress');
-		diagnostics.push('  QUEREUS_TEST_SHOW_PLAN=true     - Show query plan');
-		diagnostics.push('  QUEREUS_TEST_SHOW_PROGRAM=true  - Show instruction program');
-		diagnostics.push('  QUEREUS_TEST_SHOW_STACK=true    - Show full stack trace');
-		diagnostics.push('  QUEREUS_TEST_SHOW_TRACE=true    - Show execution trace');
+		diagnostics.push('\nFor more detailed diagnostics, use command line arguments:');
+		diagnostics.push('  --verbose                     - Show execution progress');
+		diagnostics.push('  --show-plan                   - Show concise query plan');
+		diagnostics.push('  --plan-full-detail            - Show full detailed query plan');
+		diagnostics.push('  --plan-summary                - Show one-line execution path');
+		diagnostics.push('  --expand-nodes node1,node2... - Expand specific nodes in plan');
+		diagnostics.push('  --max-plan-depth N            - Limit plan depth to N levels');
+		diagnostics.push('  --show-program                - Show instruction program');
+		diagnostics.push('  --show-stack                  - Show full stack trace');
+		diagnostics.push('  --show-trace                  - Show execution trace');
+		diagnostics.push('\nOr use environment variables (deprecated):');
+		diagnostics.push('  QUEREUS_TEST_VERBOSE=true, QUEREUS_TEST_SHOW_PLAN=true, etc.');
 	}
 
 	try {
 		const statements = sqlBlock.split(';').map(s => s.trim()).filter(s => s.length > 0);
 		const lastStatement = statements[statements.length - 1];
 
-		if (lastStatement && DIAG_CONFIG.showPlan) {
-			diagnostics.push('\nQUERY PLAN:');
+		if (lastStatement && (TEST_OPTIONS.showPlan || TEST_OPTIONS.planSummary)) {
 			try {
-				const plan = db.getDebugPlan(lastStatement);
-				diagnostics.push(plan);
+				const plan = db.getPlan(lastStatement);
+				
+				if (TEST_OPTIONS.planSummary) {
+					diagnostics.push('\nQUERY PLAN SUMMARY:');
+					diagnostics.push(formatPlanSummary(plan));
+				}
+				
+				if (TEST_OPTIONS.showPlan) {
+					diagnostics.push('\nQUERY PLAN:');
+					const planOptions: PlanDisplayOptions = {
+						concise: !TEST_OPTIONS.planFullDetail,
+						expandNodes: TEST_OPTIONS.expandNodes,
+						maxDepth: TEST_OPTIONS.maxPlanDepth,
+						showPhysical: true
+					};
+					const formattedPlan = formatPlanTree(plan, planOptions);
+					diagnostics.push(formattedPlan);
+				}
 			} catch (planError: any) {
 				diagnostics.push(`Plan generation failed: ${planError.message || planError}`);
 			}
 		}
 
-		if (lastStatement && DIAG_CONFIG.showProgram) {
+		if (lastStatement && TEST_OPTIONS.showProgram) {
 			diagnostics.push('\nINSTRUCTION PROGRAM:');
 			try {
 				const stmt = db.prepare(lastStatement);
@@ -120,7 +244,7 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
 			}
 		}
 
-		if (DIAG_CONFIG.showStack && error.stack) {
+		if (TEST_OPTIONS.showStack && error.stack) {
 			diagnostics.push('\nSTACK TRACE:');
 			diagnostics.push(error.stack);
 		}
@@ -202,7 +326,7 @@ async function executeWithTracing(db: Database, sql: string, params?: any[]): Pr
 			errorMsg += locationInfo;
 		}
 
-		if (DIAG_CONFIG.showTrace) {
+		if (TEST_OPTIONS.showTrace) {
 			errorMsg += `\n\nEXECUTION TRACE:\n${formatTraceEvents(tracer.getTraceEvents())}`;
 		}
 
@@ -280,7 +404,7 @@ describe('SQL Logic Tests', () => {
 				 * Executes SQL expecting an error with the given substring
 				 */
 				const executeExpectingError = async (sqlBlock: string, errorSubstring: string, lineNum: number) => {
-					if (DIAG_CONFIG.verbose) {
+					if (TEST_OPTIONS.verbose) {
 						console.log(`Executing block (expect error "${errorSubstring}"):\n${sqlBlock}`);
 					}
 
@@ -296,10 +420,10 @@ describe('SQL Logic Tests', () => {
 
 						// Show location information if available
 						const locationInfo = formatLocationInfo(actualError, sqlBlock);
-						if (DIAG_CONFIG.verbose && locationInfo) {
+						if (TEST_OPTIONS.verbose && locationInfo) {
 							console.log(`   -> Error location: ${locationInfo}`);
 						}
-						if (DIAG_CONFIG.verbose) {
+						if (TEST_OPTIONS.verbose) {
 							console.log(`   -> Caught expected error: ${actualError.message}`);
 						}
 					}
@@ -309,7 +433,7 @@ describe('SQL Logic Tests', () => {
 				 * Executes SQL expecting specific results
 				 */
 				const executeExpectingResults = async (sqlBlock: string, expectedJson: string, lineNum: number) => {
-					if (DIAG_CONFIG.verbose) {
+					if (TEST_OPTIONS.verbose) {
 						console.log(`Executing block (expect results):\n${sqlBlock}`);
 					}
 
@@ -321,7 +445,7 @@ describe('SQL Logic Tests', () => {
 						for (let i = 0; i < statements.length - 1; i++) {
 							const statement = statements[i].trim();
 							if (statement.length > 0) {
-								if (DIAG_CONFIG.verbose) {
+								if (TEST_OPTIONS.verbose) {
 									console.log(`  -> Executing setup statement: ${statement}`);
 								}
 								await db.exec(statement);
@@ -331,7 +455,7 @@ describe('SQL Logic Tests', () => {
 
 					// Execute the final statement with tracing
 					const lastStatement = statements[statements.length - 1];
-					if (DIAG_CONFIG.verbose) {
+					if (TEST_OPTIONS.verbose) {
 						console.log(`  -> Executing final statement (with tracing): ${lastStatement}`);
 					}
 
@@ -356,7 +480,7 @@ describe('SQL Logic Tests', () => {
 					if (actualResult.length !== expectedResult.length) {
 						const baseError = new Error(`[${file}:${lineNum}] Row count mismatch. Expected ${expectedResult.length}, got ${actualResult.length}\nBlock:\n${sqlBlock}`);
 						const diagnostics = generateDiagnostics(db, sqlBlock, baseError);
-						const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
+						const traceInfo = TEST_OPTIONS.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
 						throw new Error(`${baseError.message}${diagnostics}${traceInfo}`);
 					}
 
@@ -367,12 +491,12 @@ describe('SQL Logic Tests', () => {
 						} catch (matchError: any) {
 							const error = matchError instanceof Error ? matchError : new Error(String(matchError));
 							const diagnostics = generateDiagnostics(db, sqlBlock, error);
-							const traceInfo = DIAG_CONFIG.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
+							const traceInfo = TEST_OPTIONS.showTrace ? `\nEXECUTION TRACE:\n${formatTraceEvents(executionResult.traceEvents)}` : '';
 							throw new Error(`${error.message}${diagnostics}${traceInfo}`);
 						}
 					}
 
-					if (DIAG_CONFIG.verbose) {
+					if (TEST_OPTIONS.verbose) {
 						console.log("   -> Results match!");
 					}
 				};
@@ -381,13 +505,13 @@ describe('SQL Logic Tests', () => {
 				 * Executes SQL without expecting specific results or errors (for setup)
 				 */
 				const executeSetup = async (sqlBlock: string, lineNum: number) => {
-					if (DIAG_CONFIG.verbose) {
+					if (TEST_OPTIONS.verbose) {
 						console.log(`Executing setup block:\n${sqlBlock}`);
 					}
 
 					try {
 						await db.exec(sqlBlock);
-						if (DIAG_CONFIG.verbose) {
+						if (TEST_OPTIONS.verbose) {
 							console.log("   -> Setup completed successfully");
 						}
 					} catch (error: any) {

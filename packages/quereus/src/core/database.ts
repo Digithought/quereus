@@ -25,7 +25,7 @@ import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 import { registerEmitters } from '../runtime/register.js';
-import { serializePlanTree } from '../planner/debug.js';
+import { serializePlanTree, formatPlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { Optimizer, DEFAULT_TUNING } from '../planner/optimizer.js';
@@ -624,14 +624,27 @@ export class Database {
 	}
 
 	/**
-	 * Gets a detailed JSON representation of the query plan for debugging.
+	 * Gets a detailed representation of the query plan for debugging.
 	 * @param sql The SQL statement to plan.
-	 * @returns JSON string containing the detailed plan tree.
+	 * @param options Optional formatting options. If not provided, uses concise tree format.
+	 * @returns String containing the formatted plan tree.
 	 */
-	getDebugPlan(sql: string): string {
+	getDebugPlan(sql: string, options?: { verbose?: boolean; expandNodes?: string[]; maxDepth?: number }): string {
 		this.checkOpen();
 		const plan = this.getPlan(sql);
-		return serializePlanTree(plan);
+		
+		if (options?.verbose) {
+			// Use the original detailed JSON format
+			return serializePlanTree(plan);
+		} else {
+			// Use the new concise tree format
+			return formatPlanTree(plan, {
+				concise: true,
+				expandNodes: options?.expandNodes || [],
+				maxDepth: options?.maxDepth,
+				showPhysical: true
+			});
+		}
 	}
 
 	/**
