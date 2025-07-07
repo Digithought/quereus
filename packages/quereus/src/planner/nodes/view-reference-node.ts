@@ -86,7 +86,7 @@ export class ViewReferenceNode extends PlanNode implements ZeroAryRelationalNode
 		return `VIEW ${this.viewSchema.schemaName}.${this.viewSchema.name}${aliasText}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			viewName: this.viewSchema.name,
 			schemaName: this.viewSchema.schemaName,

@@ -466,7 +466,24 @@ export class Parser {
 				const expr = this.expression();
 				const direction = this.match(TokenType.DESC) ? 'desc' :
 					(this.match(TokenType.ASC) ? 'asc' : 'asc'); // Default to ASC
-				orderBy.push({ expr, direction });
+
+				// Handle NULLS FIRST/LAST
+				let nulls: 'first' | 'last' | undefined;
+				if (this.matchKeyword('NULLS')) {
+					if (this.matchKeyword('FIRST')) {
+						nulls = 'first';
+					} else if (this.matchKeyword('LAST')) {
+						nulls = 'last';
+					} else {
+						throw this.error(this.peek(), "Expected 'FIRST' or 'LAST' after 'NULLS'.");
+					}
+				}
+
+				const orderClause: AST.OrderByClause = { expr, direction };
+				if (nulls) {
+					orderClause.nulls = nulls;
+				}
+				orderBy.push(orderClause);
 			} while (this.match(TokenType.COMMA));
 			lastConsumedToken = this.previous(); // After last order by clause
 		}
@@ -1125,33 +1142,18 @@ export class Parser {
 					}
 				} else if (this.match(TokenType.BETWEEN)) {
 					// NOT BETWEEN
-					const low = this.term();
+					const lower = this.term();
 					this.consume(TokenType.AND, "Expected 'AND' after NOT BETWEEN lower bound.");
-					const high = this.term();
-					const endToken = this.previous(); // End token is end of high expr
+					const upper = this.term();
+					const endToken = this.previous(); // End token is end of upper expr
 
-					// Create a binary AND expression for the bounds
-					const boundsExpr: AST.BinaryExpr = {
-						type: 'binary',
-						operator: 'AND',
-						left: low,
-						right: high,
-						loc: _createLoc(low.loc?.start ? this.tokens.find(t => t.startOffset === low.loc!.start.offset) ?? this.peek() : this.peek(), endToken)
-					};
-
-					// Create the BETWEEN expression as a binary expression, then wrap in NOT
-					const betweenExpr: AST.BinaryExpr = {
-						type: 'binary',
-						operator: 'BETWEEN',
-						left: expr,
-						right: boundsExpr,
-						loc: _createLoc(startToken, endToken),
-					};
-
+					// Create the NOT BETWEEN expression as a dedicated node type
 					expr = {
-						type: 'unary',
-						operator: 'NOT',
-						expr: betweenExpr,
+						type: 'between',
+						expr,
+						lower,
+						upper,
+						not: true,
 						loc: _createLoc(notStartToken, endToken),
 					};
 				} else if (this.match(TokenType.LIKE)) {
@@ -1194,26 +1196,17 @@ export class Parser {
 				};
 			} else if (operatorToken.type === TokenType.BETWEEN) {
 				// Parse BETWEEN expression: expr BETWEEN low AND high
-				const low = this.term();
+				const lower = this.term();
 				this.consume(TokenType.AND, "Expected 'AND' after BETWEEN lower bound.");
-				const high = this.term();
-				const endToken = this.previous(); // End token is end of high expr
+				const upper = this.term();
+				const endToken = this.previous(); // End token is end of upper expr
 
-				// Create a binary AND expression for the bounds
-				const boundsExpr: AST.BinaryExpr = {
-					type: 'binary',
-					operator: 'AND',
-					left: low,
-					right: high,
-					loc: _createLoc(low.loc?.start ? this.tokens.find(t => t.startOffset === low.loc!.start.offset) ?? this.peek() : this.peek(), endToken)
-				};
-
-				// Create the BETWEEN expression as a binary expression
+				// Create the BETWEEN expression as a dedicated node type
 				expr = {
-					type: 'binary',
-					operator: 'BETWEEN',
-					left: expr,
-					right: boundsExpr,
+					type: 'between',
+					expr,
+					lower,
+					upper,
 					loc: _createLoc(startToken, endToken),
 				};
 			} else if (operatorToken.type === TokenType.IN) {
@@ -1617,20 +1610,20 @@ export class Parser {
 					const direction = this.match(TokenType.DESC) ? 'desc' : (this.match(TokenType.ASC) ? 'asc' : 'asc');
 
 					// Handle NULLS FIRST/LAST
-					let nullsOrdering: 'first' | 'last' | undefined;
+					let nulls: 'first' | 'last' | undefined;
 					if (this.matchKeyword('NULLS')) {
 						if (this.matchKeyword('FIRST')) {
-							nullsOrdering = 'first';
+							nulls = 'first';
 						} else if (this.matchKeyword('LAST')) {
-							nullsOrdering = 'last';
+							nulls = 'last';
 						} else {
 							throw this.error(this.peek(), "Expected 'FIRST' or 'LAST' after 'NULLS'.");
 						}
 					}
 
 					const orderClause: AST.OrderByClause = { expr, direction };
-					if (nullsOrdering) {
-						(orderClause as any).nullsOrdering = nullsOrdering;
+					if (nulls) {
+						orderClause.nulls = nulls;
 					}
 					orderBy.push(orderClause);
 				} while (this.match(TokenType.COMMA));

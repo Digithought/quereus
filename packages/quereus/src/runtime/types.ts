@@ -20,6 +20,8 @@ export type RuntimeContext = {
 	activeConnection?: VirtualTableConnection;
 	/** Whether to collect runtime execution metrics */
 	enableMetrics: boolean;
+	/** Context tracking for debugging context leaks */
+	contextTracker?: ContextTracker;
 };
 
 export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue;
@@ -187,5 +189,45 @@ export class CollectingInstructionTracer implements InstructionTracer {
 		if (Array.isArray(value)) return value.map(v => this.cloneValue(v));
 		if (typeof value === 'object') return '[Object]';
 		return value;
+	}
+}
+
+/**
+ * Tracks context additions and removals for debugging context leaks
+ */
+export interface ContextTracker {
+	/** Record that a context was added */
+	addContext(descriptor: RowDescriptor, source: string): void;
+	/** Record that a context was removed */
+	removeContext(descriptor: RowDescriptor): void;
+	/** Get all remaining contexts with their sources */
+	getRemainingContexts(): Array<{ descriptor: RowDescriptor; source: string }>;
+	/** Check if there are any remaining contexts */
+	hasRemainingContexts(): boolean;
+}
+
+/**
+ * Default implementation of ContextTracker
+ */
+export class DefaultContextTracker implements ContextTracker {
+	private contexts = new Map<RowDescriptor, string>();
+
+	addContext(descriptor: RowDescriptor, source: string): void {
+		this.contexts.set(descriptor, source);
+	}
+
+	removeContext(descriptor: RowDescriptor): void {
+		this.contexts.delete(descriptor);
+	}
+
+	getRemainingContexts(): Array<{ descriptor: RowDescriptor; source: string }> {
+		return Array.from(this.contexts.entries()).map(([descriptor, source]) => ({
+			descriptor,
+			source
+		}));
+	}
+
+	hasRemainingContexts(): boolean {
+		return this.contexts.size > 0;
 	}
 }

@@ -42,13 +42,49 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 
 		const sortNode = new SortNode(node.scope, source, sortKeys);
 
+		// Create combined attributes: AggregateNode attributes + source attributes
+		// This ensures both GROUP BY/aggregate AND source column attribute IDs are preserved
+		const aggregateAttrs = node.getAttributes();
+		const sourceAttrs = node.source.getAttributes();
+
+		// Deduplicate by column NAME to avoid duplicate columns like 'id'
+		// (The same logical column can have different attribute IDs between aggregate and source)
+		const seenNames = new Set<string>();
+		const combinedAttrs: typeof aggregateAttrs = [];
+
+		// Add aggregate attributes first (GROUP BY + aggregates)
+		for (const attr of aggregateAttrs) {
+			combinedAttrs.push(attr);
+			seenNames.add(attr.name);
+		}
+
+		// Add source attributes that aren't already present by name
+		for (const attr of sourceAttrs) {
+			if (!seenNames.has(attr.name)) {
+				combinedAttrs.push(attr);
+				seenNames.add(attr.name);
+			}
+		}
+
+		// Final safety-pass: filter duplicates that may have slipped through
+		const uniqueByName = new Set<string>();
+		const deduped: typeof combinedAttrs = [];
+		for (const attr of combinedAttrs) {
+			if (!uniqueByName.has(attr.name)) {
+				deduped.push(attr);
+				uniqueByName.add(attr.name);
+			}
+		}
+
+		const finalAttrs = deduped;
+
 		const result = new StreamAggregateNode(
 			node.scope,
 			sortNode,
 			node.groupBy,
 			node.aggregates,
 			undefined, // estimatedCostOverride
-			node.getAttributes() // **CRITICAL**: Preserve original attribute IDs
+			finalAttrs // unique list
 		);
 
 		// Let framework set physical properties via markPhysical()
@@ -58,13 +94,49 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 		return result;
 	} else {
 		// No GROUP BY - can stream aggregate without sorting
+		// Create combined attributes: AggregateNode attributes + source attributes
+		// This ensures both GROUP BY/aggregate AND source column attribute IDs are preserved
+		const aggregateAttrs = node.getAttributes();
+		const sourceAttrs = node.source.getAttributes();
+
+		// Deduplicate by column NAME to avoid duplicate columns like 'id'
+		// (The same logical column can have different attribute IDs between aggregate and source)
+		const seenNames = new Set<string>();
+		const combinedAttrs: typeof aggregateAttrs = [];
+
+		// Add aggregate attributes first (GROUP BY + aggregates)
+		for (const attr of aggregateAttrs) {
+			combinedAttrs.push(attr);
+			seenNames.add(attr.name);
+		}
+
+		// Add source attributes that aren't already present by name
+		for (const attr of sourceAttrs) {
+			if (!seenNames.has(attr.name)) {
+				combinedAttrs.push(attr);
+				seenNames.add(attr.name);
+			}
+		}
+
+		// Final safety-pass: filter duplicates that may have slipped through
+		const uniqueByName = new Set<string>();
+		const deduped: typeof combinedAttrs = [];
+		for (const attr of combinedAttrs) {
+			if (!uniqueByName.has(attr.name)) {
+				deduped.push(attr);
+				uniqueByName.add(attr.name);
+			}
+		}
+
+		const finalAttrs = deduped;
+
 		const result = new StreamAggregateNode(
 			node.scope,
 			source,
 			node.groupBy,
 			node.aggregates,
 			undefined, // estimatedCostOverride
-			node.getAttributes() // **CRITICAL**: Preserve original attribute IDs
+			finalAttrs // unique list
 		);
 
 		// Let framework set physical properties via markPhysical()

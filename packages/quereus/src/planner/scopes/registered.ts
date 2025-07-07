@@ -10,9 +10,6 @@ import { type ReferenceCallback, type Scope, Ambiguous } from './scope.js';
  * based on the current position in the PlanNode tree.
  */
 export class RegisteredScope implements Scope {
-	/** References that have been resolved through this scope. */
-	private _references: PlanNode[] = [];
-
 	/** Symbols that have been registered in this scope. */
 	private registeredSymbols: Map<string, ReferenceCallback> = new Map();
 
@@ -43,28 +40,12 @@ export class RegisteredScope implements Scope {
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		const reference = this.registeredSymbols.get(symbolKey.toLowerCase());
 		if (reference) {
-			const node = reference(expression, this);
-			this.addReference(node);
-			return node;
+			return reference(expression, this);
 		}
 		if (this.parent) {
 			return this.parent.resolveSymbol(symbolKey, expression);
 		}
 		return undefined;
-	}
-
-	/**
-	 * Returns all references that have been resolved through this scope.
-	 * This includes references from both this scope and any parent scopes.
-	 *
-	 * @returns An array of all resolved references.
-	 */
-	getReferences(): readonly PlanNode[] {
-		return this._references;
-	}
-
-	addReference(reference: PlanNode): void {
-		this._references.push(reference);
 	}
 
 	/**

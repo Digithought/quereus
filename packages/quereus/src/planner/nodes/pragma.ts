@@ -79,7 +79,7 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 		return `PRAGMA ${this.pragmaName}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		const props: Record<string, unknown> = {
 			pragma: this.pragmaName,
 			statement: expressionToString(this.statementAst as any)

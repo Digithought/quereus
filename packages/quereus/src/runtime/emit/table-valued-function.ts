@@ -7,6 +7,7 @@ import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { TableFunctionCallNode } from '../../planner/nodes/table-function-call.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { withRowContextGenerator } from '../context-helpers.js';
 
 export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.functionName.toLowerCase();
@@ -49,16 +50,9 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
 
-			for await (const row of iterable) {
-				// Set up row context for column references
-				innerCtx.context.set(rowDescriptor, () => row);
-				try {
-					yield row;
-				} finally {
-					// Clean up row context
-					innerCtx.context.delete(rowDescriptor);
-				}
-			}
+			yield* withRowContextGenerator(innerCtx, rowDescriptor, iterable, async function* (row) {
+				yield row;
+			});
 		} catch (error: any) {
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
 		}
@@ -92,16 +86,9 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
 
-			for await (const row of iterable) {
-				// Set up row context for column references
-				innerCtx.context.set(rowDescriptor, () => row);
-				try {
-					yield row;
-				} finally {
-					// Clean up row context
-					innerCtx.context.delete(rowDescriptor);
-				}
-			}
+			yield* withRowContextGenerator(innerCtx, rowDescriptor, iterable, async function* (row) {
+				yield row;
+			});
 		} catch (error: any) {
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
 		}

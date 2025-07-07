@@ -1,14 +1,12 @@
 import { createLogger } from '../common/logger.js';
-import { PlanNode, type PhysicalProperties } from './nodes/plan-node.js';
+import { PlanNode } from './nodes/plan-node.js';
 import { PlanNodeType } from './nodes/plan-node-type.js';
 import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 
 // Re-export for convenience
 export { DEFAULT_TUNING };
 
-import { quereusError } from '../common/errors.js';
-import { StatusCode } from '../common/types.js';
-import { applyRules, clearVisitedRules, registerRules, createRule } from './framework/registry.js';
+import { applyRules, registerRules, createRule } from './framework/registry.js';
 import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
 import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
 import { createOptContext, type OptContext } from './framework/context.js';
@@ -21,11 +19,11 @@ import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streami
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
-import { ruleMarkPhysical } from './rules/physical/rule-mark-physical.js';
 // Phase 3 rules
-import { ruleConstantFolding } from './rules/rewrite/rule-constant-folding.js';
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
+import { performConstantFolding } from './analysis/const-pass.js';
+import { createRuntimeExpressionEvaluator } from './analysis/const-evaluator.js';
 
 const log = createLogger('optimizer');
 
@@ -58,36 +56,7 @@ export class Optimizer {
 
 		const toRegister = [];
 
-		// Phase 3 rules - constant folding
-		// Register for multiple node types that commonly have expressions
-		const constantFoldingNodeTypes = [
-			PlanNodeType.Project,    // Projection expressions
-			PlanNodeType.Filter,     // Predicate expressions
-			PlanNodeType.Window,     // Window function expressions
-			PlanNodeType.Aggregate,  // Aggregate expressions
-			PlanNodeType.Sort,       // Sort key expressions
-			PlanNodeType.Values,     // Literal values in VALUES clauses
-			PlanNodeType.Join        // Join condition expressions
-		];
-
-		for (const nodeType of constantFoldingNodeTypes) {
-			toRegister.push(createRule(
-				`constant-folding-${nodeType.toLowerCase()}`,
-				nodeType,
-				'rewrite',
-				ruleConstantFolding,
-				10 // Very high priority - should run first to help other rules
-			));
-		}
-
-		// Core optimization rules (converted from old system)
-		toRegister.push(createRule(
-			'aggregate-streaming',
-			PlanNodeType.Aggregate,
-			'impl',
-			ruleAggregateStreaming,
-			40 // High priority - fundamental logical→physical transformation
-		));
+		// Note: Single-pass constant folding is done before rules
 
 		// Mutating subquery cache injection - critical for correctness
 		toRegister.push(createRule(
@@ -98,14 +67,22 @@ export class Optimizer {
 			20 // Very high priority - correctness fix to prevent multiple execution
 		));
 
-		// Constraint rules removed - now handled directly in builders for correctness
-
+		// Phase 1.5 rules
 		toRegister.push(createRule(
-			'cte-optimization',
-			PlanNodeType.CTE,
+			'select-access-path',
+			PlanNodeType.TableReference,
 			'impl',
-			ruleCteOptimization,
-			70 // Lower priority - caching optimization
+			ruleSelectAccessPath,
+			25 // High priority - fundamental access path selection
+		));
+
+		// Core optimization rules (converted from old system)
+		toRegister.push(createRule(
+			'aggregate-streaming',
+			PlanNodeType.Aggregate,
+			'impl',
+			ruleAggregateStreaming,
+			40 // High priority - fundamental logical→physical transformation
 		));
 
 		// toRegister.push(createRule(
@@ -124,41 +101,40 @@ export class Optimizer {
 		// 	50 // Medium priority - basic optimization
 		// ));
 
-		// Phase 1.5 rules
 		toRegister.push(createRule(
-			'select-access-path',
-			PlanNodeType.TableScan,
+			'cte-optimization',
+			PlanNodeType.CTE,
 			'impl',
-			ruleSelectAccessPath,
-			30 // High priority - fundamental access path selection
+			ruleCteOptimization,
+			70 // Lower priority - caching optimization
 		));
 
-		// Phase 2 rules
-		toRegister.push(createRule(
-			'materialization-advisory',
-			PlanNodeType.Block, // Apply to root-level nodes
-			'rewrite',
-			ruleMaterializationAdvisory,
-			90 // Low priority - run last for global analysis
-		));
-
-		// Fallback rule - must run last with lowest priority
-		// We need to register this for multiple node types that might need fallback handling
-		const fallbackNodeTypes = [
-			PlanNodeType.TableScan, PlanNodeType.Values, PlanNodeType.TableFunctionCall,
-			PlanNodeType.Join, PlanNodeType.NestedLoopJoin, PlanNodeType.SingleRow,
-			PlanNodeType.SetOperation, PlanNodeType.Distinct, PlanNodeType.LimitOffset,
-			PlanNodeType.Window, PlanNodeType.Block, PlanNodeType.CTEReference,
-			PlanNodeType.Cache, PlanNodeType.Sequencing, PlanNodeType.UpdateExecutor
+		// Phase 2 rules - Materialization advisory
+		// TODO: Can we apply this more generally rather than assuming certain node types?
+		// Register for all node types that can have relational children
+		const nodeTypesWithRelationalChildren = [
+			PlanNodeType.Block,           // Contains statements
+			PlanNodeType.ScalarSubquery,  // Contains relational subquery
+			PlanNodeType.Exists,          // Contains relational subquery
+			PlanNodeType.In,              // Can contain relational subquery
+			PlanNodeType.Insert,          // Has source relation
+			PlanNodeType.Update,          // Has source relation
+			PlanNodeType.Delete,          // Has source relation
+			PlanNodeType.CTE,             // Has definition relation
+			PlanNodeType.RecursiveCTE,    // Has anchor/recursive relations
+			PlanNodeType.Returning,       // Wraps DML operations
+			// Scalar nodes that might contain subqueries
+			PlanNodeType.ScalarFunctionCall,  // Function args might be subqueries
+			PlanNodeType.CaseExpr,            // CASE conditions might be subqueries
 		];
 
-		for (const nodeType of fallbackNodeTypes) {
+		for (const nodeType of nodeTypesWithRelationalChildren) {
 			toRegister.push(createRule(
-				`mark-physical-${nodeType.toLowerCase()}`,
+				'materialization-advisory',
 				nodeType,
-				'impl',
-				ruleMarkPhysical,
-				100 // Lowest priority - absolute fallback
+				'rewrite',
+				ruleMaterializationAdvisory,
+				90 // Low priority - run last for global analysis
 			));
 		}
 
@@ -172,15 +148,17 @@ export class Optimizer {
 	optimize(plan: PlanNode, db: Database): PlanNode {
 		log('Starting optimization of plan', plan.nodeType);
 
-		// Clear rule tracking from previous runs
-		clearVisitedRules();
-
 		// Create optimization context
 		const context = createOptContext(this, this.stats, this.tuning, db);
 
 		tracePhaseStart('optimization');
 		try {
-			const result = this.optimizeNode(plan, context);
+			// Phase 0: Single-pass constant folding before other rules
+			log('Running constant folding pre-pass');
+			const constantFoldedPlan = this.performConstantFolding(plan, context);
+
+			// Continue with rule-based optimization
+			const result = this.optimizeNode(constantFoldedPlan, context);
 
 			// Phase 3: Validate the physical plan before returning
 			if (this.tuning.debug.validatePlan) {
@@ -200,15 +178,34 @@ export class Optimizer {
 		}
 	}
 
+	/**
+	 * Perform single-pass constant folding over the entire plan tree
+	 */
+	private performConstantFolding(plan: PlanNode, context: OptContext): PlanNode {
+		// Create runtime expression evaluator
+		const evaluator = createRuntimeExpressionEvaluator(context.db);
+
+		// Perform single-pass constant folding
+		const result = performConstantFolding(plan, evaluator);
+
+		log('Constant folding completed');
+		return result;
+	}
+
 	optimizeNode(node: PlanNode, context: OptContext): PlanNode {
 		traceNodeStart(node);
 
-		// If already physical, just recurse on children
-		if (node.physical) {
-			const result = this.optimizeChildren(node, context);
-			traceNodeEnd(node, result);
-			return result;
+		// Check if we've already optimized this exact node instance
+		const cached = context.optimizedNodes.get(node.id);
+		if (cached) {
+			log('Reusing optimized version of shared node %s (%s)', node.id, node.nodeType);
+			traceNodeEnd(node, cached);
+			return cached;
 		}
+
+		// Note: We removed the broken `if (node.physical)` check here
+		// The `physical` property is always truthy (it returns a PhysicalProperties object)
+		// Physical vs logical distinction should be handled by the rules themselves
 
 		// First optimize all children
 		const optimizedNode = this.optimizeChildren(node, context);
@@ -219,23 +216,19 @@ export class Optimizer {
 		if (rulesApplied !== optimizedNode) {
 			// Rules transformed the node
 			log(`Rules applied to ${optimizedNode.nodeType}, transformed to ${rulesApplied.nodeType}`);
-			this.markPhysical(rulesApplied);
 			traceNodeEnd(node, rulesApplied);
+
+			// Cache the final result
+			context.optimizedNodes.set(node.id, rulesApplied);
 			return rulesApplied;
 		}
 
-		// No rule applied - if node supports direct physical conversion, do it
-		if (this.canBePhysical(optimizedNode)) {
-			this.markPhysical(optimizedNode);
-			traceNodeEnd(node, optimizedNode);
-			return optimizedNode;
-		} else {
-			log('Failed to make node %s physical after optimization', optimizedNode.nodeType);
-			quereusError(
-				`No rule to make ${optimizedNode.nodeType} physical`,
-				StatusCode.INTERNAL
-			);
-		}
+		// No rule applied - assume node is physical
+		traceNodeEnd(node, optimizedNode);
+
+		// Cache the result even if no rules applied
+		context.optimizedNodes.set(node.id, optimizedNode);
+		return optimizedNode;
 	}
 
 	private optimizeChildren(node: PlanNode, context: OptContext): PlanNode {
@@ -255,71 +248,10 @@ export class Optimizer {
 		return node.withChildren(optimizedChildren);
 	}
 
-
-
 	/**
 	 * Get the statistics provider
 	 */
 	getStats(): StatsProvider {
 		return this.stats;
 	}
-
-
-
-	// Constraint-related methods removed - constraints now handled in builders
-
-	/**
-	 * Mark a node as physical and compute its properties
-	 */
-	private markPhysical(node: PlanNode): void {
-		if (node.physical) return; // Already physical
-
-		// Collect physical properties from children (both scalar and relational)
-		const childrenPhysical: PhysicalProperties[] = [];
-
-		// Add properties from scalar children
-		for (const child of node.getChildren()) {
-			if (child instanceof PlanNode && child.physical) {
-				childrenPhysical.push(child.physical);
-			}
-		}
-
-		// Add properties from relational children
-		for (const relation of node.getRelations()) {
-			if (relation.physical) {
-				childrenPhysical.push(relation.physical);
-			}
-		}
-
-		// Let the node compute its own physical properties if it can
-		let computedProperties: PhysicalProperties | undefined;
-		if (node.getPhysical) {
-			computedProperties = node.getPhysical(childrenPhysical);
-		}
-
-		// Set default physical properties with computed properties as override
-		PlanNode.setDefaultPhysical(node, computedProperties);
-
-		// Optimizer can override/adjust properties here
-		// For example, propagate constant flag up the tree
-		if (childrenPhysical.length > 0 && childrenPhysical.every(p => p.constant)) {
-			node.physical!.constant = true;
-		}
-	}
-
-	/**
-	 * Check if a node type can be directly marked as physical without transformation
-	 */
-	private canBePhysical(node: PlanNode): boolean {
-		// Types that need logical-to-physical transformation
-		const needsTransformation = new Set([
-			PlanNodeType.Aggregate,  // → StreamAggregate/HashAggregate
-			// Insert/Update/Delete might need ConstraintCheck wrapping (handled by rules)
-			// Most other types are directly physical
-		]);
-
-		return !needsTransformation.has(node.nodeType);
-	}
-
-
 }

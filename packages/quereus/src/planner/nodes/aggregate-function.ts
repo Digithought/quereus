@@ -121,7 +121,7 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 		return `${this.functionName}(${distinctStr}${argsStr})${filterStr}${orderByStr}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		const props: Record<string, unknown> = {
 			function: this.functionName,
 			arguments: this.args.map(arg => arg.toString()),

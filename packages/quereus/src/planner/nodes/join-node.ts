@@ -1,4 +1,4 @@
-import { PlanNode } from './plan-node.js';
+import { isRelationalNode, PlanNode } from './plan-node.js';
 import type { RelationalPlanNode, Attribute, BinaryRelationalNode, ScalarPlanNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
@@ -131,10 +131,10 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode {
 		const [newLeft, newRight, newCondition] = newChildren;
 
 		// Type check
-		if (!('getAttributes' in newLeft) || typeof (newLeft as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newLeft)) {
 			quereusError('JoinNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
 		}
-		if (!('getAttributes' in newRight) || typeof (newRight as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newRight)) {
 			quereusError('JoinNode: second child must be a RelationalPlanNode', StatusCode.INTERNAL);
 		}
 		if (newCondition && !('expression' in newCondition)) {
@@ -201,7 +201,7 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode {
 		}
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			joinType: this.joinType,
 			hasCondition: !!this.condition,

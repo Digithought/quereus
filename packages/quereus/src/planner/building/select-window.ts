@@ -43,6 +43,17 @@ export function buildWindowPhase(
 			// For now, proceed with WindowNode
 		}
 
+		// CRITICAL: Build window specification expressions using the INPUT scope
+		// This ensures expressions reference the correct input attribute IDs,
+		// not premature output attribute IDs that don't exist in the runtime context
+		const partitionExpressions = windowSpec.partitionBy.map(expr =>
+			buildExpression(selectContext, expr, false)
+		);
+
+		const orderByExpressions = windowSpec.orderBy.map(orderClause =>
+			buildExpression(selectContext, orderClause.expr, false)
+		);
+
 		// Create new WindowFunctionCallNode instances with alias information
 		const windowFuncsWithAlias = functions.map(({ func, alias }) =>
 			new WindowFunctionCallNode(
@@ -54,17 +65,9 @@ export function buildWindowPhase(
 			)
 		);
 
-		// Build expressions for window specification
-		const partitionExpressions = windowSpec.partitionBy.map(expr =>
-			buildExpression(selectContext, expr, false)
-		);
-
-		const orderByExpressions = windowSpec.orderBy.map(orderClause =>
-			buildExpression(selectContext, orderClause.expr, false)
-		);
-
 		const functionArguments = buildWindowFunctionArguments(windowFuncsWithAlias, selectContext);
 
+		// Now create the WindowNode with pre-compiled expressions
 		currentInput = new WindowNode(
 			selectContext.scope,
 			currentInput,
@@ -246,3 +249,5 @@ function compareWindowSpecs(originalWindow: any, funcWindow: any): boolean {
 		   originalOrder === funcOrder &&
 		   originalFrame === funcFrame;
 }
+
+

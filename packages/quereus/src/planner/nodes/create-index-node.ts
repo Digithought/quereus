@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
-import { VoidNode } from './plan-node.js';
+import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 
@@ -22,7 +22,7 @@ export class CreateIndexNode extends VoidNode {
     return `CREATE ${uniquePrefix}INDEX ${this.statementAst.index.name} ON ${this.statementAst.table.name}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     return {
       index: this.statementAst.index.name,
       table: this.statementAst.table.name,
@@ -34,4 +34,8 @@ export class CreateIndexNode extends VoidNode {
       statement: expressionToString(this.statementAst as any) // Convert AST to string
     };
   }
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
+	}
 }

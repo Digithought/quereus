@@ -639,7 +639,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 * Destroys a memory table and frees associated resources
 	 */
 	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
-		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const manager = this.tables.get(tableKey);
 
 		if (manager) {
@@ -654,7 +654,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 * Creates an index on a memory table
 	 */
 	async xCreateIndex(db: Database, schemaName: string, tableName: string, indexSchema: IndexSchema): Promise<void> {
-		const tableKey = `${schemaName.toLowerCase()}.${tableName.toLowerCase()}`;
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const manager = this.tables.get(tableKey);
 
 		if (!manager) {

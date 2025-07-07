@@ -53,7 +53,24 @@ SELECT id FROM outer_t WHERE outer_t.id = (SELECT i.outer_id FROM inner_t i WHER
 
 -- Subquery in SELECT list returning multiple rows (Error expected)
 SELECT id, (SELECT val FROM inner_t WHERE inner_t.outer_id = outer_t.id) FROM outer_t;
--- error: subquery must return only one column
+-- error: Scalar subquery returned more than one row
+
+-- Subqueries in ORDER BY (testing async expression handling)
+-- Uncorrelated scalar subquery in ORDER BY
+SELECT id, grp FROM outer_t ORDER BY (SELECT max(val) FROM inner_t), id;
+→ [{"id":1,"grp":"A"},{"id":2,"grp":"B"},{"id":3,"grp":"A"}]
+
+-- Correlated scalar subquery in ORDER BY
+SELECT id, grp FROM outer_t ORDER BY (SELECT sum(val) FROM inner_t WHERE inner_t.outer_id = outer_t.id) DESC, id;
+→ [{"id":1,"grp":"A"},{"id":3,"grp":"A"},{"id":2,"grp":"B"}]
+
+-- Complex ORDER BY with both regular columns and subqueries
+SELECT id, grp FROM outer_t ORDER BY grp, (SELECT count(*) FROM inner_t WHERE inner_t.outer_id = outer_t.id) DESC;
+→ [{"id":1,"grp":"A"},{"id":3,"grp":"A"},{"id":2,"grp":"B"}]
+
+-- ORDER BY with subquery that may return NULL
+SELECT id, grp FROM outer_t ORDER BY (SELECT min(val) FROM inner_t WHERE inner_t.outer_id = outer_t.id + 100) NULLS LAST, id;
+→ [{"id":1,"grp":"A"},{"id":2,"grp":"B"},{"id":3,"grp":"A"}]
 
 DROP TABLE outer_t;
 DROP TABLE inner_t;

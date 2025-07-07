@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type PhysicalProperties, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -48,7 +48,7 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
     const [newSource] = newChildren;
 
     // Type check
-    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+    if (!isRelationalNode(newSource)) {
       throw new Error('UpdateExecutorNode: child must be a RelationalPlanNode');
     }
 
@@ -75,7 +75,7 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
     return `EXECUTE ${this.operation} ${this.table.tableSchema.name}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {
       operation: this.operation,
       table: this.table.tableSchema.name,
@@ -89,16 +89,10 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
     return props;
   }
 
-  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
-    const sourcePhysical = childrenPhysical[0];
-
+  computePhysical(): Partial<PhysicalProperties> {
     return {
-      estimatedRows: sourcePhysical?.estimatedRows,
-      uniqueKeys: sourcePhysical?.uniqueKeys,
       readonly: false, // DML executor has side effects
-      deterministic: true, // Same input always produces same result
       idempotent: false, // DML operations are generally not idempotent
-      constant: false // Never constant
     };
   }
 }

@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type PhysicalProperties, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type PhysicalProperties, type Attribute, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -31,15 +31,19 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
 
     super(scope, estimatedCostOverride ?? (source.getTotalCost() + streamingCost));
 
+
+
     this.attributesCache = new Cached(() => this.buildAttributes());
   }
 
-  private buildAttributes(): Attribute[] {
-    // If we have preserved attribute IDs, use them
+          private buildAttributes(): Attribute[] {
+    // If we have preserved attribute IDs, use them directly
+    // The optimizer rule now passes both aggregate AND source attributes
     if (this.preserveAttributeIds) {
-      return this.preserveAttributeIds.slice(); // Return a copy
+      return this.preserveAttributeIds.slice();
     }
 
+    // Fallback: build attributes from scratch (used when not created via optimizer)
     const attributes: Attribute[] = [];
 
     // Group by columns come first
@@ -63,6 +67,18 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       });
     });
 
+    // Add source attributes to support HAVING clauses
+    const sourceAttributes = this.source.getAttributes();
+    const existingAttrNames = new Set(attributes.map(attr => attr.name));
+
+    for (const sourceAttr of sourceAttributes) {
+      // Only add if not already present by name (avoid duplicates for GROUP BY columns)
+      if (!existingAttrNames.has(sourceAttr.name)) {
+        attributes.push(sourceAttr);
+        existingAttrNames.add(sourceAttr.name);
+      }
+    }
+
     return attributes;
   }
 
@@ -78,21 +94,44 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
   }
 
   getType(): RelationType {
-    // Same output type as logical aggregate
-    const columns = [
+    const columns = [];
+
+    // Start with preserved attributes if we have them, otherwise build GROUP BY + aggregates
+    if (this.preserveAttributeIds) {
+      // Use preserved attributes to match getAttributes() exactly
+      for (const attr of this.preserveAttributeIds) {
+        columns.push({
+          name: attr.name,
+          type: attr.type,
+          generated: false  // Source attributes are not generated
+        });
+      }
+    } else {
       // Group by columns come first
-      ...this.groupBy.map((expr, index) => ({
+      columns.push(...this.groupBy.map((expr, index) => ({
         name: this.getGroupByColumnName(expr, index),
         type: expr.getType(),
         generated: false
-      })),
+      })));
+
       // Then aggregate columns
-      ...this.aggregates.map(agg => ({
+      columns.push(...this.aggregates.map(agg => ({
         name: agg.alias,
         type: agg.expression.getType(),
         generated: true
-      }))
-    ];
+      })));
+
+      // Add all source columns to support HAVING clauses (consistent with getAttributes())
+      const sourceType = this.source.getType();
+      const existingNames = new Set(columns.map(col => col.name));
+
+      for (const sourceCol of sourceType.columns) {
+        // Only add if not already present (avoid duplicates for GROUP BY columns)
+        if (!existingNames.has(sourceCol.name)) {
+          columns.push(sourceCol);
+        }
+      }
+    }
 
     return {
       typeClass: 'relation',
@@ -107,6 +146,31 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
 
   getAttributes(): Attribute[] {
     return this.attributesCache.value;
+  }
+
+  getProducingExprs(): Map<number, ScalarPlanNode> {
+    const attributes = this.getAttributes();
+    const map = new Map<number, ScalarPlanNode>();
+
+    // Map GROUP BY expressions to their attribute IDs
+    for (let i = 0; i < this.groupBy.length; i++) {
+      const expr = this.groupBy[i];
+      const attr = attributes[i];
+      if (attr) {
+        map.set(attr.id, expr);
+      }
+    }
+
+    // Map aggregate expressions to their attribute IDs
+    for (let i = 0; i < this.aggregates.length; i++) {
+      const agg = this.aggregates[i];
+      const attr = attributes[this.groupBy.length + i]; // Aggregates come after GROUP BY
+      if (attr) {
+        map.set(attr.id, agg.expression);
+      }
+    }
+
+    return map;
   }
 
   getChildren(): readonly PlanNode[] {
@@ -131,9 +195,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     }
   }
 
-  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
-    const sourcePhysical = childrenPhysical[0]; // Source is first relation
-
+  computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
     return {
       estimatedRows: this.estimatedRows,
       // Stream aggregate preserves ordering on GROUP BY columns
@@ -144,9 +206,6 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       uniqueKeys: this.groupBy.length > 0 ?
         [this.groupBy.map((_, idx) => idx)] :
         [[]], // Single row if no GROUP BY
-      readonly: true,
-      deterministic: sourcePhysical?.deterministic ?? true,
-      constant: this.groupBy.length === 0 && (sourcePhysical?.constant ?? false)
     };
   }
 
@@ -167,7 +226,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     return parts.join('  ');
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {
       implementation: 'streaming',
       requiresOrdering: true
@@ -198,7 +257,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     const newAggregateExpressions = restChildren.slice(this.groupBy.length);
 
     // Type check
-    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+    if (!isRelationalNode(newSource)) {
       quereusError('StreamAggregateNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
     }
 

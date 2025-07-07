@@ -1,4 +1,4 @@
-import { PlanNode } from './plan-node.js';
+import { isRelationalNode, PlanNode } from './plan-node.js';
 import type { RelationalPlanNode, Attribute, BinaryRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
@@ -60,10 +60,10 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
     const [newLeft, newRight] = newChildren;
 
     // Type check
-    if (!('getAttributes' in newLeft) || typeof (newLeft as any).getAttributes !== 'function') {
+    if (!isRelationalNode(newLeft)) {
       quereusError('SetOperationNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
     }
-    if (!('getAttributes' in newRight) || typeof (newRight as any).getAttributes !== 'function') {
+    if (!isRelationalNode(newRight)) {
       quereusError('SetOperationNode: second child must be a RelationalPlanNode', StatusCode.INTERNAL);
     }
 

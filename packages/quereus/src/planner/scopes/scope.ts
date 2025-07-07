@@ -13,16 +13,4 @@ export type ReferenceCallback = (expression: AST.Expression, currentScope: Scope
  */
 export interface Scope {
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined;
-
-	/**
-	 * Returns all references that have been resolved through this scope.
-	 * This includes references from both this scope and any parent scopes.
-	 *
-	 * @returns An array of all resolved references.
-	 */
-	getReferences(): readonly PlanNode[];
-
-	addReference(reference: PlanNode): void;
 }
-
-

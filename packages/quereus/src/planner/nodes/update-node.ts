@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ScalarPlanNode } from './plan-node.js';
@@ -8,6 +8,7 @@ import type { ConflictResolution } from '../../common/constants.js';
 import type { RelationType } from '../../common/datatype.js';
 import { formatExpression } from '../../util/plan-formatter.js';
 import { buildAttributesFromFlatDescriptor } from '../../util/row-descriptor.js';
+import type { PhysicalProperties } from './plan-node.js';
 
 export interface UpdateAssignment {
   targetColumn: AST.ColumnExpr; // Could be resolved ColumnReferenceNode or just index
@@ -24,7 +25,7 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     scope: Scope,
     public readonly table: TableReferenceNode,
     public readonly assignments: ReadonlyArray<UpdateAssignment>,
-    public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableScanNode
+    		public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableReferenceNode
 		public readonly onConflict: ConflictResolution | undefined,
     public readonly oldRowDescriptor: RowDescriptor, // For constraint checking
     public readonly newRowDescriptor: RowDescriptor, // For constraint checking
@@ -46,32 +47,43 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     return [this.source, this.table];
   }
 
-  getChildren(): readonly ScalarPlanNode[] {
-    return this.assignments.map(a => a.value);
+  getChildren(): readonly PlanNode[] {
+    // Return ALL child nodes: the source relation and the scalar assignment values
+    return [this.source, ...this.assignments.map(a => a.value)];
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== this.assignments.length) {
-      throw new Error(`UpdateNode expects ${this.assignments.length} children, got ${newChildren.length}`);
+    const expectedChildCount = 1 + this.assignments.length; // source + assignment values
+    if (newChildren.length !== expectedChildCount) {
+      throw new Error(`UpdateNode expects ${expectedChildCount} children (1 source + ${this.assignments.length} assignments), got ${newChildren.length}`);
     }
 
-    // Type check
-    for (const child of newChildren) {
+    // First child is the source
+    const newSource = newChildren[0] as RelationalPlanNode;
+    if (!isRelationalNode(newSource)) {
+      throw new Error('UpdateNode: first child must be a RelationalPlanNode (source)');
+    }
+
+    // Remaining children are assignment values
+    const newAssignmentValues = newChildren.slice(1);
+    for (const child of newAssignmentValues) {
       if (!('expression' in child)) {
-        throw new Error('UpdateNode: all children must be ScalarPlanNodes');
+        throw new Error('UpdateNode: assignment children must be ScalarPlanNodes');
       }
     }
 
     // Check if anything changed
-    const childrenChanged = newChildren.some((child, i) => child !== this.assignments[i].value);
-    if (!childrenChanged) {
+    const sourceChanged = newSource !== this.source;
+    const assignmentsChanged = newAssignmentValues.some((child, i) => child !== this.assignments[i].value);
+
+    if (!sourceChanged && !assignmentsChanged) {
       return this;
     }
 
     // Create new assignments with updated values
     const newAssignments = this.assignments.map((assignment, i) => ({
       targetColumn: assignment.targetColumn,
-      value: newChildren[i] as ScalarPlanNode
+      value: newAssignmentValues[i] as ScalarPlanNode
     }));
 
     // Create new instance
@@ -79,12 +91,18 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
       this.scope,
       this.table,
       newAssignments,
-      this.source, // Source doesn't change via withChildren
+      newSource,
       this.onConflict,
       this.oldRowDescriptor,
       this.newRowDescriptor,
       this.flatRowDescriptor
     );
+  }
+
+  computePhysical(): Partial<PhysicalProperties> {
+    return {
+      readonly: false,  // UPDATE has side effects
+    };
   }
 
   get estimatedRows(): number | undefined {
@@ -95,7 +113,7 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     return `UPDATE ${this.table.tableSchema.name}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {
       table: this.table.tableSchema.name,
       schema: this.table.tableSchema.schemaName,
@@ -110,18 +128,5 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     }
 
     return props;
-  }
-
-  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
-    const sourcePhysical = childrenPhysical[0];
-
-    return {
-      estimatedRows: sourcePhysical?.estimatedRows,
-      uniqueKeys: sourcePhysical?.uniqueKeys,
-      readonly: false, // UPDATE has side effects
-      deterministic: true, // Same input always produces same result
-      idempotent: false, // UPDATE is generally not idempotent (could update same row multiple times)
-      constant: false // Never constant
-    };
   }
 }

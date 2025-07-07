@@ -30,15 +30,15 @@ export class SinkNode extends PlanNode {
 		};
 	}
 
-	getChildren(): readonly PlanNode[] {
-		return [];
+	getChildren(): readonly [RelationalPlanNode] {
+		return [this.source];
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`SinkNode expects 0 children, got ${newChildren.length}`);
+		if (newChildren.length !== 1) {
+			throw new Error(`SinkNode expects 1 child, got ${newChildren.length}`);
 		}
-		return this; // No children in getChildren(), source is accessed via getRelations()
+		return new SinkNode(this.scope, newChildren[0] as RelationalPlanNode, this.operation);
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
@@ -53,7 +53,7 @@ export class SinkNode extends PlanNode {
 		return `SINK (${this.operation})`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			sourceType: this.source.nodeType
 		};

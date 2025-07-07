@@ -1,9 +1,15 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type ScalarPlanNode, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { RowOp } from '../../schema/table.js';
+import type { RowConstraintSchema } from '../../schema/table.js';
+
+export interface ConstraintCheck {
+  constraint: RowConstraintSchema;  // The constraint metadata
+  expression: ScalarPlanNode;       // Pre-built expression node
+}
 
 /**
  * Represents constraint checking for DML operations.
@@ -17,8 +23,10 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
     public readonly source: RelationalPlanNode,
     public readonly table: TableReferenceNode,
     public readonly operation: RowOp,
-    public readonly oldRowDescriptor?: RowDescriptor,
-    public readonly newRowDescriptor?: RowDescriptor,
+    public readonly oldRowDescriptor: RowDescriptor | undefined,
+    public readonly newRowDescriptor: RowDescriptor | undefined,
+    public readonly flatRowDescriptor: RowDescriptor,
+    public readonly constraintChecks: ConstraintCheck[]
   ) {
     super(scope);
   }
@@ -37,25 +45,46 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
   }
 
   getChildren(): readonly PlanNode[] {
-    return [this.source];
+    const children: PlanNode[] = [this.source];
+    // Add all constraint expression nodes as children so optimizer can see them
+    this.constraintChecks.forEach(check => {
+      children.push(check.expression);
+    });
+    return children;
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== 1) {
-      throw new Error(`ConstraintCheckNode expects 1 child, got ${newChildren.length}`);
+    const expectedChildren = 1 + this.constraintChecks.length;
+    if (newChildren.length !== expectedChildren) {
+      throw new Error(`ConstraintCheckNode expects ${expectedChildren} children, got ${newChildren.length}`);
     }
 
-    const [newSource] = newChildren;
+    const [newSource, ...newConstraintExprs] = newChildren;
 
-    // Type check
-    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
-      throw new Error('ConstraintCheckNode: child must be a RelationalPlanNode');
+    // Type check the source
+    if (!isRelationalNode(newSource)) {
+      throw new Error('ConstraintCheckNode: first child must be a RelationalPlanNode');
+    }
+
+    // Type check constraint expressions
+    for (let i = 0; i < newConstraintExprs.length; i++) {
+      const expr = newConstraintExprs[i];
+      if (!('getType' in expr) || typeof (expr as any).getType !== 'function') {
+        throw new Error(`ConstraintCheckNode: constraint child ${i + 1} must be a ScalarPlanNode`);
+      }
     }
 
     // Return same instance if nothing changed
-    if (newSource === this.source) {
+    if (newSource === this.source &&
+        newConstraintExprs.every((expr, i) => expr === this.constraintChecks[i].expression)) {
       return this;
     }
+
+    // Rebuild constraint checks with new expressions
+    const newConstraintChecks = this.constraintChecks.map((check, i) => ({
+      ...check,
+      expression: newConstraintExprs[i] as ScalarPlanNode
+    }));
 
     // Create new instance
     return new ConstraintCheckNode(
@@ -64,7 +93,9 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
       this.table,
       this.operation,
       this.oldRowDescriptor,
-      this.newRowDescriptor
+      this.newRowDescriptor,
+      this.flatRowDescriptor,
+      newConstraintChecks
     );
   }
 
@@ -76,10 +107,11 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
     const opName = this.operation === 1 ? 'INSERT' :
                    this.operation === 2 ? 'UPDATE' :
                    this.operation === 4 ? 'DELETE' : 'UNKNOWN';
-    return `CHECK CONSTRAINTS ON ${opName}`;
+    const constraintCount = this.constraintChecks.length;
+    return `CHECK ${constraintCount} CONSTRAINTS ON ${opName}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const opName = this.operation === 1 ? 'INSERT' :
                    this.operation === 2 ? 'UPDATE' :
                    this.operation === 4 ? 'DELETE' : 'UNKNOWN';
@@ -88,6 +120,8 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
       table: this.table.tableSchema.name,
       schema: this.table.tableSchema.schemaName,
       operation: opName,
+      constraintCount: this.constraintChecks.length,
+      constraintNames: this.constraintChecks.map(c => c.constraint.name || '_unnamed'),
       hasOldDescriptor: !!this.oldRowDescriptor,
       hasNewDescriptor: !!this.newRowDescriptor,
     };

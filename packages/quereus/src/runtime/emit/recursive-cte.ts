@@ -11,6 +11,7 @@ import { DEFAULT_TUNING } from '../../planner/optimizer-tuning.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { withRowContext } from '../context-helpers.js';
 
 const log = createLogger('runtime:emit:recursive-cte');
 
@@ -42,12 +43,7 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 
 			if (shouldYield) {
 				// Yield immediately (streaming)
-				rctx.context.set(rowDescriptor, () => row);
-				try {
-					yield row;
-				} finally {
-					rctx.context.delete(rowDescriptor);
-				}
+				yield withRowContext(rctx, rowDescriptor, () => row, () => row);
 
 				// Add to delta for recursive processing (deep copy to avoid reference issues)
 				deltaRows.push([...row] as Row);
@@ -75,12 +71,7 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 
 					if (shouldYield) {
 						// Stream the row immediately
-						rctx.context.set(rowDescriptor, () => row);
-						try {
-							yield row;
-						} finally {
-							rctx.context.delete(rowDescriptor);
-						}
+						yield withRowContext(rctx, rowDescriptor, () => row, () => row);
 
 						// Add to next iteration's delta (deep copy to avoid reference issues)
 						newDeltaRows.push([...row] as Row);

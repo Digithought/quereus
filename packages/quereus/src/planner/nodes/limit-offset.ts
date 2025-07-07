@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
@@ -65,7 +65,7 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
     return parts.join(' ');
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {};
 
     if (this.limit) {
@@ -88,7 +88,7 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
     const [newSource, ...restChildren] = newChildren;
 
     // Type check
-    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+    if (!isRelationalNode(newSource)) {
       quereusError('LimitOffsetNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
     }
 

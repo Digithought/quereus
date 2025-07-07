@@ -35,44 +35,55 @@ if (DIAG_CONFIG.verbose) {
 
 /**
  * Formats location information from QuereusError for display
+ * Recursively unravels the cause chain to show all error details
  */
 function formatLocationInfo(error: any, sqlContext: string): string | null {
-	if (!(error instanceof QuereusError) || error.line === undefined ) {
-		return null;
-	}
+	const locationInfoParts: string[] = [];
+	let currentError = error;
+	let depth = 0;
+	const maxDepth = 10; // Prevent infinite loops
 
-	const location = { line: error.line, column: error.column };
-	const lines = sqlContext.split('\n');
-	const locationInfo = ['\n'];
+	// Recursively walk through the cause chain
+	while (currentError && depth < maxDepth) {
+		if (currentError instanceof QuereusError && currentError.line !== undefined) {
+			const location = { line: currentError.line, column: currentError.column };
+			const lines = sqlContext.split('\n');
+			const prefix = depth === 0 ? '' : `  Caused by (depth ${depth}): `;
 
-	if (location.line !== undefined && location.column !== undefined) {
-		locationInfo.push(`  Line ${location.line}, Column ${location.column}`);
+			locationInfoParts.push(`${prefix}Line ${location.line}, Column ${location.column || 'unknown'}`);
+			locationInfoParts.push(`${prefix}Error: ${currentError.message}`);
 
-		// Show the problematic line with a caret indicator
-		if (location.line > 0 && location.line <= lines.length) {
-			const lineContent = lines[location.line - 1];
-			locationInfo.push(`  ${lineContent}`);
+			// Show the problematic line with a caret indicator
+			if (location.line > 0 && location.line <= lines.length) {
+				const lineContent = lines[location.line - 1];
+				locationInfoParts.push(`${prefix}${lineContent}`);
 
-			// Add caret pointer if column is valid
-			if (location.column > 0 && location.column <= lineContent.length) {
-				const pointer = ' '.repeat(location.column - 1) + '^';
-				locationInfo.push(`  ${pointer}`);
+				// Add caret pointer if column is valid
+				if (location.column !== undefined && location.column > 0 && location.column <= lineContent.length) {
+					const pointer = ' '.repeat(location.column - 1) + '^';
+					locationInfoParts.push(`${prefix}${pointer}`);
+				}
+			}
+
+			if (depth > 0) {
+				locationInfoParts.push(''); // Add spacing between cause levels
 			}
 		}
+
+		// Move to the next error in the cause chain
+		currentError = currentError?.cause;
+		depth++;
 	}
 
-	return locationInfo.join('\n');
+	if (depth >= maxDepth && currentError) {
+		locationInfoParts.push(`  ... (max depth ${maxDepth} reached, additional causes not shown)`);
+	}
+
+	return locationInfoParts.length > 0 ? '\n' + locationInfoParts.join('\n') : null;
 }
 
 /**
  * Generates configurable diagnostic information for failed tests.
- *
- * Environment variables to control output:
- * - QUEREUS_TEST_VERBOSE=true       : Show execution progress during tests
- * - QUEREUS_TEST_SHOW_PLAN=true     : Include query plan in diagnostics
- * - QUEREUS_TEST_SHOW_PROGRAM=true  : Include instruction program in diagnostics
- * - QUEREUS_TEST_SHOW_STACK=true    : Include full stack trace in diagnostics
- * - QUEREUS_TEST_SHOW_TRACE=true    : Include execution trace in diagnostics
  */
 function generateDiagnostics(db: Database, sqlBlock: string, error: Error): string {
 	const diagnostics = ['\n=== FAILURE DIAGNOSTICS ==='];
@@ -193,10 +204,10 @@ async function executeWithTracing(db: Database, sql: string, params?: any[]): Pr
 
 		await stmt.finalize();
 	} catch (error: any) {
-		// Re-throw with optional trace and location information
+		// Re-throw with optional trace and location information (including cause chain)
 		let errorMsg = error.message || String(error);
 
-		// Add location information if available
+		// Add location information if available (recursively through cause chain)
 		const locationInfo = formatLocationInfo(error, sql);
 		if (locationInfo) {
 			errorMsg += locationInfo;

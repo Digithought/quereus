@@ -14,46 +14,50 @@ import { MaterializationAdvisory } from '../../cache/materialization-advisory.js
 const log = createLogger('optimizer:rule:materialization-advisory');
 
 export function ruleMaterializationAdvisory(node: PlanNode, context: OptContext): PlanNode | null {
-	// This is a global rule that analyzes the entire tree
-	// It should only be applied to root nodes to avoid duplicate analysis
+	// Apply this rule when we're at a non-relational node that has relational children
+	// This captures transitions into relational subtrees (queries, subqueries, CTEs, etc.)
 
-	// Simple heuristic: only apply to certain root-level node types
-	// to avoid analyzing the same tree multiple times
-	const rootNodeTypes = new Set([
-		'Select', 'Insert', 'Update', 'Delete', 'Block', 'CTE'
-	]);
-
-	if (!rootNodeTypes.has(node.nodeType)) {
+	// Check if this is a non-relational node
+	const nodeType = node.getType();
+	if (nodeType.typeClass === 'relation') {
+		// This is already a relational node, don't apply here
 		return null;
 	}
 
-	log('Applying materialization advisory to tree rooted at %s', node.nodeType);
+	// Check if this node has any relational children
+	const relations = node.getRelations();
+	if (relations.length === 0) {
+		// No relational children, nothing to analyze
+		return null;
+	}
+
+	log('Applying materialization advisory at transition from %s to relational children', node.nodeType);
 
 	try {
 		// Create advisory with current tuning parameters
 		const advisory = new MaterializationAdvisory(context.tuning);
 
-		// Analyze the tree for caching opportunities
-		const recommendations = advisory.analyzeTree(node);
+		// We need to analyze and potentially transform each relational subtree
+		let anyTransformed = false;
 
-		// Count how many cache recommendations were made
-		const cacheCount = Array.from(recommendations.values())
-			.filter(rec => rec.shouldCache).length;
-
-		if (cacheCount === 0) {
-			log('No caching opportunities identified');
-			return null;
+		// For each relational child, analyze and transform its entire subtree
+		for (const relation of relations) {
+			const transformedRelation = advisory.analyzeAndTransform(relation);
+			if (transformedRelation !== relation) {
+				anyTransformed = true;
+				log('Transformed relational subtree under %s', node.nodeType);
+			}
 		}
 
-		log('Found %d caching opportunities', cacheCount);
-
-		// Apply the caching recommendations
-		const cachedTree = advisory.applyCaching(node, recommendations);
-
-		// If the tree was modified, return the new tree
-		if (cachedTree !== node) {
-			log('Applied materialization advisory, tree modified');
-			return cachedTree;
+		// If any relational children were transformed, we need to return a transformed node
+		// However, since we can't easily reconstruct the parent node with new relational children
+		// (as discussed in the earlier implementation), we'll analyze the entire node
+		if (anyTransformed) {
+			// Re-analyze the entire tree rooted at this node
+			const fullTransform = advisory.analyzeAndTransform(node);
+			if (fullTransform !== node) {
+				return fullTransform;
+			}
 		}
 
 		return null;

@@ -1,10 +1,11 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatSortKey } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { extractOrderingFromSortKeys } from '../framework/physical-utils.js';
 
 /**
  * Represents a sort key for ordering results
@@ -66,21 +67,19 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 		return this.source.estimatedRows;
 	}
 
-	getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0]; // Source is first relation
+		const sourceAttributes = this.source.getAttributes();
+
+		// Extract ordering from sort keys if they are trivial column references
+		const ordering = extractOrderingFromSortKeys(this.sortKeys, sourceAttributes);
 
 		return {
 			estimatedRows: this.estimatedRows,
-			// Sort establishes ordering based on sort keys
-			ordering: this.sortKeys.map((key, idx) => ({
-				column: idx, // This would need to map to actual column indices
-				desc: key.direction === 'desc'
-			})),
+			// Only set ordering if we can extract it from trivial column references
+			ordering,
 			// Preserve unique keys from source
 			uniqueKeys: sourcePhysical?.uniqueKeys,
-			readonly: sourcePhysical?.readonly ?? true,
-			deterministic: sourcePhysical?.deterministic ?? true,
-			constant: sourcePhysical?.constant ?? false
 		};
 	}
 
@@ -91,7 +90,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 		return `ORDER BY ${keyDescriptions}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			sortKeys: this.sortKeys.map(key => ({
 				expression: key.expression.toString(),
@@ -109,7 +108,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 		const [newSource, ...newSortExpressions] = newChildren;
 
 		// Type check
-		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newSource)) {
 			quereusError('SortNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
 		}
 

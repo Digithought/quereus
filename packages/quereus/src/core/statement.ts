@@ -14,6 +14,7 @@ import { isAsyncIterable } from '../runtime/utils.js';
 import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
 import type { InstructionTracer } from '../runtime/types.js';
 import { EmissionContext } from '../runtime/emission-context.js';
+import type { SchemaDependency } from '../planner/planning-context.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
@@ -34,6 +35,7 @@ export class Statement {
 	private emissionContext: EmissionContext | null = null;
 	private needsCompile = true;
 	private columnDefCache = new Cached<DeepReadonly<ColumnDef>[]>(() => this.getColumnDefs());
+	private schemaChangeUnsubscriber: (() => void) | null = null;
 
 	/**
 	 * @internal - Use db.prepare().
@@ -100,12 +102,55 @@ export class Statement {
 		this.validateStatement("compile/plan");
 		this.columnDefCache.clear();
 
-		log("Planning current statement (new runtime): %s", this.getBlockSql().substring(0,100));
+		log("Planning current statement (new runtime): %s", this.getBlockSql().substring(0, 100));
 		let plan: BlockNode | undefined;
 		try {
 			const currentAst = this.getAstStatement();
-			plan = this.db._buildPlan([currentAst], this.boundArgs);
-			plan = this.db.optimizer.optimize(plan, this.db) as BlockNode;
+			const planResult = this.db._buildPlan([currentAst], this.boundArgs);
+			const dependencies = (planResult as any).schemaDependencies; // Extract dependencies from planning context
+			plan = this.db.optimizer.optimize(planResult, this.db) as BlockNode;
+
+			// Set up schema change invalidation if we have dependencies
+			if (dependencies && dependencies.hasAnyDependencies()) {
+				// Remove any existing listener
+				if (this.schemaChangeUnsubscriber) {
+					this.schemaChangeUnsubscriber();
+				}
+
+				// Add new listener for schema changes that affect our dependencies
+				this.schemaChangeUnsubscriber = this.db.schemaManager.getChangeNotifier().addListener(event => {
+					// Map event type to dependency type
+					let dependencyType: string;
+					if (event.type.startsWith('table_')) {
+						dependencyType = 'table';
+					} else if (event.type.startsWith('function_')) {
+						dependencyType = 'function';
+					} else if (event.type.startsWith('module_')) {
+						dependencyType = 'vtab_module';
+					} else if (event.type.startsWith('collation_')) {
+						dependencyType = 'collation';
+					} else {
+						return; // Unknown event type
+					}
+
+					// Check if this change affects any of our dependencies
+					const planDependencies = dependencies.getDependencies();
+					const affectedDependency = planDependencies.find((dep: SchemaDependency) =>
+						dep.type === dependencyType &&
+						dep.objectName === event.objectName &&
+						(!dep.schemaName || dep.schemaName === event.schemaName)
+					);
+
+					if (affectedDependency) {
+						log('Schema change invalidated plan for statement: %s %s', event.type, event.objectName);
+						this.needsCompile = true;
+						this.plan = null;
+						this.emissionContext = null;
+						this.columnDefCache.clear();
+					}
+				});
+			}
+
 			this.needsCompile = false;
 			log("Planning complete for current statement.");
 		} catch (e) {
@@ -259,6 +304,13 @@ export class Statement {
 		this.emissionContext = null;
 		this.columnDefCache.clear();
 		this.astBatchIndex = -1;
+
+		// Clean up schema change listener
+		if (this.schemaChangeUnsubscriber) {
+			this.schemaChangeUnsubscriber();
+			this.schemaChangeUnsubscriber = null;
+		}
+
 		this.db._statementFinalized(this);
 	}
 
@@ -336,8 +388,8 @@ export class Statement {
 
 	getColumnDefs(): DeepReadonly<ColumnDef>[] {
 		if (!this.plan) {
-			if (this.astBatchIndex >=0 && this.astBatchIndex < this.astBatch.length && this.needsCompile) {
-				try { this.compile(); } catch { /*ignore compile error for _getColumnDefs, return empty */}
+			if (this.astBatchIndex >= 0 && this.astBatchIndex < this.astBatch.length && this.needsCompile) {
+				try { this.compile(); } catch { /*ignore compile error for _getColumnDefs, return empty */ }
 			}
 			if (!this.plan) return [];
 		}

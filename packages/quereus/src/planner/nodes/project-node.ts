@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -97,35 +97,39 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			// Get the computed column names from the type
 			const outputType = this.getType();
 
-			// For each projection, preserve attribute ID if it's a simple column reference
+			// For each projection, preserve attribute ID for simple column references
 			return this.projections.map((proj, index) => {
-				// Check if projection has a predefined attribute ID
+				// Use predefined attribute ID if supplied (optimizer path)
 				if (proj.attributeId !== undefined) {
 					return {
 						id: proj.attributeId,
 						name: outputType.columns[index].name,
 						type: proj.node.getType(),
-						sourceRelation: `${this.nodeType}:${this.id}`
+						sourceRelation: `${this.nodeType}:${this.id}`,
+						relationName: 'projection'
 					};
 				}
 
-				// If this projection is a simple column reference, preserve its attribute ID
 				if (proj.node instanceof ColumnReferenceNode) {
+					// Forwarding an existing column – keep its attribute ID so downstream
+					// references remain valid across projection boundaries.
 					return {
-						id: proj.node.attributeId,
-						name: outputType.columns[index].name, // Use the deduplicated name
+						id: (proj.node as ColumnReferenceNode).attributeId,
+						name: outputType.columns[index].name,
 						type: proj.node.getType(),
-						sourceRelation: `${this.nodeType}:${this.id}`
-					};
-				} else {
-					// For computed expressions, generate new attribute ID
-					return {
-						id: PlanNode.nextAttrId(),
-						name: outputType.columns[index].name, // Use the deduplicated name
-						type: proj.node.getType(),
-						sourceRelation: `${this.nodeType}:${this.id}`
+						sourceRelation: `${this.nodeType}:${this.id}`,
+						relationName: 'projection'
 					};
 				}
+
+				// Computed expression – generate fresh attribute ID
+				return {
+					id: PlanNode.nextAttrId(),
+					name: outputType.columns[index].name,
+					type: proj.node.getType(),
+					sourceRelation: `${this.nodeType}:${this.id}`,
+					relationName: 'projection'
+				};
 			});
 		});
 	}
@@ -172,7 +176,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		return `SELECT ${projectionStrings}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			projections: this.projections.map(p => ({
 				expression: expressionToString(p.node.expression),
@@ -189,7 +193,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		const [newSource, ...newProjectionNodes] = newChildren;
 
 		// Type check
-		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newSource)) {
 			quereusError('ProjectNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
 		}
 

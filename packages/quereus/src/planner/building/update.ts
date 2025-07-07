@@ -2,7 +2,7 @@ import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { UpdateNode, type UpdateAssignment } from '../nodes/update-node.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
-import { buildTableReference, buildTableScan } from './table.js';
+import { buildTableReference } from './table.js';
 import { buildExpression } from './expression.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
@@ -15,6 +15,7 @@ import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
+import { buildConstraintChecks } from './constraint-builder.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -23,7 +24,7 @@ export function buildUpdateStmt(
   const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Plan the source of rows to update. This is typically the table itself, potentially filtered.
-  let sourceNode: RelationalPlanNode = buildTableScan({ type: 'table', table: stmt.table }, ctx);
+  let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Create a new scope with the table columns registered for column resolution
   const tableScope = new RegisteredScope(ctx.scope);
@@ -77,6 +78,16 @@ export function buildUpdateStmt(
   }));
 
   const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
+
+  // Build constraint checks at plan time
+  const constraintChecks = buildConstraintChecks(
+    updateCtx,
+    tableReference.tableSchema,
+    RowOp.UPDATE,
+    oldAttributes,
+    newAttributes,
+    flatRowDescriptor
+  );
 
   if (stmt.returning && stmt.returning.length > 0) {
     // For RETURNING, create coordinated attribute IDs like we do for INSERT
@@ -207,7 +218,9 @@ export function buildUpdateStmt(
       tableReference,
       RowOp.UPDATE,
       oldRowDescriptor,
-      newRowDescriptor
+      newRowDescriptor,
+      flatRowDescriptor,
+      constraintChecks
     );
 
     const updateExecutorNode = new DmlExecutorNode(
@@ -241,7 +254,9 @@ export function buildUpdateStmt(
     tableReference,
     RowOp.UPDATE,
     oldRowDescriptor,
-    newRowDescriptor
+    newRowDescriptor,
+    flatRowDescriptor,
+    constraintChecks
   );
 
   const updateExecutorNode = new DmlExecutorNode(

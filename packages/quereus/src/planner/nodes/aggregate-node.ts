@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -19,7 +19,6 @@ export interface AggregateExpression {
  */
 export class AggregateNode extends PlanNode implements UnaryRelationalNode {
   override readonly nodeType = PlanNodeType.Aggregate;
-	override readonly physical: undefined = undefined;
 
   private outputTypeCache: Cached<RelationType>;
   private attributesCache: Cached<Attribute[]>;
@@ -96,7 +95,8 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
         id: PlanNode.nextAttrId(),
         name,
         type: expr.getType(),
-        sourceRelation: `${this.nodeType}:${this.id}`
+        sourceRelation: `${this.nodeType}:${this.id}`,
+        relationName: 'aggregate' // AggregateNode creates new relation context
       });
     });
 
@@ -106,7 +106,8 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
         id: PlanNode.nextAttrId(),
         name: agg.alias,
         type: agg.expression.getType(),
-        sourceRelation: `${this.nodeType}:${this.id}`
+        sourceRelation: `${this.nodeType}:${this.id}`,
+        relationName: 'aggregate' // AggregateNode creates new relation context
       });
     });
 
@@ -140,7 +141,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
     const newAggregateExpressions = restChildren.slice(this.groupBy.length);
 
     // Type check
-    if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+    if (!isRelationalNode(newSource)) {
       quereusError('AggregateNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
     }
 
@@ -202,7 +203,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
     return parts.join('  ');
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {};
 
     if (this.groupBy.length > 0) {

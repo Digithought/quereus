@@ -40,7 +40,7 @@ describe(`Basic query`, () => {
 	describe('Parameter binding', () => {
 		beforeEach(async () => {
 			// Create a test table with some data
-			await db.exec('CREATE TABLE test_params (id INTEGER, name TEXT, value REAL)');
+			await db.exec('CREATE TABLE test_params (id INTEGER primary key, name TEXT, value REAL)');
 			await db.exec('INSERT INTO test_params VALUES (1, "Alice", 100.5)');
 			await db.exec('INSERT INTO test_params VALUES (2, "Bob", 200.7)');
 			await db.exec('INSERT INTO test_params VALUES (3, "Charlie", 300.9)');

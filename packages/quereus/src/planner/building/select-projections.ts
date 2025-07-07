@@ -9,6 +9,8 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
+import { type RelationalPlanNode } from '../nodes/plan-node.js';
+import type { Scope } from '../scopes/scope.js';
 
 /**
  * Checks if an expression contains aggregate functions
@@ -53,48 +55,45 @@ export function isWindowExpression(node: ScalarPlanNode): boolean {
  */
 export function buildStarProjections(
 	column: { type: 'all'; table?: string },
-	input: any,
-	selectScope: any
+	source: RelationalPlanNode,
+	selectScope: Scope
 ): Projection[] {
-	const projections: Projection[] = [];
-	const inputColumns = input.getType().columns;
-	const inputAttributes = input.getAttributes();
+	const allAttributes = source.getAttributes();
 
-	if (column.table) {
-		// Handle qualified SELECT table.*
-		const inputTableName = input.source?.tableSchema?.name;
-		const tableMatches = column.table.toLowerCase() === inputTableName?.toLowerCase();
-		if (!tableMatches) {
-			throw new QuereusError(
-				`Table '${column.table}' not found in FROM clause for qualified SELECT *`,
-				StatusCode.ERROR
-			);
-		}
+	// Filter by relation name if qualified (e.g., SELECT t1.*)
+	const matchingAttributes = column.table
+		? allAttributes.filter(attr =>
+			attr.relationName && attr.relationName.toLowerCase() === column.table!.toLowerCase()
+		)
+		: allAttributes;
+
+	if (column.table && matchingAttributes.length === 0) {
+		throw new QuereusError(
+			`Table '${column.table}' not found in FROM clause for qualified SELECT *`,
+			StatusCode.ERROR
+		);
 	}
 
-	// Add a projection for each column in the input relation
-	inputColumns.forEach((columnDef: any, index: number) => {
+	// Convert to projections
+	return matchingAttributes.map((attr, index) => {
 		const columnExpr: AST.ColumnExpr = {
 			type: 'column',
-			name: columnDef.name,
+			name: attr.name,
 		};
 
-		const attr = inputAttributes[index];
 		const columnRef = new ColumnReferenceNode(
 			selectScope,
 			columnExpr,
-			columnDef.type,
+			attr.type,
 			attr.id,
 			index
 		);
 
-		projections.push({
+		return {
 			node: columnRef,
-			alias: columnDef.name
-		});
+			alias: attr.name
+		};
 	});
-
-	return projections;
 }
 
 /**

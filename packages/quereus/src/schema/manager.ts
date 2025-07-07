@@ -11,6 +11,7 @@ import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask } f
 import type { ViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
+import { SchemaChangeNotifier } from './change-events.js';
 
 const log = createLogger('schema:manager');
 const warnLog = log.extend('warn');
@@ -38,6 +39,7 @@ export class SchemaManager {
 	private defaultVTabModuleName: string = 'memory';
 	private defaultVTabModuleArgs: Record<string, SqlValue> = {};
 	private db: Database;
+	private changeNotifier = new SchemaChangeNotifier();
 
 	/**
 	 * Creates a new schema manager
@@ -197,6 +199,13 @@ export class SchemaManager {
 	 */
 	_getAllSchemas(): IterableIterator<Schema> {
 		return this.schemas.values();
+	}
+
+	/**
+	 * Gets the schema change notifier for listening to schema changes
+	 */
+	getChangeNotifier(): SchemaChangeNotifier {
+		return this.changeNotifier;
 	}
 
 	/**
@@ -373,6 +382,16 @@ export class SchemaManager {
 			throw new QuereusError(`Failed to remove table ${tableName} from schema ${schemaName}, though it was initially found.`, StatusCode.INTERNAL);
 		}
 
+		// Notify schema change listeners if table was removed
+		if (removed) {
+			this.changeNotifier.notifyChange({
+				type: 'table_removed',
+				schemaName: schemaName,
+				objectName: tableName,
+				oldObject: tableSchema
+			});
+		}
+
 		// Process destruction asynchronously
 		if (destroyPromise) {
 			void destroyPromise.then(() => log(`xDestroy completed for VTab %s.%s`, schemaName, tableName));
@@ -454,7 +473,7 @@ export class SchemaManager {
 		}
 
 		// Check if the virtual table module supports xCreateIndex
-		if (typeof (tableSchema.vtabModule as any)?.xCreateIndex !== 'function') {
+		if (!tableSchema.vtabModule.xCreateIndex) {
 			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 
@@ -499,19 +518,26 @@ export class SchemaManager {
 
 		try {
 			// Call xCreateIndex on the virtual table module
-			await tableSchema.vtabModule.xCreateIndex!(
+			await tableSchema.vtabModule.xCreateIndex(
 				this.db,
 				targetSchemaName,
 				tableName,
 				indexSchema
 			);
 
-			// Update the table schema with the new index
+			// Update the table schema with the new index by creating a new schema object
 			const updatedIndexes = [...(tableSchema.indexes || []), indexSchema];
-			(tableSchema as any).indexes = Object.freeze(updatedIndexes);
+			const updatedTableSchema: TableSchema = {
+				...tableSchema,
+				indexes: Object.freeze(updatedIndexes),
+			};
+
+			// Replace the table schema in the schema
+			const schema = this.getSchemaOrFail(targetSchemaName);
+			schema.addTable(updatedTableSchema);
 
 			log(`Successfully created index %s on table %s.%s`, indexName, targetSchemaName, tableName);
-		} catch (e: any) {
+		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
 			throw new QuereusError(`xCreateIndex failed for index '${indexName}' on table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
@@ -615,7 +641,7 @@ export class SchemaManager {
 				this.db,
 				baseTableSchema
 			);
-		} catch (e: any) {
+		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
 			throw new QuereusError(`Module '${moduleName}' xCreate failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
@@ -631,19 +657,27 @@ export class SchemaManager {
 			throw new QuereusError(`Module '${moduleName}' xCreate did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
 		}
 
+		// Create a properly typed schema object instead of mutating properties
+		let correctedSchema = finalRegisteredSchema;
 		if (finalRegisteredSchema.name.toLowerCase() !== tableName.toLowerCase() ||
 			finalRegisteredSchema.schemaName.toLowerCase() !== targetSchemaName.toLowerCase()) {
-			warnLog(`Module ${moduleName} returned schema for ${finalRegisteredSchema.schemaName}.${finalRegisteredSchema.name} but expected ${targetSchemaName}.${tableName}. Overwriting name/schemaName.`);
-			(finalRegisteredSchema as any).name = tableName;
-			(finalRegisteredSchema as any).schemaName = targetSchemaName;
+			warnLog(`Module ${moduleName} returned schema for ${finalRegisteredSchema.schemaName}.${finalRegisteredSchema.name} but expected ${targetSchemaName}.${tableName}. Correcting name/schemaName.`);
+			correctedSchema = {
+				...finalRegisteredSchema,
+				name: tableName,
+				schemaName: targetSchemaName,
+			};
 		}
-		(finalRegisteredSchema as any).vtabModuleName = moduleName;
-		(finalRegisteredSchema as any).vtabArgs = effectiveModuleArgs;
-		(finalRegisteredSchema as any).vtabModule = moduleInfo.module;
-		(finalRegisteredSchema as any).vtabAuxData = moduleInfo.auxData;
-		if (finalRegisteredSchema.estimatedRows === undefined) {
-			(finalRegisteredSchema as any).estimatedRows = 0;
-		}
+
+		// Ensure all required properties are properly set
+		const completeTableSchema: TableSchema = {
+			...correctedSchema,
+			vtabModuleName: moduleName,
+			vtabArgs: effectiveModuleArgs,
+			vtabModule: moduleInfo.module,
+			vtabAuxData: moduleInfo.auxData,
+			estimatedRows: correctedSchema.estimatedRows ?? 0,
+		};
 
 		const existingTable = schema.getTable(tableName);
 		const existingView = schema.getView(tableName);
@@ -659,8 +693,17 @@ export class SchemaManager {
 			}
 		}
 
-		schema.addTable(finalRegisteredSchema);
+		schema.addTable(completeTableSchema);
 		log(`Successfully created table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
-		return finalRegisteredSchema;
+
+		// Notify schema change listeners
+		this.changeNotifier.notifyChange({
+			type: 'table_added',
+			schemaName: targetSchemaName,
+			objectName: tableName,
+			newObject: completeTableSchema
+		});
+
+		return completeTableSchema;
 	}
 }

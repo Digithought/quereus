@@ -56,10 +56,10 @@ function compareDistinctValues(a: SqlValue | SqlValue[], b: SqlValue | SqlValue[
  * This traverses up the tree to find the original table scan or similar node.
  */
 function findSourceRelation(node: PlanNode): PlanNode {
-	// Keep going up until we find a table scan or values node
+	// Keep going up until we find a values node
 	let current = node;
 	while (current) {
-		if (current.nodeType === 'TableScan' || current.nodeType === 'Values' || current.nodeType === 'SingleRow') {
+		if (current.nodeType === 'Values' || current.nodeType === 'SingleRow') {
 			return current;
 		}
 		// Get the first relational source
@@ -84,6 +84,12 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	const sourceRelationRowDescriptor = sourceRelation !== plan.source
 		? buildRowDescriptor((sourceRelation as any).getAttributes?.() || sourceAttributes)
 		: sourceRowDescriptor;
+
+	// Create separate descriptors for group yielding to avoid conflicts with source row processing
+	const groupSourceRowDescriptor = buildRowDescriptor(sourceAttributes);
+	const groupSourceRelationRowDescriptor = sourceRelation !== plan.source
+		? buildRowDescriptor((sourceRelation as any).getAttributes?.() || sourceAttributes)
+		: groupSourceRowDescriptor;
 
 	ctxLog('StreamAggregate setup: source=%s, sourceRelation=%s', plan.source.nodeType, sourceRelation.nodeType);
 	ctxLog('Source attributes: %O', sourceAttributes.map(attr => `${attr.name}(#${attr.id})`));
@@ -278,9 +284,15 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			let currentSourceRow: Row | null = null; // Track the current group's representative row
 			let currentAccumulators: any[] = [];
 			let currentDistinctTrees: BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>[] = [];
+			let cleanupPreviousGroupContext: (() => void) | null = null;
 
 			// Process all rows
 			for await (const row of sourceRows) {
+				if (cleanupPreviousGroupContext) {
+					cleanupPreviousGroupContext();
+					cleanupPreviousGroupContext = null;
+				}
+
 				// Set the current row in the runtime context for evaluation using row descriptors
 				ctx.context.set(sourceRowDescriptor, () => row);
 				logContextPush(sourceRowDescriptor, 'source-row', sourceAttributes);
@@ -323,6 +335,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 					// Check if we've moved to a new group using proper SQL value comparison
 					if (currentGroupKey !== null && compareGroupKeys(currentGroupKey, groupValues) !== 0) {
+						// CRITICAL: Save the previous group's representative row before yielding
+						const previousGroupSourceRow = currentSourceRow;
+
 						// Yield the previous group's results
 						const resultRow: SqlValue[] = [];
 
@@ -343,34 +358,35 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							resultRow.push(finalValue);
 						}
 
-						// Set up combined context that allows access to both
-						// the aggregated result AND the original source row attributes
+						// Set up context with the PREVIOUS group's representative row (not the current row)
 						ctx.context.set(outputRowDescriptor, () => resultRow);
 						logContextPush(outputRowDescriptor, 'output-row-groupby');
-						if (currentSourceRow) {
-							// Also provide access to a representative source row for this group
-							// This enables correlated subqueries to access original table attributes
-							ctx.context.set(sourceRowDescriptor, () => currentSourceRow!);
-							logContextPush(sourceRowDescriptor, 'source-row-groupby', sourceAttributes);
+						if (previousGroupSourceRow) {
+							// Use the previous group's representative row for HAVING evaluation
+							// Use separate descriptors to avoid conflicts with source row processing
+							ctx.context.set(groupSourceRowDescriptor, () => previousGroupSourceRow!);
+							logContextPush(groupSourceRowDescriptor, 'source-row-groupby', sourceAttributes);
 							if (sourceRelation !== plan.source) {
-								ctx.context.set(sourceRelationRowDescriptor, () => currentSourceRow!);
-								logContextPush(sourceRelationRowDescriptor, 'source-relation-row-groupby');
+								ctx.context.set(groupSourceRelationRowDescriptor, () => previousGroupSourceRow!);
+								logContextPush(groupSourceRelationRowDescriptor, 'source-relation-row-groupby');
 							}
 						}
-						try {
-							yield resultRow;
-						} finally {
+
+						// Defer context cleanup
+						cleanupPreviousGroupContext = () => {
 							logContextPop(outputRowDescriptor, 'output-row-groupby');
 							ctx.context.delete(outputRowDescriptor);
-							if (currentSourceRow) {
-								logContextPop(sourceRowDescriptor, 'source-row-groupby');
-								ctx.context.delete(sourceRowDescriptor);
+							if (previousGroupSourceRow) {
+								logContextPop(groupSourceRowDescriptor, 'source-row-groupby');
+								ctx.context.delete(groupSourceRowDescriptor);
 								if (sourceRelation !== plan.source) {
-									logContextPop(sourceRelationRowDescriptor, 'source-relation-row-groupby');
-									ctx.context.delete(sourceRelationRowDescriptor);
+									logContextPop(groupSourceRelationRowDescriptor, 'source-relation-row-groupby');
+									ctx.context.delete(groupSourceRelationRowDescriptor);
 								}
 							}
-						}
+						};
+
+						yield resultRow;
 
 						// Reset for new group
 						currentAccumulators = aggregateSchemas.map(schema => {
@@ -392,6 +408,8 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								compareDistinctValues
 							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, compareDistinctValues)
 						);
+						// Set representative row for the new group (which is the current row)
+						currentSourceRow = row;
 					}
 
 					// Initialize if first group
@@ -415,12 +433,13 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								compareDistinctValues
 							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, compareDistinctValues)
 						);
+						// Set representative row for the first group
+						currentSourceRow = row;
 					}
 
 					// Update current group
 					currentGroupKey = groupValues;
 					currentGroupValues = groupValues;
-					currentSourceRow = row; // Keep a representative row for this group
 
 					// For each aggregate, call its step function using the pre-evaluated arguments
 					for (let i = 0; i < plan.aggregates.length; i++) {
@@ -454,6 +473,11 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 				}
 			}
 
+			if (cleanupPreviousGroupContext) {
+				cleanupPreviousGroupContext();
+				cleanupPreviousGroupContext = null;
+			}
+
 			// Yield the final group if any rows were processed
 			if (currentGroupKey !== null) {
 				const resultRow: SqlValue[] = [];
@@ -475,28 +499,31 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					resultRow.push(finalValue);
 				}
 
-				// CRITICAL FIX: Set up combined context for final group
+				// Set up context for final group with correct source row
 				ctx.context.set(outputRowDescriptor, () => resultRow);
 				logContextPush(outputRowDescriptor, 'final-output-row');
 				if (currentSourceRow) {
-					ctx.context.set(sourceRowDescriptor, () => currentSourceRow);
-					logContextPush(sourceRowDescriptor, 'final-source-row', sourceAttributes);
+					// Use the final group's representative row for HAVING evaluation
+					// Use separate descriptors to avoid conflicts with source row processing
+					ctx.context.set(groupSourceRowDescriptor, () => currentSourceRow);
+					logContextPush(groupSourceRowDescriptor, 'final-source-row', sourceAttributes);
 					if (sourceRelation !== plan.source) {
-						ctx.context.set(sourceRelationRowDescriptor, () => currentSourceRow);
-						logContextPush(sourceRelationRowDescriptor, 'final-source-relation-row');
+						ctx.context.set(groupSourceRelationRowDescriptor, () => currentSourceRow);
+						logContextPush(groupSourceRelationRowDescriptor, 'final-source-relation-row');
 					}
 				}
+
 				try {
 					yield resultRow;
 				} finally {
 					logContextPop(outputRowDescriptor, 'final-output-row');
 					ctx.context.delete(outputRowDescriptor);
 					if (currentSourceRow) {
-						logContextPop(sourceRowDescriptor, 'final-source-row');
-						ctx.context.delete(sourceRowDescriptor);
+						logContextPop(groupSourceRowDescriptor, 'final-source-row');
+						ctx.context.delete(groupSourceRowDescriptor);
 						if (sourceRelation !== plan.source) {
-							logContextPop(sourceRelationRowDescriptor, 'final-source-relation-row');
-							ctx.context.delete(sourceRelationRowDescriptor);
+							logContextPop(groupSourceRelationRowDescriptor, 'final-source-relation-row');
+							ctx.context.delete(groupSourceRelationRowDescriptor);
 						}
 					}
 				}

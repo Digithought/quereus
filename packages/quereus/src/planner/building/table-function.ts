@@ -4,9 +4,8 @@ import { TableFunctionCallNode } from '../nodes/table-function-call.js';
 import { buildExpression } from './expression.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { resolveFunction } from '../resolve.js';
-import { Ambiguous } from '../scopes/scope.js';
 import { isTableValuedFunctionSchema } from '../../schema/function.js';
+import { resolveFunctionSchema } from './schema-resolution.js';
 
 export function buildTableFunctionCall(
   functionSource: AST.FunctionSource,
@@ -15,26 +14,10 @@ export function buildTableFunctionCall(
   const functionName = functionSource.name.name;
   const args = functionSource.args.map(arg => buildExpression(ctx, arg));
 
-  // Resolve the function to get its schema
-  const functionExpr: AST.FunctionExpr = {
-    type: 'function',
-    name: functionName,
-    args: functionSource.args
-  };
+  // Resolve function schema at build time
+  const functionSchema = resolveFunctionSchema(ctx, functionName, args.length);
 
-  const funcResolution = resolveFunction(ctx.scope, functionExpr);
-  if (!funcResolution || funcResolution === Ambiguous) {
-    throw new QuereusError(
-      `Table-valued function not found: ${functionName}/${args.length}`,
-      StatusCode.ERROR,
-      undefined,
-      functionSource.loc?.start.line,
-      functionSource.loc?.start.column
-    );
-  }
-
-  const functionSchema = (funcResolution as any).functionSchema;
-  if (!functionSchema || !isTableValuedFunctionSchema(functionSchema)) {
+  if (!isTableValuedFunctionSchema(functionSchema)) {
     throw new QuereusError(
       `Function ${functionName}/${args.length} is not a table-valued function`,
       StatusCode.ERROR,

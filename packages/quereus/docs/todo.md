@@ -2,7 +2,34 @@
 
 This list reflects the **current state** of Quereus - a feature-complete SQL query processor with a modern Titan optimizer architecture. The core infrastructure is solid and most foundational work is complete!
 
+## 🏗️ Titan Optimizer Implementation Progress
+
+### Completed Phases
+- ✅ **Phase 0 - Groundwork**: Cost models, constraint analysis, shared caching utilities, development standards
+- ✅ **xBestIndex Refactor**: Modern type-safe BestAccessPlan API replacing legacy SQLite-style interfaces  
+- ✅ **Phase 1 - Core Framework**: Rule registration, trace framework, physical properties, statistics abstraction, emitter metadata, golden plan tests
+- ✅ **Phase 2 - Cache & Visualize**: Intelligent materialization advisory, async stream utilities, PlanViz CLI tool
+- ✅ **Phase 2.5 - Generic Tree Rewriting**: Abstract `withChildren()` method for robust tree transformations with attribute ID preservation
+- ✅ **Phase 3 - Constant Folding**: Functional safety flags, runtime-based evaluation, expression boundary optimization
+
+### In Progress
+- 🔄 **Phase 1.5 - Access Path Selection**: Seek/range scan infrastructure and optimization rules
+
+### Upcoming Optimizer Work
+- 📋 **Predicate Pushdown**: Push filter predicates closer to data sources
+- 📋 **Subquery Optimization**: Transform correlated subqueries to joins
+- 📋 **Advanced Statistics**: VTab-supplied or ANALYZE-based statistics
+- 📋 **Join Algorithms**: Hash joins and merge joins
+- 📋 **Aggregate Pushdown**: Push aggregations below joins when semantically valid
+- 📋 **Key-driven row-count reduction**: With better key inference, cardinality can be better estimated and efficiencies gained
+
+
 ## 🔄 Current Development Focus
+
+**Cleanup**
+- [ ] try to remove most dynamic attribute references between classes/objects (fragile assumptions)
+- [ ] optimizer rules managed globally - shouldn't be.  Other global registries should be instance specific
+- [ ] switch from casting to using "satisfies" in as many places as possible
 
 **Core SQL Features**
 - [ ] **DELETE T FROM ...**: Allow specification of target alias for DML ops
@@ -16,11 +43,17 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 				await vtab.xUpdate!('insert', newRow);
 ```
 - [ ] Fix suppressed constant folding issue
+- [ ] More intelligent key inference for joins and beyond
+- [ ] Make choice of scheduler run method determined at constructor time, not in run
 
 **Query Optimization (Next Priority)**
 - [ ] **Phase 1.5 - Access Path Selection**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` physical access infrastructure
+- [ ] **QuickPick Join Optimization**: Implement TSP-inspired join ordering using random greedy tours
+  - [ ] Phase 2: Multi-pass optimizer framework
+  - [ ] Phase 3: Join cardinality cost model  
+  - [ ] Phase 4: Random tour generator with configurable count
+  - [ ] Phase 5: Best plan selection and integration
 - [ ] **Predicate Pushdown**: Advanced filter predicate optimization closer to data sources
-- [ ] **Join Reordering**: Cost-based join order optimization using cardinality estimates
 - [ ] **Subquery Optimization**: Transform correlated subqueries to joins where beneficial
 
 **Window Functions (Remaining)**
@@ -95,3 +128,8 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - Optimizer Phase 1.5 access path selection is the immediate next milestone
 - Will unlock significant performance improvements for data-intensive workloads
 - Builds on the robust optimizer framework completed in Phases 0-3
+
+**🎯 Next Strategic Priority: QUICKPICK JOIN OPTIMIZATION**
+- Revolutionary TSP-based join ordering will deliver near-optimal plans with minimal complexity
+- Requires visited tracking redesign to support multi-pass optimization
+- Perfect fit for Quereus' lean architecture and virtual table ecosystem

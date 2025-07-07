@@ -3,7 +3,7 @@
  * Validates that a plan tree meets all invariants before emission
  */
 
-import { PlanNode, type RelationalPlanNode } from '../nodes/plan-node.js';
+import { isRelationalNode, PlanNode, type RelationalPlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -297,13 +297,6 @@ function validateOrdering(ordering: any[], columnCount: number, nodePath: string
 			);
 		}
 	}
-}
-
-/**
- * Check if a node is a relational node
- */
-function isRelationalNode(node: PlanNode): boolean {
-	return 'getAttributes' in node && typeof (node as any).getAttributes === 'function';
 }
 
 /**

@@ -27,17 +27,17 @@ export function buildAggregatePhase(
 	needsFinalProjection: boolean;
 	preAggregateSort: boolean;
 } {
+		const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
+
 	// If there is a HAVING clause but the SELECT contains **no aggregate functions**
-	// we can safely treat the HAVING predicate as a regular filter that runs *before*
-	// the aggregation (i.e. between the source and the AggregateNode). This avoids
-	// the "missing column context" problem where the predicate refers to columns
+	// AND **no GROUP BY**, we can safely treat the HAVING predicate as a regular filter
+	// that runs *before* the aggregation (i.e. between the source and the AggregateNode).
+	// This avoids the "missing column context" problem where the predicate refers to columns
 	// that are not available after the AggregateNode (only grouping columns and
 	// aggregate results are exposed). This behaviour is compatible with SQLite –
 	// GROUP BY with a primary-key guarantees one row per group so the semantics
 	// are unchanged.
-	const shouldPushHavingBelowAggregate = Boolean(stmt.having && !hasAggregates);
-
-	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
+	const shouldPushHavingBelowAggregate = Boolean(stmt.having && !hasAggregates && !hasGroupBy);
 
 	if (!hasAggregates && !hasGroupBy) {
 		return { output: input, needsFinalProjection: false, preAggregateSort: false };
@@ -67,7 +67,7 @@ export function buildAggregatePhase(
 	const groupByExpressions = stmt.groupBy ?
 		stmt.groupBy.map(expr => buildExpression(selectContext, expr, false)) : [];
 
-	// Create AggregateNode
+		// Create AggregateNode
 	currentInput = new AggregateNode(selectContext.scope, currentInput, groupByExpressions, aggregates);
 
 	// Create aggregate output scope
@@ -166,6 +166,21 @@ function createAggregateOutputScope(
 			new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), attr.id, columnIndex));
 	});
 
+			// Register source columns for HAVING clause access
+	// Start after GROUP BY and aggregate columns
+	const sourceColumnStartIndex = groupByExpressions.length + aggregates.length;
+	for (let i = sourceColumnStartIndex; i < aggregateAttributes.length; i++) {
+		const attr = aggregateAttributes[i];
+		// Only register if not already registered (avoid conflicts with GROUP BY columns)
+		const symbolName = attr.name.toLowerCase();
+		const existingSymbols = aggregateOutputScope.getSymbols();
+		const alreadyRegistered = existingSymbols.some(([key]) => key === symbolName);
+		if (!alreadyRegistered) {
+			aggregateOutputScope.registerSymbol(symbolName, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, i));
+		}
+	}
+
 	return aggregateOutputScope;
 }
 
@@ -182,10 +197,35 @@ function buildHavingFilter(
 ): RelationalPlanNode {
 	const aggregateAttributes = input.getAttributes();
 
-	// Build HAVING expression with the aggregate scope
+	// Create a hybrid scope that first tries the aggregate output scope,
+	// then falls back to the original source scope for column resolution
+	const hybridScope = new RegisteredScope();
+
+	// Copy all symbols from aggregate output scope
+	for (const [symbolKey, callback] of aggregateOutputScope.getSymbols()) {
+		hybridScope.registerSymbol(symbolKey, callback);
+	}
+
+	// For any source columns not already registered, register them with
+	// references to the source table
+	const sourceInput = input.getRelations()[0]; // The AggregateNode's source
+	const sourceAttributes = sourceInput.getAttributes();
+
+	sourceAttributes.forEach((sourceAttr, sourceIndex) => {
+		const symbolName = sourceAttr.name.toLowerCase();
+		const existingSymbols = hybridScope.getSymbols();
+		const alreadyRegistered = existingSymbols.some(([key]) => key === symbolName);
+
+		if (!alreadyRegistered) {
+			hybridScope.registerSymbol(symbolName, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, sourceAttr.type, sourceAttr.id, sourceIndex));
+		}
+	});
+
+	// Build HAVING expression with the hybrid scope
 	const havingContext: PlanningContext = {
 		...selectContext,
-		scope: aggregateOutputScope,
+		scope: hybridScope,
 		aggregates: aggregates.map((agg, index) => {
 			const columnIndex = groupByExpressions.length + index;
 			const attr = aggregateAttributes[columnIndex];
@@ -200,7 +240,7 @@ function buildHavingFilter(
 
 	const havingExpression = buildExpression(havingContext, havingClause, true);
 
-	return new FilterNode(aggregateOutputScope, input, havingExpression);
+	return new FilterNode(hybridScope, input, havingExpression);
 }
 
 /**
@@ -234,9 +274,15 @@ export function buildFinalAggregateProjections(
 			const finalContext: PlanningContext = { ...selectContext, scope: aggregateOutputScope };
 			const scalarNode = buildExpression(finalContext, column.expr, true);
 
+			let attrId: number | undefined = undefined;
+			if (scalarNode instanceof ColumnReferenceNode) {
+				attrId = scalarNode.attributeId;
+			}
+
 			finalProjections.push({
 				node: scalarNode,
-				alias: column.alias || (column.expr.type === 'column' ? column.expr.name : undefined)
+				alias: column.alias || (column.expr.type === 'column' ? column.expr.name : undefined),
+				attributeId: attrId
 			});
 		}
 	}

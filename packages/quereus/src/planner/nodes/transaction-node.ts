@@ -42,7 +42,7 @@ export class TransactionPlanNode extends VoidNode implements TransactionNode {
 		}
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		const props: Record<string, unknown> = {
 			operation: this.operation,
 			statement: expressionToString(this.statementAst as any)

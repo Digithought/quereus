@@ -1,6 +1,7 @@
 import type { Row } from '../common/types.js';
 import type { RuntimeContext } from '../runtime/types.js';
 import type { RowDescriptor } from '../planner/nodes/plan-node.js';
+import { withRowContextGenerator } from '../runtime/context-helpers.js';
 
 /**
  * A reusable async iterable for working table data that can be iterated multiple times.
@@ -16,15 +17,22 @@ export class WorkingTableIterable implements AsyncIterable<Row> {
 	) {}
 
 	async *[Symbol.asyncIterator](): AsyncIterator<Row> {
-		for (const row of this.rows) {
-			// Set up context for this row using the CTE row descriptor
-			this.rctx.context.set(this.rowDescriptor, () => row);
-			try {
+		// Convert rows array to async iterable
+		async function* rowsIterable(rows: Row[]): AsyncIterable<Row> {
+			for (const row of rows) {
 				yield row;
-			} finally {
-				// Clean up context
-				this.rctx.context.delete(this.rowDescriptor);
 			}
 		}
+
+		// Use the helper to manage context
+		yield* withRowContextGenerator(
+			this.rctx,
+			this.rowDescriptor,
+			rowsIterable(this.rows),
+			async function* (row) {
+				yield row;
+			}
+		);
 	}
 }
+

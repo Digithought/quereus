@@ -37,7 +37,13 @@ export class GlobalScope extends BaseScope {
 		if (!tableSchema) {
 			return undefined;
 		}
-		return new TableReferenceNode(this, tableSchema);
+		// Note: GlobalScope can't resolve vtab modules without a planning context
+		// This path is mainly used for constraint checking where we don't need full resolution
+		const vtabModule = this.manager.getModule(tableSchema.vtabModuleName);
+		if (!vtabModule) {
+			return undefined;
+		}
+		return new TableReferenceNode(this, tableSchema, vtabModule.module, vtabModule.auxData);
 	}
 
 	findUnqualifiedName(name: string): PlanNode | typeof Ambiguous | undefined {
@@ -56,7 +62,11 @@ export class GlobalScope extends BaseScope {
 		const table = this.manager.findTable(name);
 		if (table) {
 			// TODO: Create a proper ColumnScope to allow column references
-			return new TableReferenceNode(this, table);
+			const vtabModule = this.manager.getModule(table.vtabModuleName);
+			if (!vtabModule) {
+				return undefined;
+			}
+			return new TableReferenceNode(this, table, vtabModule.module, vtabModule.auxData);
 		}
 		return undefined;
 	}

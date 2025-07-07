@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { VoidNode } from './plan-node.js';
+import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type * as AST from '../../parser/ast.js';
 import { expressionToString } from '../../util/ast-stringify.js';
@@ -21,11 +21,15 @@ export class DropTableNode extends VoidNode {
     return `DROP TABLE ${this.statementAst.name.name}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     return {
       table: this.statementAst.name.name,
       schema: this.statementAst.name.schema,
       statement: expressionToString(this.statementAst as any)
     };
   }
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
+	}
 }

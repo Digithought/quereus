@@ -44,7 +44,6 @@ export interface RuleHandle {
  */
 class RuleRegistry {
 	private rules = new Map<PlanNodeType, RuleHandle[]>();
-	private visitedRules = new Map<string, Set<string>>(); // nodeId -> ruleIds applied
 
 	/**
 	 * Register a new optimization rule
@@ -84,26 +83,19 @@ class RuleRegistry {
 	/**
 	 * Check if a rule has already been applied to a node
 	 */
-	hasRuleBeenApplied(nodeId: string, ruleId: string): boolean {
-		const nodeVisited = this.visitedRules.get(nodeId);
+	hasRuleBeenApplied(nodeId: string, ruleId: string, context: OptContext): boolean {
+		const nodeVisited = context.visitedRules.get(nodeId);
 		return nodeVisited?.has(ruleId) ?? false;
 	}
 
 	/**
 	 * Mark a rule as applied to a node
 	 */
-	markRuleApplied(nodeId: string, ruleId: string): void {
-		if (!this.visitedRules.has(nodeId)) {
-			this.visitedRules.set(nodeId, new Set());
+	markRuleApplied(nodeId: string, ruleId: string, context: OptContext): void {
+		if (!context.visitedRules.has(nodeId)) {
+			context.visitedRules.set(nodeId, new Set());
 		}
-		this.visitedRules.get(nodeId)!.add(ruleId);
-	}
-
-	/**
-	 * Clear visited rules (typically called at start of optimization)
-	 */
-	clearVisitedRules(): void {
-		this.visitedRules.clear();
+		context.visitedRules.get(nodeId)!.add(ruleId);
 	}
 
 	/**
@@ -120,20 +112,22 @@ class RuleRegistry {
 	/**
 	 * Get statistics about rule application
 	 */
-	getStats(): { totalRules: number; nodesWithRules: number; appliedRules: number } {
+	getStats(context?: OptContext): { totalRules: number; nodesWithRules: number; appliedRules: number } {
 		let totalRules = 0;
 		for (const rules of this.rules.values()) {
 			totalRules += rules.length;
 		}
 
 		let appliedRules = 0;
-		for (const ruleSet of this.visitedRules.values()) {
-			appliedRules += ruleSet.size;
+		if (context) {
+			for (const ruleSet of context.visitedRules.values()) {
+				appliedRules += ruleSet.size;
+			}
 		}
 
 		return {
 			totalRules,
-			nodesWithRules: this.visitedRules.size,
+			nodesWithRules: context?.visitedRules.size ?? 0,
 			appliedRules
 		};
 	}
@@ -161,29 +155,22 @@ export function rulesFor(nodeType: PlanNodeType): readonly RuleHandle[] {
 /**
  * Check if a rule has been applied to a node
  */
-export function hasRuleBeenApplied(nodeId: string, ruleId: string): boolean {
-	return globalRegistry.hasRuleBeenApplied(nodeId, ruleId);
+export function hasRuleBeenApplied(nodeId: string, ruleId: string, context: OptContext): boolean {
+	return globalRegistry.hasRuleBeenApplied(nodeId, ruleId, context);
 }
 
 /**
  * Mark a rule as applied to a node
  */
-export function markRuleApplied(nodeId: string, ruleId: string): void {
-	globalRegistry.markRuleApplied(nodeId, ruleId);
-}
-
-/**
- * Clear all visited rule tracking
- */
-export function clearVisitedRules(): void {
-	globalRegistry.clearVisitedRules();
+export function markRuleApplied(nodeId: string, ruleId: string, context: OptContext): void {
+	globalRegistry.markRuleApplied(nodeId, ruleId, context);
 }
 
 /**
  * Get registry statistics
  */
-export function getRegistryStats(): { totalRules: number; nodesWithRules: number; appliedRules: number } {
-	return globalRegistry.getStats();
+export function getRegistryStats(context?: OptContext): { totalRules: number; nodesWithRules: number; appliedRules: number } {
+	return globalRegistry.getStats(context);
 }
 
 /**
@@ -208,7 +195,7 @@ export function applyRules(node: PlanNode, context: OptContext): PlanNode {
 
 	for (const rule of applicableRules) {
 		// Skip if rule already applied to this node
-		if (hasRuleBeenApplied(currentNode.id, rule.id)) {
+		if (hasRuleBeenApplied(currentNode.id, rule.id, context)) {
 			log('Skipping rule %s for node %s (already applied)', rule.id, currentNode.id);
 			continue;
 		}
@@ -222,9 +209,9 @@ export function applyRules(node: PlanNode, context: OptContext): PlanNode {
 
 			const result = rule.fn(currentNode, context);
 
-						if (result && result !== currentNode) {
+			if (result && result !== currentNode) {
 				ruleLog('Rule transformed %s to %s', currentNode.nodeType, result.nodeType);
-				markRuleApplied(currentNode.id, rule.id);
+				markRuleApplied(currentNode.id, rule.id, context);
 
 				// Trace successful transformation
 				traceRuleEnd(rule, currentNode, result);

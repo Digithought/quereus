@@ -7,6 +7,7 @@ import type { ScalarPlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
 import type { SqlValue } from '../../common/types.js';
+import { LiteralNode } from '../nodes/scalar.js';
 
 /**
  * Constraint operators that can be pushed down to virtual tables
@@ -119,11 +120,11 @@ function extractBinaryConstraint(
 	let constraintOp = op;
 
 	if (isColumnReference(left) && isLiteralConstant(right)) {
-		columnRef = left as ColumnReferenceNode;
+		columnRef = left;
 		constant = getLiteralValue(right);
 	} else if (isLiteralConstant(left) && isColumnReference(right)) {
 		// Reverse pattern (constant op column) - flip operator
-		columnRef = right as ColumnReferenceNode;
+		columnRef = right;
 		constant = getLiteralValue(left);
 		constraintOp = flipOperator(op);
 	}
@@ -192,14 +193,14 @@ function getBinaryExpressionChildren(_expr: ScalarPlanNode): {
 /**
  * Check if node is a column reference
  */
-function isColumnReference(node: ScalarPlanNode): boolean {
+function isColumnReference(node: ScalarPlanNode): node is ColumnReferenceNode {
 	return node.nodeType === PlanNodeType.ColumnReference;
 }
 
 /**
  * Check if node is a literal constant
  */
-function isLiteralConstant(node: ScalarPlanNode): boolean {
+function isLiteralConstant(node: ScalarPlanNode): node is LiteralNode {
 	return node.nodeType === PlanNodeType.Literal;
 }
 

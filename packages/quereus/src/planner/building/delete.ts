@@ -1,7 +1,7 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { DeleteNode } from '../nodes/delete-node.js';
-import { buildTableReference, buildTableScan } from './table.js';
+import { buildTableReference } from './table.js';
 import { buildExpression } from './expression.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
@@ -15,6 +15,7 @@ import { RowOp } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
+import { buildConstraintChecks } from './constraint-builder.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -23,7 +24,7 @@ export function buildDeleteStmt(
   const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Plan the source of rows to delete. This is typically the table itself, potentially filtered.
-  let sourceNode: RelationalPlanNode = buildTableScan({ type: 'table', table: stmt.table }, ctx);
+  let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 
   // Create a new scope with the table columns registered for column resolution
   const tableScope = new RegisteredScope(ctx.scope);
@@ -69,6 +70,16 @@ export function buildDeleteStmt(
 
   const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
 
+  // Build constraint checks at plan time
+  const constraintChecks = buildConstraintChecks(
+    deleteCtx,
+    tableReference.tableSchema,
+    RowOp.DELETE,
+    oldAttributes,
+    newAttributes,
+    flatRowDescriptor
+  );
+
   // Always inject ConstraintCheckNode for DELETE operations
   const constraintCheckNode = new ConstraintCheckNode(
     deleteCtx.scope,
@@ -76,7 +87,9 @@ export function buildDeleteStmt(
     tableReference,
     RowOp.DELETE,
     oldRowDescriptor,
-    newRowDescriptor
+    newRowDescriptor,
+    flatRowDescriptor,
+    constraintChecks
   );
 
   const deleteNode = new DeleteNode(

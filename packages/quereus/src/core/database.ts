@@ -21,6 +21,7 @@ import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
 import type { BlockNode } from '../planner/nodes/block.js';
 import type { PlanningContext } from '../planner/planning-context.js';
+import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
@@ -677,7 +678,15 @@ export class Database {
 		// This ParameterScope is for the entire batch. It has globalScope as its parent.
 		const parameterScope = new ParameterScope(globalScope);
 
-		const ctx = { db: this, schemaManager: this.schemaManager, parameters: params ?? {}, scope: parameterScope } as PlanningContext;
+		const ctx: PlanningContext = {
+			db: this,
+			schemaManager: this.schemaManager,
+			parameters: params ?? {},
+			scope: parameterScope,
+			cteNodes: new Map(),
+			schemaDependencies: new BuildTimeDependencyTracker(),
+			schemaCache: new Map()
+		};
 
 		return buildBlock(ctx, statements);
 	}

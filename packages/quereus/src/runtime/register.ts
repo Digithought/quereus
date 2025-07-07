@@ -13,7 +13,8 @@ import { emitDropTable } from './emit/drop-table.js';
 import { emitCreateView } from './emit/create-view.js';
 import { emitDropView } from './emit/drop-view.js';
 import { emitCTE } from './emit/cte.js';
-import { emitTableReference } from './emit/table-reference.js';
+import { emitCTEReference } from './emit/cte-reference.js';
+import { emitInternalRecursiveCTERef } from './emit/internal-recursive-cte-ref.js';
 import { emitInsert } from './emit/insert.js';
 import { emitUpdate } from './emit/update.js';
 import { emitDmlExecutor } from './emit/dml-executor.js';
@@ -21,7 +22,7 @@ import { emitDelete } from './emit/delete.js';
 import { emitProject } from './emit/project.js';
 import { emitColumnReference } from './emit/column-reference.js';
 import { emitArrayIndex } from './emit/array-index.js';
-import { emitValues, emitSingleRow } from './emit/values.js';
+import { emitValues, emitSingleRow, emitTableLiteral } from './emit/values.js';
 import { emitFilter } from './emit/filter.js';
 import { emitDistinct } from './emit/distinct.js';
 import { emitScalarFunctionCall } from './emit/scalar-function.js';
@@ -45,7 +46,7 @@ import { emitLoopJoin } from './emit/join.js';
 import { emitCache } from './emit/cache.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
-import { emitCTEReference } from './emit/cte-reference.js';
+import { emitBetween } from './emit/between.js';
 
 let registered = false;
 
@@ -67,14 +68,14 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.CaseExpr, emitCaseExpr as EmitterFunc);
 	registerEmitter(PlanNodeType.Cast, emitCast as EmitterFunc);
 	registerEmitter(PlanNodeType.Collate, emitCollate as EmitterFunc);
+	registerEmitter(PlanNodeType.Between, emitBetween as EmitterFunc);
 	registerEmitter(PlanNodeType.ScalarSubquery, emitScalarSubquery as EmitterFunc);
 	registerEmitter(PlanNodeType.Exists, emitExists as EmitterFunc);
 
 	// Relational emitters (mix of logical and physical for now)
 	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);
-	registerEmitter(PlanNodeType.TableReference, emitTableReference as EmitterFunc);
 	registerEmitter(PlanNodeType.CTEReference, emitCTEReference as EmitterFunc);
-	registerEmitter(PlanNodeType.TableScan, emitSeqScan as EmitterFunc);
+	registerEmitter(PlanNodeType.InternalRecursiveCTERef, emitInternalRecursiveCTERef as EmitterFunc);
 
 	// Physical access node emitters (Phase 1)
 	registerEmitter(PlanNodeType.SeqScan, emitSeqScan as EmitterFunc);
@@ -82,6 +83,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.IndexSeek, emitSeqScan as EmitterFunc); // Reuse for now
 
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
+	registerEmitter(PlanNodeType.TableLiteral, emitTableLiteral as EmitterFunc);
 	registerEmitter(PlanNodeType.SingleRow, emitSingleRow as EmitterFunc);
 	registerEmitter(PlanNodeType.Filter, emitFilter as EmitterFunc);
 	registerEmitter(PlanNodeType.Project, emitProject as EmitterFunc);

@@ -11,6 +11,7 @@ import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import type { VirtualTableModule } from '../../vtab/module.js';
 
 /** Represents a reference to a table in the global schema. */
 export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode {
@@ -22,6 +23,8 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	constructor(
 		scope: Scope,
 		public readonly tableSchema: TableSchema,
+		public readonly vtabModule: VirtualTableModule<any, any>,
+		public readonly vtabAuxData?: unknown,
 		estimatedCostOverride?: number
 	) {
 		super(scope, estimatedCostOverride ?? 1);
@@ -38,7 +41,8 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 					isReadOnly: false,
 					collationName: column.collation
 				},
-				sourceRelation: `${this.tableSchema.schemaName}.${this.tableSchema.name}`
+				sourceRelation: `${this.tableSchema.schemaName}.${this.tableSchema.name}`,
+				relationName: this.tableSchema.name
 			}));
 		});
 	}
@@ -74,7 +78,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			schema: this.tableSchema.schemaName,
 			table: this.tableSchema.name,
@@ -105,7 +109,8 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 					id: PlanNode.nextAttrId(),
 					name: column.name,
 					type: column.type,
-					sourceRelation: `${this.functionSchema.name}()`
+					sourceRelation: `${this.functionSchema.name}()`,
+					relationName: this.functionSchema.name
 				}));
 			}
 			return [];
@@ -149,7 +154,7 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
 		return `${this.functionSchema.name}()`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		const props: Record<string, unknown> = {
 			function: this.functionSchema.name,
 			numArgs: this.functionSchema.numArgs
@@ -169,7 +174,6 @@ export class TableFunctionReferenceNode extends PlanNode implements ZeroAryRelat
  */
 export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 	override readonly nodeType = PlanNodeType.ColumnReference;
-	override readonly physical: undefined = undefined; // Never physical
 
 	constructor(
 		scope: Scope,
@@ -206,7 +210,7 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 		return columnName;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			column: this.expression.alias ?? this.expression.name,
 			schema: this.expression.schema,
@@ -255,7 +259,7 @@ export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNod
 		return `:${this.nameOrIndex}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			parameter: this.nameOrIndex,
 			resultType: formatScalarType(this.targetType)
@@ -298,7 +302,7 @@ export class FunctionReferenceNode extends PlanNode {
 		return `${this.functionSchema.name}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			function: this.functionSchema.name,
 			numArgs: this.functionSchema.numArgs,

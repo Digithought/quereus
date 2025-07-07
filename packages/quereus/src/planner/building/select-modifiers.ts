@@ -30,13 +30,13 @@ export function buildFinalProjections(
 		return { output: input, finalContext: selectContext, preAggregateSort: false };
 	}
 
-	// Check if ORDER BY should be applied before projection
+	// Check if ORDER BY should be applied before projection (using input scope only)
 	const needsPreProjectionSort = shouldApplyOrderByBeforeProjection(stmt, projections);
 	let preAggregateSort = false;
 
 	let currentInput = input;
 
-	// Apply ORDER BY before projection if needed
+	// Apply ORDER BY before projection if needed (compile expressions against input scope)
 	if (needsPreProjectionSort && stmt.orderBy && stmt.orderBy.length > 0) {
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
 			const expression = buildExpression(selectContext, orderByClause.expr);
@@ -50,9 +50,10 @@ export function buildFinalProjections(
 		preAggregateSort = true;
 	}
 
+	// Create the ProjectNode only after all expressions are compiled against input scope
 	currentInput = new ProjectNode(selectScope, currentInput, projections);
 
-	// Create a new scope that maps column names to the ProjectNode's output attributes
+	// Create projection output scope only AFTER ProjectNode exists
 	const projectionOutputScope = createProjectionOutputScope(currentInput);
 
 	// Update selectContext to use BOTH the projection output scope AND the original scope

@@ -5,6 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { buildRowDescriptor, composeOldNewRow } from '../../util/row-descriptor.js';
+import { withRowContextGenerator } from '../context-helpers.js';
 
 export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
@@ -28,39 +29,31 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 	);
 
 	async function* run(rctx: RuntimeContext, sourceRowsIterable: AsyncIterable<Row>, ...assignmentEvaluators: Array<(ctx: RuntimeContext) => SqlValue>): AsyncIterable<Row> {
-		for await (const sourceRow of sourceRowsIterable) {
-			// Set up row context for evaluating assignment expressions
-			rctx.context.set(sourceRowDescriptor, () => sourceRow);
-
-			try {
-				// Evaluate assignment expressions in the context of this row
-				const assignmentValues: SqlValue[] = [];
-				for (const evaluator of assignmentEvaluators) {
-					const value = evaluator(rctx) as SqlValue;
-					assignmentValues.push(value);
-				}
-
-				// Create a new row with updated values
-				const updatedRow = [...sourceRow]; // Copy the original row
-
-				// Apply assignment values to the row
-				for (let i = 0; i < assignmentValues.length; i++) {
-					const targetColIdx = assignmentTargetIndices[i];
-					updatedRow[targetColIdx] = assignmentValues[i];
-				}
-
-				// Create flat row with OLD (source) and NEW (updated) values for constraint checking
-				const flatRow = composeOldNewRow(sourceRow, updatedRow, tableSchema.columns.length);
-
-				// Yield the flat row for constraint checking
-				// NOTE: UpdateNode only transforms rows - it does NOT execute the actual update
-				// The UpdateExecutorNode is responsible for calling vtab.xUpdate
-				yield flatRow;
-			} finally {
-				// Clean up row context
-				rctx.context.delete(sourceRowDescriptor);
+		yield* withRowContextGenerator(rctx, sourceRowDescriptor, sourceRowsIterable, async function* (sourceRow) {
+			// Evaluate assignment expressions in the context of this row
+			const assignmentValues: SqlValue[] = [];
+			for (const evaluator of assignmentEvaluators) {
+				const value = evaluator(rctx) as SqlValue;
+				assignmentValues.push(value);
 			}
-		}
+
+			// Create a new row with updated values
+			const updatedRow = [...sourceRow]; // Copy the original row
+
+			// Apply assignment values to the row
+			for (let i = 0; i < assignmentValues.length; i++) {
+				const targetColIdx = assignmentTargetIndices[i];
+				updatedRow[targetColIdx] = assignmentValues[i];
+			}
+
+			// Create flat row with OLD (source) and NEW (updated) values for constraint checking
+			const flatRow = composeOldNewRow(sourceRow, updatedRow, tableSchema.columns.length);
+
+			// Yield the flat row for constraint checking
+			// NOTE: UpdateNode only transforms rows - it does NOT execute the actual update
+			// The UpdateExecutorNode is responsible for calling vtab.xUpdate
+			yield flatRow;
+		});
 	}
 
 	const sourceInstruction = emitPlanNode(plan.source, ctx);

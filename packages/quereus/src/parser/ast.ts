@@ -13,7 +13,7 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values';
+		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -23,7 +23,7 @@ export interface AstNode {
 // Expression types
 export type Expression = LiteralExpr | IdentifierExpr | BinaryExpr | UnaryExpr | FunctionExpr | CastExpr
 	| ParameterExpr | SubqueryExpr | ColumnExpr | FunctionSource | CollateExpr | WindowFunctionExpr | CaseExpr
-	| InExpr | ExistsExpr;
+	| InExpr | ExistsExpr | BetweenExpr;
 
 // Literal value expression (number, string, null, etc.)
 export interface LiteralExpr extends AstNode {
@@ -127,6 +127,15 @@ export interface ParameterExpr extends AstNode {
 export interface SubqueryExpr extends AstNode {
 	type: 'subquery';
 	query: SelectStmt;
+}
+
+// BETWEEN expression
+export interface BetweenExpr extends AstNode {
+	type: 'between';
+	expr: Expression;      // Left side of BETWEEN
+	lower: Expression;     // Lower bound
+	upper: Expression;     // Upper bound
+	not?: boolean;         // For NOT BETWEEN
 }
 
 // IN expression

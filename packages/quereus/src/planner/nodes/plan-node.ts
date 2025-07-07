@@ -2,7 +2,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { BaseType, RelationType, ScalarType } from '../../common/datatype.js';
 import type { Expression } from '../../parser/ast.js';
-import type { Row } from '../../common/types.js';
+import type { OutputValue, Row } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 
 /**
@@ -42,8 +42,8 @@ export interface PhysicalProperties {
   idempotent?: boolean;
 
   /**
-   * Whether this node produces a constant result (independent of input rows).
-   * Examples: literal values, deterministic functions of constants
+   * Whether this node directly produces a constant result (deterministic, readonly, and no dependencies).
+	 * If this is true, the node should implement getValue() to return the constant value.
    */
   constant?: boolean;
 }
@@ -74,6 +74,8 @@ export interface Attribute {
   type: ScalarType;
   /** Source relation that originally produced this column */
   sourceRelation?: string;
+  /** Relation name for qualified access (e.g. table name or alias) */
+  relationName?: string;
 }
 
 /**
@@ -105,7 +107,7 @@ export abstract class PlanNode {
   abstract readonly nodeType: PlanNodeType;
 
   /** Present if the node is a physical plan node */
-  physical?: PhysicalProperties;
+  private _physical?: PhysicalProperties;
 
   constructor(
 		/** The scope in which this node is planned.  Note that this captures references made through it, so you can tell if a node has dependencies. */
@@ -126,8 +128,7 @@ export abstract class PlanNode {
    */
 	getRelations(): readonly RelationalPlanNode[] {
     return this.getChildren()
-               .filter((c): c is RelationalPlanNode =>
-                        'getAttributes' in c && typeof (c as any).getAttributes === 'function');
+    	.filter(isRelationalNode);
   }
 
   /**
@@ -142,11 +143,11 @@ export abstract class PlanNode {
   abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
 
   /**
-   * Compute physical properties for this node based on its children.
+   * Compute physical property overrides for this node
    * Called by the optimizer when converting logical to physical nodes.
-   * @param childrenPhysical Physical properties of optimized children
+   * @param children Physical properties of optimized children
    */
-  getPhysical?(childrenPhysical: PhysicalProperties[]): PhysicalProperties;
+  computePhysical?(children: readonly PhysicalProperties[]): Partial<PhysicalProperties>;
 
   /**
    * Get the attributes (columns) produced by this relational node
@@ -178,26 +179,36 @@ export abstract class PlanNode {
    * Get logical properties for this node.
    * Override to provide node-specific logical information.
    */
-  getLogicalProperties(): Record<string, unknown> {
+  getLogicalAttributes(): Record<string, unknown> {
     return {};
   }
+
+	/** Infer and cache the physical properties of this node */
+	get physical(): PhysicalProperties {
+		if (!this._physical) {
+			const childrenPhysical = this.getChildren().map(child => child.physical);
+
+			// Get the node-specific overrides
+			const propsOverride = this.computePhysical?.(childrenPhysical);
+
+			// Derive defaults from children if there are any, else leaf defaults
+			const defaults = childrenPhysical.length
+				? {
+					deterministic: childrenPhysical.every(child => child.deterministic),
+					idempotent: childrenPhysical.every(child => child.idempotent),
+					readonly: childrenPhysical.every(child => child.readonly),
+					// constant: DON'T INHERIT - only ValueNodes can be directly constant
+				}
+				: DEFAULT_PHYSICAL;
+
+			this._physical = { ...defaults, ...propsOverride };
+		}
+		return this._physical;
+	}
 
   /** Helper to generate unique attribute IDs */
   public static nextAttrId(): number {
     return PlanNode.nextAttributeId++;
-  }
-
-  /**
-   * Set default physical properties on a node with optional overrides
-   * This ensures every node has consistent physical properties after optimization
-   */
-  public static setDefaultPhysical(node: PlanNode, propsOverride?: Partial<PhysicalProperties>): void {
-    if (!node.physical) {
-      node.physical = { ...DEFAULT_PHYSICAL, ...propsOverride };
-    } else {
-      // Merge with existing properties, giving precedence to existing values
-      node.physical = { ...DEFAULT_PHYSICAL, ...node.physical, ...propsOverride };
-    }
   }
 
   /**
@@ -261,12 +272,26 @@ export interface RelationalPlanNode extends PlanNode {
 }
 
 /**
+ * Check if a node is relational (can be cached)
+ */
+export function isRelationalNode(node: PlanNode): node is RelationalPlanNode {
+	return node.getType().typeClass === 'relation';
+}
+
+/**
  * Base interface for PlanNodes that produce a scalar value (Expression Nodes).
  * Note: this is an interface that concrete ScalarNode classes will implement.
  */
 export interface ScalarPlanNode extends PlanNode {
 	readonly expression: Expression;
   getType(): ScalarType;
+}
+
+/**
+ * Check if a node is a scalar node
+ */
+export function isScalarNode(node: PlanNode): node is ScalarPlanNode {
+	return node.getType().typeClass === 'scalar';
 }
 
 // --- Arity-based Base Abstractions (Interfaces, to be implemented by concrete node classes) ---
@@ -311,6 +336,11 @@ export interface BinaryScalarNode extends ScalarPlanNode {
   readonly left: ScalarPlanNode;
   readonly right: ScalarPlanNode;
   getChildren(): readonly [ScalarPlanNode, ScalarPlanNode];
+}
+
+/** A scalar plan node that operates on three scalar inputs. */
+export interface TernaryScalarNode extends ScalarPlanNode {
+  getChildren(): readonly [ScalarPlanNode, ScalarPlanNode, ScalarPlanNode];
 }
 
 /** A scalar plan node that operates on N scalar inputs. */
@@ -434,6 +464,22 @@ export abstract class BinaryScalarBase extends PlanNode implements BinaryScalarN
 }
 
 /**
+ * Base class for scalar nodes with three scalar inputs
+ */
+export abstract class TernaryScalarBase extends PlanNode implements TernaryScalarNode {
+  abstract readonly expression: Expression;
+  abstract getType(): ScalarType;
+  abstract getChildren(): readonly [ScalarPlanNode, ScalarPlanNode, ScalarPlanNode];
+
+  withChildren(newChildren: readonly PlanNode[]): PlanNode {
+    if (newChildren.length !== 3) {
+      quereusError(`${this.nodeType} expects 3 children, got ${newChildren.length}`);
+    }
+    return this;
+  }
+}
+
+/**
  * Base class for scalar nodes with N scalar inputs
  */
 export abstract class NaryScalarBase extends PlanNode implements NaryScalarNode {
@@ -446,4 +492,12 @@ export abstract class NaryScalarBase extends PlanNode implements NaryScalarNode 
   }
 
   abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+}
+
+/**
+ * A node that directly produces a constant result (deterministic, readonly, and no dependencies).
+ * If the node is constant (literal value), it should implement getValue() to return the constant value.
+ */
+export interface ConstantNode extends PlanNode {
+	getValue(): OutputValue;
 }

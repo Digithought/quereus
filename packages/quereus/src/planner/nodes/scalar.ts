@@ -1,6 +1,6 @@
 import type { ScalarType } from "../../common/datatype.js";
-import { SqlDataType } from "../../common/types.js";
-import { PlanNode, type ScalarPlanNode, type UnaryScalarNode, type NaryScalarNode, type ZeroAryScalarNode, type BinaryScalarNode } from "./plan-node.js";
+import { OutputValue, SqlDataType } from "../../common/types.js";
+import { PlanNode, type ScalarPlanNode, type UnaryScalarNode, type NaryScalarNode, type ZeroAryScalarNode, type BinaryScalarNode, PhysicalProperties, type ConstantNode, type TernaryScalarNode } from "./plan-node.js";
 import type * as AST from "../../parser/ast.js";
 import type { Scope } from "../scopes/scope.js";
 import { PlanNodeType } from "./plan-node-type.js";
@@ -100,13 +100,15 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 		return `${this.expression.operator} ${formatExpression(this.operand)}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			operator: this.expression.operator,
 			operand: formatExpression(this.operand),
 			resultType: formatScalarType(this.getType())
 		};
 	}
+
+
 }
 
 export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
@@ -148,7 +150,6 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 			case 'IS':
 			case 'IS NOT':
 			case 'IN':
-			case 'BETWEEN':
 				datatype = SqlDataType.INTEGER;
 				break;
 			case '||':
@@ -211,7 +212,7 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 		return `${formatExpression(this.left)} ${this.expression.operator} ${formatExpression(this.right)}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			operator: this.expression.operator,
 			left: formatExpression(this.left),
@@ -219,19 +220,34 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 			resultType: formatScalarType(this.getType())
 		};
 	}
+
+
 }
 
-export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
+export class LiteralNode extends PlanNode implements ZeroAryScalarNode, ConstantNode {
 	readonly nodeType = PlanNodeType.Literal;
-
+	/**
+	 * When constant folding replaces an expression with a literal, we still need to
+	 * preserve the *type metadata* (affinity, collation, nullability, etc.).
+	 *
+	 * The optional `explicitType` allows the caller to override the
+	 * automatically-derived type so that information (e.g. COLLATE NOCASE)
+	 * survives the folding pass.
+	 */
 	constructor(
 		public readonly scope: Scope,
 		public readonly expression: AST.LiteralExpr,
+		private readonly explicitType?: ScalarType,
 	) {
 		super(scope, 0.001); // Minimal cost
 	}
 
 	getType(): ScalarType {
+		// If a caller supplied an explicit type (to preserve metadata such as
+		// collation) honour it verbatim.
+		if (this.explicitType) {
+			return this.explicitType;
+		}
 		const value = this.expression.value;
 		if (value === null) {
 			return {
@@ -290,6 +306,10 @@ export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
 		quereusError(`Unknown literal type ${typeof value}`, StatusCode.INTERNAL);
 	}
 
+	getValue(): OutputValue {
+		return this.expression.value;
+	}
+
 	getChildren(): readonly [] {
 		return [];
 	}
@@ -313,10 +333,16 @@ export class LiteralNode extends PlanNode implements ZeroAryScalarNode {
 		return String(value);
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			value: this.expression.value,
 			resultType: formatScalarType(this.getType())
+		};
+	}
+
+	override computePhysical(): Partial<PhysicalProperties> {
+		return {
+			constant: true,
 		};
 	}
 }
@@ -492,7 +518,7 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 		return `CASE${baseStr}${whenThenStr}${elseStr} END`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		const props: Record<string, unknown> = {
 			resultType: formatScalarType(this.getType()),
 			whenThenClauses: this.whenThenClauses.map(clause => ({
@@ -635,7 +661,7 @@ export class CastNode extends PlanNode implements UnaryScalarNode {
 		return `CAST(${formatExpression(this.operand)} AS ${this.expression.targetType})`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			operand: formatExpression(this.operand),
 			targetType: this.expression.targetType,
@@ -653,7 +679,7 @@ export class CollateNode extends PlanNode implements UnaryScalarNode {
 		public readonly expression: AST.CollateExpr,
 		public readonly operand: ScalarPlanNode,
 	) {
-		super(scope, 0); // No runtime cost - collation is metadata
+		super(scope, 0.001); // Minimal cost for COLLATE
 		this.cachedType = new Cached(this.generateType);
 	}
 
@@ -664,14 +690,9 @@ export class CollateNode extends PlanNode implements UnaryScalarNode {
 	generateType = (): ScalarType => {
 		const operandType = this.operand.getType();
 
-		// COLLATE preserves the operand type but changes the collation
 		return {
-			typeClass: 'scalar',
-			affinity: operandType.affinity,
-			nullable: operandType.nullable,
-			isReadOnly: operandType.isReadOnly,
-			datatype: operandType.datatype,
-			collationName: this.expression.collation.toUpperCase(),
+			...operandType,
+			collationName: this.expression.collation.toUpperCase()
 		};
 	}
 
@@ -712,10 +733,87 @@ export class CollateNode extends PlanNode implements UnaryScalarNode {
 		return `${formatExpression(this.operand)} COLLATE ${this.expression.collation}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			operand: formatExpression(this.operand),
 			collation: this.expression.collation,
+			resultType: formatScalarType(this.getType())
+		};
+	}
+}
+
+export class BetweenNode extends PlanNode implements TernaryScalarNode {
+	readonly nodeType = PlanNodeType.Between;
+
+	constructor(
+		public readonly scope: Scope,
+		public readonly expression: AST.BetweenExpr,
+		public readonly expr: ScalarPlanNode,
+		public readonly lower: ScalarPlanNode,
+		public readonly upper: ScalarPlanNode,
+	) {
+		super(scope, 0.03); // Cost for three comparisons
+	}
+
+	getType(): ScalarType {
+		// BETWEEN always returns INTEGER (0 or 1)
+		return {
+			typeClass: 'scalar',
+			affinity: SqlDataType.INTEGER,
+			nullable: false,
+			isReadOnly: true,
+			datatype: SqlDataType.INTEGER,
+		};
+	}
+
+	getChildren(): readonly [ScalarPlanNode, ScalarPlanNode, ScalarPlanNode] {
+		return [this.expr, this.lower, this.upper];
+	}
+
+	getRelations(): readonly [] {
+		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 3) {
+			quereusError(`BetweenNode expects 3 children, got ${newChildren.length}`, StatusCode.INTERNAL);
+		}
+
+		const [newExpr, newLower, newUpper] = newChildren;
+
+		// Type check
+		for (const child of newChildren) {
+			if (!('expression' in child)) {
+				quereusError('BetweenNode: all children must be ScalarPlanNodes', StatusCode.INTERNAL);
+			}
+		}
+
+		// Return same instance if nothing changed
+		if (newExpr === this.expr && newLower === this.lower && newUpper === this.upper) {
+			return this;
+		}
+
+		// Create new instance
+		return new BetweenNode(
+			this.scope,
+			this.expression,
+			newExpr as ScalarPlanNode,
+			newLower as ScalarPlanNode,
+			newUpper as ScalarPlanNode
+		);
+	}
+
+	override toString(): string {
+		const notPrefix = this.expression.not ? 'NOT ' : '';
+		return `${formatExpression(this.expr)} ${notPrefix}BETWEEN ${formatExpression(this.lower)} AND ${formatExpression(this.upper)}`;
+	}
+
+	override getLogicalAttributes(): Record<string, unknown> {
+		return {
+			expr: formatExpression(this.expr),
+			lower: formatExpression(this.lower),
+			upper: formatExpression(this.upper),
+			not: this.expression.not ?? false,
 			resultType: formatScalarType(this.getType())
 		};
 	}

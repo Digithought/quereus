@@ -4,7 +4,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { PlanningContext } from '../planning-context.js';
 import { SingleRowNode } from '../nodes/single-row.js';
-import { buildTableScan } from './table.js';
+import { buildTableReference } from './table.js';
 import { AliasedScope } from '../scopes/aliased.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import type { Scope } from '../scopes/scope.js';
@@ -14,6 +14,7 @@ import { buildExpression } from './expression.js';
 import { FilterNode } from '../nodes/filter.js';
 import { buildTableFunctionCall } from './table-function.js';
 import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
+import { InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
 import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
@@ -26,6 +27,7 @@ import { analyzeSelectColumns, buildStarProjections } from './select-projections
 import { buildAggregatePhase, buildFinalAggregateProjections } from './select-aggregates.js';
 import { buildWindowPhase } from './select-window.js';
 import { buildFinalProjections, applyDistinct, applyOrderBy, applyLimitOffset } from './select-modifiers.js';
+import { SortNode, type SortKey } from '../nodes/sort.js';
 
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
@@ -35,7 +37,7 @@ import { buildDeleteStmt } from './delete.js';
  * Creates an initial logical query plan for a SELECT statement.
  *
  * For this initial version, it only supports simple "SELECT ... FROM one_table" queries,
- * effectively returning a TableScanNode for that table.
+ * effectively returning a TableReferenceNode for that table.
  *
  * @param stmt The AST.SelectStmt to plan.
  * @param ctx The parent planning context for this SELECT statement.
@@ -123,10 +125,62 @@ export function buildSelectStmt(
 		}
 	}
 
-	// Handle window functions if present
-	input = buildWindowPhase(input, windowFunctions, selectContext, stmt);
+		// Handle window functions if present
+	if (hasWindowFunctions) {
+		// Check if ORDER BY references columns not in SELECT before applying window functions
+		let preWindowSort = false;
+		if (stmt.orderBy) {
+			const selectedColumns = new Set<string>();
+			for (const column of stmt.columns) {
+				if (column.type === 'column' && column.expr.type === 'column') {
+					selectedColumns.add(column.expr.name.toLowerCase());
+				}
+				if (column.type === 'column' && column.alias) {
+					selectedColumns.add(column.alias.toLowerCase());
+				}
+			}
 
-	// Handle final projections for non-aggregate cases
+			// Check if ORDER BY references columns not in SELECT
+			for (const orderByClause of stmt.orderBy) {
+				if (orderByClause.expr.type === 'column') {
+					const orderColumn = orderByClause.expr.name.toLowerCase();
+					if (!selectedColumns.has(orderColumn)) {
+						// Apply ORDER BY before window projections
+						const sortKeys: SortKey[] = stmt.orderBy.map(orderBy => ({
+							expression: buildExpression(selectContext, orderBy.expr),
+							direction: orderBy.direction,
+							nulls: orderBy.nulls
+						}));
+						input = new SortNode(selectContext.scope, input, sortKeys);
+						preWindowSort = true;
+						break;
+					}
+				}
+			}
+		}
+
+		input = buildWindowPhase(input, windowFunctions, selectContext, stmt);
+
+		// Update context to include window output columns
+		const windowOutputScope = new RegisteredScope(selectContext.scope);
+		const windowAttributes = input.getAttributes();
+		input.getType().columns.forEach((col, index) => {
+			const attr = windowAttributes[index];
+			windowOutputScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, index));
+		});
+
+		// Create combined scope that includes both original columns and window output
+		const combinedScope = new MultiScope([windowOutputScope, selectScope]);
+		selectContext = { ...selectContext, scope: combinedScope };
+
+		// Don't apply ORDER BY again if we already did it
+		if (preWindowSort) {
+			preAggregateSort = true;
+		}
+	}
+
+	// Handle final projections for non-aggregate, non-window cases
 	if (!hasAggregates && !hasWindowFunctions) {
 		const finalResult = buildFinalProjections(input, projections, selectScope, stmt, selectContext);
 		input = finalResult.output;
@@ -138,6 +192,8 @@ export function buildSelectStmt(
 	input = applyDistinct(input, stmt, selectScope);
 	input = applyOrderBy(input, stmt, selectContext, preAggregateSort);
 	input = applyLimitOffset(input, stmt, selectContext);
+
+
 
 	return input;
 }
@@ -162,6 +218,22 @@ export function buildValuesStmt(
 	return new ValuesNode(ctx.scope, rows);
 }
 
+/**
+ * Processes a FROM clause item into a relational plan node.
+ *
+ * Handles different types of FROM items:
+ * - Table references - creates a TableReferenceNode
+ * - Subqueries - plans the subquery
+ * - Joins - builds the join structure
+ * - Table functions - creates a table function call node
+ *
+ * For a simple table reference, this calls buildTableReference which
+ * returns a TableReferenceNode for that table.
+ *
+ * @param fromClause The FROM clause AST node to process
+ * @param ctx The planning context
+ * @returns A relational plan node representing the FROM clause
+ */
 export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode> = new Map()): RelationalPlanNode {
 	let fromTable: RelationalPlanNode;
 	let columnScope: Scope;
@@ -169,27 +241,50 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	if (fromClause.type === 'table') {
 		const tableName = fromClause.table.name.toLowerCase();
 
-		// Check if this is a CTE reference
+				// Check if this is a CTE reference
 		if (cteNodes.has(tableName)) {
 			const cteNode = cteNodes.get(tableName)!;
-			const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
 
-			// Create scope for CTE columns
-			const cteScope = new RegisteredScope(parentContext.scope);
-			const cteAttributes = cteNode.getAttributes();
-			cteNode.getType().columns.forEach((c, i) => {
-				const attr = cteAttributes[i];
-				cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
-			});
+			// Check if this is an internal recursive CTE reference
+			if (cteNode instanceof InternalRecursiveCTERefNode) {
+				// For internal recursive references, use the node directly
+				fromTable = cteNode;
 
-			if (fromClause.alias) {
-				columnScope = new AliasedScope(cteScope, tableName, fromClause.alias.toLowerCase());
+				// Create scope for internal recursive CTE columns
+				const internalScope = new RegisteredScope(parentContext.scope);
+				const internalAttributes = cteNode.getAttributes();
+				cteNode.getType().columns.forEach((c, i) => {
+					const attr = internalAttributes[i];
+					internalScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+				});
+
+				if (fromClause.alias) {
+					columnScope = new AliasedScope(internalScope, tableName, fromClause.alias.toLowerCase());
+				} else {
+					columnScope = new AliasedScope(internalScope, tableName, tableName);
+				}
 			} else {
-				columnScope = new AliasedScope(cteScope, tableName, tableName);
-			}
+				// Regular CTE reference
+				const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
 
-			fromTable = cteRefNode;
+				// Create scope for CTE columns using attributes from the reference node (may be fresh)
+				const cteScope = new RegisteredScope(parentContext.scope);
+				const refAttrs = cteRefNode.getAttributes();
+				cteRefNode.getType().columns.forEach((c, i) => {
+					const attr = refAttrs[i];
+					cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+				});
+
+				if (fromClause.alias) {
+					columnScope = new AliasedScope(cteScope, tableName, fromClause.alias.toLowerCase());
+				} else {
+					columnScope = new AliasedScope(cteScope, tableName, tableName);
+				}
+
+				fromTable = cteRefNode;
+			}
 		} else {
 			// Check if this is a view
 			const schemaName = fromClause.table.schema || parentContext.db.schemaManager.getCurrentSchemaName();
@@ -215,7 +310,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				}
 			} else {
 				// Regular table
-				fromTable = buildTableScan(fromClause, parentContext);
+				fromTable = buildTableReference(fromClause, parentContext);
 
 				// Create scope for table columns
 				const tableScope = new RegisteredScope(parentContext.scope);

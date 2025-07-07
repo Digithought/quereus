@@ -2,8 +2,10 @@ import type { Instruction, RuntimeContext, InstructionRuntimeStats } from "./typ
 import type { OutputValue, RuntimeValue, Row } from "../common/types.js";
 import { isAsyncIterable } from "./utils.js";
 import { createLogger } from "../common/logger.js";
+import { DefaultContextTracker } from './types.js';
 
 const log = createLogger('runtime:metrics');
+const contextLog = createLogger('runtime:context');
 
 type ResultDestination = number | null;
 
@@ -70,14 +72,29 @@ export class Scheduler {
 		}
 	}
 
-		run(ctx: RuntimeContext): OutputValue {
-		if (ctx.enableMetrics) {
-			return this.runWithMetrics(ctx);
-		} else if (!ctx.tracer) {
-			return this.runOptimized(ctx);
-		} else {
-			return this.runWithTracing(ctx);
+	run(ctx: RuntimeContext): OutputValue {
+		// Initialize context tracker if not already present
+		if (!ctx.contextTracker) {
+			ctx.contextTracker = new DefaultContextTracker();
 		}
+
+		let result: OutputValue;
+
+		if (ctx.enableMetrics) {
+			result = this.runWithMetrics(ctx);
+		} else if (!ctx.tracer) {
+			result = this.runOptimized(ctx);
+		} else {
+			result = this.runWithTracing(ctx);
+		}
+
+		// Check for remaining contexts and warn rather than error
+		if (ctx.contextTracker && ctx.contextTracker.hasRemainingContexts()) {
+			const remaining = ctx.contextTracker.getRemainingContexts();
+			contextLog('Context leak detected - remaining contexts:', remaining.map(c => c.source));
+		}
+
+		return result;
 	}
 
 	private runOptimized(ctx: RuntimeContext): OutputValue {
@@ -163,7 +180,6 @@ export class Scheduler {
 			const instruction = this.instructions[i];
 			const args = instrArgs[i]!;	// Guaranteed not to contain promises
 			instrArgs[i] = undefined; // Clear args as we go to minimize memory usage.
-
 
 			// Trace input
 			ctx.tracer!.traceInput(i, instruction, args as RuntimeValue[]);
@@ -386,12 +402,12 @@ export class Scheduler {
 					stats.elapsedNs += process.hrtime.bigint() - start;
 					throw error;
 				});
-			} else {
-				// Sync result
-				stats.out += this.countOutputs(result);
-				stats.elapsedNs += process.hrtime.bigint() - start;
-				return result;
 			}
+
+			stats.out += this.countOutputs(result);
+			stats.elapsedNs += process.hrtime.bigint() - start;
+
+			return result;
 		} catch (error) {
 			stats.elapsedNs += process.hrtime.bigint() - start;
 			throw error;
@@ -406,13 +422,10 @@ export class Scheduler {
 		stats.in += this.countInputs(args);
 
 		try {
-			const result = instruction.run(ctx, ...args);
-			const resolved = result instanceof Promise ? await result : result;
-
-			stats.out += this.countOutputs(resolved);
+			const result = await instruction.run(ctx, ...args);
+			stats.out += this.countOutputs(result);
 			stats.elapsedNs += process.hrtime.bigint() - start;
-
-			return resolved;
+			return result;
 		} catch (error) {
 			stats.elapsedNs += process.hrtime.bigint() - start;
 			throw error;
@@ -420,65 +433,52 @@ export class Scheduler {
 	}
 
 	private countInputs(args: RuntimeValue[]): number {
-		let count = 0;
-		for (const arg of args) {
-			if (Array.isArray(arg)) {
-				count += arg.length; // Count array elements
-			} else if (isAsyncIterable(arg)) {
-				count += 1; // Count iterables as 1 (we can't know size without consuming)
+		return args.reduce((sum: number, arg) => {
+			if (isAsyncIterable(arg)) {
+				return sum + 1; // Count as 1 for async iterables (we don't know size)
+			} else if (Array.isArray(arg)) {
+				return sum + arg.length;
 			} else {
-				count += 1; // Count other values as 1
+				return sum + 1;
 			}
-		}
-		return count;
+		}, 0);
 	}
 
 	private countOutputs(result: OutputValue): number {
-		if (Array.isArray(result)) {
+		if (isAsyncIterable(result)) {
+			return 1; // Count as 1 for async iterables (we don't know size)
+		} else if (Array.isArray(result)) {
 			return result.length;
-		} else if (isAsyncIterable(result)) {
-			return 1; // Count iterables as 1 (we can't know size without consuming)
 		} else {
 			return 1;
 		}
 	}
 
 	private logAggregateMetrics(): void {
-		if (!log.enabled && !log.extend('stats').enabled) {
-			return;
-		}
+		if (log.enabled) {
+			let totalExecutions = 0;
+			let totalElapsed = 0n;
+			let totalIn = 0;
+			let totalOut = 0;
 
-		const statsLog = log.extend('stats');
-		statsLog('Execution metrics summary:');
-
-		let totalTime = 0n;
-		for (let i = 0; i < this.instructions.length; i++) {
-			const instruction = this.instructions[i];
-			const stats = instruction.runtimeStats;
-			if (stats) {
-				const elapsedMs = Number(stats.elapsedNs) / 1_000_000;
-				totalTime += stats.elapsedNs;
-
-				statsLog('  [%d] %s: %d exec, %d in, %d out, %.2fms',
-					i,
-					instruction.note || 'unknown',
-					stats.executions,
-					stats.in,
-					stats.out,
-					elapsedMs
-				);
+			for (const instruction of this.instructions) {
+				if (instruction.runtimeStats) {
+					totalExecutions += instruction.runtimeStats.executions;
+					totalElapsed += instruction.runtimeStats.elapsedNs;
+					totalIn += instruction.runtimeStats.in;
+					totalOut += instruction.runtimeStats.out;
+				}
 			}
-		}
 
-		const totalMs = Number(totalTime) / 1_000_000;
-		statsLog('Total execution time: %.2fms', totalMs);
+			log(`Aggregate metrics: ${totalExecutions} executions, ${totalElapsed / 1000n}μs elapsed, ${totalIn} inputs, ${totalOut} outputs`);
+		}
 	}
 
 	/**
 	 * Get runtime statistics for all instructions
 	 */
 	getMetrics(): InstructionRuntimeStats[] {
-		return this.instructions.map(instr => instr.runtimeStats || {
+		return this.instructions.map(instruction => instruction.runtimeStats || {
 			in: 0,
 			out: 0,
 			elapsedNs: 0n,

@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type Attribute, type RelationalPlanNode, type UnaryRelationalNode } from './plan-node.js';
+import { isRelationalNode, PlanNode, type Attribute, type RelationalPlanNode, type UnaryRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -79,7 +79,7 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 		const [newSource] = newChildren;
 
 		// Type check
-		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newSource)) {
 			throw new Error('SequencingNode: child must be a RelationalPlanNode');
 		}
 
@@ -104,7 +104,7 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 		return `SEQUENCE ADD ${this.sequenceColumnName}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			sequenceColumn: this.sequenceColumnName,
 			purpose: 'Convert bag to set by adding unique row sequence'

@@ -6,6 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { compareRows } from '../../util/comparison.js';
 import { BTree } from 'inheritree';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { withRowContext } from '../context-helpers.js';
 
 export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruction {
 	// Create row descriptor for output attributes (same as source since DISTINCT preserves attributes)
@@ -24,13 +25,7 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 
 			if (newPath.on) {
 				// This is a new distinct row - set up context and yield it
-				ctx.context.set(outputRowDescriptor, () => sourceRow);
-				try {
-					yield sourceRow;
-				} finally {
-					// Clean up context for this row
-					ctx.context.delete(outputRowDescriptor);
-				}
+				yield await withRowContext(ctx, outputRowDescriptor, () => sourceRow, () => sourceRow);
 			}
 		}
 	}

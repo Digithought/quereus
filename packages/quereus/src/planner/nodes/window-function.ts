@@ -62,7 +62,7 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 		return `${this.functionName}(${distinctStr})${aliasStr}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			function: this.functionName,
 			isDistinct: this.isDistinct,

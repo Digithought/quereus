@@ -31,7 +31,6 @@ export class MultiScope extends BaseScope {
 				return Ambiguous;
 			}
 			if (result) {
-				this.addReference(result);
 				return result;
 			}
 		}

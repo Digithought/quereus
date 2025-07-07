@@ -75,10 +75,6 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 					op = node.nodeType.replace(/Node$/, '').toUpperCase();
 
 					switch (node.nodeType) {
-						case 'TableScan':
-							objectName = node.source?.tableSchema?.name || null;
-							alias = node.alias || null;
-							break;
 						case 'TableFunctionCall':
 							objectName = node.functionName;
 							alias = node.alias || null;
@@ -285,13 +281,6 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 							name: 'buildBlock',
 							location: 'building/block.ts:buildBlock',
 							vars: { statementCount: node.statements?.length || 0 }
-						});
-						break;
-					case 'TableScan':
-						stack.push({
-							name: 'buildTableScan',
-							location: 'building/table.ts:buildTableScan',
-							vars: { tableName: node.source?.tableSchema?.name || 'unknown' }
 						});
 						break;
 					case 'Filter':

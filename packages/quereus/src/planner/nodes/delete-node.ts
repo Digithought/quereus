@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -14,7 +14,7 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
   constructor(
     scope: Scope,
     public readonly table: TableReferenceNode,
-    public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableScanNode
+    public readonly source: RelationalPlanNode, // Typically a FilterNode wrapping a TableReferenceNode
     public readonly oldRowDescriptor?: RowDescriptor, // For constraint checking
     public readonly flatRowDescriptor?: RowDescriptor,
   ) {
@@ -33,33 +33,44 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
     return this.source.getAttributes();
   }
 
-  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
-    const sourcePhysical = childrenPhysical[0];
-
-    return {
-      estimatedRows: sourcePhysical?.estimatedRows,
-      uniqueKeys: sourcePhysical?.uniqueKeys,
-      readonly: false, // DELETE has side effects
-      deterministic: true, // Same input always produces same result
-      idempotent: true, // DELETE is idempotent (deleting same row twice has same effect)
-      constant: false // Never constant
-    };
-  }
-
   getRelations(): readonly [RelationalPlanNode, TableReferenceNode] {
     // The source provides keys to be deleted, table is the target of deletions.
     return [this.source, this.table];
   }
 
-  getChildren(): readonly [] {
-    return [];
+  getChildren(): readonly PlanNode[] {
+    // Return the source relation as a child so optimizer can traverse it
+    return [this.source];
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== 0) {
-      throw new Error(`DeleteNode expects 0 children, got ${newChildren.length}`);
+    if (newChildren.length !== 1) {
+      throw new Error(`DeleteNode expects 1 child (source), got ${newChildren.length}`);
     }
-    return this; // No children in getChildren(), source is accessed via getRelations()
+
+    const newSource = newChildren[0] as RelationalPlanNode;
+    if (!isRelationalNode(newSource)) {
+      throw new Error('DeleteNode: child must be a RelationalPlanNode');
+    }
+
+    if (newSource === this.source) {
+      return this;
+    }
+
+    return new DeleteNode(
+      this.scope,
+      this.table,
+      newSource,
+      this.oldRowDescriptor,
+      this.flatRowDescriptor
+    );
+  }
+
+  computePhysical(): Partial<PhysicalProperties> {
+    return {
+      readonly: false,  // DELETE has side effects
+      estimatedRows: this.source.estimatedRows
+    };
   }
 
   get estimatedRows(): number | undefined {
@@ -70,7 +81,7 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
     return `DELETE FROM ${this.table.tableSchema.name}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {
       table: this.table.tableSchema.name,
       schema: this.table.tableSchema.schemaName

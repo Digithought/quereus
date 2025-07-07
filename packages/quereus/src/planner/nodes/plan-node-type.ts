@@ -3,7 +3,6 @@ export enum PlanNodeType {
   Block = 'Block',
   TableReference = 'TableReference',
   CTEReference = 'CTEReference',
-  TableScan = 'TableScan',
   TableSeek = 'TableSeek',
   Filter = 'Filter',
   Project = 'Project',
@@ -16,6 +15,7 @@ export enum PlanNodeType {
   SetOperation = 'SetOperation',
   CTE = 'CTE',
   RecursiveCTE = 'RecursiveCTE',
+  InternalRecursiveCTERef = 'InternalRecursiveCTERef',
   In = 'In',
   Exists = 'Exists',
   Sequencing = 'Sequencing',
@@ -67,6 +67,7 @@ export enum PlanNodeType {
 
   // Special relational nodes
   Values = 'Values',
+	TableLiteral = "TableLiteral",
   SingleRow = 'SingleRow',  // For SELECT without FROM
   TableFunctionCall = 'TableFunctionCall',
 

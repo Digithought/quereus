@@ -1,5 +1,5 @@
 import type * as AST from '../../parser/ast.js';
-import { VoidNode } from './plan-node.js';
+import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -28,7 +28,7 @@ export class CreateViewNode extends VoidNode {
 		return `CREATE VIEW ${ifNotExistsClause}${this.schemaName}.${this.viewName}${columnsClause}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			viewName: this.viewName,
 			schemaName: this.schemaName,
@@ -36,5 +36,9 @@ export class CreateViewNode extends VoidNode {
 			columns: this.columns,
 			selectSql: this.sql
 		};
+	}
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
 	}
 }

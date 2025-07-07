@@ -21,6 +21,7 @@ import { ReturningNode } from '../nodes/returning-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
+import { buildConstraintChecks } from './constraint-builder.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
@@ -243,12 +244,21 @@ export function buildInsertStmt(
 
 	const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
 
+	// Build constraint checks at plan time
+	const constraintChecks = buildConstraintChecks(
+		ctx,
+		tableReference.tableSchema,
+		RowOp.INSERT,
+		oldAttributes,
+		newAttributes,
+		flatRowDescriptor
+	);
+
 	const insertNode = new InsertNode(
 		ctx.scope,
 		tableReference,
 		finalTargetColumns,
 		expandedSourceNode,
-		stmt.onConflict,
 		flatRowDescriptor
 	);
 
@@ -258,7 +268,9 @@ export function buildInsertStmt(
 		tableReference,
 		RowOp.INSERT,
 		oldRowDescriptor,
-		newRowDescriptor
+		newRowDescriptor,
+		flatRowDescriptor,
+		constraintChecks
 	);
 
 	// Add DML executor node to perform the actual database insert operations

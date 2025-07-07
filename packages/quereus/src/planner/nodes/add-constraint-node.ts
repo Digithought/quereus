@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type VoidNode } from './plan-node.js';
+import { PhysicalProperties, PlanNode, type VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { VoidType } from '../../common/datatype.js';
@@ -45,7 +45,7 @@ export class AddConstraintNode extends PlanNode implements VoidNode {
     return `ADD CONSTRAINT ${constraintName} ${constraintType}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     return {
       table: this.table.tableSchema.name,
       schema: this.table.tableSchema.schemaName,
@@ -55,4 +55,8 @@ export class AddConstraintNode extends PlanNode implements VoidNode {
       operations: this.constraint.operations,
     };
   }
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
+	}
 }

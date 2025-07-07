@@ -1,6 +1,6 @@
 import type { WindowNode } from '../../planner/nodes/window-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
-import type { Row, SqlValue } from '../../common/types.js';
+import type { OutputValue, Row, SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
@@ -10,6 +10,7 @@ import { compareSqlValues, createOrderByComparatorFast, resolveCollation } from 
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { RowDescriptor } from '../../planner/nodes/plan-node.js';
+import { withRowContext, withAsyncRowContext } from '../context-helpers.js';
 
 const log = createLogger('runtime:emit:window');
 
@@ -45,7 +46,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 	async function* run(
 		rctx: RuntimeContext,
 		source: AsyncIterable<Row>,
-		...callbacks: Array<(ctx: RuntimeContext) => any>
+		...callbacks: Array<(ctx: RuntimeContext) => OutputValue>
 	): AsyncIterable<Row> {
 		log('Starting window function execution');
 
@@ -113,23 +114,22 @@ async function groupByPartitions(
 	const partitions = new Map<string, Row[]>();
 
 	for (const row of rows) {
-		rctx.context.set(sourceRowDescriptor, () => row);
-		try {
+		const partitionKey = await withAsyncRowContext(rctx, sourceRowDescriptor, () => row, async () => {
 			// Evaluate partition expressions
-			const partitionValues = partitionCallbacks.map(callback => callback(rctx));
+			const partitionValues = await Promise.all(partitionCallbacks.map(callback =>
+				callback(rctx)
+			));
 
 			// Create partition key
-			const partitionKey = partitionValues.map(val =>
+			return partitionValues.map(val =>
 				val === null ? 'NULL' : String(val)
 			).join('|');
+		});
 
-			if (!partitions.has(partitionKey)) {
-				partitions.set(partitionKey, []);
-			}
-			partitions.get(partitionKey)!.push(row);
-		} finally {
-			rctx.context.delete(sourceRowDescriptor);
+		if (!partitions.has(partitionKey)) {
+			partitions.set(partitionKey, []);
 		}
+		partitions.get(partitionKey)!.push(row);
 	}
 
 	return partitions;
@@ -142,9 +142,9 @@ async function* processPartition(
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor,
 	outputRowDescriptor: RowDescriptor,
-	partitionCallbacks: Array<(ctx: RuntimeContext) => any>,
-	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
-	funcArgCallbacks: Array<((ctx: RuntimeContext) => any) | null>
+	partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
+	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
+	funcArgCallbacks: Array<(ctx: RuntimeContext) => OutputValue | null>
 ): AsyncIterable<Row> {
 	// Sort rows according to ORDER BY specification
 	const sortedRows = await sortRows(
@@ -158,8 +158,8 @@ async function* processPartition(
 		const outputRow = [...currentRow];
 
 		// Set up context for current row
-		rctx.context.set(sourceRowDescriptor, () => currentRow);
-		try {
+		const outputValues = await withRowContext(rctx, sourceRowDescriptor, () => currentRow, async () => {
+			const values: SqlValue[] = [];
 			// Compute each window function
 			for (let funcIndex = 0; funcIndex < plan.functions.length; funcIndex++) {
 				const func = plan.functions[funcIndex];
@@ -169,7 +169,7 @@ async function* processPartition(
 				let value: SqlValue;
 
 				if (schema.kind === 'ranking') {
-					value = computeRankingFunction(
+					value = await computeRankingFunction(
 						func.functionName, sortedRows, currentIndex,
 						orderByCallbacks, rctx, sourceRowDescriptor
 					);
@@ -186,26 +186,23 @@ async function* processPartition(
 					);
 				}
 
-				outputRow.push(value);
+				values.push(value);
 			}
-		} finally {
-			rctx.context.delete(sourceRowDescriptor);
-		}
+			return values;
+		});
+
+		// Add computed values to output row
+		outputRow.push(...outputValues);
 
 		// Yield the output row
-		rctx.context.set(outputRowDescriptor, () => outputRow as Row);
-		try {
-			yield outputRow as Row;
-		} finally {
-			rctx.context.delete(outputRowDescriptor);
-		}
+		yield await withRowContext(rctx, outputRowDescriptor, () => outputRow as Row, () => outputRow as Row);
 	}
 }
 
 async function sortRows(
 	rows: Row[],
 	orderBy: any[],
-	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
+	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
 ): Promise<Row[]> {
@@ -220,34 +217,29 @@ async function sortRows(
 		const collationFunc = resolveCollation('BINARY');
 		return createOrderByComparatorFast(
 			orderClause.direction,
-			(orderClause as any).nullsOrdering,
+			orderClause.nulls,
 			collationFunc
 		);
 	});
 
-	return [...rows].sort((a, b) => {
+	// Pre-evaluate ORDER BY values for all rows to avoid async in sort
+	const rowsWithValues = await Promise.all(rows.map(async (row) => {
+		const values = await Promise.all(orderByCallbacks.map(async (callback) => {
+			return await withAsyncRowContext(rctx, sourceRowDescriptor, () => row, async () => {
+				const result = callback(rctx);
+				return await Promise.resolve(result);
+			});
+		}));
+		return { row, values };
+	}));
+
+	// Now sort using the pre-evaluated values
+	rowsWithValues.sort((a, b) => {
 		// Compare each ORDER BY expression in sequence
 		for (let i = 0; i < orderBy.length; i++) {
-			const callback = orderByCallbacks[i];
 			const comparator = orderByComparators[i];
-
-			// Evaluate expression for row A
-			rctx.context.set(sourceRowDescriptor, () => a);
-			let valueA: SqlValue;
-			try {
-				valueA = callback(rctx);
-			} finally {
-				rctx.context.delete(sourceRowDescriptor);
-			}
-
-			// Evaluate expression for row B
-			rctx.context.set(sourceRowDescriptor, () => b);
-			let valueB: SqlValue;
-			try {
-				valueB = callback(rctx);
-			} finally {
-				rctx.context.delete(sourceRowDescriptor);
-			}
+			const valueA = a.values[i] as SqlValue;
+			const valueB = b.values[i] as SqlValue;
 
 			// Use pre-created optimized comparator
 			const comparison = comparator(valueA, valueB);
@@ -262,16 +254,19 @@ async function sortRows(
 
 		return 0; // All ORDER BY expressions are equal
 	});
+
+	// Extract just the rows in sorted order
+	return rowsWithValues.map(item => item.row);
 }
 
-function computeRankingFunction(
+async function computeRankingFunction(
 	functionName: string,
 	sortedRows: Row[],
 	currentIndex: number,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
-): number {
+): Promise<number> {
 	switch (functionName.toLowerCase()) {
 		case 'row_number':
 			return currentIndex + 1;
@@ -283,9 +278,9 @@ function computeRankingFunction(
 
 			for (let i = 0; i < currentIndex; i++) {
 				const prevRow = sortedRows[i];
-				if (!areRowsEqualInOrderBy(
+				if (!(await areRowsEqualInOrderBy(
 					prevRow, currentRow, orderByCallbacks, rctx, sourceRowDescriptor
-				)) {
+				))) {
 					rank = i + 2; // Rank is 1-based and accounts for ties
 				}
 			}
@@ -300,11 +295,11 @@ function computeRankingFunction(
 
 			for (let i = 0; i < currentIndex; i++) {
 				const prevRow = sortedRows[i];
-				if (!areRowsEqualInOrderBy(
+				if (!(await areRowsEqualInOrderBy(
 					prevRow, currentRow, orderByCallbacks, rctx, sourceRowDescriptor
-				)) {
+				))) {
 					// Create a key for this distinct set of ORDER BY values
-					const key = getOrderByKey(prevRow, orderByCallbacks, rctx, sourceRowDescriptor);
+					const key = await getOrderByKey(prevRow, orderByCallbacks, rctx, sourceRowDescriptor);
 					if (!seenValues.has(key)) {
 						seenValues.add(key);
 						denseRank++;
@@ -335,20 +330,20 @@ async function computeAggregateFunction(
 	// Determine frame bounds
 	const frameBounds = getFrameBounds(frame, sortedRows.length, currentIndex, hasOrderBy);
 
-	let accumulator = null;
+	let accumulator: any = null;
 	let rowCount = 0;
 
 	// Process rows within the frame
 	for (let i = frameBounds.start; i <= frameBounds.end; i++) {
 		const frameRow = sortedRows[i];
 
-		rctx.context.set(sourceRowDescriptor, () => frameRow);
-		try {
+		await withAsyncRowContext(rctx, sourceRowDescriptor, () => frameRow, async () => {
 			let argValue: SqlValue = null;
 
 			// Get argument value if callback exists
 			if (argCallback) {
-				argValue = argCallback(rctx);
+				const result = argCallback(rctx);
+				argValue = await Promise.resolve(result);
 			}
 
 			// Apply aggregate step function
@@ -356,9 +351,7 @@ async function computeAggregateFunction(
 				accumulator = schema.step(accumulator, argValue);
 				rowCount++;
 			}
-		} finally {
-			rctx.context.delete(sourceRowDescriptor);
-		}
+		});
 	}
 
 	// Apply final function
@@ -421,31 +414,25 @@ function getFrameBounds(
 	return { start, end };
 }
 
-function areRowsEqualInOrderBy(
+async function areRowsEqualInOrderBy(
 	rowA: Row,
 	rowB: Row,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
-): boolean {
+): Promise<boolean> {
 	for (const callback of orderByCallbacks) {
 		// Get value for row A
-		rctx.context.set(sourceRowDescriptor, () => rowA);
-		let valueA: SqlValue;
-		try {
-			valueA = callback(rctx);
-		} finally {
-			rctx.context.delete(sourceRowDescriptor);
-		}
+		const valueA = await withAsyncRowContext(rctx, sourceRowDescriptor, () => rowA, async () => {
+			const result = callback(rctx);
+			return await Promise.resolve(result);
+		});
 
 		// Get value for row B
-		rctx.context.set(sourceRowDescriptor, () => rowB);
-		let valueB: SqlValue;
-		try {
-			valueB = callback(rctx);
-		} finally {
-			rctx.context.delete(sourceRowDescriptor);
-		}
+		const valueB = await withAsyncRowContext(rctx, sourceRowDescriptor, () => rowB, async () => {
+			const result = callback(rctx);
+			return await Promise.resolve(result);
+		});
 
 		// If any ORDER BY expression differs, rows are not equal
 		if (compareSqlValues(valueA, valueB) !== 0) {
@@ -456,17 +443,16 @@ function areRowsEqualInOrderBy(
 	return true; // All ORDER BY expressions are equal
 }
 
-function getOrderByKey(
+async function getOrderByKey(
 	row: Row,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
-): string {
-	rctx.context.set(sourceRowDescriptor, () => row);
-	try {
-		const values = orderByCallbacks.map(callback => callback(rctx));
+): Promise<string> {
+	return await withAsyncRowContext(rctx, sourceRowDescriptor, () => row, async () => {
+		const values = await Promise.all(orderByCallbacks.map(callback =>
+			Promise.resolve(callback(rctx))
+		));
 		return values.map(val => val === null ? 'NULL' : String(val)).join('|');
-	} finally {
-		rctx.context.delete(sourceRowDescriptor);
-	}
+	});
 }

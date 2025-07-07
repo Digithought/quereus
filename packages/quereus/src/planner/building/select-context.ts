@@ -27,8 +27,8 @@ export function buildWithContext(
 	contextWithCTEs: PlanningContext;
 	cteNodes: Map<string, CTEPlanNode>;
 } {
-	// Start with parent CTEs
-	const cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs);
+	// Start with parent CTEs - either from parameter or from context
+	const cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs.size > 0 ? parentCTEs : (ctx.cteNodes ?? new Map()));
 	let contextWithCTEs = ctx;
 
 	if (stmt.withClause) {
@@ -40,11 +40,11 @@ export function buildWithContext(
 
 		// Create a new scope that includes the CTEs
 		const cteScope = createCTEScope(cteNodes, ctx);
-		contextWithCTEs = { ...ctx, scope: cteScope };
-	} else if (parentCTEs.size > 0) {
+		contextWithCTEs = { ...ctx, scope: cteScope, cteNodes };
+	} else if (cteNodes.size > 0) {
 		// No WITH clause but we have parent CTEs, create scope for them
-		const cteScope = createCTEScope(parentCTEs, ctx);
-		contextWithCTEs = { ...ctx, scope: cteScope };
+		const cteScope = createCTEScope(cteNodes, ctx);
+		contextWithCTEs = { ...ctx, scope: cteScope, cteNodes };
 	}
 
 	return { contextWithCTEs, cteNodes };

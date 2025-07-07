@@ -7,6 +7,8 @@ import type { Scope } from "../scopes/scope.js";
 import { compareSqlValues } from "../../util/comparison.js";
 import type { Expression } from "../../parser/ast.js";
 import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
+import { quereusError } from "../../common/errors.js";
+import { StatusCode } from "../../common/types.js";
 
 export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
 	override readonly nodeType = PlanNodeType.ScalarSubquery;
@@ -36,8 +38,9 @@ export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
 		};
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly PlanNode[] {
+		// Include the subquery so the optimizer can visit it
+		return [this.subquery];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
@@ -45,17 +48,35 @@ export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`ScalarSubqueryNode expects 0 children, got ${newChildren.length}`);
+		if (newChildren.length !== 1) {
+			quereusError(`ScalarSubqueryNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
 		}
-		return this; // No children in getChildren(), subquery is accessed via getRelations()
+
+		const [newSubquery] = newChildren;
+
+		// Type check
+		if (newSubquery.getType().typeClass !== 'relation') {
+			quereusError('ScalarSubqueryNode: child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Check if anything changed
+		if (newSubquery === this.subquery) {
+			return this;
+		}
+
+		// Create new instance
+		return new ScalarSubqueryNode(
+			this.scope,
+			this.expression,
+			newSubquery as RelationalPlanNode
+		);
 	}
 
 	override toString(): string {
 		return `(subquery)`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			subqueryType: 'scalar',
 			resultType: formatScalarType(this.getType()),
@@ -89,11 +110,16 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		}
 	}
 
-	getChildren(): readonly ScalarPlanNode[] {
+	getChildren(): readonly PlanNode[] {
+		// Include condition, values (if any), and source subquery (if any)
+		const children: PlanNode[] = [this.condition];
 		if (this.values) {
-			return [this.condition, ...this.values];
+			children.push(...this.values);
 		}
-		return [this.condition];
+		if (this.source) {
+			children.push(this.source);
+		}
+		return children;
 	}
 
 	getRelations(): readonly RelationalPlanNode[] {
@@ -104,29 +130,47 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		const expectedLength = this.values ? 1 + this.values.length : 1;
+		const expectedLength = 1 + (this.values?.length ?? 0) + (this.source ? 1 : 0);
 		if (newChildren.length !== expectedLength) {
-			throw new Error(`InNode expects ${expectedLength} children, got ${newChildren.length}`);
+			quereusError(`InNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
 		}
 
-		const [newCondition, ...newValues] = newChildren;
+		let childIndex = 0;
+		const newCondition = newChildren[childIndex++];
 
-		// Type check
-		if (!('expression' in newCondition)) {
-			throw new Error('InNode: condition must be a ScalarPlanNode');
+		// Type check condition
+		if (newCondition.getType().typeClass !== 'scalar') {
+			quereusError('InNode: condition must be a ScalarPlanNode', StatusCode.INTERNAL);
 		}
 
-		for (const value of newValues) {
-			if (!('expression' in value)) {
-				throw new Error('InNode: values must be ScalarPlanNodes');
+		// Extract new values if they exist
+		let newValues: ScalarPlanNode[] | undefined;
+		if (this.values) {
+			newValues = [];
+			for (let i = 0; i < this.values.length; i++) {
+				const value = newChildren[childIndex++];
+				if (value.getType().typeClass !== 'scalar') {
+					quereusError('InNode: values must be ScalarPlanNodes', StatusCode.INTERNAL);
+				}
+				newValues.push(value as ScalarPlanNode);
+			}
+		}
+
+		// Extract new source if it exists
+		let newSource: RelationalPlanNode | undefined;
+		if (this.source) {
+			newSource = newChildren[childIndex++] as RelationalPlanNode;
+			if (newSource.getType().typeClass !== 'relation') {
+				quereusError('InNode: source must be a RelationalPlanNode', StatusCode.INTERNAL);
 			}
 		}
 
 		// Check if anything changed
 		const conditionChanged = newCondition !== this.condition;
-		const valuesChanged = this.values && newValues.some((val, i) => val !== this.values![i]);
+		const valuesChanged = this.values && newValues && newValues.some((val, i) => val !== this.values![i]);
+		const sourceChanged = newSource !== this.source;
 
-		if (!conditionChanged && !valuesChanged) {
+		if (!conditionChanged && !valuesChanged && !sourceChanged) {
 			return this;
 		}
 
@@ -135,8 +179,8 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 			this.scope,
 			this.expression,
 			newCondition as ScalarPlanNode,
-			this.source, // Source doesn't change via withChildren
-			this.values ? newValues as ScalarPlanNode[] : undefined
+			newSource,
+			newValues
 		);
 	}
 
@@ -148,7 +192,7 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		}
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			condition: formatExpression(this.condition),
 			subqueryType: this.source ? 'subquery' : 'values',
@@ -179,26 +223,45 @@ export class ExistsNode extends PlanNode implements ScalarPlanNode {
 		};
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly PlanNode[] {
+		// Include the subquery so the optimizer can visit it
+		return [this.subquery];
 	}
 
-	getRelations(): readonly [RelationalPlanNode] {
+	getRelations(): readonly RelationalPlanNode[] {
 		return [this.subquery];
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`ExistsNode expects 0 children, got ${newChildren.length}`);
+		if (newChildren.length !== 1) {
+			quereusError(`ExistsNode expects 1 child, got ${newChildren.length}`, StatusCode.INTERNAL);
 		}
-		return this; // No children in getChildren(), subquery is accessed via getRelations()
+
+		const [newSubquery] = newChildren;
+
+		// Type check
+		if (newSubquery.getType().typeClass !== 'relation') {
+			quereusError('ExistsNode: child must be a RelationalPlanNode', StatusCode.INTERNAL);
+		}
+
+		// Check if anything changed
+		if (newSubquery === this.subquery) {
+			return this;
+		}
+
+		// Create new instance
+		return new ExistsNode(
+			this.scope,
+			this.expression,
+			newSubquery as RelationalPlanNode
+		);
 	}
 
 	override toString(): string {
 		return `EXISTS (subquery)`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			subqueryType: 'exists',
 			resultType: formatScalarType(this.getType()),

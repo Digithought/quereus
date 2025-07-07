@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
-import { VoidNode } from './plan-node.js';
+import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 
@@ -21,11 +21,15 @@ export class CreateTableNode extends VoidNode {
     return `CREATE TABLE ${this.statementAst.table.name}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     return {
       table: this.statementAst.table.name,
       schema: this.statementAst.table.schema,
       statement: expressionToString(this.statementAst as any) // Convert AST to string
     };
   }
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
+	}
 }

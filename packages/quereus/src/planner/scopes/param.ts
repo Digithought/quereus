@@ -76,7 +76,6 @@ export class ParameterScope extends BaseScope {
 			return this.parentScope.resolveSymbol(symbolKey, expression);
 		}
 
-		this.addReference(parameterNode!);
 		return parameterNode;
 	}
 

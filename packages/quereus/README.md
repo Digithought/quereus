@@ -29,7 +29,7 @@ Quereus is built on a modern architecture based on partially immutable PlanNodes
     *   Handles Common Table Expressions (CTEs) and Subqueries by converting them into relational `PlanNode`s.
     *   Resolves table and function references using the Schema Manager.
     *   Performs query planning, incorporating virtual table `xBestIndex` method and table schema statistics.
-    *   **Optimizer (`src/planner/optimizer`)**: Performs query optimization, including join reordering, predicate pushdown, and other optimizations.
+    *   **Optimizer (`src/planner/optimizer`)**: Transforms logical plans into efficient physical execution plans through a rule-based optimization system. See [Optimizer Documentation](docs/optimizer.md) for details.
 4.  **Runtime (`src/runtime`)**:
     *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: Translate `PlanNode`s into a graph of `Instruction` objects.
     *   **Scheduler (`src/runtime/scheduler.ts`)**: Manages the execution flow of the `Instruction` graph.
@@ -159,22 +159,11 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Robust transaction support** - Multi-level savepoints and rollback
 *   **Rich built-in function library** - Scalar, aggregate, window, JSON, and date/time functions
 
-**Titan Optimizer Implementation Status:**
-*   ✅ **Phase 0 - Groundwork**: Foundational infrastructure complete with cost models, constraint analysis, shared caching utilities, and development standards
-*   ✅ **xBestIndex Refactor**: Modern type-safe BestAccessPlan API replacing legacy SQLite-style interfaces  
-*   ✅ **Phase 1 - Core Framework**: Complete rule registration system, trace framework, physical property utilities, statistics provider abstraction, emitter metadata, and golden plan test harness
-*   ✅ **Phase 2 - Cache & Visualize**: Intelligent materialization advisory, async stream utilities, and PlanViz CLI tool for visual plan inspection
-*   ✅ **Phase 2.5 - Generic Tree Rewriting**: Abstract `withChildren()` method eliminating manual node handling and preserving attribute IDs
-*   ✅ **Phase 3 - Constant Folding**: Functional safety flags, runtime-based evaluation, and expression boundary optimization
-*   🔄 **Phase 1.5 - Access Path Selection**: Seek/range scan infrastructure and access path selection rules  
-*   📋 **Upcoming**: Advanced optimization rules, join algorithms, and performance tooling
+**Optimizer Status:**
 
-**Current development focus:**
-*   **Access Path Selection** - Physical seek/range scan nodes and optimization rules
-*   **Phase 3 Polishing** - Plan validation, constant folding, execution metrics, and development tooling
-*   **Advanced Optimization Rules** - Predicate pushdown, join reordering, and cost-based transformations
+Quereus features a sophisticated rule-based query optimizer that transforms logical plans into efficient physical execution plans. The optimizer uses a single plan node hierarchy with logical-to-physical transformation, generic tree rewriting infrastructure, and comprehensive optimization rules including constant folding, intelligent caching, and streaming aggregation.
 
-See the [Titan Optimizer Documentation](docs/titan-optimizer.md) for detailed implementation progress and [Optimizer Conventions](docs/optimizer-conventions.md) for the rules and conventions used, as well as [Planner framework README](src/planner/framework/README.md) for optimizer framework details.
+See the [Optimizer Documentation](docs/optimizer.md) for architecture details and [Optimizer Conventions](docs/optimizer-conventions.md) for development guidelines.
 [TODO List](docs/todo.md) has remaining priorities.
 
 ## Testing

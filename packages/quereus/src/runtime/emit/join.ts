@@ -6,6 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { createRowSlot } from '../context-helpers.js';
 
 const log = createLogger('runtime:emit:join');
 
@@ -28,41 +29,41 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 		log('Starting %s join between %d left attrs and %d right attrs',
 			joinType.toUpperCase(), leftAttributes.length, rightAttributes.length);
 
-		// Process left side and join with right (pure streaming)
-		for await (const leftRow of leftSource) {
-			// Set up left context
-			rctx.context.set(leftRowDescriptor, () => leftRow);
+		// Create row slots for efficient context management
+		const leftSlot = createRowSlot(rctx, leftRowDescriptor);
+		const rightSlot = createRowSlot(rctx, rightRowDescriptor);
 
-			try {
+		try {
+			// Process left side and join with right (pure streaming)
+			for await (const leftRow of leftSource) {
+				// Set up left context
+				leftSlot.set(leftRow);
+
 				let leftMatched = false;
 
 				// Stream through right side for each left row
 				for await (const rightRow of rightCallback(rctx)) {
 					// Set up right context
-					rctx.context.set(rightRowDescriptor, () => rightRow);
+					rightSlot.set(rightRow);
 
-					try {
-						// Evaluate join condition
-						let conditionMet = true;
+					// Evaluate join condition
+					let conditionMet = true;
 
-						if (conditionCallback) {
-							// Evaluate the join condition using the callback provided by scheduler
-							const conditionResult = await conditionCallback(rctx);
-							conditionMet = !!conditionResult; // Convert to boolean
-						} else if (plan.usingColumns) {
-							// Handle USING condition: check equality of specified columns
-							conditionMet = evaluateUsingCondition(leftRow, rightRow, plan.usingColumns, leftAttributes, rightAttributes);
-						} else if (joinType === 'cross') {
-							// Cross join - always true
-							conditionMet = true;
-						}
+					if (conditionCallback) {
+						// Evaluate the join condition using the callback provided by scheduler
+						const conditionResult = await conditionCallback(rctx);
+						conditionMet = !!conditionResult; // Convert to boolean
+					} else if (plan.usingColumns) {
+						// Handle USING condition: check equality of specified columns
+						conditionMet = evaluateUsingCondition(leftRow, rightRow, plan.usingColumns, leftAttributes, rightAttributes);
+					} else if (joinType === 'cross') {
+						// Cross join - always true
+						conditionMet = true;
+					}
 
-						if (conditionMet) {
-							leftMatched = true;
-							yield [...leftRow, ...rightRow] as Row;
-						}
-					} finally {
-						rctx.context.delete(rightRowDescriptor);
+					if (conditionMet) {
+						leftMatched = true;
+						yield [...leftRow, ...rightRow] as Row;
 					}
 				}
 
@@ -73,22 +74,23 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 					const outputRow = [...leftRow, ...nullPadding] as Row;
 					yield outputRow;
 				}
-			} finally {
-				rctx.context.delete(leftRowDescriptor);
 			}
-		}
 
-		// Handle right outer join semantics - we need to track which right rows were matched
-		// For now, we'll handle this in a simpler way by iterating again for right/full outer joins
-		if (joinType === 'right' || joinType === 'full') {
-			// For right outer joins, we need to find unmatched right rows
-			// This is more complex and less efficient - a real implementation would track matches
-			// For now, we'll implement a simplified version
-			log('Right/full outer join - checking for unmatched right rows');
+			// Handle right outer join semantics - we need to track which right rows were matched
+			// For now, we'll handle this in a simpler way by iterating again for right/full outer joins
+			if (joinType === 'right' || joinType === 'full') {
+				// For right outer joins, we need to find unmatched right rows
+				// This is more complex and less efficient - a real implementation would track matches
+				// For now, we'll implement a simplified version
+				log('Right/full outer join - checking for unmatched right rows');
 
-			// We'd need to track which right rows were matched during the main loop
-			// For now, we'll skip this implementation detail
-			// TODO: Implement proper right outer join semantics
+				// We'd need to track which right rows were matched during the main loop
+				// For now, we'll skip this implementation detail
+				// TODO: Implement proper right outer join semantics
+			}
+		} finally {
+			leftSlot.close();
+			rightSlot.close();
 		}
 	}
 

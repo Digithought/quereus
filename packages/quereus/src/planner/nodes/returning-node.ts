@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { ScalarPlanNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -150,25 +150,37 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     return [this.executor];
   }
 
-  getChildren(): readonly ScalarPlanNode[] {
-    return this.projections.map(proj => proj.node);
+  getChildren(): readonly PlanNode[] {
+    // Return executor first, then all projection expressions
+    return [this.executor, ...this.projections.map(proj => proj.node)];
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== this.projections.length) {
-      throw new Error(`ReturningNode expects ${this.projections.length} children, got ${newChildren.length}`);
+    const expectedChildren = 1 + this.projections.length; // executor + projections
+    if (newChildren.length !== expectedChildren) {
+      throw new Error(`ReturningNode expects ${expectedChildren} children, got ${newChildren.length}`);
     }
 
-    // Type check
-    for (const child of newChildren) {
-      if (!('expression' in child)) {
-        throw new Error('ReturningNode: all children must be ScalarPlanNodes');
+    const [newExecutor, ...newProjectionNodes] = newChildren;
+
+    // Type check the executor
+    if (!isRelationalNode(newExecutor)) {
+      throw new Error('ReturningNode: first child must be a RelationalPlanNode (executor)');
+    }
+
+    // Type check projection expressions
+    for (let i = 0; i < newProjectionNodes.length; i++) {
+      const expr = newProjectionNodes[i];
+      if (!('expression' in expr)) {
+        throw new Error(`ReturningNode: projection child ${i + 1} must be a ScalarPlanNode`);
       }
     }
 
     // Check if anything changed
-    const childrenChanged = newChildren.some((child, i) => child !== this.projections[i].node);
-    if (!childrenChanged) {
+    const executorChanged = newExecutor !== this.executor;
+    const projectionsChanged = newProjectionNodes.some((child, i) => child !== this.projections[i].node);
+
+    if (!executorChanged && !projectionsChanged) {
       return this;
     }
 
@@ -177,7 +189,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
 
     // Create new projections with preserved attribute IDs
     const newProjections = this.projections.map((proj, i) => ({
-      node: newChildren[i] as ScalarPlanNode,
+      node: newProjectionNodes[i] as ScalarPlanNode,
       alias: proj.alias,
       attributeId: originalAttributes[i].id // Preserve original attribute ID
     }));
@@ -185,7 +197,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     // Create new instance with preserved attributes
     return new ReturningNode(
       this.scope,
-      this.executor, // Executor doesn't change via withChildren
+      newExecutor as RelationalPlanNode,
       newProjections,
       originalAttributes // Pass original attributes to preserve IDs
     );
@@ -202,7 +214,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     return `RETURNING ${projList}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     return {
       executor: this.executor.nodeType,
       projectionCount: this.projections.length,
@@ -210,19 +222,6 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
         alias: proj.alias,
         expression: proj.node.toString()
       }))
-    };
-  }
-
-  getPhysical(childrenPhysical: PhysicalProperties[]): PhysicalProperties {
-    const executorPhysical = childrenPhysical[0];
-
-    return {
-      estimatedRows: executorPhysical?.estimatedRows,
-      uniqueKeys: executorPhysical?.uniqueKeys,
-      readonly: false, // RETURNING is part of a mutating operation
-      deterministic: executorPhysical?.deterministic ?? true,
-      idempotent: executorPhysical?.idempotent ?? false,
-      constant: false // Never constant
     };
   }
 }

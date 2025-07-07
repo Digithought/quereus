@@ -10,6 +10,7 @@ import { createLogger } from '../../common/logger.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 import { Database } from '../../core/database.js';
+import type { PlanNode } from '../nodes/plan-node.js';
 
 const log = createLogger('optimizer:framework:context');
 
@@ -38,6 +39,12 @@ export interface OptContext {
 
 	/** Database instance */
 	readonly db: Database;
+
+	/** Context-scoped visited rules tracking (nodeId → ruleIds) */
+	readonly visitedRules: Map<string, Set<string>>;
+
+	/** Cache of already-optimized nodes within this context (nodeId → optimized result) */
+	readonly optimizedNodes: Map<string, PlanNode>;
 }
 
 /**
@@ -45,6 +52,8 @@ export interface OptContext {
  */
 export class OptimizationContext implements OptContext {
 	readonly context = new Map<string, any>();
+	readonly visitedRules = new Map<string, Set<string>>();
+	readonly optimizedNodes = new Map<string, PlanNode>();
 
 	constructor(
 		public readonly optimizer: Optimizer,
@@ -61,7 +70,7 @@ export class OptimizationContext implements OptContext {
 	 * Create a new context for a different phase
 	 */
 	withPhase(phase: 'rewrite' | 'impl'): OptimizationContext {
-		return new OptimizationContext(
+		const newContext = new OptimizationContext(
 			this.optimizer,
 			this.stats,
 			this.tuning,
@@ -69,6 +78,10 @@ export class OptimizationContext implements OptContext {
 			this.db,
 			this.depth,
 		);
+
+		// Copy visited tracking state
+		this.copyTrackingState(newContext);
+		return newContext;
 	}
 
 	/**
@@ -79,7 +92,7 @@ export class OptimizationContext implements OptContext {
 			quereusError(`Maximum optimization depth exceeded: ${this.depth}`, StatusCode.ERROR);
 		}
 
-		return new OptimizationContext(
+		const newContext = new OptimizationContext(
 			this.optimizer,
 			this.stats,
 			this.tuning,
@@ -87,6 +100,10 @@ export class OptimizationContext implements OptContext {
 			this.db,
 			this.depth + 1,
 		);
+
+		// Copy visited tracking state
+		this.copyTrackingState(newContext);
+		return newContext;
 	}
 
 	/**
@@ -110,7 +127,24 @@ export class OptimizationContext implements OptContext {
 		// Add new context
 		newContext.context.set(key, value);
 
+		// Copy visited tracking state
+		this.copyTrackingState(newContext);
 		return newContext;
+	}
+
+	/**
+	 * Copy visited tracking state to another context
+	 */
+	private copyTrackingState(target: OptimizationContext): void {
+		// Copy visitedRules
+		for (const [nodeId, ruleIds] of this.visitedRules) {
+			target.visitedRules.set(nodeId, new Set(ruleIds));
+		}
+
+		// Copy optimizedNodes
+		for (const [nodeId, node] of this.optimizedNodes) {
+			target.optimizedNodes.set(nodeId, node);
+		}
 	}
 
 	/**

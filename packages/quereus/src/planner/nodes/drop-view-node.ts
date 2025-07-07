@@ -1,4 +1,4 @@
-import { VoidNode } from './plan-node.js';
+import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 
@@ -23,11 +23,15 @@ export class DropViewNode extends VoidNode {
 		return `DROP VIEW ${ifExistsClause}${this.schemaName}.${this.viewName}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			viewName: this.viewName,
 			schemaName: this.schemaName,
 			ifExists: this.ifExists
 		};
+	}
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
 	}
 }

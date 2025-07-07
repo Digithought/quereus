@@ -84,16 +84,23 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	getChildren(): readonly PlanNode[] {
-		// Return all scalar expressions: partition expressions, order by expressions, and function arguments
-		const children: PlanNode[] = [];
-		children.push(...this.partitionExpressions);
-		children.push(...this.orderByExpressions);
-		children.push(...this.functionArguments.filter(arg => arg !== null) as ScalarPlanNode[]);
-		return children;
+		return [
+			// Include *both* the relational source and all scalar expression children so
+			// that generic optimizer passes (e.g. access-path selection) can traverse
+			// into the relational subtree.
+			this.source,
+
+			// Scalar expressions: partition expressions, order-by expressions, and
+			// any non-null function arguments
+			...this.partitionExpressions,
+			...this.orderByExpressions,
+			...this.functionArguments.filter(arg => arg !== null) as ScalarPlanNode[]
+		];
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		const expectedLength = this.partitionExpressions.length +
+		const expectedLength = 1 + // relational source
+			this.partitionExpressions.length +
 			this.orderByExpressions.length +
 			this.functionArguments.filter(arg => arg !== null).length;
 
@@ -101,15 +108,11 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			throw new Error(`WindowNode expects ${expectedLength} children, got ${newChildren.length}`);
 		}
 
-		// Type check
-		for (const child of newChildren) {
-			if (!('expression' in child)) {
-				throw new Error('WindowNode: all children must be ScalarPlanNodes');
-			}
-		}
+		// First child is the relational *source*.
+		const newSource = newChildren[0] as RelationalPlanNode;
+		let childIndex = 1;
 
-		// Split children back into their respective arrays
-		let childIndex = 0;
+		// Remaining children are scalar expressions.
 		const newPartitionExpressions = newChildren.slice(childIndex, childIndex + this.partitionExpressions.length) as ScalarPlanNode[];
 		childIndex += this.partitionExpressions.length;
 
@@ -129,29 +132,32 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			}
 		}
 
-		// Check if anything changed
+		// Detect changes
+		const sourceChanged = newSource !== this.source;
 		const partitionChanged = newPartitionExpressions.some((expr, i) => expr !== this.partitionExpressions[i]);
 		const orderByChanged = newOrderByExpressions.some((expr, i) => expr !== this.orderByExpressions[i]);
 		const functionArgsChanged = newFunctionArguments.some((arg, i) => arg !== this.functionArguments[i]);
 
-		if (!partitionChanged && !orderByChanged && !functionArgsChanged) {
+		if (!sourceChanged && !partitionChanged && !orderByChanged && !functionArgsChanged) {
 			return this;
 		}
 
 		// **CRITICAL**: Preserve original attribute IDs to maintain column reference stability
 		const originalAttributes = this.getAttributes();
 
-		// Create new instance with preserved attributes
 		return new WindowNode(
 			this.scope,
-			this.source, // Source doesn't change via withChildren
+			newSource,
 			this.windowSpec,
-			this.functions, // Functions don't change via withChildren
+			this.functions,
 			newPartitionExpressions,
 			newOrderByExpressions,
 			newFunctionArguments,
-			undefined, // estimatedCostOverride
-			originalAttributes // Preserve original attribute IDs
+			undefined,
+			// Preserve attributes only when the source is unchanged so that column IDs
+			// stay consistent. If the source relation changed, let the WindowNode rebuild
+			// its attribute list so that descriptors match the new underlying schema.
+			sourceChanged ? undefined : originalAttributes
 		);
 	}
 
@@ -176,7 +182,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		return `WINDOW ${funcNames} OVER (${clauses})`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			windowSpec: {
 				partitionBy: this.windowSpec.partitionBy.length,

@@ -40,7 +40,7 @@ export class BlockNode extends PlanNode {
     return `${this.statements.length} statements`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     return {
       numStatements: this.statements.length,
       statementTypes: this.statements.map(stmt => stmt.nodeType),

@@ -4,6 +4,7 @@ import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { withRowContextGenerator } from '../context-helpers.js';
 
 export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instruction {
 	// Use the executor's attributes to build the row descriptor
@@ -21,20 +22,12 @@ export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instru
 		...projectionCallbacks: Array<(ctx: RuntimeContext) => any>
 	): AsyncIterable<Row> {
 		// Project the results from the executor rows
-		for await (const sourceRow of executorRows) {
-			// Set up the source context - the row is already in the correct flat OLD/NEW format
-			rctx.context.set(sourceRowDescriptor, () => sourceRow);
-
-			try {
-				// Evaluate projection expressions in the context of this row
-				const outputs = projectionCallbacks.map(func => func(rctx));
-				const resolved = await Promise.all(outputs);
-				yield resolved as Row;
-			} finally {
-				// Clean up source context
-				rctx.context.delete(sourceRowDescriptor);
-			}
-		}
+		yield* withRowContextGenerator(rctx, sourceRowDescriptor, executorRows, async function* (_sourceRow) {
+			// Evaluate projection expressions in the context of this row
+			const outputs = projectionCallbacks.map(func => func(rctx));
+			const resolved = await Promise.all(outputs);
+			yield resolved as Row;
+		});
 	}
 
 	// Emit the executor (now always produces rows)

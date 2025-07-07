@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
@@ -55,7 +55,7 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode {
 		return `WHERE ${formatExpression(this.predicate)}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			predicate: formatExpression(this.predicate)
 		};
@@ -69,10 +69,10 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode {
 		const [newSource, newPredicate] = newChildren;
 
 		// Type check
-		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newSource)) {
 			quereusError('FilterNode: first child must be a RelationalPlanNode', StatusCode.INTERNAL);
 		}
-		if (!('expression' in newPredicate)) {
+		if (!isScalarNode(newPredicate)) {
 			quereusError('FilterNode: second child must be a ScalarPlanNode', StatusCode.INTERNAL);
 		}
 

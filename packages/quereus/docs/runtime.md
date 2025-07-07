@@ -235,8 +235,11 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
+import { withRowContextGenerator, createRowSlot } from '../context-helpers.js';
 
 export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): Instruction {
+	const sourceInstruction = emitPlanNode(plan.source, ctx);
+
 	// Create row descriptor for source attributes
 	const sourceRowDescriptor: RowDescriptor = [];
 	const sourceAttributes = plan.source.getAttributes();
@@ -251,29 +254,28 @@ export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): In
 		outputRowDescriptor[attr.id] = index;
 	});
 
-	// Optimal run function patterns:
-	
-	// For async generators (row-producing operations):
+	// Common run function patterns:
+
+	// Pattern 1: Simple streaming with context helper
 	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
-		for await (const row of inputRows) {
-			// Set up context for input row using row descriptor
-			rctx.context.set(sourceRowDescriptor, () => row);
-			
-			try {
-				// Process each row
+		yield* withRowContextGenerator(rctx, sourceRowDescriptor, inputRows, async function* (row) {
+			// Process each row - column references automatically resolve
+			const processedRow = processRow(row, plan.operationParam);
+			yield processedRow;
+		});
+	}
+
+	// Pattern 2: High-volume streaming with row slot (for scan-like operations)
+	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
+		const rowSlot = createRowSlot(rctx, sourceRowDescriptor);
+		try {
+			for await (const row of inputRows) {
+				rowSlot.set(row);
 				const processedRow = processRow(row, plan.operationParam);
-				
-				// Set up context for output row (if different from input)
-				rctx.context.set(outputRowDescriptor, () => processedRow);
-				try {
-					yield processedRow;
-				} finally {
-					rctx.context.delete(outputRowDescriptor);
-				}
-			} finally {
-				// Clean up input context
-				rctx.context.delete(sourceRowDescriptor);
+				yield processedRow;
 			}
+		} finally {
+			rowSlot.close();
 		}
 	}
 
@@ -282,18 +284,12 @@ export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): In
 	//     return processValue(inputValue, plan.operationParam);
 	// }
 
-	// For void operations (DDL/DML) - async example:
+	// For void operations (DDL/DML):
 	// async function run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): Promise<void> {
-	//     for await (const row of inputRows) {
-	//         // Set up context for this row
-	//         rctx.context.set(sourceRowDescriptor, () => row);
-	//         try {
-	//             await performSideEffect(row);
-	//         } finally {
-	//             rctx.context.delete(sourceRowDescriptor);
-	//         }
-	//     }
-	//     return void;
+	//     await processRowsWithContext(rctx, sourceRowDescriptor, inputRows, async (row) => {
+	//         await performSideEffect(row);
+	//     });
+	//     return undefined;
 	// }
 
 	// Emit child instructions
@@ -322,41 +318,58 @@ export function registerEmitters() {
 ## Key Emitter Patterns
 
 ### Row Context Management
-**Always** set up row context using row descriptors:
-```typescript
-// Create row descriptor
-const rowDescriptor: RowDescriptor = [];
-const attributes = plan.getAttributes();
-attributes.forEach((attr, index) => {
-	rowDescriptor[attr.id] = index;
-});
+Use context helpers to manage row contexts safely and efficiently:
 
-// Set context for each row
-rctx.context.set(rowDescriptor, () => row);
-try {
-	// Process row...
+**Pattern 1: Simple row processing (withRowContextGenerator)**
+```typescript
+import { withRowContextGenerator } from '../context-helpers.js';
+
+// For simple streaming operations
+yield* withRowContextGenerator(rctx, rowDescriptor, sourceRows, async function* (row) {
+	// Process row - column references automatically resolve
+	const result = await processRow(row);
 	yield result;
+});
+```
+
+**Pattern 2: High-volume streaming (createRowSlot)**
+```typescript
+import { createRowSlot } from '../context-helpers.js';
+
+// For scan/join operations processing many rows
+const rowSlot = createRowSlot(rctx, rowDescriptor);
+try {
+	for await (const row of sourceRows) {
+		rowSlot.set(row);  // Cheap update - no Map mutation
+		yield processRow(row);
+	}
 } finally {
-	rctx.context.delete(rowDescriptor);
+	rowSlot.close();
 }
 ```
 
+**Pattern 3: One-off context (withRowContext/withAsyncRowContext)**
+```typescript
+import { withRowContext, withAsyncRowContext } from '../context-helpers.js';
+
+// Synchronous evaluation
+const result = withRowContext(rctx, rowDescriptor, () => row, () => {
+	return evaluateExpression(rctx);
+});
+
+// Async evaluation
+const result = await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
+	return await evaluateAsyncExpression(rctx);
+});
+```
+
 ### Column Reference Resolution
-Column references are resolved automatically using attribute IDs:
+Column references are resolved automatically using attribute IDs.  The runtime now searches the context **from newest → oldest**, so the most recently-pushed scope wins:
 ```typescript
 // In emitColumnReference (built-in):
 function run(ctx: RuntimeContext): SqlValue {
-	// Use deterministic lookup based on attribute ID
-	for (const [descriptor, rowGetter] of ctx.context.entries()) {
-		const columnIndex = descriptor[plan.attributeId];
-		if (columnIndex !== undefined) {
-			const row = rowGetter();
-			if (Array.isArray(row) && columnIndex < row.length) {
-				return row[columnIndex];
-			}
-		}
-	}
-	throw new QuereusError(`No row context found for column`, StatusCode.INTERNAL);
+	// Deterministic lookup: newest (innermost) scope wins
+	return resolveAttribute(ctx, plan.attributeId, plan.expression.name);
 }
 ```
 
@@ -378,19 +391,59 @@ The Scheduler executes instructions in dependency order:
 - **Error Handling**: Throw `QuereusError` with appropriate `StatusCode`
 - **Attribute Preservation**: Understand whether your node preserves or creates new attributes
 
-## Emission Context
+## Schema Resolution (Build-Time)
 
-Provides schema lookups and dependency tracking during emission:
+Quereus resolves all schema dependencies during the planning phase and tracks them for automatic plan invalidation:
+
+### Early Resolution at Build Time
+
+All schema objects are resolved during planning and stored directly in plan nodes:
 
 ```typescript
-// During emission
-const tableSchema = ctx.findTable('users');
-const moduleInfo = ctx.getVtabModule('memory');
+// TableReferenceNode stores pre-resolved objects
+class TableReferenceNode {
+  constructor(
+    scope: Scope,
+    public readonly tableSchema: TableSchema,
+    public readonly vtabModule: VirtualTableModule,
+    public readonly vtabAuxData?: unknown
+  ) { ... }
+}
 
-// Capture dependencies for runtime
-const moduleKey = `vtab_module:${tableSchema.vtabModuleName}`;
-// Runtime retrieval
-const capturedModule = ctx.getCapturedSchemaObject(moduleKey);
+// ScalarFunctionCallNode stores pre-resolved function
+class ScalarFunctionCallNode {
+  constructor(
+    scope: Scope,
+    public readonly expression: AST.FunctionExpr,
+    public readonly functionSchema: FunctionSchema,
+    public readonly operands: ScalarPlanNode[]
+  ) { ... }
+}
+```
+
+### Dependency Tracking and Auto-Invalidation
+
+The planning context tracks all schema dependencies:
+
+```typescript
+// During planning
+const functionSchema = resolveFunctionSchema(ctx, 'sum', 1);
+const tableSchema = resolveTableSchema(ctx, 'users');
+const vtabModule = resolveVtabModule(ctx, 'memory');
+
+// Dependencies tracked automatically
+ctx.schemaDependencies.recordDependency({
+  type: 'function',
+  objectName: 'sum/1'
+}, functionSchema);
+```
+
+Prepared statements automatically invalidate when dependencies change:
+
+```typescript
+// Schema change triggers automatic plan invalidation
+schemaManager.createTable(...); // Emits 'table_added' event
+// → Statements using affected schema objects recompile automatically
 ```
 
 ## Attribute-Based Context System
@@ -473,6 +526,10 @@ set DEBUG=quereus:runtime:context* && yarn test
 - Always use the logging helpers: `logContextPush()` and `logContextPop()`
 - Include meaningful notes that identify the operation context
 - Log attribute information when setting up row descriptors
+- Always use context helpers (`withRowContext`, `withAsyncRowContext`, `withRowContextGenerator`, `createRowSlot`)
+- Never call `rctx.context.set/delete` directly
+- Choose the appropriate helper based on your use case
+- Include meaningful notes in your instruction's `note` field
 
 ## Bags vs Sets (Relational Semantics)
 
@@ -565,15 +622,17 @@ function logContextPop(descriptor: RowDescriptor, note: string) {
 	ctxLog('POP context %s: attrs=[%s]', note, attrs.join(','));
 }
 
-// In your emitter:
-ctx.context.set(rowDescriptor, () => row);
-logContextPush(rowDescriptor, 'my-operation', attributes);
-try {
-	// Process row...
-} finally {
-	logContextPop(rowDescriptor, 'my-operation');
-	ctx.context.delete(rowDescriptor);
-}
+// Example of debugging helpers (if needed for troubleshooting):
+// Can use withRowContext/withAsyncRowContext/withRowContextGenerator with logging
+const result = withRowContext(rctx, rowDescriptor, () => row, () => {
+	logContextPush(rowDescriptor, 'my-operation', attributes);
+	try {
+		// Process row - column references resolve automatically
+		return processExpression(rctx);
+	} finally {
+		logContextPop(rowDescriptor, 'my-operation');
+	}
+});
 ```
 
 ## Bags vs Sets (Relational Semantics)
@@ -674,8 +733,11 @@ During statement building, mutation operations generate:
 
 **Context Setup**: Single flat context eliminates attribute ID collisions:
 ```typescript
+// Use withRowContext for constraint evaluation
 const flatRow = composeOldNewRow(oldRow, newRow, columnCount);
-rctx.context.set(flatRowDescriptor, () => flatRow);
+await withAsyncRowContext(rctx, flatRowDescriptor, () => flatRow, async () => {
+	await evaluateConstraints(rctx);
+});
 ```
 
 **Symbol Resolution**: Column references resolve deterministically:
@@ -693,7 +755,7 @@ rctx.context.set(flatRowDescriptor, () => flatRow);
 - **Easier Reasoning**: Users can reliably reference OLD/NEW in any mutation context
 - **Future-Proof**: Supports triggers, defaults, and other features that need OLD/NEW access
 
-### Migration from Conditional Model
+### Don't use Conditional Model
 
 The previous model used conditional OLD/NEW descriptors with metadata properties:
 ```typescript
@@ -703,9 +765,12 @@ if (plan.oldRowDescriptor) {
 }
 // Plus hidden __updateRowData properties
 
-// NEW MODEL - always-present flat context  
+// CURRENT MODEL - always-present flat context with helpers
 const flatRow = composeOldNewRow(oldRow, newRow, columnCount);
-rctx.context.set(flatRowDescriptor, () => flatRow);
+yield* withRowContextGenerator(rctx, flatRowDescriptor, flatRows, async function* (flatRow) {
+	// Process mutations with proper context
+	yield flatRow;
+});
 ```
 
 This eliminates the break-fix cycle where attribute ID conflicts caused unpredictable column resolution behavior.
@@ -714,18 +779,25 @@ This eliminates the break-fix cycle where attribute ID conflicts caused unpredic
 
 ### Row Processing with Context
 ```typescript
+// Simple streaming pattern
 async function* run(rctx: RuntimeContext, input: AsyncIterable<Row>): AsyncIterable<Row> {
-	for await (const row of input) {
-		// Set up row context using row descriptor
-		rctx.context.set(rowDescriptor, () => row);
-		try {
-			// Process row - column references will resolve automatically
-			const result = await processRow(row);
-			yield result;
-		} finally {
-			// Always clean up context
-			rctx.context.delete(rowDescriptor);
+	yield* withRowContextGenerator(rctx, rowDescriptor, input, async function* (row) {
+		// Process row - column references resolve automatically
+		const result = await processRow(row, rctx);
+		yield result;
+	});
+}
+
+// High-volume streaming pattern (scan, join)
+async function* run(rctx: RuntimeContext, input: AsyncIterable<Row>): AsyncIterable<Row> {
+	const rowSlot = createRowSlot(rctx, rowDescriptor);
+	try {
+		for await (const row of input) {
+			rowSlot.set(row);
+			yield processRow(row, rctx);
 		}
+	} finally {
+		rowSlot.close();
 	}
 }
 ```
@@ -741,189 +813,66 @@ function run(rctx: RuntimeContext, ...args: SqlValue[]): SqlValue {
 ### Side Effects (DDL/DML)
 ```typescript
 async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<undefined> {
+	// Process each row with proper context
 	for await (const row of input) {
-		rctx.context.set(rowDescriptor, () => row);
-		try {
-			await performMutation(row);
-		} finally {
-			rctx.context.delete(rowDescriptor);
-		}
+		await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
+			await performMutation(row, rctx);
+		});
 	}
 	return undefined;
 }
 ```
 
-## Optimiser Architecture (Titan Phase-I)
+## Query Optimizer Integration
 
-Titan uses a single plan node hierarchy with a logical→physical transformation pass, enhanced by a robust generic tree rewriting infrastructure that ensures attribute ID preservation and eliminates optimizer maintenance burden.
+The Quereus optimizer transforms logical plan nodes into physical execution plans between the builder and runtime phases. This section covers the key aspects relevant to runtime emitter development.
 
-Every plan node built by the *builder* starts as **logical** (no `physical` property).
-The *optimiser* then walks the tree and transforms or marks each node so that, after optimisation, **every** node in the tree has a `physical` property and therefore has a registered runtime emitter.
+### Optimizer Overview
 
-### Key Design Points
+The optimizer uses a single plan node hierarchy with logical-to-physical transformation:
+- **Logical nodes**: Created by the builder - may or may not have physical emitters
+- **Physical nodes**: Transformed by the optimizer with execution properties
+- **Attribute preservation**: Column references use stable attribute IDs that survive optimization
 
-1. **Single hierarchy, dual phase**
-   •  One `PlanNode` type tree – no duplicated logical/physical subclasses.
-   •  Each instance carries optional `physical: PhysicalProperties` to indicate its phase.
+Key optimizer guarantees for emitter authors:
+- Every node reaching the emitter phase has `physical` properties set
+- Attribute IDs remain stable across all transformations
+- Column references can rely on deterministic attribute ID lookup
+- The optimizer respects virtual table capabilities via `BestAccessPlan`
 
-2. **Generic Tree Rewriting Infrastructure**
-   •  **Abstract `withChildren()` method**: Every `PlanNode` implements generic tree rewriting capability
-   •  **Attribute ID Preservation**: Critical architectural guarantee that column references remain valid across optimizations
-   •  **Type-Safe Reconstruction**: Each node validates child types and maintains invariants during reconstruction
-   •  **Performance Optimized**: Only creates new instances when children actually change
+### Physical Properties
 
-3. **Physical Properties**
-   •  `PhysicalProperties` captures execution characteristics: ordering, row estimates, unique keys, determinism, etc.
-   •  Nodes can implement `getPhysical(childrenPhysical)` to compute their properties based on children.
-   •  The optimizer calls this during the logical→physical transformation.
-
-4. **Transformation rules**
-   •  Rules are registered per `PlanNodeType` (see `optimizer.ts`).
-   •  Each rule can:
-     –   return *null* (not applicable),
-     –   return a **replacement node** (often a different physical algorithm), or
-     –   do a deeper rewrite (e.g. `Aggregate → Sort + StreamAggregate`).
-
-5. **Attribute ID preservation**
-   •  **Critical**: Optimizer preserves original attribute IDs during transformations
-   •  `ColumnReferenceNode` uses stable `attributeId` instead of node references
-   •  Relational nodes implement `getAttributes()` to define their output columns
-   •  This enables robust column tracking across plan transformations
-
-### Generic Tree Rewriting System
-
-The centerpiece of the Titan optimizer is its generic tree rewriting capability:
-
-**Abstract Interface:**
+Physical properties capture execution characteristics used by both optimizer and runtime:
 ```typescript
-abstract class PlanNode {
-  abstract getChildren(): readonly PlanNode[];
-  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
+interface PhysicalProperties {
+  ordering?: Ordering[];        // Output row ordering
+  estimatedRows?: number;       // Cardinality estimate
+  uniqueKeys?: number[][];      // Attribute IDs forming unique keys
+  deterministic: boolean;       // Pure and repeatable
+  readonly: boolean;            // No side effects
 }
 ```
 
-**Generic Optimizer Core:**
+These can be overridden through overriding the computePhysical() plan node method, otherwise these are inherited from child nodes or are defaults.
 ```typescript
-private optimizeChildren(node: PlanNode): PlanNode {
-  const originalChildren = node.getChildren();
-  const optimizedChildren = originalChildren.map(child => this.optimizeNode(child));
-  
-  const childrenChanged = optimizedChildren.some((child, i) => child !== originalChildren[i]);
-  if (!childrenChanged) {
-    return node; // No changes
-  }
-  
-  return node.withChildren(optimizedChildren); // ✅ Attribute IDs preserved
+computePhysical(): Partial<PhysicalProperties> {
+  return {
+    readonly: false,  // Side-effecting (should only be set if the node directly mutates)
+    estimatedRows: this.source.estimatedRows,
+    uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
+  };
 }
 ```
 
-**Benefits:**
-- **Eliminates Manual Node Handling**: No more 200-line `instanceof` chains in optimizer core
-- **Prevents Attribute ID Regressions**: Generic rewriting preserves column reference validity
-- **Simplifies Adding New Nodes**: New node types automatically work with optimization
-- **Type Safety**: Each node validates child types during reconstruction
+### Attribute ID System
 
-### Implementation Patterns
+The runtime's column reference resolution relies on the optimizer's attribute ID preservation:
+- Each column has a unique, stable attribute ID assigned during planning
+- The optimizer's `withChildren()` infrastructure preserves these IDs
+- Runtime column lookup uses attribute IDs, not names or positions
+- This enables robust resolution across arbitrary plan transformations
 
-**Leaf Nodes (Zero Children):**
-```typescript
-withChildren(newChildren: readonly PlanNode[]): PlanNode {
-  if (newChildren.length !== 0) {
-    throw new Error(`${this.nodeType} expects 0 children, got ${newChildren.length}`);
-  }
-  return this; // No children, so no change
-}
-```
-
-**Unary Relational Nodes:**
-```typescript
-withChildren(newChildren: readonly PlanNode[]): PlanNode {
-  if (newChildren.length !== 1) {
-    throw new Error(`FilterNode expects 1 child, got ${newChildren.length}`);
-  }
-  
-  const [newSource] = newChildren;
-  if (!('getAttributes' in newSource)) {
-    throw new Error('FilterNode: child must be a RelationalPlanNode');
-  }
-  
-  if (newSource === this.source) return this; // Optimization: no change
-  
-  return new FilterNode(this.scope, newSource, this.predicate); // Preserves attribute IDs
-}
-```
-
-**Multi-Child Complex Nodes:**
-```typescript
-withChildren(newChildren: readonly PlanNode[]): PlanNode {
-  const expectedLength = 1 + this.projections.length;
-  if (newChildren.length !== expectedLength) {
-    throw new Error(`ProjectNode expects ${expectedLength} children, got ${newChildren.length}`);
-  }
-  
-  const [newSource, ...newProjectionNodes] = newChildren;
-  
-  // Type checking and change detection...
-  
-  // ✅ Critical: Preserve original attribute IDs
-  const newProjections = this.projections.map((proj, i) => ({
-    node: newProjectionNodes[i] as ScalarPlanNode,
-    alias: proj.alias,
-    attributeId: proj.attributeId // Preserved from original
-  }));
-  
-  return new ProjectNode(this.scope, newSource, newProjections);
-}
-```
-
-### Consistent Child Enumeration
-
-All nodes implement `getChildren()` to return ALL children (both relational and scalar) in a predictable order:
-
-```typescript
-// FilterNode: source + predicate
-getChildren(): readonly [RelationalPlanNode, ScalarPlanNode] {
-  return [this.source, this.predicate];
-}
-
-// ProjectNode: source + all projection expressions  
-getChildren(): readonly PlanNode[] {
-  return [this.source, ...this.projections.map(p => p.node)];
-}
-
-// AggregateNode: source + group expressions + aggregate expressions
-getChildren(): readonly PlanNode[] {
-  return [this.source, ...this.groupBy, ...this.aggregates.map(agg => agg.expression)];
-}
-```
-
-This consistency enables the generic optimizer to work uniformly across all node types.
-
-### Example Transformations
-
-- `AggregateNode` (logical) → `SortNode + StreamAggregateNode` (physical, preserving attribute IDs)
-- `TableScanNode` → `TableScanNode` (marked physical with properties)
-- Nodes that cannot be physical (like `AggregateNode`) have `override readonly physical: undefined`
-
-### Physical Properties Inference
-
-The optimizer automatically:
-- Collects properties from all children (scalar + relational)
-- Calls node's `getPhysical()` if available
-- Applies inference rules (e.g., constant propagation)
-- **Preserves attribute IDs** when creating physical nodes
-- Ensures every node becomes physical or fails with clear error
-
-### Attribute-Based Context System Integration
-
-The optimizer's attribute ID preservation directly supports the runtime's attribute-based context system:
-
-- **Stable References**: Column references use attribute IDs that remain valid across optimizations
-- **Context Resolution**: Runtime context maps attribute IDs to column indices without fragile node lookups  
-- **Transformation Safety**: Plan transformations preserve attribute mappings, ensuring `emitColumnReference` always works
-- **No Type Checking**: Runtime avoids complex node type checking because attribute IDs provide deterministic lookup
-
-This completes the minimal framework needed to support ordered and hash aggregation as well as other decisions like index selection and join algorithms, all while maintaining robust column reference resolution through the attribute-based context system and eliminating optimizer maintenance burden through generic tree rewriting.
+For comprehensive optimizer details, see the [Optimizer Documentation](../optimizer.md).
 
 ## Type Coercion Best Practices
 
@@ -1045,32 +994,6 @@ if (conditionCallback) {
 - Direct calls bypass dependency resolution and can cause race conditions
 - Callbacks ensure proper context setup and error handling
 
-### Context Responsibility Boundaries
-
-**❌ DON'T create output context in child instructions:**
-```typescript
-// WRONG - child instruction creating output context
-const outputRow = [...leftRow, ...rightRow];
-rctx.context.set(outputRowDescriptor, () => outputRow);
-try {
-    yield outputRow;
-} finally {
-    rctx.context.delete(outputRowDescriptor);
-}
-```
-
-**✅ DO let parent instructions handle output context:**
-```typescript
-// CORRECT - just yield the row, parent will set context as needed
-const outputRow = [...leftRow, ...rightRow];
-yield outputRow;
-```
-
-**Why this matters:**
-- Parent instructions know when and how they need to access child output
-- Child output context setup is often unnecessary overhead
-- Simpler child emitters are easier to debug and optimize
-
 ### Scope Resolution Debugging
 
 When debugging column resolution issues, understand the scope hierarchy:
@@ -1097,15 +1020,29 @@ if (symbolKey === 'problematic.column') {
 
 **Context Setup Pattern:**
 ```typescript
-// Always use this pattern for row context
-rctx.context.set(rowDescriptor, () => row);
-try {
-    // Process row - column references will resolve automatically
-    const result = await processRow(row);
+// Always use context helpers for row context
+// Pattern 1: Streaming with generator helper
+yield* withRowContextGenerator(rctx, rowDescriptor, rows, async function* (row) {
+    // Process row - column references resolve automatically
+    const result = await processRow(row, rctx);
     yield result;
+});
+
+// Pattern 2: One-off async evaluation
+const result = await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
+    // Async processing with automatic cleanup
+    return await processRow(row, rctx);
+});
+
+// Pattern 3: High-volume streaming with row slot
+const slot = createRowSlot(rctx, rowDescriptor);
+try {
+    for await (const row of rows) {
+        slot.set(row);
+        yield processRow(row, rctx);
+    }
 } finally {
-    // CRITICAL: Always clean up context
-    rctx.context.delete(rowDescriptor);
+    slot.close();  // CRITICAL: Always clean up
 }
 ```
 
@@ -1137,3 +1074,105 @@ DEBUG=quereus:runtime* yarn test
 ```
 
 [Recursive CTE Execution Pattern](./recursive-cte.md)
+
+### Context Helper Functions
+
+Quereus provides helper functions in `src/runtime/context-helpers.ts` to simplify context operations and ensure consistent behavior:
+
+**`createRowSlot(rctx, descriptor)`**
+- Creates a mutable slot for efficient streaming operations
+- Installs context once, updates by reference (no Map mutations per row)
+- Perfect for scan/join operations processing many rows
+- Must call `close()` to clean up
+
+**`resolveAttribute(rctx, attributeId, columnName?)`**
+- Looks up an attribute ID in the current context
+- Searches newest → oldest (innermost scope wins)  
+- Throws descriptive error if not found
+
+**`withRowContext(rctx, descriptor, rowGetter, fn)`**
+- Executes a function with a row context
+- Executes a **synchronous** function with a row context
+- Ensures proper cleanup in finally block
+- Use for synchronous expression evaluation
+
+**`withAsyncRowContext(rctx, descriptor, rowGetter, fn)`**
+- Executes an **async** function with a row context  
+- Ensures proper cleanup in finally block
+- Use for async operations (e.g., constraint checks)
+
+**`withRowContextGenerator(rctx, descriptor, rows, fn)`**
+- Processes multiple rows with automatic context management
+- Ideal for simple streaming operations
+- Handles context setup/teardown for each row
+
+**Example usage:**
+```typescript
+import { createRowSlot, withRowContext, withAsyncRowContext, withRowContextGenerator, resolveAttribute } from '../context-helpers.js';
+
+// Pattern 1: Simple streaming with generator helper
+async function* run(rctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
+	yield* withRowContextGenerator(rctx, rowDescriptor, rows, async function* (row) {
+		const value = someExpression(rctx); // Column refs auto-resolve
+		yield processRow(row, value);
+	});
+}
+
+// Pattern 2: High-volume streaming with row slot
+async function* run(rctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
+	const slot = createRowSlot(rctx, rowDescriptor);
+	try {
+		for await (const row of rows) {
+			slot.set(row);
+			yield row; // Process millions of rows efficiently
+		}
+	} finally {
+		slot.close();
+	}
+}
+
+// Pattern 3: Synchronous expression evaluation
+function evaluateSync(rctx: RuntimeContext, row: Row): SqlValue {
+	return withRowContext(rctx, rowDescriptor, () => row, () => {
+		// Synchronous expression evaluation
+		return someExpression(rctx);
+	});
+}
+
+// Pattern 4: Async operation with context
+async function evaluateAsync(rctx: RuntimeContext, row: Row): Promise<SqlValue> {
+	return await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
+		// Async operation (e.g., constraint check)
+		return await someAsyncOperation(rctx);
+	});
+}
+```
+
+## Context Lifecycle Best Practices
+
+1. **Don't use `rctx.context.set/delete` directly** - Always use helpers
+2. **Choose the right pattern:**
+   - `withRowContextGenerator`: Default for most streaming operations
+   - `createRowSlot`: When processing > 10K rows (scan, join)  
+   - `withRowContext`: Synchronous one-off evaluations
+   - `withAsyncRowContext`: Async one-off evaluations
+3. **Always clean up:** Row slots must call `close()` in finally blocks
+4. **Context nesting is safe:** Newest context wins (newest → oldest lookup)
+
+## Scheduler Execution Model
+
+The Scheduler executes instructions in dependency order:
+
+1. **Flattening**: Converts instruction tree to linear array
+2. **Dependency Resolution**: Ensures instructions execute after their dependencies
+3. **Async Handling**: Uses `Promise.all()` for concurrent dependency resolution
+4. **Memory Management**: Clears instruction arguments after execution
+
+### Key Points for Emitter Authors
+
+- **Row Descriptors**: Always create row descriptors mapping attribute IDs to column indices
+- **Context Cleanup**: Use try/finally blocks to ensure context cleanup
+- **Return Types**: Match your function signature to expected output type
+- **Async Iterables**: Use `async function*` for row-producing operations
+- **Error Handling**: Throw `QuereusError` with appropriate `StatusCode`
+- **Attribute Preservation**: Understand whether your node preserves or creates new attributes

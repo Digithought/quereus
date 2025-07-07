@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { StatusCode } from '../../common/types.js';
@@ -58,7 +58,7 @@ export class CacheNode extends PlanNode implements UnaryRelationalNode {
 		const [newSource] = newChildren;
 
 		// Type check
-		if (!('getAttributes' in newSource) || typeof (newSource as any).getAttributes !== 'function') {
+		if (!isRelationalNode(newSource)) {
 			quereusError('CacheNode: child must be a RelationalPlanNode', StatusCode.INTERNAL);
 		}
 
@@ -84,7 +84,7 @@ export class CacheNode extends PlanNode implements UnaryRelationalNode {
 		return `CACHE (${this.strategy}, threshold=${this.threshold})`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			strategy: this.strategy,
 			threshold: this.threshold,

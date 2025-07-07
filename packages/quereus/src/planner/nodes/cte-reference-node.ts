@@ -9,8 +9,10 @@ import { Cached } from '../../util/cached.js';
  * Plan node for referencing a CTE in a FROM clause.
  * This points to a materialized CTE result.
  */
-export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
+export class CTEReferenceNode extends PlanNode implements RelationalPlanNode {
 	readonly nodeType = PlanNodeType.CTEReference;
+	private static nextRefId = 1;
+	public readonly referenceId: number;
 
 	private attributesCache: Cached<Attribute[]>;
 	private typeCache: Cached<RelationType>;
@@ -21,18 +23,25 @@ export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
 		public readonly alias?: string
 	) {
 		super(scope, 5); // Low cost since CTEs are materialized
+		this.referenceId = CTEReferenceNode.nextRefId++;
 		this.attributesCache = new Cached(() => this.buildAttributes());
 		this.typeCache = new Cached(() => this.buildType());
 	}
 
 	private buildAttributes(): Attribute[] {
-		// Preserve original attribute IDs from the CTE to ensure proper context resolution
-		// especially important for recursive CTEs where working table substitution occurs
+		// Create fresh attribute IDs when the CTE reference is aliased with a different name.
+		// This avoids collisions between multiple aliases (e.g., base AS b1, base AS b2) in
+		// correlated sub-queries. If no alias (or alias equals original name), preserve IDs
+		// so recursive CTEs continue to share the same descriptor.
+		const relationName = this.alias || this.source.cteName;
+		const useFreshIds = this.alias !== undefined && this.alias.toLowerCase() !== this.source.cteName.toLowerCase();
+
 		return this.source.getAttributes().map((attr: any) => ({
-			id: attr.id, // Preserve original ID instead of creating new one
+			id: useFreshIds ? PlanNode.nextAttrId() : attr.id,
 			name: attr.name,
 			type: attr.type,
-			sourceRelation: `cte_ref:${this.source.cteName}`
+			sourceRelation: `cte_ref:${this.source.cteName}`,
+			relationName
 		}));
 	}
 
@@ -59,8 +68,8 @@ export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
 		return this.typeCache.value;
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly [CTEPlanNode] {
+		return [this.source];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
@@ -68,10 +77,28 @@ export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`CTEReferenceNode expects 0 children, got ${newChildren.length}`);
+		if (newChildren.length !== 1) {
+			throw new Error(`CTEReferenceNode expects 1 child, got ${newChildren.length}`);
 		}
-		return this; // No children in getChildren(), source is accessed via getRelations()
+
+		const [newSource] = newChildren;
+
+		// Type check
+		if (newSource.nodeType !== PlanNodeType.CTE && newSource.nodeType !== PlanNodeType.RecursiveCTE) {
+			throw new Error(`CTEReferenceNode: child (${newSource.nodeType}) must be a CTEPlanNode`);
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance with updated source
+		return new CTEReferenceNode(
+			this.scope,
+			newSource as CTEPlanNode,
+			this.alias
+		);
 	}
 
 	override toString(): string {
@@ -79,7 +106,7 @@ export class CTEReferenceNode extends PlanNode implements UnaryRelationalNode {
 		return `CTE_REF ${this.source.cteName}${aliasText}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			cteName: this.source.cteName,
 			alias: this.alias,

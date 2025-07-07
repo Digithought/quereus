@@ -5,6 +5,7 @@ import { type SqlValue, type Row, type MaybePromise } from '../../common/types.j
 import type { EmissionContext } from '../emission-context.js';
 import { createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { withAsyncRowContext } from '../context-helpers.js';
 
 export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -31,21 +32,17 @@ export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 		const rowsWithKeys: Array<{ row: Row; keys: SqlValue[] }> = [];
 
 		for await (const sourceRow of source) {
-			// Set up context for this row using row descriptor
-			ctx.context.set(sourceRowDescriptor, () => sourceRow);
-
-			try {
+			const keys = await withAsyncRowContext(ctx, sourceRowDescriptor, () => sourceRow, async () => {
 				// Evaluate sort key expressions
-				const keys: SqlValue[] = [];
+				const keyValues: SqlValue[] = [];
 				for (const keyFunc of sortKeyFunctions) {
-					keys.push(await keyFunc(ctx));
+					const result = keyFunc(ctx);
+					keyValues.push(await Promise.resolve(result));
 				}
+				return keyValues;
+			});
 
-				rowsWithKeys.push({ row: sourceRow, keys });
-			} finally {
-				// Clean up context for this row
-				ctx.context.delete(sourceRowDescriptor);
-			}
+			rowsWithKeys.push({ row: sourceRow, keys });
 		}
 
 		// Sort the collected rows using pre-created optimized comparators

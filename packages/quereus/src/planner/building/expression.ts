@@ -1,20 +1,17 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
-import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, CollateNode } from '../nodes/scalar.js';
-import { ScalarFunctionCallNode } from '../nodes/function.js';
-import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
-import { ColumnReferenceNode } from '../nodes/reference.js';
+import { LiteralNode, BinaryOpNode, UnaryOpNode, CaseExprNode, CastNode, CollateNode, BetweenNode } from '../nodes/scalar.js';
 import { ScalarSubqueryNode, InNode, ExistsNode } from '../nodes/subquery.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { RelationType } from '../../common/datatype.js';
-import { resolveColumn, resolveParameter, resolveFunction } from '../resolve.js';
+import { resolveColumn, resolveParameter } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt } from './select.js';
-import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
+import { buildFunctionCall } from './function-call.js';
 
 export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allowAggregates: boolean = false): ScalarPlanNode {
   switch (expr.type) {
@@ -90,92 +87,13 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
       return new CollateNode(ctx.scope, expr, collateOperand);
     }
 
-		case 'function': {
-      // In HAVING context, check if this function matches an existing aggregate
-      if (ctx.aggregates && ctx.aggregates.length > 0) {
-        // Try to find a matching aggregate
-        for (const agg of ctx.aggregates) {
-          if (agg.expression instanceof AggregateFunctionCallNode) {
-            const aggFuncNode = agg.expression as AggregateFunctionCallNode;
-            // Check if function name matches and argument count matches
-            if (aggFuncNode.functionName.toLowerCase() === expr.name.toLowerCase() &&
-                aggFuncNode.args.length === expr.args.length) {
-              // Check if arguments match
-              let argsMatch = true;
-              for (let i = 0; i < expr.args.length; i++) {
-                const exprArg = expr.args[i];
-                const aggArg = aggFuncNode.args[i];
-                // Simple check: if both are column references, check names match
-                if (exprArg.type === 'column' && (aggArg as any).expression?.type === 'column') {
-                  if (exprArg.name.toLowerCase() !== (aggArg as any).expression.name.toLowerCase()) {
-                    argsMatch = false;
-                    break;
-                  }
-                } else if (exprArg.type === 'literal' && (aggArg as any).expression?.type === 'literal') {
-                  if (exprArg.value !== (aggArg as any).expression.value) {
-                    argsMatch = false;
-                    break;
-                  }
-                }
-                // For other cases, we'd need more sophisticated comparison
-              }
-
-              if (argsMatch) {
-                // Found matching aggregate - return a column reference to it
-                const columnExpr: AST.ColumnExpr = {
-                  type: 'column',
-                  name: agg.alias
-                };
-                return new ColumnReferenceNode(
-                  ctx.scope,
-                  columnExpr,
-                  agg.expression.getType(),
-                  agg.attributeId,
-                  agg.columnIndex
-                );
-              }
-            }
-          }
-        }
-      }
-
-      const funcResolution = resolveFunction(ctx.scope, expr);
-      if (!funcResolution || funcResolution === Ambiguous) {
-        throw new QuereusError(`Function not found/ambiguous: ${expr.name}/${expr.args.length}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
-      }
-
-      // Check if this is an aggregate function
-      const functionSchema = (funcResolution as any).functionSchema;
-      if (functionSchema && isAggregateFunctionSchema(functionSchema)) {
-        if (!allowAggregates) {
-          throw new QuereusError(`Aggregate function ${expr.name} not allowed in this context`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
-        }
-
-        // Build arguments for aggregate function
-        const args = expr.args.map(arg => buildExpression(ctx, arg, false)); // Aggregates can't contain other aggregates
-
-        return new AggregateFunctionCallNode(
-          ctx.scope,
-          expr,
-          expr.name,
-          functionSchema,
-          args,
-          expr.distinct ?? false, // Use the distinct field from the AST
-          undefined, // orderBy - TODO: parse from expr
-          undefined  // filter - TODO: parse from expr
-        );
-      } else {
-        // Regular scalar function
-        const args = expr.args.map(arg => buildExpression(ctx, arg, allowAggregates));
-        return new ScalarFunctionCallNode(ctx.scope, expr, functionSchema.returnType, args);
-      }
-		}
+		case 'function': return buildFunctionCall(ctx, expr, allowAggregates);
 
     case 'subquery': {
        // For scalar subqueries, create a context that allows correlation
        // The buildSelectStmt will create the proper scope chain with subquery tables taking precedence
        const subqueryContext = { ...ctx };
-       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query);
+       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query, ctx.cteNodes);
        if (subqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
@@ -221,7 +139,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        if (expr.subquery) {
          // IN subquery: expr IN (SELECT ...)
          const inSubqueryContext = { ...ctx };
-         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery);
+         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery, ctx.cteNodes);
          if (inSubqueryPlan.getType().typeClass !== 'relation') {
            throw new QuereusError('IN subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
          }
@@ -245,11 +163,19 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
     case 'exists': {
        // Build the EXISTS subquery
        const existsSubqueryContext = { ...ctx };
-       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery);
+       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery, ctx.cteNodes);
        if (existsSubqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('EXISTS subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
        return new ExistsNode(ctx.scope, expr, existsSubqueryPlan as RelationalPlanNode);
+		}
+
+    case 'between': {
+       // Build the BETWEEN expression: expr BETWEEN lower AND upper
+       const exprNode = buildExpression(ctx, expr.expr, allowAggregates);
+       const lowerNode = buildExpression(ctx, expr.lower, allowAggregates);
+       const upperNode = buildExpression(ctx, expr.upper, allowAggregates);
+       return new BetweenNode(ctx.scope, expr, exprNode, lowerNode, upperNode);
 		}
 
 		default:

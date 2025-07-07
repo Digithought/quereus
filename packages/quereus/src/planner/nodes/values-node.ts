@@ -4,6 +4,7 @@ import { PlanNode, type ScalarPlanNode, type ZeroAryRelationalNode, type Attribu
 import { PlanNodeType } from './plan-node-type.js';
 import { Cached } from '../../util/cached.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
+import { Row } from '../../common/types.js';
 
 /**
  * Represents a VALUES clause, producing a relation from literal rows.
@@ -150,7 +151,7 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
     return `VALUES (${this.rows.length} rows)`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     if (this.rows.length === 0) {
       return {
         rows: [],
@@ -168,4 +169,76 @@ export class ValuesNode extends PlanNode implements ZeroAryRelationalNode {
       )
     };
   }
+}
+
+/**
+ * Represents a table literal (collapsed const), producing a relation from literal rows.
+ */
+export class TableLiteralNode extends PlanNode implements ZeroAryRelationalNode {
+	override readonly nodeType = PlanNodeType.TableLiteral;
+
+	private attributesCache: Cached<Attribute[]>;
+
+	constructor(
+		scope: Scope,
+		// Each inner array is a row, consisting of literal values for each cell.
+		public readonly rows: ReadonlyArray<Row> | AsyncIterable<Row>,
+		// The number of rows in the literal.
+		public readonly rowCount: number | undefined,
+		// The relation type defining the structure and column types
+		public readonly type: RelationType,
+	) {
+		super(scope, 0.001); // Minimal cost
+
+		this.attributesCache = new Cached(() => this.buildAttributes());
+	}
+
+	private buildAttributes(): Attribute[] {
+		return this.type.columns.map(column => ({
+			id: PlanNode.nextAttrId(),
+			name: column.name,
+			type: column.type,
+			sourceRelation: `${this.nodeType}:${this.id}`
+		}));
+	}
+
+	getType(): RelationType {
+		return this.type;
+	}
+
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
+	}
+
+	getChildren(): readonly ScalarPlanNode[] {
+		return [];
+	}
+
+	getRelations(): readonly [] {
+		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length > 0) {
+			throw new Error('TableLiteralNode does not accept children');
+		}
+		return this;
+	}
+
+	get estimatedRows(): number {
+		return this.rowCount ?? 10;
+	}
+
+	override toString(): string {
+		return `TABLE LITERAL (${this.rowCount} rows)`;
+	}
+
+	override getLogicalAttributes(): Record<string, unknown> {
+		const reltype = this.getType();
+		return {
+			numRows: this.rowCount,
+			numColumns: reltype.columns.length,
+			columnTypes: reltype.columns.map(col => formatScalarType(col.type)),
+		};
+	}
 }

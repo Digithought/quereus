@@ -2,6 +2,7 @@ import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { CTENode, type CTEPlanNode } from '../nodes/cte-node.js';
 import { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
+import { InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
 import { buildSelectStmt } from './select.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
@@ -151,27 +152,25 @@ function buildRecursiveCTE(
 		options?.maxRecursion
 	);
 
-	// For the recursive case, we need to create a special context where the CTE name
+		// For the recursive case, we need to create a special context where the CTE name
 	// references the working table (this will be handled at runtime)
 	const recursiveContext = { ...ctx };
 
-	// Create a temporary CTE reference for the recursive case that shares the same tableDescriptor
-	const tempCteNode = new CTENode(
+	// Create an internal recursive reference node that will look up the working table at runtime
+	const internalRefNode = new InternalRecursiveCTERefNode(
 		ctx.scope,
 		cte.name,
-		cte.columns,
-		baseCaseQuery, // Use base case as template
-		'materialized',
-		true
+		recursiveCTENode.getAttributes(),
+		recursiveCTENode.getType(),
+		recursiveCTENode.tableDescriptor
 	);
-	// Share the same tableDescriptor for runtime coordination
-	(tempCteNode as any).tableDescriptor = recursiveCTENode.tableDescriptor;
 
-	// Create a map containing the recursive CTE reference
-	const recursiveCteMap = new Map<string, CTEPlanNode>();
-	recursiveCteMap.set(cte.name.toLowerCase(), tempCteNode);
+	// Build the recursive case query with a simple replacement strategy
+	// We'll replace CTE references with the internal recursive reference during the FROM clause processing
+	const recursiveCteMap = new Map<string, any>();
+	recursiveCteMap.set(cte.name.toLowerCase(), internalRefNode);
 
-	// Build the recursive case query with the CTE map so it can find the table reference
+	// Build the recursive case query
 	const recursiveCaseQuery = buildSelectStmt(recursiveContext, recursiveCaseStmt, recursiveCteMap) as RelationalPlanNode;
 
 	// Now update the recursive CTE node with the actual recursive case query

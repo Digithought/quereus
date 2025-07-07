@@ -1,4 +1,4 @@
-import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor } from './plan-node.js';
+import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
@@ -47,7 +47,7 @@ export class CTENode extends PlanNode implements CTEPlanNode {
 		const columnNames = this.columns || queryType.columns.map((c: any) => c.name);
 
 		return queryAttributes.map((attr: any, index: number) => ({
-			id: PlanNode.nextAttrId(),
+			id: attr.id, // Preserve original attribute ID for proper context resolution
 			name: columnNames[index] || attr.name,
 			type: attr.type,
 			sourceRelation: `cte:${this.cteName}`
@@ -77,8 +77,8 @@ export class CTENode extends PlanNode implements CTEPlanNode {
 		return this.typeCache.value;
 	}
 
-	getChildren(): readonly [] {
-		return [];
+	getChildren(): readonly [RelationalPlanNode] {
+		return [this.source];
 	}
 
 	getRelations(): readonly [RelationalPlanNode] {
@@ -86,10 +86,31 @@ export class CTENode extends PlanNode implements CTEPlanNode {
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`CTENode expects 0 children, got ${newChildren.length}`);
+		if (newChildren.length !== 1) {
+			throw new Error(`CTENode expects 1 child, got ${newChildren.length}`);
 		}
-		return this; // No children in getChildren(), source is accessed via getRelations()
+
+		const [newSource] = newChildren;
+
+		// Type check
+		if (!isRelationalNode(newSource)) {
+			throw new Error('CTENode: child must be a RelationalPlanNode');
+		}
+
+		// Return same instance if nothing changed
+		if (newSource === this.source) {
+			return this;
+		}
+
+		// Create new instance with updated source
+		return new CTENode(
+			this.scope,
+			this.cteName,
+			this.columns,
+			newSource as RelationalPlanNode,
+			this.materializationHint,
+			this.isRecursive
+		);
 	}
 
 	override toString(): string {
@@ -99,7 +120,7 @@ export class CTENode extends PlanNode implements CTEPlanNode {
 		return `${recursiveText}CTE ${this.cteName}${columnsText}${materializationText}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			cteName: this.cteName,
 			columns: this.columns,

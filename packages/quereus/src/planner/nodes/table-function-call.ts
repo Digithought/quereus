@@ -108,7 +108,7 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     return `${this.functionName}(${argsStr})${aliasStr}`;
   }
 
-  override getLogicalProperties(): Record<string, unknown> {
+  override getLogicalAttributes(): Record<string, unknown> {
     const props: Record<string, unknown> = {
       function: this.functionName,
       arguments: this.operands.map(op => op.toString())

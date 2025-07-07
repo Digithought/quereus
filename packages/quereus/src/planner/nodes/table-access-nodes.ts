@@ -1,6 +1,6 @@
 /**
-* Physical table access nodes for seek and range scan operations
- * These replace logical TableScanNode during optimization
+ * Physical table access nodes for seek and range scan operations
+ * These replace logical TableReferenceNode during optimization
  */
 
 import { PlanNodeType } from './plan-node-type.js';
@@ -16,7 +16,7 @@ import type { ScalarPlanNode } from './plan-node.js';
  * Base class for physical table access operations
  * Provides common functionality for sequential scan, index scan, and index seek
  */
-export abstract class PhysicalTableAccessNode extends PlanNode implements UnaryRelationalNode {
+export abstract class TableAccessNode extends PlanNode implements UnaryRelationalNode {
 	private attributesCache: Cached<Attribute[]>;
 	private outputType: Cached<RelationType>;
 
@@ -69,23 +69,7 @@ export abstract class PhysicalTableAccessNode extends PlanNode implements UnaryR
 		throw new Error(`${this.nodeType} must override withChildren method`);
 	}
 
-		/**
-	 * Get common physical properties for table access
-	 */
-	protected getBasePhysicalProperties(): PhysicalProperties {
-		const tableType = this.source.getType();
-
-		return {
-			estimatedRows: this.source.estimatedRows,
-			// Table scans preserve the logical keys from the table schema
-			uniqueKeys: tableType.keys.map(key => key.map(colRef => colRef.index)),
-			readonly: true,
-			deterministic: true,
-			constant: false // Table access is never constant
-		};
-	}
-
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			table: this.source.tableSchema.name,
 			schema: this.source.tableSchema.schemaName,
@@ -104,14 +88,13 @@ export abstract class PhysicalTableAccessNode extends PlanNode implements UnaryR
  * Sequential scan - reads entire table without using indexes
  * Used when no suitable index exists or for small tables
  */
-export class SeqScanNode extends PhysicalTableAccessNode {
+export class SeqScanNode extends TableAccessNode {
 	override readonly nodeType = PlanNodeType.SeqScan;
 
-	getPhysical(): PhysicalProperties {
-		const baseProps = this.getBasePhysicalProperties();
-
+	computePhysical(): Partial<PhysicalProperties> {
 		return {
-			...baseProps,
+			estimatedRows: this.source.estimatedRows,
+			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Sequential scans don't provide any specific ordering
 			ordering: undefined
 		};
@@ -151,7 +134,7 @@ export class SeqScanNode extends PhysicalTableAccessNode {
  * Index scan - uses an index to read table data in order
  * Provides ordering and can handle range queries efficiently
  */
-export class IndexScanNode extends PhysicalTableAccessNode {
+export class IndexScanNode extends TableAccessNode {
 	override readonly nodeType = PlanNodeType.IndexScan;
 
 	constructor(
@@ -165,11 +148,10 @@ export class IndexScanNode extends PhysicalTableAccessNode {
 		super(scope, source, filterInfo, estimatedCostOverride);
 	}
 
-	getPhysical(): PhysicalProperties {
-		const baseProps = this.getBasePhysicalProperties();
-
+	computePhysical(): Partial<PhysicalProperties> {
 		return {
-			...baseProps,
+			estimatedRows: this.source.estimatedRows,
+			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Index scans can provide ordering
 			ordering: this.providesOrdering
 		};
@@ -182,9 +164,9 @@ export class IndexScanNode extends PhysicalTableAccessNode {
 		return `INDEX SCAN ${this.source.tableSchema.name} USING ${this.indexName}${orderDesc}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
-			...super.getLogicalProperties(),
+			...super.getLogicalAttributes(),
 			indexName: this.indexName,
 			providesOrdering: this.providesOrdering
 		};
@@ -222,7 +204,7 @@ export class IndexScanNode extends PhysicalTableAccessNode {
  * Index seek - point lookup or tight range using an index
  * Very efficient for equality constraints and small ranges
  */
-export class IndexSeekNode extends PhysicalTableAccessNode {
+export class IndexSeekNode extends TableAccessNode {
 	override readonly nodeType = PlanNodeType.IndexSeek;
 
 	constructor(
@@ -238,15 +220,13 @@ export class IndexSeekNode extends PhysicalTableAccessNode {
 		super(scope, source, filterInfo, estimatedCostOverride);
 	}
 
-	getPhysical(): PhysicalProperties {
-		const baseProps = this.getBasePhysicalProperties();
-
+	computePhysical(): Partial<PhysicalProperties> {
 		return {
-			...baseProps,
+			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Index seeks can provide ordering and usually return few rows
 			ordering: this.providesOrdering,
 			// Seeks typically return much fewer rows than estimated
-			estimatedRows: Math.min(baseProps.estimatedRows || 1000, 100)
+			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100)
 		};
 	}
 
@@ -258,9 +238,9 @@ export class IndexSeekNode extends PhysicalTableAccessNode {
 		return `INDEX ${seekDesc} ${this.source.tableSchema.name} USING ${this.indexName}${orderDesc}`;
 	}
 
-	override getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
-			...super.getLogicalProperties(),
+			...super.getLogicalAttributes(),
 			indexName: this.indexName,
 			seekKeys: this.seekKeys.map(key => key.toString()),
 			isRange: this.isRange,

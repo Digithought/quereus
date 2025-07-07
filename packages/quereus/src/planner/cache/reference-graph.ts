@@ -1,12 +1,16 @@
 /**
  * Reference graph builder for materialization advisory
  * Analyzes plan tree to identify nodes that would benefit from caching
+ *
+ * Note: This builder works with logical plan nodes and their properties.
+ * It does not make assumptions about execution strategies (e.g., whether
+ * a join will use nested loops vs hash join). Loop detection and execution
+ * multipliers should be determined during physical optimization when
+ * concrete execution strategies are chosen.
  */
 
 import { createLogger } from '../../common/logger.js';
-import type { PlanNode } from '../nodes/plan-node.js';
-import { PlanNodeType } from '../nodes/plan-node-type.js';
-import { JoinNode } from '../nodes/join-node.js';
+import { isRelationalNode, type PlanNode } from '../nodes/plan-node.js';
 import type { OptimizerTuning } from '../optimizer-tuning.js';
 
 const log = createLogger('optimizer:cache:reference-graph');
@@ -23,6 +27,22 @@ export interface RefStats {
 	estimatedRows: number;
 	/** Whether this node is deterministic (same inputs produce same outputs) */
 	deterministic: boolean;
+	/** Parent nodes that reference this node (for debugging) */
+	parents: Set<PlanNode>;
+	/** Estimated execution multiplier due to loop contexts */
+	loopMultiplier: number;
+}
+
+/**
+ * Node traversal context
+ */
+interface TraversalContext {
+	/** Current parent node */
+	parent: PlanNode | null;
+	/** Whether we're in a loop context */
+	inLoop: boolean;
+	/** Estimated loop iteration count */
+	loopIterations: number;
 }
 
 /**
@@ -30,7 +50,6 @@ export interface RefStats {
  */
 export class ReferenceGraphBuilder {
 	private refMap = new Map<PlanNode, RefStats>();
-	private visited = new Set<PlanNode>();
 
 	constructor(private tuning: OptimizerTuning) {}
 
@@ -38,90 +57,105 @@ export class ReferenceGraphBuilder {
 	 * Build reference statistics for all nodes in the plan tree
 	 */
 	buildReferenceGraph(root: PlanNode): Map<PlanNode, RefStats> {
+		if (!root) {
+			log('Warning: buildReferenceGraph called with null root');
+			return new Map();
+		}
+
 		this.refMap.clear();
-		this.visited.clear();
 
-		// First pass: count parent references
-		this.countReferences(root, false);
+		// Build the reference graph with proper parent tracking
+		const context: TraversalContext = {
+			parent: null,
+			inLoop: false,
+			loopIterations: 1
+		};
 
-		// Second pass: identify loop contexts
-		this.identifyLoopContexts(root, false);
+		this.buildReferences(root, context);
 
 		log('Built reference graph with %d nodes', this.refMap.size);
 		return new Map(this.refMap);
 	}
 
 	/**
-	 * First pass: count how many parents reference each node
+	 * Build reference statistics recursively
 	 */
-	private countReferences(node: PlanNode, inLoop: boolean): void {
-		if (this.visited.has(node)) {
-			// Node seen again - increment parent count
-			const stats = this.refMap.get(node);
-			if (stats) {
-				stats.parentCount++;
-			}
+	private buildReferences(node: PlanNode | null | undefined, context: TraversalContext): void {
+		if (!node) {
 			return;
 		}
 
-		this.visited.add(node);
+		// Get or create stats for this node
+		let stats = this.refMap.get(node);
+		if (!stats) {
+			// First time seeing this node
+			stats = {
+				parentCount: 0,
+				appearsInLoop: context.inLoop,
+				estimatedRows: this.getEstimatedRows(node),
+				deterministic: this.isDeterministic(node),
+				parents: new Set<PlanNode>(),
+				loopMultiplier: context.loopIterations
+			};
+			this.refMap.set(node, stats);
+		}
 
-		// Initialize stats for this node
-		const stats: RefStats = {
-			parentCount: 1, // First time seeing this node
-			appearsInLoop: inLoop,
-			estimatedRows: this.getEstimatedRows(node),
-			deterministic: this.isDeterministic(node)
+		// Update stats based on current traversal
+		if (context.parent && !stats.parents.has(context.parent)) {
+			stats.parents.add(context.parent);
+			stats.parentCount++;
+		}
+
+		// Update loop context
+		if (context.inLoop) {
+			stats.appearsInLoop = true;
+			stats.loopMultiplier = Math.max(stats.loopMultiplier, context.loopIterations);
+		}
+
+		// Create child context - for now, we propagate the parent context
+		// In the future, if nodes expose execution strategy hints, we could use those
+		const childContext: TraversalContext = {
+			parent: node,
+			inLoop: context.inLoop,
+			loopIterations: context.loopIterations
 		};
 
-		this.refMap.set(node, stats);
-
-		// Recurse to children
-		this.visitChildren(node, (child) => {
-			this.countReferences(child, inLoop);
-		});
-	}
-
-	/**
-	 * Second pass: identify nodes that appear in loop contexts
-	 */
-	private identifyLoopContexts(node: PlanNode, inLoop: boolean): void {
-		const stats = this.refMap.get(node);
-		if (!stats) return;
-
-		// Update loop status if we're now in a loop context
-		if (inLoop && !stats.appearsInLoop) {
-			stats.appearsInLoop = true;
-			log('Node %s marked as appearing in loop', node.nodeType);
-		}
-
-		// Determine if children are in loop context
-		if (node instanceof JoinNode && node.joinType === 'inner') {
-			// Right side of nested loop join is in loop context
-			const [left, right] = node.getRelations();
-			this.identifyLoopContexts(left, inLoop);
-			this.identifyLoopContexts(right, true); // Right side is in loop
-		} else {
-			// Recurse to all children with current loop status
-			this.visitChildren(node, (child) => {
-				this.identifyLoopContexts(child, inLoop);
-			});
-		}
+		// Visit all children uniformly
+		this.visitAllChildren(node, childContext);
 	}
 
 	/**
 	 * Visit all children of a node
 	 */
-	private visitChildren(node: PlanNode, visitor: (child: PlanNode) => void): void {
-		// Visit scalar expression children
-		for (const child of node.getChildren()) {
-			visitor(child);
+	private visitAllChildren(node: PlanNode, childContext: TraversalContext): void {
+		// 1. Scalar children (expressions)
+		try {
+			const children = node.getChildren();
+			for (const child of children) {
+				if (child) {
+					this.buildReferences(child, childContext);
+				}
+			}
+		} catch (e) {
+			log('Warning: Failed to get children for node %s: %s', node.nodeType, e);
 		}
 
-		// Visit relational children
-		if ('getRelations' in node) {
-			for (const relation of (node as any).getRelations()) {
-				visitor(relation);
+		// 2. Relational children
+		// Note: getRelations() returns a subset of getChildren() for nodes that have relational children
+		// We need to be careful not to double-count, but since we're using a Set for parents,
+		// and checking if we've already added a parent, this should be fine
+		if (isRelationalNode(node)) {
+			try {
+				const relations = node.getRelations();
+				for (const relation of relations) {
+					if (relation) {
+						// For now, treat all relational children the same
+						// In the future, nodes could provide hints about execution patterns
+						this.buildReferences(relation, childContext);
+					}
+				}
+			} catch (e) {
+				log('Warning: Failed to get relations for node %s: %s', node.nodeType, e);
 			}
 		}
 	}
@@ -129,44 +163,34 @@ export class ReferenceGraphBuilder {
 	/**
 	 * Get estimated row count for a node
 	 */
-	private getEstimatedRows(node: PlanNode): number {
-		if ('estimatedRows' in node && typeof node.estimatedRows === 'number') {
-			return node.estimatedRows;
+	private getEstimatedRows(node: PlanNode | null | undefined): number {
+		if (!node) {
+			return this.tuning.defaultRowEstimate;
 		}
-		if (node.physical?.estimatedRows) {
+
+		// Use physical properties if available
+		if (node.physical?.estimatedRows !== undefined) {
 			return node.physical.estimatedRows;
 		}
+
+		// Fall back to node-specific estimates (for relational nodes)
+		if (isRelationalNode(node) && node.estimatedRows !== undefined) {
+			return node.estimatedRows;
+		}
+
+		// Default estimate
 		return this.tuning.defaultRowEstimate;
 	}
 
 	/**
 	 * Determine if a node is deterministic
 	 */
-	private isDeterministic(node: PlanNode): boolean {
-		// Check physical properties first
-		if (node.physical?.deterministic !== undefined) {
-			return node.physical.deterministic;
+	private isDeterministic(node: PlanNode | null | undefined): boolean {
+		if (!node) {
+			return true;
 		}
 
-		// Node-type specific deterministic analysis
-		switch (node.nodeType) {
-			case PlanNodeType.TableScan:
-			case PlanNodeType.Values:
-			case PlanNodeType.Project:
-			case PlanNodeType.Filter:
-			case PlanNodeType.Sort:
-			case PlanNodeType.Aggregate:
-			case PlanNodeType.StreamAggregate:
-				return true;
-
-			case PlanNodeType.TableFunctionCall:
-				// Would need to check if the table function is deterministic
-				// For now, assume non-deterministic to be safe
-				return false;
-
-			default:
-				// Conservative default - assume deterministic unless proven otherwise
-				return true;
-		}
+		// Use physical properties to determine determinism
+		return node.physical?.deterministic ?? true;
 	}
 }

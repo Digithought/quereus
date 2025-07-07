@@ -1,7 +1,7 @@
 /**
  * Rule: Select Access Path
  *
- * Transforms: TableScanNode → SeqScanNode | IndexScanNode | IndexSeekNode
+ * Transforms: TableReferenceNode → SeqScanNode | IndexScanNode | IndexSeekNode
  * Conditions: When logical table access needs to be made physical
  * Benefits: Enables cost-based access path selection and index utilization
  */
@@ -9,40 +9,36 @@
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
-import { TableScanNode } from '../../nodes/scan.js';
-import { SeqScanNode, IndexScanNode, IndexSeekNode } from '../../nodes/physical-access-nodes.js';
+import { TableReferenceNode } from '../../nodes/reference.js';
+import { SeqScanNode, IndexScanNode, IndexSeekNode } from '../../nodes/table-access-nodes.js';
 import { seqScanCost } from '../../cost/index.js';
-import type { ColumnMeta, PredicateConstraint, BestAccessPlanRequest, BestAccessPlanResult, ConstraintOp } from '../../../vtab/best-access-plan.js';
-import { PlanNode as BasePlanNode } from '../../nodes/plan-node.js';
+import type { ColumnMeta, PredicateConstraint, BestAccessPlanRequest, BestAccessPlanResult } from '../../../vtab/best-access-plan.js';
+import { FilterInfo } from '../../../vtab/filter-info.js';
+import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
 
 export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanNode | null {
-	// Guard: only apply to TableScanNode
-	if (!(node instanceof TableScanNode)) {
+	// Guard: only apply to TableReferenceNode
+	if (!(node instanceof TableReferenceNode)) {
 		return null;
 	}
 
-	// Guard: already physical
-	if (node.physical) {
-		return null;
-	}
-
-	log('Selecting access path for table %s', node.source.tableSchema.name);
+	log('Selecting access path for table %s', node.tableSchema.name);
 
 	try {
 		// Get table schema and virtual table module
-		const tableSchema = node.source.tableSchema;
+		const tableSchema = node.tableSchema;
 		const vtabModule = tableSchema.vtabModule;
 
 		// If no virtual table module, fall back to sequential scan
 		if (!vtabModule || typeof vtabModule !== 'object' || !('getBestAccessPlan' in vtabModule)) {
 			log('No getBestAccessPlan support, using sequential scan for %s', tableSchema.name);
-			return createSeqScan(node);
+			return createSeqScan(node, undefined);
 		}
 
 		// Extract constraints from current filter info
-		const constraints = extractConstraintsFromFilterInfo(node, tableSchema);
+		const constraints: PredicateConstraint[] = []; // TODO: Extract from parent Filter node if any
 
 		// Build request for getBestAccessPlan
 		const request: BestAccessPlanRequest = {
@@ -54,7 +50,7 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 				isUnique: col.primaryKey || false // For now, assume only PK columns are unique
 			} as ColumnMeta)),
 			filters: constraints,
-			estimatedRows: node.source.estimatedRows
+			estimatedRows: node.estimatedRows
 		};
 
 		// Call getBestAccessPlan
@@ -69,57 +65,42 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 		return physicalNode;
 
 	} catch (error) {
-		log('Error selecting access path for %s: %s', node.source.tableSchema.name, error);
+		log('Error selecting access path for %s: %s', node.tableSchema.name, error);
 		// Fall back to sequential scan on error
 		return createSeqScan(node);
 	}
 }
 
 /**
- * Extract predicate constraints from FilterInfo
- */
-function extractConstraintsFromFilterInfo(node: TableScanNode, _tableSchema: any): PredicateConstraint[] {
-	const constraints: PredicateConstraint[] = [];
-
-	// Extract from FilterInfo.indexInfoOutput.aConstraint if available
-	const indexConstraints = node.filterInfo.indexInfoOutput.aConstraint;
-	if (indexConstraints) {
-		for (let i = 0; i < indexConstraints.length; i++) {
-			const constraint = indexConstraints[i];
-
-			if (constraint && constraint.usable) {
-				constraints.push({
-					columnIndex: constraint.iColumn,
-					op: mapConstraintOp(constraint.op),
-					usable: constraint.usable,
-					// Note: actual value would need to be extracted from args
-					value: undefined
-				});
-			}
-		}
-	}
-
-	return constraints;
-}
-
-/**
- * Map internal constraint op to public constraint op
- */
-function mapConstraintOp(_internalOp: number): ConstraintOp {
-	// This mapping would need to be based on the actual constants used
-	// For now, assume equality - in a real implementation this would map
-	// from IndexConstraintOp constants to ConstraintOp
-	return '=';
-}
-
-/**
  * Select the appropriate physical node based on access plan
  */
 function selectPhysicalNode(
-	originalNode: TableScanNode,
+	originalNode: TableReferenceNode,
 	accessPlan: BestAccessPlanResult,
 	constraints: PredicateConstraint[]
 ): SeqScanNode | IndexScanNode | IndexSeekNode {
+
+	// Create a default FilterInfo for the physical nodes
+	const filterInfo: FilterInfo = {
+		idxNum: 0,
+		idxStr: 'fullscan',
+		constraints: [],
+		args: [],
+		indexInfoOutput: {
+			nConstraint: 0,
+			aConstraint: [],
+			nOrderBy: 0,
+			aOrderBy: [],
+			aConstraintUsage: [] as IndexConstraintUsage[],
+			idxNum: 0,
+			idxStr: 'fullscan',
+			orderByConsumed: false,
+			estimatedCost: accessPlan.cost,
+			estimatedRows: BigInt(accessPlan.rows || 1000),
+			idxFlags: 0,
+			colUsed: 0n,
+		}
+	};
 
 	// Analyze the access plan to determine node type
 	const hasEqualityConstraints = constraints.some(c => c.op === '=' && accessPlan.handledFilters[constraints.indexOf(c)]);
@@ -137,8 +118,8 @@ function selectPhysicalNode(
 		log('Using index seek (equality constraint, small result)');
 		return new IndexSeekNode(
 			originalNode.scope,
-			originalNode.source,
-			originalNode.filterInfo,
+			originalNode,
+			filterInfo,
 			'primary', // Default to primary index
 			[], // seekKeys would be populated from constraints
 			false, // not a range
@@ -150,8 +131,8 @@ function selectPhysicalNode(
 		log('Using index scan (range constraints or ordering)');
 		return new IndexScanNode(
 			originalNode.scope,
-			originalNode.source,
-			originalNode.filterInfo,
+			originalNode,
+			filterInfo,
 			'primary', // Default to primary index
 			providesOrdering,
 			accessPlan.cost
@@ -159,31 +140,45 @@ function selectPhysicalNode(
 	} else {
 		// Fall back to sequential scan
 		log('Using sequential scan (no beneficial index access)');
-		return createSeqScan(originalNode, accessPlan.cost);
+		return createSeqScan(originalNode, filterInfo, accessPlan.cost);
 	}
 }
 
 /**
  * Create a sequential scan node
  */
-function createSeqScan(originalNode: TableScanNode, cost?: number): SeqScanNode {
-	const tableRows = originalNode.source.estimatedRows || 1000;
+function createSeqScan(originalNode: TableReferenceNode, filterInfo?: FilterInfo, cost?: number): SeqScanNode {
+	const tableRows = originalNode.estimatedRows || 1000;
 	const scanCost = cost ?? seqScanCost(tableRows);
+
+	// Create default FilterInfo if not provided
+	const effectiveFilterInfo = filterInfo || {
+		idxNum: 0,
+		idxStr: 'fullscan',
+		constraints: [],
+		args: [],
+		indexInfoOutput: {
+			nConstraint: 0,
+			aConstraint: [],
+			nOrderBy: 0,
+			aOrderBy: [],
+			aConstraintUsage: [] as IndexConstraintUsage[],
+			idxNum: 0,
+			idxStr: 'fullscan',
+			orderByConsumed: false,
+			estimatedCost: scanCost,
+			estimatedRows: BigInt(tableRows),
+			idxFlags: 0,
+			colUsed: 0n,
+		}
+	};
 
 	const seqScan = new SeqScanNode(
 		originalNode.scope,
-		originalNode.source,
-		originalNode.filterInfo,
+		originalNode,
+		effectiveFilterInfo,
 		scanCost
 	);
-
-	// Set physical properties
-	BasePlanNode.setDefaultPhysical(seqScan, {
-		estimatedRows: tableRows,
-		readonly: true,
-		deterministic: true,
-		constant: false
-	});
 
 	return seqScan;
 }

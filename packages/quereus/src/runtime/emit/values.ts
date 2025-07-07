@@ -1,5 +1,6 @@
 import type { ValuesNode } from '../../planner/nodes/values-node.js';
 import type { SingleRowNode } from '../../planner/nodes/single-row.js';
+import type { TableLiteralNode } from '../../planner/nodes/values-node.js';
 import type { Instruction, RuntimeContext } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { type SqlValue, type Row, StatusCode } from '../../common/types.js';
@@ -42,3 +43,24 @@ export function emitValues(plan: ValuesNode, ctx: EmissionContext): Instruction 
 		note: `values(${plan.rows.length} rows, ${plan.rows[0]?.length || 0} cols)`
 	};
 }
+
+export function emitTableLiteral(plan: TableLiteralNode, _ctx: EmissionContext): Instruction {
+	async function* runArray(_rctx: RuntimeContext): AsyncIterable<Row> {
+		for (const row of plan.rows as ReadonlyArray<Row>) {
+			yield row;
+		}
+	}
+
+	async function* runAsyncIterable(_rctx: RuntimeContext): AsyncIterable<Row> {
+		yield* plan.rows as AsyncIterable<Row>;
+	}
+
+	const run = plan.rows instanceof Array ? runArray : runAsyncIterable;
+
+	return {
+		params: [],
+		run,
+		note: `tableLiteral(${plan.rowCount ?? '?'} rows, ${plan.getType().columns.length} cols)`
+	};
+}
+
