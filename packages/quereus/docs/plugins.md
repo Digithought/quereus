@@ -604,9 +604,7 @@ In Quoomb Web, use the Plugin Manager to:
 3. Enable/disable plugins
 4. View plugin capabilities
 
-## Legacy Support
 
-The plugin system maintains backward compatibility with old-style plugins that register directly with the database. Use `loadLegacyPlugin()` for these plugins.
 
 ## Troubleshooting
 

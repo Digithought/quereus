@@ -278,7 +278,6 @@ const jsonTableModule = {
 /**
  * Plugin registration function
  * This is called by Quereus when the plugin is loaded
- * Now returns a PluginRegistrations object instead of registering directly
  */
 export default function register(db, config = {}) {
   console.log(`JSON_TABLE plugin loaded with config:`, config);

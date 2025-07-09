@@ -140,34 +140,4 @@ export function validatePluginUrl(url: string): boolean {
 	}
 }
 
-/**
- * Legacy plugin support - for backward compatibility with old-style plugins
- * that register vtables directly in their default export function
- */
-export async function loadLegacyPlugin(
-	url: string,
-	db: Database,
-	config: Record<string, SqlValue> = {}
-): Promise<PluginManifest | undefined> {
-	try {
-		const moduleUrl = new URL(url);
-		if (moduleUrl.protocol === 'file:' || moduleUrl.hostname === 'localhost') {
-			moduleUrl.searchParams.set('t', Date.now().toString());
-		}
 
-		const mod = await import(/* @vite-ignore */ moduleUrl.toString());
-
-		if (typeof mod.default !== 'function') {
-			quereusError(`Module at ${url} has no default export function`, StatusCode.FORMAT);
-		}
-
-		// Call the legacy plugin function - it registers directly with the database
-		await mod.default(db, config);
-
-		log('Successfully loaded legacy plugin from %s', url);
-		return mod.manifest as PluginManifest | undefined;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		quereusError(`Failed to load legacy plugin from ${url}: ${message}`);
-	}
-}
