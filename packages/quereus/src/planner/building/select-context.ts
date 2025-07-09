@@ -52,6 +52,8 @@ export function buildWithContext(
 
 /**
  * Creates a scope that includes CTE references
+ * CRITICAL: Uses stable input attribute IDs only, ignoring any projection output scopes
+ * that might cause attribute ID collisions in correlated subqueries
  */
 function createCTEScope(
 	cteNodes: Map<string, CTEPlanNode>,
@@ -61,13 +63,21 @@ function createCTEScope(
 
 	// Register each CTE in the scope
 	for (const [cteName, cteNode] of cteNodes) {
+		// CRITICAL: Use only the stable input attributes from the CTE definition
+		// Do NOT use any projection output attributes that might have fresh IDs
 		const attributes = cteNode.getAttributes();
-		cteNode.getType().columns.forEach((col: any, i: number) => {
-			const attr = attributes[i];
-			// Register CTE columns with qualified names to avoid collisions
-			const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
-			cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
+		const columnTypes = cteNode.getType().columns;
+
+		// Only register columns that are stable input attributes
+		// This prevents scope pollution from projection output attributes
+		columnTypes.forEach((col: any, i: number) => {
+			if (i < attributes.length) {
+				const attr = attributes[i];
+				// Register CTE columns with qualified names to avoid collisions
+				const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
+				cteScope.registerSymbol(qualifiedColumnName, (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, col.type, attr.id, i));
+			}
 		});
 	}
 

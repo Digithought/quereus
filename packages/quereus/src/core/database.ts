@@ -32,6 +32,7 @@ import { EmissionContext } from '../runtime/emission-context.js';
 import { Optimizer, DEFAULT_TUNING } from '../planner/optimizer.js';
 import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-functions.js';
 import { DatabaseOptionsManager } from './database-options.js';
+import type { InstructionTracer } from '../runtime/types.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -52,6 +53,7 @@ export class Database {
 	private inImplicitTransaction = false; // Track if we're in an implicit transaction
 	public readonly optimizer: Optimizer;
 	public readonly options: DatabaseOptionsManager;
+	private instructionTracer: InstructionTracer | undefined;
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -144,6 +146,12 @@ export class Database {
 				}
 				log('Default column nullability changed to: %s', value);
 			}
+		});
+
+		this.options.registerOption('trace_plan_stack', {
+			type: 'boolean',
+			defaultValue: false,
+			description: 'Enable plan stack tracing',
 		});
 	}
 
@@ -247,6 +255,7 @@ export class Database {
 						params: params ?? {},
 						context: new Map(),
 						tableContexts: new Map(),
+						tracer: this.instructionTracer,
 						enableMetrics: this.options.getBooleanOption('runtime_stats'),
 					};
 
@@ -547,6 +556,24 @@ export class Database {
 		log('Registered collation: %s', name);
 	}
 
+	/**
+	 * Sets the instruction tracer for this database.
+	 * The tracer will be used for all statement executions.
+	 * @param tracer The instruction tracer to use, or null to disable tracing.
+	 */
+	setInstructionTracer(tracer: InstructionTracer | undefined): void {
+		this.instructionTracer = tracer;
+		log('Instruction tracer %s', tracer ? 'enabled' : 'disabled');
+	}
+
+	/**
+	 * Gets the current instruction tracer for this database.
+	 * @returns The instruction tracer, or undefined if none is set.
+	 */
+	getInstructionTracer(): InstructionTracer | undefined {
+		return this.instructionTracer;
+	}
+
 	/** @internal Gets a registered collation function */
 	_getCollation(name: string): CollationFunction | undefined {
 		return getCollation(name);
@@ -685,7 +712,8 @@ export class Database {
 			scope: parameterScope,
 			cteNodes: new Map(),
 			schemaDependencies: new BuildTimeDependencyTracker(),
-			schemaCache: new Map()
+			schemaCache: new Map(),
+			cteReferenceCache: new Map()
 		};
 
 		return buildBlock(ctx, statements);

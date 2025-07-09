@@ -61,12 +61,32 @@ export function getEmitterMeta(nodeType: PlanNodeType): EmitterMeta | undefined 
 	return registration?.meta;
 }
 
+/**
+ * Wraps an instruction's run function with plan node stack tracking for debugging.
+ * Only adds overhead when tracing is enabled.
+ */
+function instrumentRunForTracing(plan: PlanNode, originalRun: InstructionRun): InstructionRun {
+	return function (ctx: RuntimeContext, ...args: any[]) {
+		(ctx.planStack = ctx.planStack || []).push(plan);
+		try {
+			return originalRun(ctx, ...args);
+		} finally {
+			ctx.planStack.pop();
+		}
+	};
+}
+
 export function emitPlanNode(plan: PlanNode, ctx: EmissionContext): Instruction {
 	const registration = emitters.get(plan.nodeType);
 	if (!registration) {
 		throw new QuereusError(`No emitter registered for ${plan.nodeType}`, StatusCode.ERROR);
 	}
-	return registration.emitter(plan, ctx);
+	const instruction = registration.emitter(plan, ctx);
+	// Wrap with instrumentation for tracing
+	if (ctx.tracePlanStack) {
+		instruction.run = instrumentRunForTracing(plan, instruction.run);
+	}
+	return instruction;
 }
 
 /**

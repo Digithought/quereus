@@ -76,6 +76,14 @@ export function resolveAttribute(rctx: RuntimeContext, attributeId: number, colu
 			const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
 			ctxLookupLog('  - Descriptor with attrs=[%s]', attrs.join(','));
 		}
+
+		// Log current plan execution stack if available
+		if (rctx.planStack && rctx.planStack.length > 0) {
+			const currentNode = rctx.planStack[rctx.planStack.length - 1];
+			ctxLookupLog('LOOKUP FAILED in node %s id=%d', currentNode.nodeType, currentNode.id);
+			ctxLookupLog('Execution stack: %s',
+				rctx.planStack.map(n => `${n.nodeType}#${n.id}`).join(' → '));
+		}
 	}
 
 	throw new QuereusError(

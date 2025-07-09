@@ -32,7 +32,9 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 		public readonly projections: ReadonlyArray<Projection>,
 		estimatedCostOverride?: number,
 		/** Optional predefined attributes for preserving IDs during optimization */
-		predefinedAttributes?: Attribute[]
+		predefinedAttributes?: Attribute[],
+		/** Whether to preserve input columns in the output (default: true) */
+		public readonly preserveInputColumns: boolean = true
 	) {
 		super(scope, estimatedCostOverride);
 
@@ -97,6 +99,17 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			// Get the computed column names from the type
 			const outputType = this.getType();
 
+			// If preserveInputColumns is false, only create attributes for projections
+			if (!this.preserveInputColumns) {
+				return this.projections.map((proj, index) => ({
+					id: proj.attributeId ?? PlanNode.nextAttrId(),
+					name: outputType.columns[index].name,
+					type: proj.node.getType(),
+					sourceRelation: `${this.nodeType}:${this.id}`,
+					relationName: 'projection'
+				}));
+			}
+
 			// For each projection, preserve attribute ID for simple column references
 			return this.projections.map((proj, index) => {
 				// Use predefined attribute ID if supplied (optimizer path)
@@ -111,10 +124,12 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 				}
 
 				if (proj.node instanceof ColumnReferenceNode) {
-					// Forwarding an existing column – keep its attribute ID so downstream
-					// references remain valid across projection boundaries.
+					// Always preserve the original attribute ID so that any reference
+					// to the underlying column (e.g., in ORDER BY) remains valid even
+					// after aliasing. The alias is purely a name change, not a new column.
+					const colRef = proj.node as ColumnReferenceNode;
 					return {
-						id: (proj.node as ColumnReferenceNode).attributeId,
+						id: colRef.attributeId,
 						name: outputType.columns[index].name,
 						type: proj.node.getType(),
 						sourceRelation: `${this.nodeType}:${this.id}`,
@@ -122,7 +137,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 					};
 				}
 
-				// Computed expression – generate fresh attribute ID
+				// Computed expression or aliased column – generate fresh attribute ID
 				return {
 					id: PlanNode.nextAttrId(),
 					name: outputType.columns[index].name,
@@ -221,7 +236,8 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			newSource as RelationalPlanNode,
 			newProjections,
 			undefined, // estimatedCostOverride
-			originalAttributes // Pass original attributes to preserve IDs
+			originalAttributes, // Pass original attributes to preserve IDs
+			this.preserveInputColumns // Preserve the flag
 		);
 	}
 }

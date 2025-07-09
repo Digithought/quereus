@@ -4,6 +4,7 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { Scope } from './scopes/scope.js';
 import type { ScalarPlanNode } from './nodes/plan-node.js';
 import type { CTEPlanNode } from './nodes/cte-node.js';
+import type { CTEReferenceNode } from './nodes/cte-reference-node.js';
 
 /**
  * Debug options for query planning and execution.
@@ -173,4 +174,10 @@ export interface PlanningContext {
    * Schema object cache for resolved objects during planning.
    */
   readonly schemaCache: Map<string, any>;
+
+  /**
+   * Cache for CTE reference nodes to ensure consistent attribute IDs across multiple references
+   * to the same CTE with the same alias. Key format: "cteName:alias"
+   */
+  cteReferenceCache?: Map<string, CTEReferenceNode>;
 }

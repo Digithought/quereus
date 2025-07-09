@@ -41,17 +41,27 @@ export class CTENode extends PlanNode implements CTEPlanNode {
 
 	private buildAttributes(): Attribute[] {
 		const queryAttributes = this.source.getAttributes();
-
-		// Use explicit column names if provided, otherwise use query output column names
 		const queryType = this.source.getType();
 		const columnNames = this.columns || queryType.columns.map((c: any) => c.name);
 
-		return queryAttributes.map((attr: any, index: number) => ({
-			id: attr.id, // Preserve original attribute ID for proper context resolution
-			name: columnNames[index] || attr.name,
-			type: attr.type,
-			sourceRelation: `cte:${this.cteName}`
-		}));
+		return columnNames.map((name: string) => {
+			const srcAttr = queryAttributes.find(a => a.name.toLowerCase() === name.toLowerCase());
+			let resolvedType: any = srcAttr?.type;
+			if (!resolvedType) {
+				const colMeta = queryType.columns.find((c: any) => c.name.toLowerCase() === name.toLowerCase());
+				resolvedType = colMeta?.type;
+			}
+			// Fallback: generic TEXT scalar if nothing else is available (should not normally happen)
+			if (!resolvedType) {
+				resolvedType = { typeClass: 'scalar', affinity: 'TEXT', nullable: true, isReadOnly: false } as any;
+			}
+			return {
+				id: srcAttr?.id ?? PlanNode.nextAttrId(),
+				name,
+				type: resolvedType,
+				sourceRelation: `cte:${this.cteName}`
+			};
+		});
 	}
 
 	private buildType(): RelationType {

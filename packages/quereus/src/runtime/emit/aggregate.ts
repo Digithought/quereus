@@ -101,13 +101,16 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	// Create output row descriptor for the StreamAggregate's output
 	const outputRowDescriptor = buildRowDescriptor(plan.getAttributes());
 
+	// Create scan row descriptor for source relation attributes (for Filter evaluation)
+	const scanRowDescriptor = buildRowDescriptor(sourceAttributes);
+
 	// CRITICAL FIX: Create a combined descriptor that includes BOTH output and source attributes
 	// This allows correlated subqueries to access original table attributes
-	const combinedRowDescriptor: RowDescriptor = [...outputRowDescriptor];
+	const combinedRowDescriptor: RowDescriptor = {...outputRowDescriptor};
 	sourceAttributes.forEach((attr, index) => {
 		// Only add if not already present in output (avoid conflicts)
 		if (combinedRowDescriptor[attr.id] === undefined) {
-			combinedRowDescriptor[attr.id] = index;
+			combinedRowDescriptor[attr.id] = Object.keys(outputRowDescriptor).length + index;
 		}
 	});
 
@@ -188,15 +191,16 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 				) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, compareDistinctValues) // Empty tree for non-distinct
 			);
 
+			// Track the last source row for representative row in combined descriptor
+			let lastSourceRow: Row | null = null;
+
 			// Process all rows
 			for await (const row of sourceRows) {
-				// Set the current row in the runtime context for evaluation using row descriptors
-				ctx.context.set(sourceRowDescriptor, () => row);
-				logContextPush(sourceRowDescriptor, 'source-row', sourceAttributes);
-				if (sourceRelation !== plan.source) {
-					ctx.context.set(sourceRelationRowDescriptor, () => row);
-					logContextPush(sourceRelationRowDescriptor, 'source-relation-row');
-				}
+				lastSourceRow = row;
+
+				// Set the current row in the runtime context for Filter and aggregate evaluation
+				ctx.context.set(scanRowDescriptor, () => row);
+				logContextPush(scanRowDescriptor, 'scan-row', sourceAttributes);
 
 				try {
 					// For each aggregate, call its step function
@@ -240,18 +244,14 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						}
 					}
 				} finally {
-					// Clean up context for this row
-					logContextPop(sourceRowDescriptor, 'source-row');
-					ctx.context.delete(sourceRowDescriptor);
-					if (sourceRelation !== plan.source) {
-						logContextPop(sourceRelationRowDescriptor, 'source-relation-row');
-						ctx.context.delete(sourceRelationRowDescriptor);
-					}
+					// Clean up scan context for this row
+					logContextPop(scanRowDescriptor, 'scan-row');
+					ctx.context.delete(scanRowDescriptor);
 				}
 			}
 
 			// Finalize and yield the result
-			const resultRow: SqlValue[] = [];
+			const aggregateRow: SqlValue[] = [];
 			for (let i = 0; i < plan.aggregates.length; i++) {
 				const schema = aggregateSchemas[i];
 
@@ -262,18 +262,28 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					finalValue = accumulators[i];
 				}
 
-				resultRow.push(finalValue);
+				aggregateRow.push(finalValue);
 			}
 
+			// Build combined row with aggregate results + representative source row
+			const fullRow = lastSourceRow ? [...aggregateRow, ...lastSourceRow] : aggregateRow;
+
 			// Set up combined context for the result row (includes both output and source attributes)
-			ctx.context.set(outputRowDescriptor, () => resultRow);
-			logContextPush(outputRowDescriptor, 'output-row');
-			// Note: For no GROUP BY case, we can't preserve source row context since we processed multiple rows
+			if (lastSourceRow) {
+				ctx.context.set(scanRowDescriptor, () => lastSourceRow);
+				logContextPush(scanRowDescriptor, 'aggregate-rep-row');
+			}
+			ctx.context.set(combinedRowDescriptor, () => fullRow);
+			logContextPush(combinedRowDescriptor, 'aggregate-full-row');
 			try {
-				yield resultRow;
+				yield aggregateRow;
 			} finally {
-				logContextPop(outputRowDescriptor, 'output-row');
-				ctx.context.delete(outputRowDescriptor);
+				logContextPop(combinedRowDescriptor, 'aggregate-full-row');
+				ctx.context.delete(combinedRowDescriptor);
+				if (lastSourceRow) {
+					logContextPop(scanRowDescriptor, 'aggregate-rep-row');
+					ctx.context.delete(scanRowDescriptor);
+				}
 			}
 		} else {
 			// Handle GROUP BY case with streaming aggregation
@@ -293,13 +303,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					cleanupPreviousGroupContext = null;
 				}
 
-				// Set the current row in the runtime context for evaluation using row descriptors
-				ctx.context.set(sourceRowDescriptor, () => row);
-				logContextPush(sourceRowDescriptor, 'source-row', sourceAttributes);
-				if (sourceRelation !== plan.source) {
-					ctx.context.set(sourceRelationRowDescriptor, () => row);
-					logContextPush(sourceRelationRowDescriptor, 'source-relation-row');
-				}
+				// Set the current row in the runtime context for Filter and GROUP BY evaluation
+				ctx.context.set(scanRowDescriptor, () => row);
+				logContextPush(scanRowDescriptor, 'scan-row', sourceAttributes);
 
 				try {
 					// Evaluate GROUP BY expressions to determine the group
@@ -339,10 +345,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						const previousGroupSourceRow = currentSourceRow;
 
 						// Yield the previous group's results
-						const resultRow: SqlValue[] = [];
+						const aggregateRow: SqlValue[] = [];
 
 						// First, add the GROUP BY values
-						resultRow.push(...currentGroupValues);
+						aggregateRow.push(...currentGroupValues);
 
 						// Then, add the finalized aggregate values
 						for (let i = 0; i < plan.aggregates.length; i++) {
@@ -355,12 +361,19 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								finalValue = currentAccumulators[i];
 							}
 
-							resultRow.push(finalValue);
+							aggregateRow.push(finalValue);
 						}
 
+						// Build combined row with aggregate results + representative source row
+						const fullRow = previousGroupSourceRow ? [...aggregateRow, ...previousGroupSourceRow] : aggregateRow;
+
 						// Set up context with the PREVIOUS group's representative row (not the current row)
-						ctx.context.set(outputRowDescriptor, () => resultRow);
-						logContextPush(outputRowDescriptor, 'output-row-groupby');
+						if (previousGroupSourceRow) {
+							ctx.context.set(scanRowDescriptor, () => previousGroupSourceRow);
+							logContextPush(scanRowDescriptor, 'group-rep-row');
+						}
+						ctx.context.set(combinedRowDescriptor, () => fullRow);
+						logContextPush(combinedRowDescriptor, 'output-row-groupby');
 						if (previousGroupSourceRow) {
 							// Use the previous group's representative row for HAVING evaluation
 							// Use separate descriptors to avoid conflicts with source row processing
@@ -374,8 +387,12 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 						// Defer context cleanup
 						cleanupPreviousGroupContext = () => {
-							logContextPop(outputRowDescriptor, 'output-row-groupby');
-							ctx.context.delete(outputRowDescriptor);
+							logContextPop(combinedRowDescriptor, 'output-row-groupby');
+							ctx.context.delete(combinedRowDescriptor);
+							if (previousGroupSourceRow) {
+								logContextPop(scanRowDescriptor, 'group-rep-row');
+								ctx.context.delete(scanRowDescriptor);
+							}
 							if (previousGroupSourceRow) {
 								logContextPop(groupSourceRowDescriptor, 'source-row-groupby');
 								ctx.context.delete(groupSourceRowDescriptor);
@@ -386,7 +403,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							}
 						};
 
-						yield resultRow;
+						yield aggregateRow;
 
 						// Reset for new group
 						currentAccumulators = aggregateSchemas.map(schema => {
@@ -463,13 +480,9 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						}
 					}
 				} finally {
-					// Clean up context for this row
-					logContextPop(sourceRowDescriptor, 'source-row');
-					ctx.context.delete(sourceRowDescriptor);
-					if (sourceRelation !== plan.source) {
-						logContextPop(sourceRelationRowDescriptor, 'source-relation-row');
-						ctx.context.delete(sourceRelationRowDescriptor);
-					}
+					// Clean up scan context for this row
+					logContextPop(scanRowDescriptor, 'scan-row');
+					ctx.context.delete(scanRowDescriptor);
 				}
 			}
 
@@ -480,10 +493,10 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 			// Yield the final group if any rows were processed
 			if (currentGroupKey !== null) {
-				const resultRow: SqlValue[] = [];
+				const aggregateRow: SqlValue[] = [];
 
 				// First, add the GROUP BY values
-				resultRow.push(...currentGroupValues);
+				aggregateRow.push(...currentGroupValues);
 
 				// Then, add the finalized aggregate values
 				for (let i = 0; i < plan.aggregates.length; i++) {
@@ -496,28 +509,39 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						finalValue = currentAccumulators[i];
 					}
 
-					resultRow.push(finalValue);
+					aggregateRow.push(finalValue);
 				}
 
+				// Build combined row with aggregate results + representative source row
+				const fullRow = currentSourceRow ? [...aggregateRow, ...currentSourceRow] : aggregateRow;
+
 				// Set up context for final group with correct source row
-				ctx.context.set(outputRowDescriptor, () => resultRow);
-				logContextPush(outputRowDescriptor, 'final-output-row');
+				if (currentSourceRow) {
+					ctx.context.set(scanRowDescriptor, () => currentSourceRow);
+					logContextPush(scanRowDescriptor, 'final-group-rep-row');
+				}
+				ctx.context.set(combinedRowDescriptor, () => fullRow);
+				logContextPush(combinedRowDescriptor, 'final-output-row');
 				if (currentSourceRow) {
 					// Use the final group's representative row for HAVING evaluation
 					// Use separate descriptors to avoid conflicts with source row processing
-					ctx.context.set(groupSourceRowDescriptor, () => currentSourceRow);
+					ctx.context.set(groupSourceRowDescriptor, () => currentSourceRow!);
 					logContextPush(groupSourceRowDescriptor, 'final-source-row', sourceAttributes);
 					if (sourceRelation !== plan.source) {
-						ctx.context.set(groupSourceRelationRowDescriptor, () => currentSourceRow);
+						ctx.context.set(groupSourceRelationRowDescriptor, () => currentSourceRow!);
 						logContextPush(groupSourceRelationRowDescriptor, 'final-source-relation-row');
 					}
 				}
 
 				try {
-					yield resultRow;
+					yield aggregateRow;
 				} finally {
-					logContextPop(outputRowDescriptor, 'final-output-row');
-					ctx.context.delete(outputRowDescriptor);
+					logContextPop(combinedRowDescriptor, 'final-output-row');
+					ctx.context.delete(combinedRowDescriptor);
+					if (currentSourceRow) {
+						logContextPop(scanRowDescriptor, 'final-group-rep-row');
+						ctx.context.delete(scanRowDescriptor);
+					}
 					if (currentSourceRow) {
 						logContextPop(groupSourceRowDescriptor, 'final-source-row');
 						ctx.context.delete(groupSourceRowDescriptor);

@@ -29,13 +29,12 @@ export class CTEReferenceNode extends PlanNode implements RelationalPlanNode {
 	}
 
 	private buildAttributes(): Attribute[] {
-		// Create fresh attribute IDs when the CTE reference is aliased with a different name.
-		// This avoids collisions between multiple aliases (e.g., base AS b1, base AS b2) in
-		// correlated sub-queries. If no alias (or alias equals original name), preserve IDs
-		// so recursive CTEs continue to share the same descriptor.
+		// CRITICAL: Always create fresh attribute IDs for each CTE reference instance.
+		// Since we now cache CTEReferenceNode instances per alias in buildFrom(),
+		// each alias gets its own unique set of attribute IDs that remain consistent
+		// throughout the planning and execution phases.
 		const relationName = this.alias || this.source.cteName;
 		const useFreshIds = this.alias !== undefined && this.alias.toLowerCase() !== this.source.cteName.toLowerCase();
-
 		return this.source.getAttributes().map((attr: any) => ({
 			id: useFreshIds ? PlanNode.nextAttrId() : attr.id,
 			name: attr.name,

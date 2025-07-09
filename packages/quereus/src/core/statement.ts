@@ -12,7 +12,6 @@ import type { RuntimeContext } from '../runtime/types.js';
 import { Cached } from '../util/cached.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
-import type { InstructionTracer } from '../runtime/types.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import type { SchemaDependency } from '../planner/planning-context.js';
 
@@ -241,6 +240,7 @@ export class Statement {
 				params: this.boundArgs,
 				context: new Map(),
 				tableContexts: new Map(),
+				tracer: this.db.getInstructionTracer(),
 				enableMetrics: this.db.getOption('runtime_metrics'),
 			};
 
@@ -437,54 +437,6 @@ export class Statement {
 		const scheduler = new Scheduler(rootInstruction);
 
 		return generateInstructionProgram(scheduler.instructions, scheduler.destinations);
-	}
-
-	/**
-	 * Executes with runtime instruction tracing enabled.
-	 * @param params Optional parameters to bind.
-	 * @param tracer Optional custom tracer for collecting trace data.
-	 */
-	async *iterateRowsWithTrace(params?: SqlParameters | SqlValue[], tracer?: InstructionTracer): AsyncIterable<Row> {
-		this.validateStatement("iterate rows with trace for");
-		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
-		if (params) this.bindAll(params);
-		this.busy = true;
-
-		try {
-			const blockPlanNode = this.compile();
-			if (!blockPlanNode.statements.length) return;
-
-			const emissionContext = this.getEmissionContext();
-			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
-			const scheduler = new Scheduler(rootInstruction);
-			const runtimeCtx: RuntimeContext = {
-				db: this.db,
-				stmt: this,
-				params: this.boundArgs,
-				context: new Map(),
-				tableContexts: new Map(),
-				tracer: tracer,
-				enableMetrics: this.db.getOption('runtime_metrics'),
-			};
-
-			const results = await scheduler.run(runtimeCtx);
-			if (results) {
-				if (Array.isArray(results) && results.length) {
-					const lastStatementOutput = results[results.length - 1];
-					if (isAsyncIterable(lastStatementOutput)) {
-						yield* lastStatementOutput as AsyncIterable<Row>;
-					}
-				} else if (isAsyncIterable(results)) {
-					yield* results as AsyncIterable<Row>;
-				}
-			}
-		} catch (e: any) {
-			errorLog('Runtime execution failed in iterateRowsWithTrace for current statement: %O', e);
-			if (e instanceof QuereusError) throw e;
-			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
-		} finally {
-			this.busy = false;
-		}
 	}
 }
 

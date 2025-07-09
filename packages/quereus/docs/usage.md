@@ -194,6 +194,9 @@ Standard transaction control methods.
 ### `db.registerVtabModule(...)`, `db.createScalarFunction(...)`, `db.createAggregateFunction(...)`, `db.registerCollation(...)`
 Methods for extending database functionality.
 
+### `db.setInstructionTracer(tracer: InstructionTracer | null)`
+Sets an instruction tracer for debugging and performance analysis. The tracer will be used for all statement executions on this database instance.
+
 ### `db.close()`
 Closes the database connection and finalizes all open statements.
 

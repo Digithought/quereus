@@ -20,10 +20,12 @@ export function buildFinalProjections(
 	projections: Projection[],
 	selectScope: any,
 	stmt: AST.SelectStmt,
-	selectContext: PlanningContext
+	selectContext: PlanningContext,
+	preserveInputColumns: boolean = true
 ): {
 	output: RelationalPlanNode;
 	finalContext: PlanningContext;
+	projectionScope?: RegisteredScope;
 	preAggregateSort: boolean;
 } {
 	if (projections.length === 0) {
@@ -51,21 +53,16 @@ export function buildFinalProjections(
 	}
 
 	// Create the ProjectNode only after all expressions are compiled against input scope
-	currentInput = new ProjectNode(selectScope, currentInput, projections);
+	currentInput = new ProjectNode(selectScope, currentInput, projections, undefined, undefined, preserveInputColumns);
 
-	// Create projection output scope only AFTER ProjectNode exists
+	// Create projection output scope but DON'T merge it into finalContext yet
+	// Let the caller decide when to make these output attributes visible
 	const projectionOutputScope = createProjectionOutputScope(currentInput);
-
-	// Update selectContext to use BOTH the projection output scope AND the original scope
-	let finalContext = selectContext;
-	if (!needsPreProjectionSort) {
-		const combinedScope = new MultiScope([projectionOutputScope, selectScope]);
-		finalContext = { ...selectContext, scope: combinedScope };
-	}
 
 	return {
 		output: currentInput,
-		finalContext,
+		finalContext: selectContext, // Keep unchanged - no premature scope pollution
+		projectionScope: projectionOutputScope,
 		preAggregateSort
 	};
 }
@@ -91,11 +88,19 @@ export function applyOrderBy(
 	input: RelationalPlanNode,
 	stmt: AST.SelectStmt,
 	selectContext: PlanningContext,
-	preAggregateSort: boolean
+	preAggregateSort: boolean,
+	projectionScope?: RegisteredScope
 ): RelationalPlanNode {
 	if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
+		// Merge projection scope if available so ORDER BY can reference output column aliases
+		let orderByContext = selectContext;
+		if (projectionScope) {
+			const combinedScope = new MultiScope([projectionScope, selectContext.scope]);
+			orderByContext = { ...selectContext, scope: combinedScope };
+		}
+
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(selectContext, orderByClause.expr);
+			const expression = buildExpression(orderByContext, orderByClause.expr);
 			return {
 				expression,
 				direction: orderByClause.direction,
@@ -103,7 +108,7 @@ export function applyOrderBy(
 			};
 		});
 
-		return new SortNode(selectContext.scope, input, sortKeys);
+		return new SortNode(orderByContext.scope, input, sortKeys);
 	}
 	return input;
 }
@@ -114,13 +119,21 @@ export function applyOrderBy(
 export function applyLimitOffset(
 	input: RelationalPlanNode,
 	stmt: AST.SelectStmt,
-	selectContext: PlanningContext
+	selectContext: PlanningContext,
+	projectionScope?: RegisteredScope
 ): RelationalPlanNode {
 	if (stmt.limit || stmt.offset) {
-		const literalNull = new LiteralNode(selectContext.scope, { type: 'literal', value: null });
-		const limitExpression = stmt.limit ? buildExpression(selectContext, stmt.limit) : literalNull;
-		const offsetExpression = stmt.offset ? buildExpression(selectContext, stmt.offset) : literalNull;
-		return new LimitOffsetNode(selectContext.scope, input, limitExpression, offsetExpression);
+		// Merge projection scope if available so LIMIT/OFFSET can reference output column aliases
+		let limitContext = selectContext;
+		if (projectionScope) {
+			const combinedScope = new MultiScope([projectionScope, selectContext.scope]);
+			limitContext = { ...selectContext, scope: combinedScope };
+		}
+
+		const literalNull = new LiteralNode(limitContext.scope, { type: 'literal', value: null });
+		const limitExpression = stmt.limit ? buildExpression(limitContext, stmt.limit) : literalNull;
+		const offsetExpression = stmt.offset ? buildExpression(limitContext, stmt.offset) : literalNull;
+		return new LimitOffsetNode(limitContext.scope, input, limitExpression, offsetExpression);
 	}
 	return input;
 }

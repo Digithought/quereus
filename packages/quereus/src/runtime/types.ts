@@ -5,6 +5,7 @@ import type { RowDescriptor, RowGetter, TableDescriptor, TableGetter } from "../
 import type { Scheduler } from "./scheduler.js";
 import type { EmissionContext } from "./emission-context.js";
 import type { VirtualTableConnection } from "../vtab/connection.js";
+import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 export type RuntimeContext = {
 	db: Database;
@@ -22,6 +23,8 @@ export type RuntimeContext = {
 	enableMetrics: boolean;
 	/** Context tracking for debugging context leaks */
 	contextTracker?: ContextTracker;
+	/** Stack of currently executing plan nodes (only when tracing enabled) */
+	planStack?: PlanNode[];
 };
 
 export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue;

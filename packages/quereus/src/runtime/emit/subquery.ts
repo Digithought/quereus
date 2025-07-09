@@ -11,7 +11,7 @@ import { ConstantNode } from '../../planner/nodes/plan-node.js';
 
 export function emitScalarSubquery(plan: ScalarSubqueryNode, ctx: EmissionContext): Instruction {
 
-	async function run(_rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<SqlValue> {
+	async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<SqlValue> {
 		let result: SqlValue = null;
 		let seen = false;
 

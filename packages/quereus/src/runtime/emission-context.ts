@@ -98,9 +98,12 @@ export class EmissionContext {
 	private readonly schemaManager: SchemaManager;
 	private readonly dependencyTracker = new DependencyTracker();
 	private readonly schemaSnapshot = new Map<string, any>();
+	public readonly tracePlanStack: boolean;
 
-	constructor(public readonly db: Database) {
-		this.db = db;
+	constructor(
+		public readonly db: Database,
+	) {
+		this.tracePlanStack = !!db.getOption('trace_plan_stack').value;
 		this.schemaManager = db.schemaManager;
 	}
 

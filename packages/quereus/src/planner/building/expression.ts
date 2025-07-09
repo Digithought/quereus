@@ -92,8 +92,12 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
     case 'subquery': {
        // For scalar subqueries, create a context that allows correlation
        // The buildSelectStmt will create the proper scope chain with subquery tables taking precedence
-       const subqueryContext = { ...ctx };
-       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query, ctx.cteNodes);
+       // CRITICAL: Share the cteReferenceCache to ensure consistent attribute IDs across contexts
+       const subqueryContext = {
+         ...ctx,
+         cteReferenceCache: ctx.cteReferenceCache || new Map()
+       };
+       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query, ctx.cteNodes, false);
        if (subqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
@@ -138,8 +142,11 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 
        if (expr.subquery) {
          // IN subquery: expr IN (SELECT ...)
-         const inSubqueryContext = { ...ctx };
-         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery, ctx.cteNodes);
+         const inSubqueryContext = {
+           ...ctx,
+           cteReferenceCache: ctx.cteReferenceCache || new Map()
+         };
+         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery, ctx.cteNodes, false);
          if (inSubqueryPlan.getType().typeClass !== 'relation') {
            throw new QuereusError('IN subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
          }
@@ -162,8 +169,11 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 
     case 'exists': {
        // Build the EXISTS subquery
-       const existsSubqueryContext = { ...ctx };
-       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery, ctx.cteNodes);
+       const existsSubqueryContext = {
+         ...ctx,
+         cteReferenceCache: ctx.cteReferenceCache || new Map()
+       };
+       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery, ctx.cteNodes, false);
        if (existsSubqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('EXISTS subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }

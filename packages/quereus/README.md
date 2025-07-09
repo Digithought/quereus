@@ -108,6 +108,34 @@ To add logging within a module:
     }
     ```
 
+### Instruction Tracing
+
+For detailed runtime analysis and debugging, Quereus provides an instruction tracing system. Set a tracer on the database instance, and all statement executions will be traced:
+
+```typescript
+import { Database, CollectingInstructionTracer } from 'quereus';
+
+const db = new Database();
+const tracer = new CollectingInstructionTracer();
+
+// Enable tracing for all database operations
+db.setInstructionTracer(tracer);
+
+// Execute statements - they will automatically be traced
+await db.exec("CREATE TABLE users (id INTEGER, name TEXT)");
+await db.exec("INSERT INTO users VALUES (1, 'Alice')");
+const users = await db.prepare("SELECT * FROM users").all();
+
+// Analyze the trace
+const events = tracer.getTraceEvents();
+console.log(`Executed ${events.length} instruction operations`);
+
+// Disable tracing
+db.setInstructionTracer(null);
+```
+
+The `CollectingInstructionTracer` captures detailed information about each instruction execution, including inputs, outputs, timing, and any sub-programs. This is particularly useful for performance analysis and debugging complex query plans.
+
 ## Documentation
 
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference

@@ -48,7 +48,14 @@ import { buildDeleteStmt } from './delete.js';
 export function buildSelectStmt(
   ctx: PlanningContext,
   stmt: AST.SelectStmt,
-  parentCTEs: Map<string, CTEPlanNode> = new Map()
+  parentCTEs: Map<string, CTEPlanNode> = new Map(),
+  /**
+   * Whether ProjectNodes inside this SELECT should forward all input columns that are not explicitly
+   * listed in the projection list. This is desirable for top-level queries (helps ORDER BY, window
+   * functions, etc.) but must be switched off for scalar/IN/EXISTS sub-queries which are required to
+   * expose only their declared columns.
+   */
+  preserveInputColumns: boolean = true
 ): PlanNode {
 
 	// Phase 0: Handle WITH clause if present
@@ -121,7 +128,7 @@ export function buildSelectStmt(
 		// Build final projections if needed
 		if (aggregateResult.needsFinalProjection) {
 			const finalProjections = buildFinalAggregateProjections(stmt, selectContext, aggregateResult.aggregateScope);
-			input = new ProjectNode(selectScope, input, finalProjections);
+			input = new ProjectNode(selectScope, input, finalProjections, undefined, undefined, preserveInputColumns);
 		}
 	}
 
@@ -182,18 +189,21 @@ export function buildSelectStmt(
 
 	// Handle final projections for non-aggregate, non-window cases
 	if (!hasAggregates && !hasWindowFunctions) {
-		const finalResult = buildFinalProjections(input, projections, selectScope, stmt, selectContext);
+		const finalResult = buildFinalProjections(input, projections, selectScope, stmt, selectContext, preserveInputColumns);
 		input = finalResult.output;
 		selectContext = finalResult.finalContext;
 		preAggregateSort = finalResult.preAggregateSort;
+
+		// Apply final modifiers with projection scope for column alias resolution
+		input = applyDistinct(input, stmt, selectScope);
+		input = applyOrderBy(input, stmt, selectContext, preAggregateSort, finalResult.projectionScope);
+		input = applyLimitOffset(input, stmt, selectContext, finalResult.projectionScope);
+	} else {
+		// Apply final modifiers without projection scope for aggregate/window cases
+		input = applyDistinct(input, stmt, selectScope);
+		input = applyOrderBy(input, stmt, selectContext, preAggregateSort);
+		input = applyLimitOffset(input, stmt, selectContext);
 	}
-
-	// Apply final modifiers
-	input = applyDistinct(input, stmt, selectScope);
-	input = applyOrderBy(input, stmt, selectContext, preAggregateSort);
-	input = applyLimitOffset(input, stmt, selectContext);
-
-
 
 	return input;
 }
@@ -265,16 +275,33 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 					columnScope = new AliasedScope(internalScope, tableName, tableName);
 				}
 			} else {
-				// Regular CTE reference
-				const cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
+				// Regular CTE reference - cache by CTE name + alias to ensure consistent attribute IDs
+				const cacheKey = `${tableName}:${fromClause.alias || tableName}`;
 
-				// Create scope for CTE columns using attributes from the reference node (may be fresh)
+				// Initialize cache if not exists
+				if (!parentContext.cteReferenceCache) {
+					parentContext.cteReferenceCache = new Map();
+				}
+
+				let cteRefNode: CTEReferenceNode;
+				if (parentContext.cteReferenceCache.has(cacheKey)) {
+					cteRefNode = parentContext.cteReferenceCache.get(cacheKey)!;
+				} else {
+					cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
+					parentContext.cteReferenceCache.set(cacheKey, cteRefNode);
+				}
+
+				// Create scope for CTE columns using attributes from the reference node
+				// CRITICAL: Use a closure to capture the reference node's attributes
+				// This ensures all column references use the same attribute IDs
 				const cteScope = new RegisteredScope(parentContext.scope);
 				const refAttrs = cteRefNode.getAttributes();
 				cteRefNode.getType().columns.forEach((c, i) => {
 					const attr = refAttrs[i];
-					cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+					cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) => {
+						// Always use the cached reference node's attribute ID
+						return new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i);
+					});
 				});
 
 				if (fromClause.alias) {
@@ -282,6 +309,9 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				} else {
 					columnScope = new AliasedScope(cteScope, tableName, tableName);
 				}
+
+				// CRITICAL: Cache the reference node so later expression compilation uses the same attribute IDs
+				(columnScope as any).referenceNode = cteRefNode;
 
 				fromTable = cteRefNode;
 			}

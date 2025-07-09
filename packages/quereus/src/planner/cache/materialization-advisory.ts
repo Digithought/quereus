@@ -50,7 +50,7 @@ export class MaterializationAdvisory {
 
 		for (const [node, stats] of refGraph) {
 			// Only consider relational nodes for caching
-			if (!this.isRelationalNode(node)) {
+			if (!isRelationalNode(node)) {
 				continue;
 			}
 
@@ -98,7 +98,7 @@ export class MaterializationAdvisory {
 
 		// Rule 3: Correlated subqueries should not be cached
 		// Check if this node is part of a subquery context and if it's correlated
-		if (this.isRelationalNode(node) && this.isCorrelatedNode(node)) {
+		if (isRelationalNode(node) && this.isCorrelatedNode(node)) {
 			return {
 				shouldCache: false,
 				strategy: 'memory',
@@ -210,7 +210,7 @@ export class MaterializationAdvisory {
 
 		// Then check if this node itself should be cached
 		const recommendation = recommendations.get(node);
-		if (recommendation?.shouldCache && this.isRelationalNode(transformedNode)) {
+		if (recommendation?.shouldCache && isRelationalNode(transformedNode)) {
 			log('Injecting %s cache for %s (threshold: %d)',
 				recommendation.strategy, transformedNode.nodeType, recommendation.threshold);
 
