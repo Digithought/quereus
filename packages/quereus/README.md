@@ -146,6 +146,7 @@ The `CollectingInstructionTracer` captures detailed information about each instr
 * [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
 * [Runtime](docs/runtime.md): Details on the runtime and opcodes.
 * [Error Handling](docs/error.md): Details on the error handling and status codes.
+* [Plugin System](docs/plugins.md): Complete guide to creating and using plugins for virtual tables, functions, and collations.
 * [TODO List](docs/todo.md): Planned features and improvements
 
 ## Key Design Decisions

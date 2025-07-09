@@ -5,7 +5,7 @@
  * It allows reading JSON data from URLs or files as if it were a SQL table.
  *
  * Usage:
- *   CREATE VIRTUAL TABLE my_data USING json_table(
+ *   CREATE TABLE my_data USING json_table(
  *     'https://api.example.com/data.json',
  *     '$.items[*]'
  *   );
@@ -51,7 +51,10 @@ export const manifest = {
       help: 'Whether to cache HTTP responses'
     }
   ],
-  capabilities: ['scan', 'filter']
+  capabilities: ['scan', 'filter'],
+  provides: {
+    vtables: ['json_table']
+  }
 };
 
 // Simple in-memory cache
@@ -249,31 +252,45 @@ class JsonTable {
 }
 
 /**
+ * Virtual table module implementation
+ */
+const jsonTableModule = {
+  create: async (tableName, args, config) => {
+    const table = new JsonTable(args, config);
+    await table.initialize();
+    return {
+      schema: table.getSchema(),
+      vtable: table
+    };
+  },
+
+  connect: async (tableName, args, config) => {
+    // Same as create for this simple implementation
+    const table = new JsonTable(args, config);
+    await table.initialize();
+    return {
+      schema: table.getSchema(),
+      vtable: table
+    };
+  }
+};
+
+/**
  * Plugin registration function
  * This is called by Quereus when the plugin is loaded
+ * Now returns a PluginRegistrations object instead of registering directly
  */
 export default function register(db, config = {}) {
-  // Register the virtual table module
-  db.registerVirtualTableModule('json_table', {
-    create: async (tableName, args) => {
-      const table = new JsonTable(args, config);
-      await table.initialize();
-      return {
-        schema: table.getSchema(),
-        vtable: table
-      };
-    },
-
-    connect: async (tableName, args) => {
-      // Same as create for this simple implementation
-      const table = new JsonTable(args, config);
-      await table.initialize();
-      return {
-        schema: table.getSchema(),
-        vtable: table
-      };
-    }
-  });
-
   console.log(`JSON_TABLE plugin loaded with config:`, config);
+  
+  // Return what we want to register
+  return {
+    vtables: [
+      {
+        name: 'json_table',
+        module: jsonTableModule,
+        auxData: config
+      }
+    ]
+  };
 }

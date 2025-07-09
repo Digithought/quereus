@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { useSettingsStore } from '../stores/settingsStore.js';
-import { X, Plus, Settings, Power, RotateCw, AlertTriangle, CheckCircle, Trash2 } from 'lucide-react';
+import { X, Plus, Settings, Power, RotateCw, AlertTriangle, CheckCircle, Trash2, Database, Code, SortAsc } from 'lucide-react';
 import type { PluginRecord, PluginSetting } from '../worker/types.js';
 import type { SqlValue } from '@quereus/quereus';
 
@@ -96,6 +96,36 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
     } catch (error) {
       console.error('Failed to save config:', error);
     }
+  };
+
+  const renderPluginCapabilities = (plugin: PluginRecord) => {
+    const provides = plugin.manifest?.provides;
+    if (!provides || (!provides.vtables?.length && !provides.functions?.length && !provides.collations?.length)) {
+      return null;
+    }
+
+    return (
+      <div className="mt-2 flex flex-wrap gap-2">
+        {provides.vtables?.map((vtable: string) => (
+          <span key={vtable} className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded text-xs">
+            <Database size={12} />
+            {vtable}
+          </span>
+        ))}
+        {provides.functions?.map((func: string) => (
+          <span key={func} className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded text-xs">
+            <Code size={12} />
+            {func}()
+          </span>
+        ))}
+        {provides.collations?.map((collation: string) => (
+          <span key={collation} className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded text-xs">
+            <SortAsc size={12} />
+            {collation}
+          </span>
+        ))}
+      </div>
+    );
   };
 
   const renderConfigForm = (plugin: PluginRecord) => {
@@ -247,7 +277,29 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
             <div className="mt-3 text-sm text-gray-600 dark:text-gray-400">
               <p>• Enter a URL to an ES module that exports a plugin</p>
               <p>• GitHub raw URLs and jsDelivr CDN links work well</p>
+              <p>• Plugins can provide virtual tables, functions, and collations</p>
               <p>• Only install plugins from sources you trust</p>
+            </div>
+          </div>
+
+          {/* Plugin type legend */}
+          <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-2">
+              Plugin Types
+            </h3>
+            <div className="flex flex-wrap gap-3 text-sm">
+              <div className="flex items-center gap-1">
+                <Database size={16} className="text-blue-500" />
+                <span className="text-gray-700 dark:text-gray-300">Virtual Tables</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <Code size={16} className="text-green-500" />
+                <span className="text-gray-700 dark:text-gray-300">Functions</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <SortAsc size={16} className="text-purple-500" />
+                <span className="text-gray-700 dark:text-gray-300">Collations</span>
+              </div>
             </div>
           </div>
 
@@ -300,6 +352,9 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                                 by {plugin.manifest.author}
                               </p>
                             )}
+
+                            {/* Plugin capabilities */}
+                            {renderPluginCapabilities(plugin)}
                           </div>
 
                           <div className="flex items-center gap-2">
