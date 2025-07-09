@@ -314,3 +314,166 @@ export function generateTraceReport(
   lines.push('=== END TRACE ===');
   return lines.join('\n');
 }
+
+/**
+ * Options for plan formatting
+ */
+export interface PlanDisplayOptions {
+	/** Show concise plan by default (true) or full details (false) */
+	concise?: boolean;
+	/** Node IDs to expand with full details (only applies when concise=true) */
+	expandNodes?: string[];
+	/** Maximum depth to display (default: no limit) */
+	maxDepth?: number;
+	/** Show physical properties if available */
+	showPhysical?: boolean;
+}
+
+/**
+ * Creates a concise, tree-like representation of the plan
+ */
+export function formatPlanTree(rootNode: PlanNode, options: PlanDisplayOptions = {}): string {
+	const { concise = true, expandNodes = [], maxDepth, showPhysical = true } = options;
+	const lines: string[] = [];
+	const nodesSeen = new Set<PlanNode>();
+
+	function formatNode(node: PlanNode, depth: number, isLast: boolean, prefix: string): void {
+		if (maxDepth !== undefined && depth > maxDepth) {
+			return;
+		}
+
+		// Avoid infinite recursion for circular references
+		if (nodesSeen.has(node)) {
+			lines.push(`${prefix}├─ [CIRCULAR: ${node.nodeType}#${node.id}]`);
+			return;
+		}
+		nodesSeen.add(node);
+
+		// Determine if this node should be expanded
+		const shouldExpand = !concise || expandNodes.includes(node.id);
+
+		// Node header with connection lines
+		const connector = isLast ? '└─ ' : '├─ ';
+		const nodeType = node.nodeType;
+		const nodeId = `#${node.id}`;
+		const description = node.toString();
+
+		// Build the header line
+		let headerLine = `${prefix}${connector}${nodeType}${nodeId}`;
+		if (description && description !== nodeType) {
+			headerLine += `: ${description}`;
+		}
+
+		// Add cost information if available
+		const cost = node.estimatedCost;
+		const totalCost = node.getTotalCost();
+		if (cost > 0 || totalCost > 0) {
+			headerLine += ` [cost: ${cost}, total: ${totalCost}]`;
+		}
+
+		// Add physical properties if requested and available
+		if (showPhysical && (node as any).physical) {
+			const physical = (node as any).physical;
+			const physicalInfo = [];
+			if (physical.estimatedRows !== undefined) {
+				physicalInfo.push(`rows: ${physical.estimatedRows}`);
+			}
+			if (physical.ordering && physical.ordering.length > 0) {
+				physicalInfo.push(`ordered: ${physical.ordering.map((o: any) => `${o.attributeId}:${o.direction}`).join(',')}`);
+			}
+			if (physical.readonly !== undefined) {
+				physicalInfo.push(`readonly: ${physical.readonly}`);
+			}
+			if (physicalInfo.length > 0) {
+				headerLine += ` {${physicalInfo.join(', ')}}`;
+			}
+		}
+
+		lines.push(headerLine);
+
+		// Add expanded details if requested
+		if (shouldExpand) {
+			const logical = node.getLogicalAttributes();
+			if (logical && Object.keys(logical).length > 0) {
+				const logicalLines = JSON.stringify(logical, null, 2).split('\n');
+				const extendedPrefix = prefix + (isLast ? '    ' : '│   ');
+				lines.push(`${extendedPrefix}┌─ Logical Attributes:`);
+				for (let i = 0; i < logicalLines.length; i++) {
+					const line = logicalLines[i];
+					const isLastLogicalLine = i === logicalLines.length - 1;
+					const logicalConnector = isLastLogicalLine ? '└─ ' : '│  ';
+					lines.push(`${extendedPrefix}${logicalConnector}${line}`);
+				}
+			}
+		}
+
+		// Process children
+		const children = node.getChildren();
+		const relations = node.getRelations();
+		const allChildren = [...children, ...relations];
+
+		// Filter out duplicates (in case a child is both a child and relation)
+		const uniqueChildren = Array.from(new Set(allChildren));
+
+		for (let i = 0; i < uniqueChildren.length; i++) {
+			const child = uniqueChildren[i];
+			const isLastChild = i === uniqueChildren.length - 1;
+			const childPrefix = prefix + (isLast ? '    ' : '│   ');
+			formatNode(child, depth + 1, isLastChild, childPrefix);
+		}
+
+		nodesSeen.delete(node);
+	}
+
+	lines.push('Query Plan:');
+	formatNode(rootNode, 0, true, '');
+
+	// Add help text
+	if (concise && expandNodes.length === 0) {
+		lines.push('');
+		lines.push('Tip: Use --expand-nodes node1,node2,... to see detailed properties for specific nodes');
+	}
+
+	return lines.join('\n');
+}
+
+/**
+ * Generates a compact plan summary showing just the execution path
+ */
+export function formatPlanSummary(rootNode: PlanNode): string {
+	const path: string[] = [];
+	const visited = new Set<PlanNode>();
+
+	function collectPath(node: PlanNode): void {
+		if (visited.has(node)) return;
+		visited.add(node);
+
+		const description = node.toString();
+		const nodeInfo = description && description !== node.nodeType
+			? `${node.nodeType}(${description})`
+			: node.nodeType;
+
+		path.push(nodeInfo);
+
+		// Follow the main execution path (first child for most nodes)
+		const children = node.getChildren();
+		if (children.length > 0) {
+			collectPath(children[0]);
+		}
+	}
+
+	collectPath(rootNode);
+	return `Execution Path: ${path.join(' → ')}`;
+}
+
+/**
+ * Enhanced plan serialization with formatting options
+ */
+export function serializePlanTreeWithOptions(rootNode: PlanNode, options: PlanDisplayOptions = {}): string {
+	if (options.concise !== false) {
+		return formatPlanTree(rootNode, options);
+	} else {
+		// Use the existing detailed serialization
+		return serializePlanTree(rootNode);
+	}
+}

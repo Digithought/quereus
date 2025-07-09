@@ -49,9 +49,42 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 yarn test
 ```
 
-For diagnostics on test failures run the SET env commands separately - for some reason, they won't be recognized when run together with &&:
+For diagnostics on test failures, use command line arguments:
 ```bash
-set QUEREUS_TEST_SHOW_PLAN=true # First, set the env variable
+# Show concise query plan
+yarn test -- --show-plan
+
+# Show one-line execution path summary 
+yarn test -- --plan-summary
+
+# Show full detailed plan (JSON format)
+yarn test -- --plan-full-detail
+
+# Expand specific nodes in concise plan (get node IDs from initial plan output)
+yarn test -- --show-plan --expand-nodes "node1,node2,node3"
+
+# Limit plan depth
+yarn test -- --show-plan --max-plan-depth 3
+
+# Show instruction program
+yarn test -- --show-program
+
+# Show execution trace
+yarn test -- --show-trace
+
+# Show full stack traces
+yarn test -- --show-stack
+
+# Verbose execution progress
+yarn test -- --verbose
+
+# Combine multiple options
+yarn test -- --show-plan --plan-summary --verbose
+```
+
+**Environment Variables (Deprecated but still supported):**
+```bash
+set QUEREUS_TEST_SHOW_PLAN=true
 yarn test      # Show query plan
 
 set QUEREUS_TEST_SHOW_PROGRAM=true
