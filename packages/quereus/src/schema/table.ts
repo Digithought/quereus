@@ -4,7 +4,7 @@ import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type TableConstraint } from '../parser/ast.js';
 import { getAffinity } from '../common/type-inference.js';
-import { SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
+import { RowOp, SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
@@ -228,7 +228,7 @@ export const DEFAULT_ROWOP_MASK = RowOpFlag.INSERT | RowOpFlag.UPDATE;
  * @param list Optional array of operation types
  * @returns A bitmask representing the operations
  */
-export function opsToMask(list?: AST.RowOp[]): RowOpMask {
+export function opsToMask(list?: RowOp[]): RowOpMask {
 	if (!list || list.length === 0) {
 		return DEFAULT_ROWOP_MASK;
 	}

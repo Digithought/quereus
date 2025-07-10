@@ -2,7 +2,7 @@ import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
-import type { SqlValue } from '../common/types.js';
+import type { RowOp, SqlValue } from '../common/types.js';
 import { quereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { getSyncLiteral } from './utils.js';
@@ -2447,7 +2447,7 @@ export class Parser {
 			return { type: 'unique', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
 			// --- Parse optional ON clause before parentheses --- //
-			let operations: AST.RowOp[] | undefined;
+			let operations: RowOp[] | undefined;
 			if (this.matchKeyword('ON')) {
 				operations = this.parseRowOpList();
 			}
@@ -2526,7 +2526,7 @@ export class Parser {
 			return { type: 'unique', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
 			// --- Parse optional ON clause before parentheses --- //
-			let operations: AST.RowOp[] | undefined;
+			let operations: RowOp[] | undefined;
 			if (this.matchKeyword('ON')) {
 				operations = this.parseRowOpList();
 			}
@@ -2697,8 +2697,8 @@ export class Parser {
 	}
 
 			/** Parses the list of operations for CHECK ON */
-	private parseRowOpList(): AST.RowOp[] {
-		const operations: AST.RowOp[] = [];
+	private parseRowOpList(): RowOp[] {
+		const operations: RowOp[] = [];
 
 		// Parse operations in a comma-separated list
 		do {
