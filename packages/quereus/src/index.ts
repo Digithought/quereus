@@ -11,7 +11,7 @@ export { Statement } from './core/statement.js';
 
 // Common data types and constants
 export { StatusCode, SqlDataType } from './common/types.js';
-export type { SqlValue, SqlParameters, Row, MaybePromise } from './common/types.js';
+export type { SqlValue, SqlParameters, Row, MaybePromise, RowOp } from './common/types.js';
 export { ConflictResolution, IndexConstraintOp, VTabConfig, FunctionFlags } from './common/constants.js';
 export { QuereusError, MisuseError, ConstraintError, unwrapError, formatErrorChain, getPrimaryError } from './common/errors.js';
 export type { ErrorInfo } from './common/errors.js';

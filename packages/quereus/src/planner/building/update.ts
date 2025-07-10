@@ -12,7 +12,7 @@ import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
-import { RowOp } from '../../schema/table.js';
+import { RowOpFlag } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { buildConstraintChecks } from './constraint-builder.js';
@@ -83,7 +83,7 @@ export function buildUpdateStmt(
   const constraintChecks = buildConstraintChecks(
     updateCtx,
     tableReference.tableSchema,
-    RowOp.UPDATE,
+    RowOpFlag.UPDATE,
     oldAttributes,
     newAttributes,
     flatRowDescriptor
@@ -216,7 +216,7 @@ export function buildUpdateStmt(
       updateCtx.scope,
       updateNodeWithDescriptor,
       tableReference,
-      RowOp.UPDATE,
+      RowOpFlag.UPDATE,
       oldRowDescriptor,
       newRowDescriptor,
       flatRowDescriptor,
@@ -252,7 +252,7 @@ export function buildUpdateStmt(
     updateCtx.scope,
     updateNode,
     tableReference,
-    RowOp.UPDATE,
+    RowOpFlag.UPDATE,
     oldRowDescriptor,
     newRowDescriptor,
     flatRowDescriptor,

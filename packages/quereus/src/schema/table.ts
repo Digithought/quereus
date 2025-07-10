@@ -214,13 +214,13 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 }
 
 /** Bitmask for row operations */
-export const enum RowOp {
+export const enum RowOpFlag {
 	INSERT = 1,
 	UPDATE = 2,
 	DELETE = 4
 }
-export type RowOpMask = RowOp;
-export const DEFAULT_ROWOP_MASK = RowOp.INSERT | RowOp.UPDATE;
+export type RowOpMask = RowOpFlag;
+export const DEFAULT_ROWOP_MASK = RowOpFlag.INSERT | RowOpFlag.UPDATE;
 
 /**
  * Converts an array of row operations to a bitmask
@@ -235,9 +235,9 @@ export function opsToMask(list?: AST.RowOp[]): RowOpMask {
 	let mask: RowOpMask = 0 as RowOpMask;
 	list.forEach(op => {
 		switch (op) {
-			case 'insert': mask |= RowOp.INSERT; break;
-			case 'update': mask |= RowOp.UPDATE; break;
-			case 'delete': mask |= RowOp.DELETE; break;
+			case 'insert': mask |= RowOpFlag.INSERT; break;
+			case 'update': mask |= RowOpFlag.UPDATE; break;
+			case 'delete': mask |= RowOpFlag.DELETE; break;
 		}
 	});
 	return mask;

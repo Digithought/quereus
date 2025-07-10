@@ -6,7 +6,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
-import { RowOp } from '../../schema/table.js';
+import { RowOpFlag } from '../../schema/table.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
@@ -82,7 +82,7 @@ async function checkNotNullConstraints(
 	// For INSERT operations, check NOT NULL on NEW values
 	// For UPDATE operations, check NOT NULL on NEW values
 	// DELETE operations don't need NOT NULL checks
-	if (plan.operation === RowOp.DELETE) {
+	if (plan.operation === RowOpFlag.DELETE) {
 		return;
 	}
 

@@ -1,4 +1,4 @@
-import type { MaybePromise, SqlValue } from '../common/types.js';
+import type { MaybePromise, RowOp, SqlValue } from '../common/types.js';
 import type { ConflictResolution } from '../common/constants.js';
 
 /**
@@ -355,9 +355,6 @@ export interface ColumnDef {
 	dataType?: string;
 	constraints: ColumnConstraint[];
 }
-
-// New type for row operations
-export type RowOp = 'insert' | 'update' | 'delete';
 
 // Column constraint (PRIMARY KEY, NOT NULL, etc.)
 export interface ColumnConstraint extends AstNode {

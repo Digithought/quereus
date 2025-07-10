@@ -146,3 +146,4 @@ export interface DatabaseConfig {
 	 */
 	foreignKeys?: boolean;
 }
+export type RowOp = 'insert' | 'update' | 'delete';

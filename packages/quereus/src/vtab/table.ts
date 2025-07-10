@@ -4,7 +4,7 @@ import type { TableSchema } from '../schema/table.js';
 import type { MaybePromise, Row } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
-import type { RowOp } from '../parser/ast.js';
+import type { RowOp } from '../common/types.js';
 import type { VirtualTableConnection } from './connection.js';
 
 /**

@@ -3,7 +3,7 @@ import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, 
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
-import type { RowOp } from '../../schema/table.js';
+import type { RowOpFlag } from '../../schema/table.js';
 import type { RowConstraintSchema } from '../../schema/table.js';
 
 export interface ConstraintCheck {
@@ -22,7 +22,7 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
     scope: Scope,
     public readonly source: RelationalPlanNode,
     public readonly table: TableReferenceNode,
-    public readonly operation: RowOp,
+    public readonly operation: RowOpFlag,
     public readonly oldRowDescriptor: RowDescriptor | undefined,
     public readonly newRowDescriptor: RowDescriptor | undefined,
     public readonly flatRowDescriptor: RowDescriptor,

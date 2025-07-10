@@ -1,6 +1,6 @@
 import type { PlanningContext } from '../planning-context.js';
 import type { TableSchema, RowConstraintSchema } from '../../schema/table.js';
-import type { RowOp } from '../../schema/table.js';
+import type { RowOpFlag } from '../../schema/table.js';
 import type { Attribute, RowDescriptor } from '../nodes/plan-node.js';
 import type { ConstraintCheck } from '../nodes/constraint-check-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
@@ -12,7 +12,7 @@ import * as AST from '../../parser/ast.js';
 /**
  * Determines if a constraint should be checked for the given operation
  */
-function shouldCheckConstraint(constraint: RowConstraintSchema, operation: RowOp): boolean {
+function shouldCheckConstraint(constraint: RowConstraintSchema, operation: RowOpFlag): boolean {
   // Check if the current operation is in the constraint's operations bitmask
   return (constraint.operations & operation) !== 0;
 }
@@ -24,7 +24,7 @@ function shouldCheckConstraint(constraint: RowConstraintSchema, operation: RowOp
 export function buildConstraintChecks(
   ctx: PlanningContext,
   tableSchema: TableSchema,
-  operation: RowOp,
+  operation: RowOpFlag,
   oldAttributes: Attribute[],
   newAttributes: Attribute[],
   _flatRowDescriptor: RowDescriptor

@@ -16,7 +16,7 @@ import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
-import { RowOp } from '../../schema/table.js';
+import { RowOpFlag } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
@@ -248,7 +248,7 @@ export function buildInsertStmt(
 	const constraintChecks = buildConstraintChecks(
 		ctx,
 		tableReference.tableSchema,
-		RowOp.INSERT,
+		RowOpFlag.INSERT,
 		oldAttributes,
 		newAttributes,
 		flatRowDescriptor
@@ -266,7 +266,7 @@ export function buildInsertStmt(
 		ctx.scope,
 		insertNode,
 		tableReference,
-		RowOp.INSERT,
+		RowOpFlag.INSERT,
 		oldRowDescriptor,
 		newRowDescriptor,
 		flatRowDescriptor,

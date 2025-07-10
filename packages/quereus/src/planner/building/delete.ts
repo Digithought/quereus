@@ -11,7 +11,7 @@ import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
-import { RowOp } from '../../schema/table.js';
+import { RowOpFlag } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
@@ -74,7 +74,7 @@ export function buildDeleteStmt(
   const constraintChecks = buildConstraintChecks(
     deleteCtx,
     tableReference.tableSchema,
-    RowOp.DELETE,
+    RowOpFlag.DELETE,
     oldAttributes,
     newAttributes,
     flatRowDescriptor
@@ -85,7 +85,7 @@ export function buildDeleteStmt(
     deleteCtx.scope,
     sourceNode,
     tableReference,
-    RowOp.DELETE,
+    RowOpFlag.DELETE,
     oldRowDescriptor,
     newRowDescriptor,
     flatRowDescriptor,

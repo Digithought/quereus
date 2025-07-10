@@ -4,7 +4,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { ConflictResolution } from '../../common/constants.js';
-import { RowOp } from '../../parser/ast.js';
+import { RowOp } from '../../common/types.js';
 
 /**
  * Executes actual database insert/update/delete operations after constraint validation.
