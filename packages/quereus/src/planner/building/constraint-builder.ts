@@ -27,7 +27,7 @@ export function buildConstraintChecks(
   operation: RowOp,
   oldAttributes: Attribute[],
   newAttributes: Attribute[],
-  flatRowDescriptor: RowDescriptor
+  _flatRowDescriptor: RowDescriptor
 ): ConstraintCheck[] {
   // Build attribute ID mappings for column registration
   const newAttrIdByCol: Record<string, number> = {};

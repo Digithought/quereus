@@ -79,11 +79,6 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 	// Create row descriptors for context
 	const sourceAttributes = plan.source.getAttributes();
-	const sourceRowDescriptor = buildRowDescriptor(sourceAttributes);
-
-	const sourceRelationRowDescriptor = sourceRelation !== plan.source
-		? buildRowDescriptor((sourceRelation as any).getAttributes?.() || sourceAttributes)
-		: sourceRowDescriptor;
 
 	// Create separate descriptors for group yielding to avoid conflicts with source row processing
 	const groupSourceRowDescriptor = buildRowDescriptor(sourceAttributes);

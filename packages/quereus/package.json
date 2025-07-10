@@ -1,8 +1,13 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Federated SQL query processor inspired by SQLite",
+  "description": "Federated SQL query processor",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Digithought/quereus.git",
+    "directory": "packages/quereus"
+  },
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [

@@ -90,59 +90,202 @@ export default function register(db, config = {}) {
 
 ## Virtual Table Plugins
 
-Virtual tables allow you to expose external data sources as SQL tables.
+Virtual tables allow you to expose external data sources as SQL tables. Use the exported TypeScript types for full type safety.
 
 ### Basic Virtual Table
 
-```javascript
-class MyTable {
-  constructor(args, config) {
-    this.data = [
+```typescript
+import {
+  VirtualTable,
+  VirtualTableModule,
+  BaseModuleConfig,
+  Database,
+  TableSchema,
+  Row,
+  BestAccessPlanRequest,
+  BestAccessPlanResult,
+  AccessPlanBuilder
+} from 'quereus';
+
+// Configuration interface for your module
+interface MyTableConfig extends BaseModuleConfig {
+  initialData?: Row[];
+}
+
+// Virtual table implementation extending the base class
+class MyTable extends VirtualTable {
+  private data: Row[] = [];
+
+  constructor(
+    db: Database, 
+    module: VirtualTableModule<any, any>, 
+    schemaName: string, 
+    tableName: string,
+    config: MyTableConfig
+  ) {
+    super(db, module, schemaName, tableName);
+    this.data = config.initialData || [
       { id: 1, name: 'Alice' },
       { id: 2, name: 'Bob' }
     ];
   }
 
-  getSchema() {
-    return 'CREATE TABLE my_table(id INTEGER, name TEXT)';
+  // Modern query planning interface
+  getBestAccessPlan(request: BestAccessPlanRequest): BestAccessPlanResult {
+    // For simple tables, use full scan
+    return AccessPlanBuilder.fullScan(this.data.length)
+      .setHandledFilters(request.filters.map(() => false))
+      .setExplanation('Simple table scan')
+      .build();
   }
 
-  * scan() {
+  // Query implementation using async iterator
+  async* xQuery(): AsyncIterable<Row> {
     for (const row of this.data) {
       yield row;
     }
   }
 
-  getRowCount() {
-    return this.data.length;
+  // Update operations (INSERT, UPDATE, DELETE)
+  async xUpdate(operation: any, values: Row | undefined): Promise<Row | undefined> {
+    if (operation === 'INSERT' && values) {
+      this.data.push(values);
+      return values;
+    }
+    // Handle UPDATE and DELETE as needed
+    return undefined;
+  }
+
+  async xDisconnect(): Promise<void> {
+    // Cleanup resources
   }
 }
 
-const myTableModule = {
-  create: async (tableName, args, config) => {
-    const table = new MyTable(args, config);
-    return {
-      schema: table.getSchema(),
-      vtable: table
-    };
-  },
-
-  connect: async (tableName, args, config) => {
-    // Usually same as create
-    return myTableModule.create(tableName, args, config);
+// Module implementation
+class MyTableModule implements VirtualTableModule<MyTable, MyTableConfig> {
+  xCreate(db: Database, tableSchema: TableSchema): MyTable {
+    const config: MyTableConfig = {}; // Parse from tableSchema if needed
+    return new MyTable(db, this, tableSchema.schemaName, tableSchema.tableName, config);
   }
-};
 
-export default function register(db, config) {
+  xConnect(
+    db: Database,
+    pAux: unknown,
+    moduleName: string,
+    schemaName: string,
+    tableName: string,
+    options: MyTableConfig
+  ): MyTable {
+    return new MyTable(db, this, schemaName, tableName, options);
+  }
+
+  getBestAccessPlan(
+    db: Database,
+    tableInfo: TableSchema,
+    request: BestAccessPlanRequest
+  ): BestAccessPlanResult {
+    return AccessPlanBuilder.fullScan(100) // Estimated row count
+      .setHandledFilters(request.filters.map(() => false))
+      .build();
+  }
+
+  xBestIndex(): number { return 0; } // Legacy compatibility
+
+  async xDestroy(): Promise<void> {
+    // Cleanup persistent resources
+  }
+}
+
+export default function register(db: Database, config: MyTableConfig) {
   return {
     vtables: [
       {
         name: 'my_table',
-        module: myTableModule,
+        module: new MyTableModule(),
         auxData: config
       }
     ]
   };
+}
+```
+
+### Modern Query Planning
+
+For advanced optimization, implement the modern planning interface:
+
+```typescript
+import {
+  BestAccessPlanRequest,
+  BestAccessPlanResult,
+  AccessPlanBuilder,
+  ConstraintOp,
+  PredicateConstraint
+} from 'quereus';
+
+class AdvancedTable extends VirtualTable {
+  getBestAccessPlan(request: BestAccessPlanRequest): BestAccessPlanResult {
+    // Check for equality constraints on indexed columns
+    const eqConstraints = request.filters.filter(f => 
+      f.op === '=' && f.usable && this.isIndexedColumn(f.columnIndex)
+    );
+
+    if (eqConstraints.length > 0) {
+      // Use index for equality lookups
+      const handledFilters = request.filters.map(f => 
+        eqConstraints.includes(f)
+      );
+      
+      return AccessPlanBuilder.eqMatch(1) // Expect 1 row for unique lookup
+        .setHandledFilters(handledFilters)
+        .setOrdering(this.getIndexOrdering())
+        .setIsSet(true) // Guarantees unique rows
+        .setExplanation('Index equality seek on primary key')
+        .build();
+    }
+
+    // Fall back to full scan
+    return AccessPlanBuilder.fullScan(this.getEstimatedRowCount())
+      .setHandledFilters(request.filters.map(() => false))
+      .build();
+  }
+
+  private isIndexedColumn(columnIndex: number): boolean {
+    // Check if column has an index
+    return columnIndex === 0; // Example: first column is indexed
+  }
+
+  private getIndexOrdering() {
+    return [{ columnIndex: 0, desc: false }];
+  }
+}
+```
+
+### Legacy Compatibility
+
+For compatibility with older planning systems, also implement `xBestIndex`:
+
+```typescript
+xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
+  // Convert legacy IndexInfo to modern BestAccessPlanRequest
+  const filters: PredicateConstraint[] = indexInfo.aConstraint.map(constraint => ({
+    columnIndex: constraint.iColumn,
+    op: this.mapConstraintOp(constraint.op),
+    usable: constraint.usable
+  }));
+
+  const request: BestAccessPlanRequest = {
+    columns: this.getColumnMetadata(),
+    filters: filters
+  };
+
+  const result = this.getBestAccessPlan(request);
+  
+  // Map back to legacy IndexInfo format
+  indexInfo.estimatedCost = result.cost;
+  indexInfo.estimatedRows = BigInt(result.rows || 0);
+  indexInfo.orderByConsumed = result.providesOrdering !== undefined;
+  
+  return StatusCode.OK;
 }
 ```
 
@@ -164,20 +307,22 @@ Functions extend SQL with custom computational logic.
 
 Return a single value:
 
-```javascript
-function reverse(text) {
+```typescript
+import { Database, FunctionFlags, SqlValue } from 'quereus';
+
+function reverse(text: SqlValue): SqlValue {
   if (text === null || text === undefined) return null;
   return String(text).split('').reverse().join('');
 }
 
-export default function register(db, config) {
+export default function register(db: Database, config: any) {
   return {
     functions: [
       {
         schema: {
           name: 'reverse',
           numArgs: 1,
-          flags: 1, // FunctionFlags.UTF8
+          flags: FunctionFlags.UTF8,
           returnType: { typeClass: 'scalar', sqlType: 'TEXT' },
           implementation: reverse
         }
@@ -293,8 +438,10 @@ Collations control text sorting and comparison behavior.
 
 ### Basic Collation
 
-```javascript
-function numericCollation(a, b) {
+```typescript
+import { Database, CollationFunction } from 'quereus';
+
+const numericCollation: CollationFunction = (a: string, b: string): number => {
   // Parse out numeric parts for natural sorting
   const parseString = (str) => {
     const parts = [];
@@ -538,6 +685,54 @@ export default function register(db, config) {
 }
 ```
 
+## TypeScript Benefits
+
+With the exported types, plugin development gains several advantages:
+
+### Full Type Safety
+
+```typescript
+// Compile-time checking of vtable implementations
+class MyTable extends VirtualTable {
+  // TypeScript ensures all required methods are implemented
+  async xUpdate(operation: RowOp, values: Row | undefined): Promise<Row | undefined> {
+    // Type-safe parameter handling
+    if (operation === 'INSERT' && values) {
+      return this.handleInsert(values);
+    }
+    return undefined;
+  }
+}
+
+// Interface compliance is checked at compile time
+class MyModule implements VirtualTableModule<MyTable, MyConfig> {
+  // All required methods must be implemented with correct signatures
+}
+```
+
+### IntelliSense and Documentation
+
+IDEs provide rich autocomplete and inline documentation for all exported types:
+
+- Method signatures with parameter types
+- Enum values with descriptions  
+- Interface properties with documentation
+- Import suggestions for missing types
+
+### Modern Planning Features
+
+Access advanced query optimization through the modern planning API:
+
+```typescript
+// Use builder pattern for clean, type-safe plan construction
+const plan = AccessPlanBuilder.eqMatch(1)
+  .setHandledFilters([true, false, true])
+  .setOrdering([{ columnIndex: 0, desc: false }])
+  .setIsSet(true)
+  .setExplanation('Primary key lookup')
+  .build();
+```
+
 ## Best Practices
 
 ### Error Handling
@@ -580,9 +775,8 @@ function safeFunction(input) {
 
 ### Loading Plugins
 
-```javascript
-import { Database } from 'quereus';
-import { dynamicLoadModule } from 'quereus/plugin-loader';
+```typescript
+import { Database, dynamicLoadModule } from 'quereus';
 
 const db = new Database();
 
@@ -643,6 +837,184 @@ See the `packages/sample-plugins/` directory for complete examples:
 
 ## API Reference
 
+All types are exported from the main `quereus` package for external plugin development.
+
+### Core Virtual Table Types
+
+```typescript
+// Base class for virtual table implementations
+abstract class VirtualTable {
+  constructor(db: Database, module: VirtualTableModule<any, any>, schemaName: string, tableName: string);
+  abstract xDisconnect(): Promise<void>;
+  abstract xUpdate(operation: RowOp, values: Row | undefined, oldKeyValues?: Row): Promise<Row | undefined>;
+  
+  // Optional methods
+  xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
+  createConnection?(): MaybePromise<VirtualTableConnection>;
+  getBestAccessPlan?(request: BestAccessPlanRequest): BestAccessPlanResult;
+  xBegin?(): Promise<void>;
+  xCommit?(): Promise<void>;
+  xRollback?(): Promise<void>;
+  // ... other optional methods
+}
+
+// Module interface for creating and managing virtual table instances
+interface VirtualTableModule<TTable extends VirtualTable, TConfig extends BaseModuleConfig> {
+  xCreate(db: Database, tableSchema: TableSchema): TTable;
+  xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: TConfig): TTable;
+  getBestAccessPlan?(db: Database, tableInfo: TableSchema, request: BestAccessPlanRequest): BestAccessPlanResult;
+  xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number;
+  xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void>;
+}
+
+// Base configuration interface
+interface BaseModuleConfig {}
+
+// Connection interface for transaction support
+interface VirtualTableConnection {
+  readonly connectionId: string;
+  readonly tableName: string;
+  begin(): MaybePromise<void>;
+  commit(): MaybePromise<void>;
+  rollback(): MaybePromise<void>;
+  createSavepoint(index: number): MaybePromise<void>;
+  releaseSavepoint(index: number): MaybePromise<void>;
+  rollbackToSavepoint(index: number): MaybePromise<void>;
+  disconnect(): MaybePromise<void>;
+}
+```
+
+### Modern Query Planning Interface
+
+```typescript
+// Request object for query planning
+interface BestAccessPlanRequest {
+  columns: readonly ColumnMeta[];
+  filters: readonly PredicateConstraint[];
+  requiredOrdering?: readonly OrderingSpec[];
+  limit?: number | null;
+  estimatedRows?: number;
+}
+
+// Result object describing the chosen query plan
+interface BestAccessPlanResult {
+  handledFilters: readonly boolean[];
+  residualFilter?: (row: any) => boolean;
+  cost: number;
+  rows: number | undefined;
+  providesOrdering?: readonly OrderingSpec[];
+  isSet?: boolean;
+  explains?: string;
+}
+
+// Helper class for building access plans
+class AccessPlanBuilder {
+  static fullScan(estimatedRows: number): AccessPlanBuilder;
+  static eqMatch(matchedRows: number, indexCost?: number): AccessPlanBuilder;
+  static rangeScan(estimatedRows: number, indexCost?: number): AccessPlanBuilder;
+  
+  setCost(cost: number): this;
+  setRows(rows: number | undefined): this;
+  setHandledFilters(handledFilters: readonly boolean[]): this;
+  setOrdering(ordering: readonly OrderingSpec[]): this;
+  setIsSet(isSet: boolean): this;
+  setExplanation(explanation: string): this;
+  setResidualFilter(filter: (row: any) => boolean): this;
+  build(): BestAccessPlanResult;
+}
+
+// Planning primitive types
+interface ColumnMeta {
+  index: number;
+  name: string;
+  type: SqlDataType;
+  isPrimaryKey: boolean;
+  isUnique: boolean;
+}
+
+interface PredicateConstraint {
+  columnIndex: number;
+  op: ConstraintOp;
+  value?: SqlValue;
+  usable: boolean;
+}
+
+interface OrderingSpec {
+  columnIndex: number;
+  desc: boolean;
+  nullsFirst?: boolean;
+}
+
+type ConstraintOp = '=' | '>' | '>=' | '<' | '<=' | 'MATCH' | 'LIKE' | 'GLOB' | 'IS NULL' | 'IS NOT NULL';
+```
+
+### Legacy Planning Interface
+
+```typescript
+// Legacy IndexInfo interface for compatibility
+interface IndexInfo {
+  nConstraint: number;
+  aConstraint: ReadonlyArray<IndexConstraint>;
+  nOrderBy: number;
+  aOrderBy: ReadonlyArray<IndexOrderBy>;
+  colUsed: bigint;
+  
+  // Output fields
+  aConstraintUsage: IndexConstraintUsage[];
+  idxNum: number;
+  idxStr: string | null;
+  orderByConsumed: boolean;
+  estimatedCost: number;
+  estimatedRows: bigint;
+  idxFlags: number;
+}
+
+interface IndexConstraint {
+  iColumn: number;
+  op: IndexConstraintOp;
+  usable: boolean;
+  iTermOffset?: number;
+}
+
+interface FilterInfo {
+  idxNum: number;
+  idxStr: string | null;
+  constraints: ReadonlyArray<{ constraint: IndexConstraint, argvIndex: number }>;
+  args: ReadonlyArray<SqlValue>;
+  indexInfoOutput: IndexInfo;
+}
+```
+
+### Constants and Enums
+
+```typescript
+enum IndexConstraintOp {
+  EQ = 2, GT = 4, LE = 8, LT = 16, GE = 32,
+  MATCH = 64, LIKE = 65, GLOB = 66, REGEXP = 67,
+  NE = 68, ISNOT = 69, ISNOTNULL = 70, ISNULL = 71,
+  IS = 72, LIMIT = 73, OFFSET = 74, IN = 75,
+  FUNCTION = 150
+}
+
+enum IndexScanFlags {
+  UNIQUE = 0x0001
+}
+
+enum VTabConfig {
+  CONSTRAINT_SUPPORT = 1,
+  INNOCUOUS = 2,
+  DIRECTONLY = 3,
+  USES_ALL_SCHEMAS = 4
+}
+
+enum FunctionFlags {
+  UTF8 = 1,
+  DETERMINISTIC = 0x000000800,
+  DIRECTONLY = 0x000080000,
+  INNOCUOUS = 0x000200000
+}
+```
+
 ### Plugin Registration Types
 
 ```typescript
@@ -654,7 +1026,7 @@ interface PluginRegistrations {
 
 interface VTablePluginInfo {
   name: string;
-  module: VirtualTableModule;
+  module: VirtualTableModule<any, any>;
   auxData?: unknown;
 }
 
@@ -668,36 +1040,6 @@ interface CollationPluginInfo {
 }
 ```
 
-### Function Schema Types
-
-```typescript
-interface ScalarFunctionSchema {
-  name: string;
-  numArgs: number;
-  flags: FunctionFlags;
-  returnType: ScalarType;
-  implementation: ScalarFunc;
-}
-
-interface TableValuedFunctionSchema {
-  name: string;
-  numArgs: number;
-  flags: FunctionFlags;
-  returnType: RelationType;
-  implementation: TableValuedFunc;
-}
-
-interface AggregateFunctionSchema {
-  name: string;
-  numArgs: number;
-  flags: FunctionFlags;
-  returnType: ScalarType;
-  stepFunction: AggregateReducer;
-  finalizeFunction: AggregateFinalizer;
-  initialValue?: any;
-}
-```
-
 ### Collation Function Type
 
 ```typescript
@@ -708,3 +1050,17 @@ The function should return:
 - `-1` if `a < b`
 - `0` if `a === b`
 - `1` if `a > b`
+
+### Built-in Collations
+
+```typescript
+// Available collation functions
+const BINARY_COLLATION: CollationFunction;    // Byte-by-byte comparison
+const NOCASE_COLLATION: CollationFunction;    // Case-insensitive comparison  
+const RTRIM_COLLATION: CollationFunction;     // Right-trim before comparison
+
+// Collation management
+function registerCollation(name: string, func: CollationFunction): void;
+function getCollation(name: string): CollationFunction | undefined;
+function resolveCollation(collationName: string): CollationFunction;
+```
