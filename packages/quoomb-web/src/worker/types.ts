@@ -1,7 +1,16 @@
-import type { SqlValue, PluginManifest } from '@quereus/quereus';
+import type { SqlValue, PluginManifest as BasePluginManifest } from '@quereus/quereus';
 
-// Re-export plugin types for convenience
-export type { PluginManifest, PluginRecord, PluginSetting } from '@quereus/quereus';
+// Re-export plugin types for convenience, but extend PluginManifest with UI-specific properties
+export type { PluginRecord, PluginSetting } from '@quereus/quereus';
+
+// Extended PluginManifest for UI display with provides information
+export interface PluginManifest extends BasePluginManifest {
+  provides?: {
+    vtables?: string[];         // names of vtable modules provided
+    functions?: string[];       // names of functions provided
+    collations?: string[];      // names of collations provided
+  };
+}
 
 export interface PlanGraphNode {
   id: string;                 // stable, local to this plan
