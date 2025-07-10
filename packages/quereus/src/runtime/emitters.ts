@@ -67,12 +67,43 @@ export function getEmitterMeta(nodeType: PlanNodeType): EmitterMeta | undefined 
  */
 function instrumentRunForTracing(plan: PlanNode, originalRun: InstructionRun): InstructionRun {
 	return function (ctx: RuntimeContext, ...args: any[]) {
-		(ctx.planStack = ctx.planStack || []).push(plan);
+		const stack = (ctx.planStack = ctx.planStack || []);
+		stack.push(plan);
+
+		let result: any;
 		try {
-			return originalRun(ctx, ...args);
-		} finally {
-			ctx.planStack.pop();
+			result = originalRun(ctx, ...args);
+		} catch (err) {
+			// Synchronous error – pop immediately and re-throw
+			stack.pop();
+			throw err;
 		}
+
+		// If the result is an async iterable, defer the pop until iteration completes
+		if (result && typeof result === 'object' && Symbol.asyncIterator in result) {
+			const iterable = result as AsyncIterable<unknown>;
+			// Wrap iterable to pop stack in a finally block once iteration ends
+			return (async function* () {
+				try {
+					for await (const item of iterable) {
+						yield item;
+					}
+				} finally {
+					stack.pop();
+				}
+			})();
+		}
+
+		// If the result is a promise, pop once it settles
+		if (result && typeof (result as Promise<unknown>).then === 'function') {
+			return (result as Promise<unknown>).finally(() => {
+				stack.pop();
+			});
+		}
+
+		// Synchronous return value – pop immediately
+		stack.pop();
+		return result;
 	};
 }
 

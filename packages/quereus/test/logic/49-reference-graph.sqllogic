@@ -69,13 +69,15 @@ ORDER BY b1.id
 → [{"id": 1, "ref_count": 2, "higher_count": 0}, {"id": 2, "ref_count": 2, "higher_count": 0}, {"id": 3, "ref_count": 1, "higher_count": 2}]
 
 -- Test 8: Non-deterministic functions should not be cached
+-- Verify that query plans with random() do not contain cache nodes
 CREATE TABLE t3 (id INTEGER PRIMARY KEY);
 INSERT INTO t3 VALUES (1), (2), (3);
 
--- This should not cache the random() subquery
--- Note: The result should be 3 different values due to random()
-SELECT COUNT(DISTINCT x) AS cnt FROM (
-    SELECT (SELECT id FROM t3 ORDER BY random() LIMIT 1) AS x
-    FROM t3
-) sub
-→ [{"cnt": 3}]
+-- Check that no Cache nodes are present in the plan for non-deterministic subquery
+SELECT COUNT(*) AS cache_count FROM query_plan('SELECT (SELECT id FROM t3 ORDER BY random() LIMIT 1) AS x FROM t3') WHERE op = 'CACHE'
+→ [{"cache_count": 0}]
+
+-- Test 9: CTE with MATERIALIZED hint should trigger caching
+-- This CTE has an explicit materialization hint, so it should inject a cache node
+SELECT COUNT(*) AS cache_count FROM query_plan('WITH high_values AS MATERIALIZED (SELECT * FROM t1 WHERE value >= 20) SELECT COUNT(*) FROM high_values') WHERE op = 'CACHE'
+→ [{"cache_count": 1}]

@@ -19,6 +19,7 @@ import type { CTEPlanNode } from '../nodes/cte-node.js';
 import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { ValuesNode } from '../nodes/values-node.js';
+import { createLogger } from '../../common/logger.js';
 
 // Import decomposed functionality
 import { buildWithContext } from './select-context.js';
@@ -32,6 +33,8 @@ import { SortNode, type SortKey } from '../nodes/sort.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
+
+const logger = createLogger('planner:cte');
 
 /**
  * Creates an initial logical query plan for a SELECT statement.
@@ -286,9 +289,13 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				let cteRefNode: CTEReferenceNode;
 				if (parentContext.cteReferenceCache.has(cacheKey)) {
 					cteRefNode = parentContext.cteReferenceCache.get(cacheKey)!;
+					const attrs = cteRefNode.getAttributes();
+					logger(`Using cached CTE reference ${cacheKey}, attrs=[${attrs.map(a => a.id).join(',')}]`);
 				} else {
 					cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
 					parentContext.cteReferenceCache.set(cacheKey, cteRefNode);
+					const attrs = cteRefNode.getAttributes();
+					logger(`Created new CTE reference ${cacheKey}, attrs=[${attrs.map(a => a.id).join(',')}]`);
 				}
 
 				// Create scope for CTE columns using attributes from the reference node

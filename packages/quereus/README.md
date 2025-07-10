@@ -209,15 +209,16 @@ Quereus employs a multi-faceted testing strategy:
     *   Uses simple text files (`*.sqllogic`) containing SQL statements and their expected JSON results (using `→` marker) or expected error messages (using `-- error:` directive).
     *   Driven by a Mocha test runner (`test/logic.spec.ts`) that executes the SQL against a fresh `Database` instance for each file.
     *   **Configurable Diagnostics**: On unexpected failures, the test runner provides clean error messages by default with optional detailed diagnostics controlled by command line arguments:
-        *   `--verbose` - Show execution progress during tests
-        *   `--show-plan` - Include concise query plan in diagnostics
-        *   `--plan-full-detail` - Include full detailed query plan (JSON format)
-        *   `--plan-summary` - Show one-line execution path summary
-        *   `--expand-nodes node1,node2...` - Expand specific nodes in concise plan
-        *   `--max-plan-depth N` - Limit plan display depth
-        *   `--show-program` - Include instruction program in diagnostics
-        *   `--show-stack` - Include full stack trace in diagnostics
-        *   `--show-trace` - Include execution trace in diagnostics
+        *   `yarn test --verbose` - Show execution progress during tests
+        *   `yarn test --show-plan` - Include concise query plan in diagnostics
+        *   `yarn test --plan-full-detail` - Include full detailed query plan (JSON format)
+        *   `yarn test --plan-summary` - Show one-line execution path summary
+        *   `yarn test --expand-nodes node1,node2...` - Expand specific nodes in concise plan
+        *   `yarn test --max-plan-depth N` - Limit plan display depth
+        *   `yarn test --show-program` - Include instruction program in diagnostics
+        *   `yarn test --show-stack` - Include full stack trace in diagnostics
+        *   `yarn test --show-trace` - Include execution trace in diagnostics
+        *   `yarn test --trace-plan-stack` - Enable plan stack tracing in runtime
         *   Environment variables (deprecated): `QUEREUS_TEST_VERBOSE=true`, `QUEREUS_TEST_SHOW_PLAN=true`, etc.
     *   This helps pinpoint failures at the Parser, Planner, or Runtime layer while keeping output manageable.
     *   Provides comprehensive coverage of SQL features: basic CRUD, complex expressions, all join types, window functions, aggregates, subqueries, CTEs, constraints, transactions, set operations, views, and error handling.

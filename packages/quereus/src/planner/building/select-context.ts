@@ -40,11 +40,11 @@ export function buildWithContext(
 
 		// Create a new scope that includes the CTEs
 		const cteScope = createCTEScope(cteNodes, ctx);
-		contextWithCTEs = { ...ctx, scope: cteScope, cteNodes };
+		contextWithCTEs = { ...ctx, scope: cteScope, cteNodes, cteReferenceCache: ctx.cteReferenceCache };
 	} else if (cteNodes.size > 0) {
 		// No WITH clause but we have parent CTEs, create scope for them
 		const cteScope = createCTEScope(cteNodes, ctx);
-		contextWithCTEs = { ...ctx, scope: cteScope, cteNodes };
+		contextWithCTEs = { ...ctx, scope: cteScope, cteNodes, cteReferenceCache: ctx.cteReferenceCache };
 	}
 
 	return { contextWithCTEs, cteNodes };

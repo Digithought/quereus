@@ -12,7 +12,13 @@ import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt } from './select.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
 import { buildFunctionCall } from './function-call.js';
+import { createLogger } from '../../common/logger.js';
 
+const logger = createLogger('planner:expression');
+
+/**
+ * Builds an expression plan node from an AST expression.
+ */
 export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allowAggregates: boolean = false): ScalarPlanNode {
   switch (expr.type) {
     case 'literal':
@@ -93,11 +99,15 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
        // For scalar subqueries, create a context that allows correlation
        // The buildSelectStmt will create the proper scope chain with subquery tables taking precedence
        // CRITICAL: Share the cteReferenceCache to ensure consistent attribute IDs across contexts
+       logger(`Building scalar subquery - ctx.cteReferenceCache size: ${ctx.cteReferenceCache?.size ?? 'undefined'}`);
        const subqueryContext = {
          ...ctx,
          cteReferenceCache: ctx.cteReferenceCache || new Map()
        };
-       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query, ctx.cteNodes, false);
+       // Preserve input columns in scalar subqueries to ensure correlated predicates
+       // have access to all underlying attributes.
+       const subqueryPlan = buildSelectStmt(subqueryContext, expr.query, ctx.cteNodes, true);
+       logger(`Building scalar subquery with preserveInputColumns=true`);
        if (subqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('Subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }
@@ -146,7 +156,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
            ...ctx,
            cteReferenceCache: ctx.cteReferenceCache || new Map()
          };
-         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery, ctx.cteNodes, false);
+         const inSubqueryPlan = buildSelectStmt(inSubqueryContext, expr.subquery, ctx.cteNodes, true);
          if (inSubqueryPlan.getType().typeClass !== 'relation') {
            throw new QuereusError('IN subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
          }
@@ -173,7 +183,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
          ...ctx,
          cteReferenceCache: ctx.cteReferenceCache || new Map()
        };
-       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery, ctx.cteNodes, false);
+       const existsSubqueryPlan = buildSelectStmt(existsSubqueryContext, expr.subquery, ctx.cteNodes, true);
        if (existsSubqueryPlan.getType().typeClass !== 'relation') {
          throw new QuereusError('EXISTS subquery must produce a relation', StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
        }

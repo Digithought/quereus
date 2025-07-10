@@ -12,7 +12,7 @@ CREAT TABLE t_err (a);
 
 -- Semantic Error: Table not found
 SELECT * FROM non_existent_table;
--- error: main.non_existent_table isn't a table
+-- error: Table not found: main.non_existent_table
 
 -- Semantic Error: Column not found
 CREATE TABLE t_err_col (a INTEGER);
@@ -33,7 +33,7 @@ DROP TABLE t_amb2;
 
 -- Semantic Error: Function not found
 SELECT non_existent_function(1);
--- error: Function not found/ambiguous: non_existent_function/1
+-- error: Function not found: non_existent_function/1
 
 -- Runtime Error: Division by zero (SQLite returns NULL)
 SELECT 1 / 0;

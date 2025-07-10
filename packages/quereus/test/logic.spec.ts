@@ -33,6 +33,7 @@ interface TestOptions {
 	expandNodes: string[];
 	planFullDetail: boolean;
 	maxPlanDepth?: number;
+	tracePlanStack: boolean;
 }
 
 function parseTestOptions(): TestOptions {
@@ -46,7 +47,8 @@ function parseTestOptions(): TestOptions {
 		planSummary: false,
 		expandNodes: [],
 		planFullDetail: false,
-		maxPlanDepth: undefined
+		maxPlanDepth: undefined,
+		tracePlanStack: false
 	};
 
 	for (let i = 0; i < args.length; i++) {
@@ -74,6 +76,9 @@ function parseTestOptions(): TestOptions {
 			case '--plan-full-detail':
 				options.planFullDetail = true;
 				options.showPlan = true; // Implies show-plan
+				break;
+			case '--trace-plan-stack':
+				options.tracePlanStack = true;
 				break;
 			case '--expand-nodes':
 				if (i + 1 < args.length) {
@@ -104,6 +109,7 @@ function parseTestOptions(): TestOptions {
 		options.showStack = process.env.QUEREUS_TEST_SHOW_STACK === 'true';
 		options.showTrace = process.env.QUEREUS_TEST_SHOW_TRACE === 'true';
 		options.verbose = process.env.QUEREUS_TEST_VERBOSE === 'true';
+		options.tracePlanStack = process.env.QUEREUS_TEST_TRACE_PLAN_STACK === 'true';
 	}
 
 	return options;
@@ -112,7 +118,8 @@ function parseTestOptions(): TestOptions {
 function hasAnyArgument(args: string[]): boolean {
 	const testFlags = [
 		'--show-plan', '--show-program', '--show-stack', '--show-trace',
-		'--verbose', '--plan-summary', '--plan-full-detail', '--expand-nodes', '--max-plan-depth'
+		'--verbose', '--plan-summary', '--plan-full-detail', '--expand-nodes', '--max-plan-depth',
+		'--trace-plan-stack'
 	];
 	return args.some(arg => testFlags.includes(arg));
 }
@@ -187,6 +194,7 @@ function formatLocationInfo(error: any, sqlContext: string): string | null {
  * - --show-program                : Include instruction program in diagnostics
  * - --show-stack                  : Include full stack trace in diagnostics
  * - --show-trace                  : Include execution trace in diagnostics
+ * - --trace-plan-stack            : Enable plan stack tracing in runtime
  *
  * Environment variables (for backward compatibility):
  * - QUEREUS_TEST_VERBOSE=true       : Show execution progress during tests
@@ -194,6 +202,7 @@ function formatLocationInfo(error: any, sqlContext: string): string | null {
  * - QUEREUS_TEST_SHOW_PROGRAM=true  : Include instruction program in diagnostics
  * - QUEREUS_TEST_SHOW_STACK=true    : Include full stack trace in diagnostics
  * - QUEREUS_TEST_SHOW_TRACE=true    : Include execution trace in diagnostics
+ * - QUEREUS_TEST_TRACE_PLAN_STACK=true : Enable plan stack tracing in runtime
  */
 function generateDiagnostics(db: Database, sqlBlock: string, error: Error): string {
 	const diagnostics = ['\n=== FAILURE DIAGNOSTICS ==='];
@@ -217,6 +226,7 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
 		diagnostics.push('  --show-program                - Show instruction program');
 		diagnostics.push('  --show-stack                  - Show full stack trace');
 		diagnostics.push('  --show-trace                  - Show execution trace');
+		diagnostics.push('  --trace-plan-stack            - Enable plan stack tracing');
 		diagnostics.push('\nOr use environment variables (deprecated):');
 		diagnostics.push('  QUEREUS_TEST_VERBOSE=true, QUEREUS_TEST_SHOW_PLAN=true, etc.');
 	}
@@ -402,6 +412,11 @@ describe('SQL Logic Tests', () => {
 
 			beforeEach(() => {
 				db = new Database();
+
+				// Set trace_plan_stack option if enabled
+				if (TEST_OPTIONS.tracePlanStack) {
+					db.setOption('trace_plan_stack', true);
+				}
 			});
 
 			afterEach(async () => {
