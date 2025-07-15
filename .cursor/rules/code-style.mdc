@@ -16,3 +16,5 @@ alwaysApply: true
 * ES Modules, so always include `.js` on imports
 
 * This project uses @.editorconfig to enforce consistent coding styles across editors and IDEs.  Summary: Tab indentation,  Single quotes for strings.  The complete configuration is defined in [.editorconfig](mdc:.editorconfig).
+
+* Use "satisfies" rather than casting when possible

@@ -28,7 +28,6 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 
 **Cleanup**
 - [ ] try to remove most dynamic attribute references between classes/objects (fragile assumptions)
-- [ ] optimizer rules managed globally - shouldn't be.  Other global registries should be instance specific
 - [ ] switch from casting to using "satisfies" in as many places as possible
 
 **Core SQL Features**
@@ -42,12 +41,13 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 				(newRow as any)._onConflict = plan.onConflict || 'abort';
 				await vtab.xUpdate!('insert', newRow);
 ```
-- [ ] Fix suppressed constant folding issue
+- [ ] Fix suppressed constant folding issue (see Known Issues in optimizer.md)
+- [ ] Complete constraint extraction implementation (currently has placeholder logic)
 - [ ] More intelligent key inference for joins and beyond
 - [ ] Make choice of scheduler run method determined at constructor time, not in run
 
 **Query Optimization (Next Priority)**
-- [ ] **Phase 1.5 - Access Path Selection**: `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` physical access infrastructure
+- [ ] **Phase 1.5 - Access Path Selection**: Complete `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` implementation (currently partial with fallbacks)
 - [ ] **QuickPick Join Optimization**: Implement TSP-inspired join ordering using random greedy tours
   - [ ] Phase 2: Multi-pass optimizer framework
   - [ ] Phase 3: Join cardinality cost model  

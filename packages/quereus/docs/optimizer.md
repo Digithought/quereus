@@ -431,6 +431,7 @@ import { extractConstraints } from '../analysis/constraint-extractor.js';
 
 const constraints = extractConstraints(predicate, tableColumns);
 // Use constraints for index selection, pushdown, etc.
+// Note: Current implementation contains placeholder logic - see Known Issues
 ```
 
 ### Property Propagation
@@ -472,6 +473,13 @@ if (shouldCache(node, context)) {
 - Plan trees can be large for complex queries
 - Avoid keeping references to old plan nodes
 - Clean up temporary data structures
+
+## Known Issues
+
+**Current Limitations**
+- **Constraint Extraction**: The `constraint-extractor.ts` module contains placeholder implementations for complex predicate analysis
+- **Suppressed Constant Folding**: Some constant folding optimizations are currently suppressed pending resolution of specific edge cases
+- **Access Path Selection**: Phase 1.5 implementation exists but may require additional work for full production readiness
 
 ## Future Directions
 
