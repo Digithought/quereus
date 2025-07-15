@@ -1,382 +1,349 @@
-# Optimizer Coding Conventions
+# Optimizer Conventions: Characteristics-Based Patterns
 
-This document establishes coding conventions and best practices for developing optimizer rules in the Quereus Titan optimizer.
+This document establishes sustainable patterns for the Quereus optimizer to avoid fragile node-specific dependencies and enable robust, extensible optimization rules.
 
-## File Organization
+## Philosophy: Characteristics Over Identity
 
-### Rule Structure
-- Each rule lives in `src/planner/rules/<area>/rule-<name>.ts`
-- Areas include: `rewrite`, `access`, `join`, `aggregate`, `cache`, `pushdown`
-- Rule names should be descriptive: `rule-predicate-pushdown.ts`, `rule-aggregate-streaming.ts`
+The optimizer should make decisions based on **what nodes can do** (characteristics) rather than **what nodes are** (specific types). This approach:
 
-### Rule Function Signature
-All rules must be pure functions with this exact signature:
+- **Eliminates fragility**: No hard-coded assumptions about specific node types
+- **Enables extensibility**: New node types automatically work with existing rules
+- **Improves maintainability**: Rules are self-documenting about their requirements
+- **Supports symbolic refactoring**: Member names can be changed without breaking dynamic references
+
+## Core Principles
+
+### 1. Physical Properties First
+Use the physical properties system as the primary way to understand node capabilities:
+
 ```typescript
-type RuleFn = (node: PlanNode, context: OptContext) => PlanNode | null;
-```
+// ❌ Fragile: Hard-coded node type check
+if (node instanceof UpdateNode || node instanceof DeleteNode) {
+  // handle mutating operations
+}
 
-**Key principles:**
-- Return `null` if rule is not applicable
-- Return a new `PlanNode` if transformation was applied
-- **Never mutate** the incoming `PlanNode` - always create new instances
-- Rules must be deterministic and side-effect free
-- **NEW**: Access optimizer via `context.optimizer`, database via `context.db`, tuning via `context.tuning`
-
-## Rule Implementation Guidelines
-
-### 1. Guard Clauses First
-Start every rule with type and applicability checks:
-```typescript
-export function ruleAggregateStreaming(node: PlanNode, context: OptContext): PlanNode | null {
-	// Guard: only apply to AggregateNode
-	if (!(node instanceof AggregateNode)) {
-		return null;
-	}
-
-	// Guard: check preconditions
-	if (node.groupBy.length === 0) {
-		return null; // No grouping, different rule applies
-	}
-
-	// Actual transformation logic...
+// ✅ Robust: Physical property check
+if (PlanNode.hasSideEffects(node.physical)) {
+  // handle operations with side effects
 }
 ```
 
-### 2. Preserve Attribute IDs
-When creating new nodes, **always preserve original attribute IDs**:
-```typescript
-// ✅ CORRECT - preserve attributes from original node
-return new StreamAggregateNode(
-	node.scope,
-	source, // Source already optimized by framework
-	node.groupBy,
-	node.aggregates,
-	undefined, // estimatedCostOverride
-	node.getAttributes() // Preserve original attribute IDs
-);
-
-// ❌ WRONG - creates new attribute IDs
-return new StreamAggregateNode(
-	node.scope,
-	source,
-	node.groupBy,
-	node.aggregates
-); // Missing attribute preservation
-```
-
-### 3. Framework Handles Children and Properties
-**IMPORTANT**: The framework now handles child optimization and physical properties automatically:
+### 2. Interface-Based Capabilities
+Define interfaces that capture what nodes can do, not what they are:
 
 ```typescript
-// ✅ CORRECT - let framework handle children and properties
-export function ruleMyTransformation(node: PlanNode, context: OptContext): PlanNode | null {
-	if (!(node instanceof MyNode)) return null;
-	
-	// Source is already optimized by framework - just use it
-	const result = new TransformedNode(node.scope, node.source, node.params);
-	
-	// Framework will set physical properties via markPhysical()
-	return result;
+// ❌ Fragile: Checking specific node types
+if (node instanceof FilterNode || node instanceof JoinNode) {
+  // Both have predicates, but different structures
 }
 
-// ❌ WRONG - manually optimizing children (redundant)
-export function badRule(node: PlanNode, context: OptContext): PlanNode | null {
-	const optimizedSource = context.optimizer.optimizeNode(node.source, context); // Don't do this!
-	return new TransformedNode(node.scope, optimizedSource, node.params);
+// ✅ Robust: Interface for predicate capability
+interface HasPredicate {
+  getPredicate(): ScalarPlanNode | null;
 }
 
-// ❌ WRONG - manually setting physical properties (bypasses framework)
-export function badRule(node: PlanNode, context: OptContext): PlanNode | null {
-	const result = new TransformedNode(node.scope, node.source, node.params);
-	PlanNode.setDefaultPhysical(result, { /* properties */ }); // Don't do this!
-	return result;
+function canPushDownPredicate(node: PlanNode): node is HasPredicate {
+  return 'getPredicate' in node && typeof node.getPredicate === 'function';
 }
 ```
 
-### 4. Cost and Row Estimation (Optional)
-Rules may use cost helpers for decision-making, but framework handles physical properties:
+### 3. Utility Functions for Characteristics
+Create reusable functions that detect characteristics across node types:
+
 ```typescript
-import { sortCost, aggregateCost } from '../../cost/index.js';
-import { getRowEstimate } from '../../stats/basic-estimates.js';
-
-// Use for rule decisions, not for setting properties
-const inputRows = getRowEstimate(node.source, context.tuning);
-const sortCostEstimate = sortCost(inputRows);
-
-if (sortCostEstimate > context.tuning.maxSortCost) {
-	return null; // Don't apply this transformation
+// ✅ Characteristic detection utilities
+export class PlanNodeCharacteristics {
+  static hasOrderedOutput(node: PlanNode): boolean {
+    return node.physical.ordering !== undefined && node.physical.ordering.length > 0;
+  }
+  
+  static isConstantValue(node: PlanNode): node is ConstantNode {
+    return node.physical.constant === true && 'getValue' in node;
+  }
+  
+  static estimatesRows(node: PlanNode): number {
+    return node.physical.estimatedRows ?? DEFAULT_ROW_ESTIMATE;
+  }
 }
 ```
 
-### 5. Physical Properties (Framework Managed)
-**DO NOT manually set physical properties** - the framework handles this automatically:
+## Pattern Categories
+
+### Access Path Selection
+
+**Problem**: Rules need to identify table access patterns
+**Solution**: Interface-based table access capabilities
 
 ```typescript
-// ✅ CORRECT - let framework compute properties
-const transformedNode = new SortNode(node.scope, node.source, sortKeys);
-return transformedNode; // Framework will call markPhysical()
+interface TableAccessNode extends RelationalPlanNode {
+  readonly tableSchema: TableSchema;
+  getAccessMethod(): 'sequential' | 'index-scan' | 'index-seek';
+}
 
-// ❌ WRONG - manually setting properties (bypasses framework logic)
-const transformedNode = new SortNode(node.scope, node.source, sortKeys);
-PlanNode.setDefaultPhysical(transformedNode, { /* properties */ }); // Don't do this!
-return transformedNode;
-```
-
-**How Properties Are Computed:**
-- Framework calls `optimizeChildren()` first
-- Then applies rules to get transformed node
-- Finally calls `markPhysical()` which:
-  - Collects properties from all children
-  - Calls node's `getPhysical(childrenProperties)` if implemented
-  - Computes inheritance of `readonly`, `deterministic` flags
-  - Sets final properties on the node
-
-### 6. Logging and Debugging
-Use consistent logging patterns:
-```typescript
-import { createLogger } from '../../../common/logger.js';
-
-const log = createLogger('optimizer:rule:aggregate-streaming');
-
-export function ruleAggregateStreaming(node: PlanNode, context: OptContext): PlanNode | null {
-	if (!(node instanceof AggregateNode)) return null;
-
-	log('Applying aggregate streaming rule to node %s', node.id);
-	
-	// ... transformation logic
-	
-	log('Transformed AggregateNode to StreamAggregateNode with sort');
-	return result;
+function isTableAccess(node: PlanNode): node is TableAccessNode {
+  return isRelationalNode(node) && 'tableSchema' in node;
 }
 ```
 
-## Testing Requirements
+### Predicate Operations
 
-### Unit Tests
-Every rule **must** have unit tests in the test/optimizer directory as `<rule-name>.spec.ts`:
+**Problem**: Rules need to work with predicates across different node types
+**Solution**: Unified predicate interface
 
 ```typescript
-// src/planner/rules/aggregate/rule-aggregate-streaming.spec.ts
-import { describe, it, expect } from 'mocha';
-import { ruleAggregateStreaming } from './rule-aggregate-streaming.js';
-import { AggregateNode } from '../../nodes/aggregate-node.js';
-// ... other imports
-
-describe('ruleAggregateStreaming', () => {
-	it('should transform AggregateNode with GROUP BY to StreamAggregateNode', () => {
-		// Test positive case
-		const aggregate = new AggregateNode(/* ... */);
-		const result = ruleAggregateStreaming(aggregate, mockContext);
-		
-		expect(result).to.be.instanceOf(StreamAggregateNode);
-		expect(result?.getAttributes()).to.deep.equal(aggregate.getAttributes());
-	});
-
-	it('should return null for non-AggregateNode', () => {
-		// Test guard clause
-		const filter = new FilterNode(/* ... */);
-		const result = ruleAggregateStreaming(filter, mockContext);
-		
-		expect(result).to.be.null;
-	});
-
-	it('should return null for AggregateNode without GROUP BY', () => {
-		// Test precondition
-		const aggregate = new AggregateNode(/* groupBy: [] */);
-		const result = ruleAggregateStreaming(aggregate, mockContext);
-		
-		expect(result).to.be.null;
-	});
-});
-```
-
-### Required Test Cases
-Every rule must test:
-1. **Positive case** - rule applies and transforms correctly
-2. **Guard clause** - rule returns null for wrong node type
-3. **Precondition** - rule returns null when preconditions not met
-4. **Attribute preservation** - transformed node preserves original attribute IDs
-
-## Rule Registration
-
-### Registration Pattern
-Rules are registered in the optimizer using a consistent pattern:
-```typescript
-// In src/planner/optimizer-rules.ts or rule-specific file
-import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
-
-registerRule({
-	id: 'Aggregate→StreamAggregate',
-	nodeType: PlanNodeType.Aggregate,
-	phase: 'impl', // 'rewrite' for logical→logical, 'impl' for logical→physical
-	fn: ruleAggregateStreaming
-});
-```
-
-### Rule Phases
-- **rewrite**: Logical-to-logical transformations (predicate pushdown, join reordering)
-- **impl**: Logical-to-physical transformations (Aggregate → StreamAggregate)
-
-## Error Handling
-
-### Rule Failures
-Rules should not throw exceptions under normal circumstances:
-```typescript
-// ✅ CORRECT - return null for non-applicable cases
-if (!isValidPrecondition) {
-	return null;
+interface PredicateCapable {
+  getPredicate(): ScalarPlanNode | null;
+  withPredicate(newPredicate: ScalarPlanNode | null): PlanNode;
 }
 
-// ❌ WRONG - don't throw for normal non-applicable cases
-if (!isValidPrecondition) {
-	quereusError('Rule not applicable');
+interface PredicateCombinable extends PredicateCapable {
+  canCombinePredicates(): boolean;
+  combineWith(other: ScalarPlanNode): ScalarPlanNode;
 }
 ```
 
-### Internal Errors
-Only throw for actual programming errors:
+### Aggregation Detection
+
+**Problem**: Multiple ways to represent aggregation operations
+**Solution**: Aggregation capability interface
+
 ```typescript
-// ✅ CORRECT - throw for programming errors
-if (node.getAttributes().length === 0) {
-	quereusError(`Internal error: ${node.nodeType} has no attributes`);
+interface AggregationCapable extends RelationalPlanNode {
+  getGroupingKeys(): readonly ScalarPlanNode[];
+  getAggregateExpressions(): readonly { expr: ScalarPlanNode; alias: string }[];
+  requiresOrdering(): boolean;
+}
+
+function isAggregating(node: PlanNode): node is AggregationCapable {
+  return isRelationalNode(node) && 'getGroupingKeys' in node;
 }
 ```
 
-## Performance Guidelines
+### Caching Eligibility
 
-### Rule Efficiency
-- Keep rules lightweight - they're called frequently
-- Use early returns to avoid expensive computations
-- Cache expensive calculations in local variables
+**Problem**: Determining what can be cached
+**Solution**: Physical properties + interface checks
 
 ```typescript
-export function expensiveRule(node: PlanNode, optimizer: Optimizer): PlanNode | null {
-	if (!(node instanceof ExpensiveNode)) return null;
-
-	// Cache expensive computation
-	const rowEstimate = getRowEstimate(node.source, optimizer.tuning);
-	if (rowEstimate < THRESHOLD) return null;
-
-	// Use cached value in multiple places
-	const cost1 = calculateCost1(rowEstimate);
-	const cost2 = calculateCost2(rowEstimate);
-	// ...
+export class CachingAnalysis {
+  static isCacheable(node: PlanNode): boolean {
+    // Must be relational to cache results
+    if (!isRelationalNode(node)) return false;
+    
+    // Already cached nodes don't need re-caching
+    if (this.isAlreadyCached(node)) return false;
+    
+    // Check physical properties for side effects
+    const physical = node.physical;
+    if (PlanNode.hasSideEffects(physical)) {
+      // Only cache if execution would be expensive and repeated
+      return this.isExpensiveRepeatedOperation(node);
+    }
+    
+    return true;
+  }
+  
+  private static isAlreadyCached(node: PlanNode): boolean {
+    return 'cacheStrategy' in node && node.cacheStrategy !== null;
+  }
 }
 ```
 
-### Memory Management
-- Don't hold references to transformed nodes
-- Let optimizer handle node lifecycle
-- Avoid creating large intermediate data structures
+## Migration Patterns
 
-## Common Anti-Patterns
+### From instanceof to Interface Checks
 
-### ❌ Mutating Input Nodes
 ```typescript
-// WRONG - mutates input
-function badRule(node: AggregateNode, context: OptContext): PlanNode | null {
-	node.physical = { /* ... */ }; // Mutates input!
-	return node;
+// Before: Hard-coded type checks
+function oldRule(node: PlanNode): PlanNode | null {
+  if (node instanceof FilterNode) {
+    const filter = node as FilterNode;
+    // ... work with filter.predicate
+  } else if (node instanceof JoinNode) {
+    const join = node as JoinNode;
+    // ... work with join.condition
+  }
+  return null;
+}
+
+// After: Interface-based approach
+function newRule(node: PlanNode): PlanNode | null {
+  if (canPushDownPredicate(node)) {
+    const predicate = node.getPredicate();
+    if (predicate && canOptimizePredicate(predicate)) {
+      return optimizePredicateNode(node, predicate);
+    }
+  }
+  return null;
 }
 ```
 
-### ❌ Creating New Attribute IDs
-```typescript
-// WRONG - loses attribute ID mapping
-return new ProjectNode(scope, source, projections); // Uses new attribute IDs
-```
+### From nodeType Checks to Property Checks
 
-### ❌ Manually Optimizing Children
 ```typescript
-// WRONG - framework already handles this
-function badRule(node: PlanNode, context: OptContext): PlanNode | null {
-	const optimizedSource = context.optimizer.optimizeNode(node.source, context); // Redundant!
-	return new TransformedNode(scope, optimizedSource, params);
+// Before: Enumeration-based checks
+if (node.nodeType === PlanNodeType.Sort || 
+    node.nodeType === PlanNodeType.StreamAggregate) {
+  // Handle ordered operations
+}
+
+// After: Property-based checks
+if (PlanNodeCharacteristics.hasOrderedOutput(node)) {
+  // Handle any node that produces ordered output
 }
 ```
 
-### ❌ Manually Setting Physical Properties
+## Framework Utilities
+
+### Core Characteristic Detectors
+
 ```typescript
-// WRONG - bypasses framework logic  
-function badRule(node: PlanNode, context: OptContext): PlanNode | null {
-	const result = new TransformedNode(scope, node.source, params);
-	PlanNode.setDefaultPhysical(result, { /* properties */ }); // Framework handles this!
-	return result;
+export class PlanNodeCharacteristics {
+  // Physical property shortcuts
+  static hasSideEffects = PlanNode.hasSideEffects;
+  static isReadOnly(node: PlanNode): boolean {
+    return node.physical.readonly !== false;
+  }
+  static isDeterministic(node: PlanNode): boolean {
+    return node.physical.deterministic !== false;
+  }
+  static isConstant(node: PlanNode): node is ConstantNode {
+    return node.physical.constant === true && 'getValue' in node;
+  }
+  
+  // Ordering capabilities
+  static hasOrderedOutput(node: PlanNode): boolean {
+    return node.physical.ordering !== undefined && node.physical.ordering.length > 0;
+  }
+  static preservesOrdering(node: PlanNode): boolean {
+    // Check if node preserves input ordering
+    const children = node.getChildren();
+    return children.length === 1 && this.hasOrderedOutput(children[0]);
+  }
+  
+  // Cardinality analysis
+  static estimatesRows(node: PlanNode): number {
+    return node.physical.estimatedRows ?? DEFAULT_ROW_ESTIMATE;
+  }
+  static guaranteesUniqueRows(node: PlanNode): boolean {
+    return node.physical.uniqueKeys?.some(key => key.length === 0) === true;
+  }
+  
+  // Relational capabilities
+  static isRelational = isRelationalNode;
+  static producesRows(node: PlanNode): node is RelationalPlanNode {
+    return isRelationalNode(node);
+  }
 }
 ```
 
-### ❌ Side Effects
+### Capability Interface Registry
+
 ```typescript
-// WRONG - has side effects
-function badRule(node: PlanNode, context: OptContext): PlanNode | null {
-	context.tuning.defaultRowEstimate = 5000; // Mutates context state!
-	return transformedNode;
+export class CapabilityRegistry {
+  private static readonly detectors = new Map<string, (node: PlanNode) => boolean>();
+  
+  static register<T extends PlanNode>(
+    capability: string,
+    detector: (node: PlanNode) => node is T
+  ): void {
+    this.detectors.set(capability, detector);
+  }
+  
+  static hasCapability(node: PlanNode, capability: string): boolean {
+    const detector = this.detectors.get(capability);
+    return detector ? detector(node) : false;
+  }
+  
+  static getCapable<T extends PlanNode>(
+    nodes: readonly PlanNode[], 
+    capability: string
+  ): T[] {
+    const detector = this.detectors.get(capability);
+    if (!detector) return [];
+    return nodes.filter(detector) as T[];
+  }
+}
+
+// Usage in rules:
+CapabilityRegistry.register('predicate-pushdown', canPushDownPredicate);
+CapabilityRegistry.register('table-access', isTableAccess);
+```
+
+## Rule Development Guidelines
+
+### 1. Start with Capabilities
+Before writing a rule, identify what characteristics the rule needs:
+
+```typescript
+function ruleMyOptimization(node: PlanNode, context: OptContext): PlanNode | null {
+  // 1. Check required capabilities
+  if (!PlanNodeCharacteristics.isRelational(node)) return null;
+  if (PlanNodeCharacteristics.hasSideEffects(node)) return null;
+  
+  // 2. Check specific interfaces if needed
+  if (!isSpecializedCapability(node)) return null;
+  
+  // 3. Apply transformation based on characteristics
+  return transformBasedOnCharacteristics(node, context);
 }
 ```
 
-### ❌ Non-Deterministic Rules
+### 2. Prefer Composition over Inheritance
+Use interfaces to compose capabilities rather than relying on inheritance hierarchies:
+
 ```typescript
-// WRONG - non-deterministic
-function badRule(node: PlanNode, context: OptContext): PlanNode | null {
-	if (Math.random() > 0.5) { // Non-deterministic!
-		return transformedNode;
-	}
-	return null;
+interface Sortable {
+  getSortKeys(): readonly SortKey[];
+  withSortKeys(keys: readonly SortKey[]): PlanNode;
+}
+
+interface Projectable {
+  getProjections(): readonly Projection[];
+  withProjections(projections: readonly Projection[]): PlanNode;
+}
+
+// Nodes implement multiple interfaces as appropriate
+class SortedProjectNode implements RelationalPlanNode, Sortable, Projectable {
+  // ... implementation
 }
 ```
 
-## File Template
+### 3. Document Required Characteristics
+Make rule requirements explicit in documentation:
 
-Use this template for new rules:
 ```typescript
 /**
- * Rule: <Brief Description>
+ * Rule: Predicate Pushdown
  * 
- * Transforms: <InputNodeType> → <OutputNodeType>
- * Conditions: <When this rule applies>
- * Benefits: <Why this optimization helps>
+ * Required Characteristics:
+ * - Node must implement PredicateCapable interface
+ * - Node must be read-only (no side effects)
+ * - Predicate must be deterministic
+ * 
+ * Applied When:
+ * - Child node supports predicate pushdown
+ * - Predicate references only child's output columns
  */
-
-import { createLogger } from '../../../common/logger.js';
-import type { PlanNode } from '../../nodes/plan-node.js';
-import type { OptContext } from '../../framework/context.js';
-import { InputNodeType } from '../../nodes/input-node.js';
-import { OutputNodeType } from '../../nodes/output-node.js';
-
-const log = createLogger('optimizer:rule:<rule-name>');
-
-export function rule<RuleName>(node: PlanNode, context: OptContext): PlanNode | null {
-	// Guard: node type check
-	if (!(node instanceof InputNodeType)) {
-		return null;
-	}
-
-	// Guard: precondition checks
-	if (!meetsPreConditions(node)) {
-		return null;
-	}
-
-	log('Applying <rule-name> rule to node %s', node.id);
-
-	// Source is already optimized by framework - just use it
-	// Create transformed node
-	const result = new OutputNodeType(
-		node.scope,
-		node.source, // Already optimized by framework
-		// ... other parameters
-		node.getAttributes() // Preserve attribute IDs
-	);
-
-	// Framework will set physical properties automatically via markPhysical()
-	
-	log('Transformed %s to %s', node.nodeType, result.nodeType);
-	return result;
-}
-
-function meetsPreConditions(node: InputNodeType): boolean {
-	// Implementation-specific precondition checks
-	return true;
+export function rulePushDownPredicate(node: PlanNode, context: OptContext): PlanNode | null {
+  // Implementation follows documented requirements
 }
 ```
 
-This convention ensures consistent, maintainable, and testable optimizer rules that integrate seamlessly with the Titan optimizer architecture. 
+## Benefits of This Approach
+
+1. **Symbolic Rename Safety**: Member names can be changed without breaking optimizer
+2. **Extensibility**: New node types work automatically with existing rules
+3. **Maintainability**: Clear separation between node structure and optimization logic
+4. **Testability**: Characteristics can be tested independently of specific nodes
+5. **Documentation**: Rules self-document their requirements through capability checks
+
+## Migration Strategy
+
+1. **Phase 1**: Create characteristic utilities and interfaces
+2. **Phase 2**: Update existing rules one by one
+3. **Phase 3**: Establish testing patterns for characteristics
+4. **Phase 4**: Update documentation and examples
+5. **Phase 5**: Add linting rules to prevent regression
+
+This approach ensures the optimizer remains robust and extensible as the system grows in complexity. 

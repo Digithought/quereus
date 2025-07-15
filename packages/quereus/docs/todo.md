@@ -27,7 +27,14 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 ## 🔄 Current Development Focus
 
 **Cleanup**
-- [ ] try to remove most dynamic attribute references between classes/objects (fragile assumptions)
+- ✅ **Characteristics-Based Optimizer**: Established framework for robust, extensible optimization patterns
+  - ✅ Created `PlanNodeCharacteristics` utilities for property-based decisions
+  - ✅ Defined capability interfaces (`PredicateCapable`, `JoinCapable`, `AggregationCapable`, etc.)
+  - ✅ Implemented extensible `CapabilityRegistry` system
+  - ✅ Refactored example rules to use characteristics instead of `instanceof` checks
+  - ✅ Created comprehensive documentation and migration plan
+  - 🚧 **Phase 2**: Update plan nodes to implement capability interfaces
+  - 📋 **Phase 3**: Migrate remaining rules to use characteristics-based patterns
 - [ ] switch from casting to using "satisfies" in as many places as possible
 
 **Core SQL Features**
