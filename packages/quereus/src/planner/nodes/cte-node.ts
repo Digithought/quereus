@@ -1,5 +1,6 @@
 import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor, isRelationalNode } from './plan-node.js';
-import type { RelationType } from '../../common/datatype.js';
+import type { RelationType, ScalarType } from '../../common/datatype.js';
+import { SqlDataType } from '../../common/types.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -53,7 +54,7 @@ export class CTENode extends PlanNode implements CTEPlanNode {
 			}
 			// Fallback: generic TEXT scalar if nothing else is available (should not normally happen)
 			if (!resolvedType) {
-				resolvedType = { typeClass: 'scalar', affinity: 'TEXT', nullable: true, isReadOnly: false } as any;
+				resolvedType = { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: false } satisfies ScalarType;
 			}
 			return {
 				id: srcAttr?.id ?? PlanNode.nextAttrId(),

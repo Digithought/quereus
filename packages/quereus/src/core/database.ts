@@ -111,6 +111,7 @@ export class Database {
 					}
 				};
 				// Recreate optimizer with new tuning
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				(this as any).optimizer = new Optimizer(newTuning);
 				log('Optimizer recreated with validate_plan = %s', event.newValue);
 			}
@@ -251,6 +252,7 @@ export class Database {
 
 					const runtimeCtx: RuntimeContext = {
 						db: this,
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
 						stmt: null as any, // No persistent Statement object for transient exec statements
 						params: params ?? {},
 						context: new Map(),
@@ -262,6 +264,7 @@ export class Database {
 					void await scheduler.run(runtimeCtx);
 					// Nothing to do with the result, this is executed for side effects only
 
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				} catch (err: any) {
 					executionError = err instanceof QuereusError ? err : new QuereusError(err.message, StatusCode.ERROR, err);
 					break; // Stop processing further statements on error
@@ -294,6 +297,7 @@ export class Database {
 	 * @param module The module implementation.
 	 * @param auxData Optional client data passed to xCreate/xConnect.
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	registerVtabModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
 		this.checkOpen();
 		this.schemaManager.registerModule(name, module, auxData);

@@ -21,6 +21,10 @@ export interface ColumnSchema {
 	collation: string;
 	/** Is the column generated? */
 	generated: boolean;
+	/** Whether the primary key is auto-increment (only valid for INTEGER PRIMARY KEY) */
+	autoIncrement?: boolean;
+	/** Sort direction for primary key ('asc' | 'desc') */
+	pkDirection?: 'asc' | 'desc';
 }
 
 /**

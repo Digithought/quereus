@@ -50,7 +50,7 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 				columns: [...sourceType.columns, sequenceColumn],
 				keys: [allColumnsKey], // All columns including sequence form a unique key
 				rowConstraints: sourceType.rowConstraints,
-			} as RelationType;
+			} satisfies RelationType;
 		});
 	}
 

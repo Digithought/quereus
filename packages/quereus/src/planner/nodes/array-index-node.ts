@@ -22,7 +22,7 @@ export class ArrayIndexNode extends PlanNode implements ZeroAryScalarNode {
 		this.expression = {
 			type: 'literal',
 			value: `[${index}]`
-		} as AST.LiteralExpr;
+		} satisfies AST.LiteralExpr;
 	}
 
 	getType(): ScalarType {

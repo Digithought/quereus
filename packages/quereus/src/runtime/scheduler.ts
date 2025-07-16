@@ -22,7 +22,7 @@ function wrapIterableForTracing<T>(
 	instruction: Instruction
 ): AsyncIterable<T> {
 	// Prevent double-wrapping
-	if ((src as any)[TRACED_ITERABLE_SYMBOL]) {
+	if ((src as unknown as Record<symbol, boolean>)[TRACED_ITERABLE_SYMBOL]) {
 		return src;
 	}
 
@@ -39,7 +39,7 @@ function wrapIterableForTracing<T>(
 	})();
 
 	// Mark as already wrapped
-	(wrapped as any)[TRACED_ITERABLE_SYMBOL] = true;
+	(wrapped as unknown as Record<symbol, boolean>)[TRACED_ITERABLE_SYMBOL] = true;
 	return wrapped;
 }
 

@@ -280,7 +280,8 @@ export class Parser {
 
 		// Attach WITH clause if present and supported
 		if (withClause && this.statementSupportsWithClause(stmt)) {
-			(stmt as any).withClause = withClause;
+							// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				(stmt as any).withClause = withClause;
 			if (withClause.loc && stmt.loc) {
 				stmt.loc.start = withClause.loc.start;
 			}

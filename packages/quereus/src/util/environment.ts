@@ -20,8 +20,8 @@ export function getEnvVar(key: string): string | undefined {
 
 	// Browser environment - check if globalThis has the variable
 	// This allows setting environment variables like: globalThis.DEBUG = "quereus:*"
-	if (typeof globalThis !== 'undefined' && (globalThis as any)[key]) {
-		return (globalThis as any)[key];
+	if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>)[key]) {
+		return (globalThis as Record<string, unknown>)[key] as string;
 	}
 
 	// React Native or other environments might set environment variables differently

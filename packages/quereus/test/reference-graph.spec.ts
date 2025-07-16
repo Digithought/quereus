@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, beforeEach } from 'mocha';
 import { expect } from 'chai';
 import { Database } from '../src/core/database.js';

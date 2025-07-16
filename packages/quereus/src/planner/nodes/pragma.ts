@@ -60,7 +60,7 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 				name: column.name, // Use the deduplicated name
 				type: column.type,
 				sourceRelation: `${this.nodeType}:${this.id}`
-			} as Attribute
+			} satisfies Attribute
 		));
 	}
 

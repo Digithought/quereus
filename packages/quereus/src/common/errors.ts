@@ -138,7 +138,7 @@ export function unwrapError(error: Error): ErrorInfo[] {
 		errorChain.push(errorInfo);
 
 		// Move to the next error in the chain
-		currentError = (currentError as any).cause;
+		currentError = (currentError as Error & { cause?: Error }).cause;
 	}
 
 	return errorChain;

@@ -1,4 +1,5 @@
 import { expect } from 'chai';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js'; // Adjust path as needed
 import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
