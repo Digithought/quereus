@@ -5,10 +5,10 @@
  * - Node must be a join operation (JoinCapable interface)
  * - Right side must contain operations with side effects (readonly=false)
  * - Right side must not already be cached
- * 
+ *
  * Applied When:
  * - Join has mutating operations on right side that could be executed multiple times
- * 
+ *
  * Benefits: Prevents mutating subqueries from being executed multiple times in nested loop joins
  */
 
@@ -21,7 +21,7 @@ import { PlanNodeCharacteristics, CapabilityDetectors, CachingAnalysis, type Joi
 
 const log = createLogger('optimizer:rule:mutating-subquery-cache');
 
-export function ruleMutatingSubqueryCache(node: PlanNode, context: OptContext): PlanNode | null {
+export function ruleMutatingSubqueryCache(node: PlanNode, _context: OptContext): PlanNode | null {
 	// Guard: node must support join operations
 	if (!CapabilityDetectors.isJoin(node)) {
 		return null;

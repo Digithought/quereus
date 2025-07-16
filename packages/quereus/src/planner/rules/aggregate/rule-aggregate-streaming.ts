@@ -5,24 +5,23 @@
  * - Node must support aggregation operations (AggregationCapable interface)
  * - Node must be relational (produces rows)
  * - Node must be read-only (no side effects for streaming)
- * 
+ *
  * Applied When:
  * - Logical aggregate node needs physical streaming implementation
  * - Source data can be processed incrementally
- * 
+ *
  * Benefits: Enables streaming aggregation with proper grouping order, memory efficient processing
  */
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
-import { AggregateNode } from '../../nodes/aggregate-node.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
-import { 
-	PlanNodeCharacteristics, 
+import {
+	PlanNodeCharacteristics,
 	CapabilityDetectors,
-	type AggregationCapable 
+	type AggregationCapable
 } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:aggregate-streaming');
@@ -123,8 +122,8 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
  * Check if source ordering matches grouping requirements for streaming
  */
 function isOrderedForGrouping(
-	ordering: { column: number; desc: boolean }[] | undefined,
-	groupingKeys: readonly any[]
+	_ordering: { column: number; desc: boolean }[] | undefined,
+	_groupingKeys: readonly any[]
 ): boolean {
 	// TODO: Implement proper ordering analysis
 	// For now, conservatively return false to always sort

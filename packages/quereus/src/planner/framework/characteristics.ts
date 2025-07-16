@@ -1,12 +1,12 @@
 /**
  * Characteristics-based plan node analysis
- * 
+ *
  * This module provides utilities for analyzing plan nodes based on their capabilities
  * and characteristics rather than their specific types, enabling robust and extensible
  * optimization rules.
  */
 
-import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode, PhysicalProperties } from '../nodes/plan-node.js';
+import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode } from '../nodes/plan-node.js';
 import { isRelationalNode } from '../nodes/plan-node.js';
 import type { TableSchema } from '../../schema/table.js';
 
@@ -176,7 +176,7 @@ export interface CacheCapable extends PlanNode {
  */
 export class CapabilityDetectors {
 	static canPushDownPredicate(node: PlanNode): node is PredicateCapable {
-		return 'getPredicate' in node && 
+		return 'getPredicate' in node &&
 			   typeof (node as any).getPredicate === 'function' &&
 			   'withPredicate' in node &&
 			   typeof (node as any).withPredicate === 'function';
@@ -189,14 +189,14 @@ export class CapabilityDetectors {
 	}
 
 	static isTableAccess(node: PlanNode): node is TableAccessCapable {
-		return PlanNodeCharacteristics.isRelational(node) && 
+		return PlanNodeCharacteristics.isRelational(node) &&
 			   'tableSchema' in node &&
 			   'getAccessMethod' in node &&
 			   typeof (node as any).getAccessMethod === 'function';
 	}
 
 	static isAggregating(node: PlanNode): node is AggregationCapable {
-		return PlanNodeCharacteristics.isRelational(node) && 
+		return PlanNodeCharacteristics.isRelational(node) &&
 			   'getGroupingKeys' in node &&
 			   typeof (node as any).getGroupingKeys === 'function' &&
 			   'getAggregateExpressions' in node &&
@@ -249,7 +249,7 @@ export class CapabilityRegistry {
 	}
 
 	static getCapable(
-		nodes: readonly PlanNode[], 
+		nodes: readonly PlanNode[],
 		capability: string
 	): PlanNode[] {
 		const detector = this.detectors.get(capability);
@@ -309,7 +309,7 @@ export class CachingAnalysis {
 	}
 
 	private static isExpensiveRepeatedOperation(node: PlanNode): boolean {
-		return PlanNodeCharacteristics.isExpensive(node) && 
+		return PlanNodeCharacteristics.isExpensive(node) &&
 			   PlanNodeCharacteristics.isLikelyRepeated(node);
 	}
 
@@ -334,11 +334,11 @@ export class PredicateAnalysis {
 
 	static canCombine(pred1: ScalarPlanNode, pred2: ScalarPlanNode): boolean {
 		// Basic heuristic: both must be deterministic
-		return PlanNodeCharacteristics.isDeterministic(pred1) && 
+		return PlanNodeCharacteristics.isDeterministic(pred1) &&
 			   PlanNodeCharacteristics.isDeterministic(pred2);
 	}
 
-	private static predicateReferencesOnly(predicate: ScalarPlanNode, targetNode: PlanNode): boolean {
+	private static predicateReferencesOnly(_predicate: ScalarPlanNode, _targetNode: PlanNode): boolean {
 		// TODO: Implement column reference analysis
 		// For now, conservatively return true
 		return true;

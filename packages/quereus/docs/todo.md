@@ -95,7 +95,6 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 **Developer Experience & Tooling**
 - [ ] **Enhanced EXPLAIN**: More detailed query plan analysis capabilities
 - [ ] **Performance Profiling**: Detailed execution timing and resource usage
-- [ ] **ESLint Rules**: Prevent physical nodes in builder code, enforce conventions
 - [ ] **Virtual Table Development Guide**: Best practices for creating custom vtab modules
 
 **Testing & Quality (Ongoing)**
