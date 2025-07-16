@@ -17,12 +17,7 @@ import { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { CacheNode } from '../../nodes/cache-node.js';
 import { JoinNode } from '../../nodes/join-node.js';
-import { 
-	PlanNodeCharacteristics, 
-	CapabilityDetectors, 
-	CachingAnalysis,
-	type JoinCapable 
-} from '../../framework/characteristics.js';
+import { PlanNodeCharacteristics, CapabilityDetectors, CachingAnalysis, type JoinCapable } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:mutating-subquery-cache');
 
