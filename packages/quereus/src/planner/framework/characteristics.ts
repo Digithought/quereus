@@ -106,7 +106,7 @@ export class PlanNodeCharacteristics {
 /**
  * Interface for nodes that can provide predicates (WHERE clauses, join conditions)
  */
-export interface PredicateCapable {
+export interface PredicateCapable extends PlanNode {
 	getPredicate(): ScalarPlanNode | null;
 	withPredicate(newPredicate: ScalarPlanNode | null): PlanNode;
 }
@@ -140,7 +140,7 @@ export interface AggregationCapable extends RelationalPlanNode {
 /**
  * Interface for sorting operations
  */
-export interface SortCapable {
+export interface SortCapable extends PlanNode {
 	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[];
 	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[]): PlanNode;
 }
@@ -166,7 +166,7 @@ export interface JoinCapable extends RelationalPlanNode {
 /**
  * Interface for cached operations
  */
-export interface CacheCapable {
+export interface CacheCapable extends PlanNode {
 	getCacheStrategy(): string | null;
 	isCached(): boolean;
 }
@@ -236,9 +236,9 @@ export class CapabilityDetectors {
 export class CapabilityRegistry {
 	private static readonly detectors = new Map<string, (node: PlanNode) => boolean>();
 
-	static register<T extends PlanNode>(
+	static register(
 		capability: string,
-		detector: (node: PlanNode) => node is T
+		detector: (node: PlanNode) => boolean
 	): void {
 		this.detectors.set(capability, detector);
 	}
@@ -248,13 +248,13 @@ export class CapabilityRegistry {
 		return detector ? detector(node) : false;
 	}
 
-	static getCapable<T extends PlanNode>(
+	static getCapable(
 		nodes: readonly PlanNode[], 
 		capability: string
-	): T[] {
+	): PlanNode[] {
 		const detector = this.detectors.get(capability);
 		if (!detector) return [];
-		return nodes.filter(detector) as T[];
+		return nodes.filter(detector);
 	}
 
 	static getAllCapabilities(): string[] {

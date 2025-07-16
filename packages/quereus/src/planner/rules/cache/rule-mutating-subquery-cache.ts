@@ -66,7 +66,7 @@ export function ruleMutatingSubqueryCache(node: PlanNode, context: OptContext): 
 		joinNode.getLeftSource(),
 		cachedRightSide,
 		joinNode.getJoinType(),
-		joinNode.getJoinCondition(),
+		joinNode.getJoinCondition() ?? undefined,
 		(node as any).usingColumns // TODO: Add to JoinCapable interface
 	);
 

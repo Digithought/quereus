@@ -78,11 +78,17 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 		// Create combined attributes preserving attribute IDs
 		const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
 
+		// Convert aggregate expressions to match StreamAggregateNode interface
+		const streamAggregates = aggregateExpressions.map(agg => ({
+			expression: agg.expr,
+			alias: agg.alias
+		}));
+
 		const result = new StreamAggregateNode(
 			node.scope,
 			sortedSource,
 			groupingKeys,
-			aggregateExpressions,
+			streamAggregates,
 			undefined, // estimatedCostOverride
 			finalAttrs
 		);
@@ -93,11 +99,17 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 		// No GROUP BY - can stream aggregate without sorting
 		const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
 
+		// Convert aggregate expressions to match StreamAggregateNode interface
+		const streamAggregates = aggregateExpressions.map(agg => ({
+			expression: agg.expr,
+			alias: agg.alias
+		}));
+
 		const result = new StreamAggregateNode(
 			node.scope,
 			source,
 			groupingKeys,
-			aggregateExpressions,
+			streamAggregates,
 			undefined, // estimatedCostOverride
 			finalAttrs
 		);
