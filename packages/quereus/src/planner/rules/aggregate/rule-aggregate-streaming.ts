@@ -1,9 +1,16 @@
 /**
  * Rule: Aggregate Streaming
  *
- * Transforms: AggregateNode → StreamAggregateNode (with Sort if needed)
- * Conditions: Logical aggregate node needs physical implementation
- * Benefits: Enables streaming aggregation with proper grouping order
+ * Required Characteristics:
+ * - Node must support aggregation operations (AggregationCapable interface)
+ * - Node must be relational (produces rows)
+ * - Node must be read-only (no side effects for streaming)
+ * 
+ * Applied When:
+ * - Logical aggregate node needs physical streaming implementation
+ * - Source data can be processed incrementally
+ * 
+ * Benefits: Enables streaming aggregation with proper grouping order, memory efficient processing
  */
 
 import { createLogger } from '../../../common/logger.js';
@@ -12,137 +19,150 @@ import type { OptContext } from '../../framework/context.js';
 import { AggregateNode } from '../../nodes/aggregate-node.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
+import { 
+	PlanNodeCharacteristics, 
+	CapabilityDetectors,
+	type AggregationCapable 
+} from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:aggregate-streaming');
 
 export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): PlanNode | null {
-	// Guard: only apply to AggregateNode
-	if (!(node instanceof AggregateNode)) {
+	// Guard: node must support aggregation operations
+	if (!CapabilityDetectors.isAggregating(node)) {
+		return null;
+	}
+
+	// Guard: must be read-only for streaming (no side effects)
+	if (PlanNodeCharacteristics.hasSideEffects(node)) {
 		return null;
 	}
 
 	log('Applying aggregate streaming rule to node %s', node.id);
 
+	// Get aggregation characteristics
+	const aggregateNode = node as AggregationCapable;
+	const groupingKeys = aggregateNode.getGroupingKeys();
+	const aggregateExpressions = aggregateNode.getAggregateExpressions();
+
 	// Source is already optimized by framework
-	const source = node.source;
+	const source = (node as any).source; // TODO: Add source to AggregationCapable interface
 
-	// For now, always use StreamAggregate
-	// TODO: Check if source is ordered on groupBy columns
-	// TODO: Consider HashAggregate for unordered inputs
+	// Check if streaming aggregation is beneficial
+	if (!aggregateNode.canStreamAggregate()) {
+		log('Node cannot use streaming aggregation, skipping');
+		return null;
+	}
 
-	if (node.groupBy.length > 0) {
+	if (groupingKeys.length > 0) {
 		// Need to ensure ordering for streaming aggregate
-		// For now, always insert a sort
-		// TODO: Check if source already provides the required ordering
-		const sortKeys = node.groupBy.map(expr => ({
-			expression: expr,
-			direction: 'asc' as const,
-			nulls: undefined
+		// Check if source already provides the required ordering
+		const sourceOrdering = PlanNodeCharacteristics.getOrdering(source);
+		const needsSort = !isOrderedForGrouping(sourceOrdering, groupingKeys);
+
+		let sortedSource = source;
+		if (needsSort) {
+			// Insert sort to ensure proper grouping order
+			const sortKeys = groupingKeys.map(expr => ({
+				expression: expr,
+				direction: 'asc' as const,
+				nulls: undefined
+			}));
+
+			sortedSource = new SortNode(node.scope, source, sortKeys);
+			log('Inserted sort for grouping keys');
+		} else {
+			log('Source already provides required ordering for streaming');
+		}
+
+		// Create combined attributes preserving attribute IDs
+		const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
+
+		// Convert aggregate expressions to match StreamAggregateNode interface
+		const streamAggregates = aggregateExpressions.map(agg => ({
+			expression: agg.expr,
+			alias: agg.alias
 		}));
-
-		const sortNode = new SortNode(node.scope, source, sortKeys);
-
-		// Create combined attributes: AggregateNode attributes + source attributes
-		// This ensures both GROUP BY/aggregate AND source column attribute IDs are preserved
-		const aggregateAttrs = node.getAttributes();
-		const sourceAttrs = node.source.getAttributes();
-
-		// Deduplicate by column NAME to avoid duplicate columns like 'id'
-		// (The same logical column can have different attribute IDs between aggregate and source)
-		const seenNames = new Set<string>();
-		const combinedAttrs: typeof aggregateAttrs = [];
-
-		// Add aggregate attributes first (GROUP BY + aggregates)
-		for (const attr of aggregateAttrs) {
-			combinedAttrs.push(attr);
-			seenNames.add(attr.name);
-		}
-
-		// Add source attributes that aren't already present by name
-		for (const attr of sourceAttrs) {
-			if (!seenNames.has(attr.name)) {
-				combinedAttrs.push(attr);
-				seenNames.add(attr.name);
-			}
-		}
-
-		// Final safety-pass: filter duplicates that may have slipped through
-		const uniqueByName = new Set<string>();
-		const deduped: typeof combinedAttrs = [];
-		for (const attr of combinedAttrs) {
-			if (!uniqueByName.has(attr.name)) {
-				deduped.push(attr);
-				uniqueByName.add(attr.name);
-			}
-		}
-
-		const finalAttrs = deduped;
 
 		const result = new StreamAggregateNode(
 			node.scope,
-			sortNode,
-			node.groupBy,
-			node.aggregates,
+			sortedSource,
+			groupingKeys,
+			streamAggregates,
 			undefined, // estimatedCostOverride
-			finalAttrs // unique list
+			finalAttrs
 		);
 
-		// Let framework set physical properties via markPhysical()
-		// Both SortNode and StreamAggregateNode have getPhysical() methods
-
-		log('Transformed AggregateNode to StreamAggregateNode with sort');
+		log('Transformed aggregation to StreamAggregateNode with %s', needsSort ? 'sort' : 'existing order');
 		return result;
 	} else {
 		// No GROUP BY - can stream aggregate without sorting
-		// Create combined attributes: AggregateNode attributes + source attributes
-		// This ensures both GROUP BY/aggregate AND source column attribute IDs are preserved
-		const aggregateAttrs = node.getAttributes();
-		const sourceAttrs = node.source.getAttributes();
+		const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
 
-		// Deduplicate by column NAME to avoid duplicate columns like 'id'
-		// (The same logical column can have different attribute IDs between aggregate and source)
-		const seenNames = new Set<string>();
-		const combinedAttrs: typeof aggregateAttrs = [];
-
-		// Add aggregate attributes first (GROUP BY + aggregates)
-		for (const attr of aggregateAttrs) {
-			combinedAttrs.push(attr);
-			seenNames.add(attr.name);
-		}
-
-		// Add source attributes that aren't already present by name
-		for (const attr of sourceAttrs) {
-			if (!seenNames.has(attr.name)) {
-				combinedAttrs.push(attr);
-				seenNames.add(attr.name);
-			}
-		}
-
-		// Final safety-pass: filter duplicates that may have slipped through
-		const uniqueByName = new Set<string>();
-		const deduped: typeof combinedAttrs = [];
-		for (const attr of combinedAttrs) {
-			if (!uniqueByName.has(attr.name)) {
-				deduped.push(attr);
-				uniqueByName.add(attr.name);
-			}
-		}
-
-		const finalAttrs = deduped;
+		// Convert aggregate expressions to match StreamAggregateNode interface
+		const streamAggregates = aggregateExpressions.map(agg => ({
+			expression: agg.expr,
+			alias: agg.alias
+		}));
 
 		const result = new StreamAggregateNode(
 			node.scope,
 			source,
-			node.groupBy,
-			node.aggregates,
+			groupingKeys,
+			streamAggregates,
 			undefined, // estimatedCostOverride
-			finalAttrs // unique list
+			finalAttrs
 		);
 
-		// Let framework set physical properties via markPhysical()
-		// StreamAggregateNode has getPhysical() method
-
-		log('Transformed AggregateNode to StreamAggregateNode without sort');
+		log('Transformed aggregation to StreamAggregateNode without sort');
 		return result;
 	}
+}
+
+/**
+ * Check if source ordering matches grouping requirements for streaming
+ */
+function isOrderedForGrouping(
+	ordering: { column: number; desc: boolean }[] | undefined,
+	groupingKeys: readonly any[]
+): boolean {
+	// TODO: Implement proper ordering analysis
+	// For now, conservatively return false to always sort
+	// This should check if the ordering covers all grouping keys in order
+	return false;
+}
+
+/**
+ * Combine attributes from aggregate and source, avoiding duplicates by name
+ * This preserves attribute IDs while ensuring unique column names
+ */
+function combineAttributes(aggregateAttrs: any[], sourceAttrs: any[]): any[] {
+	const seenNames = new Set<string>();
+	const combinedAttrs: any[] = [];
+
+	// Add aggregate attributes first (GROUP BY + aggregates)
+	for (const attr of aggregateAttrs) {
+		combinedAttrs.push(attr);
+		seenNames.add(attr.name);
+	}
+
+	// Add source attributes that aren't already present by name
+	for (const attr of sourceAttrs) {
+		if (!seenNames.has(attr.name)) {
+			combinedAttrs.push(attr);
+			seenNames.add(attr.name);
+		}
+	}
+
+	// Final deduplication pass
+	const uniqueByName = new Set<string>();
+	const deduped: any[] = [];
+	for (const attr of combinedAttrs) {
+		if (!uniqueByName.has(attr.name)) {
+			deduped.push(attr);
+			uniqueByName.add(attr.name);
+		}
+	}
+
+	return deduped;
 }
