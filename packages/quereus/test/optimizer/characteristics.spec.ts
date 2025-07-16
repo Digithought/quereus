@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-expressions */
 /**
  * Tests for characteristics-based plan node analysis
  */
@@ -52,7 +53,7 @@ describe('CapabilityDetectors', () => {
 		// Mock node with predicate capability
 		const predicateNode = {
 			getPredicate: () => null,
-			withPredicate: (pred: any) => predicateNode
+			withPredicate: (_pred: any) => predicateNode
 		} as any;
 
 		const regularNode = {} as PlanNode;
