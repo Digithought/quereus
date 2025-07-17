@@ -49,6 +49,7 @@ interface AggregateFuncOptions {
 	/** Whether the function is deterministic (affects caching) */
 	deterministic?: boolean;
 	/** Initial accumulator value */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	initialValue?: any;
 	/** Return type information */
 	returnType?: ScalarType;

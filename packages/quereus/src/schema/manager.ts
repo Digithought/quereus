@@ -35,6 +35,7 @@ export interface GenericModuleCallOptions extends BaseModuleConfig {
 export class SchemaManager {
 	private schemas: Map<string, Schema> = new Map();
 	private currentSchemaName: string = 'main';
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private modules: Map<string, { module: VirtualTableModule<any, any>, auxData?: unknown }> = new Map();
 	private defaultVTabModuleName: string = 'memory';
 	private defaultVTabModuleArgs: Record<string, SqlValue> = {};
@@ -82,6 +83,7 @@ export class SchemaManager {
 	 * @param module Module implementation
 	 * @param auxData Optional client data associated with the module registration
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	registerModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
@@ -97,6 +99,7 @@ export class SchemaManager {
 	 * @param name Module name to look up
 	 * @returns The module and its auxData, or undefined if not found
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
 		return this.modules.get(name.toLowerCase());
 	}

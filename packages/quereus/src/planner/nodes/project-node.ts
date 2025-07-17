@@ -88,7 +88,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 				keys: [],
 				// TODO: propagate row constraints that don't have projected off columns
 				rowConstraints: [],
-			} as RelationType;
+			} satisfies RelationType;
 		});
 
 		this.attributesCache = new Cached(() => {

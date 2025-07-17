@@ -63,7 +63,7 @@ function createRowExpansionProjection(
 				// Create a column reference to the source attribute
 				const columnRef = new ColumnReferenceNode(
 					ctx.scope,
-					{ type: 'column', name: sourceAttr.name } as AST.ColumnExpr,
+					{ type: 'column', name: sourceAttr.name } satisfies AST.ColumnExpr,
 					sourceAttr.type,
 					sourceAttr.id,
 					targetColIndex

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { expect } from "chai";
 import { Database } from "../src/index.js";
 import { MemoryTableModule } from "../src/vtab/memory/module.js";

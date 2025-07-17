@@ -17,6 +17,7 @@ export interface DebugOptions {
   /** Enable instruction program output */
   showProgram?: boolean;
   /** Custom debug context for additional logging */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   debugContext?: Record<string, any>;
 }
 
@@ -36,12 +37,14 @@ export interface SchemaDependency {
  */
 export class BuildTimeDependencyTracker {
 	private dependencies = new Set<string>();
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private resolvedObjects = new Map<string, WeakRef<any>>();
 	private invalidationCallbacks = new Set<() => void>();
 
 	/**
 	 * Records a dependency on a schema object and stores a weak reference to it.
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	recordDependency(dep: SchemaDependency, object: any): void {
 		const key = this.dependencyKey(dep);
 		this.dependencies.add(key);
@@ -173,6 +176,7 @@ export interface PlanningContext {
   /**
    * Schema object cache for resolved objects during planning.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly schemaCache: Map<string, any>;
 
   /**

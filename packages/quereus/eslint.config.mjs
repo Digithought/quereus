@@ -20,7 +20,7 @@ export default tseslint.config(
       import: importPlugin,
     },
     rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-explicit-any': 'warn',
 			'@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
 			'import/extensions': ['error', 'always', { ignorePackages: true }],
 			'@typescript-eslint/no-floating-promises': ['error', { ignoreVoid: true }]

@@ -63,7 +63,7 @@ export class DatabaseOptionsManager {
 	/**
 	 * Set an option value and notify listeners
 	 */
-	setOption(key: string, value: any): void {
+	setOption(key: string, value: unknown): void {
 		const canonicalKey = this.resolveKey(key);
 		if (!canonicalKey) {
 			throw new QuereusError(`Unknown option: ${key}`, StatusCode.ERROR);
@@ -121,12 +121,12 @@ export class DatabaseOptionsManager {
 	/**
 	 * Get an object option value with type safety
 	 */
-	getObjectOption(key: string): Record<string, any> {
+	getObjectOption(key: string): Record<string, SqlValue> {
 		const value = this.getOption(key);
 		if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 			throw new QuereusError(`Option ${key} is not an object (got ${typeof value})`, StatusCode.INTERNAL);
 		}
-		return value as Record<string, any>;
+		return value as Record<string, SqlValue>;
 	}
 
 
@@ -172,7 +172,7 @@ export class DatabaseOptionsManager {
 		return null;
 	}
 
-	private convertValue(value: any, definition: OptionDefinition, originalKey: string): OptionValue {
+	private convertValue(value: unknown, definition: OptionDefinition, originalKey: string): OptionValue {
 		switch (definition.type) {
 			case 'boolean':
 				return this.convertToBoolean(value, originalKey);
@@ -187,7 +187,7 @@ export class DatabaseOptionsManager {
 		}
 	}
 
-	private convertToBoolean(value: any, key: string): boolean {
+	private convertToBoolean(value: unknown, key: string): boolean {
 		if (typeof value === 'boolean') {
 			return value;
 		}
@@ -206,7 +206,7 @@ export class DatabaseOptionsManager {
 		throw new QuereusError(`Invalid boolean value for option ${key}: ${value}`, StatusCode.ERROR);
 	}
 
-	private convertToNumber(value: any, key: string): number {
+	private convertToNumber(value: unknown, key: string): number {
 		if (typeof value === 'number') {
 			return value;
 		}
@@ -219,9 +219,9 @@ export class DatabaseOptionsManager {
 		throw new QuereusError(`Invalid number value for option ${key}: ${value}`, StatusCode.ERROR);
 	}
 
-	private convertToObject(value: any, key: string): Record<string, SqlValue> {
+	private convertToObject(value: unknown, key: string): Record<string, SqlValue> {
 		if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-			return value;
+			return value as Record<string, SqlValue>;
 		}
 		if (typeof value === 'string') {
 			try {

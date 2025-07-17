@@ -30,10 +30,10 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 			// Most window functions return numeric types
 			// row_number() specifically returns an integer
 			if (this.functionName === 'row_number') {
-				return { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false } as ScalarType;
+				return { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false } satisfies ScalarType;
 			}
 			// Other window functions would have their own type inference
-			return { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: false } as ScalarType;
+			return { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: false } satisfies ScalarType;
 		});
 	}
 

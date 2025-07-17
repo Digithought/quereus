@@ -29,6 +29,7 @@ export interface TableSchema {
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<RowConstraintSchema>;
 	/** Reference to the registered module */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	vtabModule: VirtualTableModule<any, any>;
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
@@ -105,6 +106,7 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 		switch (constraint.type) {
 			case 'primaryKey':
 				schema.primaryKey = true;
+				schema.pkDirection = constraint.direction;
 				break;
 			case 'notNull':
 				schema.notNull = true;
@@ -356,8 +358,8 @@ function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyA
 
 	return Object.freeze(pkCols.map(col => ({
 		index: col.originalIndex,
-		desc: col.affinity === SqlDataType.INTEGER && (col as any).autoIncrement ? false : (col as any).pkDirection === 'desc',
-		autoIncrement: col.affinity === SqlDataType.INTEGER && !!((col as any).autoIncrement),
+		desc: col.affinity === SqlDataType.INTEGER && col.pkDirection === 'desc',
+		autoIncrement: col.affinity === SqlDataType.INTEGER,
 		collation: col.collation || 'BINARY'
 	})));
 }

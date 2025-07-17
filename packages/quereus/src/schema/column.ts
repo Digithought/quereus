@@ -21,6 +21,8 @@ export interface ColumnSchema {
 	collation: string;
 	/** Is the column generated? */
 	generated: boolean;
+	/** Sort direction for primary key ('asc' | 'desc') */
+	pkDirection?: 'asc' | 'desc';
 }
 
 /**

@@ -156,6 +156,7 @@ export enum TokenType {
 export interface Token {
 	type: TokenType;
 	lexeme: string;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	literal?: any;
 	startLine: number;
 	startColumn: number;
@@ -737,6 +738,7 @@ export class Lexer {
 		return c === ' ' || c === '\r' || c === '\n' || c === '\t';
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private addToken(type: TokenType, literal?: any): void {
 		const lexeme = this.source.substring(this.start, this.current);
 		this.tokens.push({

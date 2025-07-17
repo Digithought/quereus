@@ -3,6 +3,7 @@
  * Captures expected plan structures for regression testing
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it } from 'mocha';
 import { expect } from 'chai';
 import { promises as fs } from 'fs';

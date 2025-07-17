@@ -106,6 +106,7 @@ export class Statement {
 		try {
 			const currentAst = this.getAstStatement();
 			const planResult = this.db._buildPlan([currentAst], this.boundArgs);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			const dependencies = (planResult as any).schemaDependencies; // Extract dependencies from planning context
 			plan = this.db.optimizer.optimize(planResult, this.db) as BlockNode;
 
@@ -255,6 +256,7 @@ export class Statement {
 					yield* results as AsyncIterable<Row>;
 				}
 			}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (e: any) {
 			errorLog('Runtime execution failed in iterateRows for current statement: %O', e);
 			if (e instanceof QuereusError) throw e;

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { RuntimeValue, SqlParameters, OutputValue, Row } from "../common/types.js";
 import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";

@@ -53,7 +53,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 				columns: [...sourceType.columns, ...windowColumns],
 				keys: sourceType.keys, // Window functions don't change key structure
 				rowConstraints: sourceType.rowConstraints,
-			} as RelationType;
+			} satisfies RelationType;
 		});
 
 		this.attributesCache = new Cached(() => {

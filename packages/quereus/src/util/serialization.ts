@@ -1,6 +1,8 @@
 /**
  * Utility functions for safe serialization, particularly handling BigInt and Uint8Arrays.
  */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('util:serialization');

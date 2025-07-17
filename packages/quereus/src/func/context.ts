@@ -109,12 +109,14 @@ export interface QuereusContext {
 	 * @param createIfNotFound If true and no context exists, creates a new empty object
 	 * @returns The aggregate context for the current group, or undefined
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getAggregateContext<T = any>(createIfNotFound?: boolean): T | undefined;
 
 	/**
 	 * Sets the context (accumulator) for an aggregate function.
 	 * @param context The new state for the aggregate context
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	setAggregateContext<T = any>(context: T): void;
 }
 
@@ -133,6 +135,7 @@ export class FunctionContext implements QuereusContext {
 	private userData: unknown;
 	private db: Database;
 	private auxData: Map<number, { data: unknown, destructor?: (data: unknown) => void }> = new Map();
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private _aggregateContext: any | undefined = undefined;
 
 	constructor(db: Database, userData?: unknown) {
@@ -171,6 +174,7 @@ export class FunctionContext implements QuereusContext {
 	/**
 	 * @internal Sets the aggregate context reference from VDBE
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	_setAggregateContextRef(contextRef: any | undefined): void {
 		this._aggregateContext = contextRef;
 	}
@@ -178,6 +182,7 @@ export class FunctionContext implements QuereusContext {
 	/**
 	 * @internal Gets the potentially modified aggregate context
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	_getAggregateContextRef(): any | undefined {
 		return this._aggregateContext;
 	}
@@ -224,6 +229,7 @@ export class FunctionContext implements QuereusContext {
 		}
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getAggregateContext<T = any>(createIfNotFound: boolean = false): T | undefined {
 		if (this._aggregateContext === undefined && createIfNotFound) {
 			return {} as T;
@@ -231,6 +237,7 @@ export class FunctionContext implements QuereusContext {
 		return this._aggregateContext as T | undefined;
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	setAggregateContext<T = any>(context: T): void {
 		this._aggregateContext = context;
 	}
