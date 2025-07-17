@@ -1,8 +1,14 @@
 /**
  * Rule: Select Access Path
  *
- * Transforms: TableReferenceNode → SeqScanNode | IndexScanNode | IndexSeekNode
- * Conditions: When logical table access needs to be made physical
+ * Required Characteristics:
+ * - Node must support table access operations (TableAccessCapable interface)
+ * - Node must be relational (produces rows)
+ * - Node must represent a logical table reference
+ *
+ * Applied When:
+ * - Logical table access node needs to be converted to physical access method
+ *
  * Benefits: Enables cost-based access path selection and index utilization
  */
 
@@ -15,26 +21,36 @@ import { seqScanCost } from '../../cost/index.js';
 import type { ColumnMeta, PredicateConstraint, BestAccessPlanRequest, BestAccessPlanResult } from '../../../vtab/best-access-plan.js';
 import { FilterInfo } from '../../../vtab/filter-info.js';
 import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
+import { CapabilityDetectors, type TableAccessCapable } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
 
 export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanNode | null {
-	// Guard: only apply to TableReferenceNode
+	// Guard: node must support table access operations
+	if (!CapabilityDetectors.isTableAccess(node)) {
+		return null;
+	}
+
+	// Additional check: ensure this is specifically a TableReferenceNode for now
+	// (in the future, other table access nodes might need different handling)
 	if (!(node instanceof TableReferenceNode)) {
 		return null;
 	}
 
-	log('Selecting access path for table %s', node.tableSchema.name);
+	// Get table access characteristics
+	const tableAccessNode = node as TableAccessCapable;
+	const tableSchema = tableAccessNode.tableSchema;
+
+	log('Selecting access path for table %s', tableSchema.name);
 
 	try {
-		// Get table schema and virtual table module
-		const tableSchema = node.tableSchema;
+		// Get virtual table module from schema
 		const vtabModule = tableSchema.vtabModule;
 
 		// If no virtual table module, fall back to sequential scan
 		if (!vtabModule || typeof vtabModule !== 'object' || !('getBestAccessPlan' in vtabModule)) {
 			log('No getBestAccessPlan support, using sequential scan for %s', tableSchema.name);
-			return createSeqScan(node, undefined);
+			return createSeqScan(node as TableReferenceNode, undefined);
 		}
 
 		// Extract constraints from current filter info
@@ -50,14 +66,14 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 				isUnique: col.primaryKey || false // For now, assume only PK columns are unique
 			} as ColumnMeta)),
 			filters: constraints,
-			estimatedRows: node.estimatedRows
+			estimatedRows: tableAccessNode.estimatedRows
 		};
 
 		// Call getBestAccessPlan
 		const accessPlan = (vtabModule as any).getBestAccessPlan(context.db, tableSchema, request) as BestAccessPlanResult;
 
 		// Choose physical node based on access plan
-		const physicalNode = selectPhysicalNode(node, accessPlan, constraints);
+		const physicalNode = selectPhysicalNode(node as TableReferenceNode, accessPlan, constraints);
 
 		log('Selected %s for table %s (cost: %f, rows: %s)',
 			physicalNode.nodeType, tableSchema.name, accessPlan.cost, accessPlan.rows);
@@ -65,9 +81,9 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 		return physicalNode;
 
 	} catch (error) {
-		log('Error selecting access path for %s: %s', node.tableSchema.name, error);
+		log('Error selecting access path for %s: %s', tableSchema.name, error);
 		// Fall back to sequential scan on error
-		return createSeqScan(node);
+		return createSeqScan(node as TableReferenceNode);
 	}
 }
 

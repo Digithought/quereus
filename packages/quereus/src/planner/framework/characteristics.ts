@@ -172,6 +172,17 @@ export interface CacheCapable extends PlanNode {
 }
 
 /**
+ * Interface for Common Table Expression operations
+ */
+export interface CTECapable extends RelationalPlanNode {
+	readonly cteName: string;
+	readonly columns: string[] | undefined;
+	readonly materializationHint: 'materialized' | 'not_materialized' | undefined;
+	readonly isRecursive: boolean;
+	getCTESource(): RelationalPlanNode;
+}
+
+/**
  * Type guards for capability detection
  */
 export class CapabilityDetectors {
@@ -227,6 +238,14 @@ export class CapabilityDetectors {
 	static isCached(node: PlanNode): node is CacheCapable {
 		return 'getCacheStrategy' in node &&
 			   typeof (node as any).getCacheStrategy === 'function';
+	}
+
+	static isCTE(node: PlanNode): node is CTECapable {
+		return PlanNodeCharacteristics.isRelational(node) &&
+			   'cteName' in node &&
+			   typeof (node as any).cteName === 'string' &&
+			   'getCTESource' in node &&
+			   typeof (node as any).getCTESource === 'function';
 	}
 }
 
@@ -353,3 +372,4 @@ CapabilityRegistry.register('sort', CapabilityDetectors.isSortable);
 CapabilityRegistry.register('projection', CapabilityDetectors.canProject);
 CapabilityRegistry.register('join', CapabilityDetectors.isJoin);
 CapabilityRegistry.register('cache', CapabilityDetectors.isCached);
+CapabilityRegistry.register('cte', CapabilityDetectors.isCTE);

@@ -4,6 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
+import type { CacheCapable } from '../framework/characteristics.js';
 
 export type CacheStrategy = 'memory' | 'spill'; // Future: spill-to-disk
 
@@ -14,7 +15,7 @@ export type CacheStrategy = 'memory' | 'spill'; // Future: spill-to-disk
  * subsequent iterations from the cached result. It implements
  * smart threshold-based policies to avoid excessive memory usage.
  */
-export class CacheNode extends PlanNode implements UnaryRelationalNode {
+export class CacheNode extends PlanNode implements UnaryRelationalNode, CacheCapable {
 	readonly nodeType = PlanNodeType.Cache;
 
 	constructor(
@@ -78,6 +79,14 @@ export class CacheNode extends PlanNode implements UnaryRelationalNode {
 
 	get estimatedRows(): number | undefined {
 		return this.source.estimatedRows;
+	}
+
+	getCacheStrategy(): string {
+		return this.strategy;
+	}
+
+	isCached(): boolean {
+		return true;
 	}
 
 	override toString(): string {

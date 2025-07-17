@@ -12,9 +12,10 @@ import { formatScalarType } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { VirtualTableModule } from '../../vtab/module.js';
+import type { TableAccessCapable } from '../framework/characteristics.js';
 
 /** Represents a reference to a table in the global schema. */
-export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode {
+export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode, TableAccessCapable {
 	override readonly nodeType = PlanNodeType.TableReference;
 
 	private typeCache: Cached<RelationType>;
@@ -76,6 +77,11 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 
 	override toString(): string {
 		return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+	}
+
+	getAccessMethod(): 'sequential' | 'index-scan' | 'index-seek' | 'virtual' {
+		// Logical table reference - will be converted to physical by optimizer
+		return 'virtual';
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
