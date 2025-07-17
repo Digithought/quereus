@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Database } from '../core/database.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { TableSchema } from '../schema/table.js';

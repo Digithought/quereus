@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { PlanNode } from './nodes/plan-node.js';
 import { safeJsonStringify } from '../util/serialization.js';
 import { astToString } from '../util/ast-stringify.js';

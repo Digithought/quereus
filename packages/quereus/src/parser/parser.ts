@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
@@ -280,8 +281,7 @@ export class Parser {
 
 		// Attach WITH clause if present and supported
 		if (withClause && this.statementSupportsWithClause(stmt)) {
-							// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				(stmt as any).withClause = withClause;
+			(stmt as any).withClause = withClause;
 			if (withClause.loc && stmt.loc) {
 				stmt.loc.start = withClause.loc.start;
 			}

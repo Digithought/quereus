@@ -1,4 +1,5 @@
 import type { ScalarType } from '../common/datatype.js';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { SqlValue } from '../common/types.js';
 
 export interface WindowFunctionSchema {

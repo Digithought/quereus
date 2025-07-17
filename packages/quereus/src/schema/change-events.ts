@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:change-events');

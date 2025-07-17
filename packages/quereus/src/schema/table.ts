@@ -7,6 +7,7 @@ import { getAffinity } from '../common/type-inference.js';
 import { RowOp, SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:table');
@@ -105,7 +106,6 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 		switch (constraint.type) {
 			case 'primaryKey':
 				schema.primaryKey = true;
-				schema.autoIncrement = constraint.autoincrement;
 				schema.pkDirection = constraint.direction;
 				break;
 			case 'notNull':
@@ -358,8 +358,8 @@ function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyA
 
 	return Object.freeze(pkCols.map(col => ({
 		index: col.originalIndex,
-		desc: col.affinity === SqlDataType.INTEGER && col.autoIncrement ? false : col.pkDirection === 'desc',
-		autoIncrement: col.affinity === SqlDataType.INTEGER && !!(col.autoIncrement),
+		desc: col.affinity === SqlDataType.INTEGER && col.pkDirection === 'desc',
+		autoIncrement: col.affinity === SqlDataType.INTEGER,
 		collation: col.collation || 'BINARY'
 	})));
 }

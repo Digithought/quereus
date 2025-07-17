@@ -1,4 +1,5 @@
 import { createLogger } from '../common/logger.js';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type * as AST from './ast.js';
 
 const log = createLogger('parser:visitor'); // Create logger instance
@@ -50,8 +51,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 	}
 
 	// Call specific visitor if defined
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const specificVisitorKey = `visit${node.type.charAt(0).toUpperCase() + node.type.slice(1)}` as keyof AstVisitorCallbacks;
+	const specificVisitorKey = `visit${node.type.charAt(0).toUpperCase() + node.type.slice(1)}` as keyof AstVisitorCallbacks;
 	if (callbacks[specificVisitorKey]) {
 		const specificVisitor = callbacks[specificVisitorKey] as (n: any) => void | boolean;
 		const result = specificVisitor(node);

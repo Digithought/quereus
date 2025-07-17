@@ -1,4 +1,5 @@
 import type { SqlParameters } from '../common/types.js';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Database } from '../core/database.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { Scope } from './scopes/scope.js';
