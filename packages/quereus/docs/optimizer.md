@@ -411,6 +411,7 @@ SELECT * FROM users WHERE active = true;
 - Return `null` for non-applicable cases
 - Never mutate input nodes
 - Always preserve attribute IDs
+- **Use characteristics-based patterns**: Prefer `CapabilityDetectors` over `instanceof` checks for robust, extensible rules
 - Include comprehensive tests
 
 **Property Computation**

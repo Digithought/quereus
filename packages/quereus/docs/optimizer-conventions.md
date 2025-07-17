@@ -1,10 +1,10 @@
 # Optimizer Conventions: Characteristics-Based Patterns
 
-This document establishes sustainable patterns for the Quereus optimizer to avoid fragile node-specific dependencies and enable robust, extensible optimization rules.
+This document establishes the **implemented patterns** for the Quereus optimizer, using characteristics-based detection to ensure robust, extensible optimization rules. This approach is **actively in use** throughout the optimizer and plan builders.
 
 ## Philosophy: Characteristics Over Identity
 
-The optimizer should make decisions based on **what nodes can do** (characteristics) rather than **what nodes are** (specific types). This approach:
+The optimizer makes decisions based on **what nodes can do** (characteristics) rather than **what nodes are** (specific types). This **implemented approach**:
 
 - **Eliminates fragility**: No hard-coded assumptions about specific node types
 - **Enables extensibility**: New node types automatically work with existing rules
@@ -338,12 +338,10 @@ export function rulePushDownPredicate(node: PlanNode, context: OptContext): Plan
 4. **Testability**: Characteristics can be tested independently of specific nodes
 5. **Documentation**: Rules self-document their requirements through capability checks
 
-## Migration Strategy
+## For New Developers
 
-1. **Phase 1**: Create characteristic utilities and interfaces
-2. **Phase 2**: Update existing rules one by one
-3. **Phase 3**: Establish testing patterns for characteristics
-4. **Phase 4**: Update documentation and examples
-5. **Phase 5**: Add linting rules to prevent regression
-
-This approach ensures the optimizer remains robust and extensible as the system grows in complexity. 
+When working with the optimizer or plan builders:
+- **DO**: Use `CapabilityDetectors` and `PlanNodeCharacteristics` utilities
+- **DON'T**: Use `instanceof` checks or hard-coded node type assumptions
+- **REFERENCE**: The capability interfaces in `src/planner/framework/characteristics.ts`
+- **FOLLOW**: The patterns established in existing optimization rules and builders 

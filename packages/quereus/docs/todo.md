@@ -26,21 +26,9 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 
 ## 🔄 Current Development Focus
 
-**Cleanup**
-- ✅ **Characteristics-Based Optimizer**: Established framework for robust, extensible optimization patterns
-  - ✅ Created `PlanNodeCharacteristics` utilities for property-based decisions
-  - ✅ Defined capability interfaces (`PredicateCapable`, `JoinCapable`, `AggregationCapable`, etc.)
-  - ✅ Implemented extensible `CapabilityRegistry` system
-  - ✅ Refactored example rules to use characteristics instead of `instanceof` checks
-  - ✅ Created comprehensive documentation and migration plan
-  - 🚧 **Phase 2**: Update plan nodes to implement capability interfaces
-  - 📋 **Phase 3**: Migrate remaining rules to use characteristics-based patterns
-- [ ] switch from casting to using "satisfies" in as many places as possible
-
 **Core SQL Features**
 - [ ] **DELETE T FROM ...**: Allow specification of target alias for DML ops
 - [ ] **Orthogonal relational expressions**: allow any expression that results in a relational expression in a relational expressive context 
-- [ ] Default nullability to `not null` and document
 - [ ] Values in "select" locations (e.g. views)
 - [ ] Expression-based functions
 - [ ] Make "on conflict" an argument of xUpdate, rather than _onConflict row voodoo:
