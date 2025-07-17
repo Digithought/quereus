@@ -32,11 +32,6 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 		return null;
 	}
 
-	// Guard: must be read-only for streaming (no side effects)
-	if (PlanNodeCharacteristics.hasSideEffects(node)) {
-		return null;
-	}
-
 	log('Applying aggregate streaming rule to node %s', node.id);
 
 	// Get aggregation characteristics

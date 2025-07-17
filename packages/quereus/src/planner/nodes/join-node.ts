@@ -6,6 +6,7 @@ import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
+import { JoinCapable } from '../framework/characteristics.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';
 
@@ -13,7 +14,7 @@ export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';
  * Represents a logical JOIN operation between two relations.
  * This is a logical node that will be converted to physical join algorithms during optimization.
  */
-export class JoinNode extends PlanNode implements BinaryRelationalNode {
+export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapable {
 	readonly nodeType = PlanNodeType.Join;
 	private attributesCache: Cached<Attribute[]>;
 
@@ -209,5 +210,21 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode {
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows
 		};
+	}
+
+	public getJoinType(): JoinType {
+		return this.joinType;
+	}
+
+	public getJoinCondition(): ScalarPlanNode | null {
+		return this.condition ?? null;
+	}
+
+	public getLeftSource(): RelationalPlanNode {
+		return this.left;
+	}
+
+	public getRightSource(): RelationalPlanNode {
+		return this.right;
 	}
 }

@@ -99,8 +99,8 @@ export function registerEmitters() {
 
 	// Physical aggregate emitters
 	registerEmitter(PlanNodeType.StreamAggregate, emitStreamAggregate as EmitterFunc);
-	// For now, logical aggregates also use the stream aggregate emitter
-	registerEmitter(PlanNodeType.Aggregate, emitStreamAggregate as EmitterFunc);
+	// Do not map the aggregate node to an emitter.  It is logical only.
+	// NO: registerEmitter(PlanNodeType.Aggregate, emitStreamAggregate as EmitterFunc);
 	// TODO: registerEmitter(PlanNodeType.HashAggregate, emitHashAggregate as EmitterFunc);
 
 	// DML/DDL emitters

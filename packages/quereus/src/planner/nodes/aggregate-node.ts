@@ -6,6 +6,7 @@ import { Cached } from '../../util/cached.js';
 import { formatExpressionList } from '../../util/plan-formatter.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
+import type { AggregationCapable } from '../framework/characteristics.js';
 
 export interface AggregateExpression {
   expression: ScalarPlanNode;
@@ -13,11 +14,10 @@ export interface AggregateExpression {
 }
 
 /**
- * Represents an aggregation operation.
- * It takes an input relation and applies aggregate functions,
- * optionally grouping by specified expressions.
+ * Logical node representing an aggregate operation.
+ * Requires transformation to StreamAggregateNode or HashAggregateNode by optimizer.
  */
-export class AggregateNode extends PlanNode implements UnaryRelationalNode {
+export class AggregateNode extends PlanNode implements UnaryRelationalNode, AggregationCapable {
   override readonly nodeType = PlanNodeType.Aggregate;
 
   private outputTypeCache: Cached<RelationType>;
@@ -218,5 +218,29 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode {
     }
 
     return props;
+  }
+
+  // AggregationCapable interface implementation
+  getGroupingKeys(): readonly ScalarPlanNode[] {
+    return this.groupBy;
+  }
+
+  getAggregateExpressions(): readonly { expr: ScalarPlanNode; alias: string; attributeId: number }[] {
+    const attributes = this.getAttributes();
+    const groupByCount = this.groupBy.length;
+
+    return this.aggregates.map((agg, index) => ({
+      expr: agg.expression,
+      alias: agg.alias,
+      attributeId: attributes[groupByCount + index].id
+    }));
+  }
+
+  requiresOrdering(): boolean {
+    return this.groupBy.length > 0; // Only requires ordering if we have GROUP BY
+  }
+
+  canStreamAggregate(): boolean {
+    return true; // AggregateNode can always be converted to streaming
   }
 }
