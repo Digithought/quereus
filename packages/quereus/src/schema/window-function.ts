@@ -9,7 +9,9 @@ export interface WindowFunctionSchema {
 	kind: 'ranking' | 'aggregate' | 'value' | 'navigation';
 
 	// Optional custom step/final hooks for aggregate-style windows
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	step?: (state: any, value: SqlValue) => any;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	final?: (state: any, rowCount: number) => SqlValue;
 }
 

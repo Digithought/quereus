@@ -23,11 +23,13 @@ export type IntegratedTableValuedFunc = (db: Database, ...args: SqlValue[]) => M
 /**
  * Type for aggregate step function.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AggregateReducer<T = any> = (accumulator: T, ...args: SqlValue[]) => T;
 
 /**
  * Type for aggregate finalizer function.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AggregateFinalizer<T = any> = (accumulator: T) => SqlValue;
 
 /**
@@ -76,6 +78,7 @@ export interface AggregateFunctionSchema extends BaseFunctionSchema {
 	/** Aggregate finalizer function */
 	finalizeFunction: AggregateFinalizer;
 	/** Initial accumulator value for aggregates */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	initialValue?: any;
 }
 
@@ -85,7 +88,7 @@ export interface AggregateFunctionSchema extends BaseFunctionSchema {
 export interface WindowFunctionSchema extends BaseFunctionSchema {
 	returnType: ScalarType;
 	/** Window function implementation */
-	implementation: (...args: any[]) => any;
+	implementation: (...args: SqlValue[]) => SqlValue;
 }
 
 /**

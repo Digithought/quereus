@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import type { TableSchema } from '../schema/table.js';

@@ -11,8 +11,8 @@ export interface SchemaChangeEvent {
 	      'module_added' | 'module_removed' | 'collation_added' | 'collation_removed';
 	schemaName?: string;
 	objectName: string;
-	oldObject?: any;
-	newObject?: any;
+	oldObject?: unknown;
+	newObject?: unknown;
 }
 
 /**

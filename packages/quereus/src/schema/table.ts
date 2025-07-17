@@ -29,6 +29,7 @@ export interface TableSchema {
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<RowConstraintSchema>;
 	/** Reference to the registered module */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	vtabModule: VirtualTableModule<any, any>;
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
