@@ -5,13 +5,14 @@ import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { PredicateCapable } from '../framework/characteristics.js';
 
 /**
  * Represents a filter operation (WHERE clause).
  * It takes an input relation and a predicate expression,
  * and outputs rows for which the predicate is true.
  */
-export class FilterNode extends PlanNode implements UnaryRelationalNode {
+export class FilterNode extends PlanNode implements UnaryRelationalNode, PredicateCapable {
 	override readonly nodeType = PlanNodeType.Filter;
 
 	constructor(
@@ -87,5 +88,23 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode {
 			newSource as RelationalPlanNode,
 			newPredicate as ScalarPlanNode
 		);
+	}
+
+	// PredicateCapable interface implementation
+	getPredicate(): ScalarPlanNode | null {
+		return this.predicate;
+	}
+
+	withPredicate(newPredicate: ScalarPlanNode | null): PlanNode {
+		if (newPredicate === null) {
+			// If predicate is null, return the source directly (no filter needed)
+			return this.source;
+		}
+
+		if (newPredicate === this.predicate) {
+			return this;
+		}
+
+		return new FilterNode(this.scope, this.source, newPredicate);
 	}
 }

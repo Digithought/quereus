@@ -86,44 +86,59 @@ function ruleBasedOnCharacteristics(node: PlanNode, context: OptContext): PlanNo
 5. ✅ **Fix all linter errors** - Type-safe interfaces and proper inheritance
 6. ✅ **Verify build and tests** - All TypeScript builds clean, tests pass
 
-### Phase 2: Interface Implementation (🚧 Next)
-Update plan nodes to implement capability interfaces:
+### Phase 2: Interface Implementation (✅ Complete)
+**Summary**: Updated all priority plan nodes to implement capability interfaces, enabling robust characteristics-based optimization rules.
 
-```typescript
-// Priority nodes to update:
-- JoinNode → implement JoinCapable
-- FilterNode → implement PredicateCapable  
-- AggregateNode → implement AggregationCapable
-- SeqScanNode, IndexScanNode → implement TableAccessCapable
-- ProjectNode → implement ProjectionCapable
-- SortNode → implement SortCapable
-```
+**Completed Implementations:**
 
-Example implementation:
-```typescript
-export class JoinNode extends RelationalNode implements JoinCapable {
-  // ... existing implementation
+✅ **JoinNode** - Already implemented `JoinCapable`
+- `getJoinType()`: Returns 'inner' | 'left' | 'right' | 'full' | 'cross'
+- `getJoinCondition()`: Returns join condition or null
+- `getLeftSource()` / `getRightSource()`: Returns join operands
 
-  // Add JoinCapable interface methods
-  getJoinType(): 'inner' | 'left' | 'right' | 'full' | 'cross' {
-    return this.joinType;
-  }
+✅ **FilterNode** - Implemented `PredicateCapable`  
+- `getPredicate()`: Returns the WHERE clause predicate
+- `withPredicate()`: Creates new FilterNode with different predicate
+- Enables predicate pushdown optimization
 
-  getJoinCondition(): ScalarPlanNode | null {
-    return this.condition;
-  }
+✅ **AggregateNode** - Already implemented `AggregationCapable`
+- `getGroupingKeys()`: Returns GROUP BY expressions
+- `getAggregateExpressions()`: Returns aggregate functions with attribute IDs
+- `requiresOrdering()` / `canStreamAggregate()`: Optimization hints
 
-  getLeftSource(): RelationalPlanNode {
-    return this.left;
-  }
+✅ **ProjectNode** - Implemented `ProjectionCapable`
+- `getProjections()`: Returns SELECT list with attribute IDs
+- `withProjections()`: Creates new ProjectNode with different projections
+- Preserves attribute ID stability across transformations
 
-  getRightSource(): RelationalPlanNode {
-    return this.right;
-  }
-}
-```
+✅ **SortNode** - Implemented `SortCapable`
+- `getSortKeys()`: Returns ORDER BY expressions with directions
+- `withSortKeys()`: Creates new SortNode with different sort criteria
+- Enables sort optimization and elimination
 
-### Phase 3: Rule Migration (📋 Planned)
+✅ **SeqScanNode** - Implemented `TableAccessCapable`
+- `tableSchema`: Exposes accessed table metadata
+- `getAccessMethod()`: Returns 'sequential'
+- Enables access path optimization decisions
+
+✅ **IndexScanNode** - Implemented `TableAccessCapable`  
+- `tableSchema`: Exposes accessed table metadata
+- `getAccessMethod()`: Returns 'index-scan'
+- Enables index-aware optimizations
+
+✅ **IndexSeekNode** - Implemented `TableAccessCapable`
+- `tableSchema`: Exposes accessed table metadata  
+- `getAccessMethod()`: Returns 'index-seek'
+- Enables point lookup optimizations
+
+**Impact:**
+- **Eliminates fragile `instanceof` checks** in optimization rules
+- **Enables extensibility** - new node types work automatically with existing rules
+- **Improves maintainability** - rules self-document their requirements
+- **Provides type safety** - compile-time verification of capability interfaces
+- **All 95 tests pass** - no regression in functionality
+
+### Phase 3: Rule Migration (📋 Next)
 Update remaining optimization rules to use characteristics:
 
 **High Priority Rules:**

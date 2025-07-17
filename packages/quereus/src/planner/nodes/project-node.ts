@@ -8,6 +8,7 @@ import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { ProjectionCapable } from '../framework/characteristics.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -20,7 +21,7 @@ export interface Projection {
  * Represents a projection operation (SELECT list) without DISTINCT.
  * It takes an input relation and outputs a new relation with specified columns/expressions.
  */
-export class ProjectNode extends PlanNode implements UnaryRelationalNode {
+export class ProjectNode extends PlanNode implements UnaryRelationalNode, ProjectionCapable {
 	override readonly nodeType = PlanNodeType.Project;
 
 	private outputTypeCache: Cached<RelationType>;
@@ -238,6 +239,55 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode {
 			undefined, // estimatedCostOverride
 			originalAttributes, // Pass original attributes to preserve IDs
 			this.preserveInputColumns // Preserve the flag
+		);
+	}
+
+	// ProjectionCapable interface implementation
+	getProjections(): readonly { node: ScalarPlanNode; alias: string; attributeId: number }[] {
+		const attributes = this.getAttributes();
+		return this.projections.map((proj, index) => ({
+			node: proj.node,
+			alias: proj.alias || attributes[index].name,
+			attributeId: attributes[index].id
+		}));
+	}
+
+	withProjections(projections: readonly { node: ScalarPlanNode; alias: string; attributeId: number }[]): PlanNode {
+		// Convert to internal Projection format
+		const newProjections = projections.map(proj => ({
+			node: proj.node,
+			alias: proj.alias,
+			attributeId: proj.attributeId
+		}));
+
+		// Check if anything changed
+		const changed = newProjections.length !== this.projections.length ||
+			newProjections.some((proj, i) =>
+				proj.node !== this.projections[i].node ||
+				proj.alias !== this.projections[i].alias ||
+				proj.attributeId !== this.projections[i].attributeId
+			);
+
+		if (!changed) {
+			return this;
+		}
+
+		// Create predefined attributes from the new projections
+		const predefinedAttributes = projections.map(proj => ({
+			id: proj.attributeId,
+			name: proj.alias,
+			type: proj.node.getType(),
+			sourceRelation: `${this.nodeType}:${this.id}`,
+			relationName: 'projection'
+		}));
+
+		return new ProjectNode(
+			this.scope,
+			this.source,
+			newProjections,
+			undefined, // estimatedCostOverride
+			predefinedAttributes,
+			this.preserveInputColumns
 		);
 	}
 }

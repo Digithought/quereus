@@ -11,12 +11,13 @@ import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import type { FilterInfo } from '../../vtab/filter-info.js';
 import type { ScalarPlanNode } from './plan-node.js';
+import { TableAccessCapable } from '../framework/characteristics.js';
 
 /**
  * Base class for physical table access operations
  * Provides common functionality for sequential scan, index scan, and index seek
  */
-export abstract class TableAccessNode extends PlanNode implements UnaryRelationalNode {
+export abstract class TableAccessNode extends PlanNode implements UnaryRelationalNode, TableAccessCapable {
 	private attributesCache: Cached<Attribute[]>;
 	private outputType: Cached<RelationType>;
 
@@ -48,6 +49,13 @@ export abstract class TableAccessNode extends PlanNode implements UnaryRelationa
 		return [this.source];
 	}
 
+	// TableAccessCapable interface implementation
+	get tableSchema() {
+		return this.source.tableSchema;
+	}
+
+	abstract getAccessMethod(): 'sequential' | 'index-scan' | 'index-seek' | 'virtual';
+
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
 		if (newChildren.length !== 1) {
 			throw new Error(`${this.nodeType} expects 1 child, got ${newChildren.length}`);
@@ -73,7 +81,7 @@ export abstract class TableAccessNode extends PlanNode implements UnaryRelationa
 		return {
 			table: this.source.tableSchema.name,
 			schema: this.source.tableSchema.schemaName,
-			accessMethod: this.nodeType,
+			accessMethod: this.getAccessMethod(),
 			filterInfo: {
 				usableIndex: this.filterInfo.indexInfoOutput.idxStr,
 				matchedClauses: this.filterInfo.indexInfoOutput.aConstraintUsage?.length || 0,
@@ -90,6 +98,10 @@ export abstract class TableAccessNode extends PlanNode implements UnaryRelationa
  */
 export class SeqScanNode extends TableAccessNode {
 	override readonly nodeType = PlanNodeType.SeqScan;
+
+	getAccessMethod(): 'sequential' {
+		return 'sequential';
+	}
 
 	computePhysical(): Partial<PhysicalProperties> {
 		return {
@@ -146,6 +158,10 @@ export class IndexScanNode extends TableAccessNode {
 		estimatedCostOverride?: number
 	) {
 		super(scope, source, filterInfo, estimatedCostOverride);
+	}
+
+	getAccessMethod(): 'index-scan' {
+		return 'index-scan';
 	}
 
 	computePhysical(): Partial<PhysicalProperties> {
@@ -218,6 +234,10 @@ export class IndexSeekNode extends TableAccessNode {
 		estimatedCostOverride?: number
 	) {
 		super(scope, source, filterInfo, estimatedCostOverride);
+	}
+
+	getAccessMethod(): 'index-seek' {
+		return 'index-seek';
 	}
 
 	computePhysical(): Partial<PhysicalProperties> {

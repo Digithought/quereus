@@ -6,6 +6,7 @@ import { formatSortKey } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { extractOrderingFromSortKeys } from '../framework/physical-utils.js';
+import { SortCapable } from '../framework/characteristics.js';
 
 /**
  * Represents a sort key for ordering results
@@ -25,7 +26,7 @@ export interface SortKey {
  * and outputs rows sorted according to the keys.
  * This is a physical operation that materializes and sorts rows.
  */
-export class SortNode extends PlanNode implements UnaryRelationalNode {
+export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapable {
 	override readonly nodeType = PlanNodeType.Sort;
 
 	constructor(
@@ -133,5 +134,35 @@ export class SortNode extends PlanNode implements UnaryRelationalNode {
 			newSource as RelationalPlanNode,
 			newSortKeys
 		);
+	}
+
+	// SortCapable interface implementation
+	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[] {
+		return this.sortKeys.map(key => ({
+			expression: key.expression,
+			direction: key.direction
+		}));
+	}
+
+	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[]): PlanNode {
+		// Convert to internal SortKey format with nulls handling
+		const newSortKeys = keys.map(key => ({
+			expression: key.expression,
+			direction: key.direction,
+			nulls: undefined as 'first' | 'last' | undefined
+		}));
+
+		// Check if anything changed
+		const changed = newSortKeys.length !== this.sortKeys.length ||
+			newSortKeys.some((key, i) =>
+				key.expression !== this.sortKeys[i].expression ||
+				key.direction !== this.sortKeys[i].direction
+			);
+
+		if (!changed) {
+			return this;
+		}
+
+		return new SortNode(this.scope, this.source, newSortKeys);
 	}
 }
