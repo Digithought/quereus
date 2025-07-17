@@ -33,6 +33,7 @@ import { SortNode, type SortKey } from '../nodes/sort.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
 
 const logger = createLogger('planner:cte');
 
@@ -259,7 +260,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			const cteNode = cteNodes.get(tableName)!;
 
 			// Check if this is an internal recursive CTE reference
-			if (cteNode instanceof InternalRecursiveCTERefNode) {
+			if (CapabilityDetectors.isRecursiveCTERef(cteNode)) {
 				// For internal recursive references, use the node directly
 				fromTable = cteNode;
 

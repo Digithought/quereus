@@ -11,12 +11,13 @@ import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import { type RelationalPlanNode } from '../nodes/plan-node.js';
 import type { Scope } from '../scopes/scope.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
 
 /**
  * Checks if an expression contains aggregate functions
  */
 export function isAggregateExpression(node: ScalarPlanNode): boolean {
-	if (node instanceof AggregateFunctionCallNode) {
+	if (CapabilityDetectors.isAggregateFunction(node)) {
 		return true;
 	}
 
@@ -35,7 +36,7 @@ export function isAggregateExpression(node: ScalarPlanNode): boolean {
  * Checks if an expression contains window functions
  */
 export function isWindowExpression(node: ScalarPlanNode): boolean {
-	if (node instanceof WindowFunctionCallNode) {
+	if (CapabilityDetectors.isWindowFunction(node)) {
 		return true;
 	}
 
@@ -161,8 +162,8 @@ function collectWindowFunctions(
 	alias?: string,
 	windowFunctions: { func: WindowFunctionCallNode; alias?: string }[] = []
 ): { func: WindowFunctionCallNode; alias?: string }[] {
-	if (node instanceof WindowFunctionCallNode) {
-		windowFunctions.push({ func: node, alias });
+	if (CapabilityDetectors.isWindowFunction(node)) {
+		windowFunctions.push({ func: node as WindowFunctionCallNode, alias });
 	}
 
 	// Recursively check children (only scalar children)

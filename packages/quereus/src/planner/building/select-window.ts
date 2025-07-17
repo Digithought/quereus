@@ -1,14 +1,17 @@
 import type { RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import type { PlanningContext } from '../planning-context.js';
-import type { Projection } from '../nodes/project-node.js';
 import { WindowNode, type WindowSpec } from '../nodes/window-node.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
+import { SequencingNode } from '../nodes/sequencing-node.js';
+import { ProjectNode, type Projection } from '../nodes/project-node.js';
+import { RegisteredScope } from '../scopes/registered.js';
+import { ColumnReferenceNode } from '../nodes/reference.js';
 import { ArrayIndexNode } from '../nodes/array-index-node.js';
-import { ProjectNode } from '../nodes/project-node.js';
 import { LiteralNode } from '../nodes/scalar.js';
 import { buildExpression } from './expression.js';
 import { isWindowExpression } from './select-projections.js';
 import type * as AST from '../../parser/ast.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
 
 /**
  * Processes window functions and creates WindowNode(s) with proper projections
@@ -214,13 +217,16 @@ function findWindowFunctionIndex(
 
 	const matchingWindowFuncIndex = windowFunctions.findIndex(({ func }) => {
 		// Match based on function name, parameters, and window specification
-		if (!(originalExpr instanceof WindowFunctionCallNode) ||
+		if (!CapabilityDetectors.isWindowFunction(originalExpr) ||
 			func.functionName.toLowerCase() !== originalExpr.functionName.toLowerCase()) {
 			return false;
 		}
 
+		// Cast to WindowFunctionCallNode to access expression property
+		const windowFunc = originalExpr as WindowFunctionCallNode;
+
 		// Also compare window specifications to distinguish between functions with same name
-		const originalWindow = originalExpr.expression.window;
+		const originalWindow = windowFunc.expression.window;
 		const funcWindow = func.expression.window;
 
 		return compareWindowSpecs(originalWindow, funcWindow);

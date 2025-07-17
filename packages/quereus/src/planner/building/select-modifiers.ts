@@ -11,6 +11,7 @@ import { MultiScope } from '../scopes/multi.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
 
 /**
  * Builds final projections for non-aggregate cases
@@ -156,7 +157,7 @@ function shouldApplyOrderByBeforeProjection(
 			// Check if this column is in the projection aliases
 			const isInProjection = projections.some(proj =>
 				(proj.alias?.toLowerCase() === orderColumn) ||
-				(proj.node instanceof ColumnReferenceNode && proj.node.expression.name.toLowerCase() === orderColumn)
+				(CapabilityDetectors.isColumnReference(proj.node) && proj.node.expression.name.toLowerCase() === orderColumn)
 			);
 			if (!isInProjection) {
 				return true;

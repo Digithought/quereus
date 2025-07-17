@@ -10,6 +10,7 @@ import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
 
 /**
  * Processes GROUP BY, aggregates, and HAVING clauses
@@ -254,7 +255,7 @@ function checkNeedsFinalProjection(projections: Projection[]): boolean {
 	// Check if any of the projections are complex expressions (not just column refs)
 	return projections.some(proj => {
 		// If it's not a simple ColumnReferenceNode, we need final projection
-		return !(proj.node instanceof ColumnReferenceNode);
+		return !CapabilityDetectors.isColumnReference(proj.node);
 	});
 }
 
@@ -275,7 +276,7 @@ export function buildFinalAggregateProjections(
 			const scalarNode = buildExpression(finalContext, column.expr, true);
 
 			let attrId: number | undefined = undefined;
-			if (scalarNode instanceof ColumnReferenceNode) {
+			if (CapabilityDetectors.isColumnReference(scalarNode)) {
 				attrId = scalarNode.attributeId;
 			}
 

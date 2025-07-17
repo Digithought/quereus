@@ -183,6 +183,41 @@ export interface CTECapable extends RelationalPlanNode {
 }
 
 /**
+ * Interface for column reference nodes
+ */
+export interface ColumnReferenceCapable extends ScalarPlanNode {
+	readonly attributeId: number;
+	readonly columnIndex: number;
+	readonly expression: any; // AST.ColumnExpr
+}
+
+/**
+ * Interface for window function call nodes
+ */
+export interface WindowFunctionCapable extends ScalarPlanNode {
+	readonly functionName: string;
+	readonly isDistinct: boolean;
+	readonly alias?: string;
+}
+
+/**
+ * Interface for aggregate function call nodes
+ */
+export interface AggregateFunctionCapable extends ScalarPlanNode {
+	readonly functionName: string;
+	readonly isDistinct: boolean;
+	readonly args: ReadonlyArray<ScalarPlanNode>;
+}
+
+/**
+ * Interface for internal recursive CTE reference nodes
+ */
+export interface RecursiveCTERefCapable extends RelationalPlanNode {
+	readonly cteName: string;
+	readonly workingTableDescriptor: any; // TableDescriptor
+}
+
+/**
  * Type guards for capability detection
  */
 export class CapabilityDetectors {
@@ -246,6 +281,48 @@ export class CapabilityDetectors {
 			   typeof (node as any).cteName === 'string' &&
 			   'getCTESource' in node &&
 			   typeof (node as any).getCTESource === 'function';
+	}
+
+	static isColumnReference(node: PlanNode): node is ColumnReferenceCapable {
+		if (!node) return false;
+		return PlanNodeCharacteristics.isScalar(node) &&
+			   'attributeId' in node &&
+			   typeof (node as any).attributeId === 'number' &&
+			   'columnIndex' in node &&
+			   typeof (node as any).columnIndex === 'number' &&
+			   'expression' in node;
+	}
+
+	static isWindowFunction(node: PlanNode): node is WindowFunctionCapable {
+		if (!node) return false;
+		// Check nodeType specifically to distinguish from AggregateFunctionCallNode
+		return node.nodeType === 'WindowFunctionCall' &&
+			   PlanNodeCharacteristics.isScalar(node) &&
+			   'functionName' in node &&
+			   typeof (node as any).functionName === 'string' &&
+			   'isDistinct' in node &&
+			   typeof (node as any).isDistinct === 'boolean';
+	}
+
+	static isAggregateFunction(node: PlanNode): node is AggregateFunctionCapable {
+		if (!node) return false;
+		// Check for AggregateFunctionCallNode - it uses ScalarFunctionCall nodeType but has args property
+		return PlanNodeCharacteristics.isScalar(node) &&
+			   'functionName' in node &&
+			   typeof (node as any).functionName === 'string' &&
+			   'isDistinct' in node &&
+			   typeof (node as any).isDistinct === 'boolean' &&
+			   'args' in node &&
+			   Array.isArray((node as any).args) &&
+			   'functionSchema' in node;
+	}
+
+	static isRecursiveCTERef(node: PlanNode): node is RecursiveCTERefCapable {
+		if (!node) return false;
+		return PlanNodeCharacteristics.isRelational(node) &&
+			   'cteName' in node &&
+			   typeof (node as any).cteName === 'string' &&
+			   'workingTableDescriptor' in node;
 	}
 }
 
@@ -373,3 +450,7 @@ CapabilityRegistry.register('projection', CapabilityDetectors.canProject);
 CapabilityRegistry.register('join', CapabilityDetectors.isJoin);
 CapabilityRegistry.register('cache', CapabilityDetectors.isCached);
 CapabilityRegistry.register('cte', CapabilityDetectors.isCTE);
+CapabilityRegistry.register('column-reference', CapabilityDetectors.isColumnReference);
+CapabilityRegistry.register('window-function', CapabilityDetectors.isWindowFunction);
+CapabilityRegistry.register('aggregate-function', CapabilityDetectors.isAggregateFunction);
+CapabilityRegistry.register('recursive-cte-ref', CapabilityDetectors.isRecursiveCTERef);

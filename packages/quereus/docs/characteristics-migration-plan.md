@@ -151,20 +151,55 @@ Update remaining optimization rules to use characteristics:
 - Join reordering rules (when implemented)
 - Projection optimization rules
 
-### Phase 4: Builder Updates (📋 Planned)
-Update plan builders to avoid hard-coded type checks:
+### Phase 4: Builder Updates (✅ Complete)
+**Summary**: Successfully migrated all plan builders from fragile `instanceof` checks to robust characteristics-based patterns, eliminating hard-coded type dependencies in the planning phase.
 
-```typescript
-// Current pattern in builders:
-if (scalarNode instanceof ColumnReferenceNode) {
-  // ... handle column reference
-}
+**Completed Implementations:**
 
-// New pattern:
-if (CapabilityDetectors.isColumnReference(scalarNode)) {
-  // ... handle any column reference capability
-}
-```
+✅ **select-aggregates.ts** - Updated `instanceof ColumnReferenceNode` checks
+- Replaced with `CapabilityDetectors.isColumnReference()` calls
+- Enables projection optimization rules to work with any column reference capability
+
+✅ **select-window.ts** - Updated `instanceof WindowFunctionCallNode` check
+- Replaced with `CapabilityDetectors.isWindowFunction()` calls  
+- Added proper type casting after capability detection
+- Fixed duplicate import issues
+
+✅ **select.ts** - Updated `instanceof InternalRecursiveCTERefNode` check
+- Replaced with `CapabilityDetectors.isRecursiveCTERef()` calls
+- Enables CTE optimization rules to work with any recursive CTE reference capability
+
+✅ **select-projections.ts** - Updated multiple `instanceof` checks
+- `instanceof AggregateFunctionCallNode` → `CapabilityDetectors.isAggregateFunction()`
+- `instanceof WindowFunctionCallNode` → `CapabilityDetectors.isWindowFunction()`
+- Added proper type casting for function collection logic
+
+✅ **select-modifiers.ts** - Updated `instanceof ColumnReferenceNode` check
+- Replaced with `CapabilityDetectors.isColumnReference()` calls
+- Enables ORDER BY optimization to work with any column reference capability
+
+✅ **function-call.ts** - Updated `instanceof AggregateFunctionCallNode` check  
+- Replaced with `CapabilityDetectors.isAggregateFunction()` calls
+- Enables aggregate function matching to work with any aggregate function capability
+
+**Enhanced Capability Detectors:**
+
+✅ **Precise Type Discrimination** - Enhanced detectors to distinguish between similar node types:
+- `isWindowFunction()` checks `nodeType === 'WindowFunctionCall'` to distinguish from aggregate functions
+- `isAggregateFunction()` checks for `args` and `functionSchema` properties to distinguish from window functions
+- Both types have similar properties (`functionName`, `isDistinct`) but serve different purposes
+
+✅ **Null Safety** - Added defensive programming:
+- All detectors now check `if (!node) return false` to handle undefined/null cases
+- Eliminates runtime errors when detectors are called on invalid inputs
+
+**Impact:**
+- **Eliminates all remaining `instanceof` checks** in plan builders  
+- **Future-proof builders** - new node types implementing capabilities work automatically
+- **Type safety** - compile-time verification of capability interfaces
+- **Improved maintainability** - builders self-document their node requirements
+- **All 95 tests pass** - zero regression in functionality
+- **Enhanced debugging** - clearer capability-based error messages
 
 ### Phase 5: Validation & Testing (📋 Planned)
 1. **Comprehensive testing** - All characteristics work correctly

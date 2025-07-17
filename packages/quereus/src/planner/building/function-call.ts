@@ -9,13 +9,14 @@ import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { buildExpression } from "./expression.js";
 import { ScalarFunctionCallNode } from "../nodes/function.js";
 import { resolveFunctionSchema } from "./schema-resolution.js";
+import { CapabilityDetectors } from '../framework/characteristics.js';
 
 export function buildFunctionCall(ctx: PlanningContext, expr: AST.FunctionExpr, allowAggregates: boolean): ScalarPlanNode {
 	// In HAVING context, check if this function matches an existing aggregate
 	if (ctx.aggregates && ctx.aggregates.length > 0) {
 		// Try to find a matching aggregate
 		for (const agg of ctx.aggregates) {
-			if (agg.expression instanceof AggregateFunctionCallNode) {
+			if (CapabilityDetectors.isAggregateFunction(agg.expression)) {
 				const aggFuncNode = agg.expression as AggregateFunctionCallNode;
 				// Check if function name matches and argument count matches
 				if (aggFuncNode.functionName.toLowerCase() === expr.name.toLowerCase() &&
