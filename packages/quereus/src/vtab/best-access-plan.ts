@@ -4,7 +4,6 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
 import { quereusError } from '../common/errors.js';
 import { StatusCode, type SqlDataType, type SqlValue } from '../common/types.js';
 

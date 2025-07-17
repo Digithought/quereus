@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js';
 import { MisuseError, quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
@@ -112,6 +111,7 @@ export class Database {
 					}
 				};
 				// Recreate optimizer with new tuning
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				(this as any).optimizer = new Optimizer(newTuning);
 				log('Optimizer recreated with validate_plan = %s', event.newValue);
 			}
@@ -131,7 +131,7 @@ export class Database {
 			defaultValue: {},
 			description: 'Default virtual table module arguments',
 			onChange: (event) => {
-				this.schemaManager.setDefaultVTabArgs(event.newValue as Record<string, any>);
+				this.schemaManager.setDefaultVTabArgs(event.newValue as Record<string, SqlValue>);
 			}
 		});
 
@@ -252,6 +252,7 @@ export class Database {
 
 					const runtimeCtx: RuntimeContext = {
 						db: this,
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
 						stmt: null as any, // No persistent Statement object for transient exec statements
 						params: params ?? {},
 						context: new Map(),
@@ -263,6 +264,7 @@ export class Database {
 					void await scheduler.run(runtimeCtx);
 					// Nothing to do with the result, this is executed for side effects only
 
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				} catch (err: any) {
 					executionError = err instanceof QuereusError ? err : new QuereusError(err.message, StatusCode.ERROR, err);
 					break; // Stop processing further statements on error
@@ -295,6 +297,7 @@ export class Database {
 	 * @param module The module implementation.
 	 * @param auxData Optional client data passed to xCreate/xConnect.
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	registerVtabModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
 		this.checkOpen();
 		this.schemaManager.registerModule(name, module, auxData);
@@ -415,6 +418,7 @@ export class Database {
 			deterministic?: boolean;
 			flags?: number;
 		},
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		func: (...args: any[]) => SqlValue
 	): void {
 		this.checkOpen();
@@ -448,9 +452,12 @@ export class Database {
 		options: {
 			numArgs: number;
 			flags?: number;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			initialState?: any;
 		},
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		stepFunc: (acc: any, ...args: any[]) => any,
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		finalFunc: (acc: any) => SqlValue
 	): void {
 		this.checkOpen();
@@ -519,6 +526,7 @@ export class Database {
 	 * @param option The option name
 	 * @param value The option value
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	setOption(option: string, value: any): void {
 		this.checkOpen();
 		this.options.setOption(option, value);
@@ -529,6 +537,7 @@ export class Database {
 	 * @param option The option name
 	 * @returns The option value
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	getOption(option: string): any {
 		this.checkOpen();
 		return this.options.getOption(option);
@@ -637,6 +646,7 @@ export class Database {
 			const parser = new Parser();
 			try {
 				ast = parser.parse(originalSqlString);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			} catch (e: any) {
 				errorLog("Failed to parse SQL for query plan: %O", e);
 				throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
@@ -688,6 +698,7 @@ export class Database {
 
 		const stmt = new Statement(this, sql);
 		// Set debug options on the statement
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(stmt as any)._debugOptions = debug;
 
 		this.statements.add(stmt);
@@ -695,6 +706,7 @@ export class Database {
 	}
 
 	/** @internal */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
 		// Delegate to SchemaManager
 		return this.schemaManager.getModule(name);

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { QuereusError } from "../common/errors.js";
 import type { PlanNode } from "../planner/nodes/plan-node.js";
 import type { PlanNodeType } from "../planner/nodes/plan-node-type.js";

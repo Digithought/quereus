@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js'; // Import logger
 import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
@@ -281,6 +280,7 @@ export class Parser {
 
 		// Attach WITH clause if present and supported
 		if (withClause && this.statementSupportsWithClause(stmt)) {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			(stmt as any).withClause = withClause;
 			if (withClause.loc && stmt.loc) {
 				stmt.loc.start = withClause.loc.start;
@@ -1410,6 +1410,7 @@ export class Parser {
 		// Literals
 		if (this.match(TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING, TokenType.NULL, TokenType.TRUE, TokenType.FALSE, TokenType.BLOB)) {
 			const token = this.previous();
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			let value: any;
 			let lexeme: string | undefined = undefined;
 

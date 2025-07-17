@@ -9,7 +9,6 @@ import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
 import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask } from './table.js';
 import type { ViewSchema } from './view.js';
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
 import { SchemaChangeNotifier } from './change-events.js';

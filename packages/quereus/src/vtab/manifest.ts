@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { SqlValue } from '../common/types.js';
 import type { FunctionSchema } from '../schema/function.js';
 import type { CollationFunction } from '../util/comparison.js';

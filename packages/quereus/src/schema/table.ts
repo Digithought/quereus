@@ -7,7 +7,6 @@ import { getAffinity } from '../common/type-inference.js';
 import { RowOp, SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:table');
