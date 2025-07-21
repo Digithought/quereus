@@ -6,7 +6,7 @@ import { SqlDataType } from '../common/types.js';
  * Utility to build a RowDescriptor (attributeId → columnIndex mapping)
  * for any relational plan node.
  */
-export function buildRowDescriptor(attributes: Attribute[]): RowDescriptor {
+export function buildRowDescriptor(attributes: readonly Attribute[]): RowDescriptor {
   const descriptor: RowDescriptor = [];
   attributes.forEach((attr, index) => {
     descriptor[attr.id] = index;

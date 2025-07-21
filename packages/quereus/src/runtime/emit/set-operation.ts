@@ -1,5 +1,5 @@
 import type { SetOperationNode } from '../../planner/nodes/set-operation-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
@@ -87,25 +87,25 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     }
   }
 
-  let runFunc: any;
+  let run: InstructionRun;
   switch (plan.op) {
     case 'unionAll':
-      runFunc = runUnionAll;
+      run = runUnionAll as InstructionRun;
       break;
     case 'union':
-      runFunc = runUnionDistinct;
+      run = runUnionDistinct as InstructionRun;
       break;
     case 'intersect':
-      runFunc = runIntersect;
+      run = runIntersect as InstructionRun;
       break;
     case 'except':
-      runFunc = runExcept;
+      run = runExcept as InstructionRun;
       break;
   }
 
   return {
     params: [leftInst, rightInst],
-    run: runFunc as any,
+    run,
     note: plan.op
   };
 }

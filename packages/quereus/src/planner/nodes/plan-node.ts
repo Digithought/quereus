@@ -110,7 +110,7 @@ export abstract class PlanNode {
   private _physical?: PhysicalProperties;
 
   constructor(
-		/** The scope in which this node is planned.  Note that this captures references made through it, so you can tell if a node has dependencies. */
+		/** The scope in which this node is planned. */
     public readonly scope: Scope,
 	  /** Estimated cost to execute this node itself (excluding its children). */
 		public readonly estimatedCost = 0.01
@@ -152,7 +152,7 @@ export abstract class PlanNode {
   /**
    * Get the attributes (columns) produced by this relational node
    */
-  getAttributes?(): Attribute[];
+  getAttributes?(): readonly Attribute[];
 
   /**
    * Get map of attribute ID to producing scalar expression (for constant folding)
@@ -268,7 +268,7 @@ export interface RelationalPlanNode extends PlanNode {
    * Get the attributes (columns) produced by this relational node
    * Each attribute has a unique ID that persists across plan transformations
    */
-  getAttributes(): Attribute[];
+  getAttributes(): readonly Attribute[];
 }
 
 /**
@@ -356,7 +356,7 @@ export interface NaryScalarNode extends ScalarPlanNode {
  */
 export abstract class ZeroAryRelationalBase extends PlanNode implements ZeroAryRelationalNode {
   abstract getType(): RelationType;
-  abstract getAttributes(): Attribute[];
+  abstract getAttributes(): readonly Attribute[];
 
   getChildren(): readonly PlanNode[] {
     return [];
@@ -380,7 +380,7 @@ export abstract class ZeroAryRelationalBase extends PlanNode implements ZeroAryR
 export abstract class UnaryRelationalBase extends PlanNode implements UnaryRelationalNode {
   abstract readonly source: RelationalPlanNode;
   abstract getType(): RelationType;
-  abstract getAttributes(): Attribute[];
+  abstract getAttributes(): readonly Attribute[];
 
   getChildren(): readonly PlanNode[] {
     return [this.source];
@@ -400,7 +400,7 @@ export abstract class BinaryRelationalBase extends PlanNode implements BinaryRel
   abstract readonly left: RelationalPlanNode;
   abstract readonly right: RelationalPlanNode;
   abstract getType(): RelationType;
-  abstract getAttributes(): Attribute[];
+  abstract getAttributes(): readonly Attribute[];
 
   getChildren(): readonly PlanNode[] {
     return [this.left, this.right];

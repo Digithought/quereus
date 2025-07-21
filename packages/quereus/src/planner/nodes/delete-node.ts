@@ -25,7 +25,7 @@ export class DeleteNode extends PlanNode implements RelationalPlanNode {
 		return this.source.getType();
 	}
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     if (this.flatRowDescriptor && Object.keys(this.flatRowDescriptor).length > 0) {
       return buildAttributesFromFlatDescriptor(this.flatRowDescriptor);
     }

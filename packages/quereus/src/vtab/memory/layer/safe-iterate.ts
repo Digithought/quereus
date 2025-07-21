@@ -1,4 +1,4 @@
-import type { BTree } from 'inheritree';
+import type { BTree, Path } from 'inheritree';
 
 /**
  * A mutation-safe iterator for BTree that automatically handles tree mutations
@@ -33,7 +33,7 @@ export async function* safeIterate<TKey, TValue>(tree: BTree<TKey, TValue>, isAs
 }
 
 /* Attempts to move the path to the nearest valid position if not found - preferring the direction of the iteration */
-function moveNearest<TKey, TValue>(tree: BTree<TKey, TValue>, isAscending: boolean, path: any): void {
+function moveNearest<TKey, TValue>(tree: BTree<TKey, TValue>, isAscending: boolean, path: Path<TKey, TValue>): void {
 	if (!path.on) {
 		// If not found, the path will point to the closest "crack".  All we need to do is move off of it in the correct direction
 		if (isAscending) {

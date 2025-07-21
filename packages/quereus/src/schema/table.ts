@@ -1,5 +1,5 @@
 import type { ColumnSchema } from './column.js';
-import type { VirtualTableModule } from '../vtab/module.js';
+import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type TableConstraint } from '../parser/ast.js';
@@ -29,8 +29,7 @@ export interface TableSchema {
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<RowConstraintSchema>;
 	/** Reference to the registered module */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	vtabModule: VirtualTableModule<any, any>;
+	vtabModule: AnyVirtualTableModule;
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */

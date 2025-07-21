@@ -11,7 +11,7 @@ import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import type { VirtualTableModule } from '../../vtab/module.js';
+import type { AnyVirtualTableModule } from '../../vtab/module.js';
 import type { TableAccessCapable } from '../framework/characteristics.js';
 
 /** Represents a reference to a table in the global schema. */
@@ -24,7 +24,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	constructor(
 		scope: Scope,
 		public readonly tableSchema: TableSchema,
-		public readonly vtabModule: VirtualTableModule<any, any>,
+		public readonly vtabModule: AnyVirtualTableModule,
 		public readonly vtabAuxData?: unknown,
 		estimatedCostOverride?: number
 	) {

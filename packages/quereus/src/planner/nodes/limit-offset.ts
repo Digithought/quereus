@@ -30,7 +30,7 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode {
     return this.source.getType();
   }
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     // LIMIT/OFFSET preserves the same attributes as its source
     return this.source.getAttributes();
   }

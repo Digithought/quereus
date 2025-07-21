@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Characteristics-based plan node analysis
  *
@@ -6,8 +7,9 @@
  * optimization rules.
  */
 
-import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode } from '../nodes/plan-node.js';
+import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode, TableDescriptor } from '../nodes/plan-node.js';
 import { isRelationalNode } from '../nodes/plan-node.js';
+import type * as AST from '../../parser/ast.js';
 import type { TableSchema } from '../../schema/table.js';
 
 // Default row estimate when not available
@@ -135,6 +137,7 @@ export interface AggregationCapable extends RelationalPlanNode {
 	getAggregateExpressions(): readonly { expr: ScalarPlanNode; alias: string; attributeId: number }[];
 	requiresOrdering(): boolean;
 	canStreamAggregate(): boolean;
+	getSource(): RelationalPlanNode;
 }
 
 /**
@@ -158,9 +161,10 @@ export interface ProjectionCapable extends RelationalPlanNode {
  */
 export interface JoinCapable extends RelationalPlanNode {
 	getJoinType(): 'inner' | 'left' | 'right' | 'full' | 'cross';
-	getJoinCondition(): ScalarPlanNode | null;
+	getJoinCondition(): ScalarPlanNode | undefined;
 	getLeftSource(): RelationalPlanNode;
 	getRightSource(): RelationalPlanNode;
+	getUsingColumns(): readonly string[] | undefined;
 }
 
 /**
@@ -188,7 +192,7 @@ export interface CTECapable extends RelationalPlanNode {
 export interface ColumnReferenceCapable extends ScalarPlanNode {
 	readonly attributeId: number;
 	readonly columnIndex: number;
-	readonly expression: any; // AST.ColumnExpr
+	readonly expression: AST.ColumnExpr;
 }
 
 /**
@@ -214,7 +218,7 @@ export interface AggregateFunctionCapable extends ScalarPlanNode {
  */
 export interface RecursiveCTERefCapable extends RelationalPlanNode {
 	readonly cteName: string;
-	readonly workingTableDescriptor: any; // TableDescriptor
+	readonly workingTableDescriptor: TableDescriptor;
 }
 
 /**

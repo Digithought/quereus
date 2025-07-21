@@ -1,5 +1,5 @@
 import type { CTENode } from '../../planner/nodes/cte-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
@@ -33,7 +33,7 @@ export function emitCTE(plan: CTENode, ctx: EmissionContext): Instruction {
 
 	return {
 		params: [queryInstruction],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `cte(${plan.cteName})`
 	};
 }

@@ -1,5 +1,5 @@
 import type { ProjectNode } from '../../planner/nodes/project-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type Row } from '../../common/types.js';
 import { type OutputValue } from '../../common/types.js';
@@ -40,7 +40,7 @@ export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instructio
 
 	return {
 		params: [sourceInstruction, ...projectionFuncs],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `project(${plan.projections.length} cols)`
 	};
 }

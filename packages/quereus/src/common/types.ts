@@ -147,3 +147,5 @@ export interface DatabaseConfig {
 	foreignKeys?: boolean;
 }
 export type RowOp = 'insert' | 'update' | 'delete';
+
+export type { JSONValue } from './json-types.js';

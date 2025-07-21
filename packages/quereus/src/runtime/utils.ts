@@ -8,7 +8,7 @@ import type { VirtualTableConnection } from '../vtab/connection.js';
 import { createLogger } from '../common/logger.js';
 import type { MemoryVirtualTableConnection } from '../vtab/memory/connection.js';
 import type { MemoryTable } from '../vtab/memory/table.js';
-import type { RowDescriptor } from '../planner/nodes/plan-node.js';
+import type { RowDescriptor, Attribute } from '../planner/nodes/plan-node.js';
 
 const log = createLogger('runtime:utils');
 const errorLog = log.extend('error');
@@ -122,7 +122,7 @@ export async function disconnectVTable(ctx: RuntimeContext, vtab: VirtualTable):
 /**
  * Helper function to log context push operations
  */
-export function logContextPush(descriptor: RowDescriptor, note: string, attributes?: any[]) {
+export function logContextPush(descriptor: RowDescriptor, note: string, attributes?: readonly Attribute[]) {
 	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
 	const attrNames = attributes ? attributes.map(attr => `${attr.name}(#${attr.id})`).join(',') : 'unknown';
 	ctxLog('PUSH context %s: attrs=[%s] names=[%s]', note, attrs.join(','), attrNames);

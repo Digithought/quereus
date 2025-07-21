@@ -1,5 +1,6 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode } from './plan-node.js';
+import { ColumnReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -41,7 +42,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
   private getGroupByColumnName(expr: ScalarPlanNode, index: number): string {
     // If it's a column reference, use the column name
     if (expr.nodeType === PlanNodeType.ColumnReference) {
-      const colRef = expr as any; // ColumnReferenceNode
+      const colRef = expr as ColumnReferenceNode;
       return colRef.expression.name;
     }
     // Otherwise, use a generic name
@@ -118,7 +119,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
     return this.outputTypeCache.value;
   }
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     return this.attributesCache.value;
   }
 
@@ -243,4 +244,8 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
   canStreamAggregate(): boolean {
     return true; // AggregateNode can always be converted to streaming
   }
+
+	getSource(): RelationalPlanNode {
+		return this.source;
+	}
 }

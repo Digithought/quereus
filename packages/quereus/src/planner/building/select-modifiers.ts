@@ -1,12 +1,12 @@
 import type * as AST from '../../parser/ast.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import type { PlanningContext } from '../planning-context.js';
-import type { Projection } from '../nodes/project-node.js';
+import type { Scope } from '../scopes/scope.js';
+import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { DistinctNode } from '../nodes/distinct-node.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
 import { LimitOffsetNode } from '../nodes/limit-offset.js';
 import { LiteralNode } from '../nodes/scalar.js';
-import { ProjectNode } from '../nodes/project-node.js';
 import { MultiScope } from '../scopes/multi.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
@@ -14,12 +14,12 @@ import { buildExpression } from './expression.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
 
 /**
- * Builds final projections for non-aggregate cases
+ * Creates final output projections and applies result column aliases
  */
 export function buildFinalProjections(
 	input: RelationalPlanNode,
 	projections: Projection[],
-	selectScope: any,
+	selectScope: Scope,
 	stmt: AST.SelectStmt,
 	selectContext: PlanningContext,
 	preserveInputColumns: boolean = true
@@ -69,12 +69,12 @@ export function buildFinalProjections(
 }
 
 /**
- * Applies DISTINCT modifier if present
+ * Applies DISTINCT if specified
  */
 export function applyDistinct(
 	input: RelationalPlanNode,
 	stmt: AST.SelectStmt,
-	selectScope: any
+	selectScope: Scope
 ): RelationalPlanNode {
 	if (stmt.distinct) {
 		return new DistinctNode(selectScope, input);

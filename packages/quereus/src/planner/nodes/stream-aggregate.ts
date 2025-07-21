@@ -6,6 +6,7 @@ import { Cached } from '../../util/cached.js';
 import { formatExpressionList } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import type { ColumnReferenceNode } from './reference.js';
 
 /**
  * Physical node representing a streaming aggregate operation.
@@ -86,7 +87,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
   private getGroupByColumnName(expr: ScalarPlanNode, index: number): string {
     // If it's a column reference, use the column name
     if (expr.nodeType === PlanNodeType.ColumnReference) {
-      const colRef = expr as any; // ColumnReferenceNode
+      const colRef = expr as ColumnReferenceNode;
       return colRef.expression.name;
     }
     // Otherwise, use a generic name

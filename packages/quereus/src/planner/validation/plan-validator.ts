@@ -8,6 +8,7 @@ import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { validateLog } from '../debug/logger-utils.js';
+import type { ColumnReferenceNode } from '../nodes/reference.js';
 
 const log = validateLog();
 
@@ -105,7 +106,7 @@ function validateNode(node: PlanNode, context: ValidationContext, path: string[]
 
 		// 4. Validate column references point to valid attributes
 		if (node.nodeType === PlanNodeType.ColumnReference) {
-			validateColumnReference(node as any, context, nodePath);
+			validateColumnReference(node as ColumnReferenceNode, context, nodePath);
 		}
 
 		// 5. Recursively validate children
@@ -248,7 +249,7 @@ function validateRelationalNode(node: RelationalPlanNode, context: ValidationCon
 /**
  * Validate column references point to valid attributes
  */
-function validateColumnReference(node: any, context: ValidationContext, nodePath: string): void {
+function validateColumnReference(node: ColumnReferenceNode, context: ValidationContext, nodePath: string): void {
 	if (!context.options.validateAttributes) {
 		return;
 	}
@@ -272,7 +273,7 @@ function validateColumnReference(node: any, context: ValidationContext, nodePath
 /**
  * Validate ordering specification
  */
-function validateOrdering(ordering: any[], columnCount: number, nodePath: string): void {
+function validateOrdering(ordering: { column: number; desc: boolean }[], columnCount: number, nodePath: string): void {
 	for (let i = 0; i < ordering.length; i++) {
 		const orderSpec = ordering[i];
 

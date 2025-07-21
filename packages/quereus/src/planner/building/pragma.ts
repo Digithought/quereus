@@ -17,6 +17,7 @@ export function buildPragmaStmt(ctx: PlanningContext, stmt: AST.PragmaStmt): Pla
 		} else if (stmt.value.type === 'identifier') {
 			value = stmt.value.name;
 		} else {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			throw new QuereusError(`Unsupported PRAGMA value type: ${(stmt.value as any).type}`, StatusCode.ERROR);
 		}
 	}

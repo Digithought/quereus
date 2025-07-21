@@ -1,5 +1,4 @@
-import type { Row } from "../../common/types.js";
-import type { SqlValue } from "../../common/types.js";
+import type { Row, SqlValue, JSONValue } from "../../common/types.js";
 import { SqlDataType } from "../../common/types.js";
 import { createTableValuedFunction } from "../registration.js";
 import { QuereusError } from "../../common/errors.js";
@@ -42,13 +41,13 @@ export const jsonEachFunc = createTableValuedFunction(
 		}
 
 		const rootPathStr = (typeof rootPath === 'string' && rootPath) ? rootPath : null;
-		let startNode = parsedJson;
+		let startNode: JSONValue | undefined = parsedJson;
 
 		if (rootPathStr) {
 			startNode = evaluateJsonPathBasic(startNode, rootPathStr);
 		}
 
-		const localStack: { value: any; parentPath: string; parentKey: string | number | null; parentId: number; }[] = [];
+		const localStack: { value: JSONValue; parentPath: string; parentKey: string | number | null; parentId: number; }[] = [];
 		let localElementIdCounter = 0;
 
 		if (startNode !== undefined) {
@@ -70,8 +69,8 @@ export const jsonEachFunc = createTableValuedFunction(
 			const path = currentState.parentPath;
 			const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
 			const type = getJsonType(currentValue);
-			const atom = (type === 'object' || type === 'array') ? null : currentValue;
-			const valueForColumn = (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue;
+			const atom: SqlValue = (type === 'object' || type === 'array') ? null : currentValue as SqlValue;
+			const valueForColumn: SqlValue = (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue as SqlValue;
 
 			const row: Row = [
 				key,
@@ -93,11 +92,11 @@ export const jsonEachFunc = createTableValuedFunction(
 						parentId: id,
 					});
 				}
-			} else if (typeof currentValue === 'object' && currentValue !== null) {
+			} else if (typeof currentValue === 'object' && currentValue !== null && !Array.isArray(currentValue)) {
 				const keys = Object.keys(currentValue).sort().reverse();
 				for (const objKey of keys) {
 					localStack.push({
-						value: currentValue[objKey],
+						value: (currentValue as Record<string, JSONValue>)[objKey],
 						parentPath: fullkey,
 						parentKey: objKey,
 						parentId: id,
@@ -144,7 +143,7 @@ export const jsonTreeFunc = createTableValuedFunction(
 		}
 
 		const rootPathStr = (typeof rootPath === 'string' && rootPath) ? rootPath : null;
-		let startNode = parsedJson;
+		let startNode: JSONValue | undefined = parsedJson;
 
 		if (rootPathStr) {
 			startNode = evaluateJsonPathBasic(startNode, rootPathStr);

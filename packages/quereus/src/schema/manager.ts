@@ -4,7 +4,7 @@ import type { TableSchema, RowConstraintSchema, IndexSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
-import type { VirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
+import type { AnyVirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
 import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask } from './table.js';
@@ -35,8 +35,7 @@ export interface GenericModuleCallOptions extends BaseModuleConfig {
 export class SchemaManager {
 	private schemas: Map<string, Schema> = new Map();
 	private currentSchemaName: string = 'main';
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private modules: Map<string, { module: VirtualTableModule<any, any>, auxData?: unknown }> = new Map();
+	private modules: Map<string, { module: AnyVirtualTableModule, auxData?: unknown }> = new Map();
 	private defaultVTabModuleName: string = 'memory';
 	private defaultVTabModuleArgs: Record<string, SqlValue> = {};
 	private db: Database;
@@ -83,8 +82,7 @@ export class SchemaManager {
 	 * @param module Module implementation
 	 * @param auxData Optional client data associated with the module registration
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	registerModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
+	registerModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
 		const lowerName = name.toLowerCase();
 		if (this.modules.has(lowerName)) {
 			warnLog(`Replacing existing virtual table module: %s`, lowerName);
@@ -99,8 +97,7 @@ export class SchemaManager {
 	 * @param name Module name to look up
 	 * @returns The module and its auxData, or undefined if not found
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	getModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
+	getModule(name: string): { module: AnyVirtualTableModule, auxData?: unknown } | undefined {
 		return this.modules.get(name.toLowerCase());
 	}
 
@@ -538,6 +535,15 @@ export class SchemaManager {
 			// Replace the table schema in the schema
 			const schema = this.getSchemaOrFail(targetSchemaName);
 			schema.addTable(updatedTableSchema);
+
+			// Notify schema change listeners that the table was modified
+			this.changeNotifier.notifyChange({
+				type: 'table_modified',
+				schemaName: targetSchemaName,
+				objectName: tableName,
+				oldObject: tableSchema,
+				newObject: updatedTableSchema
+			});
 
 			log(`Successfully created index %s on table %s.%s`, indexName, targetSchemaName, tableName);
 		} catch (e: unknown) {

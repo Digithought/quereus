@@ -6,6 +6,9 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import type { FunctionSchema } from "../../schema/function.js";
+import { isScalarFunctionSchema, isTableValuedFunctionSchema, isAggregateFunctionSchema, isWindowFunctionSchema } from "../../schema/function.js";
+import { Schema } from "../../schema/schema.js";
+import { ColumnSchema } from "../../schema/column.js";
 
 /**
  * Generates a function signature string for display
@@ -41,12 +44,12 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 		try {
 			const schemaManager = db.schemaManager;
 
-			const processSchemaInstance = function* (schemaInstance: any) {
+			const processSchemaInstance = function* (schemaInstance: Schema) {
 				// Process Tables
 				for (const tableSchema of schemaInstance.getAllTables()) {
 					let createSql: string | null = null;
 					try {
-						const columnsStr = tableSchema.columns.map((c: any) => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
+						const columnsStr = tableSchema.columns.map((c: ColumnSchema) => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
 						const argsStr = Object.entries(tableSchema.vtabArgs ?? {}).map(([key, value]) => `${key}=${value}`).join(', ');
 						createSql = `create table "${tableSchema.name}" (${columnsStr}) using ${tableSchema.vtabModuleName}(${argsStr})`;
 					} catch {
@@ -78,6 +81,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 			// Process temp schema
 			yield* processSchemaInstance(schemaManager.getTempSchema());
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If schema introspection fails, yield an error row
 			yield ['error', 'schema_error', 'schema_error', `Failed to introspect schema: ${error.message}`];
@@ -131,6 +135,7 @@ export const tableInfoFunc = createIntegratedTableValuedFunction(
 					isPrimaryKey ? 1 : 0                // pk
 				];
 			}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If table info fails, yield an error row
 			yield [0, 'error', 'error', 1, `Failed to get table info: ${error.message}`, 0];
@@ -164,14 +169,28 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 		try {
 			const schemaManager = db.schemaManager;
 
-			const processFunctions = function* (schemaInstance: any) {
+			const processFunctions = function* (schemaInstance: Schema) {
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
 					const isDeterministic = (funcSchema.flags & 0x800) !== 0; // FunctionFlags.DETERMINISTIC
+
+					// Determine function type based on schema type guards
+					let functionType: string;
+					if (isScalarFunctionSchema(funcSchema)) {
+						functionType = 'scalar';
+					} else if (isTableValuedFunctionSchema(funcSchema)) {
+						functionType = 'table';
+					} else if (isAggregateFunctionSchema(funcSchema)) {
+						functionType = 'aggregate';
+					} else if (isWindowFunctionSchema(funcSchema)) {
+						functionType = 'window';
+					} else {
+						functionType = 'unknown';
+					}
 
 					yield [
 						funcSchema.name,                           // name
 						funcSchema.numArgs,                       // num_args
-						funcSchema.type,                          // type
+						functionType,                             // type
 						isDeterministic ? 1 : 0,                 // deterministic
 						funcSchema.flags,                         // flags
 						stringifyCreateFunction(funcSchema)       // signature
@@ -185,6 +204,7 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 			// Process temp schema functions
 			yield* processFunctions(schemaManager.getTempSchema());
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If function info fails, yield an error row
 			yield ['error', -1, 'error', 0, 0, `Failed to get function info: ${error.message}`];

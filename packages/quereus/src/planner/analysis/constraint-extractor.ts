@@ -6,7 +6,7 @@
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
-import type { SqlValue } from '../../common/types.js';
+import type { Row, SqlValue } from '../../common/types.js';
 import { LiteralNode } from '../nodes/scalar.js';
 
 /**
@@ -242,12 +242,12 @@ function combineWithAnd(expressions: ScalarPlanNode[]): ScalarPlanNode {
 export function createResidualFilter(
 	originalPredicate: ScalarPlanNode,
 	handledConstraints: PredicateConstraint[]
-): ((row: any) => boolean) | undefined {
+): ((row: Row) => boolean) | undefined {
 	// If all constraints were handled, no residual filter needed
 	if (handledConstraints.length === 0) {
 		// Return a simple function that evaluates the original predicate
 		// This is a placeholder - real implementation would need to compile the predicate
-		return (_row: any) => true;
+		return (_row: Row) => true;
 	}
 
 	// For now, return undefined to indicate no residual filter

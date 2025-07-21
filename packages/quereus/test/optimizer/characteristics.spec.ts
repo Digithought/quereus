@@ -6,11 +6,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it } from 'mocha';
 import { expect } from 'chai';
-import { 
-	PlanNodeCharacteristics, 
-	CapabilityDetectors, 
+import {
+	PlanNodeCharacteristics,
+	CapabilityDetectors,
 	CachingAnalysis,
-	CapabilityRegistry 
+	CapabilityRegistry
 } from '../../src/planner/framework/characteristics.js';
 import type { PlanNode } from '../../src/planner/nodes/plan-node.js';
 
@@ -101,7 +101,7 @@ describe('CapabilityRegistry', () => {
 
 	it('should list all registered capabilities', () => {
 		const capabilities = CapabilityRegistry.getAllCapabilities();
-		
+
 		expect(capabilities).to.be.an('array');
 		expect(capabilities).to.include('predicate-pushdown');
 		expect(capabilities).to.include('table-access');
@@ -132,18 +132,18 @@ describe('Characteristics-Based Benefits', () => {
 			getType() {
 				return { typeClass: 'relation' as const };
 			}
-			
+
 			getGroupingKeys() {
 				return [];
 			}
-			
+
 			getAggregateExpressions() {
 				return [];
 			}
 		}
 
 		const customNode = new CustomAggregateNode();
-		
+
 		// The characteristics system should detect this as aggregation-capable
 		// even though it's not a standard AggregateNode
 		expect(CapabilityDetectors.isAggregating(customNode as any)).to.be.true;

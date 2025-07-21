@@ -9,7 +9,7 @@ import { StatusCode } from '../../common/types.js';
 
 export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
   readonly nodeType = PlanNodeType.SetOperation;
-  private attributesCache: Cached<Attribute[]>;
+  private attributesCache: Cached<readonly Attribute[]>;
 
   constructor(
     scope: Scope,
@@ -28,14 +28,14 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
     this.attributesCache = new Cached(() => this.buildAttributes());
   }
 
-  private buildAttributes(): Attribute[] {
+  private buildAttributes(): readonly Attribute[] {
     const leftAttrs = this.left.getAttributes();
     // Preserve left child's attributes directly to avoid any mapping issues
     // This ensures ORDER BY expressions can resolve to the same attribute IDs
     return leftAttrs;
   }
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     return this.attributesCache.value;
   }
 

@@ -24,7 +24,7 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		public readonly right: RelationalPlanNode,
 		public readonly joinType: JoinType,
 		public readonly condition?: ScalarPlanNode,
-		public readonly usingColumns?: string[]
+		public readonly usingColumns?: readonly string[]
 	) {
 		// Cost estimate: base cost is sum of children plus join cost
 		const leftCost = left.getTotalCost();
@@ -216,8 +216,8 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		return this.joinType;
 	}
 
-	public getJoinCondition(): ScalarPlanNode | null {
-		return this.condition ?? null;
+	public getJoinCondition(): ScalarPlanNode | undefined {
+		return this.condition;
 	}
 
 	public getLeftSource(): RelationalPlanNode {
@@ -226,5 +226,9 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 
 	public getRightSource(): RelationalPlanNode {
 		return this.right;
+	}
+
+	public getUsingColumns(): readonly string[] | undefined {
+		return this.usingColumns;
 	}
 }

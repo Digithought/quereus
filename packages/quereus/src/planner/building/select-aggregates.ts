@@ -11,6 +11,7 @@ import { buildExpression } from './expression.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
+import { Scope } from '../scopes/scope.js';
 
 /**
  * Processes GROUP BY, aggregates, and HAVING clauses
@@ -144,7 +145,7 @@ function validateAggregateProjections(
  * Creates a scope that includes the aggregate output columns
  */
 function createAggregateOutputScope(
-	parentScope: any,
+	parentScope: Scope,
 	aggregateNode: RelationalPlanNode,
 	groupByExpressions: ScalarPlanNode[],
 	aggregates: { expression: ScalarPlanNode; alias: string }[]

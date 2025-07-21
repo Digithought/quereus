@@ -2,7 +2,7 @@ import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
 import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { astToString, expressionToString } from '../../util/ast-stringify.js';
 
 /**
  * Represents a CREATE INDEX statement in the logical query plan.
@@ -31,7 +31,7 @@ export class CreateIndexNode extends VoidNode {
       ifNotExists: this.statementAst.ifNotExists,
       columns: this.statementAst.columns.map(col => col.name || expressionToString(col.expr!)),
       hasWhereClause: !!this.statementAst.where,
-      statement: expressionToString(this.statementAst as any) // Convert AST to string
+      statement: astToString(this.statementAst)
     };
   }
 

@@ -13,6 +13,7 @@ import { type SqlValue, type MaybePromise, OutputValue } from '../../common/type
 import { LiteralNode } from '../nodes/scalar.js';
 import { createLogger } from '../../common/logger.js';
 import type { ScalarType } from '../../common/datatype.js';
+import { ColumnReferenceNode } from '../nodes/reference.js';
 
 const log = createLogger('optimizer:folding');
 
@@ -114,7 +115,7 @@ function classifyNode(node: PlanNode, ctx: ConstFoldingContext): ConstInfo {
 
 	// Rule 2: ColumnReference → dep with {attrId}
 	if (node.nodeType === PlanNodeType.ColumnReference) {
-		const colRef = node as any; // ColumnReferenceNode
+		const colRef = node as ColumnReferenceNode
 		return { kind: 'dep', deps: new Set([colRef.attributeId]) };
 	}
 
@@ -195,7 +196,7 @@ function detectBorderNodes(
 
 	// If this is a relational node that produces expressions, check what new constants it introduces
 	if (node.getType().typeClass === 'relation' && 'getProducingExprs' in node) {
-		const producingExprs = (node as any).getProducingExprs();
+		const producingExprs = node.getProducingExprs!();
 
 		if (producingExprs) {
 			for (const [attrId, expr] of producingExprs) {

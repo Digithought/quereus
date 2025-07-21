@@ -69,8 +69,8 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 			estimatedRows: tableAccessNode.estimatedRows
 		};
 
-		// Call getBestAccessPlan
-		const accessPlan = (vtabModule as any).getBestAccessPlan(context.db, tableSchema, request) as BestAccessPlanResult;
+		// Use the vtab module's getBestAccessPlan method to get an optimized access plan
+		const accessPlan = vtabModule.getBestAccessPlan!(context.db, tableSchema, request) as BestAccessPlanResult;
 
 		// Choose physical node based on access plan
 		const physicalNode = selectPhysicalNode(node as TableReferenceNode, accessPlan, constraints);

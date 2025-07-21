@@ -43,7 +43,7 @@ export class CTEReferenceNode extends PlanNode implements RelationalPlanNode {
 		const relationName = this.alias || this.source.cteName;
 		// Only use fresh IDs when we have an alias that differs from the CTE name
 		const useFreshIds = this.alias !== undefined && this.alias.toLowerCase() !== this.source.cteName.toLowerCase();
-		return this.source.getAttributes().map((attr: any) => ({
+		return this.source.getAttributes().map((attr) => ({
 			id: useFreshIds ? PlanNode.nextAttrId() : attr.id,
 			name: attr.name,
 			type: attr.type,
@@ -58,7 +58,7 @@ export class CTEReferenceNode extends PlanNode implements RelationalPlanNode {
 			typeClass: 'relation',
 			isReadOnly: false,
 			isSet: cteType.isSet,
-			columns: this.getAttributes().map((attr: any) => ({
+			columns: this.getAttributes().map(attr => ({
 				name: attr.name,
 				type: attr.type
 			})),

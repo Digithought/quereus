@@ -3,6 +3,7 @@ import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 import type { Database } from '../core/database.js';
 import type { BaseType, ScalarType, RelationType } from '../common/datatype.js';
+import type { AggValue } from '../func/registration.js';
 
 /**
  * Type for a scalar function implementation.
@@ -78,8 +79,7 @@ export interface AggregateFunctionSchema extends BaseFunctionSchema {
 	/** Aggregate finalizer function */
 	finalizeFunction: AggregateFinalizer;
 	/** Initial accumulator value for aggregates */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	initialValue?: any;
+	initialValue?: AggValue;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { VirtualTable } from '../table.js';
-import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
+import type { AnyVirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
 import type { Row } from '../../common/types.js';
 import { type IndexSchema, type TableSchema } from '../../schema/table.js';
@@ -34,7 +34,7 @@ export class MemoryTable extends VirtualTable {
 	 */
 	constructor(
 		db: Database,
-		module: VirtualTableModule<any, any>,
+		module: AnyVirtualTableModule,
 		manager: MemoryTableManager // Pass the shared manager instance
 	) {
 		// Use manager's schema and name for the base class constructor
@@ -206,6 +206,7 @@ export class MemoryTable extends VirtualTable {
 					break;
 				default: {
 					const exhaustiveCheck: never = changeInfo;
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
 					throw new QuereusError(`Unhandled schema change: ${(exhaustiveCheck as any)?.type}`, StatusCode.INTERNAL);
 				}
 			}

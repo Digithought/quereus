@@ -25,7 +25,7 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
 		return this.source.getType();
 	}
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     // If we have a flatRowDescriptor, produce attributes that correspond to the flat OLD/NEW row structure
     if (this.flatRowDescriptor && Object.keys(this.flatRowDescriptor).length > 0) {
       // Create attributes for the flat row: OLD columns first, then NEW columns

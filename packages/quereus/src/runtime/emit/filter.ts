@@ -1,7 +1,7 @@
 import type { FilterNode } from '../../planner/nodes/filter.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { type Row } from '../../common/types.js';
+import { OutputValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { withRowContextGenerator } from '../context-helpers.js';
@@ -13,7 +13,7 @@ export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction 
 	// Create row descriptor for source attributes
 	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
-	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
+	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
 		yield* withRowContextGenerator(ctx, sourceRowDescriptor, source, async function* (sourceRow) {
 			const result = await predicate(ctx);
 			if (result) {
@@ -24,7 +24,7 @@ export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction 
 
 	return {
 		params: [sourceInstruction, predicateFunc],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `filter(${plan.predicate.toString()})`
 	};
 }

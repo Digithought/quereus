@@ -1,5 +1,5 @@
 import type { WindowNode } from '../../planner/nodes/window-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { OutputValue, Row, SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
@@ -100,14 +100,14 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 
 	return {
 		params: [sourceInstruction, ...allCallbacks],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `window(${plan.functions.map(f => f.functionName).join(', ')})`
 	};
 }
 
 async function groupByPartitions(
 	rows: Row[],
-	partitionCallbacks: Array<(ctx: RuntimeContext) => any>,
+	partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
 ): Promise<Map<string, Row[]>> {

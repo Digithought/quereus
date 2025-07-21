@@ -41,21 +41,39 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 }
 
 export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
-	let inner: (v1: any, v2: any) => any;
+	let inner: (v1: number, v2: number) => number;
+	let innerBigInt: (v1: bigint, v2: bigint) => bigint;
+
 	switch (plan.expression.operator) {
-		case '+': inner = (v1, v2) => v1 + v2; break;
-		case '-': inner = (v1, v2) => v1 - v2; break;
-		case '*': inner = (v1, v2) => v1 * v2; break;
-		case '/': inner = (v1, v2) => v1 / v2; break;
-		case '%': inner = (v1, v2) => v1 % v2; break;
-		default: throw new QuereusError(`Unsupported numeric operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+		case '+':
+			inner = (v1, v2) => v1 + v2;
+			innerBigInt = (v1, v2) => v1 + v2;
+			break;
+		case '-':
+			inner = (v1, v2) => v1 - v2;
+			innerBigInt = (v1, v2) => v1 - v2;
+			break;
+		case '*':
+			inner = (v1, v2) => v1 * v2;
+			innerBigInt = (v1, v2) => v1 * v2;
+			break;
+		case '/':
+			inner = (v1, v2) => v1 / v2;
+			innerBigInt = (v1, v2) => v1 / v2;
+			break;
+		case '%':
+			inner = (v1, v2) => v1 % v2;
+			innerBigInt = (v1, v2) => v1 % v2;
+			break;
+		default:
+			throw new QuereusError(`Unsupported numeric operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
 	}
 
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
 		if (v1 !== null && v2 !== null) {
 			if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
 				try {
-					return inner(BigInt(v1 as any), BigInt(v2 as any));
+					return innerBigInt(v1 as bigint, v2 as bigint);
 				} catch {
 					return null;
 				}

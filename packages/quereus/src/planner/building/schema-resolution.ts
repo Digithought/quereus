@@ -1,7 +1,7 @@
 import type { PlanningContext, SchemaDependency } from '../planning-context.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { FunctionSchema } from '../../schema/function.js';
-import type { VirtualTableModule } from '../../vtab/module.js';
+import type { AnyVirtualTableModule } from '../../vtab/module.js';
 import type { CollationFunction } from '../../util/comparison.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -103,7 +103,7 @@ export function resolveFunctionSchema(
 export function resolveVtabModule(
 	ctx: PlanningContext,
 	moduleName: string
-): { module: VirtualTableModule<any, any>, auxData?: unknown } {
+): { module: AnyVirtualTableModule, auxData?: unknown } {
 	const cacheKey = `vtab_module:${moduleName}`;
 
 	// Check cache first

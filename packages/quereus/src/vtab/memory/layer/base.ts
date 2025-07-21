@@ -77,6 +77,7 @@ export class BaseLayer implements Layer {
 			try {
 				const memoryIndex = new MemoryIndex(indexSchema, this.tableSchema.columns);
 				newIndexes.set(indexSchema.name, memoryIndex);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			} catch (e: any) {
 				logger.error('Create Index', this.tableSchema.name, e, { indexName: indexSchema.name });
 			}
@@ -99,6 +100,7 @@ export class BaseLayer implements Layer {
 			try {
 				const indexKey = index.keyFromRow(row);
 				index.addEntry(indexKey, primaryKey);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			} catch (e: any) {
 				logger.error('Re-index Row', this.tableSchema.name, e, { indexName: index.name });
 			}

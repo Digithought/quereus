@@ -28,7 +28,7 @@ export type RuntimeContext = {
 	planStack?: PlanNode[];
 };
 
-export type InstructionRun = (ctx: RuntimeContext, ...args: any[]) => OutputValue;
+export type InstructionRun = (ctx: RuntimeContext, ...args: RuntimeValue[]) => OutputValue;
 
 export type Instruction = {
 	params: Instruction[];

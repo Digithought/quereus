@@ -1,5 +1,5 @@
 import type { ScalarFunctionCallNode } from '../../planner/nodes/function.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
@@ -36,7 +36,7 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 
 	return createValidatedInstruction(
 		[...operandExprs],
-		run as any,
+		run as InstructionRun,
 		ctx,
 		`${plan.expression.name}(${plan.operands.length})`
 	);

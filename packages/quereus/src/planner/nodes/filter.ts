@@ -30,7 +30,7 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		return this.source.getType();
 	}
 
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		// Filter preserves the same attributes as its source
 		return this.source.getAttributes();
 	}

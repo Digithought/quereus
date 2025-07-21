@@ -18,3 +18,9 @@ alwaysApply: true
 * This project uses @.editorconfig to enforce consistent coding styles across editors and IDEs.  Summary: Tab indentation,  Single quotes for strings.  The complete configuration is defined in [.editorconfig](mdc:.editorconfig).
 
 * Use "satisfies" rather than casting when possible
+
+* Don't use "any" unless it's a genuine case of taking any type, such as serialization.  Don't "monkey patch" attributes into objects; use proper types and interfaces.
+
+* Never inline imports()
+
+This is an important system; write production-grade, maintainble, and expressive code that we don't have to revisit later.

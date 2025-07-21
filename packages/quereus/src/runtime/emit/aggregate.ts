@@ -1,5 +1,5 @@
 import type { StreamAggregateNode } from '../../planner/nodes/stream-aggregate.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row, type MaybePromise } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
@@ -7,6 +7,7 @@ import type { FunctionSchema } from '../../schema/function.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
 import type { PlanNode, RowDescriptor } from '../../planner/nodes/plan-node.js';
+import { isRelationalNode } from '../../planner/nodes/plan-node.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { BTree } from 'inheritree';
 import { createLogger } from '../../common/logger.js';
@@ -15,6 +16,7 @@ import { coerceForAggregate } from '../../util/coercion.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import { AggValue } from '../../func/registration.js';
 
 export const ctxLog = createLogger('runtime:context');
 
@@ -83,14 +85,14 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	// Create separate descriptors for group yielding to avoid conflicts with source row processing
 	const groupSourceRowDescriptor = buildRowDescriptor(sourceAttributes);
 	const groupSourceRelationRowDescriptor = sourceRelation !== plan.source
-		? buildRowDescriptor((sourceRelation as any).getAttributes?.() || sourceAttributes)
+		? buildRowDescriptor(isRelationalNode(sourceRelation) ? sourceRelation.getAttributes() : sourceAttributes)
 		: groupSourceRowDescriptor;
 
 	ctxLog('StreamAggregate setup: source=%s, sourceRelation=%s', plan.source.nodeType, sourceRelation.nodeType);
 	ctxLog('Source attributes: %O', sourceAttributes.map(attr => `${attr.name}(#${attr.id})`));
 	if (sourceRelation !== plan.source) {
-		const sourceRelationAttributes = (sourceRelation as any).getAttributes?.() || sourceAttributes;
-		ctxLog('Source relation attributes: %O', sourceRelationAttributes.map((attr: any) => `${attr.name}(#${attr.id})`));
+		const sourceRelationAttributes = isRelationalNode(sourceRelation) ? sourceRelation.getAttributes() : sourceAttributes;
+		ctxLog('Source relation attributes: %O', sourceRelationAttributes.map((attr) => `${attr.name}(#${attr.id})`));
 	}
 
 	// Create output row descriptor for the StreamAggregate's output
@@ -164,7 +166,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		// Handle the case with no GROUP BY - aggregate everything into a single group
 		if (plan.groupBy.length === 0) {
 			// Initialize accumulators for each aggregate
-			const accumulators: any[] = aggregateSchemas.map(schema => {
+			const accumulators: SqlValue[] = aggregateSchemas.map(schema => {
 				// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
 				const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
 				if (typeof initialValue === 'function') {
@@ -287,7 +289,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			let currentGroupKey: SqlValue[] | null = null;
 			let currentGroupValues: SqlValue[] = [];
 			let currentSourceRow: Row | null = null; // Track the current group's representative row
-			let currentAccumulators: any[] = [];
+			let currentAccumulators: AggValue[] = [];
 			let currentDistinctTrees: BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>[] = [];
 			let cleanupPreviousGroupContext: (() => void) | null = null;
 
@@ -573,7 +575,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 	return {
 		params: [sourceInstruction, ...groupByInstructions, ...aggregateArgInstructions],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `stream_aggregate(${plan.groupBy.length > 0 ? `GROUP BY ${plan.groupBy.length}` : 'no grouping'}, ${plan.aggregates.length} aggs)`
 	};
 }

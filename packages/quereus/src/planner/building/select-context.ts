@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
-import type { CTEPlanNode } from '../nodes/cte-node.js';
+import type { CTEScopeNode } from '../nodes/cte-node.js';
 import type { Scope } from '../scopes/scope.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ParameterScope } from '../scopes/param.js';
@@ -22,13 +22,13 @@ export function getNonParamAncestor(scope: Scope): Scope {
 export function buildWithContext(
 	ctx: PlanningContext,
 	stmt: AST.SelectStmt,
-	parentCTEs: Map<string, CTEPlanNode> = new Map()
+	parentCTEs: Map<string, CTEScopeNode> = new Map()
 ): {
 	contextWithCTEs: PlanningContext;
-	cteNodes: Map<string, CTEPlanNode>;
+	cteNodes: Map<string, CTEScopeNode>;
 } {
 	// Start with parent CTEs - either from parameter or from context
-	const cteNodes: Map<string, CTEPlanNode> = new Map(parentCTEs.size > 0 ? parentCTEs : (ctx.cteNodes ?? new Map()));
+	const cteNodes: Map<string, CTEScopeNode> = new Map(parentCTEs.size > 0 ? parentCTEs : (ctx.cteNodes ?? new Map()));
 	let contextWithCTEs = ctx;
 
 	if (stmt.withClause) {
@@ -56,7 +56,7 @@ export function buildWithContext(
  * that might cause attribute ID collisions in correlated subqueries
  */
 function createCTEScope(
-	cteNodes: Map<string, CTEPlanNode>,
+	cteNodes: Map<string, CTEScopeNode>,
 	ctx: PlanningContext
 ): RegisteredScope {
 	const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
@@ -70,7 +70,7 @@ function createCTEScope(
 
 		// Only register columns that are stable input attributes
 		// This prevents scope pollution from projection output attributes
-		columnTypes.forEach((col: any, i: number) => {
+		columnTypes.forEach((col, i) => {
 			if (i < attributes.length) {
 				const attr = attributes[i];
 				// Register CTE columns with qualified names to avoid collisions

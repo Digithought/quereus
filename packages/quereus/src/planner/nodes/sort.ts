@@ -49,7 +49,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 		return this.source.getType();
 	}
 
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		// Sort preserves the same attributes as its source
 		return this.source.getAttributes();
 	}

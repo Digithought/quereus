@@ -3,13 +3,13 @@ import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import type { CTEPlanNode } from './cte-node.js';
+import type { CTEPlanNode, CTEScopeNode } from './cte-node.js';
 
 /**
  * Plan node for Recursive Common Table Expressions.
  * This handles the special structure of recursive CTEs with base and recursive cases.
  */
-export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
+export class RecursiveCTENode extends PlanNode implements CTEPlanNode, CTEScopeNode {
 	readonly nodeType = PlanNodeType.RecursiveCTE;
 	readonly isRecursive = true; // Always true for recursive CTEs
 	readonly tableDescriptor: TableDescriptor;
@@ -57,9 +57,9 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 
 		// Use explicit column names if provided, otherwise use base case column names
 		const baseCaseType = this.baseCaseQuery.getType();
-		const columnNames = this.columns || baseCaseType.columns.map((c: any) => c.name);
+		const columnNames = this.columns || baseCaseType.columns.map((c) => c.name);
 
-		return baseCaseAttributes.map((attr: any, index: number) => ({
+		return baseCaseAttributes.map((attr, index) => ({
 			id: attr.id, // Preserve original attribute ID for proper context resolution
 			name: columnNames[index] || attr.name,
 			type: attr.type,
@@ -71,8 +71,8 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode {
 		return {
 			typeClass: 'relation',
 			isReadOnly: false,
-			isSet: !this.isUnionAll, // UNION creates a set, UNION ALL creates a bag
-			columns: this.getAttributes().map((attr: any) => ({
+			isSet: false, // Recursive CTEs can generate duplicates
+			columns: this.getAttributes().map((attr) => ({
 				name: attr.name,
 				type: attr.type
 			})),
