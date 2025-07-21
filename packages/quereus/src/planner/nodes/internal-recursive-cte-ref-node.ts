@@ -3,6 +3,7 @@ import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
+import type { CTEScopeNode } from './cte-node.js';
 
 /**
  * Plan node for internal recursive CTE references.
@@ -10,11 +11,10 @@ import { Cached } from '../../util/cached.js';
  * Unlike CTEReferenceNode, this doesn't materialize the CTE but looks up the working table
  * from the runtime table context.
  */
-export class InternalRecursiveCTERefNode extends ZeroAryRelationalBase {
+export class InternalRecursiveCTERefNode extends ZeroAryRelationalBase implements CTEScopeNode {
 	readonly nodeType = PlanNodeType.InternalRecursiveCTERef;
 
 	private attributesCache: Cached<Attribute[]>;
-	private typeCache: Cached<RelationType>;
 
 	constructor(
 		scope: Scope,
@@ -26,12 +26,11 @@ export class InternalRecursiveCTERefNode extends ZeroAryRelationalBase {
 	) {
 		super(scope, 0.01); // Very low cost since we're just reading from working table
 		this.attributesCache = new Cached(() => this.buildAttributes());
-		this.typeCache = new Cached(() => this.buildType());
 	}
 
 	private buildAttributes(): Attribute[] {
 		// Return the attributes as provided, with proper source relation
-		return this.attributes.map((attr: any) => ({
+		return this.attributes.map((attr) => ({
 			id: attr.id,
 			name: attr.name,
 			type: attr.type,
@@ -39,26 +38,12 @@ export class InternalRecursiveCTERefNode extends ZeroAryRelationalBase {
 		}));
 	}
 
-	private buildType(): RelationType {
-		return {
-			typeClass: 'relation',
-			isReadOnly: true, // Working table is read-only from recursive case perspective
-			isSet: this.relationType.isSet,
-			columns: this.getAttributes().map((attr: any) => ({
-				name: attr.name,
-				type: attr.type
-			})),
-			keys: [],
-			rowConstraints: []
-		};
-	}
-
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		return this.attributesCache.value;
 	}
 
 	getType(): RelationType {
-		return this.typeCache.value;
+		return this.relationType;
 	}
 
 	toString(): string {

@@ -1,5 +1,6 @@
 import { registerWindowFunction } from '../../schema/window-function.js';
 import { SqlDataType } from '../../common/types.js';
+import { AggValue } from '../registration.js';
 
 // Built-in window function schemas
 export function registerBuiltinWindowFunctions(): void {
@@ -68,13 +69,13 @@ export function registerBuiltinWindowFunctions(): void {
 		},
 		requiresOrderBy: false,
 		kind: 'aggregate',
-		step: (state: any, value: any) => {
+		step: (state: AggValue, value: AggValue) => {
 			if (state === null || state === undefined) {
 				state = 0;
 			}
 			return value !== null ? state + 1 : state;
 		},
-		final: (state: any) => state || 0
+		final: (state: AggValue) => state || 0
 	});
 
 	registerWindowFunction({
@@ -88,14 +89,14 @@ export function registerBuiltinWindowFunctions(): void {
 		},
 		requiresOrderBy: false,
 		kind: 'aggregate',
-		step: (state: any, value: any) => {
+		step: (state: AggValue, value: AggValue) => {
 			if (value === null) return state;
 			if (state === null || state === undefined) {
 				return Number(value);
 			}
 			return state + Number(value);
 		},
-		final: (state: any) => state
+		final: (state: AggValue) => state
 	});
 
 	registerWindowFunction({
@@ -109,7 +110,7 @@ export function registerBuiltinWindowFunctions(): void {
 		},
 		requiresOrderBy: false,
 		kind: 'aggregate',
-		step: (state: any, value: any) => {
+		step: (state: AggValue, value: AggValue) => {
 			if (value === null) return state;
 			if (!state) {
 				state = { sum: 0, count: 0 };
@@ -118,7 +119,7 @@ export function registerBuiltinWindowFunctions(): void {
 			state.count += 1;
 			return state;
 		},
-		final: (state: any) => state ? state.sum / state.count : null
+		final: (state: AggValue) => state ? state.sum / state.count : null
 	});
 
 	registerWindowFunction({
@@ -132,14 +133,14 @@ export function registerBuiltinWindowFunctions(): void {
 		},
 		requiresOrderBy: false,
 		kind: 'aggregate',
-		step: (state: any, value: any) => {
+		step: (state: AggValue, value: AggValue) => {
 			if (value === null) return state;
 			if (state === null || state === undefined) {
 				return value;
 			}
 			return value < state ? value : state;
 		},
-		final: (state: any) => state
+		final: (state: AggValue) => state
 	});
 
 	registerWindowFunction({
@@ -153,13 +154,13 @@ export function registerBuiltinWindowFunctions(): void {
 		},
 		requiresOrderBy: false,
 		kind: 'aggregate',
-		step: (state: any, value: any) => {
+		step: (state: AggValue, value: AggValue) => {
 			if (value === null) return state;
 			if (state === null || state === undefined) {
 				return value;
 			}
 			return value > state ? value : state;
 		},
-		final: (state: any) => state
+		final: (state: AggValue) => state
 	});
 }

@@ -66,8 +66,10 @@ export function ruleMutatingSubqueryCache(node: PlanNode, _context: OptContext):
 		joinNode.getLeftSource(),
 		cachedRightSide,
 		joinNode.getJoinType(),
-		joinNode.getJoinCondition() ?? undefined,
-		(node as any).usingColumns // TODO: Add to JoinCapable interface
+		joinNode.getJoinCondition(),
+		// Special case: for JOINs, we also need to check if any of the join conditions
+		// reference columns from the mutating subquery (via USING clause)
+		joinNode.getUsingColumns()
 	);
 
 	log('Successfully injected cache for operations with side effects (threshold: %d)', threshold);
@@ -92,12 +94,9 @@ function containsOperationsWithSideEffects(node: PlanNode): boolean {
 	}
 
 	// Check relational children if available (preserved for compatibility)
-	// TODO: This could be made more characteristics-based by detecting nodes that expose relations
-	if ('getRelations' in node && typeof (node as any).getRelations === 'function') {
-		for (const relation of (node as any).getRelations()) {
-			if (containsOperationsWithSideEffects(relation)) {
-				return true;
-			}
+	for (const relation of node.getRelations()) {
+		if (containsOperationsWithSideEffects(relation)) {
+			return true;
 		}
 	}
 

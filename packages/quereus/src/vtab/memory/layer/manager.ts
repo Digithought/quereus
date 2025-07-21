@@ -216,6 +216,7 @@ export class MemoryTableManager {
 			} else {
 				logger.debugLog(`[Collapse] No layers collapsed for ${this._tableName}. Current: ${this._currentCommittedLayer.getLayerId()}`);
 			}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (e: any) {
 			logger.error('Collapse Layers', this._tableName, e);
 		} finally {

@@ -35,7 +35,7 @@ export interface OptContext {
 	readonly depth: number;
 
 	/** Additional context data that rules can use */
-	readonly context: Map<string, any>;
+	readonly context: Map<string, unknown>;
 
 	/** Database instance */
 	readonly db: Database;
@@ -51,7 +51,7 @@ export interface OptContext {
  * Implementation of optimization context
  */
 export class OptimizationContext implements OptContext {
-	readonly context = new Map<string, any>();
+	readonly context = new Map<string, unknown>();
 	readonly visitedRules = new Map<string, Set<string>>();
 	readonly optimizedNodes = new Map<string, PlanNode>();
 
@@ -109,7 +109,7 @@ export class OptimizationContext implements OptContext {
 	/**
 	 * Create a new context with additional context data
 	 */
-	withContext(key: string, value: any): OptimizationContext {
+	withContext(key: string, value: unknown): OptimizationContext {
 		const newContext = new OptimizationContext(
 			this.optimizer,
 			this.stats,
@@ -164,7 +164,7 @@ export class OptimizationContext implements OptContext {
 	/**
 	 * Set context value (mutates current context)
 	 */
-	setContext(key: string, value: any): void {
+	setContext(key: string, value: unknown): void {
 		this.context.set(key, value);
 	}
 
@@ -185,8 +185,8 @@ export class OptimizationContext implements OptContext {
 	/**
 	 * Get a snapshot of all context data
 	 */
-	getContextSnapshot(): Record<string, any> {
-		const snapshot: Record<string, any> = {};
+	getContextSnapshot(): Record<string, unknown> {
+		const snapshot: Record<string, unknown> = {};
 		for (const [key, value] of this.context) {
 			snapshot[key] = value;
 		}
@@ -210,6 +210,7 @@ export function createOptContext(
 /**
  * Type guard to check if an object is an OptContext
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isOptContext(obj: any): obj is OptContext {
 	return obj &&
 		typeof obj === 'object' &&

@@ -1,5 +1,5 @@
 import type { CacheNode } from '../../planner/nodes/cache-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan } from '../emitters.js';
@@ -58,7 +58,7 @@ export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 
 	return {
 		params: [sourceInstruction],
-		run,
+		run: run as InstructionRun,
 		note: `cache(${plan.strategy}, threshold=${plan.threshold})`
 	};
 }

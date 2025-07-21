@@ -29,7 +29,7 @@ export class CacheNode extends PlanNode implements UnaryRelationalNode, CacheCap
 	}
 
 	// Cache preserves source attributes exactly
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		return this.source.getAttributes();
 	}
 

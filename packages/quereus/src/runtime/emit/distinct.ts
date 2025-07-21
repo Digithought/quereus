@@ -1,5 +1,5 @@
 import type { DistinctNode } from '../../planner/nodes/distinct-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
@@ -34,7 +34,7 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 
 	return {
 		params: [sourceInstruction],
-		run: run as any,
+		run: run as InstructionRun,
 		note: 'distinct (btree-optimized)'
 	};
 }

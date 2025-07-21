@@ -199,6 +199,7 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 		}
 
 		default:
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       throw new QuereusError(`Expression type '${(expr as any).type}' not yet supported in buildExpression.`, StatusCode.UNSUPPORTED, undefined, expr.loc?.start.line, expr.loc?.start.column);
   }
 }

@@ -1,7 +1,7 @@
 import type { ValuesNode } from '../../planner/nodes/values-node.js';
 import type { SingleRowNode } from '../../planner/nodes/single-row.js';
 import type { TableLiteralNode } from '../../planner/nodes/values-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { type SqlValue, type Row, StatusCode } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
@@ -39,7 +39,7 @@ export function emitValues(plan: ValuesNode, ctx: EmissionContext): Instruction 
 
 	return {
 		params: rowExprs,
-		run: run as any,
+		run: run as InstructionRun,
 		note: `values(${plan.rows.length} rows, ${plan.rows[0]?.length || 0} cols)`
 	};
 }

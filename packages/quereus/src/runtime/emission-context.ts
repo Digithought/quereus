@@ -1,9 +1,8 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Database } from '../core/database.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { TableSchema } from '../schema/table.js';
 import type { FunctionSchema } from '../schema/function.js';
-import type { VirtualTableModule } from '../vtab/module.js';
+import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { createLogger } from '../common/logger.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
@@ -90,6 +89,8 @@ export class DependencyTracker {
 	}
 }
 
+type SchemaObject = TableSchema | FunctionSchema | { module: AnyVirtualTableModule, auxData?: unknown } | CollationFunction;
+
 /**
  * Context provided to emitters during plan emission.
  * Allows schema lookups and tracks dependencies for plan invalidation.
@@ -98,7 +99,8 @@ export class DependencyTracker {
 export class EmissionContext {
 	private readonly schemaManager: SchemaManager;
 	private readonly dependencyTracker = new DependencyTracker();
-	private readonly schemaSnapshot = new Map<string, any>();
+	/** Schema snapshot for table/view references during emission */
+	private readonly schemaSnapshot = new Map<string, SchemaObject>();
 	public readonly tracePlanStack: boolean;
 
 	constructor(
@@ -149,7 +151,7 @@ export class EmissionContext {
 	 * Looks up a virtual table module and records the dependency.
 	 * Also captures the module reference for runtime use.
 	 */
-	getVtabModule(moduleName: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
+	getVtabModule(moduleName: string): { module: AnyVirtualTableModule, auxData?: unknown } | undefined {
 		const moduleInfo = this.schemaManager.getModule(moduleName);
 		if (moduleInfo) {
 			const key = `vtab_module:${moduleName}`;
@@ -223,7 +225,7 @@ export class EmissionContext {
 	 * This allows runtime instructions to use the schema objects that were
 	 * captured at emission time, providing consistency even if the schema changes.
 	 */
-	getCapturedSchemaObject<T = any>(key: string): T | undefined {
+	getCapturedSchemaObject<T = SchemaObject>(key: string): T | undefined {
 		return this.schemaSnapshot.get(key) as T | undefined;
 	}
 

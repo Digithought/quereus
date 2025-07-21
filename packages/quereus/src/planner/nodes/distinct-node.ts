@@ -34,7 +34,7 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
     };
   }
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     // DISTINCT preserves the same attributes as its source
     return this.source.getAttributes();
   }

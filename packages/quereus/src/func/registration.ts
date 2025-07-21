@@ -36,6 +36,10 @@ interface TableValuedFuncOptions {
 	returnType?: RelationType;
 }
 
+/* Interim values for aggregate functions don't have to be SqlValue; they can be anything */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AggValue = any;
+
 /**
  * Configuration options for aggregate functions
  */
@@ -49,8 +53,7 @@ interface AggregateFuncOptions {
 	/** Whether the function is deterministic (affects caching) */
 	deterministic?: boolean;
 	/** Initial accumulator value */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	initialValue?: any;
+	initialValue?: AggValue;
 	/** Return type information */
 	returnType?: ScalarType;
 }

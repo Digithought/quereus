@@ -1,17 +1,17 @@
+import type { InNode, ExistsNode, ScalarSubqueryNode } from '../../planner/nodes/subquery.js';
 import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
-import type { InNode, ScalarSubqueryNode, ExistsNode } from '../../planner/nodes/subquery.js';
 import { emitPlanNode } from '../emitters.js';
 import type { SqlValue, Row } from '../../common/types.js';
-import { compareSqlValuesFast, resolveCollation } from '../../util/comparison.js';
 import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { BTree } from 'inheritree';
+import { compareSqlValuesFast, resolveCollation } from '../../util/comparison.js';
 import { ConstantNode } from '../../planner/nodes/plan-node.js';
 
 export function emitScalarSubquery(plan: ScalarSubqueryNode, ctx: EmissionContext): Instruction {
 
-	async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<SqlValue> {
+	async function run(_rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<SqlValue> {
 		let result: SqlValue = null;
 		let seen = false;
 
@@ -33,7 +33,7 @@ export function emitScalarSubquery(plan: ScalarSubqueryNode, ctx: EmissionContex
 
 	return {
 		params: [innerInstruction],
-		run,
+		run: run as InstructionRun,
 		note: 'SCALAR_SUBQUERY'
 	};
 }
@@ -77,7 +77,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 
 		return {
 			params: [sourceInstruction, conditionExpr],
-			run: runSubqueryStreaming as any,
+			run: runSubqueryStreaming as InstructionRun,
 			note: `IN (subquery)`
 		};
 	} else if (plan.values) {
@@ -116,7 +116,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 
 			if (values.some(val => val instanceof Promise)) {
 				// Must resolve promises at runtime
-				runFunc = async (rctx: RuntimeContext, condition: SqlValue): Promise<SqlValue> => {
+				runFunc = (async (rctx: RuntimeContext, condition: SqlValue): Promise<SqlValue> => {
 					const resolved = await Promise.all(values);
 
 					for (const value of resolved) {
@@ -128,7 +128,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 					}
 
 					return innerConstantRun(rctx, condition);
-				}
+				}) as InstructionRun;
 			} else {
 				for (const value of values) {
 					if (value === null) {
@@ -137,7 +137,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 					}
 					tree.insert(value as SqlValue);
 				}
-			runFunc = innerConstantRun;
+				runFunc = innerConstantRun as InstructionRun;
 			}
 
 			const conditionExpr = emitPlanNode(plan.condition, ctx);
@@ -176,7 +176,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 
 			return {
 				params: [conditionExpr, ...valueExprs],
-				run: runDynamicValues as any,
+				run: runDynamicValues as InstructionRun,
 				note: `IN (${plan.values.length} dynamic values)`
 			};
 		}
@@ -197,7 +197,7 @@ export function emitExists(plan: ExistsNode, ctx: EmissionContext): Instruction 
 
 	return {
 		params: [innerInstruction],
-		run,
+		run: run as InstructionRun,
 		note: 'EXISTS'
 	};
 }

@@ -1,12 +1,13 @@
 import type { JoinNode } from '../../planner/nodes/join-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
-import type { Row } from '../../common/types.js';
+import type { Row, OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
+import type { Attribute } from '../../planner/nodes/plan-node.js';
 
 const log = createLogger('runtime:emit:join');
 
@@ -23,7 +24,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 	const rightRowDescriptor = buildRowDescriptor(rightAttributes);
 
 	// NOTE: rightSource must be re-startable (optimizer facilitates through cache node)
-	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightCallback: (ctx: RuntimeContext) => AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => any): AsyncIterable<Row> {
+	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightCallback: (ctx: RuntimeContext) => AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
 		const joinType = plan.joinType;
 
 		log('Starting %s join between %d left attrs and %d right attrs',
@@ -106,7 +107,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 
 	return {
 		params,
-		run: run as any,
+		run: run as InstructionRun,
 		note: `${plan.joinType} join (nested loop)`
 	};
 }
@@ -117,9 +118,9 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 function evaluateUsingCondition(
 	leftRow: Row,
 	rightRow: Row,
-	usingColumns: string[],
-	leftAttributes: any[],
-	rightAttributes: any[]
+	usingColumns: readonly string[],
+	leftAttributes: readonly Attribute[],
+	rightAttributes: readonly Attribute[]
 ): boolean {
 	for (const columnName of usingColumns) {
 		const leftColName = columnName.toLowerCase();

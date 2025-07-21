@@ -5,12 +5,13 @@ import { PlanNodeType } from './plan-node-type.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 import { PlanNode } from './plan-node.js';
 import { RelationType } from '../../common/datatype.js';
+import { Scope } from '../scopes/scope.js';
 
 export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.Pragma;
 
 	constructor(
-		scope: any,
+		scope: Scope,
 		public readonly pragmaName: string,
 		public readonly statementAst: AST.PragmaStmt,
 		public readonly value?: SqlValue
@@ -81,7 +82,9 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 
 	override getLogicalAttributes(): Record<string, unknown> {
 		const props: Record<string, unknown> = {
-			pragma: this.pragmaName,
+			type: 'pragma',
+			name: this.statementAst.name,
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			statement: expressionToString(this.statementAst as any)
 		};
 

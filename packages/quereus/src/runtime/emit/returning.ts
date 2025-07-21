@@ -1,6 +1,6 @@
 import type { ReturningNode } from '../../planner/nodes/returning-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
-import type { Row } from '../../common/types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
+import type { Row, OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
@@ -19,7 +19,7 @@ export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instru
 	async function* run(
 		rctx: RuntimeContext,
 		executorRows: AsyncIterable<Row>,
-		...projectionCallbacks: Array<(ctx: RuntimeContext) => any>
+		...projectionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>
 	): AsyncIterable<Row> {
 		// Project the results from the executor rows
 		yield* withRowContextGenerator(rctx, sourceRowDescriptor, executorRows, async function* (_sourceRow) {
@@ -35,7 +35,7 @@ export function emitReturning(plan: ReturningNode, ctx: EmissionContext): Instru
 
 	return {
 		params: [executorInstruction, ...projectionEvaluators],
-		run,
+		run: run as InstructionRun,
 		note: `returning(${plan.projections.length} cols)`
 	};
 }

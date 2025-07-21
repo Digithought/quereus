@@ -1,5 +1,5 @@
 import { createLogger } from '../../common/logger.js';
-import type { SqlValue } from '../../common/types.js';
+import type { SqlValue, JSONValue } from '../../common/types.js';
 
 const log = createLogger('func:builtins:json-helpers');
 
@@ -9,12 +9,12 @@ const log = createLogger('func:builtins:json-helpers');
  * @param jsonString The string to parse as JSON
  * @returns The parsed value or null if parsing failed
  */
-export function safeJsonParse(jsonString: SqlValue): any | null {
+export function safeJsonParse(jsonString: SqlValue): JSONValue | null {
 	if (typeof jsonString !== 'string') {
 		return null;
 	}
 	try {
-		return JSON.parse(jsonString);
+		return JSON.parse(jsonString) as JSONValue;
 	} catch {
 		return null;
 	}
@@ -32,14 +32,14 @@ export function safeJsonParse(jsonString: SqlValue): any | null {
  * @returns Path resolution information or null if the path is invalid
  */
 export function resolveJsonPathForModify(
-	data: any,
+	data: JSONValue,
 	path: string,
 	createParents: boolean = false
-): { parent: any; key: string | number; value: any; exists: boolean } | null {
+): { parent: JSONValue | null; key: string | number; value: JSONValue | undefined; exists: boolean } | null {
 	if (!path || typeof path !== 'string') return null;
 
-	let current = data;
-	let parent: any = null;
+	let current: JSONValue | undefined = data;
+	let parent: JSONValue | null = null;
 	let finalKey: string | number | null = null;
 	let remainingPath = path.startsWith('$') ? path.substring(1) : path;
 
@@ -48,7 +48,7 @@ export function resolveJsonPathForModify(
 	}
 
 	while (remainingPath.length > 0) {
-		parent = current;
+		parent = current as JSONValue;
 		finalKey = null;
 
 		if (current === undefined || current === null) return null;
@@ -67,19 +67,19 @@ export function resolveJsonPathForModify(
 				keyStr = match[1];
 				remainingPath = remainingPath.substring(keyStr.length);
 			}
-			if (typeof current !== 'object' || Array.isArray(current)) {
+			if (typeof current !== 'object' || current === null || Array.isArray(current)) {
 				if (!createParents || typeof parent !== 'object' || parent === null || Array.isArray(parent) || typeof finalKey !== 'string') {
 					return { parent, key: keyStr, value: undefined, exists: false };
 				}
 				log(`JSON Path: Creating intermediate object for key "%s"`, finalKey);
-				parent[finalKey] = {};
-				current = parent[finalKey];
+				(parent as Record<string, JSONValue>)[finalKey] = {};
+				current = (parent as Record<string, JSONValue>)[finalKey];
 				parent = current;
 				finalKey = keyStr;
-				current = current[keyStr];
+				current = (current as Record<string, JSONValue>)[keyStr];
 			} else {
 				finalKey = keyStr;
-				current = current[keyStr];
+				current = (current as Record<string, JSONValue>)[keyStr];
 			}
 
 		} else if (remainingPath.startsWith('[')) {
@@ -95,13 +95,13 @@ export function resolveJsonPathForModify(
 				if (!createParents || parent === null || finalKey === null) {
 					return { parent, key: index, value: undefined, exists: false };
 				}
-				const newParentArray: any[] = [];
+				const newParentArray: JSONValue[] = [];
 				if (Array.isArray(parent) && typeof finalKey === 'number') {
 					log(`JSON Path: Creating intermediate array for index %d`, finalKey);
 					parent[finalKey] = newParentArray;
-				} else if (typeof parent === 'object' && !Array.isArray(parent) && typeof finalKey === 'string') {
+				} else if (typeof parent === 'object' && parent !== null && !Array.isArray(parent) && typeof finalKey === 'string') {
 					log(`JSON Path: Creating intermediate array for key "%s"`, finalKey);
-					parent[finalKey] = newParentArray;
+					(parent as Record<string, JSONValue>)[finalKey] = newParentArray;
 				} else {
 					return { parent, key: index, value: undefined, exists: false };
 				}
@@ -134,7 +134,7 @@ export function resolveJsonPathForModify(
  * @param value The SQL value to convert
  * @returns A JSON-compatible value
  */
-export function prepareJsonValue(value: SqlValue): any {
+export function prepareJsonValue(value: SqlValue): JSONValue {
 	if (typeof value === 'bigint') {
 		if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
 			return Number(value);
@@ -185,7 +185,7 @@ export function deepCopyJson(data: any): any {
  * @param value The value to check
  * @returns The SQLite JSON type name ('null', 'true', 'false', 'integer', 'real', 'text', 'array', 'object')
  */
-export function getJsonType(value: any): string {
+export function getJsonType(value: JSONValue): string {
 	if (value === null) return 'null';
 	switch (typeof value) {
 		case 'boolean': return value ? 'true' : 'false';
@@ -208,7 +208,7 @@ export function getJsonType(value: any): string {
  * @param path The path to evaluate
  * @returns The value at the path or undefined if not found
  */
-export function evaluateJsonPathBasic(data: any, path: string): any | undefined {
+export function evaluateJsonPathBasic(data: JSONValue, path: string): JSONValue | undefined {
 	if (!path || path === '$') return data;
 
 	const parts = path.startsWith('$.') ? path.substring(2).split('.') :
@@ -227,8 +227,8 @@ export function evaluateJsonPathBasic(data: any, path: string): any | undefined 
 			} else {
 				return undefined;
 			}
-		} else if (typeof current === 'object' && current !== null && Object.prototype.hasOwnProperty.call(current, part)) {
-			current = current[part];
+		} else if (typeof current === 'object' && current !== null && !Array.isArray(current) && Object.prototype.hasOwnProperty.call(current, part)) {
+			current = (current as Record<string, JSONValue>)[part];
 		} else {
 			return undefined;
 		}

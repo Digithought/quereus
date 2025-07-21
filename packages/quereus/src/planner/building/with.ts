@@ -1,6 +1,6 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
-import { CTENode, type CTEPlanNode } from '../nodes/cte-node.js';
+import { CTENode, type CTEPlanNode, type CTEScopeNode } from '../nodes/cte-node.js';
 import { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 import { InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
 import { buildSelectStmt } from './select.js';
@@ -17,8 +17,8 @@ import { ColumnReferenceNode } from '../nodes/reference.js';
 export function buildWithClause(
 	ctx: PlanningContext,
 	withClause: AST.WithClause
-): Map<string, CTEPlanNode> {
-	const cteNodes = new Map<string, CTEPlanNode>();
+): Map<string, CTEScopeNode> {
+	const cteNodes = new Map<string, CTEScopeNode>();
 
 	// Check for duplicate CTE names
 	const cteNames = new Set<string>();
@@ -36,7 +36,7 @@ export function buildWithClause(
 	// Build each CTE in order
 	// Note: For recursive CTEs, we may need to handle forward references
 	for (const cte of withClause.ctes) {
-		const cteNode = buildCommonTableExpr(ctx, cte, withClause.recursive, cteNodes, withClause.options);
+		const cteNode = buildCommonTableExpr(ctx, cte, withClause.recursive, cteNodes, withClause.options) as CTEScopeNode;
 		cteNodes.set(cte.name.toLowerCase(), cteNode);
 	}
 
@@ -50,7 +50,7 @@ export function buildCommonTableExpr(
 	ctx: PlanningContext,
 	cte: AST.CommonTableExpr,
 	isRecursive: boolean,
-	existingCTEs: Map<string, CTEPlanNode>,
+	existingCTEs: Map<string, CTEScopeNode>,
 	options?: AST.WithClauseOptions
 ): CTEPlanNode {
 	// Create a context that includes previously defined CTEs in scope
@@ -61,7 +61,7 @@ export function buildCommonTableExpr(
 	const cteScope = new RegisteredScope(ctx.scope);
 	for (const [cteName, cteNode] of existingCTEs) {
 		const attributes = cteNode.getAttributes();
-		cteNode.getType().columns.forEach((col: any, i: number) => {
+		cteNode.getType().columns.forEach((col, i) => {
 			const attr = attributes[i];
 			// Register CTE columns with qualified names only to avoid conflicts with table columns
 			const qualifiedColumnName = `${cteName}.${col.name.toLowerCase()}`;
@@ -167,7 +167,7 @@ function buildRecursiveCTE(
 
 	// Build the recursive case query with a simple replacement strategy
 	// We'll replace CTE references with the internal recursive reference during the FROM clause processing
-	const recursiveCteMap = new Map<string, any>();
+	const recursiveCteMap = new Map<string, CTEScopeNode>();
 	recursiveCteMap.set(cte.name.toLowerCase(), internalRefNode);
 
 	// Build the recursive case query

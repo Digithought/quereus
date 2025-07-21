@@ -3,7 +3,7 @@ import type { Operation } from 'fast-json-patch';
 const { applyPatch } = fastJsonPatch;
 
 import { createLogger } from '../../common/logger.js';
-import type { SqlValue } from '../../common/types.js';
+import type { SqlValue, JSONValue } from '../../common/types.js';
 import { createScalarFunction, createAggregateFunction } from '../registration.js';
 import { safeJsonParse, resolveJsonPathForModify, prepareJsonValue, deepCopyJson, getJsonType } from './json-helpers.js';
 
@@ -27,7 +27,7 @@ export const jsonTypeFunc = createScalarFunction(
 		const data = safeJsonParse(json);
 		if (data === null && typeof json === 'string') return null; // Invalid JSON input
 
-		let targetValue = data;
+		let targetValue: JSONValue | undefined = data;
 		if (path !== undefined && path !== null) {
 			if (typeof path !== 'string') return 'null'; // Invalid path
 			const resolved = resolveJsonPathForModify(data, path);
@@ -35,7 +35,7 @@ export const jsonTypeFunc = createScalarFunction(
 			// If path evaluation leads nowhere, SQLite returns NULL type
 			if (targetValue === undefined) return null;
 		}
-		return getJsonType(targetValue);
+		return getJsonType(targetValue as JSONValue);
 	}
 );
 
@@ -174,7 +174,7 @@ export const jsonArrayLengthFunc = createScalarFunction(
 		const data = safeJsonParse(json);
 		if (data === null && typeof json === 'string') return null;
 
-		let targetValue = data;
+		let targetValue: JSONValue | undefined = data;
 		if (path !== undefined && path !== null) {
 			if (typeof path !== 'string') return 0; // Invalid path -> 0 length
 			const resolved = resolveJsonPathForModify(data, path);
@@ -204,7 +204,7 @@ export const jsonPatchFunc = createScalarFunction(
 		if (!Array.isArray(patchData)) return null; // Invalid patch JSON (must be array)
 
 		// Ensure patch operations have the correct structure (basic check)
-		const patch = patchData as Operation[];
+		const patch = patchData as unknown as Operation[];
 		if (!patch.every(op => typeof op === 'object' && op !== null && 'op' in op && 'path' in op)) {
 			return null; // Invalid operation structure
 		}
@@ -215,6 +215,7 @@ export const jsonPatchFunc = createScalarFunction(
 			// If data came from elsewhere, we might need deepCopyJson first.
 			const result = applyPatch(data, patch, true /* validate operations */).newDocument;
 			return JSON.stringify(result);
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (e: any) {
 			errorLog('json_patch failed: %s, %O', e?.message, e);
 			return null; // Return NULL on patch failure
@@ -258,8 +259,8 @@ export const jsonInsertFunc = createScalarFunction(
 						parent.splice(key, 0, preparedValue); // Insert *before* existing element
 					}
 					// Ignore if key > parent.length?
-				} else if (typeof parent === 'object' && typeof key === 'string') {
-					parent[key] = preparedValue;
+				} else if (typeof parent === 'object' && parent !== null && !Array.isArray(parent) && typeof key === 'string') {
+					(parent as Record<string, JSONValue>)[key] = preparedValue;
 				}
 				// else: Cannot insert into non-container or invalid key type - ignore
 			}
@@ -404,9 +405,9 @@ export const jsonRemoveFunc = createScalarFunction(
 				if (key >= 0 && key < parent.length) {
 					parent.splice(key, 1); // Remove array element
 				}
-			} else if (typeof parent === 'object' && typeof key === 'string') {
+			} else if (typeof parent === 'object' && parent !== null && !Array.isArray(parent) && typeof key === 'string') {
 				if (Object.prototype.hasOwnProperty.call(parent, key)) {
-					delete parent[key]; // Remove object property
+					delete (parent as Record<string, JSONValue>)[key]; // Remove object property
 				}
 			}
 			// else: Cannot remove from non-container or invalid key type - ignore

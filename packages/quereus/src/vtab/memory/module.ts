@@ -1,7 +1,7 @@
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
-import { type TableSchema, type IndexSchema } from '../../schema/table.js';
+import { type TableSchema, type IndexSchema, IndexColumnSchema } from '../../schema/table.js';
 import { MemoryTable } from './table.js';
 import type { VirtualTableModule } from '../module.js';
 import { IndexConstraintOp } from '../../common/constants.js';
@@ -10,7 +10,7 @@ import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
 import { createMemoryTableLoggers } from './utils/logging.js';
 import { AccessPlanBuilder, validateAccessPlan } from '../best-access-plan.js';
-import type { BestAccessPlanRequest, BestAccessPlanResult, ColumnMeta, PredicateConstraint } from '../best-access-plan.js';
+import type { BestAccessPlanRequest, BestAccessPlanResult, ColumnMeta, OrderingSpec, PredicateConstraint } from '../best-access-plan.js';
 
 const logger = createMemoryTableLoggers('module');
 
@@ -193,7 +193,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 * Find equality matches for index columns
 	 */
 	private findEqualityMatches(
-		indexCols: ReadonlyArray<any>,
+		indexCols: ReadonlyArray<IndexColumnSchema>,
 		filters: readonly PredicateConstraint[]
 	): { matchCount: number; handledFilters: boolean[] } {
 		const handledFilters = new Array(filters.length).fill(false);
@@ -225,7 +225,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 * Find range match for a column
 	 */
 	private findRangeMatch(
-		indexCol: any,
+		indexCol: IndexColumnSchema,
 		filters: readonly PredicateConstraint[]
 	): { hasRange: boolean; handledFilters: boolean[] } {
 		const handledFilters = new Array(filters.length).fill(false);
@@ -280,7 +280,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 */
 	private indexSatisfiesOrdering(
 		index: IndexSchema,
-		requiredOrdering: readonly any[]
+		requiredOrdering: readonly OrderingSpec[]
 	): boolean {
 		if (requiredOrdering.length > index.columns.length) {
 			return false;
@@ -349,7 +349,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return availableIndexes;
 	}
 
-	private findBestPlan(context: any, availableIndexes: IndexSchema[], indexInfo: IndexInfo) {
+	private findBestPlan(context: ReturnType<typeof this.createPlanningContext>, availableIndexes: IndexSchema[], indexInfo: IndexInfo) {
 		let bestPlan = this.createInitialPlan(context);
 
 		for (const [indexId, index] of availableIndexes.entries()) {
@@ -362,7 +362,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return this.ensureFallbackPlan(bestPlan, context, availableIndexes);
 	}
 
-	private createInitialPlan(context: any) {
+	private createInitialPlan(context: ReturnType<typeof this.createPlanningContext>) {
 		return {
 			indexId: -1,
 			planType: context.PLAN_TYPE_FULL_ASC,
@@ -374,7 +374,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		};
 	}
 
-	private evaluateIndexPlan(context: any, index: IndexSchema, indexId: number, indexInfo: IndexInfo) {
+	private evaluateIndexPlan(context: ReturnType<typeof this.createPlanningContext>, index: IndexSchema, indexId: number, indexInfo: IndexInfo) {
 		let currentPlan = this.createInitialPlan(context);
 		currentPlan.indexId = indexId;
 
@@ -399,7 +399,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return currentPlan;
 	}
 
-	private evaluateEqualityPlan(context: any, index: IndexSchema, indexId: number, indexInfo: IndexInfo) {
+	private evaluateEqualityPlan(context: ReturnType<typeof this.createPlanningContext>, index: IndexSchema, indexId: number, indexInfo: IndexInfo) {
 		const indexCols = index.columns;
 		const eqConstraints = this.findEqualityConstraints(indexCols, indexInfo);
 
@@ -456,7 +456,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return indexCols.length > 0 && eqConstraints.size === indexCols.length;
 	}
 
-	private evaluateRangePlan(context: any, index: IndexSchema, indexId: number, indexInfo: IndexInfo, currentPlan: any) {
+	private evaluateRangePlan(context: ReturnType<typeof this.createPlanningContext>, index: IndexSchema, indexId: number, indexInfo: IndexInfo, currentPlan: any) {
 		const indexCols = index.columns;
 		const firstIndexColIdx = indexCols[0]?.index ?? -2;
 		const rangeBounds = this.findRangeBounds(firstIndexColIdx, indexInfo);
@@ -508,7 +508,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return { lowerBound, upperBound };
 	}
 
-	private evaluateOrderByConsumption(context: any, index: IndexSchema, indexInfo: IndexInfo, currentPlan: any) {
+	private evaluateOrderByConsumption(context: ReturnType<typeof this.createPlanningContext>, index: IndexSchema, indexInfo: IndexInfo, currentPlan: any) {
 		if (indexInfo.nOrderBy === 0) {
 			return null;
 		}
@@ -556,7 +556,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return { canConsume: true, isDesc: isOrderDesc };
 	}
 
-	private adjustPlanTypeForOrder(context: any, basePlanType: number, requiresDescScan: boolean) {
+	private adjustPlanTypeForOrder(context: ReturnType<typeof this.createPlanningContext>, basePlanType: number, requiresDescScan: boolean) {
 		if (basePlanType === context.PLAN_TYPE_FULL_ASC) {
 			return requiresDescScan ? context.PLAN_TYPE_FULL_DESC : context.PLAN_TYPE_FULL_ASC;
 		} else { // RANGE_ASC
@@ -564,7 +564,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		}
 	}
 
-	private ensureFallbackPlan(bestPlan: any, context: any, availableIndexes: IndexSchema[]) {
+	private ensureFallbackPlan(bestPlan: any, context: ReturnType<typeof this.createPlanningContext>, availableIndexes: IndexSchema[]) {
 		if (bestPlan.indexId === -1) {
 			const primaryIndex = availableIndexes.findIndex(idx => idx.name === '_primary_');
 			bestPlan.indexId = primaryIndex >= 0 ? primaryIndex : 0;

@@ -25,7 +25,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 	override readonly nodeType = PlanNodeType.Project;
 
 	private outputTypeCache: Cached<RelationType>;
-	private attributesCache: Cached<Attribute[]>;
+	private attributesCache: Cached<readonly Attribute[]>;
 
 	constructor(
 		scope: Scope,
@@ -33,7 +33,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 		public readonly projections: ReadonlyArray<Projection>,
 		estimatedCostOverride?: number,
 		/** Optional predefined attributes for preserving IDs during optimization */
-		predefinedAttributes?: Attribute[],
+		predefinedAttributes?: readonly Attribute[],
 		/** Whether to preserve input columns in the output (default: true) */
 		public readonly preserveInputColumns: boolean = true
 	) {
@@ -154,7 +154,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 		return this.outputTypeCache.value;
 	}
 
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		return this.attributesCache.value;
 	}
 

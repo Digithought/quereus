@@ -49,7 +49,7 @@ export class ViewReferenceNode extends PlanNode implements ZeroAryRelationalNode
 			typeClass: 'relation',
 			isReadOnly: false,
 			isSet: false, // Views can contain duplicates unless they have DISTINCT
-			columns: this.getAttributes().map((attr: any) => ({
+			columns: this.getAttributes().map((attr) => ({
 				name: attr.name,
 				type: attr.type
 			})),

@@ -28,7 +28,7 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
     return this.source.getType();
   }
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     return this.source.getAttributes();
   }
 

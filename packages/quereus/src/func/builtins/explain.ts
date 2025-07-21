@@ -7,6 +7,57 @@ import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { safeJsonStringify } from "../../util/serialization.js";
 import { InstructionTraceEvent } from "../../runtime/types.js";
+import { PlanNode, RelationalPlanNode } from "../../planner/nodes/plan-node.js";
+
+// Helper function to safely get function name from nodes that have it
+function getFunctionName(node: PlanNode): string | null {
+	// Check for nodes that have functionName property
+	if ('functionName' in node && typeof (node as any).functionName === 'string') {
+		return (node as any).functionName;
+	}
+	return null;
+}
+
+// Helper function to safely get alias from nodes that have it
+function getAlias(node: PlanNode): string | null {
+	// Check for nodes that have alias property
+	if ('alias' in node && typeof (node as any).alias === 'string') {
+		return (node as any).alias;
+	}
+	return null;
+}
+
+// Helper function to safely get table name or related identifier
+function getObjectName(node: PlanNode): string | null {
+	// Check for function name first (table functions, scalar functions, etc.)
+	const functionName = getFunctionName(node);
+	if (functionName) {
+		return functionName;
+	}
+
+	// Check for table schema in table reference nodes
+	if ('tableSchema' in node) {
+		const tableSchema = (node as any).tableSchema;
+		if (tableSchema && typeof tableSchema.name === 'string') {
+			return tableSchema.schemaName ? `${tableSchema.schemaName}.${tableSchema.name}` : tableSchema.name;
+		}
+	}
+
+	// Check for CTE name
+	if ('cteName' in node && typeof (node as any).cteName === 'string') {
+		return (node as any).cteName;
+	}
+
+	// Check for view schema in view reference nodes
+	if ('viewSchema' in node) {
+		const viewSchema = (node as any).viewSchema;
+		if (viewSchema && typeof viewSchema.name === 'string') {
+			return viewSchema.schemaName ? `${viewSchema.schemaName}.${viewSchema.name}` : viewSchema.name;
+		}
+	}
+
+	return null;
+}
 
 // Query plan explanation function (table-valued function)
 export const queryPlanFunc = createIntegratedTableValuedFunction(
@@ -47,7 +98,7 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 
 			// Traverse the plan tree and yield information about each node
 			let nodeId = 1;
-			const nodeStack: Array<{ node: any; parentId: number | null; level: number }> = [
+			const nodeStack: Array<{ node: PlanNode; parentId: number | null; level: number }> = [
 				{ node: plan, parentId: null, level: 0 }
 			];
 
@@ -64,7 +115,7 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				let objectName: string | null = null;
 				let alias: string | null = null;
 				const estCost = node.estimatedCost || 1.0;
-				const estRows = (node as any).estimatedRows || 10;
+				const estRows = (node as RelationalPlanNode).estimatedRows || 10;
 
 				// Use node's toString() method for detail if available
 				if (typeof node.toString === 'function') {
@@ -74,32 +125,16 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				if (node.nodeType) {
 					op = node.nodeType.replace(/Node$/, '').toUpperCase();
 
-					switch (node.nodeType) {
-						case 'TableFunctionCall':
-							objectName = node.functionName;
-							alias = node.alias || null;
-							break;
-						default:
-							// For other node types, try to extract common properties
-							if (node.alias) {
-								alias = node.alias;
-							}
-							if (node.tableName) {
-								objectName = node.tableName;
-							}
-							if (node.functionName) {
-								objectName = node.functionName;
-							}
-					}
+					// Extract object name and alias using helper functions
+					objectName = getObjectName(node);
+					alias = getAlias(node);
 				}
 
-				// Get logical properties (if available)
+				// Get logical properties using the correct method name
 				let properties: string | null = null;
-				if (node.getLogicalProperties) {
-					const logicalProps = node.getLogicalProperties();
-					if (logicalProps) {
-						properties = safeJsonStringify(logicalProps);
-					}
+				const logicalAttributes = node.getLogicalAttributes();
+				if (logicalAttributes && Object.keys(logicalAttributes).length > 0) {
+					properties = safeJsonStringify(logicalAttributes);
 				}
 
 				// Get physical properties (if available)
@@ -124,13 +159,13 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				];
 
 				// Add children to stack (in reverse order so they're processed in correct order)
-				// Note: getChildren() should include all children (both relational and scalar)
-				// Don't add getRelations() separately as it would cause duplication
-				const children = node.getChildren ? node.getChildren() : [];
+				// getChildren() is guaranteed to exist on all PlanNode instances
+				const children = node.getChildren();
 				for (let i = children.length - 1; i >= 0; i--) {
 					nodeStack.push({ node: children[i], parentId: currentId, level });
 				}
 			}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If planning fails, yield an error row
 			yield [1, null, 0, 'ERROR', 'ERROR', `Failed to plan SQL: ${error.message}`, null, null, null, null, null, null];
@@ -214,6 +249,7 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 					}
 				}
 			}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If compilation fails, yield an error instruction
 			yield [0, 'ERROR', '[]', `Failed to compile SQL: ${error.message}`, null, 0, null];
@@ -272,7 +308,7 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 			});
 
 			// Add frames based on plan node types
-			const addPlanFrames = (node: any, depth: number = 0) => {
+			const addPlanFrames = (node: PlanNode, depth: number = 0) => {
 				if (!node || depth > 10) return; // Prevent infinite recursion
 
 				switch (node.nodeType) {
@@ -280,28 +316,29 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 						stack.push({
 							name: 'buildBlock',
 							location: 'building/block.ts:buildBlock',
-							vars: { statementCount: node.statements?.length || 0 }
+							vars: { statementCount: ('statements' in node) ? (node as any).statements?.length || 0 : 0 }
 						});
 						break;
 					case 'Filter':
 						stack.push({
 							name: 'buildFilter',
 							location: 'building/select.ts:buildSelectStmt',
-							vars: { condition: node.condition?.toString() || 'unknown' }
+							vars: { condition: ('condition' in node) ? (node as any).condition?.toString() || 'unknown' : 'unknown' }
 						});
 						break;
 					case 'Project':
 						stack.push({
 							name: 'buildProject',
 							location: 'building/select.ts:buildSelectStmt',
-							vars: { projectionCount: node.projections?.length || 0 }
+							vars: { projectionCount: ('projections' in node) ? (node as any).projections?.length || 0 : 0 }
 						});
 						break;
 				}
 
 				// Recursively add frames for children
-				const children = node.getChildren ? node.getChildren() : [];
-				children.forEach((child: any) => addPlanFrames(child, depth + 1));
+				// getChildren() is guaranteed to exist on all PlanNode instances
+				const children = node.getChildren();
+				children.forEach((child: PlanNode) => addPlanFrames(child, depth + 1));
 			};
 
 			addPlanFrames(plan);
@@ -319,6 +356,7 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 					0                            // is_virtual
 				];
 			}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If analysis fails, yield an error frame
 			yield [0, 0, 'error', 'stack_trace', JSON.stringify({ error: error.message })];
@@ -371,6 +409,7 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 					instructionDependencies.set(addr, dependencies);
 					instructionOperations.set(addr, description);
 				}
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			} catch (schedulerError: any) {
 				console.warn('Could not get scheduler program info:', schedulerError.message);
 			}
@@ -391,9 +430,9 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 				}
 
 				await stmt.finalize();
-			} catch (executionError: any) {
+			} catch (executionError: unknown) {
 				// If execution fails, we might still have some trace events
-				console.warn('Query execution failed during tracing:', executionError.message);
+				console.warn('Query execution failed during tracing:', executionError instanceof Error ? executionError.message : String(executionError));
 			}
 
 			// Get the collected trace events
@@ -484,6 +523,7 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 				];
 			}
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If tracing setup fails, yield an error event
 			yield [
@@ -545,6 +585,7 @@ export const rowTraceFunc = createIntegratedTableValuedFunction(
 				}
 
 				await stmt.finalize();
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			} catch (executionError: any) {
 				// If execution fails, we might still have some trace events
 				console.warn('Query execution failed during row tracing:', executionError.message);
@@ -595,13 +636,13 @@ export const rowTraceFunc = createIntegratedTableValuedFunction(
 				];
 			}
 
-		} catch (error: any) {
+		} catch (error: unknown) {
 			// If tracing setup fails, yield an error event
 			yield [
 				0,                                                        // instruction_index
 				'ROW_TRACE_SETUP',                                       // operation
 				0,                                                       // row_index
-				safeJsonStringify(`Failed to setup row trace: ${error.message}`), // row_data
+				safeJsonStringify(`Failed to setup row trace: ${error instanceof Error ? error.message : String(error)}`), // row_data
 				Date.now(),                                              // timestamp_ms
 				null                                                     // row_count
 			];

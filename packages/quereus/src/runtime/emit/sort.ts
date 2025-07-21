@@ -1,5 +1,5 @@
 import type { SortNode } from '../../planner/nodes/sort.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row, type MaybePromise } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
@@ -69,7 +69,7 @@ export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 
 	return {
 		params: [sourceInstruction, ...sortKeyInstructions],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `sort(${plan.sortKeys.length} keys)`
 	};
 }

@@ -134,74 +134,9 @@ export class NaiveStatsProvider implements StatsProvider {
 }
 
 /**
- * Statistics provider that delegates to virtual table modules
- * Allows VTab modules to provide their own statistics
- */
-export class VTabStatsProvider implements StatsProvider {
-	constructor(
-		private readonly fallback: StatsProvider = new NaiveStatsProvider()
-	) {
-		log('Created VTab stats provider with fallback');
-	}
-
-	tableRows(table: TableSchema): number | undefined {
-		// Try to get stats from VTab module if it supports it
-		if (table.vtabModule && typeof table.vtabModule === 'object' && 'getTableStats' in table.vtabModule) {
-			try {
-				const stats = (table.vtabModule as any).getTableStats?.(table);
-				if (stats?.rowCount !== undefined) {
-					log('Got row count from VTab module for %s: %d', table.name, stats.rowCount);
-					return stats.rowCount;
-				}
-			} catch (error) {
-				log('Error getting VTab stats for %s: %s', table.name, error);
-			}
-		}
-
-		// Fall back to default provider
-		return this.fallback.tableRows(table);
-	}
-
-	selectivity(table: TableSchema, predicate: ScalarPlanNode): number | undefined {
-		// Try VTab module selectivity
-		if (table.vtabModule && typeof table.vtabModule === 'object' && 'getSelectivity' in table.vtabModule) {
-			try {
-				const selectivity = (table.vtabModule as any).getSelectivity?.(table, predicate);
-				if (selectivity !== undefined) {
-					log('Got selectivity from VTab module for %s: %f', table.name, selectivity);
-					return selectivity;
-				}
-			} catch (error) {
-				log('Error getting VTab selectivity for %s: %s', table.name, error);
-			}
-		}
-
-		// Fall back to default provider
-		return this.fallback.selectivity(table, predicate);
-	}
-
-	joinSelectivity(leftTable: TableSchema, rightTable: TableSchema, joinCondition: ScalarPlanNode): number | undefined {
-		return this.fallback.joinSelectivity?.(leftTable, rightTable, joinCondition);
-	}
-
-	distinctValues(table: TableSchema, columnName: string): number | undefined {
-		return this.fallback.distinctValues?.(table, columnName);
-	}
-
-	indexSelectivity(table: TableSchema, indexName: string, predicate: ScalarPlanNode): number | undefined {
-		return this.fallback.indexSelectivity?.(table, indexName, predicate);
-	}
-}
-
-/**
  * Default statistics provider instance
  */
 export const defaultStatsProvider = new NaiveStatsProvider();
-
-/**
- * VTab-aware statistics provider instance
- */
-export const vtabStatsProvider = new VTabStatsProvider();
 
 /**
  * Create a custom statistics provider

@@ -7,6 +7,22 @@ import { Cached } from '../../util/cached.js';
 import type { CTECapable } from '../framework/characteristics.js';
 
 /**
+ * Narrow contract that any node must satisfy to be placed in the CTE lookup map
+ * while planning.  Both regular `CTENode`s and the internal placeholder used
+ * for the recursive working table satisfy this contract.
+ */
+export interface CTEScopeNode extends PlanNode {
+    /** Lower-cased CTE name */
+    readonly cteName: string;
+
+    /** Column metadata produced by this CTE when referenced */
+    getAttributes(): readonly Attribute[];
+
+    /** Relation type for the CTE output */
+    getType(): RelationType;
+}
+
+/**
  * Common interface for all CTE nodes (regular and recursive)
  */
 export interface CTEPlanNode extends UnaryRelationalNode {
@@ -21,7 +37,7 @@ export interface CTEPlanNode extends UnaryRelationalNode {
  * Plan node for Common Table Expressions (CTEs).
  * This represents a single CTE definition within a WITH clause.
  */
-export class CTENode extends PlanNode implements CTEPlanNode, CTECapable {
+export class CTENode extends PlanNode implements CTEPlanNode, CTEScopeNode, CTECapable {
 	readonly nodeType = PlanNodeType.CTE;
 	readonly tableDescriptor: TableDescriptor = {}; // Identity object for table context lookup
 
@@ -44,12 +60,15 @@ export class CTENode extends PlanNode implements CTEPlanNode, CTECapable {
 	private buildAttributes(): Attribute[] {
 		const queryAttributes = this.source.getAttributes();
 		const queryType = this.source.getType();
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const columnNames = this.columns || queryType.columns.map((c: any) => c.name);
 
 		return columnNames.map((name: string) => {
 			const srcAttr = queryAttributes.find(a => a.name.toLowerCase() === name.toLowerCase());
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			let resolvedType: any = srcAttr?.type;
 			if (!resolvedType) {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const colMeta = queryType.columns.find((c: any) => c.name.toLowerCase() === name.toLowerCase());
 				resolvedType = colMeta?.type;
 			}
@@ -72,6 +91,7 @@ export class CTENode extends PlanNode implements CTEPlanNode, CTECapable {
 			typeClass: 'relation',
 			isReadOnly: false,
 			isSet: queryType.isSet, // CTEs preserve the set/bag nature of their query
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			columns: this.getAttributes().map((attr: any) => ({
 				name: attr.name,
 				type: attr.type
@@ -81,7 +101,7 @@ export class CTENode extends PlanNode implements CTEPlanNode, CTECapable {
 		};
 	}
 
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		return this.attributesCache.value;
 	}
 

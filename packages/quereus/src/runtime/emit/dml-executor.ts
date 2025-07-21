@@ -21,6 +21,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		try {
 			for await (const flatRow of rows) {
 				const newRow = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
+				// TODO: Remove this monkey patch
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				(newRow as any)._onConflict = plan.onConflict || 'abort';
 				await vtab.xUpdate!('insert', newRow);
 				yield flatRow; // make OLD/NEW available downstream (e.g. RETURNING)
@@ -75,11 +77,11 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 	}
 
 	// Select the correct generator based on operation
-	let runFunc: InstructionRun;
+	let run: InstructionRun;
 	switch (plan.operation) {
-		case 'insert': runFunc = runInsert; break;
-		case 'update': runFunc = runUpdate; break;
-		case 'delete': runFunc = runDelete; break;
+		case 'insert': run = runInsert as InstructionRun; break;
+		case 'update': run = runUpdate as InstructionRun; break;
+		case 'delete': run = runDelete as InstructionRun; break;
 		default:
 			throw new QuereusError(`Unknown DML operation: ${plan.operation}`, StatusCode.INTERNAL);
 	}
@@ -88,7 +90,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 	return {
 		params: [sourceInstruction],
-		run: runFunc,
+		run,
 		note: `execute${plan.operation}(${plan.table.tableSchema.name})`
 	};
 }

@@ -14,8 +14,8 @@ import { buildExpression } from './expression.js';
 import { FilterNode } from '../nodes/filter.js';
 import { buildTableFunctionCall } from './table-function.js';
 import { CTEReferenceNode } from '../nodes/cte-reference-node.js';
-import { InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
-import type { CTEPlanNode } from '../nodes/cte-node.js';
+import { InternalRecursiveCTERefNode as _InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
+import type { CTEScopeNode, CTEPlanNode } from '../nodes/cte-node.js';
 import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { ValuesNode } from '../nodes/values-node.js';
@@ -52,7 +52,7 @@ const logger = createLogger('planner:cte');
 export function buildSelectStmt(
   ctx: PlanningContext,
   stmt: AST.SelectStmt,
-  parentCTEs: Map<string, CTEPlanNode> = new Map(),
+  parentCTEs: Map<string, CTEScopeNode> = new Map(),
   /**
    * Whether ProjectNodes inside this SELECT should forward all input columns that are not explicitly
    * listed in the projection list. This is desirable for top-level queries (helps ORDER BY, window
@@ -72,6 +72,8 @@ export function buildSelectStmt(
 	}
 
 	// Phase 1: Plan FROM clause and determine local input relations for the current select scope
+	// Use the context that includes CTEs as well as the merged CTE map so that table references
+	// inside the FROM clause can correctly resolve to CTE definitions created by the WITH clause.
 	const fromTables = !stmt.from || stmt.from.length === 0
 		? [SingleRowNode.instance]
 		: stmt.from.map(from => buildFrom(from, contextWithCTEs, cteNodes));
@@ -85,7 +87,7 @@ export function buildSelectStmt(
 	}
 
 	// Phase 2: Create the main scope for this SELECT statement
-	const columnScopes = fromTables.map(ft => (ft as any).columnScope || ft.scope).filter(Boolean);
+	const columnScopes = fromTables.map(ft => ctx.outputScopes.get(ft) || ft.scope).filter(Boolean);
 	const selectScope = new MultiScope([...columnScopes, contextWithCTEs.scope]);
 	let selectContext: PlanningContext = { ...contextWithCTEs, scope: selectScope };
 
@@ -248,7 +250,7 @@ export function buildValuesStmt(
  * @param ctx The planning context
  * @returns A relational plan node representing the FROM clause
  */
-export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode> = new Map()): RelationalPlanNode {
+export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningContext, cteNodes: Map<string, CTEScopeNode> = new Map()): RelationalPlanNode {
 	let fromTable: RelationalPlanNode;
 	let columnScope: Scope;
 
@@ -293,7 +295,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 					const attrs = cteRefNode.getAttributes();
 					logger(`Using cached CTE reference ${cacheKey}, attrs=[${attrs.map(a => a.id).join(',')}]`);
 				} else {
-					cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode, fromClause.alias);
+					cteRefNode = new CTEReferenceNode(parentContext.scope, cteNode as CTEPlanNode, fromClause.alias);
 					parentContext.cteReferenceCache.set(cacheKey, cteRefNode);
 					const attrs = cteRefNode.getAttributes();
 					logger(`Created new CTE reference ${cacheKey}, attrs=[${attrs.map(a => a.id).join(',')}]`);
@@ -319,6 +321,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				}
 
 				// CRITICAL: Cache the reference node so later expression compilation uses the same attribute IDs
+				// TODO: replace this monkey patching with a proper interface
 				(columnScope as any).referenceNode = cteRefNode;
 
 				fromTable = cteRefNode;
@@ -395,6 +398,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			fromTable = buildValuesStmt(parentContext, fromClause.subquery);
 		} else {
 			const exhaustiveCheck: never = fromClause.subquery;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			throw new QuereusError(`Unsupported subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
 
@@ -431,6 +435,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			dmlNode = buildDeleteStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
 		} else {
 			const exhaustiveCheck: never = fromClause.stmt;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			throw new QuereusError(`Unsupported mutating subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
 
@@ -460,24 +465,29 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	} else {
 		// Handle the case where fromClause.type is not recognized
 		const exhaustiveCheck: never = fromClause;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		throw new QuereusError(`Unsupported FROM clause type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 	}
 
-	(fromTable as any).columnScope = columnScope;
+	parentContext.outputScopes.set(fromTable, columnScope);
 	return fromTable;
 }
 
 /**
  * Builds a join plan node from an AST join clause
  */
-function buildJoin(joinClause: AST.JoinClause, parentContext: PlanningContext, cteNodes: Map<string, CTEPlanNode>): JoinNode {
+function buildJoin(joinClause: AST.JoinClause, parentContext: PlanningContext, cteNodes: Map<string, CTEScopeNode>): JoinNode {
 	// Build left and right sides recursively
 	const leftNode = buildFrom(joinClause.left, parentContext, cteNodes);
 	const rightNode = buildFrom(joinClause.right, parentContext, cteNodes);
 
-	// Extract column scopes from left and right nodes
-	const leftScope = (leftNode as any).columnScope as Scope;
-	const rightScope = (rightNode as any).columnScope as Scope;
+	// Create a combined scope for join expressions
+	const leftScope = parentContext.outputScopes.get(leftNode);
+	const rightScope = parentContext.outputScopes.get(rightNode);
+	if (!leftScope || !rightScope) {
+		// This should not happen if buildFrom correctly populates the scopes
+		throw new QuereusError('Could not find output scope for join source', StatusCode.INTERNAL);
+	}
 
 	// Create a combined scope for the join that includes both left and right columns
 	const combinedScope = new MultiScope([leftScope, rightScope]);
@@ -515,7 +525,7 @@ function buildJoin(joinClause: AST.JoinClause, parentContext: PlanningContext, c
 
 	// Use the combined scope as the column scope for the join
 	// This allows both qualified and unqualified column references to resolve properly
-	(joinNode as any).columnScope = combinedScope;
+	parentContext.outputScopes.set(joinNode, combinedScope);
 
 	return joinNode;
 }

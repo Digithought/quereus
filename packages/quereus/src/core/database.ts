@@ -1,7 +1,7 @@
 import { createLogger } from '../common/logger.js';
 import { MisuseError, quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
-import type { VirtualTableModule } from '../vtab/module.js';
+import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import { SchemaManager } from '../schema/manager.js';
 import type { TableSchema } from '../schema/table.js';
@@ -297,8 +297,7 @@ export class Database {
 	 * @param module The module implementation.
 	 * @param auxData Optional client data passed to xCreate/xConnect.
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	registerVtabModule(name: string, module: VirtualTableModule<any, any>, auxData?: unknown): void {
+	registerVtabModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
 		this.checkOpen();
 		this.schemaManager.registerModule(name, module, auxData);
 	}
@@ -671,7 +670,7 @@ export class Database {
 	getDebugPlan(sql: string, options?: { verbose?: boolean; expandNodes?: string[]; maxDepth?: number }): string {
 		this.checkOpen();
 		const plan = this.getPlan(sql);
-		
+
 		if (options?.verbose) {
 			// Use the original detailed JSON format
 			return serializePlanTree(plan);
@@ -706,8 +705,7 @@ export class Database {
 	}
 
 	/** @internal */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	_getVtabModule(name: string): { module: VirtualTableModule<any, any>, auxData?: unknown } | undefined {
+	_getVtabModule(name: string): { module: AnyVirtualTableModule, auxData?: unknown } | undefined {
 		// Delegate to SchemaManager
 		return this.schemaManager.getModule(name);
 		// return this.registeredVTabs.get(name.toLowerCase()); // Old implementation
@@ -739,7 +737,8 @@ export class Database {
 			cteNodes: new Map(),
 			schemaDependencies: new BuildTimeDependencyTracker(),
 			schemaCache: new Map(),
-			cteReferenceCache: new Map()
+			cteReferenceCache: new Map(),
+			outputScopes: new Map()
 		};
 
 		return buildBlock(ctx, statements);

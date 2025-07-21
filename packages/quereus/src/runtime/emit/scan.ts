@@ -2,7 +2,7 @@ import { StatusCode, type Row } from "../../common/types.js";
 import { SeqScanNode, IndexScanNode, IndexSeekNode } from "../../planner/nodes/table-access-nodes.js";
 import { QuereusError } from "../../common/errors.js";
 import type { VirtualTable } from "../../vtab/table.js";
-import type { BaseModuleConfig } from "../../vtab/module.js";
+import type { BaseModuleConfig, AnyVirtualTableModule } from "../../vtab/module.js";
 import type { Instruction, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
 import { createValidatedInstruction } from "../emitters.js";
@@ -32,7 +32,7 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
 
 	async function* run(runtimeCtx: RuntimeContext): AsyncIterable<Row> {
 		// Use the captured module info instead of doing a fresh lookup
-		const capturedModuleInfo = ctx.getCapturedSchemaObject<{ module: any, auxData?: unknown }>(moduleKey);
+		const capturedModuleInfo = ctx.getCapturedSchemaObject<{ module: AnyVirtualTableModule, auxData?: unknown }>(moduleKey);
 		if (!capturedModuleInfo) {
 			throw new QuereusError(`Virtual table module '${schema.vtabModuleName}' was not captured during emission`, StatusCode.INTERNAL);
 		}

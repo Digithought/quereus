@@ -14,7 +14,7 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode } from '../../nodes/plan-node.js';
+import type { PlanNode, ScalarPlanNode, Attribute } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
@@ -39,8 +39,8 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 	const groupingKeys = aggregateNode.getGroupingKeys();
 	const aggregateExpressions = aggregateNode.getAggregateExpressions();
 
-	// Source is already optimized by framework
-	const source = (node as any).source; // TODO: Add source to AggregationCapable interface
+	// Check if we can stream the aggregation over the source
+	const source = aggregateNode.getSource();
 
 	// Check if streaming aggregation is beneficial
 	if (!aggregateNode.canStreamAggregate()) {
@@ -118,7 +118,7 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
  */
 function isOrderedForGrouping(
 	_ordering: { column: number; desc: boolean }[] | undefined,
-	_groupingKeys: readonly any[]
+	_groupingKeys: readonly ScalarPlanNode[]
 ): boolean {
 	// TODO: Implement proper ordering analysis
 	// For now, conservatively return false to always sort
@@ -130,9 +130,9 @@ function isOrderedForGrouping(
  * Combine attributes from aggregate and source, avoiding duplicates by name
  * This preserves attribute IDs while ensuring unique column names
  */
-function combineAttributes(aggregateAttrs: any[], sourceAttrs: any[]): any[] {
+function combineAttributes(aggregateAttrs: readonly Attribute[], sourceAttrs: readonly Attribute[]): Attribute[] {
 	const seenNames = new Set<string>();
-	const combinedAttrs: any[] = [];
+	const combinedAttrs: Attribute[] = [];
 
 	// Add aggregate attributes first (GROUP BY + aggregates)
 	for (const attr of aggregateAttrs) {

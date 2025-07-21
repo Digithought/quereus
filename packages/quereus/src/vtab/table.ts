@@ -1,5 +1,4 @@
-import type { VirtualTableModule, SchemaChangeInfo } from './module.js';
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { AnyVirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
 import type { MaybePromise, Row } from '../common/types.js';
@@ -13,14 +12,14 @@ import type { VirtualTableConnection } from './connection.js';
  * Module implementations should subclass this to provide specific table behavior.
  */
 export abstract class VirtualTable {
-	public readonly module: VirtualTableModule<any, any>;
+	public readonly module: AnyVirtualTableModule;
 	public readonly db: Database;
 	public readonly tableName: string;
 	public readonly schemaName: string;
 	public errorMessage?: string;
 	public tableSchema?: TableSchema;
 
-	constructor(db: Database, module: VirtualTableModule<any, any>, schemaName: string, tableName: string) {
+	constructor(db: Database, module: AnyVirtualTableModule, schemaName: string, tableName: string) {
 		this.db = db;
 		this.module = module;
 		this.schemaName = schemaName;

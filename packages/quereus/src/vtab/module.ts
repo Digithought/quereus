@@ -138,3 +138,10 @@ export type SchemaChangeInfo =
 	| { type: 'addColumn'; columnDef: ColumnDef }
 	| { type: 'dropColumn'; columnName: string }
 	| { type: 'renameColumn'; oldName: string; newName: string; newColumnDefAst?: ColumnDef };
+
+/**
+ * Type alias for the common usage pattern where specific table and config types are not known.
+ * Use this for storage scenarios like the SchemaManager where modules of different types are stored together.
+ * eslint-disable-next-line @typescript-eslint/no-explicit-any
+ */
+export type AnyVirtualTableModule = VirtualTableModule<any, any>;

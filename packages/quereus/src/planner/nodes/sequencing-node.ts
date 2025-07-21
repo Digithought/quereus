@@ -58,7 +58,7 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 		return this.outputTypeCache.value;
 	}
 
-	getAttributes(): Attribute[] {
+	getAttributes(): readonly Attribute[] {
 		// Sort preserves the same attributes as its source
 		return this.source.getAttributes();
 	}

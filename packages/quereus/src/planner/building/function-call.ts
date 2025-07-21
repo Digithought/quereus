@@ -27,13 +27,13 @@ export function buildFunctionCall(ctx: PlanningContext, expr: AST.FunctionExpr, 
 						const exprArg = expr.args[i];
 						const aggArg = aggFuncNode.args[i];
 						// Simple check: if both are column references, check names match
-						if (exprArg.type === 'column' && (aggArg as any).expression?.type === 'column') {
-							if (exprArg.name.toLowerCase() !== (aggArg as any).expression.name.toLowerCase()) {
+						if (exprArg.type === 'column' && aggArg.expression?.type === 'column') {
+							if (exprArg.name.toLowerCase() !== aggArg.expression.name.toLowerCase()) {
 								argsMatch = false;
 								break;
 							}
-						} else if (exprArg.type === 'literal' && (aggArg as any).expression?.type === 'literal') {
-							if (exprArg.value !== (aggArg as any).expression.value) {
+						} else if (exprArg.type === 'literal' && aggArg.expression?.type === 'literal') {
+							if (exprArg.value !== aggArg.expression.value) {
 								argsMatch = false;
 								break;
 							}

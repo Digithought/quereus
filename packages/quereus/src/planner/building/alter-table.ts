@@ -40,6 +40,7 @@ export function buildAlterTableStmt(
 
     default:
       throw new QuereusError(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         `Unknown ALTER TABLE action: ${(stmt.action as any).type}`,
         StatusCode.INTERNAL
       );

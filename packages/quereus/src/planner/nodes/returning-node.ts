@@ -22,14 +22,14 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
   override readonly nodeType = PlanNodeType.Returning;
 
   private outputTypeCache: Cached<RelationType>;
-  private attributesCache: Cached<Attribute[]>;
+  private attributesCache: Cached<readonly Attribute[]>;
 
   constructor(
     scope: Scope,
     public readonly executor: RelationalPlanNode, // The DML operation that yields affected rows
     public readonly projections: ReadonlyArray<ReturningProjection>,
     /** Optional predefined attributes for preserving IDs during optimization */
-    predefinedAttributes?: Attribute[]
+    predefinedAttributes?: readonly Attribute[]
   ) {
     super(scope);
 
@@ -100,7 +100,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     };
   }
 
-  private buildAttributes(): Attribute[] {
+  private buildAttributes(): readonly Attribute[] {
     // Create attributes for the projected columns
     // Get the computed column names from the type
     const outputType = this.getType();
@@ -141,9 +141,9 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     return this.outputTypeCache.value;
   }
 
-  getAttributes(): Attribute[] {
-    return this.attributesCache.value;
-  }
+  getAttributes(): readonly Attribute[] {
+		return this.attributesCache.value;
+	}
 
   getRelations(): readonly RelationalPlanNode[] {
     // Return the executor which is now a RelationalPlanNode

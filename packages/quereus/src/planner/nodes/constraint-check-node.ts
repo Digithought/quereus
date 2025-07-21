@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type ScalarPlanNode, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type ScalarPlanNode, isRelationalNode, isScalarNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -35,7 +35,7 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
     return this.source.getType();
   }
 
-  getAttributes(): Attribute[] {
+  getAttributes(): readonly Attribute[] {
     // ConstraintCheck passes through the same attributes as its source
     return this.source.getAttributes();
   }
@@ -69,7 +69,7 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
     // Type check constraint expressions
     for (let i = 0; i < newConstraintExprs.length; i++) {
       const expr = newConstraintExprs[i];
-      if (!('getType' in expr) || typeof (expr as any).getType !== 'function') {
+      if (!isScalarNode(expr)) {
         throw new Error(`ConstraintCheckNode: constraint child ${i + 1} must be a ScalarPlanNode`);
       }
     }

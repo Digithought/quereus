@@ -1,7 +1,8 @@
 import type * as AST from '../../parser/ast.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import type { PlanningContext } from '../planning-context.js';
-import type { CTEPlanNode } from '../nodes/cte-node.js';
+import type { CTEScopeNode } from '../nodes/cte-node.js';
+import type { Scope } from '../scopes/scope.js';
 import { SetOperationNode } from '../nodes/set-operation-node.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
 import { LimitOffsetNode } from '../nodes/limit-offset.js';
@@ -19,18 +20,18 @@ import { StatusCode } from '../../common/types.js';
 export function buildCompoundSelect(
 	stmt: AST.SelectStmt,
 	contextWithCTEs: PlanningContext,
-	cteNodes: Map<string, CTEPlanNode>,
-	buildSelectStmt: (ctx: PlanningContext, stmt: AST.SelectStmt, parentCTEs?: Map<string, CTEPlanNode>) => RelationalPlanNode
+	cteNodes: Map<string, CTEScopeNode>,
+	buildSelectStmt: (ctx: PlanningContext, stmt: AST.SelectStmt, parentCTEs?: Map<string, CTEScopeNode>) => RelationalPlanNode
 ): RelationalPlanNode {
 	if (!stmt.compound) {
 		throw new QuereusError('buildCompoundSelect called without compound clause', StatusCode.INTERNAL);
 	}
 
 	// Build left side by cloning the statement without compound and stripping ORDER BY/LIMIT/OFFSET that belong to outer query
-	const { compound: _outerCompound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt as any;
+	const { compound: _outerCompound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt;
 
 	// Also strip ORDER BY/LIMIT/OFFSET from the right side - they should only apply to the final compound result
-	const { orderBy: _rightOrderBy, limit: _rightLimit, offset: _rightOffset, ...rightCore } = stmt.compound.select as any;
+	const { orderBy: _rightOrderBy, limit: _rightLimit, offset: _rightOffset, ...rightCore } = stmt.compound.select;
 
 	const leftPlan = buildSelectStmt(contextWithCTEs, leftCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
 	const rightPlan = buildSelectStmt(contextWithCTEs, rightCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
@@ -58,15 +59,15 @@ function createSetOperationScope(setNode: RelationalPlanNode): RegisteredScope {
 	const setScope = new RegisteredScope();
 	const attrs = setNode.getAttributes();
 
-	setNode.getType().columns.forEach((c: any, i: number) => {
+	setNode.getType().columns.forEach((c, i: number) => {
 		const attr = attrs[i];
 		// Ensure column has a name - use attribute name as fallback
 		const columnName = c.name || attr.name;
 		if (!columnName) {
 			throw new QuereusError(`Column at index ${i} has no name in set operation`, StatusCode.ERROR);
 		}
-		setScope.registerSymbol(columnName.toLowerCase(), (exp: any, s: any) =>
-			new ColumnReferenceNode(s, exp, c.type, attr.id, i));
+		setScope.registerSymbol(columnName.toLowerCase(), (exp: AST.Expression, s: Scope) =>
+			new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
 	});
 
 	return setScope;
@@ -77,11 +78,11 @@ function createSetOperationScope(setNode: RelationalPlanNode): RegisteredScope {
  */
 function applyOuterOrderBy(
 	input: RelationalPlanNode,
-	outerOrderBy: any[] | undefined,
+	outerOrderBy: AST.OrderByClause[] | undefined,
 	selectContext: PlanningContext
 ): RelationalPlanNode {
 	if (outerOrderBy && outerOrderBy.length > 0) {
-		const sortKeys: SortKey[] = outerOrderBy.map((ob: any) => ({
+		const sortKeys: SortKey[] = outerOrderBy.map((ob) => ({
 			expression: buildExpression(selectContext, ob.expr),
 			direction: ob.direction,
 			nulls: ob.nulls,
@@ -96,8 +97,8 @@ function applyOuterOrderBy(
  */
 function applyOuterLimitOffset(
 	input: RelationalPlanNode,
-	outerLimit: any,
-	outerOffset: any,
+	outerLimit: AST.Expression | undefined,
+	outerOffset: AST.Expression | undefined,
 	selectContext: PlanningContext
 ): RelationalPlanNode {
 	if (outerLimit || outerOffset) {

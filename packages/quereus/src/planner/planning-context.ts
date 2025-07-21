@@ -2,8 +2,8 @@ import type { SqlParameters } from '../common/types.js';
 import type { Database } from '../core/database.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { Scope } from './scopes/scope.js';
-import type { ScalarPlanNode } from './nodes/plan-node.js';
-import type { CTEPlanNode } from './nodes/cte-node.js';
+import type { PlanNode, ScalarPlanNode } from './nodes/plan-node.js';
+import type { CTEScopeNode } from './nodes/cte-node.js';
 import type { CTEReferenceNode } from './nodes/cte-reference-node.js';
 
 /**
@@ -166,7 +166,7 @@ export interface PlanningContext {
    * This map contains all CTEs from the current WITH clause and any parent WITH clauses,
    * allowing subqueries in expressions to resolve CTE references correctly.
    */
-  readonly cteNodes?: Map<string, CTEPlanNode>;
+  readonly cteNodes?: Map<string, CTEScopeNode>;
 
   /**
    * Schema dependency tracker for this planning session.
@@ -184,4 +184,7 @@ export interface PlanningContext {
    * to the same CTE with the same alias. Key format: "cteName:alias"
    */
   cteReferenceCache?: Map<string, CTEReferenceNode>;
+
+  /** maps a RelationalPlanNode to its column scope during building */
+  readonly outputScopes: Map<PlanNode, Scope>;
 }

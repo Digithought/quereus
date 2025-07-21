@@ -25,6 +25,7 @@ export class DropTableNode extends VoidNode {
     return {
       table: this.statementAst.name.name,
       schema: this.statementAst.name.schema,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       statement: expressionToString(this.statementAst as any)
     };
   }

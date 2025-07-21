@@ -2,7 +2,7 @@ import type { Row } from '../../common/types.js';
 import type { CTEReferenceNode } from '../../planner/nodes/cte-reference-node.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { withRowContextGenerator } from '../context-helpers.js';
 import { createLogger } from '../../common/logger.js';
@@ -31,7 +31,7 @@ export function emitCTEReference(plan: CTEReferenceNode, ctx: EmissionContext): 
 
 	return createValidatedInstruction(
 		[cteInstruction],
-		run as any,
+		run as InstructionRun,
 		ctx,
 		`cte_ref(${plan.source.cteName}${plan.alias ? ` AS ${plan.alias}` : ''})`
 	);

@@ -11,9 +11,9 @@ import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes
 import { buildExpression } from './expression.js';
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
-import type { CTEPlanNode } from '../nodes/cte-node.js';
+import type { CTEScopeNode } from '../nodes/cte-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
-import { ColumnReferenceNode } from '../nodes/reference.js';
+import { ColumnReferenceNode, TableReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOpFlag } from '../../schema/table.js';
@@ -32,7 +32,7 @@ function createRowExpansionProjection(
 	ctx: PlanningContext,
 	sourceNode: RelationalPlanNode,
 	targetColumns: ColumnDef[],
-	tableReference: any
+	tableReference: TableReferenceNode
 ): RelationalPlanNode {
 	const tableSchema = tableReference.tableSchema;
 
@@ -50,7 +50,7 @@ function createRowExpansionProjection(
 	const projections: Projection[] = [];
 	const sourceAttributes = sourceNode.getAttributes();
 
-	tableSchema.columns.forEach((tableColumn: any) => {
+	tableSchema.columns.forEach((tableColumn) => {
 		// Find if this table column is in the target columns
 		const targetColIndex = targetColumns.findIndex(tc =>
 			tc.name.toLowerCase() === tableColumn.name.toLowerCase()
@@ -196,7 +196,7 @@ export function buildInsertStmt(
 
 	} else if (stmt.select) {
 		// SELECT clause - build the SELECT statement
-		let parentCtes: Map<string, CTEPlanNode> = new Map();
+		let parentCtes: Map<string, CTEScopeNode> = new Map();
 		if (stmt.withClause) {
 			parentCtes = buildWithClause(ctx, stmt.withClause);
 		}

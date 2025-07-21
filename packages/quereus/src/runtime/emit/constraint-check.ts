@@ -1,5 +1,5 @@
 import type { ConstraintCheckNode } from '../../planner/nodes/constraint-check-node.js';
-import type { Instruction, RuntimeContext } from '../types.js';
+import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
@@ -50,7 +50,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 
 	return {
 		params: [sourceInstruction, ...checkEvaluators],
-		run: run as any,
+		run: run as InstructionRun,
 		note: `constraintCheck(${plan.operation}, ${plan.constraintChecks.length} checks)`
 	};
 }
