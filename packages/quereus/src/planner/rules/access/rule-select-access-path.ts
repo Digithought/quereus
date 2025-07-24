@@ -22,6 +22,7 @@ import type { ColumnMeta, PredicateConstraint, BestAccessPlanRequest, BestAccess
 import { FilterInfo } from '../../../vtab/filter-info.js';
 import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
 import { CapabilityDetectors, type TableAccessCapable } from '../../framework/characteristics.js';
+import { TableReferenceWithConstraintsNode } from '../predicate/rule-predicate-pushdown.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
 
@@ -53,8 +54,20 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 			return createSeqScan(node as TableReferenceNode, undefined);
 		}
 
-		// Extract constraints from current filter info
-		const constraints: PredicateConstraint[] = []; // TODO: Extract from parent Filter node if any
+		// Extract constraints from pushed predicates if available
+		const constraints: PredicateConstraint[] = [];
+		if (node instanceof TableReferenceWithConstraintsNode) {
+			constraints.push(...node.pushedConstraints);
+			log('Using %d pushed constraints from predicate pushdown', constraints.length);
+		}
+
+		// Convert planner constraints to vtab constraints
+		const vtabConstraints: PredicateConstraint[] = constraints.map(constraint => ({
+			columnIndex: constraint.columnIndex,
+			op: constraint.op,
+			value: constraint.value,
+			usable: constraint.usable
+		}));
 
 		// Build request for getBestAccessPlan
 		const request: BestAccessPlanRequest = {
@@ -65,7 +78,7 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 				isPrimaryKey: col.primaryKey || false,
 				isUnique: col.primaryKey || false // For now, assume only PK columns are unique
 			} as ColumnMeta)),
-			filters: constraints,
+			filters: vtabConstraints,
 			estimatedRows: tableAccessNode.estimatedRows
 		};
 

@@ -426,14 +426,32 @@ SELECT * FROM users WHERE active = true;
 
 ## Common Patterns
 
-### Predicate Analysis
-```typescript
-import { extractConstraints } from '../analysis/constraint-extractor.js';
+### Predicate Analysis and Pushdown
 
-const constraints = extractConstraints(predicate, tableColumns);
-// Use constraints for index selection, pushdown, etc.
-// Note: Current implementation contains placeholder logic - see Known Issues
+The optimizer includes sophisticated predicate analysis for pushdown optimization:
+
+```typescript
+import { extractConstraints, createTableInfoFromNode } from '../analysis/constraint-extractor.js';
+
+// Extract constraints from filter predicates for pushdown
+const tableInfo = createTableInfoFromNode(tableNode, 'main.users');
+const result = extractConstraints(filterPredicate, [tableInfo]);
+
+// Use constraints for virtual table pushdown
+const tableConstraints = result.constraintsByTable.get('main.users');
+if (tableConstraints) {
+  // Push constraints to virtual table via BestAccessPlan API
+  const pushedTable = new TableReferenceWithConstraintsNode(
+    scope, tableSchema, vtabModule, tableConstraints
+  );
+}
 ```
+
+**Predicate Pushdown Implementation:**
+- **Constraint Extraction**: Analyzes binary predicates (`=`, `>`, `<`, etc.) and extracts pushable constraints
+- **Filter Elimination**: Removes Filter nodes when all predicates are successfully pushed down
+- **Virtual Table Integration**: Passes constraints to virtual tables via the `BestAccessPlan` API
+- **Multi-table Support**: Tracks constraints by target table for complex queries
 
 ### Property Propagation
 ```typescript
@@ -478,7 +496,7 @@ if (shouldCache(node, context)) {
 ## Known Issues
 
 **Current Limitations**
-- **Constraint Extraction**: The `constraint-extractor.ts` module contains placeholder implementations for complex predicate analysis
+- **Enhanced Predicate Analysis**: The constraint extractor currently handles basic binary predicates but could be extended for OR conditions, IN lists, and complex expressions  
 - **Suppressed Constant Folding**: Some constant folding optimizations are currently suppressed pending resolution of specific edge cases
 - **Access Path Selection**: Phase 1.5 implementation exists but may require additional work for full production readiness
 
@@ -717,4 +735,135 @@ TODO
 
 * Write helper `projectKeys(keys, columnMapping)` to push keys through `ProjectNode` / `ReturningNode`.  
 * Write helper `combineJoinKeys(leftKeys, rightKeys, joinType)` (draft already lives in utils – wire it in).
+
+## Retrieve-based Push-down Architecture 
+
+### RetrieveNode
+A `RetrieveNode` is inserted in front of every `TableReferenceNode` by the builder.  It marks the exact point where data leaves a virtual-table module and becomes a Quereus row stream.
+
+```
+Retrieve
+  └─ pipeline  (logical operators handled by the module)
+      └─ TableReference  (leaf)
+```
+
+During rewrite the optimiser is allowed to *slide* the Retrieve upward as long as the module’s `supports()` predicate returns `true` for each node it crosses.  Nodes that remain **under** Retrieve are guaranteed to be executed inside the module; nodes **above** run inside Quereus.
+
+### ModuleCapabilityAPI
+```ts
+interface ModuleCapabilityAPI {
+  /** classic xBestIndex-style path selection (optional) */
+  getBestAccessPlan?(req: BestAccessPlanRequest): BestAccessPlanResult;
+
+  /** general ability check – must be pure */
+  supports(node: PlanNode, childrenSupported: boolean[]): boolean;
+}
+```
+
+*Index-style* vtabs can indirectly implement `supports()` by delegating to `getBestAccessPlan` internally, while full SQL-federation modules simply parse / analyse the pipeline.
+
+### Growth rule (`ruleGrowRetrieve`)
+A **single** bottom-up rewrite handles both push-down and upward motion:
+1. Create *candidate* pipeline = `[parent] ⨝ current.pipeline`.
+2. Call `module.supports(candidate)` → `{cost, ctx} | undefined`.
+3. If supported, build a new Retrieve with that pipeline & ctx, replace the parent, and continue.
+4. If not, stop – optimiser walks further up so higher Filters can still be tried later.
+
+Because the rule walks children-first, every Retrieve reaches its highest valid position in one fixed-point pass.
+
+### supports() return type
+```ts
+interface SupportAssessment {
+  cost      : number;      // module’s estimate; compared with local cost
+  ctx?      : unknown;     // cached inside Retrieve for the emitter
+}
+```
+
+Index-style modules compute `cost` from `getBestAccessPlan`; SQL federation engines estimate based on their own planner.
+
+### Phase order
+```
+(builder) introduce-retrieve
+(rewrite) predicate/limit/projection push+split
+(rewrite) ruleGrowRetrieve  (fixed-point)
+(optimizer) join enumeration / QuickPick  (now sees accurate row/cost)
+(impl)     access-path / RemoteQueryNode selection
+```
+
+### Testing
+Use `query_plan()` in golden plans to assert:
+* `Filter` nodes are gone when predicates fully push.  
+* Retrieve nodes appear at expected heights.  
+* `detail` for TableReference contains `WITH CONSTRAINTS […]`.
+
+---------------------------------------------------------------------------
+## ApplyNode – Correlated Join Rewrite _(NEW)_
+
+To model lateral joins and enable right-side push-down, the logical `JoinNode` is replaced by **ApplyNode**:
+
+```ts
+ApplyNode {
+  left  : RelationalPlanNode,
+  right : RelationalPlanNode,   // may start with Retrieve
+  predicate : ScalarPlanNode | null,
+  outer : boolean               // LEFT semantics when true
+}
+```
+
+Builder mapping:
+| SQL | Apply form |
+|-----|-------------|
+| `A CROSS JOIN B` | `Apply(A,B,null,false)` |
+| `A INNER JOIN B ON p` | `Apply(A, Filter(p,B), p,false)` |
+| `A LEFT  JOIN B ON p` | `Apply(A, Filter(p,B), p,true)` |
+
+Emitter executes the right subtree once **per left row**, passing left values via a correlated context; if the module under Retrieve accepted the predicate, it runs as an index seek rather than a full scan.
+
+---------------------------------------------------------------------------
+## Testing Strategy for Push-down and Apply _(NEW)_
+
+1. **Plan golden files** under `test/plan/pushdown/…` generated with `--show-plan`.  The test fails if:
+   * a `Filter` resurfaces, or
+   * a `Retrieve` disappears, or
+   * `WITH CONSTRAINTS` string is missing.
+2. **Logic tests** call `query_plan()` directly and assert row counts (`SELECT COUNT(*) FROM … WHERE node_type='Filter' = 0`).
+3. CI executes optimiser with `DEBUG=quereus:optimizer*` to ensure `ruleSlideRetrieve` and `rulePredicatePushdown` log at least once.
+
+### RuleGrowRetrieve – single-pass slide & push _(clarification)_
+
+This rewrite rule replaces the earlier two-phase description.  Pseudocode:
+
+```ts
+if (isRetrieve(node) && node.parent) {
+   const parent   = node.parent;
+   const pipeline = graft(parent, node.pipeline); // parent becomes new root of pipeline
+
+   const assessment = node.module.supports(pipeline, [true]); // children already supported
+   if (!assessment.supported) return null;             // stop climbing
+
+   const newRetrieve = node.withPipeline(pipeline, assessment.ctx)
+                           .withEstimatedCost(assessment.cost);
+   return replaceParentWith(newRetrieve);              // slide up one level
+}
+```
+
+Apply bottom-up until fixed-point.
+
+*Benefits*
+• Guarantees the module evaluates exactly the nodes it promised.  
+• Only one rule; no oscillation; immune to residual predicates discovered later.
+
+### Cost-aware supports()
+`supports()` gives optimiser a **comparable cost number**.  For simple index modules cost can be:
+
+```
+rowsMatched * 0.1 + seekOverhead
+```
+
+For remote SQL engines cost could factor network latency, etc.  The optimiser uses the number:
+
+* during `ruleSelectAccessPath` to rank between remote execution vs. local evaluation;
+* later in QuickPick join enumeration when estimating cardinalities on Apply.
+
+If the module cannot offer a reliable cost, return a heuristic.
 

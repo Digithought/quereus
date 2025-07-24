@@ -14,6 +14,8 @@ import { createOptContext, type OptContext } from './framework/context.js';
 import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-advisory.js';
 // Phase 1.5 rules
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
+// Predicate pushdown rules
+import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
 // Core optimization rules
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
 // Constraint rules removed - now handled in builders for correctness
@@ -65,6 +67,15 @@ export class Optimizer {
 			'rewrite',
 			ruleMutatingSubqueryCache,
 			20 // Very high priority - correctness fix to prevent multiple execution
+		));
+
+		// Predicate pushdown - must happen before access path selection
+		toRegister.push(createRule(
+			'predicate-pushdown',
+			PlanNodeType.Filter,
+			'rewrite',
+			rulePredicatePushdown,
+			22 // High priority - happens before access path selection
 		));
 
 		// Phase 1.5 rules
