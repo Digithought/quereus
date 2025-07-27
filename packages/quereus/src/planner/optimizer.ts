@@ -81,7 +81,7 @@ export class Optimizer {
 		// Phase 1.5 rules
 		toRegister.push(createRule(
 			'select-access-path',
-			PlanNodeType.TableReference,
+			PlanNodeType.Retrieve,
 			'impl',
 			ruleSelectAccessPath,
 			25 // High priority - fundamental access path selection

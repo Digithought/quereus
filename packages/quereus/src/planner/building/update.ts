@@ -21,7 +21,8 @@ export function buildUpdateStmt(
   ctx: PlanningContext,
   stmt: AST.UpdateStmt,
 ): PlanNode {
-  const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
   // Plan the source of rows to update. This is typically the table itself, potentially filtered.
   let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, ctx);

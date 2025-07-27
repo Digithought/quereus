@@ -4,6 +4,7 @@ import type { IndexInfo } from './index-info.js';
 import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema, IndexSchema } from '../schema/table.js'; // Add import for TableSchema and IndexSchema
 import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-plan.js';
+import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 /**
  * Base interface for module-specific configuration passed to xCreate/xConnect.
@@ -11,6 +12,17 @@ import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface BaseModuleConfig {}
+
+/**
+ * Assessment result from a module's supports() method indicating
+ * whether it can execute a plan subtree and at what cost.
+ */
+export interface SupportAssessment {
+	/** Estimated cost comparable to local evaluation cost */
+	cost: number;
+	/** Optional context data persisted for the emitter */
+	ctx?: unknown;
+}
 
 /**
  * Interface defining the methods for a virtual table module implementation.
@@ -59,6 +71,17 @@ export interface VirtualTableModule<
 		tableName: string,
 		options: TConfig
 	): TTable;
+
+	/**
+	 * Determines if this module can execute a plan subtree starting at the given node.
+	 * Used for query push-down to virtual table modules that support arbitrary queries.
+	 *
+	 * @param node The root node of the subtree to evaluate
+	 * @returns Assessment with cost and optional context, or undefined if not supported
+	 */
+	supports?(
+		node: PlanNode
+	): SupportAssessment | undefined;
 
 	/**
 	 * Modern, type-safe access planning interface.

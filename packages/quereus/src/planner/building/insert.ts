@@ -164,7 +164,8 @@ export function buildInsertStmt(
 	ctx: PlanningContext,
 	stmt: AST.InsertStmt,
 ): PlanNode {
-	const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+	const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
 	let targetColumns: ColumnDef[] = [];
 	if (stmt.columns && stmt.columns.length > 0) {

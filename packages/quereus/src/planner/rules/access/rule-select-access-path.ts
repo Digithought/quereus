@@ -2,109 +2,114 @@
  * Rule: Select Access Path
  *
  * Required Characteristics:
- * - Node must support table access operations (TableAccessCapable interface)
- * - Node must be relational (produces rows)
- * - Node must represent a logical table reference
+ * - Node must be a RetrieveNode representing a virtual table access boundary
+ * - Module must support either supports() (query-based) or getBestAccessPlan() (index-based)
  *
  * Applied When:
- * - Logical table access node needs to be converted to physical access method
+ * - RetrieveNode needs to be converted to appropriate physical access method
  *
- * Benefits: Enables cost-based access path selection and index utilization
+ * Benefits: Enables cost-based access path selection and module-specific execution
  */
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
-import { TableReferenceNode } from '../../nodes/reference.js';
+import { RetrieveNode } from '../../nodes/retrieve-node.js';
+import { RemoteQueryNode } from '../../nodes/remote-query-node.js';
 import { SeqScanNode, IndexScanNode, IndexSeekNode } from '../../nodes/table-access-nodes.js';
 import { seqScanCost } from '../../cost/index.js';
 import type { ColumnMeta, PredicateConstraint, BestAccessPlanRequest, BestAccessPlanResult } from '../../../vtab/best-access-plan.js';
 import { FilterInfo } from '../../../vtab/filter-info.js';
 import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
-import { CapabilityDetectors, type TableAccessCapable } from '../../framework/characteristics.js';
-import { TableReferenceWithConstraintsNode } from '../predicate/rule-predicate-pushdown.js';
+import { TableReferenceNode } from '../../nodes/reference.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
 
 export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanNode | null {
-	// Guard: node must support table access operations
-	if (!CapabilityDetectors.isTableAccess(node)) {
+	// Guard: node must be a RetrieveNode
+	if (!(node instanceof RetrieveNode)) {
 		return null;
 	}
 
-	// Additional check: ensure this is specifically a TableReferenceNode for now
-	// (in the future, other table access nodes might need different handling)
-	if (!(node instanceof TableReferenceNode)) {
-		return null;
+	const retrieveNode = node as RetrieveNode;
+	const tableSchema = retrieveNode.tableRef.tableSchema;
+	const vtabModule = retrieveNode.vtabModule;
+
+	log('Selecting access path for retrieve over table %s', tableSchema.name);
+
+	// Check if module supports query-based execution via supports() method
+	if (vtabModule.supports && typeof vtabModule.supports === 'function') {
+		log('Module has supports() method - checking support for current pipeline');
+
+		// Check if module supports the current pipeline
+		const assessment = vtabModule.supports(retrieveNode.source);
+
+		if (assessment) {
+			log('Pipeline supported - creating RemoteQueryNode (cost: %d)', assessment.cost);
+			return new RemoteQueryNode(
+				retrieveNode.scope,
+				retrieveNode.source,
+				retrieveNode.tableRef,
+				assessment.ctx
+			);
+		} else {
+			log('Pipeline not supported by module - falling back to sequential scan');
+			return createSeqScan(retrieveNode.tableRef);
+		}
 	}
 
-	// Get table access characteristics
-	const tableAccessNode = node as TableAccessCapable;
-	const tableSchema = tableAccessNode.tableSchema;
+	// Check if module supports index-based execution via getBestAccessPlan() method
+	if (vtabModule.getBestAccessPlan && typeof vtabModule.getBestAccessPlan === 'function') {
+		log('Module has getBestAccessPlan() method - using index-based execution for %s', tableSchema.name);
 
-	log('Selecting access path for table %s', tableSchema.name);
-
-	try {
-		// Get virtual table module from schema
-		const vtabModule = tableSchema.vtabModule;
-
-		// If no virtual table module, fall back to sequential scan
-		if (!vtabModule || typeof vtabModule !== 'object' || !('getBestAccessPlan' in vtabModule)) {
-			log('No getBestAccessPlan support, using sequential scan for %s', tableSchema.name);
-			return createSeqScan(node as TableReferenceNode, undefined);
-		}
-
-		// Extract constraints from pushed predicates if available
-		const constraints: PredicateConstraint[] = [];
-		if (node instanceof TableReferenceWithConstraintsNode) {
-			constraints.push(...node.pushedConstraints);
-			log('Using %d pushed constraints from predicate pushdown', constraints.length);
-		}
-
-		// Convert planner constraints to vtab constraints
-		const vtabConstraints: PredicateConstraint[] = constraints.map(constraint => ({
-			columnIndex: constraint.columnIndex,
-			op: constraint.op,
-			value: constraint.value,
-			usable: constraint.usable
-		}));
-
-		// Build request for getBestAccessPlan
-		const request: BestAccessPlanRequest = {
-			columns: tableSchema.columns.map((col, index) => ({
-				index,
-				name: col.name,
-				type: col.affinity,
-				isPrimaryKey: col.primaryKey || false,
-				isUnique: col.primaryKey || false // For now, assume only PK columns are unique
-			} as ColumnMeta)),
-			filters: vtabConstraints,
-			estimatedRows: tableAccessNode.estimatedRows
-		};
-
-		// Use the vtab module's getBestAccessPlan method to get an optimized access plan
-		const accessPlan = vtabModule.getBestAccessPlan!(context.db, tableSchema, request) as BestAccessPlanResult;
-
-		// Choose physical node based on access plan
-		const physicalNode = selectPhysicalNode(node as TableReferenceNode, accessPlan, constraints);
-
-		log('Selected %s for table %s (cost: %f, rows: %s)',
-			physicalNode.nodeType, tableSchema.name, accessPlan.cost, accessPlan.rows);
-
-		return physicalNode;
-
-	} catch (error) {
-		log('Error selecting access path for %s: %s', tableSchema.name, error);
-		// Fall back to sequential scan on error
-		return createSeqScan(node as TableReferenceNode);
+		return createIndexBasedAccess(retrieveNode, context);
 	}
+
+	// Fall back to sequential scan if module has no access planning support
+	log('No access planning support, using sequential scan for %s', tableSchema.name);
+	return createSeqScan(retrieveNode.tableRef);
+}
+
+/**
+ * Create index-based access for modules that support getBestAccessPlan()
+ */
+function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext): PlanNode {
+	const tableSchema = retrieveNode.tableRef.tableSchema;
+	const vtabModule = retrieveNode.vtabModule;
+
+	// For now, use empty constraints since we haven't implemented constraint extraction yet
+	const constraints: PredicateConstraint[] = [];
+
+	// Build request for getBestAccessPlan
+	const request: BestAccessPlanRequest = {
+		columns: tableSchema.columns.map((col, index) => ({
+			index,
+			name: col.name,
+			type: col.affinity,
+			isPrimaryKey: col.primaryKey || false,
+			isUnique: col.primaryKey || false // For now, assume only PK columns are unique
+		} as ColumnMeta)),
+		filters: constraints,
+		estimatedRows: retrieveNode.tableRef.estimatedRows
+	};
+
+	// Use the vtab module's getBestAccessPlan method to get an optimized access plan
+	const accessPlan = vtabModule.getBestAccessPlan!(context.db, tableSchema, request) as BestAccessPlanResult;
+
+	// Choose physical node based on access plan
+	const physicalNode = selectPhysicalNode(retrieveNode.tableRef, accessPlan, constraints);
+
+	log('Selected %s for table %s (cost: %f, rows: %s)',
+		physicalNode.nodeType, tableSchema.name, accessPlan.cost, accessPlan.rows);
+
+	return physicalNode;
 }
 
 /**
  * Select the appropriate physical node based on access plan
  */
 function selectPhysicalNode(
-	originalNode: TableReferenceNode,
+	tableRef: TableReferenceNode,
 	accessPlan: BestAccessPlanResult,
 	constraints: PredicateConstraint[]
 ): SeqScanNode | IndexScanNode | IndexSeekNode {
@@ -146,8 +151,8 @@ function selectPhysicalNode(
 		// Small result set with equality - use index seek
 		log('Using index seek (equality constraint, small result)');
 		return new IndexSeekNode(
-			originalNode.scope,
-			originalNode,
+			tableRef.scope,
+			tableRef,
 			filterInfo,
 			'primary', // Default to primary index
 			[], // seekKeys would be populated from constraints
@@ -159,8 +164,8 @@ function selectPhysicalNode(
 		// Range constraints or ordering required - use index scan
 		log('Using index scan (range constraints or ordering)');
 		return new IndexScanNode(
-			originalNode.scope,
-			originalNode,
+			tableRef.scope,
+			tableRef,
 			filterInfo,
 			'primary', // Default to primary index
 			providesOrdering,
@@ -169,15 +174,15 @@ function selectPhysicalNode(
 	} else {
 		// Fall back to sequential scan
 		log('Using sequential scan (no beneficial index access)');
-		return createSeqScan(originalNode, filterInfo, accessPlan.cost);
+		return createSeqScan(tableRef, filterInfo, accessPlan.cost);
 	}
 }
 
 /**
  * Create a sequential scan node
  */
-function createSeqScan(originalNode: TableReferenceNode, filterInfo?: FilterInfo, cost?: number): SeqScanNode {
-	const tableRows = originalNode.estimatedRows || 1000;
+function createSeqScan(tableRef: TableReferenceNode, filterInfo?: FilterInfo, cost?: number): SeqScanNode {
+	const tableRows = tableRef.estimatedRows || 1000;
 	const scanCost = cost ?? seqScanCost(tableRows);
 
 	// Create default FilterInfo if not provided
@@ -203,8 +208,8 @@ function createSeqScan(originalNode: TableReferenceNode, filterInfo?: FilterInfo
 	};
 
 	const seqScan = new SeqScanNode(
-		originalNode.scope,
-		originalNode,
+		tableRef.scope,
+		tableRef,
 		effectiveFilterInfo,
 		scanCost
 	);

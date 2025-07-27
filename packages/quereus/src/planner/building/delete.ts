@@ -21,10 +21,11 @@ export function buildDeleteStmt(
   ctx: PlanningContext,
   stmt: AST.DeleteStmt,
 ): PlanNode {
-  const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
   // Plan the source of rows to delete. This is typically the table itself, potentially filtered.
-  let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  let sourceNode: RelationalPlanNode = tableRetrieve; // Use the RetrieveNode as source
 
   // Create a new scope with the table columns registered for column resolution
   const tableScope = new RegisteredScope(ctx.scope);
@@ -44,7 +45,7 @@ export function buildDeleteStmt(
   }
 
   // Create OLD/NEW attributes for DELETE (OLD = actual values being deleted, NEW = all NULL)
-  const oldAttributes = tableReference.tableSchema.columns.map((col) => ({
+  const oldAttributes = tableReference.tableSchema.columns.map((col: any) => ({
     id: PlanNode.nextAttrId(),
     name: col.name,
     type: {
@@ -56,7 +57,7 @@ export function buildDeleteStmt(
     sourceRelation: `OLD.${tableReference.tableSchema.name}`
   }));
 
-  const newAttributes = tableReference.tableSchema.columns.map((col) => ({
+  const newAttributes = tableReference.tableSchema.columns.map((col: any) => ({
     id: PlanNode.nextAttrId(),
     name: col.name,
     type: {
@@ -115,7 +116,7 @@ export function buildDeleteStmt(
     const returningScope = new RegisteredScope(deleteCtx.scope);
 
     // Register OLD.* symbols (actual values being deleted)
-    oldAttributes.forEach((attr, columnIndex) => {
+    oldAttributes.forEach((attr: any, columnIndex: any) => {
       const tableColumn = tableReference.tableSchema.columns[columnIndex];
       returningScope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
         new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
@@ -123,7 +124,7 @@ export function buildDeleteStmt(
     });
 
     // Register NEW.* symbols (always NULL for DELETE) and unqualified column names (default to OLD for DELETE)
-    newAttributes.forEach((attr, columnIndex) => {
+    newAttributes.forEach((attr: any, columnIndex: any) => {
       const tableColumn = tableReference.tableSchema.columns[columnIndex];
 
       // NEW.column (always NULL for DELETE)

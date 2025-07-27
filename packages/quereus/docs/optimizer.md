@@ -1,6 +1,6 @@
 # Quereus Query Optimizer
 
-The Quereus optimizer transforms logical query plans into efficient physical execution plans through a rule-based transformation system. This document provides a comprehensive reference for understanding and extending the optimizer.
+The Quereus optimizer transforms logical query plans into efficient physical execution plans through a rule-based transformation system. This document provides a comprehensive reference for understanding and extending the optimizer.  This document reflects the current or future design of the system.  See TODO.md for descriptions of enhancements.
 
 ## Philosophy
 
@@ -736,134 +736,322 @@ TODO
 * Write helper `projectKeys(keys, columnMapping)` to push keys through `ProjectNode` / `ReturningNode`.  
 * Write helper `combineJoinKeys(leftKeys, rightKeys, joinType)` (draft already lives in utils – wire it in).
 
-## Retrieve-based Push-down Architecture 
+## Retrieve-based Push-down Architecture
 
-### RetrieveNode
-A `RetrieveNode` is inserted in front of every `TableReferenceNode` by the builder.  It marks the exact point where data leaves a virtual-table module and becomes a Quereus row stream.
+### Overview
 
+The Quereus optimizer features a comprehensive push-down infrastructure built around the `RetrieveNode` abstraction. This system enables virtual table modules to execute arbitrary query pipelines within their own execution context, providing a clean boundary between Quereus execution and module-specific optimization.
+
+### RetrieveNode Infrastructure
+
+**Core Concept**: Every `TableReferenceNode` is wrapped in a `RetrieveNode` at build time, marking the exact boundary where data transitions from virtual table module execution to Quereus execution.
+
+```typescript
+// Builder automatically wraps table references
+export function buildTableReference(fromClause: AST.FromClause, context: PlanningContext): RetrieveNode {
+  const tableRef = new TableReferenceNode(/* ... */);
+  return new RetrieveNode(context.scope, tableRef, tableRef); // pipeline starts as just the table
+}
 ```
-Retrieve
-  └─ pipeline  (logical operators handled by the module)
-      └─ TableReference  (leaf)
+
+**Structure**:
+```
+RetrieveNode
+  └─ pipeline: RelationalPlanNode  (operations handled by the module)
+      └─ TableReferenceNode        (leaf table reference)
 ```
 
-During rewrite the optimiser is allowed to *slide* the Retrieve upward as long as the module’s `supports()` predicate returns `true` for each node it crosses.  Nodes that remain **under** Retrieve are guaranteed to be executed inside the module; nodes **above** run inside Quereus.
+### Module Capability API
 
-### ModuleCapabilityAPI
-```ts
-interface ModuleCapabilityAPI {
-  /** classic xBestIndex-style path selection (optional) */
+**VirtualTableModule Interface**:
+```typescript
+interface VirtualTableModule {
+  // Query-based push-down
+  supports?(node: PlanNode): SupportAssessment | undefined;
+  
+  // Index-based access
   getBestAccessPlan?(req: BestAccessPlanRequest): BestAccessPlanResult;
-
-  /** general ability check – must be pure */
-  supports(node: PlanNode, childrenSupported: boolean[]): boolean;
 }
-```
 
-*Index-style* vtabs can indirectly implement `supports()` by delegating to `getBestAccessPlan` internally, while full SQL-federation modules simply parse / analyse the pipeline.
-
-### Growth rule (`ruleGrowRetrieve`)
-A **single** bottom-up rewrite handles both push-down and upward motion:
-1. Create *candidate* pipeline = `[parent] ⨝ current.pipeline`.
-2. Call `module.supports(candidate)` → `{cost, ctx} | undefined`.
-3. If supported, build a new Retrieve with that pipeline & ctx, replace the parent, and continue.
-4. If not, stop – optimiser walks further up so higher Filters can still be tried later.
-
-Because the rule walks children-first, every Retrieve reaches its highest valid position in one fixed-point pass.
-
-### supports() return type
-```ts
 interface SupportAssessment {
-  cost      : number;      // module’s estimate; compared with local cost
-  ctx?      : unknown;     // cached inside Retrieve for the emitter
+  cost: number;    // Module's cost estimate for executing this pipeline
+  ctx?: unknown;   // Opaque context data cached for runtime execution
 }
 ```
 
-Index-style modules compute `cost` from `getBestAccessPlan`; SQL federation engines estimate based on their own planner.
-
-### Phase order
-```
-(builder) introduce-retrieve
-(rewrite) predicate/limit/projection push+split
-(rewrite) ruleGrowRetrieve  (fixed-point)
-(optimizer) join enumeration / QuickPick  (now sees accurate row/cost)
-(impl)     access-path / RemoteQueryNode selection
-```
-
-### Testing
-Use `query_plan()` in golden plans to assert:
-* `Filter` nodes are gone when predicates fully push.  
-* Retrieve nodes appear at expected heights.  
-* `detail` for TableReference contains `WITH CONSTRAINTS […]`.
-
----------------------------------------------------------------------------
-## ApplyNode – Correlated Join Rewrite _(NEW)_
-
-To model lateral joins and enable right-side push-down, the logical `JoinNode` is replaced by **ApplyNode**:
-
-```ts
-ApplyNode {
-  left  : RelationalPlanNode,
-  right : RelationalPlanNode,   // may start with Retrieve
-  predicate : ScalarPlanNode | null,
-  outer : boolean               // LEFT semantics when true
+**VirtualTable Interface**:
+```typescript
+interface VirtualTable {
+  // Runtime execution of pushed-down pipelines
+  xExecutePlan?(db: Database, plan: PlanNode, ctx?: unknown): AsyncIterable<Row>;
+  
+  // Standard index-based query execution
+  xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
 }
 ```
 
-Builder mapping:
-| SQL | Apply form |
-|-----|-------------|
-| `A CROSS JOIN B` | `Apply(A,B,null,false)` |
-| `A INNER JOIN B ON p` | `Apply(A, Filter(p,B), p,false)` |
-| `A LEFT  JOIN B ON p` | `Apply(A, Filter(p,B), p,true)` |
+### Architecture Modes
 
-Emitter executes the right subtree once **per left row**, passing left values via a correlated context; if the module under Retrieve accepted the predicate, it runs as an index seek rather than a full scan.
+**1. Query-based Push-down** (implements `supports()` + `xExecutePlan()`)
+- Module analyzes entire query pipelines
+- Returns cost assessment for execution within module
+- Examples: SQL federation modules, document databases, remote APIs
 
----------------------------------------------------------------------------
-## Testing Strategy for Push-down and Apply _(NEW)_
+**2. Index-based Access** (implements `getBestAccessPlan()` + `xQuery()`)
+- Module exposes index capabilities
+- Quereus pushes individual predicates via BestAccessPlan API
+- Examples: MemoryTable, SQLite vtabs, file-based storage
 
-1. **Plan golden files** under `test/plan/pushdown/…` generated with `--show-plan`.  The test fails if:
-   * a `Filter` resurfaces, or
-   * a `Retrieve` disappears, or
-   * `WITH CONSTRAINTS` string is missing.
-2. **Logic tests** call `query_plan()` directly and assert row counts (`SELECT COUNT(*) FROM … WHERE node_type='Filter' = 0`).
-3. CI executes optimiser with `DEBUG=quereus:optimizer*` to ensure `ruleSlideRetrieve` and `rulePredicatePushdown` log at least once.
+**3. Hybrid Modules** (can implement both, but they're mutually exclusive per query)
+- Modules can provide both interfaces
+- Optimizer chooses based on cost assessment
 
-### RuleGrowRetrieve – single-pass slide & push _(clarification)_
+### Access Path Selection
 
-This rewrite rule replaces the earlier two-phase description.  Pseudocode:
+The `ruleSelectAccessPath` optimizer rule handles the routing decision:
 
-```ts
-if (isRetrieve(node) && node.parent) {
-   const parent   = node.parent;
-   const pipeline = graft(parent, node.pipeline); // parent becomes new root of pipeline
-
-   const assessment = node.module.supports(pipeline, [true]); // children already supported
-   if (!assessment.supported) return null;             // stop climbing
-
-   const newRetrieve = node.withPipeline(pipeline, assessment.ctx)
-                           .withEstimatedCost(assessment.cost);
-   return replaceParentWith(newRetrieve);              // slide up one level
+```typescript
+export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanNode | null {
+  if (!(node instanceof RetrieveNode)) return null;
+  
+  const vtabModule = node.vtabModule;
+  
+  // Query-based push-down takes priority
+  if (vtabModule.supports) {
+    const assessment = vtabModule.supports(node.source);
+    if (assessment) {
+      return new RemoteQueryNode(node.scope, node.source, node.tableRef, assessment.ctx);
+    }
+    // Module declined - fall back to sequential scan
+    return createSeqScan(node.tableRef);
+  }
+  
+  // Index-based access
+  if (vtabModule.getBestAccessPlan) {
+    return createIndexBasedAccess(node, context);
+  }
+  
+  // Default sequential scan
+  return createSeqScan(node.tableRef);
 }
 ```
 
-Apply bottom-up until fixed-point.
+### Physical Execution Nodes
 
-*Benefits*
-• Guarantees the module evaluates exactly the nodes it promised.  
-• Only one rule; no oscillation; immune to residual predicates discovered later.
+**RemoteQueryNode**:
+- Represents execution of a pipeline within a virtual table module
+- Calls `VirtualTable.xExecutePlan()` at runtime
+- Passes the original plan pipeline and cached context
 
-### Cost-aware supports()
-`supports()` gives optimiser a **comparable cost number**.  For simple index modules cost can be:
+**Traditional Access Nodes**:
+- `SeqScanNode`: Full table scan
+- `IndexScanNode`: Index-based scan with filters
+- `IndexSeekNode`: Index-based point/range lookups
 
+### Runtime Execution
+
+**Query-based Execution**:
+```typescript
+// emitRemoteQuery.ts
+export function emitRemoteQuery(plan: RemoteQueryNode, ctx: EmissionContext): Instruction {
+  async function* run(rctx: RuntimeContext): AsyncIterable<Row> {
+    const table = plan.vtabModule.xConnect(/* ... */);
+    yield* table.xExecutePlan!(rctx.db, plan.source, plan.moduleCtx);
+  }
+  return { params: [], run, note: `remoteQuery(${plan.tableRef.tableSchema.name})` };
+}
 ```
-rowsMatched * 0.1 + seekOverhead
+
+**Index-based Execution**:
+- Uses existing `xQuery()` with `FilterInfo` parameter
+- Leverages `BestAccessPlan` API for predicate push-down
+
+### Integration Points
+
+**Builder Integration**:
+- All table references automatically wrapped in `RetrieveNode`
+- DML operations (INSERT/UPDATE/DELETE) extract `tableRef` from `RetrieveNode`
+- Maintains backward compatibility with existing code
+
+**Optimizer Integration**:
+- `ruleSelectAccessPath` registered for `PlanNodeType.Retrieve`
+- Physical properties correctly propagated through `RemoteQueryNode`
+- Cost estimation integrated with existing cost model
+
+**Runtime Integration**:
+- `RemoteQueryNode` emitter registered in runtime system
+- Error handling for modules without `xExecutePlan()` implementation
+- Seamless execution alongside traditional access methods
+
+### Dynamic support growth with ruleGrowRetrieve
+
+The `ruleGrowRetrieve` optimization rule enables dynamic sliding of operations into virtual table modules:
+
+**Algorithm**: Single bottom-up rewrite that:
+1. Creates candidate pipeline by grafting parent operation onto current pipeline
+2. Calls `module.supports(candidatePipeline)` or `getBestAccessPlan` for cost assessment
+3. If supported, replaces parent with new RetrieveNode containing expanded pipeline
+4. Continues sliding upward until module declines or tree top is reached
+
+**Benefits**:
+- Single-pass optimization eliminates complex multi-phase approaches
+- Cost-based decision making between local and remote execution
+- Modules evaluate exactly the operations they commit to handle
+
+This architecture establishes Quereus as a powerful federation engine while maintaining its lean, readable codebase philosophy and excellent virtual table integration.
+
+## ApplyNode Architecture for Correlated Joins
+
+### Design Philosophy
+
+To enable lateral joins and sophisticated push-down optimization, Quereus uses an **ApplyNode** abstraction that replaces traditional `JoinNode` semantics. This design provides a unified framework for handling correlated operations while maintaining clean separation between logical and physical execution strategies.
+
+### Core Concept
+
+The `ApplyNode` represents a correlated operation where the right-side subtree is executed once per row from the left side, with correlation context passed through:
+
+```typescript
+interface ApplyNode {
+  left: RelationalPlanNode;     // Drive relation
+  right: RelationalPlanNode;    // Applied relation (may start with RetrieveNode)
+  predicate: ScalarPlanNode | null;  // Join condition
+  outer: boolean;               // LEFT JOIN semantics when true
+}
 ```
 
-For remote SQL engines cost could factor network latency, etc.  The optimiser uses the number:
+### SQL Mapping
 
-* during `ruleSelectAccessPath` to rank between remote execution vs. local evaluation;
-* later in QuickPick join enumeration when estimating cardinalities on Apply.
+Traditional SQL join constructs map naturally to ApplyNode semantics:
 
-If the module cannot offer a reliable cost, return a heuristic.
+| SQL Construct | ApplyNode Form |
+|---------------|----------------|
+| `A CROSS JOIN B` | `Apply(A, B, null, false)` |
+| `A INNER JOIN B ON p` | `Apply(A, Filter(p, B), p, false)` |
+| `A LEFT JOIN B ON p` | `Apply(A, Filter(p, B), p, true)` |
+
+### Push-down Integration
+
+The ApplyNode design enables sophisticated push-down optimization:
+
+**Correlated Push-down**: When the right side contains a `RetrieveNode`, correlation values from the left side can be pushed into the virtual table module as additional constraints.
+
+**Index Seek Optimization**: Virtual table modules can use correlation values to perform efficient index seeks rather than full scans.
+
+**Pipeline Composition**: The right-side pipeline can be arbitrarily complex, allowing modules to optimize entire correlated subqueries.
+
+### Execution Model
+
+**Runtime Semantics**:
+1. Iterate through each row from the left relation
+2. Pass correlation context to the right relation's execution
+3. Execute right relation with correlated values as additional constraints
+4. Combine results according to join semantics (inner/outer)
+
+**Virtual Table Integration**:
+```typescript
+// Right-side RetrieveNode receives correlation context
+const correlatedConstraints = extractCorrelationConstraints(leftRow, rightPipeline);
+const assessment = vtabModule.supports(rightPipeline, correlatedConstraints);
+if (assessment) {
+  // Module can optimize correlated access (e.g., index seek)
+  yield* table.xExecutePlan(db, rightPipeline, { 
+    ...assessment.ctx, 
+    correlation: correlatedConstraints 
+  });
+}
+```
+
+### Performance Characteristics
+
+**Nested Loop Foundation**: ApplyNode provides a clean nested-loop foundation that can be optimized based on virtual table capabilities.
+
+**Adaptive Optimization**: Modules can choose between full scans and index seeks based on correlation selectivity.
+
+**Later Physical Optimization**: Non-correlated Apply operations can be transformed into hash joins or merge joins by later optimization phases.
+
+### Benefits
+
+**Orthogonality**: Clean separation between correlation logic and push-down optimization.
+
+**Extensibility**: Virtual table modules can implement sophisticated correlated access patterns.
+
+**Simplicity**: Unified execution model eliminates special cases for different join types.
+
+**Federation**: Enables complex correlated queries to be pushed to remote systems (e.g., SQL databases, document stores).
+
+This design positions Quereus to handle complex analytical workloads while maintaining the flexibility to optimize across diverse data sources and virtual table implementations.
+
+### ruleGrowRetrieve Design
+
+The `ruleGrowRetrieve` optimizer rule implements a **structural, capability-bounded** sliding algorithm that maximizes the query segment each virtual table module can execute:
+
+**Algorithm**:
+1. **Bottom-up traversal**: Walk the plan tree from leaves toward root
+2. **Capability testing**: For each RetrieveNode, test `supports(candidatePipeline)` where candidatePipeline = current pipeline + parent node
+3. **Slide on success**: If module supports the expanded pipeline, slide RetrieveNode upward to encompass the parent
+4. **Stop on failure**: When `supports()` returns undefined, the RetrieveNode has reached its maximum extent
+
+**Key Properties**:
+- Purely structural - no cost modeling required during growth phase
+- Deterministic - always finds the maximum supportable pipeline
+- Module-bounded - respects exactly what each module declares it can handle
+- Foundation for subsequent push-down - establishes the "query segment" baseline
+
+```typescript
+// Example: Filter above table reference
+Filter(condition) 
+  └── RetrieveNode(source: TableRef)
+
+// After ruleGrowRetrieve (assuming module supports filtering):
+RetrieveNode(source: Filter(condition, TableRef))
+```
+
+## Optimization Pipeline Architecture
+
+Quereus uses a **characteristic-based** optimization pipeline that leverages the unique logical properties of different node types to apply rules in optimal sequence. The RetrieveNode's unique logical representation makes it an ideal boundary marker for this approach.
+
+### Phase Sequencing Strategy
+
+**0. Builder Output**
+- Every `TableReferenceNode` automatically wrapped in `RetrieveNode`
+- Establishes clear module execution boundaries from the start
+
+**1. Grow-Retrieve (Structural Phase)**
+- **Target**: `RetrieveNode` characteristics
+- **Purpose**: Find maximum contiguous pipeline each module can execute
+- **Method**: Bottom-up sliding based on `supports()` responses
+- **Result**: Fixed, module-guaranteed "query segments" for every base relation
+
+**2. Early Predicate Push-down (Cost-Light Phase)**  
+- **Target**: Filter nodes with simple characteristics (constant predicates, key equality, etc.)
+- **Purpose**: Improve cardinality estimates before expensive join enumeration
+- **Method**: Push obviously beneficial predicates into established query segments
+- **Constraint**: Only push predicates that modules explicitly support
+
+**3. Join Enumeration & Rewriting (Cost-Heavy Phase)**
+- **Target**: Join tree characteristics and cardinality estimates
+- **Purpose**: Find optimal join order using realistic row estimates
+- **Method**: Traditional dynamic programming with accurate base relation costs
+- **Foundation**: Benefits from realistic cardinality estimates from phases 1-2
+
+**4. Advanced Predicate Push-down (Cost-Precise Phase)**
+- **Target**: Complex filter characteristics (OR-predicates, subquery filters, etc.)
+- **Purpose**: Final optimization opportunities with complete cost model
+- **Method**: Sophisticated cost-based decisions on predicate placement
+- **Context**: Full join plan available for accurate cost assessment
+
+### Characteristic-Based Rule Design Philosophy
+
+**RetrieveNode Exception**: While Quereus generally avoids hard-coding specific node types in rules, `RetrieveNode` represents a unique logical concept - the module execution boundary. This makes it appropriate to have rules that specifically target `RetrieveNode` characteristics.
+
+**General Principle**: Most other rules should operate on logical characteristics rather than specific node types:
+- Filter placement based on selectivity characteristics
+- Join reordering based on cardinality characteristics  
+- Projection elimination based on attribute usage characteristics
+
+**Benefits of This Approach**:
+- Rules remain orthogonal and composable
+- Easy to add new node types without breaking existing rules
+- Clear separation of concerns between different optimization phases
+- Predictable rule application order based on logical properties
 

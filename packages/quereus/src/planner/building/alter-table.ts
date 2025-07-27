@@ -10,7 +10,8 @@ export function buildAlterTableStmt(
   ctx: PlanningContext,
   stmt: AST.AlterTableStmt,
 ): VoidNode {
-  const tableReference = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
   switch (stmt.action.type) {
     case 'addConstraint': {

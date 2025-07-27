@@ -6,6 +6,7 @@ import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
 import type { RowOp } from '../common/types.js';
 import type { VirtualTableConnection } from './connection.js';
+import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 /**
  * Base class representing a virtual table instance.
@@ -49,6 +50,21 @@ export abstract class VirtualTable {
 	 * @throws QuereusError on failure
 	 */
 	xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
+
+	/**
+	 * Executes a pushed-down plan subtree.
+	 * Called when the module indicated support via supports() method.
+	 *
+	 * @param db The database connection
+	 * @param plan The plan node to execute
+	 * @param ctx Optional context from supports() assessment
+	 * @returns Async iterable of rows resulting from the plan execution
+	 */
+	xExecutePlan?(
+		db: Database,
+		plan: PlanNode,
+		ctx?: unknown
+	): AsyncIterable<Row>;
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation

@@ -26,7 +26,28 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 
 ## 🔄 Current Development Focus
 
-**Core SQL Features**
+**Query Optimization (Current Priority)**
+- [x] **Phase 1 - Retrieve-node Infrastructure**: Complete foundation for query push-down ✅
+  - [x] RetrieveNode wraps all table access 
+  - [x] VirtualTableModule.supports() API for query-based modules
+  - [x] VirtualTable.xExecutePlan() runtime execution
+  - [x] RemoteQueryNode for physical query push-down
+  - [x] Access path rule integration and test infrastructure
+- [ ] **Phase 2 - Optimization Pipeline Sequencing**: Implement characteristic-based optimization phases
+  - [ ] ruleGrowRetrieve: Structural sliding to maximize module query segments
+  - [ ] Early predicate push-down: Cost-light optimization for better cardinality estimates  
+  - [ ] Join enumeration integration: Ensure cost model benefits from push-down
+- [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model
+  - [ ] Advanced predicate push-down with sophisticated cost decisions
+  - [ ] Projection and aggregation push-down optimization
+
+**Design Philosophy: Characteristic-Based Rules**
+- Rules target logical node characteristics rather than hard-coded node types
+- RetrieveNode is the principled exception (represents unique module boundary concept)
+- Phase sequencing ensures each optimization stage has proper cost information
+- Structural phases (grow-retrieve) precede cost-dependent phases (complex push-down)
+
+**Core SQL Features (Lower Priority)**
 - [ ] **DELETE T FROM ...**: Allow specification of target alias for DML ops
 - [ ] **Orthogonal relational expressions**: allow any expression that results in a relational expression in a relational expressive context 
 - [ ] Values in "select" locations (e.g. views)
@@ -40,23 +61,6 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - [ ] Complete constraint extraction implementation (currently has placeholder logic)
 - [ ] More intelligent key inference for joins and beyond
 - [ ] Make choice of scheduler run method determined at constructor time, not in run
-
-**Query Optimization (Next Priority)**
-- [ ] **Phase 1.5 - Access Path Selection**: Complete `SeqScanNode`, `IndexScanNode`, `IndexSeekNode` implementation (currently partial with fallbacks)
-- [x] **Predicate Pushdown Phase 1**: Basic filter predicate pushdown to table access nodes
-  - [x] Constraint extraction from binary predicates 
-  - [x] Filter node elimination for fully-pushed predicates
-  - [x] Virtual table integration via BestAccessPlan API
-  - [ ] Push down robustly
-  - [ ] Enhanced constraint extraction (OR conditions, IN lists, complex expressions)
-  - [ ] Join predicate pushdown
-  - [ ] Projection pushdown and column trimming
-- [ ] **QuickPick Join Optimization**: Implement TSP-inspired join ordering using random greedy tours
-  - [ ] Phase 2: Multi-pass optimizer framework
-  - [ ] Phase 3: Join cardinality cost model  
-  - [ ] Phase 4: Random tour generator with configurable count
-  - [ ] Phase 5: Best plan selection and integration
-- [ ] **Subquery Optimization**: Transform correlated subqueries to joins where beneficial
 
 **Window Functions (Remaining)**
 - [ ] **LAG/LEAD**: Offset functions
@@ -99,7 +103,6 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - [ ] **Cross-platform Testing**: Browser, Node.js, React Native environments
 
 **Advanced Features (Long-term Vision)**
-- [ ] **Distributed Queries**: Query federation across multiple data sources
 - [ ] **Real-time Queries**: Streaming query execution over live data
 - [ ] **Graph Queries**: Graph traversal and pattern matching capabilities
 - [ ] **Machine Learning Integration**: Built-in ML functions and operators
@@ -119,83 +122,59 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - Complex query support (joins, subqueries, CTEs, window functions)
 - Comprehensive constraint system and transaction support
 - Modern optimizer with constant folding and intelligent caching
+- **NEW**: Complete push-down infrastructure with RetrieveNode architecture
 
-**🔄 Current Focus: OPTIMIZATION & POLISH**  
+**🔄 Current Focus: ADVANCED OPTIMIZATION**  
+- Phase 1 Retrieve-node infrastructure: ✅ **COMPLETED**
 - The engine handles complex SQL workloads effectively
-- Development focus has shifted from core features to optimization and performance
-- Foundation is solid for building advanced features and ecosystem integrations
+- Development focus: ruleGrowRetrieve implementation for dynamic push-down optimization
+- Foundation is solid for building advanced federation and optimization features
 
-**🎯 Strategic Priority: ACCESS PATH OPTIMIZATION**
-- Optimizer Phase 1.5 access path selection is the immediate next milestone
-- Will unlock significant performance improvements for data-intensive workloads
-- Builds on the robust optimizer framework completed in Phases 0-3
+**🎯 Strategic Priority: RULEGRORETRIEVE IMPLEMENTATION**
+- Phase 2 ruleGrowRetrieve is the immediate next milestone  
+- Will enable dynamic sliding of operations into virtual table modules
+- Cost-based decision making between local and remote execution
+- Builds on the robust RetrieveNode infrastructure completed in Phase 1
 
 **🎯 Next Strategic Priority: QUICKPICK JOIN OPTIMIZATION**
 - Revolutionary TSP-based join ordering will deliver near-optimal plans with minimal complexity
 - Requires visited tracking redesign to support multi-pass optimization
 - Perfect fit for Quereus' lean architecture and virtual table ecosystem
 
-### Push-down & Federation Roadmap  _(NEW)_
+### Push-down & Federation Roadmap
 
-**Phase 2 – Robust Predicate / Projection Push-down**
-- [ ] OR-predicate factorisation and split across children
-- [ ] `IN (…)`, `BETWEEN`, NULL tests, LIKE/GLOB pattern extraction
-- [ ] Predicate push-through `Project`, `Distinct`, `Limit/Offset`, `Sort`
-- [ ] Multi-table predicate routing (correlated sub-queries)
-- [ ] Residual predicate generator + `handledFilters[]` bitmap to runtime
+**Phase 1 – Retrieve-node Infrastructure** ✅ **COMPLETED**
+- ✅ Introduce `RetrieveNode` (unary, wraps every `TableReference` at build time)
+- ✅ `ModuleCapabilityAPI.supports()` returns `{cost, ctx}`; cost used versus local plan
+- ✅ Update `ruleSelectAccessPath` for RemoteQueryNode vs Scan/Seek
+- ✅ `VirtualTable.xExecutePlan()` method for query-based push-down execution
+- ✅ Test module infrastructure for validating query-based push-down
 
-**Phase 3 – RetrieveNode framework**
-- [ ] Introduce `RetrieveNode` (unary, wraps every `TableReference` at build time)
-- [ ] `ruleIntroduceRetrieve` (builder)
-- [ ] **ruleGrowRetrieve** (single rewrite rule; at each step creates candidate pipeline = parent+current, asks `supports()`, bubbles Retrieve upward if accepted)
-- [ ] `ModuleCapabilityAPI.supports()` returns `{supported, cost, ctx}`; cost used versus local plan
-- [ ] Update `ruleSelectAccessPath` for RemoteQueryNode vs Scan/Seek
+**Phase 2 – Optimization Pipeline Sequencing**
+- [ ] **ruleGrowRetrieve** (structural phase): Bottom-up sliding to maximize module-supported query segments
+  - [ ] Walk plan bottom-up, test `supports(candidatePipeline)` for each RetrieveNode
+  - [ ] Slide RetrieveNode upward when module supports expanded pipeline
+  - [ ] Stop sliding when `supports()` returns undefined (capability boundary reached)
+  - [ ] Result: Fixed, maximum "query segments" for all base relations
+- [ ] **Early Predicate Push-down** (cost-light phase): Push obviously beneficial predicates
+  - [ ] Target simple filter characteristics (constants, key equality, LIMIT 1)
+  - [ ] Purpose: Improve cardinality estimates before join enumeration
+  - [ ] Only push predicates that modules explicitly support
+- [ ] **Join Enumeration Integration**: Ensure join rewriting uses realistic cardinality estimates
+  - [ ] Verify join cost model accounts for pushed-down predicates
+  - [ ] Test that join enumeration benefits from phase 1-2 optimizations
 
-**Phase 4 – Join / Apply rewrite**
-- [ ] Replace logical `JoinNode` with **ApplyNode** / filter early in builder; nested-loop semantics preserved
-- [ ] Join enumeration operates after Retrieve placement; Apply can later be rewritten into physical hash/merge joins when correlation removed
+**Phase 3 – Advanced Push-down Optimization**
+- [ ] **Advanced Predicate Push-down** (cost-precise phase): Complex predicate optimization
+  - [ ] OR-predicate factorisation and split across children
+  - [ ] `IN (…)`, `BETWEEN`, NULL test optimizations
+  - [ ] Subquery predicate push-down with correlation analysis
+- [ ] **Projection Push-down**: Eliminate unnecessary column retrieval
+  - [ ] Project only required attributes through module boundary
+  - [ ] Coordinate with SELECT list requirements and JOIN dependencies
+- [ ] **Aggregation Push-down**: Push GROUP BY and aggregate functions
+  - [ ] Simple aggregates (COUNT, SUM, MIN, MAX) for supported modules
+  - [ ] Complex aggregation split strategies
 
 ### VTab / Module Enhancements
-- [ ] Add `supports(node, childrenOK)` default mix-in for index-style modules (internal xBestIndex usage)
-- [ ] Extend `BestAccessPlanRequest` with `limit`, `requiredOrdering`, `projectedColumns`
-- [ ] Provide reference implementation for MemoryTable (supports Filter/Limit/Projection)
-- [ ] Documentation + examples for full SQL federation module
-
-### Push-down Testing
-- [ ] Add `test/plan/pushdown/*.sql` golden-plan specs asserting:
-  - Filter elimination
-  - Constraint presence on Retrieve / Scan nodes
-  - Pipeline serialisation for RemoteQueryNode
-- [ ] Add logic tests that call `query_plan()` and expect zero `Filter` rows
-- [ ] CI job runs with `DEBUG=quereus:optimizer:rule*` to ensure rule fires at least once
-
-### Optimiser rule details
-
-**ruleGrowRetrieve (rewrite)**  
-Single bottom-up rule that simultaneously:
-1. Attempts to graft the current Retrieve’s parent on top of its `pipeline` (proposedPipeline).
-2. Calls `module.supports(proposedPipeline)` ⇒ `{ supported, cost, ctx }`.
-3. If `supported===true` → Replace parent with a *new* Retrieve containing `proposedPipeline`, cache `ctx`, repeat.
-4. If `false` → stop sliding; optimiser continues upward so higher Filters etc. can still be tried later.
-
-This eliminates separate “push-down” versus “slide-up” passes.
-
-### ModuleCapabilityAPI (clarification)
-```ts
-interface SupportAssessment {
-  cost      : number;    // module’s own cost estimate (rows or CPU units)
-  ctx?      : unknown;   // opaque data cached in Retrieve for the emitter
-}
-
-supports(pipeline: PlanNode, childrenSupported: boolean[]): SupportAssessment | undefined;
-```
-
-### Physical conversion
-During **impl** phase `ruleSelectAccessPath` uses the cached `assessment`:
-- `pipeline == TableReference` ⇒ choose Seq/Index Seek using `assessment.cost`.
-- otherwise produce `RemoteQueryNode` with that cost.
-
-### Apply / Join roadmap _(clarification)_
-- [ ] Builder: always output `ApplyNode` (outer flag) instead of `JoinNode`.  Inner/Left joins map to Apply+Filter as table shows in optimizer docs.
-- [ ] Emitter: nested-loop using correlated right-side call; same performance as before when module declines.
-- [ ] Later optimisation may transform non-correlated Apply back into physical hash/merge join.
+- [ ] Add `

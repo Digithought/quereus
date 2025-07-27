@@ -47,6 +47,8 @@ import { emitCache } from './emit/cache.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
 import { emitBetween } from './emit/between.js';
+import { emitRetrieve } from './emit/retrieve.js';
+import { emitRemoteQuery } from './emit/remote-query.js';
 
 let registered = false;
 
@@ -76,11 +78,13 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Block, emitBlock as EmitterFunc);
 	registerEmitter(PlanNodeType.CTEReference, emitCTEReference as EmitterFunc);
 	registerEmitter(PlanNodeType.InternalRecursiveCTERef, emitInternalRecursiveCTERef as EmitterFunc);
+	registerEmitter(PlanNodeType.Retrieve, emitRetrieve as EmitterFunc);
 
 	// Physical access node emitters (Phase 1)
 	registerEmitter(PlanNodeType.SeqScan, emitSeqScan as EmitterFunc);
 	registerEmitter(PlanNodeType.IndexScan, emitSeqScan as EmitterFunc); // Reuse for now
 	registerEmitter(PlanNodeType.IndexSeek, emitSeqScan as EmitterFunc); // Reuse for now
+	registerEmitter(PlanNodeType.RemoteQuery, emitRemoteQuery as EmitterFunc);
 
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);
 	registerEmitter(PlanNodeType.TableLiteral, emitTableLiteral as EmitterFunc);
