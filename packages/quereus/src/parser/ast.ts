@@ -178,7 +178,7 @@ export interface SelectStmt extends AstNode {
 	all?: boolean;
 	union?: SelectStmt;
 	unionAll?: boolean;
-	compound?: { op: 'union' | 'unionAll' | 'intersect' | 'except'; select: SelectStmt };
+	compound?: { op: 'union' | 'unionAll' | 'intersect' | 'except' | 'diff'; select: SelectStmt };
 }
 
 // INSERT statement

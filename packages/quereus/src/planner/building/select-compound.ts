@@ -36,7 +36,15 @@ export function buildCompoundSelect(
 	const leftPlan = buildSelectStmt(contextWithCTEs, leftCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
 	const rightPlan = buildSelectStmt(contextWithCTEs, rightCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
 
-	const setNode = new SetOperationNode(contextWithCTEs.scope, leftPlan, rightPlan, stmt.compound.op);
+	// Expand DIFF as (A EXCEPT B) UNION (B EXCEPT A)
+	let setNode: RelationalPlanNode;
+	if (stmt.compound.op === 'diff') {
+		const leftMinusRight = new SetOperationNode(contextWithCTEs.scope, leftPlan, rightPlan, 'except');
+		const rightMinusLeft = new SetOperationNode(contextWithCTEs.scope, rightPlan, leftPlan, 'except');
+		setNode = new SetOperationNode(contextWithCTEs.scope, leftMinusRight, rightMinusLeft, 'union');
+	} else {
+		setNode = new SetOperationNode(contextWithCTEs.scope, leftPlan, rightPlan, stmt.compound.op);
+	}
 
 	// After set operation, apply ORDER BY / LIMIT / OFFSET from the *outer* (original) statement
 	let input: RelationalPlanNode = setNode;

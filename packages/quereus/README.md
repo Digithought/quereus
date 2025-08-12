@@ -185,6 +185,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Comprehensive subqueries** - Scalar, correlated, EXISTS, and IN subqueries
 *   **Relational orthogonality** - INSERT/UPDATE/DELETE with RETURNING can be used as table sources
 *   **Complete set operations** - UNION, INTERSECT, EXCEPT with proper deduplication
+*   **DIFF (symmetric difference)** - `A diff B` equals `(A except B) union (B except A)`, handy for table equality checks via `not exists(A diff B)`
 *   **Robust transaction support** - Multi-level savepoints and rollback
 *   **Rich built-in function library** - Scalar, aggregate, window, JSON, and date/time functions
 
