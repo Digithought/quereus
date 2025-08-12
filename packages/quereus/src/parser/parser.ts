@@ -421,10 +421,10 @@ export class Parser {
 		}
 
 		// Check for compound set operations (UNION / INTERSECT / EXCEPT) BEFORE ORDER BY/LIMIT
-		let compound: { op: 'union' | 'unionAll' | 'intersect' | 'except'; select: AST.SelectStmt } | undefined;
-		if (this.match(TokenType.UNION, TokenType.INTERSECT, TokenType.EXCEPT)) {
+		let compound: { op: 'union' | 'unionAll' | 'intersect' | 'except' | 'diff'; select: AST.SelectStmt } | undefined;
+		if (this.match(TokenType.UNION, TokenType.INTERSECT, TokenType.EXCEPT, TokenType.DIFF)) {
 			const tok = this.previous();
-			let op: 'union' | 'unionAll' | 'intersect' | 'except';
+			let op: 'union' | 'unionAll' | 'intersect' | 'except' | 'diff';
 			if (tok.type === TokenType.UNION) {
 				if (this.match(TokenType.ALL)) {
 					op = 'unionAll';
@@ -433,8 +433,10 @@ export class Parser {
 				}
 			} else if (tok.type === TokenType.INTERSECT) {
 				op = 'intersect';
-			} else {
+			} else if (tok.type === TokenType.EXCEPT) {
 				op = 'except';
+			} else {
+				op = 'diff';
 			}
 
 			let rightSelect: AST.SelectStmt;
@@ -1768,7 +1770,7 @@ export class Parser {
 			token === TokenType.HAVING ||
 			token === TokenType.ORDER ||
 			token === TokenType.LIMIT ||
-			token === TokenType.UNION ||
+			token === TokenType.UNION || token === TokenType.DIFF || token === TokenType.INTERSECT || token === TokenType.EXCEPT ||
 			token === TokenType.SEMICOLON ||
 			token === TokenType.EOF;
 	}

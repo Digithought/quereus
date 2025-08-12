@@ -38,6 +38,9 @@ select [distinct | all] select_expr [, select_expr ...]
 [ order by expr [asc | desc] [, expr [asc | desc]...] ]
 [ limit count [offset skip] | limit skip, count ]
 [ union [all] select_statement ]
++| [ intersect select_statement ]
++| [ except select_statement ]
++| [ diff select_statement ]
 ```
 
 **Options:**
@@ -51,7 +54,14 @@ select [distinct | all] select_expr [, select_expr ...]
 - `having`: Filters groups based on a condition
 - `order by`: Sorts the result set
 - `limit/offset`: Restricts the number of rows returned
-- `union`: Combines the results of two select statements
+- `union`/`intersect`/`except`/`diff`: Set operations combining two result sets
+
+**Set operations:**
+- `union all`: Concatenation (bag semantics)
+- `union`: Union with deduplication (set semantics)
+- `intersect`: Common rows (set semantics)
+- `except`: Rows in left not in right (set semantics)
+- `diff`: Symmetric difference = (A except B) union (B except A) (set semantics)
 
 **Examples:**
 ```sql
@@ -78,6 +88,21 @@ with active_users as (
   select name, email from active_users where age < 30
   union all
   select name, email from premium_users where subscriptionStatus = 'paid';
+
+-- Symmetric difference (DIFF)
+select value from set_a
+diff
+select value from set_b
+order by value;
+
+-- Table equality check using DIFF
+select not exists(
+  select * from (
+    select * from a
+    diff
+    select * from b
+  )
+) as tables_equal;
 ```
 
 ### 2.2 INSERT Statement
@@ -2375,7 +2400,7 @@ group_by_clause    = "group" "by" expr { "," expr } ;
 
 having_clause      = "having" expr ;
 
-compound_operator  = "union" [ "all" ] | "intersect" | "except" ;
+compound_operator  = "union" [ "all" ] | "intersect" | "except" | "diff" ;
 
 order_by_clause    = "order" "by" ordering_term { "," ordering_term } ;
 

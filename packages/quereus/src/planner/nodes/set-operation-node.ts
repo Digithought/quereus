@@ -15,7 +15,7 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
     scope: Scope,
     public readonly left: RelationalPlanNode,
     public readonly right: RelationalPlanNode,
-    public readonly op: 'union' | 'unionAll' | 'intersect' | 'except'
+    public readonly op: 'union' | 'unionAll' | 'intersect' | 'except' | 'diff'
   ) {
     super(scope, left.getTotalCost() + right.getTotalCost());
     // Validate column counts
