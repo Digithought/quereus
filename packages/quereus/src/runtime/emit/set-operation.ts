@@ -87,54 +87,6 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     }
   }
 
-  async function* runDiff(rctx: RuntimeContext, leftRows: AsyncIterable<Row>, rightRows: AsyncIterable<Row>): AsyncIterable<Row> {
-    // Compute A \ B
-    const rightSet = new Set<string>();
-    const hash = (row: Row) => JSON.stringify(row);
-    const leftMinusRight: Row[] = [];
-    const rightMinusLeft: Row[] = [];
-
-    const leftMaterialized: Row[] = [];
-    const rightMaterialized: Row[] = [];
-
-    for await (const row of leftRows) {
-      const out = createOutputRow(row);
-      leftMaterialized.push(out);
-    }
-    for await (const row of rightRows) {
-      const out = createOutputRow(row);
-      rightMaterialized.push(out);
-    }
-
-    const rightHashes = new Set<string>();
-    for (const r of rightMaterialized) rightHashes.add(hash(r));
-    const leftHashes = new Set<string>();
-    for (const l of leftMaterialized) leftHashes.add(hash(l));
-
-    for (const l of leftMaterialized) {
-      if (!rightHashes.has(hash(l))) leftMinusRight.push(l);
-    }
-    for (const r of rightMaterialized) {
-      if (!leftHashes.has(hash(r))) rightMinusLeft.push(r);
-    }
-
-    const seen = new Set<string>();
-    for (const row of leftMinusRight) {
-      const h = hash(row);
-      if (!seen.has(h)) {
-        seen.add(h);
-        yield row;
-      }
-    }
-    for (const row of rightMinusLeft) {
-      const h = hash(row);
-      if (!seen.has(h)) {
-        seen.add(h);
-        yield row;
-      }
-    }
-  }
-
   let run: InstructionRun;
   switch (plan.op) {
     case 'unionAll':
@@ -148,9 +100,6 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
       break;
     case 'except':
       run = runExcept as InstructionRun;
-      break;
-    case 'diff':
-      run = runDiff as InstructionRun;
       break;
   }
 
