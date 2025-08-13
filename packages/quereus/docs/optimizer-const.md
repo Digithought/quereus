@@ -1,10 +1,10 @@
-# Titan Optimizer – Constant Folding & Constant-Dependency Resolution ✅ IMPLEMENTED
+# Titan Optimizer – Constant Folding & Constant-Dependency Resolution
 
-This document describes the **design, data-flow, and implementation** of the constant-folding stage of the Titan optimizer.  It is written for engineers who are already familiar with the main `README.md`, `docs/runtime.md`, and `docs/titan-optimizer.md`.  
+This document describes the design, data-flow, and implementation of constant folding in Titan. It assumes familiarity with `README.md` and `docs/runtime.md`.
 
-**Implementation Status: ✅ COMPLETED** - This design has been fully implemented as part of Phase 3 of the Titan optimizer. See [Phase 3 - Constant Folding](titan-optimizer.md#phase-3--constant-folding--completed) for implementation status.
+Implementation status: Implemented as a dedicated pre-optimization pass (Pass 0) in the optimizer’s multi-pass framework. Scalar expression folding is live; relational folding is planned. See “Pass 0: Constant Folding” in `docs/optimizer.md`.
 
-The goal is to make any scalar (and later, relational) sub-tree that is *functionally* constant collapse to a `LiteralNode` or a pre-materialised `ValuesNode`, using **one single evaluation engine** – the existing runtime.
+The goal is to make any scalar (and later, relational) sub-tree that is functionally constant collapse to a `LiteralNode` or a pre-materialised `ValuesNode`, using one evaluation engine — the existing runtime.
 
 ---
 ## 1. Definitions
@@ -15,12 +15,11 @@ The goal is to make any scalar (and later, relational) sub-tree that is *functio
 | *deterministic* | Given identical inputs the node always returns the same output.                             |
 | *functional*    | `pure` **and** `deterministic`.  A functional node is safe to fold.                         |
 
-`functional` is captured on `PhysicalProperties`:
+`functional` is not a stored property; it is derived as `deterministic && readonly`. Use `PlanNode.isFunctional(physical)`:
 ```ts
-interface PhysicalProperties {
-  deterministic: boolean;   // already present
-  readonly: boolean;        // already present
-  functional?: boolean;     // omitted = deterministic && readonly
+// plan-node.ts
+public static isFunctional(physical: PhysicalProperties): boolean {
+  return (physical.deterministic !== false) && (physical.readonly !== false);
 }
 ```
 A helper `isFunctional(node)` returns the effective value.
@@ -95,16 +94,17 @@ Notes
 ---
 ## 6. API & integration points
 
-### 6.1 Pass entry points
-* **Builder level**: small helper `foldScalars(expr)` for builders like `VALUES`, default expressions, etc.
-* **Optimizer rule** (existing `rule-constant-folding.ts`):
-  1. Run bottom-up classification if cache is missing.
-  2. Run top-down propagation from current relational node.
-  3. Replace foldable scalar children.
+### 6.1 Execution entry point
+- Implemented as a dedicated pre-optimization pass (Pass 0) in the pass framework. The pass:
+  1. Runs bottom-up classification.
+  2. Runs top-down propagation.
+  3. Replaces foldable scalar subtrees.
 
-### 6.2 Functional flag defaults
-- `PlanNode.setDefaultPhysical()` sets `functional = deterministic && readonly` if omitted.
-- Emitters for side-effecting scalar functions mark emitted nodes' physical.functional = false.
+Builders do not perform folding themselves; they rely on the optimizer pass.
+
+### 6.2 Functional safety defaults
+- Functional is derived: `isFunctional(physical) = deterministic && readonly`.
+- Side-effecting or non-deterministic scalar operators must set `readonly=false` or `deterministic=false` via their physical property computation so they are never folded.
 
 ---
 ## 7. Correctness & safety
@@ -122,16 +122,14 @@ Notes
 
 ---
 ## 9. Implementation TODO list
-1. Add `functional` flag to `PhysicalProperties`; helper `isFunctional(node)`.  Default logic in `PlanNode.setDefaultPhysical`.
-2. Implement ConstInfo DFS in `analysis/const-pass.ts`.
-3. Implement top-down propagation & folding helper `applyConstPropagation(root)`.  This mutates the tree by replacing scalar nodes with `LiteralNode`s and annotating constant attributes.
-4. Replace interpreter in `analysis/constant-folding.ts` with runtime-based evaluator using the algorithm above.
-5. Update unit tests & golden plans.
-6. Document PRAGMA `quereus_constant_folding` once implemented.
+1. Relational constant detection and replacement (e.g., replace foldable relational subtrees with materialized nodes).
+2. Cost-based cut-off heuristics for very large expression trees.
+3. Optional PRAGMA to enable/disable constant folding for debugging.
+4. Broader test coverage and golden plans for complex dependency scenarios.
 
 ---
 ### TL;DR
-* **functional** flag indicates fold-safety.  
+* functional = deterministic && readonly indicates fold-safety.  
 * Bottom-up builds dependency sets, top-down resolves them.  
 * Evaluation uses the **existing runtime** through a mini-Scheduler.  
 * No environment-variable logic is needed in the folding path. 
