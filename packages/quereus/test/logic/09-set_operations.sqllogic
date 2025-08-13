@@ -37,6 +37,41 @@ SELECT value FROM set_b
 ORDER BY value;
 → [{"value":"apple"}]
 
+-- DIFF (symmetric difference)
+SELECT value FROM set_a
+DIFF
+SELECT value FROM set_b
+ORDER BY value;
+→ [{"value":"apple"},{"value":"date"}]
+
+-- DIFF commutativity: A DIFF B = B DIFF A
+SELECT value FROM set_b
+DIFF
+SELECT value FROM set_a
+ORDER BY value;
+→ [{"value":"apple"},{"value":"date"}]
+
+-- DIFF zero on identical sets
+WITH s AS (
+  SELECT value FROM set_a
+  UNION
+  SELECT value FROM set_b
+)
+SELECT COUNT(*) AS c FROM (
+  SELECT * FROM s
+  DIFF
+  SELECT * FROM s
+);
+→ [{"c":0}]
+
+-- Table equality via NOT EXISTS(A DIFF B)
+WITH a AS (SELECT 1 AS v UNION SELECT 2),
+     b AS (SELECT 2 AS v UNION SELECT 1)
+SELECT NOT EXISTS(
+  SELECT * FROM a DIFF SELECT * FROM b
+) AS eq;
+→ [{"eq":1}]
+
 -- Complex set operations with WHERE clauses
 SELECT value FROM set_a WHERE id > 1
 UNION
