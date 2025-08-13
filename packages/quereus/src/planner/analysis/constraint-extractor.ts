@@ -6,13 +6,17 @@
 import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
-import type { BinaryOpNode, LiteralNode } from '../nodes/scalar.js';
+import { BinaryOpNode, BetweenNode } from '../nodes/scalar.js';
+import type { LiteralNode } from '../nodes/scalar.js';
+import { InNode } from '../nodes/subquery.js';
 import type { Row, SqlValue } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type * as AST from '../../parser/ast.js';
-import { CapabilityDetectors } from '../framework/characteristics.js';
 import { getSyncLiteral } from '../../parser/utils.js';
 import type { ConstraintOp, PredicateConstraint as VtabPredicateConstraint } from '../../vtab/best-access-plan.js';
+import { TableReferenceNode, ColumnReferenceNode as _ColumnRef } from '../nodes/reference.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
+import type { Scope } from '../scopes/scope.js';
 
 const log = createLogger('planner:analysis:constraint-extractor');
 
@@ -29,6 +33,10 @@ export interface PredicateConstraint extends VtabPredicateConstraint {
 	sourceExpression: ScalarPlanNode;
 	/** Target table relation (for multi-table predicates) */
 	targetRelation?: string;
+	/** Dynamic value expression for parameterized/correlated constraints (or IN lists) */
+	valueExpr?: ScalarPlanNode | ScalarPlanNode[];
+	/** Binding kind describing how value is supplied */
+	bindingKind?: 'literal' | 'parameter' | 'correlated' | 'expression' | 'mixed';
 }
 
 /**
@@ -41,6 +49,8 @@ export interface ConstraintExtractionResult {
 	residualPredicate?: ScalarPlanNode;
 	/** All constraints in a flat list */
 	allConstraints: PredicateConstraint[];
+  /** Predicate comprised only of supported fragments for a specific table (optional) */
+  supportedPredicateByTable?: Map<string, ScalarPlanNode>;
 }
 
 /**
@@ -74,8 +84,9 @@ export function extractConstraints(
 		}
 	}
 
-	// Start extraction process
-	extractFromExpression(predicate, allConstraints, residualExpressions, tableByAttribute);
+  // Start extraction process & build supported fragments per table
+  const perTableParts = new Map<string, ScalarPlanNode[]>();
+  extractFromExpression(predicate, allConstraints, residualExpressions, tableByAttribute, perTableParts);
 
 	// Group constraints by table
 	for (const constraint of allConstraints) {
@@ -100,10 +111,17 @@ export function extractConstraints(
 	log('Extracted %d constraints across %d tables, %d residual expressions',
 		allConstraints.length, constraintsByTable.size, residualExpressions.length);
 
-	return {
+  const supportedPredicateByTable = new Map<string, ScalarPlanNode>();
+  for (const [rel, parts] of perTableParts) {
+    const combined = combineParts(parts);
+    if (combined) supportedPredicateByTable.set(rel, combined);
+  }
+
+  return {
 		constraintsByTable,
 		residualPredicate,
-		allConstraints
+    allConstraints,
+    supportedPredicateByTable
 	};
 }
 
@@ -114,13 +132,14 @@ function extractFromExpression(
 	expr: ScalarPlanNode,
 	constraints: PredicateConstraint[],
 	residual: ScalarPlanNode[],
-	attributeToTableMap: Map<number, TableInfo>
+  attributeToTableMap: Map<number, TableInfo>,
+  perTableParts: Map<string, ScalarPlanNode[]>
 ): void {
 	// Handle AND expressions - recurse on both sides
 	if (isAndExpression(expr)) {
 		const binaryOp = expr as BinaryOpNode;
-		extractFromExpression(binaryOp.left, constraints, residual, attributeToTableMap);
-		extractFromExpression(binaryOp.right, constraints, residual, attributeToTableMap);
+    extractFromExpression(binaryOp.left, constraints, residual, attributeToTableMap, perTableParts);
+    extractFromExpression(binaryOp.right, constraints, residual, attributeToTableMap, perTableParts);
 		return;
 	}
 
@@ -131,10 +150,31 @@ function extractFromExpression(
 		return;
 	}
 
-	// Try to extract constraint from binary comparison
-	const constraint = extractBinaryConstraint(expr, attributeToTableMap);
+  // BETWEEN → range constraints
+  if (expr.nodeType === PlanNodeType.Between) {
+    const c = extractBetweenConstraints(expr as BetweenNode, attributeToTableMap);
+    if (c) {
+      constraints.push(...c);
+      addSupportedPart(expr, attributeToTableMap, perTableParts);
+      return;
+    }
+  }
+
+  // IN list → IN constraint (literals only)
+  if (expr.nodeType === PlanNodeType.In) {
+    const c = extractInConstraint(expr as InNode, attributeToTableMap);
+    if (c) {
+      constraints.push(c);
+      addSupportedPart(expr, attributeToTableMap, perTableParts);
+      return;
+    }
+  }
+
+  // Try to extract constraint from binary comparison
+  const constraint = extractBinaryConstraint(expr, attributeToTableMap);
 	if (constraint) {
 		constraints.push(constraint);
+    addSupportedPart(expr, attributeToTableMap, perTableParts);
 		log('Extracted constraint: %s %s %s (table: %s)',
 			constraint.attributeId, constraint.op, constraint.value, constraint.targetRelation);
 	} else {
@@ -142,6 +182,45 @@ function extractFromExpression(
 		log('Cannot extract constraint from expression, adding to residual: %s', expr.toString());
 		residual.push(expr);
 	}
+}
+
+function addSupportedPart(expr: ScalarPlanNode, attributeToTableMap: Map<number, TableInfo>, perTableParts: Map<string, ScalarPlanNode[]>): void {
+  // Determine target table by first column reference in expr; if absent, skip
+  const rel = findTargetRelation(expr, attributeToTableMap);
+  if (!rel) return;
+  if (!perTableParts.has(rel)) perTableParts.set(rel, []);
+  perTableParts.get(rel)!.push(expr);
+}
+
+function findTargetRelation(expr: ScalarPlanNode, attributeToTableMap: Map<number, TableInfo>): string | undefined {
+  let found: string | undefined;
+  const stack: ScalarPlanNode[] = [expr];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.nodeType === PlanNodeType.ColumnReference) {
+      const attrId = (n as unknown as _ColumnRef).attributeId;
+      const info = attributeToTableMap.get(attrId);
+      if (info) return info.relationName;
+    }
+    for (const c of n.getChildren()) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stack.push(c as any);
+    }
+  }
+  return found;
+}
+
+function combineParts(parts: ScalarPlanNode[]): ScalarPlanNode | undefined {
+  if (parts.length === 0) return undefined;
+  if (parts.length === 1) return parts[0];
+  // Combine with AND
+  let acc = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    const right = parts[i];
+    const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (acc as any).expression, right: (right as any).expression };
+    acc = new BinaryOpNode((acc as any).scope, ast, acc, right);
+  }
+  return acc;
 }
 
 /**
@@ -158,31 +237,30 @@ function extractBinaryConstraint(
 
 	const binaryOp = expr as BinaryOpNode;
 	const { left, right } = binaryOp;
-	const operator = binaryOp.expression.operator;
-
-	// Convert AST operator to constraint operator
-	const constraintOp = mapOperatorToConstraint(operator);
-	if (!constraintOp) {
-		log('Unsupported operator for constraint: %s', operator);
-		return null;
-	}
+  const operator = binaryOp.expression.operator;
 
 	// Try column-constant pattern (column op constant)
 	let columnRef: ColumnReferenceNode | null = null;
 	let constant: SqlValue | undefined;
-	let finalOp = constraintOp;
+  let finalOp: ConstraintOp | null = null;
 
-	if (isColumnReference(left) && isLiteralConstant(right)) {
+  if (isColumnReference(left) && (isLiteralConstant(right) || isDynamicValue(right))) {
 		columnRef = left;
-		constant = getLiteralValue(right);
-	} else if (isLiteralConstant(left) && isColumnReference(right)) {
+		if (isLiteralConstant(right)) {
+			constant = getLiteralValue(right);
+		}
+    finalOp = mapOperatorToConstraint(operator, constant);
+  } else if ((isLiteralConstant(left) || isDynamicValue(left)) && isColumnReference(right)) {
 		// Reverse pattern (constant op column) - flip operator
 		columnRef = right;
-		constant = getLiteralValue(left);
-		finalOp = flipOperator(constraintOp);
+		if (isLiteralConstant(left)) {
+			constant = getLiteralValue(left);
+		}
+    const baseOp = mapOperatorToConstraint(operator, constant);
+    finalOp = baseOp ? flipOperator(baseOp) : null;
 	}
 
-	if (!columnRef) {
+  if (!columnRef || !finalOp) {
 		log('No column-constant pattern found in binary expression');
 		return null;
 	}
@@ -200,7 +278,7 @@ function extractBinaryConstraint(
 		return null;
 	}
 
-	return {
+  const result: PredicateConstraint = {
 		columnIndex,
 		attributeId: columnRef.attributeId,
 		op: finalOp,
@@ -208,27 +286,139 @@ function extractBinaryConstraint(
 		usable: true, // Usable since we found table mapping
 		sourceExpression: expr,
 		targetRelation: tableInfo.relationName
-	};
+  };
+
+  // Attach dynamic binding metadata when RHS/LHS is not a literal
+  const rhs = (expr as BinaryOpNode).right;
+  const lhs = (expr as BinaryOpNode).left;
+  const nonLiteral = !isLiteralConstant(lhs) || !isLiteralConstant(rhs);
+  if (nonLiteral) {
+    // Determine which side is the value side
+    const valueSide = (columnRef === lhs ? rhs : lhs) as ScalarPlanNode;
+    if (!isLiteralConstant(valueSide)) {
+      result.valueExpr = valueSide;
+      if (valueSide.nodeType === PlanNodeType.ParameterReference) {
+        result.bindingKind = 'parameter';
+      } else if (valueSide.nodeType === PlanNodeType.ColumnReference) {
+        const rhsAttrId = (valueSide as unknown as ColumnReferenceNode).attributeId;
+        const sameTable = tableInfo.columnIndexMap.has(rhsAttrId);
+        result.bindingKind = sameTable ? 'expression' : 'correlated';
+      } else {
+        result.bindingKind = 'expression';
+      }
+    } else {
+      result.bindingKind = 'literal';
+    }
+  } else {
+    result.bindingKind = 'literal';
+  }
+
+  return result;
+}
+
+function extractBetweenConstraints(
+  expr: BetweenNode,
+  attributeToTableMap: Map<number, TableInfo>
+): PredicateConstraint[] | null {
+  // Only support column BETWEEN literal AND literal
+  const col = expr.expr;
+  const low = expr.lower;
+  const up = expr.upper;
+  const not = !!expr.expression.not;
+
+  if (col.nodeType !== PlanNodeType.ColumnReference) return null;
+  if (!isLiteralConstant(low) || !isLiteralConstant(up)) return null;
+
+  const columnRef = col as unknown as ColumnReferenceNode;
+  const tableInfo = attributeToTableMap.get(columnRef.attributeId);
+  if (!tableInfo) return null;
+  const columnIndex = tableInfo.columnIndexMap.get(columnRef.attributeId);
+  if (columnIndex === undefined) return null;
+
+  if (not) {
+    // NOT BETWEEN not expressible as single contiguous range; leave as residual
+    return null;
+  }
+
+  const lowVal = getLiteralValue(low);
+  const upVal = getLiteralValue(up);
+  return [
+    {
+      columnIndex,
+      attributeId: columnRef.attributeId,
+      op: '>=',
+      value: lowVal,
+      usable: true,
+      sourceExpression: expr,
+      targetRelation: tableInfo.relationName
+    },
+    {
+      columnIndex,
+      attributeId: columnRef.attributeId,
+      op: '<=',
+      value: upVal,
+      usable: true,
+      sourceExpression: expr,
+      targetRelation: tableInfo.relationName
+    }
+  ];
+}
+
+function extractInConstraint(
+  expr: InNode,
+  attributeToTableMap: Map<number, TableInfo>
+): PredicateConstraint | null {
+  // Only support column IN (literal, ...)
+  if (expr.source) return null;
+  if (!expr.values || expr.values.length === 0) return null;
+  const col = expr.condition;
+  if (col.nodeType !== PlanNodeType.ColumnReference) return null;
+
+  // Ensure all are literals
+  if (!expr.values.every(v => isLiteralConstant(v))) return null;
+
+  const columnRef = col as unknown as ColumnReferenceNode;
+  const tableInfo = attributeToTableMap.get(columnRef.attributeId);
+  if (!tableInfo) return null;
+  const columnIndex = tableInfo.columnIndexMap.get(columnRef.attributeId);
+  if (columnIndex === undefined) return null;
+
+  // Virtual table IN constraint can carry a single array value or multiple equality constraints.
+  // Our API supports op 'IN' with value array.
+  const values = expr.values.map(v => getLiteralValue(v));
+  return {
+    columnIndex,
+    attributeId: columnRef.attributeId,
+    op: 'IN',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    value: values as any,
+    usable: true,
+    sourceExpression: expr,
+    targetRelation: tableInfo.relationName
+  };
 }
 
 /**
  * Map AST operators to constraint operators
  */
-function mapOperatorToConstraint(operator: string): ConstraintOp | null {
-	switch (operator) {
-		case '=': return '=';
-		case '>': return '>';
-		case '>=': return '>=';
-		case '<': return '<';
-		case '<=': return '<=';
-		case 'LIKE': return 'LIKE';
-		case 'GLOB': return 'GLOB';
-		case 'MATCH': return 'MATCH';
-		case 'IN': return 'IN';
-		case 'NOT IN': return 'NOT IN';
-		// Special handling for IS NULL / IS NOT NULL would go here
-		default: return null;
-	}
+function mapOperatorToConstraint(operator: string, rightValue?: SqlValue): ConstraintOp | null {
+  switch (operator) {
+    case '=': return '=';
+    case '>': return '>';
+    case '>=': return '>=';
+    case '<': return '<';
+    case '<=': return '<=';
+    case 'LIKE': return 'LIKE';
+    case 'GLOB': return 'GLOB';
+    case 'MATCH': return 'MATCH';
+    case 'IN': return 'IN';
+    case 'NOT IN': return 'NOT IN';
+    case 'IS':
+      return rightValue === null ? 'IS NULL' : null;
+    case 'IS NOT':
+      return rightValue === null ? 'IS NOT NULL' : null;
+    default: return null;
+  }
 }
 
 /**
@@ -259,6 +449,11 @@ function isColumnReference(node: ScalarPlanNode): node is ColumnReferenceNode {
  */
 function isLiteralConstant(node: ScalarPlanNode): node is LiteralNode {
 	return node.nodeType === PlanNodeType.Literal;
+}
+
+function isDynamicValue(node: ScalarPlanNode): boolean {
+  // Parameter or column reference from any table (correlation handled later)
+  return node.nodeType === PlanNodeType.ParameterReference || node.nodeType === PlanNodeType.ColumnReference;
 }
 
 /**
@@ -320,34 +515,91 @@ export function extractConstraintsForTable(
 }
 
 /**
+ * Extract constraints and combined residual predicate for a specific table
+ */
+export function extractConstraintsAndResidualForTable(
+    plan: RelationalPlanNode,
+    targetTableRelation: string
+): { constraints: PredicateConstraint[]; residualPredicate?: ScalarPlanNode } {
+    const constraints: PredicateConstraint[] = [];
+    const residuals: ScalarPlanNode[] = [];
+
+    walkPlanForPredicates(plan, (predicate) => {
+        const tableInfos = createTableInfosFromPlan(plan).filter(
+            info => info.relationName === targetTableRelation
+        );
+        if (tableInfos.length === 0) return;
+        const result = extractConstraints(predicate, tableInfos);
+        const tableConstraints = result.constraintsByTable.get(targetTableRelation);
+        if (tableConstraints && tableConstraints.length) {
+            constraints.push(...tableConstraints);
+        }
+        if (result.residualPredicate) {
+            residuals.push(result.residualPredicate);
+        }
+    });
+
+    return { constraints, residualPredicate: combineResiduals(residuals) };
+}
+
+function combineResiduals(predicates: ScalarPlanNode[]): ScalarPlanNode | undefined {
+    if (predicates.length === 0) return undefined;
+    if (predicates.length === 1) return predicates[0];
+    let acc = predicates[0];
+    for (let i = 1; i < predicates.length; i++) {
+        const right = predicates[i];
+        const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (acc as any).expression, right: (right as any).expression };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        acc = new (require('../nodes/scalar.js') as any).BinaryOpNode((acc as any).scope, ast, acc, right);
+    }
+    return acc;
+}
+
+/**
  * Walk a plan tree and call callback for each predicate found
  */
 function walkPlanForPredicates(
-	plan: RelationalPlanNode,
-	callback: (predicate: ScalarPlanNode, sourceNode: string) => void
+  plan: RelationalPlanNode,
+  callback: (predicate: ScalarPlanNode, sourceNode: string) => void
 ): void {
-	// This would need to be implemented based on the actual plan node types
-	// For now, just a placeholder that would examine Filter nodes, Join conditions, etc.
+  // If node exposes predicates via characteristic, collect them
+  if (CapabilityDetectors.isPredicateSource(plan as any)) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const preds = (plan as any).getPredicates() as ReadonlyArray<ScalarPlanNode>;
+      for (const p of preds) {
+        callback(p, 'PredicateSource');
+      }
+    } catch (err) {
+      const errorLog = createLogger('planner:analysis:constraint-extractor:error');
+      errorLog('Error reading predicates from %s: %O', plan.nodeType, err);
+    }
+  }
 
-	// TODO: Implement proper plan walking
-	// - Check for FilterNode with predicate
-	// - Check for JoinNode with condition
-	// - Recursively walk children
-
-	log('Plan walking for predicates not yet implemented - placeholder');
+  // Recurse into relational children
+  for (const child of plan.getRelations()) {
+    walkPlanForPredicates(child, callback);
+  }
 }
 
 /**
  * Create table information from a relational plan
  */
 function createTableInfosFromPlan(plan: RelationalPlanNode): TableInfo[] {
-	const tableInfos: TableInfo[] = [];
+  const tableInfos: TableInfo[] = [];
 
-	// This would analyze the plan to extract table references and their attributes
-	// For now, just return empty array as placeholder
+  function visit(node: RelationalPlanNode): void {
+    if (node instanceof TableReferenceNode) {
+      tableInfos.push(createTableInfoFromNode(node, `${node.tableSchema.schemaName}.${node.tableSchema.name}`));
+      return;
+    }
+    for (const rel of node.getRelations()) {
+      visit(rel);
+    }
+  }
 
-	log('Table info extraction from plan not yet implemented - placeholder');
-	return tableInfos;
+  visit(plan);
+  return tableInfos;
 }
 
 /**

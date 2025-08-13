@@ -1,5 +1,5 @@
 import type { RelationType } from '../../common/datatype.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type UnaryRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type UnaryRelationalNode, ScalarPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { TableReferenceNode } from './reference.js';
@@ -25,7 +25,9 @@ export class RetrieveNode extends PlanNode implements UnaryRelationalNode {
 		/** The table reference at the leaf of the pipeline */
 		public readonly tableRef: TableReferenceNode,
 		/** Optional context data from the module's supports() assessment */
-		public readonly moduleCtx?: unknown
+		public readonly moduleCtx?: unknown,
+		/** Captured binding expressions used by the enveloped pipeline (params/correlated) */
+		public readonly bindings?: ReadonlyArray<ScalarPlanNode>
 	) {
 		super(scope, source.getTotalCost());
 		this.typeCache = new Cached(() => this.source.getType());
@@ -40,7 +42,7 @@ export class RetrieveNode extends PlanNode implements UnaryRelationalNode {
 			throw new Error('RetrieveNode requires exactly one child');
 		}
 		const newSource = newChildren[0] as RelationalPlanNode;
-		return new RetrieveNode(this.scope, newSource, this.tableRef, this.moduleCtx);
+		return new RetrieveNode(this.scope, newSource, this.tableRef, this.moduleCtx, this.bindings);
 	}
 
 	getType(): RelationType {
@@ -61,8 +63,8 @@ export class RetrieveNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	/** Create a new RetrieveNode with updated source pipeline and module context */
-	withPipeline(newSource: RelationalPlanNode, newModuleCtx?: unknown): RetrieveNode {
-		return new RetrieveNode(this.scope, newSource, this.tableRef, newModuleCtx);
+	withPipeline(newSource: RelationalPlanNode, newModuleCtx?: unknown, newBindings?: ReadonlyArray<ScalarPlanNode>): RetrieveNode {
+		return new RetrieveNode(this.scope, newSource, this.tableRef, newModuleCtx, newBindings ?? this.bindings);
 	}
 
 	override toString(): string {
@@ -73,9 +75,12 @@ export class RetrieveNode extends PlanNode implements UnaryRelationalNode {
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
+		const bindingNodeTypes = (this.bindings ?? []).map(b => b.nodeType);
 		return {
 			table: this.tableRef.tableSchema.name,
 			moduleContext: this.moduleCtx,
+			bindingsCount: bindingNodeTypes.length,
+			bindingsNodeTypes: bindingNodeTypes,
 		};
 	}
 }

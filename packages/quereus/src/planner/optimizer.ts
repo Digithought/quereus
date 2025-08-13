@@ -10,12 +10,14 @@ import { applyRules, registerRules, createRule } from './framework/registry.js';
 import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
 import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
 import { createOptContext, type OptContext } from './framework/context.js';
+import { PassManager, PassId } from './framework/pass.js';
 // Phase 2 rules
 import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-advisory.js';
 // Phase 1.5 rules
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
-// Predicate pushdown rules
+import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
+// Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
 // Constraint rules removed - now handled in builders for correctness
@@ -34,14 +36,19 @@ const log = createLogger('optimizer');
  */
 export class Optimizer {
 	private readonly stats: StatsProvider;
+	private readonly passManager: PassManager;
 
 	constructor(
 		public readonly tuning: OptimizerTuning = DEFAULT_TUNING,
 		stats?: StatsProvider
 	) {
 		this.stats = stats ?? defaultStatsProvider;
+		this.passManager = new PassManager();
 
-		// Ensure global framework rules are registered once
+		// Register rules to their appropriate passes
+		this.registerRulesToPasses();
+
+		// Keep old registration for backward compatibility (will be removed)
 		Optimizer.ensureGlobalRulesRegistered();
 	}
 
@@ -69,13 +76,22 @@ export class Optimizer {
 			20 // Very high priority - correctness fix to prevent multiple execution
 		));
 
-		// Predicate pushdown - must happen before access path selection
+		// Predicate pushdown (structural): move filters down into Retrieve pipelines where safe
 		toRegister.push(createRule(
 			'predicate-pushdown',
 			PlanNodeType.Filter,
 			'rewrite',
 			rulePredicatePushdown,
-			22 // High priority - happens before access path selection
+			22
+		));
+
+		// Phase 1 - Structural sliding (runs on RetrieveNode before access path selection)
+		toRegister.push(createRule(
+			'grow-retrieve',
+			PlanNodeType.Retrieve,
+			'rewrite',
+			ruleGrowRetrieve,
+			5 // Very early - must run before select-access-path (25)
 		));
 
 		// Phase 1.5 rules
@@ -84,7 +100,7 @@ export class Optimizer {
 			PlanNodeType.Retrieve,
 			'impl',
 			ruleSelectAccessPath,
-			25 // High priority - fundamental access path selection
+			50 // Lower priority - runs after grow-retrieve
 		));
 
 		// Core optimization rules (converted from old system)
@@ -154,6 +170,107 @@ export class Optimizer {
 	}
 
 	/**
+	 * Register rules with their appropriate passes
+	 */
+	private registerRulesToPasses(): void {
+		// Structural pass rules (top-down) - for operations that need parent context
+		// Register grow-retrieve for ALL relational node types
+		// The rule itself will determine if growth is possible
+		const relationalNodeTypes = [
+			PlanNodeType.Filter,
+			PlanNodeType.Project,
+			PlanNodeType.Sort,
+			PlanNodeType.LimitOffset,
+			PlanNodeType.Aggregate,
+			PlanNodeType.Distinct,
+			PlanNodeType.Join,
+			PlanNodeType.SetOperation,
+			PlanNodeType.Window,
+			// Add any other relational node types as needed
+		];
+
+		for (const nodeType of relationalNodeTypes) {
+			this.passManager.addRuleToPass(PassId.Structural, {
+				id: `grow-retrieve-${nodeType}`,
+				nodeType,
+				phase: 'rewrite',
+				fn: ruleGrowRetrieve,
+				priority: 10
+			});
+		}
+
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'predicate-pushdown',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: rulePredicatePushdown,
+			priority: 20
+		});
+
+		// Physical pass rules (bottom-up) - for logical to physical transformations
+		this.passManager.addRuleToPass(PassId.Physical, {
+			id: 'select-access-path',
+			nodeType: PlanNodeType.Retrieve,
+			phase: 'impl',
+			fn: ruleSelectAccessPath,
+			priority: 10
+		});
+
+		this.passManager.addRuleToPass(PassId.Physical, {
+			id: 'aggregate-streaming',
+			nodeType: PlanNodeType.Aggregate,
+			phase: 'impl',
+			fn: ruleAggregateStreaming,
+			priority: 20
+		});
+
+		// Post-optimization pass rules (bottom-up) - for cleanup and caching
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'mutating-subquery-cache',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleMutatingSubqueryCache,
+			priority: 10
+		});
+
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'cte-optimization',
+			nodeType: PlanNodeType.CTE,
+			phase: 'rewrite',
+			fn: ruleCteOptimization,
+			priority: 20
+		});
+
+		// Register materialization advisory for multiple node types
+		const nodeTypesForMaterialization = [
+			PlanNodeType.Block,
+			PlanNodeType.ScalarSubquery,
+			PlanNodeType.Exists,
+			PlanNodeType.In,
+			PlanNodeType.Insert,
+			PlanNodeType.Update,
+			PlanNodeType.Delete,
+			PlanNodeType.CTE,
+			PlanNodeType.RecursiveCTE,
+			PlanNodeType.Returning,
+			PlanNodeType.ScalarFunctionCall,
+			PlanNodeType.CaseExpr,
+		];
+
+		for (const nodeType of nodeTypesForMaterialization) {
+			this.passManager.addRuleToPass(PassId.PostOptimization, {
+				id: `materialization-advisory-${nodeType}`,
+				nodeType,
+				phase: 'rewrite',
+				fn: ruleMaterializationAdvisory,
+				priority: 30
+			});
+		}
+
+		log('Registered rules to optimization passes');
+	}
+
+	/**
 	 * Optimize a plan tree by applying transformation rules
 	 */
 	optimize(plan: PlanNode, db: Database): PlanNode {
@@ -164,18 +281,14 @@ export class Optimizer {
 
 		tracePhaseStart('optimization');
 		try {
-			// Phase 0: Single-pass constant folding before other rules
-			log('Running constant folding pre-pass');
-			const constantFoldedPlan = this.performConstantFolding(plan, context);
+			// Execute all optimization passes
+			const optimizedPlan = this.passManager.execute(plan, context);
 
-			// Continue with rule-based optimization
-			const result = this.optimizeNode(constantFoldedPlan, context);
-
-			// Phase 3: Validate the physical plan before returning
+			// Final validation (if enabled)
 			if (this.tuning.debug.validatePlan) {
 				log('Running plan validation');
 				try {
-					validatePhysicalTree(result);
+					validatePhysicalTree(optimizedPlan);
 					log('Plan validation passed');
 				} catch (error) {
 					log('Plan validation failed: %s', error);
@@ -183,7 +296,7 @@ export class Optimizer {
 				}
 			}
 
-			return result;
+			return optimizedPlan;
 		} finally {
 			tracePhaseEnd('optimization');
 		}

@@ -1,166 +1,144 @@
 /**
- * Rule: Predicate Pushdown
+ * Rule: Predicate Pushdown (characteristic-driven)
  *
- * Required Characteristics:
- * - Node must be a FilterNode with a predicate
- * - Source must be a table access node or allow predicate pushdown
- * - Predicate must contain pushable constraints (column-constant comparisons)
+ * Goal: Move Filter predicates downward across safe commuting nodes (Sort, Distinct, eligible Project)
+ * and into the Retrieve pipeline boundary so modules can execute or exploit them.
  *
- * Applied When:
- * - Filter predicate contains constraints that can be pushed to virtual table
- * - Target table supports constraint handling via getBestAccessPlan
+ * Safe moves implemented now:
+ * - Across Sort: always safe (ordering unaffected by selection)
+ * - Across Distinct: safe for selection predicates (commute)
+ * - Across Project: only if predicate references attribute IDs available below the Project source
+ *   (we verify attribute-id coverage), and we keep predicate unchanged (IDs preserved by design)
+ * - Into Retrieve: wrap Retrieve.source with a Filter
  *
- * Benefits: Reduces data transfer and computation by filtering at the source
+ * Non-moves (for now):
+ * - Across Limit/Offset (changes semantics)
+ * - Across Aggregate/Window/Join (requires deeper analysis)
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode } from '../../nodes/plan-node.js';
+import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
+import { isRelationalNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
-import { FilterNode } from '../../nodes/filter.js';
-import { TableReferenceNode } from '../../nodes/reference.js';
-import { CapabilityDetectors, PlanNodeCharacteristics } from '../../framework/characteristics.js';
-import { extractConstraints, createTableInfoFromNode, type PredicateConstraint, type TableInfo } from '../../analysis/constraint-extractor.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
-import type { Scope } from '../../scopes/scope.js';
-import type { TableSchema } from '../../../schema/table.js';
-import type { AnyVirtualTableModule } from '../../../vtab/module.js';
+import { FilterNode } from '../../nodes/filter.js';
+import { SortNode } from '../../nodes/sort.js';
+import { DistinctNode } from '../../nodes/distinct-node.js';
+import { ProjectNode } from '../../nodes/project-node.js';
+import { RetrieveNode } from '../../nodes/retrieve-node.js';
+import { CapabilityDetectors } from '../../framework/characteristics.js';
+import type { ScalarPlanNode } from '../../nodes/plan-node.js';
+import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
+import { collectBindingsInExpr } from '../../analysis/binding-collector.js';
+import { extractConstraints, createTableInfoFromNode } from '../../analysis/constraint-extractor.js';
 
 const log = createLogger('optimizer:rule:predicate-pushdown');
 
-/**
- * Extended TableReferenceNode that can hold pushed-down constraints
- */
-export class TableReferenceWithConstraintsNode extends TableReferenceNode {
-	override readonly nodeType = PlanNodeType.TableReference; // Keep same type for compatibility
+export function rulePredicatePushdown(node: PlanNode, _context: OptContext): PlanNode | null {
+	// Only act on Filter nodes
+	if (node.nodeType !== PlanNodeType.Filter) return null;
 
-	constructor(
-		scope: Scope,
-		tableSchema: TableSchema,
-		vtabModule: AnyVirtualTableModule,
-		public readonly pushedConstraints: PredicateConstraint[],
-		vtabAuxData?: unknown,
-		estimatedCostOverride?: number
-	) {
-		super(scope, tableSchema, vtabModule, vtabAuxData, estimatedCostOverride);
+	const filter = node as FilterNode;
+  const normalized = normalizePredicate(filter.predicate);
+
+	// If no relational child, nothing to do
+	if (!isRelationalNode(filter.source)) return null;
+
+	const pushed = tryPushDown(filter.source, normalized, filter.scope);
+	if (!pushed) return null;
+
+	return pushed;
+}
+
+function tryPushDown(child: RelationalPlanNode, predicate: ScalarPlanNode, scope: any): PlanNode | null {
+  // Reach a Retrieve boundary: insert only the supported portion inside pipeline
+	if (child instanceof RetrieveNode) {
+    log('Pushing predicate into Retrieve pipeline (supported-only)');
+    const tableInfo = createTableInfoFromNode(child.tableRef, child.tableRef.tableSchema.name);
+    const extraction = extractConstraints(predicate, [tableInfo]);
+    const supported = extraction.supportedPredicateByTable?.get(child.tableRef.tableSchema.name);
+
+    if (!supported) {
+      log('No supported portion for this retrieve; not pushing');
+      return null;
+    }
+
+    const newInner = new FilterNode(child.source.scope, child.source, supported);
+    const newBindings = [
+      ...(child.bindings ?? []),
+      ...collectBindingsInExpr(supported, child.tableRef)
+    ];
+    const updatedRetrieve = child.withPipeline(newInner, child.moduleCtx, newBindings);
+
+    // If the supported portion equals the whole filter, remove original filter; else keep residual above
+    if (!extraction.residualPredicate) {
+      return updatedRetrieve;
+    }
+    return new FilterNode(scope, updatedRetrieve as unknown as RelationalPlanNode, extraction.residualPredicate);
 	}
 
-	override withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			return this; // No children
+	// Across Sort
+	if (child instanceof SortNode) {
+		log('Pushing predicate below Sort');
+		const under = child.source;
+		const newUnder = new FilterNode(under.scope, under, predicate);
+		return new SortNode(child.scope, newUnder, child.sortKeys);
+	}
+
+	// Across Distinct
+	if (child instanceof DistinctNode) {
+		log('Pushing predicate below Distinct');
+		const under = child.source;
+		const newUnder = new FilterNode(under.scope, under, predicate);
+		return new DistinctNode(child.scope, newUnder);
+	}
+
+	// Across eligible Project
+	if (child instanceof ProjectNode) {
+		if (canPushAcrossProject(child, predicate)) {
+			log('Pushing predicate below Project (eligible)');
+			const under = child.source;
+			const newUnder = new FilterNode(under.scope, under, predicate);
+			// Rebuild Project with same projections over the filtered source
+			return new ProjectNode(child.scope, newUnder, child.projections, undefined, undefined, child.preserveInputColumns);
 		}
-		return this;
+		return null;
 	}
 
-	override toString(): string {
-		const baseStr = super.toString();
-		if (this.pushedConstraints.length > 0) {
-			const constraintStrs = this.pushedConstraints.map(c =>
-				`${c.attributeId}${c.op}${c.value}`
-			);
-			return `${baseStr} WITH CONSTRAINTS [${constraintStrs.join(', ')}]`;
+	// Default: do not push across other nodes
+	return null;
+}
+
+function canPushAcrossProject(project: ProjectNode, predicate: ScalarPlanNode): boolean {
+	// If project preserves input columns and all predicate-attested attributes exist below, it's safe.
+	const sourceAttrIds = new Set(project.source.getAttributes().map(a => a.id));
+	const referenced = collectReferencedAttributeIds(predicate);
+	for (const id of referenced) {
+		if (!sourceAttrIds.has(id)) return false;
+	}
+	return true;
+}
+
+function collectReferencedAttributeIds(expr: ScalarPlanNode): Set<number> {
+	const ids = new Set<number>();
+	walkExpr(expr, node => {
+		if (CapabilityDetectors.isColumnReference(node)) {
+			ids.add((node as any).attributeId as number);
 		}
-		return baseStr;
-	}
+	});
+	return ids;
+}
 
-	override getLogicalAttributes(): Record<string, unknown> {
-		const base = super.getLogicalAttributes();
-		return {
-			...base,
-			pushedConstraints: this.pushedConstraints.map(c => ({
-				column: c.attributeId,
-				op: c.op,
-				value: c.value
-			}))
-		};
+function walkExpr(expr: ScalarPlanNode, fn: (n: ScalarPlanNode) => void): void {
+	fn(expr);
+	for (const c of expr.getChildren()) {
+		// Only scalar children
+		if (!isRelationalNode(c)) {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			walkExpr(c as any as ScalarPlanNode, fn);
+		}
 	}
 }
 
-export function rulePredicatePushdown(node: PlanNode, context: OptContext): PlanNode | null {
-	// Guard: node must be a Filter
-	if (node.nodeType !== PlanNodeType.Filter) {
-		return null;
-	}
 
-	const filterNode = node as FilterNode;
-	log('Analyzing filter for predicate pushdown: %s', filterNode.toString());
 
-	// Check if the source supports predicate pushdown
-	const source = filterNode.source;
-	if (!canPushDownToSource(source)) {
-		log('Source does not support predicate pushdown: %s', source.nodeType);
-		return null;
-	}
-
-	// For now, focus on simple case: Filter directly over TableReference
-	if (source.nodeType !== PlanNodeType.TableReference) {
-		log('Pushdown not yet supported for source type: %s', source.nodeType);
-		return null;
-	}
-
-	const tableRef = source as TableReferenceNode;
-
-	// Create table info for constraint extraction
-	const tableInfo = createTableInfoFromNode(tableRef, tableRef.toString());
-
-	// Extract constraints from the filter predicate
-	const extractionResult = extractConstraints(filterNode.predicate, [tableInfo]);
-
-	// Check if we found any pushable constraints for this table
-	const tableConstraints = extractionResult.constraintsByTable.get(tableInfo.relationName);
-	if (!tableConstraints || tableConstraints.length === 0) {
-		log('No pushable constraints found for table %s', tableInfo.relationName);
-		return null;
-	}
-
-	log('Found %d pushable constraints for table %s', tableConstraints.length, tableInfo.relationName);
-
-	// Check if the virtual table module supports constraint pushdown
-	const vtabModule = tableRef.vtabModule;
-	if (!('getBestAccessPlan' in vtabModule)) {
-		log('Virtual table module does not support getBestAccessPlan - cannot push constraints');
-		return null;
-	}
-
-	// Create new table reference with pushed constraints
-	const tableWithConstraints = new TableReferenceWithConstraintsNode(
-		tableRef.scope,
-		tableRef.tableSchema,
-		tableRef.vtabModule,
-		tableConstraints,
-		tableRef.vtabAuxData,
-		tableRef.getTotalCost()
-	);
-
-	// If we have a residual predicate, keep the filter with the residual
-	// Otherwise, return just the table with constraints
-	if (extractionResult.residualPredicate) {
-		log('Creating new filter with residual predicate');
-		return new FilterNode(
-			filterNode.scope,
-			tableWithConstraints,
-			extractionResult.residualPredicate
-		);
-	} else {
-		log('All predicates pushed down, removing filter');
-		return tableWithConstraints;
-	}
-}
-
-/**
- * Check if a plan node supports predicate pushdown
- */
-function canPushDownToSource(source: PlanNode): boolean {
-	// For now, only support direct table references
-	// TODO: Extend to support joins, subqueries, etc.
-
-	if (source.nodeType === PlanNodeType.TableReference) {
-		return true;
-	}
-
-	// Could check for other pushdown-capable nodes
-	if (CapabilityDetectors.canPushDownPredicate(source)) {
-		return true;
-	}
-
-	return false;
-}

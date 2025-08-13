@@ -272,7 +272,7 @@ export interface RelationalPlanNode extends PlanNode {
 }
 
 /**
- * Check if a node is relational (can be cached)
+ * Characteristically check if a node is relational (can be cached)
  */
 export function isRelationalNode(node: PlanNode): node is RelationalPlanNode {
 	return node.getType().typeClass === 'relation';
@@ -288,7 +288,7 @@ export interface ScalarPlanNode extends PlanNode {
 }
 
 /**
- * Check if a node is a scalar node
+ * Characteristically check if a node is a scalar node
  */
 export function isScalarNode(node: PlanNode): node is ScalarPlanNode {
 	return node.getType().typeClass === 'scalar';

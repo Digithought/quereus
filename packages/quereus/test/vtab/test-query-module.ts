@@ -109,7 +109,8 @@ export class TestQueryTable extends VirtualTable {
 		if (!TestQueryTable.testModule) {
 			TestQueryTable.testModule = new TestQueryModule();
 		}
-		super(db, TestQueryTable.testModule, tableSchema.schemaName, tableSchema.name);
+    super(db, TestQueryTable.testModule, tableSchema.schemaName, tableSchema.name);
+    this.tableSchema = tableSchema;
 	}
 
 	// Required xDisconnect method

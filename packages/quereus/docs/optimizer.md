@@ -36,7 +36,7 @@ The Quereus optimizer operates as a transformation engine between the plan build
 └─────────────┘     └──────────────┘     └─────────────┘     └──────────────┘
 ```
 
-The optimization process transforms logical nodes into physical nodes through registered rules:
+The optimizer uses a **multi-pass architecture** where different categories of transformations occur in separate tree traversals. Each pass can use either top-down or bottom-up traversal order depending on its requirements:
 
 ```mermaid
 graph LR
@@ -65,12 +65,72 @@ graph LR
     style PhysicalNode fill:#dfd,stroke:#333,stroke-width:2px
 ```
 
+### Multi-Pass Optimization System
+
+The optimizer executes transformations through a series of **optimization passes**, each with a specific purpose and traversal order:
+
+#### Pass 0: Constant Folding (Bottom-up)
+- **Purpose**: Pre-evaluate constant expressions before other optimizations
+- **Traversal**: Bottom-up to evaluate from leaves to root
+- **Implementation**: Custom execution using runtime expression evaluator
+- **Result**: Simplified plan with literals replacing constant expressions
+
+#### Pass 1: Structural Transformations (Top-down)
+- **Purpose**: Restructure the plan tree for optimal execution boundaries
+- **Key Rules**: `ruleGrowRetrieve`, `rulePredicatePushdown`
+- **Traversal**: Top-down to see parent context for sliding operations
+- **Result**: Operations pushed into virtual table boundaries where beneficial
+
+#### Pass 2: Physical Selection (Bottom-up)
+- **Purpose**: Convert logical operators to physical implementations
+- **Key Rules**: `ruleSelectAccessPath`, `ruleAggregateStreaming`
+- **Traversal**: Bottom-up to select implementations based on child properties
+- **Result**: Executable physical plan with concrete operators
+
+#### Pass 3: Post-Optimization (Bottom-up)
+- **Purpose**: Final cleanup, materialization decisions, and caching
+- **Key Rules**: `ruleMaterializationAdvisory`, `ruleCteOptimization`, `ruleMutatingSubqueryCache`
+- **Traversal**: Bottom-up for global analysis and cache injection
+- **Result**: Optimized plan with caching and materialization points
+
+#### Pass 4: Validation (Bottom-up)
+- **Purpose**: Validate the correctness of the optimized plan
+- **Implementation**: Structural and property validation checks
+- **Result**: Verified executable plan or error if invalid
+
+### Pass Framework (`src/planner/framework/pass.ts`)
+
+The pass system provides a clean abstraction for multi-pass optimization:
+
+```typescript
+interface OptimizationPass {
+  id: string;                          // Unique identifier
+  name: string;                        // Human-readable name
+  traversalOrder: TraversalOrder;      // 'top-down' or 'bottom-up'
+  rules: RuleHandle[];                 // Rules belonging to this pass
+  execute?: (plan, context) => plan;   // Optional custom execution
+  order: number;                       // Execution order (lower first)
+}
+```
+
+**Key Benefits**:
+- **Separation of Concerns**: Each pass focuses on a specific optimization category
+- **Proper Sequencing**: Structural transformations happen before physical selection
+- **Flexible Traversal**: Each pass can choose its optimal traversal order
+- **Clean Debugging**: Clear pass boundaries make optimization easier to understand
+
 ### Core Components
 
+**Pass Manager** (`src/planner/framework/pass.ts`)
+- Coordinates execution of all optimization passes
+- Manages rule registration per pass
+- Implements both top-down and bottom-up traversal strategies
+- Provides hooks for custom pass execution logic
+
 **Rule Engine** (`src/planner/optimizer.ts`)
-- Manages rule registration and execution
-- Orchestrates the logical-to-physical transformation
-- Prevents infinite loops through visit tracking
+- Registers rules to appropriate passes based on their purpose
+- Creates optimization context for rule execution
+- Integrates with pass manager for multi-pass optimization
 - Provides debugging and tracing infrastructure
 
 **Physical Properties** (`src/planner/framework/physical-utils.ts`)
@@ -361,11 +421,19 @@ interface TraceHook {
 }
 ```
 
-**Plan Visualization**
+**Plan Visualization and Testing**
 The PlanViz tool (`packages/tools/planviz`) provides visual plan inspection:
 ```bash
 quereus-planviz query.sql --format tree
 quereus-planviz query.sql --format mermaid --phase physical
+```
+
+Testing optimizer effects is easy using the `query_plan()` built-in:
+```sql
+-- Example: ensure FILTER was pushed into Retrieve (0 remaining above)
+SELECT COUNT(*) AS filters
+FROM query_plan('SELECT id FROM t WHERE id = 1')
+WHERE op = 'FILTER';
 ```
 
 ## Extending the Optimizer
@@ -448,10 +516,13 @@ if (tableConstraints) {
 ```
 
 **Predicate Pushdown Implementation:**
-- **Constraint Extraction**: Analyzes binary predicates (`=`, `>`, `<`, etc.) and extracts pushable constraints
-- **Filter Elimination**: Removes Filter nodes when all predicates are successfully pushed down
-- **Virtual Table Integration**: Passes constraints to virtual tables via the `BestAccessPlan` API
-- **Multi-table Support**: Tracks constraints by target table for complex queries
+- **Normalization**: Pushes NOT, flattens AND/OR (no CNF/DNF), inverts comparisons; collapses small OR-of-equalities to `IN`; preserves BETWEEN (NOT BETWEEN remains residual).
+- **Constraint Extraction**: Analyzes equality/range (`=`, `>`, `>=`, `<`, `<=`), `IS NULL`/`IS NOT NULL`, `BETWEEN` (as `>=`/`<=`), and `IN` value lists. Supports dynamic bindings: parameters and correlated references are captured alongside literal values.
+- **Supported-only placement**: Only the portion of a predicate that is known to be supported by the target module/index is pushed into the `Retrieve` pipeline. Any residual (unsupported) part remains above the `Retrieve`. This guarantees the `Retrieve` pipeline exclusively contains supported operations.
+- **Module Validation via supports()**: For query-based modules, a predicate (or entire filter node) is only pushed below the `RetrieveNode` when `supports()` accepts the resulting pipeline. Acceptance typically implies significantly lower cost and should be preferred over mere proximity to the data source.
+- **Index-style Fallback**: When a module does not implement `supports()`, push-down uses `getBestAccessPlan()` for constraints translation; benefits may come from filter handling, ordering, and limit pushdown.
+- **Filter Elimination**: Removes Filter nodes when all predicates are successfully handled by the module/index.
+- **Multi-table Support**: Modules may accept complex subtrees (including joins) in a single `supports()` call when multiple relations belong to the same module.
 
 ### Property Propagation
 ```typescript
@@ -759,7 +830,27 @@ export function buildTableReference(fromClause: AST.FromClause, context: Plannin
 RetrieveNode
   └─ pipeline: RelationalPlanNode  (operations handled by the module)
       └─ TableReferenceNode        (leaf table reference)
+  [bindings: ScalarPlanNode[]]     (captured params/correlated expressions)
 ```
+
+### Supported-only placement policy
+
+- **Pushdown rule**: When sliding a `Filter` down into a `Retrieve`, the optimizer:
+  - Normalizes the predicate, extracts constraints for the `Retrieve` table, and constructs a supported-only predicate fragment.
+  - Inserts only that fragment as a `Filter` inside the `Retrieve` pipeline.
+  - Leaves any residual (unsupported) predicate above the `Retrieve` boundary.
+  - Merges newly referenced bindings (parameters/correlations) into `Retrieve.bindings`.
+
+- **Grow-retrieve rule**: When sliding `Retrieve` upward over a `Filter` (index-style fallback):
+  - The rule mirrors the pushdown behavior: only supported fragments of the enveloped node are placed beneath `Retrieve` as a new `Filter`. The residual remains above.
+  - Bindings are collected from the added fragment and merged into `Retrieve.bindings`.
+
+This policy ensures the `Retrieve` pipeline is always a precise description of what the module/index can handle; unsupported parts never enter the boundary.
+
+### Diagnostics and verification
+
+- `query_plan(sql)` exposes `RETRIEVE` rows with logical properties including `bindingsCount` and `bindingsNodeTypes`, which reveal whether parameters and/or correlated column references have been captured by the pipeline.
+- For test assertions, prefer checking for the presence of `ParameterReference` nodes in the plan (logical indicator of binding presence) rather than relying on `RETRIEVE` presence post-physical selection, since physical rules may replace `Retrieve` with concrete access operators.
 
 ### Module Capability API
 
@@ -848,6 +939,14 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 - `IndexScanNode`: Index-based scan with filters
 - `IndexSeekNode`: Index-based point/range lookups
 
+### Parameterization hand-off
+
+- For index-style providers, equality constraints that fully cover the primary key (and leading index prefixes) are translated into `IndexSeekNode` with dynamic seek keys:
+  - Seek keys are stored as scalar expressions (parameters or correlated refs), evaluated at runtime by the emitter and passed to the module via the existing `FilterInfo.args` mechanism.
+  - Range bounds (>=/<=) will similarly pass dynamic lower/upper expressions.
+
+This establishes a clean “call-like” boundary: `Retrieve.bindings` declares required inputs; physical access nodes evaluate those inputs and deliver them to the module.
+
 ### Runtime Execution
 
 **Query-based Execution**:
@@ -887,14 +986,14 @@ export function emitRemoteQuery(plan: RemoteQueryNode, ctx: EmissionContext): In
 
 The `ruleGrowRetrieve` optimization rule enables dynamic sliding of operations into virtual table modules:
 
-**Algorithm**: Single bottom-up rewrite that:
-1. Creates candidate pipeline by grafting parent operation onto current pipeline
-2. Calls `module.supports(candidatePipeline)` or `getBestAccessPlan` for cost assessment
-3. If supported, replaces parent with new RetrieveNode containing expanded pipeline
-4. Continues sliding upward until module declines or tree top is reached
+**Algorithm**: Structural top-down growth pass that:
+1. Creates a candidate pipeline by grafting the parent operation onto the current pipeline
+2. Calls `module.supports(candidatePipeline)` or index-style fallback (`getBestAccessPlan`) for assessment
+3. If supported, replaces the parent with a new `RetrieveNode` containing the expanded pipeline
+4. Continues sliding upward until the module declines or the tree top is reached
 
 **Benefits**:
-- Single-pass optimization eliminates complex multi-phase approaches
+- Multi-pass architecture ensures structural growth happens before physical selection
 - Cost-based decision making between local and remote execution
 - Modules evaluate exactly the operations they commit to handle
 
@@ -986,10 +1085,10 @@ This design positions Quereus to handle complex analytical workloads while maint
 The `ruleGrowRetrieve` optimizer rule implements a **structural, capability-bounded** sliding algorithm that maximizes the query segment each virtual table module can execute:
 
 **Algorithm**:
-1. **Bottom-up traversal**: Walk the plan tree from leaves toward root
-2. **Capability testing**: For each RetrieveNode, test `supports(candidatePipeline)` where candidatePipeline = current pipeline + parent node
-3. **Slide on success**: If module supports the expanded pipeline, slide RetrieveNode upward to encompass the parent
-4. **Stop on failure**: When `supports()` returns undefined, the RetrieveNode has reached its maximum extent
+1. **Top-down traversal (Structural pass)**: Walk the plan tree from root toward leaves so parents can be slid into their `RetrieveNode` children
+2. **Capability testing**: For each candidate, test `supports(candidatePipeline)` where candidatePipeline = current pipeline + parent node; else use index-style fallback
+3. **Slide on success**: If the module supports the expanded pipeline, slide the `RetrieveNode` upward to encompass the parent
+4. **Stop on failure**: When `supports()` returns undefined, the `RetrieveNode` has reached its maximum extent
 
 **Key Properties**:
 - Purely structural - no cost modeling required during growth phase
@@ -1005,6 +1104,8 @@ Filter(condition)
 // After ruleGrowRetrieve (assuming module supports filtering):
 RetrieveNode(source: Filter(condition, TableRef))
 ```
+
+**Modules can accept arbitrary nodes**: `supports()` may accept complex subtrees, including joins across multiple tables that reside in the same module. When a module declares support for such a subtree, `ruleGrowRetrieve` will slide those operations into the `RetrieveNode` boundary, enabling efficient intra-module execution.
 
 ## Optimization Pipeline Architecture
 

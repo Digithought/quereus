@@ -195,6 +195,10 @@ Quereus features a sophisticated rule-based query optimizer that transforms logi
 See the [Optimizer Documentation](docs/optimizer.md) for architecture details and [Optimizer Conventions](docs/optimizer-conventions.md) for development guidelines.
 [TODO List](docs/todo.md) has remaining priorities.
 
+Recent changes:
+- Retrieve growth and push-down stabilized: query-based modules slide full nodes via `supports()`; index-style fallback injects supported-only fragments inside `Retrieve`, preserving residuals above.
+- Retrieve logical properties now expose `bindingsCount` and `bindingsNodeTypes` (visible in `query_plan().properties`) to aid verification that parameters/correlations are captured.
+
 ## Testing
 
 The tests are located in `test/*.spec.ts` and are driven by Mocha with ts-node/esm.

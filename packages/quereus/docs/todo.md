@@ -16,7 +16,7 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - 🔄 **Phase 1.5 - Access Path Selection**: Seek/range scan infrastructure and optimization rules
 
 ### Upcoming Optimizer Work
-- ✅ **Predicate Pushdown**: Push filter predicates closer to data sources (Phase 1 complete - basic pushdown working)
+- ✅ **Predicate Pushdown**: Push filter predicates closer to data sources (basic pushdown working; extend normalization and extraction: OR→IN, BETWEEN, IN lists)
 - 📋 **Subquery Optimization**: Transform correlated subqueries to joins
 - 📋 **Advanced Statistics**: VTab-supplied or ANALYZE-based statistics
 - 📋 **Join Algorithms**: Hash joins and merge joins
@@ -35,10 +35,15 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
   - [x] Access path rule integration and test infrastructure
 - [ ] **Phase 2 - Optimization Pipeline Sequencing**: Implement characteristic-based optimization phases
   - [ ] ruleGrowRetrieve: Structural sliding to maximize module query segments
-  - [ ] Early predicate push-down: Cost-light optimization for better cardinality estimates  
+  - [ ] Early predicate push-down: Cost-light optimization (across Sort/Distinct/eligible Project; into Retrieve)
+  - [x] Retrieve as call-boundary: track `bindings` (params/correlated) for enveloped pipeline; pass to physical access
+  - [x] Supported-only placement: push only module/index-supported predicate fragments under `Retrieve`; keep residuals above
   - [ ] Join enumeration integration: Ensure cost model benefits from push-down
 - [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model
-  - [ ] Advanced predicate push-down with sophisticated cost decisions
+  - [ ] Advanced predicate push-down with sophisticated cost decisions (LIKE prefix, complex OR factoring)
+  - [ ] Dynamic constraints: plan-time shape, runtime evaluation of binding expressions
+  - [ ] Range seeks: pass dynamic lower/upper bounds and extend Memory module scan plan to use them
+  - [ ] IN lists: choose between seek-union or residual handling based on index support and list size
   - [ ] Projection and aggregation push-down optimization
 
 **Design Philosophy: Characteristic-Based Rules**
@@ -151,15 +156,20 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - ✅ Test module infrastructure for validating query-based push-down
 
 **Phase 2 – Optimization Pipeline Sequencing**
-- [ ] **ruleGrowRetrieve** (structural phase): Bottom-up sliding to maximize module-supported query segments
-  - [ ] Walk plan bottom-up, test `supports(candidatePipeline)` for each RetrieveNode
-  - [ ] Slide RetrieveNode upward when module supports expanded pipeline
-  - [ ] Stop sliding when `supports()` returns undefined (capability boundary reached)
-  - [ ] Result: Fixed, maximum "query segments" for all base relations
-- [ ] **Early Predicate Push-down** (cost-light phase): Push obviously beneficial predicates
-  - [ ] Target simple filter characteristics (constants, key equality, LIMIT 1)
-  - [ ] Purpose: Improve cardinality estimates before join enumeration
-  - [ ] Only push predicates that modules explicitly support
+- [ ] **ruleGrowRetrieve** (structural pass, top-down): Slide operations into `RetrieveNode` to maximize module-supported query segments
+  - [ ] Walk plan top-down; for each parent above a `RetrieveNode`, create candidate pipeline and test `supports(candidatePipeline)`
+  - [ ] Slide `RetrieveNode` upward when the module supports the expanded pipeline (including complex nodes like joins when applicable)
+  - [ ] If no `supports()`, use index-style fallback (`getBestAccessPlan`) for Filter/Sort/Limit when it yields clear benefit (handled filters, ordering, or enforced limit)
+  - [ ] Stop when module declines; result is fixed maximum module-backed query segments
+- [ ] **Predicate Push-down via supports()** (cost-light phase): Validate pushdown through module acceptance
+  - [ ] Use `supports()` for query-based modules to both validate and price push-down
+  - [ ] For index-style modules, rely on `getBestAccessPlan()` translation of constraints, ordering, and limit - use a system-supplied `supports()`
+  - [ ] Purpose: Improve cardinality estimates and reduce upstream work using module-backed cost reductions
+  - [x] Policy: push only supported fragments into `Retrieve`; residuals remain above (never pushed down)
+
+Notes:
+- Retrieve logical attributes now expose `bindingsCount` and `bindingsNodeTypes` (visible via `query_plan().properties`) to aid debugging and verification of binding capture.
+- Basic predicate push-down into Retrieve uses supported-only fragments; residual predicates remain above Retrieve. Index-style fallback similarly injects only supported filter fragments inside the pipeline.
 - [ ] **Join Enumeration Integration**: Ensure join rewriting uses realistic cardinality estimates
   - [ ] Verify join cost model accounts for pushed-down predicates
   - [ ] Test that join enumeration benefits from phase 1-2 optimizations

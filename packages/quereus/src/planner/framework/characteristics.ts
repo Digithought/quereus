@@ -114,6 +114,13 @@ export interface PredicateCapable extends PlanNode {
 }
 
 /**
+ * Interface for nodes that can expose one or more local predicates (e.g., WHERE, ON)
+ */
+export interface PredicateSourceCapable extends PlanNode {
+	getPredicates(): readonly ScalarPlanNode[];
+}
+
+/**
  * Interface for nodes that can combine predicates (for pushdown optimization)
  */
 export interface PredicateCombinable extends PredicateCapable {
@@ -146,6 +153,26 @@ export interface AggregationCapable extends RelationalPlanNode {
 export interface SortCapable extends PlanNode {
 	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[];
 	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[]): PlanNode;
+}
+
+/**
+ * Interface for limit/offset capability
+ */
+export interface LimitCapable extends PlanNode {
+	getLimitExpression(): ScalarPlanNode | undefined;
+	getOffsetExpression(): ScalarPlanNode | undefined;
+}
+
+/**
+ * Interface for nodes that can provide stable attribute→column bindings for constraint mapping
+ */
+export interface ColumnBindingProvider extends PlanNode {
+	/** Relation name used for mapping/presentation (e.g., schema.table or alias) */
+	getBindingRelationName(): string;
+	/** Attributes (id/name) visible at this binding boundary */
+	getBindingAttributes(): ReadonlyArray<{ id: number; name: string }>;
+	/** Column index in the output row for a given attribute id */
+	getColumnIndexForAttribute(attributeId: number): number | undefined;
 }
 
 /**
@@ -227,106 +254,122 @@ export interface RecursiveCTERefCapable extends RelationalPlanNode {
 export class CapabilityDetectors {
 	static canPushDownPredicate(node: PlanNode): node is PredicateCapable {
 		return 'getPredicate' in node &&
-			   typeof (node as any).getPredicate === 'function' &&
-			   'withPredicate' in node &&
-			   typeof (node as any).withPredicate === 'function';
+			typeof (node as any).getPredicate === 'function' &&
+			'withPredicate' in node &&
+			typeof (node as any).withPredicate === 'function';
 	}
 
 	static canCombinePredicates(node: PlanNode): node is PredicateCombinable {
 		return this.canPushDownPredicate(node) &&
-			   'canCombinePredicates' in node &&
-			   typeof (node as any).canCombinePredicates === 'function';
+			'canCombinePredicates' in node &&
+			typeof (node as any).canCombinePredicates === 'function';
+	}
+
+	static isPredicateSource(node: PlanNode): node is PredicateSourceCapable {
+		return 'getPredicates' in node && typeof (node as any).getPredicates === 'function';
 	}
 
 	static isTableAccess(node: PlanNode): node is TableAccessCapable {
 		return PlanNodeCharacteristics.isRelational(node) &&
-			   'tableSchema' in node &&
-			   'getAccessMethod' in node &&
-			   typeof (node as any).getAccessMethod === 'function';
+			'tableSchema' in node &&
+			'getAccessMethod' in node &&
+			typeof (node as any).getAccessMethod === 'function';
 	}
 
 	static isAggregating(node: PlanNode): node is AggregationCapable {
 		return PlanNodeCharacteristics.isRelational(node) &&
-			   'getGroupingKeys' in node &&
-			   typeof (node as any).getGroupingKeys === 'function' &&
-			   'getAggregateExpressions' in node &&
-			   typeof (node as any).getAggregateExpressions === 'function';
+			'getGroupingKeys' in node &&
+			typeof (node as any).getGroupingKeys === 'function' &&
+			'getAggregateExpressions' in node &&
+			typeof (node as any).getAggregateExpressions === 'function';
 	}
 
 	static isSortable(node: PlanNode): node is SortCapable {
 		return 'getSortKeys' in node &&
-			   typeof (node as any).getSortKeys === 'function' &&
-			   'withSortKeys' in node &&
-			   typeof (node as any).withSortKeys === 'function';
+			typeof (node as any).getSortKeys === 'function' &&
+			'withSortKeys' in node &&
+			typeof (node as any).withSortKeys === 'function';
+	}
+
+	static isLimit(node: PlanNode): node is LimitCapable {
+		return 'getLimitExpression' in node &&
+			typeof (node as any).getLimitExpression === 'function' &&
+			'getOffsetExpression' in node &&
+			typeof (node as any).getOffsetExpression === 'function';
+	}
+
+	static isColumnBindingProvider(node: PlanNode): node is ColumnBindingProvider {
+		return 'getBindingRelationName' in node &&
+			typeof (node as any).getBindingRelationName === 'string' || typeof (node as any).getBindingRelationName === 'function';
 	}
 
 	static canProject(node: PlanNode): node is ProjectionCapable {
 		return PlanNodeCharacteristics.isRelational(node) &&
-			   'getProjections' in node &&
-			   typeof (node as any).getProjections === 'function';
+			'getProjections' in node &&
+			typeof (node as any).getProjections === 'function';
 	}
 
 	static isJoin(node: PlanNode): node is JoinCapable {
 		return PlanNodeCharacteristics.isRelational(node) &&
-			   'getJoinType' in node &&
-			   typeof (node as any).getJoinType === 'function' &&
-			   'getLeftSource' in node &&
-			   'getRightSource' in node;
+			'getJoinType' in node &&
+			typeof (node as any).getJoinType === 'function' &&
+			'getLeftSource' in node &&
+			'getRightSource' in node;
 	}
 
 	static isCached(node: PlanNode): node is CacheCapable {
 		return 'getCacheStrategy' in node &&
-			   typeof (node as any).getCacheStrategy === 'function';
+			typeof (node as any).getCacheStrategy === 'function';
 	}
 
 	static isCTE(node: PlanNode): node is CTECapable {
 		return PlanNodeCharacteristics.isRelational(node) &&
-			   'cteName' in node &&
-			   typeof (node as any).cteName === 'string' &&
-			   'getCTESource' in node &&
-			   typeof (node as any).getCTESource === 'function';
+			'cteName' in node &&
+			typeof (node as any).cteName === 'string' &&
+			'getCTESource' in node &&
+			typeof (node as any).getCTESource === 'function';
 	}
 
 	static isColumnReference(node: PlanNode): node is ColumnReferenceCapable {
 		if (!node) return false;
 		return PlanNodeCharacteristics.isScalar(node) &&
-			   'attributeId' in node &&
-			   typeof (node as any).attributeId === 'number' &&
-			   'columnIndex' in node &&
-			   typeof (node as any).columnIndex === 'number' &&
-			   'expression' in node;
+			'attributeId' in node &&
+			typeof (node as any).attributeId === 'number' &&
+			'columnIndex' in node &&
+			typeof (node as any).columnIndex === 'number' &&
+			'expression' in node;
 	}
 
 	static isWindowFunction(node: PlanNode): node is WindowFunctionCapable {
 		if (!node) return false;
 		// Check nodeType specifically to distinguish from AggregateFunctionCallNode
 		return node.nodeType === 'WindowFunctionCall' &&
-			   PlanNodeCharacteristics.isScalar(node) &&
-			   'functionName' in node &&
-			   typeof (node as any).functionName === 'string' &&
-			   'isDistinct' in node &&
-			   typeof (node as any).isDistinct === 'boolean';
+			PlanNodeCharacteristics.isScalar(node) &&
+			'functionName' in node &&
+			typeof (node as any).functionName === 'string' &&
+			'isDistinct' in node &&
+			typeof (node as any).isDistinct === 'boolean';
 	}
 
 	static isAggregateFunction(node: PlanNode): node is AggregateFunctionCapable {
 		if (!node) return false;
 		// Check for AggregateFunctionCallNode - it uses ScalarFunctionCall nodeType but has args property
 		return PlanNodeCharacteristics.isScalar(node) &&
-			   'functionName' in node &&
-			   typeof (node as any).functionName === 'string' &&
-			   'isDistinct' in node &&
-			   typeof (node as any).isDistinct === 'boolean' &&
-			   'args' in node &&
-			   Array.isArray((node as any).args) &&
-			   'functionSchema' in node;
+			'functionName' in node &&
+			typeof (node as any).functionName === 'string' &&
+			'isDistinct' in node &&
+			typeof (node as any).isDistinct === 'boolean' &&
+			'args' in node &&
+			Array.isArray((node as any).args) &&
+			'functionSchema' in node;
 	}
 
 	static isRecursiveCTERef(node: PlanNode): node is RecursiveCTERefCapable {
 		if (!node) return false;
 		return PlanNodeCharacteristics.isRelational(node) &&
-			   'cteName' in node &&
-			   typeof (node as any).cteName === 'string' &&
-			   'workingTableDescriptor' in node;
+			'cteName' in node &&
+			typeof (node as any).cteName === 'string' &&
+			'workingTableDescriptor' in node;
 	}
 }
 
@@ -410,7 +453,7 @@ export class CachingAnalysis {
 
 	private static isExpensiveRepeatedOperation(node: PlanNode): boolean {
 		return PlanNodeCharacteristics.isExpensive(node) &&
-			   PlanNodeCharacteristics.isLikelyRepeated(node);
+			PlanNodeCharacteristics.isLikelyRepeated(node);
 	}
 
 	static getCacheThreshold(node: PlanNode): number {
@@ -435,7 +478,7 @@ export class PredicateAnalysis {
 	static canCombine(pred1: ScalarPlanNode, pred2: ScalarPlanNode): boolean {
 		// Basic heuristic: both must be deterministic
 		return PlanNodeCharacteristics.isDeterministic(pred1) &&
-			   PlanNodeCharacteristics.isDeterministic(pred2);
+			PlanNodeCharacteristics.isDeterministic(pred2);
 	}
 
 	private static predicateReferencesOnly(_predicate: ScalarPlanNode, _targetNode: PlanNode): boolean {

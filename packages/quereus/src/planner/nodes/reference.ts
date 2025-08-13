@@ -12,10 +12,11 @@ import { formatScalarType } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { AnyVirtualTableModule } from '../../vtab/module.js';
+import type { ColumnBindingProvider } from '../framework/characteristics.js';
 import type { TableAccessCapable } from '../framework/characteristics.js';
 
 /** Represents a reference to a table in the global schema. */
-export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode, TableAccessCapable {
+export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode, TableAccessCapable, ColumnBindingProvider {
 	override readonly nodeType = PlanNodeType.TableReference;
 
 	private typeCache: Cached<RelationType>;
@@ -83,6 +84,21 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		// Logical table reference - will be converted to physical by optimizer
 		return 'virtual';
 	}
+
+  // ColumnBindingProvider implementation
+  getBindingRelationName(): string {
+    return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+  }
+
+  getBindingAttributes(): ReadonlyArray<{ id: number; name: string }> {
+    return this.getAttributes().map(a => ({ id: a.id, name: a.name }));
+  }
+
+  getColumnIndexForAttribute(attributeId: number): number | undefined {
+    const attrs = this.getAttributes();
+    const idx = attrs.findIndex(a => a.id === attributeId);
+    return idx >= 0 ? idx : undefined;
+  }
 
 	override getLogicalAttributes(): Record<string, unknown> {
 		return {

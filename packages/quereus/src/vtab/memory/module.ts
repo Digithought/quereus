@@ -136,10 +136,16 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				.build();
 		}
 
-		// Check if we can satisfy ordering requirements
-		if (request.requiredOrdering && request.requiredOrdering.length > 0) {
-			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
-		}
+    // Check if we can satisfy ordering requirements
+    if (request.requiredOrdering && request.requiredOrdering.length > 0) {
+      bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
+    }
+
+    // Prefer plans that fully handle at least one filter over pure full scans when costs tie
+    if (request.filters.length > 0 && bestPlan.handledFilters?.some(Boolean) === false) {
+      // Small nudge to cost to encourage using any usable index when costs are equal
+      bestPlan = { ...bestPlan, cost: bestPlan.cost + 0.01, explains: `${bestPlan.explains} (no filters handled)` };
+    }
 
 		return bestPlan;
 	}
@@ -278,7 +284,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Check if an index can satisfy ordering requirements
 	 */
-	private indexSatisfiesOrdering(
+  private indexSatisfiesOrdering(
 		index: IndexSchema,
 		requiredOrdering: readonly OrderingSpec[]
 	): boolean {

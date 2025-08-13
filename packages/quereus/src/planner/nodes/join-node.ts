@@ -6,7 +6,8 @@ import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
-import { JoinCapable } from '../framework/characteristics.js';
+import { JoinCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
+import { normalizePredicate } from '../analysis/predicate-normalizer.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';
 
@@ -14,7 +15,7 @@ export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';
  * Represents a logical JOIN operation between two relations.
  * This is a logical node that will be converted to physical join algorithms during optimization.
  */
-export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapable {
+export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapable, PredicateSourceCapable {
 	readonly nodeType = PlanNodeType.Join;
 	private attributesCache: Cached<Attribute[]>;
 
@@ -230,5 +231,10 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 
 	public getUsingColumns(): readonly string[] | undefined {
 		return this.usingColumns;
+	}
+
+	// PredicateSourceCapable: Expose ON condition (if present) as a predicate source
+	getPredicates(): readonly ScalarPlanNode[] {
+		return this.condition ? [normalizePredicate(this.condition)] : [];
 	}
 }

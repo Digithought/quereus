@@ -31,7 +31,7 @@ rules/
 
 ### Rewrite Rules (Logical → Logical)
 Transform logical plan structure without changing to physical nodes:
-- Predicate pushdown
+- Retrieve growth (modules handle pushdown via Retrieve pipelines)
 - Join reordering based on cardinality
 - Subquery → join conversions
 - Constant folding and elimination
@@ -71,7 +71,7 @@ Propagate and optimize physical properties:
 Rules follow the pattern: `rule-<description>.ts`
 
 Examples:
-- `rule-predicate-pushdown.ts`
+- `rule-grow-retrieve.ts`
 - `rule-aggregate-streaming.ts`
 - `rule-join-hash-conversion.ts`
 - `rule-cache-cte-materialization.ts`
