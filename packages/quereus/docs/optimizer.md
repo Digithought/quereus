@@ -246,7 +246,7 @@ get physical(): PhysicalProperties {
         deterministic: childrenPhysical.every(child => child.deterministic),
         idempotent: childrenPhysical.every(child => child.idempotent),
         readonly: childrenPhysical.every(child => child.readonly),
-        constant: childrenPhysical.every(child => child.constant),
+        // constant is not inherited; only leaf nodes explicitly set it
       }
       : DEFAULT_PHYSICAL;
 
@@ -259,7 +259,7 @@ get physical(): PhysicalProperties {
 **Key Principles:**
 - Leaf nodes get `DEFAULT_PHYSICAL` properties
 - Parent nodes inherit the most restrictive properties from children
-- Nodes can override specific properties via `computePhysical()`
+- Nodes can override specific properties via `computePhysical()`; `constant` is only set explicitly by nodes that can provide `getValue()`
 - Properties are computed once and cached
 
 **Property Computation Example**
@@ -373,8 +373,8 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleMaterializationAdvisory`: Global analysis for cache injection
 - `ruleMutatingSubqueryCache`: Ensures mutating subqueries execute once
 
-**Constant Folding** (`rewrite/`)
-- `ruleConstantFolding`: Evaluates constant expressions at plan time
+**Constant Folding** (pass)
+- Constant folding pass: Evaluates constant expressions at plan time
 
 ### Virtual Table Integration
 
@@ -568,7 +568,7 @@ if (shouldCache(node, context)) {
 
 **Current Limitations**
 - **Enhanced Predicate Analysis**: The constraint extractor currently handles basic binary predicates but could be extended for OR conditions, IN lists, and complex expressions  
-- **Suppressed Constant Folding**: Some constant folding optimizations are currently suppressed pending resolution of specific edge cases
+- **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding (materializing foldable relational subtrees) is planned
 - **Access Path Selection**: Phase 1.5 implementation exists but may require additional work for full production readiness
 
 ## Future Directions
