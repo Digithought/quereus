@@ -44,8 +44,11 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - [x] **Phase 2 - Optimization Pipeline Sequencing**: Implement characteristic-based optimization phases
   - [x] ruleGrowRetrieve: Structural sliding to maximize module query segments
   - [x] Early predicate push-down: Cost-light optimization (across Sort/Distinct/eligible Project; into Retrieve)
-  - [ ] Join enumeration integration: Ensure cost model benefits from push-down
+  - [x] Join enumeration integration: Ensure cost model benefits from push-down
     - [x] Greedy commute for INNER joins: place smaller (or singleton) input on the left
+    - [x] QuickPick tours (left-deep): random-start greedy with cross-product penalty
+    - [x] QuickPick tours (bushy): greedy component merging
+    - [x] Enabled by default with tuning limits; only replaces on meaningful improvement
   - [x] Retrieve as call-boundary: track `bindings` (params/correlated) for enveloped pipeline; pass to physical access
   - [x] Supported-only placement: push only module/index-supported predicate fragments under `Retrieve`; keep residuals above
 - [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model

@@ -10,6 +10,7 @@ import { applyRules, registerRules, createRule } from './framework/registry.js';
 import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
 import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
 import { createOptContext, type OptContext } from './framework/context.js';
+import type { OptimizerDiagnostics } from './framework/context.js';
 import { PassManager, PassId } from './framework/pass.js';
 // Phase 2 rules
 import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-advisory.js';
@@ -22,6 +23,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
+import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
@@ -39,6 +41,7 @@ const log = createLogger('optimizer');
 export class Optimizer {
 	private readonly stats: StatsProvider;
 	private readonly passManager: PassManager;
+  private lastDiagnostics: OptimizerDiagnostics | null = null;
 
 	constructor(
 		public readonly tuning: OptimizerTuning = DEFAULT_TUNING,
@@ -121,6 +124,15 @@ export class Optimizer {
 			priority: 10
 		});
 
+		// QuickPick join enumeration (optional via tuning)
+		this.passManager.addRuleToPass(PassId.Physical, {
+			id: 'quickpick-join-enumeration',
+			nodeType: PlanNodeType.Join,
+			phase: 'impl',
+			fn: ruleQuickPickJoinEnumeration,
+			priority: 5
+		});
+
 		this.passManager.addRuleToPass(PassId.Physical, {
 			id: 'aggregate-streaming',
 			nodeType: PlanNodeType.Aggregate,
@@ -188,6 +200,9 @@ export class Optimizer {
 		try {
 			// Execute all optimization passes
 			const optimizedPlan = this.passManager.execute(plan, context);
+
+			// Capture diagnostics snapshot for external consumers
+			this.lastDiagnostics = { ...context.diagnostics };
 
 			// Final validation (if enabled)
 			if (this.tuning.debug.validatePlan) {
@@ -282,5 +297,10 @@ export class Optimizer {
 	 */
 	getStats(): StatsProvider {
 		return this.stats;
+	}
+
+	/** Get diagnostics from the last optimization run */
+	getLastDiagnostics(): OptimizerDiagnostics | null {
+		return this.lastDiagnostics;
 	}
 }

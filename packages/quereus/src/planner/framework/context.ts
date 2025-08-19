@@ -37,6 +37,9 @@ export interface OptContext {
 	/** Additional context data that rules can use */
 	readonly context: Map<string, unknown>;
 
+	/** Diagnostics bag that rules can populate (emitted after optimization) */
+	readonly diagnostics: OptimizerDiagnostics;
+
 	/** Database instance */
 	readonly db: Database;
 
@@ -47,6 +50,18 @@ export interface OptContext {
 	readonly optimizedNodes: Map<string, PlanNode>;
 }
 
+/** Optimizer diagnostics structure */
+export interface OptimizerDiagnostics {
+  // QuickPick join enumeration
+  quickpick?: {
+    tours?: number;
+    bestCost?: number;
+  };
+  // Extensible for future diagnostics
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
 /**
  * Implementation of optimization context
  */
@@ -54,6 +69,7 @@ export class OptimizationContext implements OptContext {
 	readonly context = new Map<string, unknown>();
 	readonly visitedRules = new Map<string, Set<string>>();
 	readonly optimizedNodes = new Map<string, PlanNode>();
+  readonly diagnostics = {} as OptimizerDiagnostics;
 
 	constructor(
 		public readonly optimizer: Optimizer,

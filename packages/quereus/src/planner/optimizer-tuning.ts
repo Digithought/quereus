@@ -53,6 +53,18 @@ export interface OptimizerTuning {
 		/** Whether to validate physical plans before emission */
 		readonly validatePlan: boolean;
 	};
+
+	/** QuickPick join enumeration tuning */
+	readonly quickpick?: {
+		/** Maximum number of random greedy tours to evaluate */
+		readonly maxTours: number;
+		/** Time limit in milliseconds for enumeration (soft cap) */
+		readonly timeLimitMs: number;
+		/** Minimum estimated plan cost to trigger enumeration */
+		readonly minTriggerCost: number;
+		/** Enable/disable QuickPick globally */
+		readonly enabled: boolean;
+	};
 }
 
 /**
@@ -83,5 +95,11 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 	},
 	debug: {
 		validatePlan: false // Default to disabled in production
+	},
+	quickpick: {
+		maxTours: 100,
+		timeLimitMs: 100,
+		minTriggerCost: 0,
+		enabled: true
 	}
 };

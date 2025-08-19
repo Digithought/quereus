@@ -137,6 +137,11 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 				let properties: string | null = null;
 				const logicalAttributes = node.getLogicalAttributes();
 				if (logicalAttributes && Object.keys(logicalAttributes).length > 0) {
+					// Attach minimal QuickPick diagnostics from optimizer if available
+					const diag = db.optimizer.getLastDiagnostics?.();
+					if (diag?.quickpick) {
+						(logicalAttributes as any).quickpick = diag.quickpick;
+					}
 					properties = safeJsonStringify(logicalAttributes);
 				}
 
