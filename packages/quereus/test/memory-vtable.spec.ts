@@ -234,11 +234,9 @@ describe("Memory VTable Module", () => {
 		it("should handle conflict resolution with INSERT OR IGNORE", async () => {
 			await table.xUpdate('insert', [1, 'user@example.com']);
 
-			// Simulate INSERT OR IGNORE by setting conflict resolution
+			// Simulate INSERT OR IGNORE by passing conflict resolution
 			const rowWithConflictRes = [1, 'other@example.com'];
-			(rowWithConflictRes as any)._onConflict = ConflictResolution.IGNORE;
-
-			const result = await table.xUpdate('insert', rowWithConflictRes);
+			const result = await table.xUpdate('insert', rowWithConflictRes, undefined, ConflictResolution.IGNORE);
 			void expect(result).to.be.undefined; // IGNORE should return undefined
 
 			// Verify original data unchanged
