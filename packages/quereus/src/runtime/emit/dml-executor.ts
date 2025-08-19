@@ -4,6 +4,7 @@ import { emitPlanNode } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type Row } from '../../common/types.js';
 import { getVTable, disconnectVTable } from '../utils.js';
+import { ConflictResolution } from '../../common/constants.js';
 import type { EmissionContext } from '../emission-context.js';
 import { extractOldRowFromFlat, extractNewRowFromFlat } from '../../util/row-descriptor.js';
 
@@ -21,10 +22,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		try {
 			for await (const flatRow of rows) {
 				const newRow = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
-				// TODO: Remove this monkey patch
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				(newRow as any)._onConflict = plan.onConflict || 'abort';
-				await vtab.xUpdate!('insert', newRow);
+				await vtab.xUpdate!('insert', newRow, undefined, plan.onConflict ?? ConflictResolution.ABORT);
 				yield flatRow; // make OLD/NEW available downstream (e.g. RETURNING)
 			}
 		} finally {
@@ -47,7 +45,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 					return oldRow[pkColIdx];
 				});
-				await vtab.xUpdate!('update', newRow, keyValues);
+				await vtab.xUpdate!('update', newRow, keyValues, ConflictResolution.ABORT);
 				yield flatRow;
 			}
 		} finally {
@@ -68,7 +66,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 					return oldRow[pkColIdx];
 				});
-				await vtab.xUpdate!('delete', undefined, keyValues);
+				await vtab.xUpdate!('delete', undefined, keyValues, ConflictResolution.ABORT);
 				yield flatRow;
 			}
 		} finally {

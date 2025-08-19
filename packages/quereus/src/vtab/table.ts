@@ -5,6 +5,7 @@ import type { MaybePromise, Row } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
 import type { RowOp } from '../common/types.js';
+import type { ConflictResolution } from '../common/constants.js';
 import type { VirtualTableConnection } from './connection.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 
@@ -71,13 +72,15 @@ export abstract class VirtualTable {
 	 * @param operation The operation to perform (insert, update, delete)
 	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, undefined
 	 * @param oldKeyValues For UPDATE/DELETE, the old key values of the row to modify. Undefined for INSERT
+	 * @param onConflict Conflict resolution mode (defaults to ABORT if unspecified)
 	 * @returns new row for INSERT/UPDATE, undefined for DELETE
 	 * @throws QuereusError or ConstraintError on failure
 	 */
 	abstract xUpdate(
 		operation: RowOp,
 		values: Row | undefined,
-		oldKeyValues?: Row
+		oldKeyValues?: Row,
+		onConflict?: ConflictResolution
 	): Promise<Row | undefined>;
 
 	/**

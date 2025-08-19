@@ -147,7 +147,7 @@ class MyTable extends VirtualTable {
   }
 
   // Update operations (INSERT, UPDATE, DELETE)
-  async xUpdate(operation: any, values: Row | undefined): Promise<Row | undefined> {
+  async xUpdate(operation: any, values: Row | undefined, oldKeyValues?: Row, onConflict?: ConflictResolution): Promise<Row | undefined> {
     if (operation === 'INSERT' && values) {
       this.data.push(values);
       return values;
