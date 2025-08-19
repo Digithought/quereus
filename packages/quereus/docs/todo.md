@@ -41,10 +41,11 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
   - [x] VirtualTable.xExecutePlan() runtime execution
   - [x] RemoteQueryNode for physical query push-down
   - [x] Access path rule integration and test infrastructure
-- [ ] **Phase 2 - Optimization Pipeline Sequencing**: Implement characteristic-based optimization phases
-  - [ ] ruleGrowRetrieve: Structural sliding to maximize module query segments
-  - [ ] Early predicate push-down: Cost-light optimization (across Sort/Distinct/eligible Project; into Retrieve)
+- [x] **Phase 2 - Optimization Pipeline Sequencing**: Implement characteristic-based optimization phases
+  - [x] ruleGrowRetrieve: Structural sliding to maximize module query segments
+  - [x] Early predicate push-down: Cost-light optimization (across Sort/Distinct/eligible Project; into Retrieve)
   - [ ] Join enumeration integration: Ensure cost model benefits from push-down
+    - [x] Greedy commute for INNER joins: place smaller (or singleton) input on the left
   - [x] Retrieve as call-boundary: track `bindings` (params/correlated) for enveloped pipeline; pass to physical access
   - [x] Supported-only placement: push only module/index-supported predicate fragments under `Retrieve`; keep residuals above
 - [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model
@@ -165,15 +166,15 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - ✅ Test module infrastructure for validating query-based push-down
 
 **Phase 2 – Optimization Pipeline Sequencing**
-- [ ] **ruleGrowRetrieve** (structural pass, top-down): Slide operations into `RetrieveNode` to maximize module-supported query segments
-  - [ ] Walk plan top-down; for each parent above a `RetrieveNode`, create candidate pipeline and test `supports(candidatePipeline)`
-  - [ ] Slide `RetrieveNode` upward when the module supports the expanded pipeline (including complex nodes like joins when applicable)
-  - [ ] If no `supports()`, use index-style fallback (`getBestAccessPlan`) for Filter/Sort/Limit when it yields clear benefit (handled filters, ordering, or enforced limit)
-  - [ ] Stop when module declines; result is fixed maximum module-backed query segments
-- [ ] **Predicate Push-down via supports()** (cost-light phase): Validate pushdown through module acceptance
-  - [ ] Use `supports()` for query-based modules to both validate and price push-down
-  - [ ] For index-style modules, rely on `getBestAccessPlan()` translation of constraints, ordering, and limit - use a system-supplied `supports()`
-  - [ ] Purpose: Improve cardinality estimates and reduce upstream work using module-backed cost reductions
+- [x] **ruleGrowRetrieve** (structural pass, top-down): Slide operations into `RetrieveNode` to maximize module-supported query segments
+  - [x] Walk plan top-down; for each parent above a `RetrieveNode`, create candidate pipeline and test `supports(candidatePipeline)`
+  - [x] Slide `RetrieveNode` upward when the module supports the expanded pipeline (including complex nodes like joins when applicable)
+  - [x] If no `supports()`, use index-style fallback (`getBestAccessPlan`) for Filter/Sort/Limit when it yields clear benefit (handled filters, ordering, or enforced limit)
+  - [x] Stop when module declines; result is fixed maximum module-backed query segments
+- [x] **Predicate Push-down via supports()** (cost-light phase): Validate pushdown through module acceptance
+  - [x] Use `supports()` for query-based modules to both validate and price push-down
+  - [x] For index-style modules, rely on `getBestAccessPlan()` translation of constraints, ordering, and limit - use a system-supplied `supports()`
+  - [x] Purpose: Improve cardinality estimates and reduce upstream work using module-backed cost reductions
   - [x] Policy: push only supported fragments into `Retrieve`; residuals remain above (never pushed down)
 
 Notes:

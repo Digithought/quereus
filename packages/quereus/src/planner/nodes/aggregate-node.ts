@@ -231,6 +231,9 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
       }));
     }
 
+    // Expose logical unique keys: group-by columns (0..groupCount-1) or [[]] for global aggregate
+    const groupCount = this.groupBy.length;
+    (props as any).uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
     return props;
   }
 

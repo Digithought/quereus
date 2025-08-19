@@ -63,7 +63,11 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
   }
 
   override getLogicalAttributes(): Record<string, unknown> {
-    return { };
+    const colCount = this.source.getAttributes().length;
+    const allColsKey = [Array.from({ length: colCount }, (_, i) => i)];
+    return {
+      uniqueKeys: allColsKey
+    };
   }
 
   computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {

@@ -18,6 +18,7 @@ import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js'
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
+import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
@@ -92,6 +93,15 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleJoinKeyInference,
 			priority: 15
+		});
+
+		// Greedy join commute: place smaller input on the left to improve nested-loop-like costs
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'join-greedy-commute',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleJoinGreedyCommute,
+			priority: 16
 		});
 
 		this.passManager.addRuleToPass(PassId.Structural, {

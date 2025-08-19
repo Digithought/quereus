@@ -51,8 +51,9 @@ describe('Key propagation and estimatedRows reduction', () => {
 	});
 
 	it('Distinct declares all-columns key', async () => {
-		await db.exec("CREATE TABLE d (id INTEGER, v INTEGER) USING memory");
-		await db.exec("INSERT INTO d VALUES (1,1),(1,1),(2,2)");
+		// Use an explicit primary key column so duplicate (id,v) rows are allowed
+		await db.exec("CREATE TABLE d (k INTEGER PRIMARY KEY, id INTEGER, v INTEGER) USING memory");
+		await db.exec("INSERT INTO d VALUES (1,1,1),(2,1,1),(3,2,2)");
 		const rows: any[] = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT DISTINCT id, v FROM d')")) rows.push(r);
 		const props = String(rows[0].props);
