@@ -201,6 +201,12 @@ export class PassManager {
 			throw new Error(`Unknown pass: ${passId}`);
 		}
 
+		// Avoid duplicate registrations by rule ID within a pass
+		if (pass.rules.some(r => r.id === rule.id)) {
+			log('Skipping duplicate rule %s for pass %s', rule.id, passId);
+			return;
+		}
+
 		pass.rules.push(rule);
 		log('Added rule %s to pass %s', rule.id, passId);
 	}
@@ -327,14 +333,9 @@ export class PassManager {
 		pass: OptimizationPass
 	): PlanNode {
 		let currentNode = node;
-
+		// Apply rules against the current node type only
 		for (const rule of pass.rules) {
-			// Check if rule applies to this node type
-			if (rule.nodeType !== node.nodeType) {
-				continue;
-			}
-
-			// Apply the rule
+			if (rule.nodeType !== currentNode.nodeType) continue;
 			const result = rule.fn(currentNode, context);
 			if (result && result !== currentNode) {
 				log('Rule %s transformed node in pass %s', rule.id, pass.id);

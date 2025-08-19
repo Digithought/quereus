@@ -184,6 +184,7 @@ function validatePhysicalNodeType(node: PlanNode, nodePath: string): void {
 	// Node types that should NOT appear in a fully optimized physical tree
 	const logicalOnlyTypes = new Set([
 		PlanNodeType.Aggregate, // Should be StreamAggregate or HashAggregate
+		PlanNodeType.Retrieve,  // Must be rewritten to a physical access node
 		// Add other logical-only types here as needed
 	]);
 

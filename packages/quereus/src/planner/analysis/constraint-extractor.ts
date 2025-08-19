@@ -98,14 +98,18 @@ export function extractConstraints(
 		}
 	}
 
-	// Build residual predicate from unmatched expressions
+	// Build residual predicate from unmatched expressions (combine with AND)
 	let residualPredicate: ScalarPlanNode | undefined;
 	if (residualExpressions.length === 1) {
 		residualPredicate = residualExpressions[0];
 	} else if (residualExpressions.length > 1) {
-		// Combine with AND - this would need actual AND node construction
-		residualPredicate = residualExpressions[0]; // Simplified for now
-		log('Multiple residual expressions found, using first one as simplified residual');
+		let acc = residualExpressions[0];
+		for (let i = 1; i < residualExpressions.length; i++) {
+			const right = residualExpressions[i];
+			const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (acc as any).expression, right: (right as any).expression };
+			acc = new BinaryOpNode((acc as any).scope, ast, acc, right);
+		}
+		residualPredicate = acc;
 	}
 
 	log('Extracted %d constraints across %d tables, %d residual expressions',
@@ -549,8 +553,7 @@ function combineResiduals(predicates: ScalarPlanNode[]): ScalarPlanNode | undefi
     for (let i = 1; i < predicates.length; i++) {
         const right = predicates[i];
         const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (acc as any).expression, right: (right as any).expression };
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        acc = new (require('../nodes/scalar.js') as any).BinaryOpNode((acc as any).scope, ast, acc, right);
+        acc = new BinaryOpNode((acc as any).scope, ast, acc, right);
     }
     return acc;
 }

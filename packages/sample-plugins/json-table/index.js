@@ -281,7 +281,7 @@ const jsonTableModule = {
  */
 export default function register(db, config = {}) {
   console.log(`JSON_TABLE plugin loaded with config:`, config);
-  
+
   // Return what we want to register
   return {
     vtables: [

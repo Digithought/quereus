@@ -241,13 +241,18 @@ export class IndexSeekNode extends TableAccessNode {
 	}
 
 	computePhysical(): Partial<PhysicalProperties> {
-		return {
+		const base = {
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
-			// Index seeks can provide ordering and usually return few rows
 			ordering: this.providesOrdering,
-			// Seeks typically return much fewer rows than estimated
 			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100)
-		};
+		} as Partial<PhysicalProperties>;
+		if (!this.isRange) {
+			const pk = this.source.tableSchema.primaryKeyDefinition ?? [];
+			if (pk.length > 0 && this.seekKeys.length >= pk.length) {
+				return { ...base, estimatedRows: 1, uniqueKeys: [[]] } as Partial<PhysicalProperties>;
+			}
+		}
+		return base;
 	}
 
 	override toString(): string {

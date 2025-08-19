@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
@@ -50,6 +50,21 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		const sourceRows = this.source.estimatedRows;
 		if (sourceRows === undefined) return undefined;
 		return sourceRows > 0 ? Math.max(1, Math.floor(sourceRows * 0.5)) : 0;
+	}
+
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		const srcRows = sourcePhysical?.estimatedRows;
+		const est = this.estimatedRows;
+		const rows = (typeof srcRows === 'number' && typeof est === 'number')
+			? Math.min(srcRows, est)
+			: (srcRows ?? est);
+
+		return {
+			estimatedRows: rows,
+			ordering: sourcePhysical?.ordering,
+			uniqueKeys: sourcePhysical?.uniqueKeys,
+		};
 	}
 
 	override toString(): string {

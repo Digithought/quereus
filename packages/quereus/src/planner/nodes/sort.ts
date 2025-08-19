@@ -77,9 +77,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 
 		return {
 			estimatedRows: this.estimatedRows,
-			// Only set ordering if we can extract it from trivial column references
 			ordering,
-			// Preserve unique keys from source
 			uniqueKeys: sourcePhysical?.uniqueKeys,
 		};
 	}

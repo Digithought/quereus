@@ -3,12 +3,14 @@ import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Scala
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
+import { projectKeys } from '../util/key-utils.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { ProjectionCapable } from '../framework/characteristics.js';
+import type { PhysicalProperties } from './plan-node.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -84,8 +86,18 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 				isReadOnly: sourceType.isReadOnly,
 				isSet: sourceType.isSet,
 				columns,
-				// TODO: Infer keys based on DISTINCT and projection's effect on input keys
-				keys: [],
+				keys: (() => {
+					// Build source->output index map for simple column references
+					const map = new Map<number, number>();
+					this.projections.forEach((proj, outIdx) => {
+						if (proj.node instanceof ColumnReferenceNode) {
+							const colRef = proj.node as ColumnReferenceNode;
+							const srcIndex = this.source.getAttributes().findIndex(a => a.id === colRef.attributeId);
+							if (srcIndex >= 0) map.set(srcIndex, outIdx);
+						}
+					});
+					return projectKeys(sourceType.keys, map);
+				})(),
 				// TODO: propagate row constraints that don't have projected off columns
 				rowConstraints: [],
 			} satisfies RelationType;
@@ -150,6 +162,36 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 		});
 	}
 
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		// Build mapping from source index -> projected index for ColumnReferences
+		const map = new Map<number, number>();
+		const sourceAttrs = this.source.getAttributes();
+		this.projections.forEach((proj, outIdx) => {
+			if (proj.node instanceof ColumnReferenceNode) {
+				const colRef = proj.node as ColumnReferenceNode;
+				const srcIndex = sourceAttrs.findIndex(a => a.id === colRef.attributeId);
+				if (srcIndex >= 0) map.set(srcIndex, outIdx);
+			}
+		});
+		const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
+			.map(key => {
+				const projected: number[] = [];
+				for (const col of key) {
+					const outIdx = map.get(col);
+					if (outIdx === undefined) return null;
+					projected.push(outIdx);
+				}
+				return projected;
+			})
+			.filter((k): k is number[] => k !== null);
+		return {
+			estimatedRows: this.source.estimatedRows,
+			ordering: sourcePhysical?.ordering,
+			uniqueKeys,
+		};
+	}
+
 	getType(): RelationType {
 		return this.outputTypeCache.value;
 	}
@@ -194,6 +236,8 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 
 	override getLogicalAttributes(): Record<string, unknown> {
 		return {
+			projectionCount: this.projections.length,
+			uniqueKeys: this.getType().keys.map(k => k.map(ref => ref.index)),
 			projections: this.projections.map(p => ({
 				expression: expressionToString(p.node.expression),
 				alias: p.alias

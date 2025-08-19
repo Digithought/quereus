@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import { ColumnReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
@@ -185,6 +185,19 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
       // No GROUP BY means we're aggregating the entire table into a single row
       return 1;
     }
+  }
+
+  computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+    const sourcePhysical = childrenPhysical[0];
+    const groupCount = this.groupBy.length;
+    // If there is a GROUP BY, the group-by columns form a unique key on the output
+    // Output attribute indices for group-by are 0..groupCount-1 per buildAttributes
+    const uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
+    return {
+      uniqueKeys,
+      estimatedRows: this.estimatedRows,
+      ordering: sourcePhysical?.ordering,
+    };
   }
 
   override toString(): string {

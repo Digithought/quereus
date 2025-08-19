@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
@@ -66,6 +66,15 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode, Li
 			return Math.min(sourceRows, 100);
 		}
 		return sourceRows;
+	}
+
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		return {
+			estimatedRows: this.estimatedRows,
+			ordering: sourcePhysical?.ordering,
+			uniqueKeys: sourcePhysical?.uniqueKeys,
+		};
 	}
 
 	override toString(): string {

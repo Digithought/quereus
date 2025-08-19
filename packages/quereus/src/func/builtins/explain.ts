@@ -6,8 +6,11 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { safeJsonStringify } from "../../util/serialization.js";
-import { InstructionTraceEvent } from "../../runtime/types.js";
+import { CollectingInstructionTracer, InstructionTraceEvent } from "../../runtime/types.js";
 import { PlanNode, RelationalPlanNode } from "../../planner/nodes/plan-node.js";
+import { EmissionContext } from "../../runtime/emission-context.js";
+import { emitPlanNode } from "../../runtime/emitters.js";
+import { Scheduler } from "../../runtime/scheduler.js";
 
 // Helper function to safely get function name from nodes that have it
 function getFunctionName(node: PlanNode): string | null {
@@ -205,10 +208,6 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 			const plan = db.getPlan(sql);
 
 			// Emit the plan to get the instruction tree
-			const { EmissionContext } = await import('../../runtime/emission-context.js');
-			const { emitPlanNode } = await import('../../runtime/emitters.js');
-			const { Scheduler } = await import('../../runtime/scheduler.js');
-
 			const emissionContext = new EmissionContext(db);
 			const rootInstruction = emitPlanNode(plan, emissionContext);
 
@@ -415,7 +414,6 @@ export const executionTraceFunc = createIntegratedTableValuedFunction(
 			}
 
 			// Import the CollectingInstructionTracer
-			const { CollectingInstructionTracer } = await import('../../runtime/types.js');
 			const tracer = new CollectingInstructionTracer();
 
 			// Parse the query and execute with tracing
@@ -570,7 +568,6 @@ export const rowTraceFunc = createIntegratedTableValuedFunction(
 
 		try {
 			// Import the CollectingInstructionTracer
-			const { CollectingInstructionTracer } = await import('../../runtime/types.js');
 			const tracer = new CollectingInstructionTracer();
 
 			// Parse the query and execute with tracing

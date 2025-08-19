@@ -22,6 +22,14 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - 📋 **Join Algorithms**: Hash joins and merge joins
 - 📋 **Aggregate Pushdown**: Push aggregations below joins when semantically valid
 - 📋 **Key-driven row-count reduction**: With better key inference, cardinality can be better estimated and efficiencies gained
+  - ✅ Declare unique keys when produced:
+    - ✅ DISTINCT → all-columns unique key (physical properties)
+    - ✅ GROUP BY → unique key over grouping columns; global aggregate → `[[]]` (≤1 row)
+  - ✅ Equality IndexSeek on full PK → `estimatedRows=1`, `uniqueKeys=[[]]`
+  - ✅ Propagate `uniqueKeys` and `ordering` through Filter/Sort/Limit; Project maps keys via attribute-ID column references
+  - ✅ Equi-join key preservation (INNER/CROSS): if join columns cover a unique key on one side, preserve the other side’s keys and cap `estimatedRows`
+  - 📋 FK→PK join inference: derive keys when ON aligns a PK with an inferred unique set on the other side (e.g., via DISTINCT/GROUP BY)
+  - 📋 Optimizer exploitation: prefer join strategies and pruning using `[[]]` and preserved keys
 
 
 ## 🔄 Current Development Focus
@@ -36,15 +44,16 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - [ ] **Phase 2 - Optimization Pipeline Sequencing**: Implement characteristic-based optimization phases
   - [ ] ruleGrowRetrieve: Structural sliding to maximize module query segments
   - [ ] Early predicate push-down: Cost-light optimization (across Sort/Distinct/eligible Project; into Retrieve)
+  - [ ] Join enumeration integration: Ensure cost model benefits from push-down
   - [x] Retrieve as call-boundary: track `bindings` (params/correlated) for enveloped pipeline; pass to physical access
   - [x] Supported-only placement: push only module/index-supported predicate fragments under `Retrieve`; keep residuals above
-  - [ ] Join enumeration integration: Ensure cost model benefits from push-down
 - [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model
   - [ ] Advanced predicate push-down with sophisticated cost decisions (LIKE prefix, complex OR factoring)
   - [ ] Dynamic constraints: plan-time shape, runtime evaluation of binding expressions
   - [ ] Range seeks: pass dynamic lower/upper bounds and extend Memory module scan plan to use them
   - [ ] IN lists: choose between seek-union or residual handling based on index support and list size
   - [ ] Projection and aggregation push-down optimization
+  - [ ] Projection Push-down: Eliminate unnecessary column retrieval (leverage stable attribute IDs and key propagation)
 
 **Design Philosophy: Characteristic-Based Rules**
 - Rules target logical node characteristics rather than hard-coded node types
@@ -170,6 +179,9 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 Notes:
 - Retrieve logical attributes now expose `bindingsCount` and `bindingsNodeTypes` (visible via `query_plan().properties`) to aid debugging and verification of binding capture.
 - Basic predicate push-down into Retrieve uses supported-only fragments; residual predicates remain above Retrieve. Index-style fallback similarly injects only supported filter fragments inside the pipeline.
+- `SetOperation` is excluded from grow-retrieve to avoid structural oscillation; predicate push-down still applies to branch pipelines.
+- Physicalization invariant: all `Retrieve` nodes must be rewritten to concrete access nodes or `RemoteQuery` in the physical pass (enforced by validation).
+- Robust PK equality seeks: full-PK equality is recognized by column index and selects `IndexSeek` even if provider `handledFilters` ordering differs.
 - [ ] **Join Enumeration Integration**: Ensure join rewriting uses realistic cardinality estimates
   - [ ] Verify join cost model accounts for pushed-down predicates
   - [ ] Test that join enumeration benefits from phase 1-2 optimizations
@@ -185,6 +197,8 @@ Notes:
 - [ ] **Aggregation Push-down**: Push GROUP BY and aggregate functions
   - [ ] Simple aggregates (COUNT, SUM, MIN, MAX) for supported modules
   - [ ] Complex aggregation split strategies
+ - [ ] **Range Seeks**: Pass dynamic lower/upper bounds and extend Memory module scan/seek plan to use them
+ - [ ] **IN-list strategy**: Choose between seek-union vs residual based on index coverage and list size
 
 ### VTab / Module Enhancements
 - [ ] Add `

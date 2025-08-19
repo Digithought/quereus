@@ -12,7 +12,7 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode } from '../../nodes/plan-node.js';
+import type { PlanNode, ScalarPlanNode } from '../../nodes/plan-node.js';
 import { isRelationalNode, type RelationalPlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { RetrieveNode } from '../../nodes/retrieve-node.js';
@@ -25,9 +25,9 @@ import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
 import { TableReferenceNode } from '../../nodes/reference.js';
 import { FilterNode } from '../../nodes/filter.js';
 import { extractConstraintsForTable, type PredicateConstraint as PlannerPredicateConstraint } from '../../analysis/constraint-extractor.js';
-import { IndexConstraintOp } from '../../../common/constants.js';
 import { LiteralNode } from '../../nodes/scalar.js';
 import type * as AST from '../../../parser/ast.js';
+import { IndexConstraintOp } from '../../../common/constants.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
 
@@ -42,6 +42,21 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 	const vtabModule = retrieveNode.vtabModule;
 
 	log('Selecting access path for retrieve over table %s', tableSchema.name);
+
+	// Always allow fallback to sequential scan to guarantee physicalization
+	// even when no specialized support is available.
+
+	// If grow-retrieve established an index-style context, reuse it directly
+	if (isIndexStyleContext(retrieveNode.moduleCtx)) {
+		log('Using index-style context provided by grow-retrieve');
+		const accessPlan = retrieveNode.moduleCtx.accessPlan;
+		const originalConstraints = retrieveNode.moduleCtx.originalConstraints as unknown as PlannerPredicateConstraint[];
+		const physicalLeaf: RelationalPlanNode = selectPhysicalNode(retrieveNode.tableRef, accessPlan, originalConstraints) as unknown as RelationalPlanNode;
+		if (retrieveNode.moduleCtx.residualPredicate) {
+			return new FilterNode(retrieveNode.scope, physicalLeaf, retrieveNode.moduleCtx.residualPredicate);
+		}
+		return physicalLeaf;
+	}
 
 	// Check if module supports query-based execution via supports() method
 	if (vtabModule.supports && typeof vtabModule.supports === 'function') {
@@ -96,8 +111,8 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
 		constraints = indexCtx.originalConstraints || [];
 		residualPredicate = indexCtx.residualPredicate;
 	} else {
-		// Extract constraints from grown pipeline in source
-		constraints = extractConstraintsForTable(retrieveNode.source, tableSchema.name);
+		// Extract constraints from grown pipeline in source; use fully-qualified relation name
+		constraints = extractConstraintsForTable(retrieveNode.source, `${tableSchema.schemaName}.${tableSchema.name}`);
 
 		// Build request for getBestAccessPlan
 		const request: BestAccessPlanRequest = {
@@ -191,10 +206,14 @@ function selectPhysicalNode(
 	};
 
   // Analyze the access plan to determine node type
-  const handled = (c: PlannerPredicateConstraint) => accessPlan.handledFilters[constraints.indexOf(c)] === true;
-  const eqHandled = constraints.filter(c => c.op === '=' && handled(c));
+  // Determine handled constraints by column index, not array position (robust to ordering)
+  const handledByCol = new Set<number>();
+  constraints.forEach((c, i) => {
+    if (accessPlan.handledFilters[i] === true) handledByCol.add(c.columnIndex);
+  });
+  const eqHandled = constraints.filter(c => c.op === '=');
   const hasEqualityConstraints = eqHandled.length > 0;
-  const hasRangeConstraints = constraints.some(c => ['>', '>=', '<', '<='].includes(c.op) && handled(c));
+  const hasRangeConstraints = constraints.some(c => ['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex));
 
 	// Convert OrderingSpec[] to the format expected by physical nodes
 	const providesOrdering = accessPlan.providesOrdering?.map(spec => ({
@@ -209,11 +228,15 @@ function selectPhysicalNode(
   for (const c of eqHandled) eqByCol.set(c.columnIndex, c);
   const coversPk = pkCols.length > 0 && pkCols.every(pk => eqByCol.has(pk.index));
 
-  if (hasEqualityConstraints && coversPk && maybeRows <= 10) {
+  // If module didn't report handledFilters properly but we have full-PK equality,
+  // treat it as handled for the purpose of selecting IndexSeek.
+  const treatAsHandledPk = coversPk && pkCols.every(pk => handledByCol.has(pk.index) || eqByCol.has(pk.index));
+
+  if ((hasEqualityConstraints && coversPk || treatAsHandledPk) && maybeRows <= 10) {
     // Build seek keys (as ScalarPlanNode) and constraint wiring for runtime args
     const seekKeys = pkCols.map(pk => {
       const c = eqByCol.get(pk.index)!;
-      if (c.valueExpr) return c.valueExpr as unknown as import('../../nodes/plan-node.js').ScalarPlanNode;
+      if (c.valueExpr) return c.valueExpr as unknown as ScalarPlanNode;
       const lit: AST.LiteralExpr = { type: 'literal', value: c.value } as unknown as AST.LiteralExpr;
       return new LiteralNode(tableRef.scope, lit);
     });
@@ -243,14 +266,58 @@ function selectPhysicalNode(
     );
   }
 
-  if (hasRangeConstraints || providesOrdering) {
-		// Range constraints or ordering required - use index scan
-		log('Using index scan (range constraints or ordering)');
+	if (hasRangeConstraints) {
+		// Build dynamic range seek using IndexSeek with lower/upper bound expressions
+		// Choose first handled range column (typically leading PK/index column)
+		const rangeCols = constraints
+			.filter(c => ['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex))
+			.sort((a, b) => a.columnIndex - b.columnIndex);
+
+		const primaryFirstCol = (tableRef.tableSchema.primaryKeyDefinition?.[0]?.index) ?? (rangeCols[0]?.columnIndex ?? 0);
+		const lower = rangeCols.find(c => c.columnIndex === primaryFirstCol && (c.op === '>' || c.op === '>=')) as unknown as PlannerPredicateConstraint | undefined;
+		const upper = rangeCols.find(c => c.columnIndex === primaryFirstCol && (c.op === '<' || c.op === '<=')) as unknown as PlannerPredicateConstraint | undefined;
+
+		const seekKeys: ScalarPlanNode[] = [];
+		const rangeConstraints: { constraint: { iColumn: number; op: number; usable: boolean }; argvIndex: number }[] = [] as any;
+
+		let argv = 1;
+		if (lower) {
+			// argvIndex starts at 1
+			rangeConstraints.push({ constraint: { iColumn: primaryFirstCol, op: opToIndexOp(lower.op as any), usable: true }, argvIndex: argv });
+			seekKeys.push(lower.valueExpr ? lower.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: lower.value } as any));
+			argv++;
+		}
+		if (upper) {
+			rangeConstraints.push({ constraint: { iColumn: primaryFirstCol, op: opToIndexOp(upper.op as any), usable: true }, argvIndex: argv });
+			seekKeys.push(upper.valueExpr ? upper.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: upper.value } as any));
+			argv++;
+		}
+
+		const fi: FilterInfo = {
+			...filterInfo,
+			constraints: rangeConstraints as any,
+			idxStr: 'idx=_primary_(0);plan=3',
+		};
+
+		log('Using index seek (range) on primary key');
+		return new IndexSeekNode(
+			tableRef.scope,
+			tableRef,
+			fi,
+			'primary',
+			seekKeys,
+			true,
+			providesOrdering,
+			accessPlan.cost
+		);
+	} else if (providesOrdering) {
+		// Ordering benefit without explicit range constraints: prefer index scan
+		log('Using index scan (ordering provided)');
 		return new IndexScanNode(
 			tableRef.scope,
 			tableRef,
 			filterInfo,
-			'primary', // Default to primary index
+			'primary',
 			providesOrdering,
 			accessPlan.cost
 		);
@@ -259,6 +326,11 @@ function selectPhysicalNode(
 		log('Using sequential scan (no beneficial index access)');
 		return createSeqScan(tableRef, filterInfo, accessPlan.cost);
 	}
+}
+
+// Narrow module context originating from grow-retrieve index-style fallback
+function isIndexStyleContext(ctx: unknown): ctx is { kind: 'index-style'; accessPlan: BestAccessPlanResult; residualPredicate?: ScalarPlanNode; originalConstraints: unknown[] } {
+	return !!ctx && typeof ctx === 'object' && (ctx as any).kind === 'index-style';
 }
 
 /**
@@ -298,4 +370,14 @@ function createSeqScan(tableRef: TableReferenceNode, filterInfo?: FilterInfo, co
 	);
 
 	return seqScan;
+}
+
+function opToIndexOp(op: '>' | '>=' | '<' | '<='): number {
+  switch (op) {
+    case '>': return IndexConstraintOp.GT as unknown as number;
+    case '>=': return IndexConstraintOp.GE as unknown as number;
+    case '<': return IndexConstraintOp.LT as unknown as number;
+    case '<=': return IndexConstraintOp.LE as unknown as number;
+    default: return IndexConstraintOp.GE as unknown as number;
+  }
 }

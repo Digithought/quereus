@@ -278,6 +278,8 @@ computePhysical(): Partial<PhysicalProperties> {
 
 Constant folding is an elaborate optimization that evaluates constant expressions at plan time rather than runtime. The system uses a three-phase algorithm with sophisticated dependency tracking.
 
+See [Constant Folding System](optimizer-const.md) for details.
+
 **Core Concepts**
 
 The `constant` physical property has strict requirements:
@@ -846,6 +848,18 @@ RetrieveNode
   - Bindings are collected from the added fragment and merged into `Retrieve.bindings`.
 
 This policy ensures the `Retrieve` pipeline is always a precise description of what the module/index can handle; unsupported parts never enter the boundary.
+
+### Set operations and growth boundaries
+
+- `SetOperation` (`UNION`, `INTERSECT`, `EXCEPT`, `DIFF`) is excluded from the grow-retrieve structural pass. Sliding a `Retrieve` boundary across set operations can cause structural oscillation and provides little benefit to index-style modules. Predicate push-down into the branches remains supported via the supported-only policy.
+
+### Physicalization invariant
+
+- During the physical selection pass, all `Retrieve` nodes must be rewritten to concrete access nodes (`SeqScan`, `IndexScan`, or `IndexSeek`) or `RemoteQuery`. A validation invariant enforces that no `Retrieve` nodes reach emission.
+
+### Robust primary-key equality seeks
+
+- For index-style modules, full primary-key equality (including parameterized values) will select `IndexSeek` even if the provider’s `handledFilters` ordering differs from planner constraint extraction. The optimizer aligns constraints by column index and constructs dynamic seek keys from parameters/correlated expressions.
 
 ### Diagnostics and verification
 

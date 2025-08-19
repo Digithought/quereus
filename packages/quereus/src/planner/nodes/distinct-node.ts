@@ -1,9 +1,9 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { quereusError } from '../../common/errors.js';
-import { StatusCode } from '../../index.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Represents a DISTINCT operation that eliminates duplicate rows.
@@ -29,8 +29,7 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
     const sourceType = this.source.getType();
     return {
       ...sourceType,
-			// TODO: ensure that formed key is represented in the type
-      isSet: true // DISTINCT guarantees uniqueness
+      isSet: true
     };
   }
 
@@ -65,6 +64,17 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
 
   override getLogicalAttributes(): Record<string, unknown> {
     return { };
+  }
+
+  computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+    const sourcePhysical = childrenPhysical[0];
+    const colCount = this.source.getAttributes().length;
+    const allColsKey = [Array.from({ length: colCount }, (_, i) => i)];
+    return {
+      uniqueKeys: allColsKey,
+      estimatedRows: this.estimatedRows,
+      ordering: sourcePhysical?.ordering,
+    };
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {
