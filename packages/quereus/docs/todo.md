@@ -70,14 +70,6 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 - [ ] **Orthogonal relational expressions**: allow any expression that results in a relational expression in a relational expressive context 
 - [ ] Values in "select" locations (e.g. views)
 - [ ] Expression-based functions
-- [ ] Make "on conflict" an argument of xUpdate, rather than _onConflict row voodoo:
-```ts
-				(newRow as any)._onConflict = plan.onConflict || 'abort';
-				await vtab.xUpdate!('insert', newRow);
-```
-- [ ] Fix suppressed constant folding issue (see Known Issues in optimizer.md)
-- [ ] Complete constraint extraction implementation (currently has placeholder logic)
-- [ ] More intelligent key inference for joins and beyond
 - [ ] Make choice of scheduler run method determined at constructor time, not in run
 
 **Window Functions (Remaining)**

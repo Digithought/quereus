@@ -308,7 +308,8 @@ export class MemoryTableManager {
 		connection: MemoryTableConnection,
 		operation: 'insert' | 'update' | 'delete',
 		values: Row | undefined,
-		oldKeyValues?: Row
+		oldKeyValues?: Row,
+		onConflict: ConflictResolution = ConflictResolution.ABORT
 	): Promise<Row | undefined> {
 		this.validateMutationPermissions(operation);
 
@@ -316,7 +317,6 @@ export class MemoryTableManager {
 		this.ensureTransactionLayer(connection);
 
 		const targetLayer = connection.pendingTransactionLayer!;
-		const onConflict = this.extractConflictResolution(values);
 		this.cleanConflictResolutionFromValues(values);
 
 		try {
@@ -371,11 +371,12 @@ export class MemoryTableManager {
 		}
 	}
 
-	private extractConflictResolution(values: Row | undefined): ConflictResolution {
-		return (values && (values as any)._onConflict)
-			? (values as any)._onConflict as ConflictResolution
-			: ConflictResolution.ABORT;
-	}
+ 	// Deprecated: conflict resolution is now passed explicitly to performMutation
+ 	private extractConflictResolution(values: Row | undefined): ConflictResolution {
+ 		return (values && (values as any)._onConflict)
+ 			? (values as any)._onConflict as ConflictResolution
+ 			: ConflictResolution.ABORT;
+ 	}
 
 	private shouldSkipPkCheck(values: Row | undefined): boolean {
 		return !!(values && (values as any)._skipPkCheck);

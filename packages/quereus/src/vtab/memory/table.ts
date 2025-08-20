@@ -14,6 +14,7 @@ import { createMemoryTableLoggers } from './utils/logging.js';
 import { safeJsonStringify } from '../../util/serialization.js';
 import type { VirtualTableConnection } from '../connection.js';
 import { MemoryVirtualTableConnection } from './connection.js';
+import type { ConflictResolution } from '../../common/constants.js';
 
 const logger = createMemoryTableLoggers('table');
 
@@ -125,12 +126,13 @@ export class MemoryTable extends VirtualTable {
 	async xUpdate(
 		operation: 'insert' | 'update' | 'delete',
 		values: Row | undefined,
-		oldKeyValues?: Row
+		oldKeyValues?: Row,
+		onConflict?: ConflictResolution
 	): Promise<Row | undefined> {
 		const conn = await this.ensureConnection();
 		// Delegate mutation to the manager.
 		// This assumes manager.performMutation will be updated to this signature and logic.
-		return this.manager.performMutation(conn, operation, values, oldKeyValues);
+		return this.manager.performMutation(conn, operation, values, oldKeyValues, onConflict);
 	}
 
 	/** Begins a transaction for this connection */

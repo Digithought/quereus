@@ -5,6 +5,7 @@ import type { TableSchema } from '../../src/schema/table.js';
 import type { PlanNode } from '../../src/planner/nodes/plan-node.js';
 import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
 import type { Row, RowOp } from '../../src/common/types.js';
+import type { ConflictResolution } from '../../src/common/constants.js';
 import { StatusCode } from '../../src/common/types.js';
 import { IndexInfo } from '../../src/vtab/index-info.js';
 import { FilterInfo } from '../../src/vtab/filter-info.js';
@@ -122,7 +123,8 @@ export class TestQueryTable extends VirtualTable {
 	async xUpdate(
 		operation: RowOp,
 		values: Row | undefined,
-		oldKeyValues?: Row
+		oldKeyValues?: Row,
+		onConflict?: ConflictResolution
 	): Promise<Row | undefined> {
 		// Simple implementation for testing
 		switch (operation) {
