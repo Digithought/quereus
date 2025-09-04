@@ -137,7 +137,7 @@ export function ruleGrowRetrieve(node: PlanNode, context: OptContext): PlanNode 
 		if (node instanceof FilterNode) {
 			const tableInfo: TableInfo = createTableInfoFromNode(retrieveChild.tableRef, tableSchema.name);
 			const extraction = extractConstraints(normalizePredicate(node.predicate), [tableInfo]);
-			const supported = extraction.supportedPredicateByTable?.get(tableSchema.name);
+			const supported = extraction.supportedPredicateByTable?.get(tableInfo.relationKey);
 			if (supported) {
 				newPipeline = new FilterNode(
 					retrieveChild.source.scope,

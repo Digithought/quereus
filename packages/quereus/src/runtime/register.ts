@@ -12,6 +12,8 @@ import { emitCreateIndex } from './emit/create-index.js';
 import { emitDropTable } from './emit/drop-table.js';
 import { emitCreateView } from './emit/create-view.js';
 import { emitDropView } from './emit/drop-view.js';
+import { emitCreateAssertion } from './emit/create-assertion.js';
+import { emitDropAssertion } from './emit/drop-assertion.js';
 import { emitCTE } from './emit/cte.js';
 import { emitCTEReference } from './emit/cte-reference.js';
 import { emitInternalRecursiveCTERef } from './emit/internal-recursive-cte-ref.js';
@@ -113,6 +115,8 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateView, emitCreateView as EmitterFunc);
 	registerEmitter(PlanNodeType.DropView, emitDropView as EmitterFunc);
+	registerEmitter(PlanNodeType.CreateAssertion, emitCreateAssertion as EmitterFunc);
+	registerEmitter(PlanNodeType.DropAssertion, emitDropAssertion as EmitterFunc);
 	registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);
 	registerEmitter(PlanNodeType.Update, emitUpdate as EmitterFunc);
 	registerEmitter(PlanNodeType.UpdateExecutor, emitDmlExecutor as EmitterFunc);

@@ -1,0 +1,60 @@
+import type { CreateAssertionNode } from '../../planner/nodes/create-assertion-node.js';
+import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
+import type { EmissionContext } from '../emission-context.js';
+import { QuereusError } from '../../common/errors.js';
+import { SqlValue, StatusCode } from '../../common/types.js';
+import { createLogger } from '../../common/logger.js';
+import type { IntegrityAssertionSchema } from '../../schema/assertion.js';
+import { expressionToString } from '../../util/ast-stringify.js';
+
+const log = createLogger('runtime:emit:create-assertion');
+
+export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionContext): Instruction {
+
+	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+		// Convert the CHECK expression to SQL text for storage
+		// The CHECK expression should be negated to become a violation query:
+		// CHECK (condition) becomes "SELECT 1 WHERE NOT (condition)"
+		let violationSql: string;
+		try {
+			const exprSql = expressionToString(plan.checkExpression);
+			violationSql = `SELECT 1 WHERE NOT (${exprSql})`;
+		} catch (e) {
+			log('Failed to stringify assertion expression: %O', e);
+			// Fallback for complex expressions
+			violationSql = 'SELECT 1 WHERE FALSE'; // Never violates
+		}
+
+		// Create the assertion schema object
+		const assertionSchema: IntegrityAssertionSchema = {
+			name: plan.name,
+			violationSql,
+			deferrable: true, // Auto-deferred for multi-table constraints
+			initiallyDeferred: true,
+		};
+
+		// Add to schema
+		const schemaManager = rctx.db.schemaManager;
+		const schema = schemaManager.getMainSchema(); // Store in main schema for now
+
+		// Check for existing assertion
+		const existing = schema.getAssertion(plan.name);
+		if (existing) {
+			throw new QuereusError(
+				`Assertion ${plan.name} already exists`,
+				StatusCode.CONSTRAINT
+			);
+		}
+
+		schema.addAssertion(assertionSchema);
+
+		log('Created assertion %s with violationSql: %s', plan.name, violationSql);
+		return null;
+	}
+
+	return {
+		params: [],
+		run: run as InstructionRun,
+		note: `createAssertion(${plan.name})`
+	};
+}

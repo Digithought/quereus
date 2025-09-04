@@ -1843,7 +1843,7 @@ export class Parser {
 	}
 
 	/** @internal */
-	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt {
+	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt | AST.CreateAssertionStmt {
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE.");
 			return this.createTableStatement(startToken, withClause);
@@ -1853,12 +1853,15 @@ export class Parser {
 		} else if (this.peekKeyword('VIEW')) {
 			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
 			return this.createViewStatement(startToken, withClause);
+		} else if (this.peekKeyword('ASSERTION')) {
+			this.consumeKeyword('ASSERTION', "Expected 'ASSERTION' after CREATE.");
+			return this.createAssertionStatement(startToken, withClause);
 		} else if (this.peekKeyword('UNIQUE')) {
 			this.consumeKeyword('UNIQUE', "Expected 'UNIQUE' after CREATE.");
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE UNIQUE.");
 			return this.createIndexStatement(startToken, true, withClause);
 		}
-		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, or VIRTUAL after CREATE.");
+		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, ASSERTION, or VIRTUAL after CREATE.");
 	}
 
 	/**
@@ -2032,11 +2035,33 @@ export class Parser {
 	}
 
 	/**
+	 * Parse CREATE ASSERTION statement
+	 * @returns AST for CREATE ASSERTION
+	 */
+	private createAssertionStatement(startToken: Token, _withClause?: AST.WithClause): AST.CreateAssertionStmt {
+		const name = this.consumeIdentifier("Expected assertion name.");
+
+		this.consumeKeyword('CHECK', "Expected 'CHECK' after assertion name.");
+		this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
+
+		const check = this.expression();
+
+		this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
+
+		return {
+			type: 'createAssertion',
+			name,
+			check,
+			loc: _createLoc(startToken, this.previous()),
+		};
+	}
+
+	/**
 	 * Parse DROP statement
 	 * @returns AST for DROP statement
 	 */
 	private dropStatement(startToken: Token, _withClause?: AST.WithClause): AST.DropStmt {
-		let objectType: 'table' | 'view' | 'index' | 'trigger';
+		let objectType: 'table' | 'view' | 'index' | 'trigger' | 'assertion';
 
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected TABLE after DROP.");
@@ -2047,8 +2072,11 @@ export class Parser {
 		} else if (this.peekKeyword('INDEX')) {
 			this.consumeKeyword('INDEX', "Expected INDEX after DROP.");
 			objectType = 'index';
+		} else if (this.peekKeyword('ASSERTION')) {
+			this.consumeKeyword('ASSERTION', "Expected ASSERTION after DROP.");
+			objectType = 'assertion';
 		} else {
-			throw this.error(this.peek(), "Expected TABLE, VIEW, or INDEX after DROP.");
+			throw this.error(this.peek(), "Expected TABLE, VIEW, INDEX, or ASSERTION after DROP.");
 		}
 
 		let ifExists = false;

@@ -1,4 +1,5 @@
 import { Schema } from './schema.js';
+import type { IntegrityAssertionSchema } from './assertion.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema, RowConstraintSchema, IndexSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
@@ -199,6 +200,19 @@ export class SchemaManager {
 	 */
 	_getAllSchemas(): IterableIterator<Schema> {
 		return this.schemas.values();
+	}
+
+	/**
+	 * Returns all assertions across all schemas
+	 */
+	getAllAssertions(): IntegrityAssertionSchema[] {
+		const result: IntegrityAssertionSchema[] = [];
+		for (const schema of this._getAllSchemas()) {
+			for (const a of schema.getAllAssertions()) {
+				result.push(a);
+			}
+		}
+		return result;
 	}
 
 	/**

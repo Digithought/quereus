@@ -1,0 +1,54 @@
+-- Testing CREATE ASSERTION and DROP ASSERTION - table non-specific
+
+CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+
+-- Simple assertion that never fails (for DDL testing)
+CREATE ASSERTION always_passes CHECK (1 = 1);
+
+-- Insert data
+INSERT INTO users VALUES (1, 'Alice');
+COMMIT;
+
+-- Drop the assertion
+DROP ASSERTION always_passes;
+
+-- Insert more data after dropping assertion
+INSERT INTO users VALUES (2, 'Bob');
+COMMIT;
+
+-- Verify data
+SELECT name FROM users ORDER BY id;
+→ [{ "name": "Alice" }, { "name": "Bob" }]
+
+DROP TABLE users;
+
+-- Testing assertion violation behavior - table non-specific
+
+CREATE TABLE numbers (value INTEGER PRIMARY KEY);
+
+-- Assertion that always fails (for testing violation)
+CREATE ASSERTION always_fails CHECK (1 = 0);
+
+-- Try to commit with the failing assertion
+BEGIN;
+INSERT INTO numbers VALUES (5);
+
+COMMIT;
+-- error: Integrity assertion failed: always_fails
+
+-- Verify nothing was committed
+SELECT COUNT(*) FROM numbers;
+→ [{ "count(*)": 0 }]
+
+-- Drop the failing assertion
+DROP ASSERTION always_fails;
+
+-- Now we can insert data
+INSERT INTO numbers VALUES (5);
+COMMIT;
+
+-- Verify it worked
+SELECT value FROM numbers;
+→ [{ "value": 5 }]
+
+DROP TABLE numbers;

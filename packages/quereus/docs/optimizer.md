@@ -809,6 +809,113 @@ TODO
 * Write helper `projectKeys(keys, columnMapping)` to push keys through `ProjectNode` / `ReturningNode`.  
 * Write helper `combineJoinKeys(leftKeys, rightKeys, joinType)` (draft already lives in utils – wire it in).
 
+## Row‑specific vs Global Classification for Assertions
+
+### Problem Statement
+
+Global transaction‑deferred integrity assertions are expressed as violation queries that return rows when a constraint is broken. To avoid full re‑evaluation on every COMMIT, we must:
+- Classify each table reference instance in an assertion plan as row‑specific (≤1 row per changed key) or global (potentially many rows)
+- Track per‑transaction changes keyed by table instance
+- Execute efficient delta checks: full scan only when necessary; otherwise run parameterized checks per changed key
+
+### Core Definitions
+
+- relationKey: Unique identifier for a table reference instance within a plan. Format: `schema.table#<nodeId>` or `schema.table@alias#<nodeId>`.
+- uniqueKeys: Physical property carried by nodes, each key is an array of column indices relative to the node’s output that uniquely identify a row. `[[]]` denotes ≤1 row (singleton) regardless of columns.
+- coveredKey: A unique key that is fully constrained by equality predicates at a node boundary. Presence of a covered key implies `estimatedRows ≤ 1`.
+- Row‑specific: A table reference instance classified as producing at most one row for any given unique key binding at COMMIT time.
+- Global: Any instance not provably row‑specific.
+
+### Logical Analysis Pipeline
+
+1) Optimizer pre‑physical analysis
+- Use an analysis entrypoint that runs constant folding and structural rewrites, stops before physical selection.
+- This stabilizes logical shape and enables reliable key propagation without physical access assumptions.
+
+2) Unique key propagation rules
+- Filter: If predicate covers a full unique key on the source, set `uniqueKeys = [[]]` and cap `estimatedRows = 1`; otherwise propagate source `uniqueKeys` unchanged.
+- Project/Returning: Map source `uniqueKeys` through projection mapping; drop keys that aren’t fully preserved.
+- Join (INNER/CROSS): Preserve side keys when equi‑join predicates cover the other side’s key; compute composite keys when applicable. For OUTER joins, only preserve non‑null‑safe keys on the preserved side.
+- Aggregate: `GROUP BY` columns define `uniqueKeys` over their indices; global aggregates without grouping produce `[[]]`.
+- Distinct: All columns form a `uniqueKey`.
+- Set operations/window functions: Conservatively clear `uniqueKeys` unless proven otherwise.
+
+3) Covered key detection
+- Constraint extractor emits `coveredKeysByTable: Map<relationKey, number[][]>` by matching normalized equality predicates to unique key columns.
+- A table reference instance is row‑specific at a node if any covered key is present or `uniqueKeys` contains `[[]]`.
+
+### Classification API
+
+```ts
+// Pre‑physical plan only
+function analyzeRowSpecific(plan: RelationalPlanNode): Map<string /* relationKey */, 'row' | 'global'>
+```
+
+Algorithm (concise):
+- Traverse plan; collect `TableInfo` for each table reference instance with `relationKey` and `uniqueKeys` inferred at that point.
+- Compute `coveredKeysByTable` from normalized predicates along the path to the instance.
+- Classify a relationKey as 'row' if: `uniqueKeys` contains `[[]]` at or above its earliest reference OR any `coveredKey` fully matches a declared/inferred unique key. Else 'global'.
+
+Notes:
+- Multi‑reference handling: Classify per‑instance via `relationKey`. The same base table may have both row‑specific and global instances in one assertion.
+- Joins with equality on a unique key reduce the joined side to row‑specific; push this information upward to avoid false global classifications.
+
+### Transaction Change Tracking
+
+Goal: Build a per‑transaction delta of changed rows, keyed by table instance.
+
+Data structures:
+- `transactionLog: Map<relationKey | baseTableName, Set<KeyTuple>>`
+  - Initially use base table name; after analysis, map to instance `relationKey`s for assertions. For MVP, base table scope is sufficient and simpler.
+- `KeyTuple` supports composite keys via ordered arrays of values.
+
+Events captured:
+- INSERT: add NEW primary key
+- UPDATE: add OLD and NEW primary keys (if key changes)
+- DELETE: add OLD primary key
+
+Savepoints:
+- Maintain a stack of change sets; on SAVEPOINT push a new layer; on ROLLBACK TO SAVEPOINT discard the top layer; on RELEASE merge.
+
+### Commit‑time Evaluation Engine
+
+High‑level algorithm:
+1) Collect assertions impacted by the transaction: `dependentTables ∩ changedTables ≠ ∅` (dependent tables discovered during assertion preparation by examining the violation plan).
+2) For each impacted assertion:
+   a) Build/obtain pre‑physical plan via analysis entrypoint; run `analyzeRowSpecific(plan)`.
+   b) If any dependent reference is classified 'global' AND that base table changed: execute the original violation SQL once. If any row returns → fail.
+   c) Otherwise, for each row‑specific dependent table with changes: execute a parameterized variant once per changed key. If any run returns rows → fail early.
+3) On first failure: throw `QuereusError(StatusCode.CONSTRAINT)`; the COMMIT path rolls back all connections.
+
+### Prepared, Parameterized Assertion Variants
+
+For each assertion and each row‑specific dependent table reference instance:
+- Parameterization: Bind the full unique key (declared PK or any covered unique key) as parameters at the earliest reference to that instance.
+- Injection point: Add a Filter on the table’s own attributes with `= ?` parameters; do not restructure joins (no equality‑join injection), allowing the optimizer to infer `IndexSeek` or equivalent logically.
+- Metadata: For composite keys, maintain stable parameter order matching the declared key column order.
+- Multiple instances: Prepare one variant per row‑specific instance (`relationKey`) to avoid parameter collision across multiple references to the same base table.
+
+Execution strategy:
+- For N changed keys of table T, execute the prepared variant N times (MVP). A future enhancement will batch keys via `IN`/`VALUES`.
+
+### Dependency Discovery & Invalidation
+
+During assertion creation/update:
+- Parse and normalize the violation expression into a SELECT form `SELECT 1 WHERE NOT (<check>)` if provided as CHECK.
+- Plan using analysis entrypoint and extract base tables with `relationKey`s at earliest references; store as `dependentTables` with preliminary classification (updated at COMMIT time to reflect current statistics/rewrites).
+- On schema change (table/column/index/constraint) touching any dependent object: mark assertion stale; re‑prepare on next COMMIT or on `VALIDATE ASSERTION`.
+
+### Diagnostics & Tooling
+
+- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'global' }`.
+- Error formatting on violation: include assertion name and up to N sample violating key tuples when available from parameterized runs.
+
+### Guarantees and Safety
+
+- Classification is conservative: when uncertain, classify as 'global' to preserve correctness.
+- Parameterized execution binds only table‑local attributes; no cross‑relation value injection is required for correctness.
+- Transactional semantics: Assertions run atomically before commit; failures rollback all connections.
+
 ## Retrieve-based Push-down Architecture
 
 ### Overview

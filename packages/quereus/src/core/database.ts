@@ -274,14 +274,10 @@ export class Database {
 
 		} finally {
 			if (needsImplicitTransaction) {
-				try {
-					if (executionError) {
-						await this.rollbackImplicitTransaction();
-					} else {
-						await this.commitImplicitTransaction();
-					}
-				} catch (txError) {
-					errorLog(`Error during implicit transaction ${executionError ? 'rollback' : 'commit'}: %O`, txError);
+				if (executionError) {
+					await this.rollbackImplicitTransaction();
+				} else {
+					await this.commitImplicitTransaction();
 				}
 			}
 		}
@@ -589,6 +585,23 @@ export class Database {
 	}
 
 	/**
+	 * Marks that an explicit SQL BEGIN has started a transaction.
+	 * Ensures subsequently registered connections also begin a transaction.
+	 */
+	public markExplicitTransactionStart(): void {
+		this.inTransaction = true;
+		this.isAutocommit = false;
+	}
+
+	/**
+	 * Marks that an explicit SQL COMMIT/ROLLBACK has ended the transaction.
+	 */
+	public markExplicitTransactionEnd(): void {
+		this.inTransaction = false;
+		this.isAutocommit = true;
+	}
+
+	/**
 	 * Prepares, binds parameters, executes, and yields result rows for a query.
 	 * This is a high-level convenience method for iterating over query results.
 	 * The underlying statement is automatically finalized when iteration completes
@@ -834,21 +847,6 @@ export class Database {
 		if (!this.isOpen) throw new MisuseError("Database is closed");
 	}
 
-	/** Helper to execute simple commands (BEGIN, COMMIT, ROLLBACK) internally
-	 * This method is for commands that don't produce rows and don't need complex parameter handling.
-	*/
-	private async execSimple(sqlCommand: string): Promise<void> {
-		let stmt: Statement | null = null;
-		try {
-			stmt = this.prepare(sqlCommand);
-			await stmt.run();
-		} finally {
-			if (stmt) {
-				await stmt.finalize();
-			}
-		}
-	}
-
 	/**
 	 * Begin an implicit transaction and coordinate with virtual table connections
 	 */
@@ -879,26 +877,51 @@ export class Database {
 	private async commitImplicitTransaction(): Promise<void> {
 		debugLog("Database: Committing implicit transaction.");
 
-		// Commit all active connections first
-		const connections = this.getAllConnections();
-		const commitPromises = connections.map(async (connection) => {
+		try {
+			// Evaluate global assertions BEFORE committing connections. If violated, rollback and abort.
+			await this.runGlobalAssertions();
+
+			// Commit all active connections
+			const connections = this.getAllConnections();
+			const commitPromises = connections.map(async (connection) => {
+				try {
+					await connection.commit();
+				} catch (error) {
+					errorLog(`Error committing transaction on connection ${connection.connectionId}: %O`, error);
+					throw error;
+				}
+			});
+
+			await Promise.all(commitPromises);
+		} catch (e) {
+			// On pre-commit assertion failure (or commit error), rollback all connections
+			const conns = this.getAllConnections();
+			await Promise.allSettled(conns.map(c => c.rollback()));
+			throw e;
+		} finally {
+			// Always reset database state at implicit boundary
+			this.inTransaction = false;
+			this.isAutocommit = true;
+			this.inImplicitTransaction = false;
+			// DON'T disconnect connections here; keep for subsequent queries
+		}
+	}
+
+	public async runGlobalAssertions(): Promise<void> {
+		const assertions = this.schemaManager.getAllAssertions();
+		if (assertions.length === 0) return;
+		// MVP: evaluate each assertion's violationSql once (global mode). Parameterized per-row will come next.
+		for (const assertion of assertions) {
+			const stmt = await this.prepare(assertion.violationSql);
 			try {
-				await connection.commit();
-			} catch (error) {
-				errorLog(`Error committing transaction on connection ${connection.connectionId}: %O`, error);
-				throw error;
+				for await (const _ of stmt.all()) {
+					// If the assertion violationSql produces any rows, it's violated.
+					throw new QuereusError(`Integrity assertion failed: ${assertion.name}`, StatusCode.CONSTRAINT);
+				}
+			} finally {
+				await stmt.finalize();
 			}
-		});
-
-		await Promise.all(commitPromises);
-
-		// Reset database state
-		this.inTransaction = false;
-		this.isAutocommit = true;
-		this.inImplicitTransaction = false;
-
-		// DON'T disconnect connections after successful commit - leave them for subsequent queries
-		// The data in committed connections should be visible to future operations
+		}
 	}
 
 	/**

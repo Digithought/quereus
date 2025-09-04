@@ -8,6 +8,8 @@ import { buildCreateIndexStmt } from './ddl.js';
 import { buildDropTableStmt } from './drop-table.js';
 import { buildCreateViewStmt } from './create-view.js';
 import { buildDropViewStmt } from './drop-view.js';
+import { buildCreateAssertionStmt } from './create-assertion.js';
+import { buildDropAssertionStmt } from './drop-assertion.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
@@ -30,11 +32,15 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildCreateIndexStmt(ctx, stmt as AST.CreateIndexStmt);
 			case 'createView':
 				return buildCreateViewStmt(ctx, stmt as AST.CreateViewStmt);
+			case 'createAssertion':
+				return buildCreateAssertionStmt(ctx, stmt as AST.CreateAssertionStmt);
 			case 'drop':
 				if (stmt.objectType === 'table') {
 					return buildDropTableStmt(ctx, stmt as AST.DropStmt);
 				} else if (stmt.objectType === 'view') {
 					return buildDropViewStmt(ctx, stmt as AST.DropStmt);
+				} else if (stmt.objectType === 'assertion') {
+					return buildDropAssertionStmt(ctx, stmt as AST.DropStmt);
 				}
 				break;
 			case 'insert':

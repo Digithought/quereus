@@ -25,4 +25,6 @@ alwaysApply: true
 
 * Avoid "swallowing" exceptions; either the condition is expected and shouldn't be an exception, or it's unexpected and should be propagated.
 
+* Small, single-purpose functions/methods.  Prefer to decompose into other functions over documented sub-sections - let the function names document the semantics.
+
 This is an important system; write production-grade, maintainble, and expressive code that we don't have to revisit later.

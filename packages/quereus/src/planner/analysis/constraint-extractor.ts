@@ -51,15 +51,20 @@ export interface ConstraintExtractionResult {
 	allConstraints: PredicateConstraint[];
   /** Predicate comprised only of supported fragments for a specific table (optional) */
   supportedPredicateByTable?: Map<string, ScalarPlanNode>;
+  /** For each table, which unique key(s) are fully covered by equality constraints (by column indexes). Empty if none. */
+  coveredKeysByTable?: Map<string, number[][]>;
 }
 
 /**
  * Table information for constraint mapping
  */
 export interface TableInfo {
-	relationName: string;
+	relationName: string; // human-readable (e.g., schema.table)
+	relationKey: string;  // instance-unique (e.g., schema.table#<nodeId>)
 	attributes: Array<{ id: number; name: string }>;
 	columnIndexMap: Map<number, number>; // attributeId -> columnIndex
+  /** Logical unique keys for the relation, expressed as output column indexes */
+  uniqueKeys?: number[][];
 }
 
 /**
@@ -88,7 +93,7 @@ export function extractConstraints(
   const perTableParts = new Map<string, ScalarPlanNode[]>();
   extractFromExpression(predicate, allConstraints, residualExpressions, tableByAttribute, perTableParts);
 
-	// Group constraints by table
+	// Group constraints by table instance key
 	for (const constraint of allConstraints) {
 		if (constraint.targetRelation) {
 			if (!constraintsByTable.has(constraint.targetRelation)) {
@@ -121,11 +126,43 @@ export function extractConstraints(
     if (combined) supportedPredicateByTable.set(rel, combined);
   }
 
+  // Compute covered keys per table: collect equality constraints and check against table unique keys
+  const coveredKeysByTable = new Map<string, number[][]>();
+  for (const [rel, constraints] of constraintsByTable) {
+    const tInfo = tableInfos.find(t => t.relationKey === rel || t.relationName === rel);
+    if (!tInfo || !tInfo.uniqueKeys || tInfo.uniqueKeys.length === 0) {
+      coveredKeysByTable.set(rel, []);
+      continue;
+    }
+    const eqCols = new Set<number>();
+    for (const c of constraints) {
+      if (c.op === '=') {
+        eqCols.add(c.columnIndex);
+      }
+      // Single-value IN could be treated as equality
+      if (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1) {
+        eqCols.add(c.columnIndex);
+      }
+    }
+    const covered: number[][] = [];
+    for (const key of tInfo.uniqueKeys) {
+      if (key.length === 0) {
+        // Zero-length key means at most one row; trivially covered
+        covered.push([]);
+        continue;
+      }
+      const allCovered = key.every(idx => eqCols.has(idx));
+      if (allCovered) covered.push([...key]);
+    }
+    coveredKeysByTable.set(rel, covered);
+  }
+
   return {
 		constraintsByTable,
 		residualPredicate,
     allConstraints,
-    supportedPredicateByTable
+    supportedPredicateByTable,
+    coveredKeysByTable
 	};
 }
 
@@ -190,13 +227,13 @@ function extractFromExpression(
 
 function addSupportedPart(expr: ScalarPlanNode, attributeToTableMap: Map<number, TableInfo>, perTableParts: Map<string, ScalarPlanNode[]>): void {
   // Determine target table by first column reference in expr; if absent, skip
-  const rel = findTargetRelation(expr, attributeToTableMap);
-  if (!rel) return;
-  if (!perTableParts.has(rel)) perTableParts.set(rel, []);
-  perTableParts.get(rel)!.push(expr);
+  const relKey = findTargetRelationKey(expr, attributeToTableMap);
+  if (!relKey) return;
+  if (!perTableParts.has(relKey)) perTableParts.set(relKey, []);
+  perTableParts.get(relKey)!.push(expr);
 }
 
-function findTargetRelation(expr: ScalarPlanNode, attributeToTableMap: Map<number, TableInfo>): string | undefined {
+function findTargetRelationKey(expr: ScalarPlanNode, attributeToTableMap: Map<number, TableInfo>): string | undefined {
   let found: string | undefined;
   const stack: ScalarPlanNode[] = [expr];
   while (stack.length) {
@@ -204,7 +241,7 @@ function findTargetRelation(expr: ScalarPlanNode, attributeToTableMap: Map<numbe
     if (n.nodeType === PlanNodeType.ColumnReference) {
       const attrId = (n as unknown as _ColumnRef).attributeId;
       const info = attributeToTableMap.get(attrId);
-      if (info) return info.relationName;
+      if (info) return info.relationKey ?? info.relationName;
     }
     for (const c of n.getChildren()) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -289,7 +326,7 @@ function extractBinaryConstraint(
 		value: constant,
 		usable: true, // Usable since we found table mapping
 		sourceExpression: expr,
-		targetRelation: tableInfo.relationName
+		targetRelation: tableInfo.relationKey
   };
 
   // Attach dynamic binding metadata when RHS/LHS is not a literal
@@ -354,7 +391,7 @@ function extractBetweenConstraints(
       value: lowVal,
       usable: true,
       sourceExpression: expr,
-      targetRelation: tableInfo.relationName
+      targetRelation: tableInfo.relationKey
     },
     {
       columnIndex,
@@ -363,7 +400,7 @@ function extractBetweenConstraints(
       value: upVal,
       usable: true,
       sourceExpression: expr,
-      targetRelation: tableInfo.relationName
+      targetRelation: tableInfo.relationKey
     }
   ];
 }
@@ -398,7 +435,7 @@ function extractInConstraint(
     value: values as any,
     usable: true,
     sourceExpression: expr,
-    targetRelation: tableInfo.relationName
+    targetRelation: tableInfo.relationKey
   };
 }
 
@@ -493,7 +530,7 @@ function flipOperator(op: ConstraintOp): ConstraintOp {
  */
 export function extractConstraintsForTable(
 	plan: RelationalPlanNode,
-	targetTableRelation: string
+	targetTableRelationKey: string
 ): PredicateConstraint[] {
 	const constraints: PredicateConstraint[] = [];
 
@@ -501,16 +538,16 @@ export function extractConstraintsForTable(
 	walkPlanForPredicates(plan, (predicate, sourceNode) => {
 		// Create table info for the target table only
 		const tableInfos = createTableInfosFromPlan(plan).filter(
-			info => info.relationName === targetTableRelation
+			info => info.relationKey === targetTableRelationKey
 		);
 
 		if (tableInfos.length > 0) {
 			const result = extractConstraints(predicate, tableInfos);
-			const tableConstraints = result.constraintsByTable.get(targetTableRelation);
+			const tableConstraints = result.constraintsByTable.get(targetTableRelationKey);
 			if (tableConstraints) {
 				constraints.push(...tableConstraints);
 				log('Found %d constraints for table %s from %s',
-					tableConstraints.length, targetTableRelation, sourceNode);
+					tableConstraints.length, targetTableRelationKey, sourceNode);
 			}
 		}
 	});
@@ -523,18 +560,18 @@ export function extractConstraintsForTable(
  */
 export function extractConstraintsAndResidualForTable(
     plan: RelationalPlanNode,
-    targetTableRelation: string
+    targetTableRelationKey: string
 ): { constraints: PredicateConstraint[]; residualPredicate?: ScalarPlanNode } {
     const constraints: PredicateConstraint[] = [];
     const residuals: ScalarPlanNode[] = [];
 
     walkPlanForPredicates(plan, (predicate) => {
         const tableInfos = createTableInfosFromPlan(plan).filter(
-            info => info.relationName === targetTableRelation
+            info => info.relationKey === targetTableRelationKey
         );
         if (tableInfos.length === 0) return;
         const result = extractConstraints(predicate, tableInfos);
-        const tableConstraints = result.constraintsByTable.get(targetTableRelation);
+        const tableConstraints = result.constraintsByTable.get(targetTableRelationKey);
         if (tableConstraints && tableConstraints.length) {
             constraints.push(...tableConstraints);
         }
@@ -544,6 +581,65 @@ export function extractConstraintsAndResidualForTable(
     });
 
     return { constraints, residualPredicate: combineResiduals(residuals) };
+}
+
+/**
+ * Compute which unique keys are fully covered by equality constraints for a table within a plan.
+ * Returns a list of covered keys (each key is a list of column indexes in the table output order).
+ */
+export function extractCoveredKeysForTable(
+    plan: RelationalPlanNode,
+    targetTableRelationKey: string
+): number[][] {
+    const constraints: PredicateConstraint[] = extractConstraintsForTable(plan, targetTableRelationKey);
+    const tInfos = createTableInfosFromPlan(plan).filter(info => info.relationKey === targetTableRelationKey);
+    if (tInfos.length === 0) return [];
+    const uniqueKeys = tInfos[0].uniqueKeys ?? [];
+    return computeCoveredKeysForConstraints(constraints, uniqueKeys);
+}
+
+/**
+ * Given a set of constraints and a table's unique keys, compute which keys are fully covered by equality.
+ */
+export function computeCoveredKeysForConstraints(
+    constraints: readonly PredicateConstraint[],
+    tableUniqueKeys: readonly number[][]
+): number[][] {
+    const eqCols = new Set<number>();
+    for (const c of constraints) {
+        if (c.op === '=') {
+            eqCols.add(c.columnIndex);
+        }
+        if (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1) {
+            eqCols.add(c.columnIndex);
+        }
+    }
+    const covered: number[][] = [];
+    for (const key of tableUniqueKeys) {
+        if (key.length === 0) {
+            covered.push([]);
+            continue;
+        }
+        const allCovered = key.every(idx => eqCols.has(idx));
+        if (allCovered) covered.push([...key]);
+    }
+    return covered;
+}
+
+/**
+ * Analyze plan to classify each TableReference instance as 'row' (row-specific) or 'global'.
+ * Row-specific means equality constraints fully cover at least one unique key at that reference.
+ */
+export function analyzeRowSpecific(
+    plan: RelationalPlanNode
+): Map<string, 'row' | 'global'> {
+    const result = new Map<string, 'row' | 'global'>();
+    const infos = createTableInfosFromPlan(plan);
+    for (const info of infos) {
+        const covered = extractCoveredKeysForTable(plan, info.relationKey);
+        result.set(info.relationKey, covered.length > 0 ? 'row' : 'global');
+    }
+    return result;
 }
 
 function combineResiduals(predicates: ScalarPlanNode[]): ScalarPlanNode | undefined {
@@ -567,15 +663,10 @@ function walkPlanForPredicates(
 ): void {
   // If node exposes predicates via characteristic, collect them
   if (CapabilityDetectors.isPredicateSource(plan as any)) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const preds = (plan as any).getPredicates() as ReadonlyArray<ScalarPlanNode>;
-      for (const p of preds) {
-        callback(p, 'PredicateSource');
-      }
-    } catch (err) {
-      const errorLog = createLogger('planner:analysis:constraint-extractor:error');
-      errorLog('Error reading predicates from %s: %O', plan.nodeType, err);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const preds = (plan as any).getPredicates() as ReadonlyArray<ScalarPlanNode>;
+    for (const p of preds) {
+      callback(p, 'PredicateSource');
     }
   }
 
@@ -617,10 +708,21 @@ export function createTableInfoFromNode(node: RelationalPlanNode, relationName?:
 		columnIndexMap.set(attr.id, index);
 	});
 
+	// Extract logical unique keys from relation type, map ColRef[] to plain column indexes
+	const relType = (node as unknown as { getType: () => { keys: { index: number }[][] } }).getType();
+	const uniqueKeys: number[][] | undefined = Array.isArray(relType?.keys)
+		? relType.keys.map(key => key.map(ref => ref.index))
+		: undefined;
+
+	const relName = relationName || node.toString();
+	const relationKey = `${relName}#${(node as any).id ?? 'unknown'}`;
+
 	return {
-		relationName: relationName || node.toString(),
+		relationName: relName,
+		relationKey,
 		attributes: attributes.map(attr => ({ id: attr.id, name: attr.name })),
-		columnIndexMap
+		columnIndexMap,
+		uniqueKeys
 	};
 }
 

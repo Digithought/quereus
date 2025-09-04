@@ -24,7 +24,7 @@ import { FilterInfo } from '../../../vtab/filter-info.js';
 import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
 import { TableReferenceNode } from '../../nodes/reference.js';
 import { FilterNode } from '../../nodes/filter.js';
-import { extractConstraintsForTable, type PredicateConstraint as PlannerPredicateConstraint } from '../../analysis/constraint-extractor.js';
+import { extractConstraintsForTable, type PredicateConstraint as PlannerPredicateConstraint, createTableInfoFromNode } from '../../analysis/constraint-extractor.js';
 import { LiteralNode } from '../../nodes/scalar.js';
 import type * as AST from '../../../parser/ast.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
@@ -111,8 +111,9 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
 		constraints = indexCtx.originalConstraints || [];
 		residualPredicate = indexCtx.residualPredicate;
 	} else {
-		// Extract constraints from grown pipeline in source; use fully-qualified relation name
-		constraints = extractConstraintsForTable(retrieveNode.source, `${tableSchema.schemaName}.${tableSchema.name}`);
+		// Extract constraints from grown pipeline in source using table instance key
+		const tInfo = createTableInfoFromNode(retrieveNode.tableRef, `${tableSchema.schemaName}.${tableSchema.name}`);
+		constraints = extractConstraintsForTable(retrieveNode.source, tInfo.relationKey);
 
 		// Build request for getBestAccessPlan
 		const request: BestAccessPlanRequest = {

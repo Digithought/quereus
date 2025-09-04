@@ -4,6 +4,7 @@ import { getFunctionKey } from './function.js';
 import type { ViewSchema } from './view.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
+import type { IntegrityAssertionSchema } from './assertion.js';
 
 const log = createLogger('schema:schema');
 
@@ -16,6 +17,7 @@ export class Schema {
 	private tables: Map<string, TableSchema> = new Map();
 	private functions: Map<string, FunctionSchema> = new Map();
 	private views: Map<string, ViewSchema> = new Map();
+	private assertions: Map<string, IntegrityAssertionSchema> = new Map();
 
 	/**
 	 * Creates a new schema instance
@@ -138,6 +140,27 @@ export class Schema {
 	 */
 	clearViews(): void {
 		this.views.clear();
+	}
+
+	/** Assertions */
+	addAssertion(assertion: IntegrityAssertionSchema): void {
+		this.assertions.set(assertion.name.toLowerCase(), assertion);
+		log(`Added/Updated assertion '%s' in schema '%s'`, assertion.name, this.name);
+	}
+
+	getAssertion(name: string): IntegrityAssertionSchema | undefined {
+		return this.assertions.get(name.toLowerCase());
+	}
+
+	getAllAssertions(): IterableIterator<IntegrityAssertionSchema> {
+		return this.assertions.values();
+	}
+
+	removeAssertion(name: string): boolean {
+		const key = name.toLowerCase();
+		const existed = this.assertions.delete(key);
+		if (existed) log(`Removed assertion '%s' from schema '%s'`, name, this.name);
+		return existed;
 	}
 
 	/**

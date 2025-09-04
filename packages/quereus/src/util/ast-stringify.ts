@@ -177,6 +177,29 @@ export function expressionToString(expr: AST.Expression): string {
 		case 'subquery':
 			return `(${selectToString(expr.query)})`;
 
+		case 'exists':
+			return `exists (${selectToString((expr as AST.ExistsExpr).subquery)})`;
+
+		case 'in': {
+			const inExpr = expr as AST.InExpr;
+			let result = expressionToString(inExpr.expr) + ' in ';
+			if (inExpr.values) {
+				result += `(${inExpr.values.map(expressionToString).join(', ')})`;
+			} else if (inExpr.subquery) {
+				result += `(${selectToString(inExpr.subquery)})`;
+			}
+			return result;
+		}
+
+		case 'between': {
+			const betweenExpr = expr as AST.BetweenExpr;
+			const exprStr = expressionToString(betweenExpr.expr);
+			const lowerStr = expressionToString(betweenExpr.lower);
+			const upperStr = expressionToString(betweenExpr.upper);
+			const notStr = betweenExpr.not ? 'not ' : '';
+			return `${exprStr} ${notStr}between ${lowerStr} and ${upperStr}`;
+		}
+
 		case 'collate':
 			return `${expressionToString(expr.expr)} collate ${expr.collation.toLowerCase()}`;
 

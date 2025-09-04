@@ -81,6 +81,75 @@ This list reflects the **current state** of Quereus - a feature-complete SQL que
 **Type Coercion Enhancements**
 - [ ] **ORDER BY**: Enhanced numeric sorting of string columns using coercion
 
+## 🔐 Global Transaction‑Deferred Assertions
+
+Database‑wide integrity assertions deferrable at COMMIT (auto-detected), with efficient row‑level delta checks where provably row‑specific.
+
+- [ ] SQL surface & schema objects
+  - [ ] Parse `CREATE ASSERTION name CHECK (<violation-query>)`
+  - [ ] auto‑classify deferrability (see below) so users don't need `SET CONSTRAINTS`
+  - [ ] Add `IntegrityConstraint` schema object: name, text/AST/plan of violation query, `dependentTables`, classification per table (row‑specific/global), deferrability, initial mode
+  - [ ] Support `DROP ASSERTION`, `VALIDATE ASSERTION`, `EXPLAIN ASSERTION`
+
+- [ ] Dependency discovery & invalidation
+  - [ ] During assertion build, resolve base tables referenced by the violation query and store as `dependentTables`.  Note that a given table may be referenced multiply by a query; each reference should be regarded independently
+  - [ ] Hook into schema change events to invalidate/recompile affected assertions
+
+- [ ] Optimizer analysis: row‑specific vs global (logical, pre‑physical)
+  - [ ] Implement "coveredKey" detection in constraint/Predicate extraction: detect equality covering all columns of any declared/inferred unique key for a table
+  - [ ] Complete key propagation utilities and wire them in:
+    - [ ] `projectKeys(keys, columnMapping)` in `ProjectNode`/`ReturningNode`
+    - [ ] `combineJoinKeys(leftKeys, rightKeys, joinType)` in joins (preserve keys on INNER/CROSS as applicable)
+    - [ ] Ensure `Filter`/`Sort`/`Limit` propagate `uniqueKeys` unchanged
+  - [ ] Treat `GROUP BY` exactly on a unique key as row‑specific for that table; any aggregation without such grouping is global
+  - [ ] Classify presence of windows/set ops (UNION/INTERSECT/EXCEPT/DIFF) as global unless both sides are independently row‑specific
+  - [ ] Provide `analyzeRowSpecific(plan): Map<TableId, 'row' | 'global'>` executed after structural passes and before physical selection
+
+- [ ] Optimizer run modes (analysis without physicalization)
+  - [ ] Expose an entrypoint to run passes up to constant folding and structural rewrites, stopping before physical selection
+  - [ ] API example: `optimize(plan, { phase: 'pre-physical-analysis' })` returning a plan annotated with logical/unique key properties
+
+- [ ] Prepared assertion plans (parameterized, no equality joins injection)
+  - [ ] For each assertion and each row‑specific dependent table, compile a parameterized variant of the violation query that binds the table's full unique key at the earliest reference.
+  - [ ] Maintain binding metadata: table → parameter positions (support composite keys)
+  - [ ] For assertions touching multiple tables, prepare one parameterized variant per row‑specific table
+
+- [ ] Transaction change tracking
+  - [ ] Per‑transaction change log: table → set of changed primary key tuples (composite‑key aware)
+  - [ ] Integrate with savepoints (record/undo changes on rollback to savepoint)
+
+- [ ] Commit‑time evaluation engine
+  - [ ] Select impacted assertions where `dependentTables ∩ changedTables ≠ ∅`
+  - [ ] For each impacted assertion:
+    - [ ] If any dependent table is classified global and changed: run the full violation query once (transaction snapshot)
+    - [ ] Otherwise, for each row‑specific table T that changed: execute its parameterized plan once per changed key (assume row‑level is acceptable for now; no thresholding)
+    - [ ] Abort commit on first non‑empty result; include constraint name and sample violating keys in error
+
+- [ ] Diagnostics & tooling
+  - [ ] `explain_assertion(name)` TVF shows normalized violation query and concise plan (pre‑physical and physical views)
+  - [ ] Error formatting: include assertion name and up to N violating key tuples
+
+- [ ] Tests
+  - [ ] Parser/DDL round‑trip for assertions
+  - [ ] Dependency tracking and invalidation on table/column changes
+  - [ ] Row‑specific classification correctness across filters, projections, joins, aggregates, set ops
+  - [ ] Commit‑time enforcement for: single‑table FK‑like, multi‑table co‑existence (DIFF), and aggregate‑based global assertions
+  - [ ] Savepoint interaction (rollback removes violations)
+
+- [ ] Future enhancements (post‑MVP)
+  - [ ] Batched execution: support IN‑list/VALUES parameterization to amortize per‑key runs when many keys change
+  - [ ] Optional early (statement‑end) prechecks for single‑table row‑specific assertions to surface errors sooner, still enforcing at COMMIT
+  - [ ] Statistics‑aware threshold to choose between per‑key runs vs full scan
+
+### Milestones (Implementation Outline)
+
+1) Analysis: implement `analyzeRowSpecific()` using existing key propagation and coveredKey detection.
+2) Change tracking: per‑transaction log keyed by base table, integrate with savepoints.
+3) Prepared variants: compile and cache per‑assertion, per‑relationKey parameterized plans with binding metadata.
+4) Commit engine: orchestrate global vs per‑key execution; early‑fail on first violation.
+5) Diagnostics: `explain_assertion()` and enhanced error messages.
+
+
 ## 📋 Future Development Areas
 
 **Optimizer Enhancements (Near-term)**

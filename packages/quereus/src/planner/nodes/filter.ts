@@ -6,6 +6,7 @@ import { formatExpression } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { PredicateCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
+import { createTableInfoFromNode, extractConstraints } from '../analysis/constraint-extractor.js';
 
 /**
  * Represents a filter operation (WHERE clause).
@@ -56,14 +57,27 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		const sourcePhysical = childrenPhysical[0];
 		const srcRows = sourcePhysical?.estimatedRows;
 		const est = this.estimatedRows;
-		const rows = (typeof srcRows === 'number' && typeof est === 'number')
+		let rows = (typeof srcRows === 'number' && typeof est === 'number')
 			? Math.min(srcRows, est)
 			: (srcRows ?? est);
+
+		// Attempt logical covered-key detection to infer at-most-one row
+		let uniqueKeys = sourcePhysical?.uniqueKeys;
+		const tableInfo = createTableInfoFromNode(this.source);
+		if (tableInfo.uniqueKeys && tableInfo.uniqueKeys.length > 0) {
+			const result = extractConstraints(this.predicate, [tableInfo]);
+			const covered = result.coveredKeysByTable?.get(tableInfo.relationKey) || [];
+			if (covered.length > 0) {
+				// Equality covers a unique key → at most one row
+				uniqueKeys = [[]];
+				rows = 1;
+			}
+		}
 
 		return {
 			estimatedRows: rows,
 			ordering: sourcePhysical?.ordering,
-			uniqueKeys: sourcePhysical?.uniqueKeys,
+			uniqueKeys,
 		};
 	}
 

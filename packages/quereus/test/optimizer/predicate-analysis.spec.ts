@@ -84,6 +84,7 @@ describe('Predicate analysis', () => {
 		const pred = andNode(eqNode(c, lit(42)), andNode(eqNode(lit(1), colRef(999, 'other', 0)), eqNode(colRef(999, 'other', 0), lit(5))));
 		const tableInfo: TableInfo = {
 			relationName: 'main.t',
+			relationKey: 'main.t#test',
 			attributes: [{ id: 201, name: 'age' }],
 			columnIndexMap: new Map([[201, 1]])
 		};
@@ -91,7 +92,7 @@ describe('Predicate analysis', () => {
 		expect(res.allConstraints.length).to.equal(1);
 		expect(res.allConstraints[0].op).to.equal('=');
 		expect(res.allConstraints[0].columnIndex).to.equal(1);
-		expect(res.supportedPredicateByTable?.get('main.t')).to.exist;
+		expect(res.supportedPredicateByTable?.get('main.t#test')).to.exist;
 	});
 
 	it('extractConstraints handles BETWEEN into range constraints', () => {
@@ -100,6 +101,7 @@ describe('Predicate analysis', () => {
 		const between = new BetweenNode(scope, ast, c, lit(10), lit(20));
 		const tableInfo: TableInfo = {
 			relationName: 'main.t',
+			relationKey: 'main.t#test',
 			attributes: [{ id: 301, name: 'score' }],
 			columnIndexMap: new Map([[301, 2]])
 		};

@@ -9,7 +9,7 @@ import type { ConflictResolution } from '../common/constants.js';
 // Base for all AST nodes
 export interface AstNode {
 	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select'
-		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'alterTable' | 'drop' | 'begin' | 'commit'
+		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'createAssertion' | 'alterTable' | 'drop' | 'begin' | 'commit'
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
@@ -242,6 +242,13 @@ export interface CreateIndexStmt extends AstNode {
 	isUnique?: boolean;
 }
 
+// CREATE ASSERTION statement
+export interface CreateAssertionStmt extends AstNode {
+	type: 'createAssertion';
+	name: string;
+	check: Expression; // The CHECK (<violation-query>) expression
+}
+
 // CREATE VIEW statement
 export interface CreateViewStmt extends AstNode {
 	type: 'createView';
@@ -262,7 +269,7 @@ export interface AlterTableStmt extends AstNode {
 // DROP statement
 export interface DropStmt extends AstNode {
 	type: 'drop';
-	objectType: 'table' | 'view' | 'index' | 'trigger';
+	objectType: 'table' | 'view' | 'index' | 'trigger' | 'assertion';
 	name: IdentifierExpr;
 	ifExists: boolean;
 }
@@ -471,6 +478,7 @@ export type Statement =
 	| CreateTableStmt
 	| CreateIndexStmt
 	| CreateViewStmt
+	| CreateAssertionStmt
 	| DropStmt
 	| AlterTableStmt
 	| BeginStmt

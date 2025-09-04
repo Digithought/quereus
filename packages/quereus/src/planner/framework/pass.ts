@@ -231,8 +231,14 @@ export class PassManager {
 	 * Execute all passes on a plan
 	 */
 	execute(plan: PlanNode, context: OptContext): PlanNode {
-		let currentPlan = plan;
+		return this.executeUpTo(plan, context);
+	}
 
+	/**
+	 * Execute passes up to and including the specified pass id
+	 */
+	executeUpTo(plan: PlanNode, context: OptContext, upToPassId?: string): PlanNode {
+		let currentPlan = plan;
 		for (const pass of this.sortedPasses) {
 			log('Starting pass: %s', pass.name);
 
@@ -245,8 +251,8 @@ export class PassManager {
 			}
 
 			log('Completed pass: %s', pass.name);
+			if (upToPassId && pass.id === upToPassId) break;
 		}
-
 		return currentPlan;
 	}
 

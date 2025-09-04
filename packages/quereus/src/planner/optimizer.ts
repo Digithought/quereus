@@ -223,6 +223,26 @@ export class Optimizer {
 	}
 
 	/**
+	 * Run only non-physical passes to obtain a structurally rewritten logical plan
+	 * suitable for pre-physical analysis (e.g., row-specific classification).
+	 */
+	optimizeForAnalysis(plan: PlanNode, db: Database): PlanNode {
+		log('Starting pre-physical analysis optimization of plan', plan.nodeType);
+
+		const context = createOptContext(this, this.stats, this.tuning, db);
+		tracePhaseStart('pre-physical-analysis');
+		try {
+			// Execute only structural pass(es) and constant folding
+			const folded = this.performConstantFolding(plan, context);
+			const structuralOnly = this.passManager.executeUpTo(folded, context, PassId.Structural);
+			this.lastDiagnostics = { ...context.diagnostics };
+			return structuralOnly;
+		} finally {
+			tracePhaseEnd('pre-physical-analysis');
+		}
+	}
+
+	/**
 	 * Perform single-pass constant folding over the entire plan tree
 	 */
 	private performConstantFolding(plan: PlanNode, context: OptContext): PlanNode {

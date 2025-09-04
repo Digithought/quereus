@@ -39,6 +39,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 						throw error;
 					}
 				}
+				// Reflect explicit transaction state in Database
+				rctx.db.markExplicitTransactionStart();
 				return null;
 			};
 			note = `BEGIN ${plan.mode || 'DEFERRED'}`;
@@ -49,15 +51,26 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 				const connections = rctx.db.getAllConnections();
 				log(`COMMIT: Found ${connections.length} active connections`);
 
-				for (const connection of connections) {
-					try {
-						await connection.commit();
-						log(`COMMIT: Successfully called on connection ${connection.connectionId}`);
-					} catch (error) {
-						log(`COMMIT: Error on connection ${connection.connectionId}: %O`, error);
-						throw error;
+				try {
+					// Evaluate global assertions BEFORE committing connections. If violated, abort commit.
+					await rctx.db.runGlobalAssertions();
+
+					for (const connection of connections) {
+						try {
+							await connection.commit();
+							log(`COMMIT: Successfully called on connection ${connection.connectionId}`);
+						} catch (error) {
+							log(`COMMIT: Error on connection ${connection.connectionId}: %O`, error);
+							throw error;
+						}
 					}
+				} catch (e) {
+					// If assertions fail (or a commit throws), rollback all connections and rethrow
+					await Promise.allSettled(connections.map(c => c.rollback()));
+					throw e;
 				}
+				// Reflect explicit transaction end regardless of success or failure propagation
+				rctx.db.markExplicitTransactionEnd();
 				return null;
 			};
 			note = 'COMMIT';
@@ -97,6 +110,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 							throw error;
 						}
 					}
+					// Reflect explicit transaction end
+					rctx.db.markExplicitTransactionEnd();
 					return null;
 				};
 				note = 'ROLLBACK';

@@ -33,6 +33,8 @@ export enum PlanNodeType {
   DropIndex = 'DropIndex',
   CreateView = 'CreateView',
   DropView = 'DropView',
+  CreateAssertion = 'CreateAssertion',
+  DropAssertion = 'DropAssertion',
   AlterTable = 'AlterTable',
   AddConstraint = 'AddConstraint',
 

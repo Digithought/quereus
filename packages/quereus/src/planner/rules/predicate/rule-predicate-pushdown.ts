@@ -54,9 +54,9 @@ function tryPushDown(child: RelationalPlanNode, predicate: ScalarPlanNode, scope
   // Reach a Retrieve boundary: insert only the supported portion inside pipeline
 	if (child instanceof RetrieveNode) {
     log('Pushing predicate into Retrieve pipeline (supported-only)');
-    const tableInfo = createTableInfoFromNode(child.tableRef, child.tableRef.tableSchema.name);
+    const tableInfo = createTableInfoFromNode(child.tableRef, `${child.tableRef.tableSchema.name}`);
     const extraction = extractConstraints(predicate, [tableInfo]);
-    const supported = extraction.supportedPredicateByTable?.get(child.tableRef.tableSchema.name);
+    const supported = extraction.supportedPredicateByTable?.get(tableInfo.relationKey);
 
     if (!supported) {
       log('No supported portion for this retrieve; not pushing');
