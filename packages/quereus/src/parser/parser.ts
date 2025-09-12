@@ -41,6 +41,8 @@ export class Parser {
 	private current = 0;
 	// Counter for positional parameters
 	private parameterPosition = 1;
+	// Track opening parentheses for accurate error locations
+	private parenStack: Token[] = [];
 
 	/**
 	 * Initialize the parser with tokens from a SQL string
@@ -52,6 +54,7 @@ export class Parser {
 		this.tokens = lexer.scanTokens();
 		this.current = 0;
 		this.parameterPosition = 1; // Reset parameter counter
+		this.parenStack = [];
 
 		// Check for errors from lexer
 		const errorToken = this.tokens.find(t => t.type === TokenType.ERROR);
@@ -107,6 +110,22 @@ export class Parser {
 					e instanceof Error ? e : undefined
 				);
 			}
+		}
+
+		// Report any unterminated parenthesis at EOF with pointer to opening location
+		if (this.parenStack.length > 0) {
+			const openToken = this.parenStack[this.parenStack.length - 1];
+			quereusError(
+				`Unterminated '(' opened at line ${openToken.startLine}, column ${openToken.startColumn}. Expected ')' before end of input.`,
+				StatusCode.ERROR,
+				undefined,
+				{
+					loc: {
+						start: { line: openToken.startLine, column: openToken.startColumn },
+						end: { line: this.peek().endLine, column: this.peek().endColumn },
+					},
+				}
+			);
 		}
 
 		// If we consumed all tokens and didn't parse any statements (e.g., empty input or only comments/whitespace),
@@ -1703,6 +1722,22 @@ export class Parser {
 			return this.advance();
 		}
 
+		// If a ')' was expected, point back to the matching '('
+		if (type === TokenType.RPAREN && this.parenStack.length > 0) {
+			const openToken = this.parenStack[this.parenStack.length - 1];
+			quereusError(
+				`${message} Unterminated '(' opened at line ${openToken.startLine}, column ${openToken.startColumn}.`,
+				StatusCode.ERROR,
+				undefined,
+				{
+					loc: {
+						start: { line: openToken.startLine, column: openToken.startColumn },
+						end: { line: this.peek().endLine, column: this.peek().endColumn },
+					},
+				}
+			);
+		}
+
 		this.error(this.peek(), message);
 	}
 
@@ -1718,7 +1753,23 @@ export class Parser {
 
 	private advance(): Token {
 		if (!this.isAtEnd()) this.current++;
-		return this.previous();
+		const tok = this.previous();
+		// Maintain parenthesis balance for precise diagnostics
+		if (tok.type === TokenType.LPAREN) {
+			this.parenStack.push(tok);
+		} else if (tok.type === TokenType.RPAREN) {
+			if (this.parenStack.length === 0) {
+				quereusError(
+					`Unmatched ')' at line ${tok.startLine}, column ${tok.startColumn}.`,
+					StatusCode.ERROR,
+					undefined,
+					{ loc: { start: { line: tok.startLine, column: tok.startColumn }, end: { line: tok.endLine, column: tok.endColumn } } }
+				);
+			} else {
+				this.parenStack.pop();
+			}
+		}
+		return tok;
 	}
 
 	private isAtEnd(): boolean {
