@@ -426,6 +426,39 @@ column_name [data_type] [column_constraint...]
 on conflict { rollback | abort | fail | ignore | replace }
 ```
 
+### 2.6.1 CREATE/DROP ASSERTION (Global Integrity Constraints)
+
+Quereus supports database-wide integrity assertions evaluated at COMMIT time.
+
+Syntax:
+```sql
+create assertion assertion_name check (condition_expression);
+drop assertion assertion_name;
+```
+
+Behavior:
+- Assertions are enforced at COMMIT. Any row produced by the stored violation query indicates a violation and the COMMIT fails with a constraint error (transaction rolled back).
+- The `check (expr)` is stored as a violation SQL: `SELECT 1 WHERE NOT (expr)`.
+- Efficiency: The optimizer classifies each table reference instance in the violation query as row-specific (unique key fully covered) or global. If any changed base is global, run the violation SQL once. Otherwise, for row-specific references, the engine executes per changed primary key using prepared parameters (`pk0`, `pk1`, ... for composite keys), early-exiting on the first violation.
+
+Diagnostics:
+- Use `explain_assertion(name)` to introspect classification and prepared parameterization.
+
+Examples:
+```sql
+-- Global-style assertion (aggregate)
+create table t2 (id integer primary key) using memory;
+create assertion a_global check ((select count(*) from t2) = (select count(*) from t2));
+select exists(
+  select 1 from explain_assertion('a_global') where classification = 'global'
+) as ok;
+
+-- Row-specific assertion: PK equality reduces to row-specific
+create table t1 (id integer primary key) using memory;
+create assertion a_row check (exists (select 1 from t1 where id = 1));
+select prepared_pk_params from explain_assertion('a_row') where classification = 'row' limit 1;
+```
+
 **Options:**
 - If an empty key column list is provided, the table may have 0 or 1 rows.
 - `temp/temporary`: Creates a temporary table

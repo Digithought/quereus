@@ -11,6 +11,14 @@ import { PlanNode, RelationalPlanNode } from "../../planner/nodes/plan-node.js";
 import { EmissionContext } from "../../runtime/emission-context.js";
 import { emitPlanNode } from "../../runtime/emitters.js";
 import { Scheduler } from "../../runtime/scheduler.js";
+import { analyzeRowSpecific } from "../../planner/analysis/constraint-extractor.js";
+import { Parser } from "../../parser/parser.js";
+import * as AST from "../../parser/ast.js";
+import { GlobalScope } from "../../planner/scopes/global.js";
+import { ParameterScope } from "../../planner/scopes/param.js";
+import type { PlanningContext } from "../../planner/planning-context.js";
+import { BuildTimeDependencyTracker } from "../../planner/planning-context.js";
+import { buildBlock } from "../../planner/building/block.js";
 
 // Helper function to safely get function name from nodes that have it
 function getFunctionName(node: PlanNode): string | null {
@@ -676,5 +684,96 @@ export const schemaSizeFunc = createIntegratedTableValuedFunction(
 	},
 	async function* (_db: Database, _sql: SqlValue): AsyncIterable<Row> {
 		// TODO: Implementation of schemaSizeFunc
+	}
+);
+
+// Explain assertion analysis and prepared parameterization (pre-physical)
+export const explainAssertionFunc = createIntegratedTableValuedFunction(
+	{
+		name: 'explain_assertion',
+		numArgs: 1,
+		deterministic: true,
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'assertion', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'relation_key', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'base', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'classification', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'prepared_pk_params', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: true }, generated: true }, // JSON array of param names or NULL
+				{ name: 'violation_sql', type: { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: false, isReadOnly: true }, generated: true }
+			],
+			keys: [],
+			rowConstraints: []
+		}
+	},
+	async function* (db: Database, assertionName: SqlValue): AsyncIterable<Row> {
+		if (typeof assertionName !== 'string') {
+			throw new QuereusError('explain_assertion(name) requires an assertion name', StatusCode.ERROR);
+		}
+
+		// Find assertion across all schemas
+		const all = db.schemaManager.getAllAssertions();
+		const assertion = all.find(a => a.name.toLowerCase() === assertionName.toLowerCase());
+		if (!assertion) {
+			throw new QuereusError(`Assertion not found: ${assertionName}`, StatusCode.NOTFOUND);
+		}
+
+		const sql = assertion.violationSql;
+
+		// Build pre-physical plan for analysis
+		let ast: AST.Statement;
+		try {
+			const parser = new Parser();
+			ast = parser.parse(sql) as AST.Statement;
+		} catch (e) {
+			throw new QuereusError(`Failed to parse assertion SQL: ${(e as Error).message}`, StatusCode.ERROR, e as Error);
+		}
+
+		const globalScope = new GlobalScope(db.schemaManager);
+		const parameterScope = new ParameterScope(globalScope);
+		const ctx: PlanningContext = {
+			db,
+			schemaManager: db.schemaManager,
+			parameters: {},
+			scope: parameterScope,
+			cteNodes: new Map(),
+			schemaDependencies: new BuildTimeDependencyTracker(),
+			schemaCache: new Map(),
+			cteReferenceCache: new Map(),
+			outputScopes: new Map()
+		};
+
+		const plan = buildBlock(ctx, [ast]);
+		const analyzed = db.optimizer.optimizeForAnalysis(plan, db) as unknown as RelationalPlanNode;
+
+		// Classify row/global per relationKey
+		const classifications = analyzeRowSpecific(analyzed);
+
+		for (const [relationKey, cls] of classifications) {
+			const base = `${relationKey.split('#')[0]}`;
+			let prepared: string | null = null;
+			if (cls === 'row' && base) {
+				// Prepared parameters are PK-based: ["pk0", "pk1", ...]
+				const [schemaName, tableName] = base.split('.');
+				const table = db._findTable(tableName, schemaName);
+				if (table) {
+					const pkCount = table.primaryKeyDefinition.length;
+					const names = Array.from({ length: pkCount }, (_, i) => `pk${i}`);
+					prepared = JSON.stringify(names);
+				}
+			}
+
+			yield [
+				assertion.name,
+				relationKey,
+				base,
+				cls,
+				prepared,
+				sql
+			];
+		}
 	}
 );

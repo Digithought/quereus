@@ -41,6 +41,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 				}
 				// Reflect explicit transaction state in Database
 				rctx.db.markExplicitTransactionStart();
+				// Reset any prior change tracking at the start of an explicit transaction
+				rctx.db._clearChangeLog();
 				return null;
 			};
 			note = `BEGIN ${plan.mode || 'DEFERRED'}`;
@@ -68,9 +70,11 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 					// If assertions fail (or a commit throws), rollback all connections and rethrow
 					await Promise.allSettled(connections.map(c => c.rollback()));
 					throw e;
+				} finally {
+					// Always mark end of explicit transaction and clear change tracking
+					rctx.db.markExplicitTransactionEnd();
+					rctx.db._clearChangeLog();
 				}
-				// Reflect explicit transaction end regardless of success or failure propagation
-				rctx.db.markExplicitTransactionEnd();
 				return null;
 			};
 			note = 'COMMIT';
@@ -93,6 +97,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 							throw error;
 						}
 					}
+					// Discard top change layer
+					rctx.db._rollbackSavepointLayer();
 					return null;
 				};
 				note = `ROLLBACK TO SAVEPOINT ${plan.savepoint}`;
@@ -110,8 +116,9 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 							throw error;
 						}
 					}
-					// Reflect explicit transaction end
+					// Reflect explicit transaction end and clear change tracking
 					rctx.db.markExplicitTransactionEnd();
+					rctx.db._clearChangeLog();
 					return null;
 				};
 				note = 'ROLLBACK';
@@ -137,6 +144,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 						throw error;
 					}
 				}
+				// Track change layer
+				rctx.db._beginSavepointLayer();
 				return null;
 			};
 			note = `SAVEPOINT ${plan.savepoint}`;
@@ -161,6 +170,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 						throw error;
 					}
 				}
+				// Merge top change layer into below
+				rctx.db._releaseSavepointLayer();
 				return null;
 			};
 			note = `RELEASE SAVEPOINT ${plan.savepoint}`;

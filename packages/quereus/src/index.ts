@@ -49,7 +49,7 @@ export {
 
 // SQL Parser and Compiler
 export { Parser } from './parser/parser.js';
-export { Lexer, TokenType } from './parser/lexer.js';
+export { Lexer, TokenType, KEYWORDS } from './parser/lexer.js';
 export { ParseError } from './parser/parser.js';
 
 // Schema management

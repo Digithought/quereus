@@ -874,6 +874,36 @@ The runtime's column reference resolution relies on the optimizer's attribute ID
 
 For comprehensive optimizer details, see the [Optimizer Documentation](../optimizer.md).
 
+## Incremental Delta Runtime (Design)
+
+Quereus can reuse a single incremental runtime to power multiple features that react to base-table changes: transaction-deferred assertions, materialized views, and future trigger-like facilities. The core idea is to execute only the affected slice of a registered query at transaction boundaries using binding-aware residual plans.
+
+### Goals
+- Reuse the same delta infrastructure across assertions and views
+- Execute parameterized residuals per affected key/group; fall back to global when required
+- Respect savepoints; changes rolled back via SAVEPOINT should not be visible to COMMIT-time checks
+
+### Building Blocks
+- ChangeCapture (existing): per-transaction change log tracking primary-key tuples per base table; savepoint aware
+- BindingInference: classifies a plan’s table references as row-specific, group-specific, or global (see optimizer doc) and identifies binding keys (PK/unique or group-by/partition keys)
+- ParameterizedPlanCache: per-registrant (assertion/view) and per relationKey, store prepared residual plans with parameter slots aligned to key order
+- DeltaExecutor: at COMMIT, select impacted registrants, decide global vs per-binding execution, early-exit on first violation (assertions) or produce delta rows (views)
+
+### Execution Modes
+- Assertions: run residuals and fail on first non-empty result (error → rollback)
+- Materialized Views (future): compute ΔView and merge into cached table (insert/update/delete)
+
+### Savepoints
+- On SAVEPOINT: push a new change layer
+- On ROLLBACK TO: discard the top layer
+- On RELEASE: merge the top layer into the previous one
+
+### Diagnostics
+- `explain_assertion(name)` exposes classification and prepared parameter layout for assertions
+- Future: `explain_view_delta(name)` for materialized views
+
+This design keeps runtime responsibilities focused on execution and caching, while the optimizer provides binding inference and plan shaping. See the optimizer document for analysis details.
+
 ## Type Coercion Best Practices
 
 SQL requires different coercion strategies for different contexts. Quereus provides centralized type coercion utilities in `src/util/coercion.ts` that should be used consistently across all emitters.

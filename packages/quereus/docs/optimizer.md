@@ -916,6 +916,36 @@ During assertion creation/update:
 - Parameterized execution binds only table‑local attributes; no cross‑relation value injection is required for correctness.
 - Transactional semantics: Assertions run atomically before commit; failures rollback all connections.
 
+## Binding-aware Delta Planning (Reusable)
+
+The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features.
+
+### Modes of Specificity
+- Row-specific: unique key fully covered (or `[[]]`); bind PK/unique key
+- Group-specific: GROUP BY or window PARTITION BY on columns K; bind K
+- Global: no safe binding → evaluate full query
+
+### Binding Extraction
+- From predicates: equality that covers a declared/inferred unique key
+- From aggregations/windows: grouping or partition keys
+- From joins: propagate bindings through equi-joins; when `T.k = U.k` and `k` is a binding key on `T`, it binds `U` as well
+
+### Residual Construction
+- Do not rewrite joins structurally; inject a Filter on the bound relation’s own attributes with `= ?` parameters
+- Preserve attribute IDs; parameter order follows key column order
+- Cache one residual per `relationKey` and key-shape
+
+### Delta Execution Strategy
+- On COMMIT, collect changed keys/groups per base table
+- If any dependent reference is global and that base changed → run full query once
+- Else run residual per affected key/group; batch in future via IN/VALUES
+
+### Applicability Beyond Assertions
+- Materialized Views: compute ΔQ and merge into cached relation
+- Triggers/Signals: invoke actions only for affected keys/groups
+
+This places “what to bind” in the optimizer and “when/how to execute residuals” in the runtime, enabling reuse across features.
+
 ## Retrieve-based Push-down Architecture
 
 ### Overview

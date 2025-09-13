@@ -4,7 +4,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
-import type { IntegrityAssertionSchema } from '../../schema/assertion.js';
+import type { IntegrityAssertionSchema, AssertionDependentTable } from '../../schema/assertion.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 
 const log = createLogger('runtime:emit:create-assertion');
@@ -31,7 +31,29 @@ export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionCon
 			violationSql,
 			deferrable: true, // Auto-deferred for multi-table constraints
 			initiallyDeferred: true,
+			dependentTables: []
 		};
+
+		// Discover dependent base tables (best-effort; conservative if any failure)
+		try {
+			const planNode = rctx.db.getPlan(violationSql);
+			const deps = new Map<string, AssertionDependentTable>();
+			(function collect(node: unknown) {
+				const anyNode = node as any;
+				if (anyNode && typeof anyNode.getRelations === 'function') {
+					for (const child of anyNode.getRelations()) collect(child);
+				}
+				if (anyNode?.tableSchema?.name && anyNode?.id !== undefined) {
+					const base = `${anyNode.tableSchema.schemaName}.${anyNode.tableSchema.name}`.toLowerCase();
+					const relationKey = `${base}#${anyNode.id}`;
+					if (!deps.has(relationKey)) deps.set(relationKey, { relationKey, base });
+				}
+			})(planNode);
+			assertionSchema.dependentTables = Array.from(deps.values());
+			log('Assertion %s dependencies discovered: %o', plan.name, assertionSchema.dependentTables);
+		} catch (depErr) {
+			log('Dependency discovery failed for assertion %s: %O', plan.name, depErr);
+		}
 
 		// Add to schema
 		const schemaManager = rctx.db.schemaManager;

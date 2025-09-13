@@ -1,11 +1,12 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { ScalarPlanNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { ColumnReferenceNode } from './reference.js';
 import { expressionToString } from '../../util/ast-stringify.js';
 import { Cached } from '../../util/cached.js';
+import { projectKeys } from '../util/key-utils.js';
 
 export interface ReturningProjection {
   node: ScalarPlanNode;
@@ -90,13 +91,24 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       };
     });
 
+    // Logical key propagation via simple column references
+    const execType = this.executor.getType();
+    const execAttrs = this.executor.getAttributes();
+    const srcToOut = new Map<number, number>();
+    this.projections.forEach((proj, outIdx) => {
+      if (proj.node instanceof ColumnReferenceNode) {
+        const srcIndex = execAttrs.findIndex(a => a.id === (proj.node as ColumnReferenceNode).attributeId);
+        if (srcIndex >= 0) srcToOut.set(srcIndex, outIdx);
+      }
+    });
+
     return {
       typeClass: 'relation',
       columns,
-      isSet: this.executor.getType().isSet, // Preserve set/bag semantics
+      isSet: execType.isSet,
       isReadOnly: false,
-      keys: [], // No known keys for returning results
-      rowConstraints: [], // No row constraints for returning results
+      keys: projectKeys(execType.keys, srcToOut),
+      rowConstraints: [],
     };
   }
 
@@ -205,6 +217,36 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
 
   get estimatedRows(): number | undefined {
     return this.executor.estimatedRows;
+  }
+
+  computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+    const sourcePhysical = childrenPhysical[0];
+    const execAttrs = this.executor.getAttributes();
+    const map = new Map<number, number>();
+    this.projections.forEach((proj, outIdx) => {
+      if (proj.node instanceof ColumnReferenceNode) {
+        const srcIndex = execAttrs.findIndex(a => a.id === (proj.node as ColumnReferenceNode).attributeId);
+        if (srcIndex >= 0) map.set(srcIndex, outIdx);
+      }
+    });
+
+    const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
+      .map(key => {
+        const projected: number[] = [];
+        for (const col of key) {
+          const outIdx = map.get(col);
+          if (outIdx === undefined) return null;
+          projected.push(outIdx);
+        }
+        return projected;
+      })
+      .filter((k): k is number[] => k !== null);
+
+    return {
+      estimatedRows: this.estimatedRows,
+      ordering: sourcePhysical?.ordering,
+      uniqueKeys,
+    };
   }
 
   override toString(): string {

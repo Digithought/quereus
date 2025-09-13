@@ -19,20 +19,25 @@ import { buildBlock } from '../planner/building/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
-import type { BlockNode } from '../planner/nodes/block.js';
+import { BlockNode } from '../planner/nodes/block.js';
 import type { PlanningContext } from '../planner/planning-context.js';
 import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
-import type { PlanNode } from '../planner/nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
+import { FilterNode } from '../planner/nodes/filter.js';
+import { BinaryOpNode } from '../planner/nodes/scalar.js';
+import { ColumnReferenceNode, ParameterReferenceNode } from '../planner/nodes/reference.js';
 import { registerEmitters } from '../runtime/register.js';
 import { serializePlanTree, formatPlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { Optimizer, DEFAULT_TUNING } from '../planner/optimizer.js';
+import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
 import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-functions.js';
 import { DatabaseOptionsManager } from './database-options.js';
 import type { InstructionTracer } from '../runtime/types.js';
+import { isAsyncIterable } from '../runtime/utils.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -54,6 +59,10 @@ export class Database {
 	public readonly optimizer: Optimizer;
 	public readonly options: DatabaseOptionsManager;
 	private instructionTracer: InstructionTracer | undefined;
+	/** Per-transaction change tracking: base table name → serialized PK tuples */
+	private changeLog: Map<string, Set<string>> = new Map();
+	/** Savepoint layers for change tracking */
+	private changeLogLayers: Array<Map<string, Set<string>>> = [];
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -584,6 +593,76 @@ export class Database {
 		return getCollation(name);
 	}
 
+	/** Serialize a composite primary key tuple for set storage */
+	private serializeKeyTuple(values: SqlValue[]): string {
+		// JSON serialization is sufficient because SqlValue is JSON-safe in this engine
+		return JSON.stringify(values);
+	}
+
+	/** Add a key tuple to the current change log for a base table */
+	private addChange(baseTable: string, keyTuple: SqlValue[]): void {
+		const target = this.changeLogLayers.length > 0
+			? this.changeLogLayers[this.changeLogLayers.length - 1]
+			: this.changeLog;
+		const key = baseTable.toLowerCase();
+		if (!target.has(key)) target.set(key, new Set());
+		target.get(key)!.add(this.serializeKeyTuple(keyTuple));
+	}
+
+	/** Public API used by DML emitters to record changes */
+	public _recordInsert(baseTable: string, newKey: SqlValue[]): void {
+		this.addChange(baseTable, newKey);
+	}
+
+	public _recordDelete(baseTable: string, oldKey: SqlValue[]): void {
+		this.addChange(baseTable, oldKey);
+	}
+
+	public _recordUpdate(baseTable: string, oldKey: SqlValue[], newKey: SqlValue[]): void {
+		this.addChange(baseTable, oldKey);
+		// If the PK changed, also record the new key
+		if (this.serializeKeyTuple(oldKey) !== this.serializeKeyTuple(newKey)) {
+			this.addChange(baseTable, newKey);
+		}
+	}
+
+	/** Savepoint change tracking */
+	public _beginSavepointLayer(): void {
+		this.changeLogLayers.push(new Map());
+	}
+
+	public _rollbackSavepointLayer(): void {
+		// Discard the top layer
+		this.changeLogLayers.pop();
+	}
+
+	public _releaseSavepointLayer(): void {
+		// Merge the top layer into previous or main log
+		const top = this.changeLogLayers.pop();
+		if (!top) return;
+		const target = this.changeLogLayers.length > 0 ? this.changeLogLayers[this.changeLogLayers.length - 1] : this.changeLog;
+		for (const [table, set] of top) {
+			if (!target.has(table)) target.set(table, new Set());
+			const tgt = target.get(table)!;
+			for (const k of set) tgt.add(k);
+		}
+	}
+
+	private getChangedBaseTables(): Set<string> {
+		const result = new Set<string>();
+		const collect = (m: Map<string, Set<string>>) => {
+			for (const [t, s] of m) { if (s.size > 0) result.add(t); }
+		};
+		collect(this.changeLog);
+		for (const layer of this.changeLogLayers) collect(layer);
+		return result;
+	}
+
+	public _clearChangeLog(): void {
+		this.changeLog.clear();
+		this.changeLogLayers = [];
+	}
+
 	/**
 	 * Marks that an explicit SQL BEGIN has started a transaction.
 	 * Ensures subsequently registered connections also begin a transaction.
@@ -903,6 +982,8 @@ export class Database {
 			this.inTransaction = false;
 			this.isAutocommit = true;
 			this.inImplicitTransaction = false;
+			// Clear change tracking on implicit boundary completion
+			this._clearChangeLog();
 			// DON'T disconnect connections here; keep for subsequent queries
 		}
 	}
@@ -910,17 +991,239 @@ export class Database {
 	public async runGlobalAssertions(): Promise<void> {
 		const assertions = this.schemaManager.getAllAssertions();
 		if (assertions.length === 0) return;
-		// MVP: evaluate each assertion's violationSql once (global mode). Parameterized per-row will come next.
+
+		// Only evaluate assertions impacted by changed base tables
+		const changedBases = this.getChangedBaseTables();
+		if (changedBases.size === 0) return;
+
 		for (const assertion of assertions) {
-			const stmt = await this.prepare(assertion.violationSql);
+			// Build plan for analysis
+			let plansql = assertion.violationSql;
+			const parser = new Parser();
+			let ast: AST.Statement;
 			try {
-				for await (const _ of stmt.all()) {
-					// If the assertion violationSql produces any rows, it's violated.
-					throw new QuereusError(`Integrity assertion failed: ${assertion.name}`, StatusCode.CONSTRAINT);
-				}
-			} finally {
-				await stmt.finalize();
+				ast = parser.parse(plansql) as AST.Statement;
+			} catch (e) {
+				// If we cannot parse, fall back to executing the violation SQL once
+				await this.executeViolationOnce(assertion.name, assertion.violationSql);
+				continue;
 			}
+			const plan = this._buildPlan([ast]) as BlockNode;
+			const analyzed = this.optimizer.optimizeForAnalysis(plan, this) as BlockNode;
+
+			// Collect base tables and relationKeys in this plan
+			const relationKeyToBase = new Map<string, string>();
+			const baseTablesInPlan = new Set<string>();
+			this.collectTables(analyzed, relationKeyToBase, baseTablesInPlan);
+
+			// Determine impact: if assertion has no dependencies, treat as global and always impacted.
+			const hasDeps = baseTablesInPlan.size > 0;
+			let impacted = !hasDeps;
+			if (hasDeps) {
+				for (const b of baseTablesInPlan) { if (changedBases.has(b)) { impacted = true; break; } }
+			}
+			if (!impacted) continue;
+
+			// Classify instances as row/global
+			const { analyzeRowSpecific } = await import('../planner/analysis/constraint-extractor.js');
+			const classifications: Map<string, 'row' | 'global'> = analyzeRowSpecific(analyzed as unknown as RelationalPlanNode);
+
+			// If any changed base appears as a global instance, run full violation query once
+			let requiresGlobal = false;
+			for (const [relKey, klass] of classifications) {
+				if (klass === 'global') {
+					const base = relationKeyToBase.get(relKey);
+					if (base && changedBases.has(base)) { requiresGlobal = true; break; }
+				}
+			}
+
+			if (requiresGlobal) {
+				await this.executeViolationOnce(assertion.name, assertion.violationSql);
+				continue;
+			}
+
+			// Collect row-specific references that correspond to changed bases
+			const rowSpecificChanged: Array<{ relKey: string; base: string }> = [];
+			for (const [relKey, klass] of classifications) {
+				if (klass !== 'row') continue;
+				const base = relationKeyToBase.get(relKey);
+				if (base && changedBases.has(base)) rowSpecificChanged.push({ relKey, base });
+			}
+
+			if (rowSpecificChanged.length === 0) {
+				// No row-specific changed refs (or no refs at all) → run once globally.
+				await this.executeViolationOnce(assertion.name, assertion.violationSql);
+				continue;
+			}
+
+			// Execute parameterized variants per changed key for each row-specific reference; early-exit on violation
+			for (const { relKey, base } of rowSpecificChanged) {
+				await this.executeViolationPerChangedKeys(assertion.name, assertion.violationSql, analyzed, relKey, base);
+			}
+		}
+	}
+
+	private async executeViolationOnce(assertionName: string, sql: string): Promise<void> {
+		const stmt = await this.prepare(sql);
+		try {
+			for await (const _ of stmt.all()) {
+				throw new QuereusError(`Integrity assertion failed: ${assertionName}`, StatusCode.CONSTRAINT);
+			}
+		} finally {
+			await stmt.finalize();
+		}
+	}
+
+	/** Execute a parameterized variant of the assertion once per changed key for a specific row-specific relationKey. */
+	private async executeViolationPerChangedKeys(
+		assertionName: string,
+		violationSql: string,
+		analyzed: BlockNode,
+		targetRelationKey: string,
+		base: string
+	): Promise<void> {
+		const changedKeyTuples = this.getChangedKeyTuples(base);
+		if (changedKeyTuples.length === 0) return;
+
+		// Find PK indices for the base table
+		const [schemaName, tableName] = base.split('.');
+		const table = this._findTable(tableName, schemaName);
+		if (!table) {
+			throw new QuereusError(`Assertion references unknown table ${base}`, StatusCode.INTERNAL);
+		}
+		const pkIndices = table.primaryKeyDefinition.map(def => def.index);
+
+		// Prepare a rewritten plan with an injected Filter on the target relationKey
+		const rewritten = this.injectPkFilter(analyzed, targetRelationKey, base, pkIndices);
+		const optimizedPlan = this.optimizer.optimize(rewritten, this) as BlockNode;
+
+		// Emit and execute for each changed PK tuple; stop on first violation row.
+		const emissionContext = new EmissionContext(this);
+		const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
+		const scheduler = new Scheduler(rootInstruction);
+
+		for (const tuple of changedKeyTuples) {
+			const params: Record<string, SqlValue> = {};
+			for (let i = 0; i < pkIndices.length; i++) {
+				params[`pk${i}`] = tuple[i];
+			}
+
+			const runtimeCtx: RuntimeContext = {
+				db: this,
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				stmt: null as any,
+				params,
+				context: new Map(),
+				tableContexts: new Map(),
+				tracer: this.instructionTracer,
+				enableMetrics: this.options.getBooleanOption('runtime_stats'),
+			};
+
+			// Run and detect first output row (violation)
+			const result = await scheduler.run(runtimeCtx);
+			if (isAsyncIterable(result)) {
+				for await (const _ of result as AsyncIterable<unknown>) {
+					throw new QuereusError(`Integrity assertion failed: ${assertionName}`, StatusCode.CONSTRAINT);
+				}
+			}
+		}
+	}
+
+	/** Gather all changed PK tuples for a base table across layers */
+	private getChangedKeyTuples(base: string): SqlValue[][] {
+		const lower = base.toLowerCase();
+		const tuples: SqlValue[][] = [];
+		const collect = (m: Map<string, Set<string>>): void => {
+			const set = m.get(lower);
+			if (!set) return;
+			for (const s of set) tuples.push(JSON.parse(s) as SqlValue[]);
+		};
+		collect(this.changeLog);
+		for (const layer of this.changeLogLayers) collect(layer);
+		return tuples;
+	}
+
+	/** Inject an equality Filter with named parameters :pk0, :pk1, ... at the earliest reference of targetRelationKey. */
+	private injectPkFilter(block: BlockNode, targetRelationKey: string, base: string, pkIndices: number[]): BlockNode {
+		const newStatements = block.getChildren().map(stmt => this.rewriteForPkFilter(stmt, targetRelationKey, base, pkIndices));
+		if (newStatements.every((s, i) => s === block.getChildren()[i])) return block;
+		return new BlockNode((block as unknown as { scope: unknown }).scope as unknown as any, newStatements, block.parameters);
+	}
+
+	private rewriteForPkFilter(node: PlanNode, targetRelationKey: string, base: string, pkIndices: number[]): PlanNode {
+		// If this node is the target TableReference instance, wrap with a Filter
+		const maybe = this.tryWrapTableReference(node, targetRelationKey, base, pkIndices);
+		if (maybe) return maybe;
+
+		const originalChildren = node.getChildren();
+		if (!originalChildren || originalChildren.length === 0) return node;
+		const rewrittenChildren = originalChildren.map(child => this.rewriteForPkFilter(child, targetRelationKey, base, pkIndices));
+		const changed = rewrittenChildren.some((c, i) => c !== originalChildren[i]);
+		return changed ? node.withChildren(rewrittenChildren) : node;
+	}
+
+	private tryWrapTableReference(node: PlanNode, targetRelationKey: string, base: string, pkIndices: number[]): PlanNode | null {
+		// Duck-type TableReferenceNode: presence of tableSchema and no relations
+		const anyNode = node as unknown as { tableSchema?: { schemaName: string; name: string; columns: unknown[] }; id?: string };
+		if (!anyNode?.tableSchema || anyNode.tableSchema.name === undefined) return null;
+		const schemaName = anyNode.tableSchema.schemaName;
+		const tableName = anyNode.tableSchema.name;
+		const relName = `${schemaName}.${tableName}`.toLowerCase();
+		const relKey = `${relName}#${anyNode.id ?? 'unknown'}`;
+		if (relKey !== targetRelationKey) return null;
+
+		// Build predicate: AND(col_pk_i = :pk{i}) for all PK columns
+		const scope = (node as unknown as { scope: unknown }).scope as unknown as any;
+		const attributes = (node as unknown as { getAttributes: () => { id: number; name: string; type: unknown }[] }).getAttributes();
+
+		const makeColumnRef = (colIndex: number): ScalarPlanNode => {
+			const attr = attributes[colIndex];
+			const expr: AST.ColumnExpr = { type: 'column', name: attr.name, table: tableName, schema: schemaName } as unknown as AST.ColumnExpr;
+			return new (ColumnReferenceNode as unknown as { new(scope: any, expr: AST.ColumnExpr, type: any, attributeId: number, columnIndex: number): ScalarPlanNode })(scope, expr, (attr as any).type, attr.id, colIndex);
+		};
+
+		const makeParamRef = (i: number, type: unknown): ScalarPlanNode => {
+			const pexpr: AST.ParameterExpr = { type: 'parameter', name: `pk${i}` } as unknown as AST.ParameterExpr;
+			return new (ParameterReferenceNode as unknown as { new(scope: any, expr: AST.ParameterExpr, nameOrIndex: string | number, targetType: unknown): ScalarPlanNode })(scope, pexpr, `pk${i}`, type as unknown);
+		};
+
+		let predicate: ScalarPlanNode | null = null;
+		for (let i = 0; i < pkIndices.length; i++) {
+			const colIdx = pkIndices[i];
+			const left = makeColumnRef(colIdx);
+			const right = makeParamRef(i, (attributes[colIdx] as any).type);
+			const bexpr: AST.BinaryExpr = { type: 'binary', operator: '=', left: (left as unknown as { expression: AST.Expression }).expression, right: (right as unknown as { expression: AST.Expression }).expression } as unknown as AST.BinaryExpr;
+			const eqNode = new (BinaryOpNode as unknown as { new(scope: any, expr: AST.BinaryExpr, left: ScalarPlanNode, right: ScalarPlanNode): ScalarPlanNode })(scope, bexpr, left, right);
+			if (!predicate) predicate = eqNode; else {
+				const andExpr: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (predicate as unknown as { expression: AST.Expression }).expression, right: (eqNode as unknown as { expression: AST.Expression }).expression } as unknown as AST.BinaryExpr;
+				predicate = new (BinaryOpNode as unknown as { new(scope: any, expr: AST.BinaryExpr, left: ScalarPlanNode, right: ScalarPlanNode): ScalarPlanNode })(scope, andExpr, predicate, eqNode);
+			}
+		}
+
+		if (!predicate) return null;
+
+		// Wrap the table reference with a FilterNode
+		const FilterCtor = FilterNode as unknown as { new(scope: any, source: RelationalPlanNode, predicate: ScalarPlanNode): RelationalPlanNode };
+		return new FilterCtor(scope, node as unknown as RelationalPlanNode, predicate);
+	}
+
+	private collectTables(node: PlanNode, relToBase: Map<string, string>, bases: Set<string>): void {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const anyNode = node as any;
+		if (anyNode && typeof anyNode.getRelations === 'function') {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			for (const child of (anyNode as any).getRelations()) {
+				this.collectTables(child as PlanNode, relToBase, bases);
+			}
+		}
+		// Detect TableReferenceNode by duck-typing on presence of tableSchema
+		if ((anyNode?.tableSchema) && (anyNode?.tableSchema?.name)) {
+			const schemaName = anyNode.tableSchema.schemaName as string;
+			const tableName = anyNode.tableSchema.name as string;
+			const base = `${schemaName}.${tableName}`.toLowerCase();
+			bases.add(base);
+			const relKey = `${base}#${anyNode.id ?? 'unknown'}`;
+			relToBase.set(relKey, base);
 		}
 	}
 

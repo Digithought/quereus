@@ -1,0 +1,35 @@
+{
+	"$schema": "https://raw.githubusercontent.com/microsoft/vscode/master/extensions/theme-defaults/schema/tmlanguage.schema.json",
+	"name": "Quereus SQL",
+	"scopeName": "source.quereus",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#strings" },
+		{ "include": "#numbers" },
+		{ "include": "#keywords" },
+		{ "include": "#operators" }
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{ "name": "comment.line.double-dash.sql", "match": "--.*$" },
+				{ "name": "comment.block.sql", "begin": "/\\*", "end": "\\*/" }
+			]
+		},
+		"strings": {
+			"patterns": [
+				{ "name": "string.quoted.single.sql", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sql" }] },
+				{ "name": "string.quoted.double.sql", "begin": "\"", "end": "\"", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sql" }] }
+			]
+		},
+		"numbers": { "patterns": [{ "name": "constant.numeric.sql", "match": "\\b\\d+(?:\\.\\d+)?\\b" }] },
+		"operators": { "patterns": [{ "name": "keyword.operator.sql", "match": "=|==|!=|<>|<=|>=|<|>|\\|\\||\\+|\-|\\*|/|%" }] },
+		"keywords": {
+			"patterns": [
+				{ "name": "keyword.control.sql", "match": "(?i:\\b(?:WITH|RECURSIVE|SELECT|INSERT|UPDATE|DELETE|VALUES|CREATE|TABLE|VIEW|INDEX|ASSERTION|DROP|ALTER|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|RETURNING|WHERE|FROM|GROUP|BY|HAVING|ORDER|LIMIT|OFFSET|JOIN|INNER|LEFT|RIGHT|FULL|CROSS|OUTER|ON|USING|AS|DISTINCT|ALL|UNION|INTERSECT|EXCEPT|DIFF|NULL|TRUE|FALSE|IS|NOT|AND|OR|XOR|IN|LIKE|BETWEEN|EXISTS|CASE|WHEN|THEN|ELSE|END|OVER|PARTITION|ROWS|RANGE|UNBOUNDED|PRECEDING|FOLLOWING|CURRENT|COLLATE|DEFAULT|PRIMARY|KEY|CHECK|UNIQUE|FOREIGN|REFERENCES|CONSTRAINT|GENERATED|ALWAYS|STORED|VIRTUAL|INTO|USING|IF|TO|ADD|RENAME|SET|NO|ACTION|ABORT|FAIL|IGNORE|REPLACE)\\b)" }
+			]
+		}
+	}
+}
+
+

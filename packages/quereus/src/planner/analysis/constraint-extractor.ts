@@ -3,7 +3,7 @@
  * Converts scalar expressions into constraints that can be pushed down to virtual tables
  */
 
-import type { ScalarPlanNode, RelationalPlanNode } from '../nodes/plan-node.js';
+import type { ScalarPlanNode, RelationalPlanNode, PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
 import { BinaryOpNode, BetweenNode } from '../nodes/scalar.js';
@@ -631,12 +631,12 @@ export function computeCoveredKeysForConstraints(
  * Row-specific means equality constraints fully cover at least one unique key at that reference.
  */
 export function analyzeRowSpecific(
-    plan: RelationalPlanNode
+    plan: RelationalPlanNode | PlanNode
 ): Map<string, 'row' | 'global'> {
     const result = new Map<string, 'row' | 'global'>();
-    const infos = createTableInfosFromPlan(plan);
+    const infos = createTableInfosFromPlan(plan as RelationalPlanNode);
     for (const info of infos) {
-        const covered = extractCoveredKeysForTable(plan, info.relationKey);
+        const covered = extractCoveredKeysForTable(plan as RelationalPlanNode, info.relationKey);
         result.set(info.relationKey, covered.length > 0 ? 'row' : 'global');
     }
     return result;
@@ -658,9 +658,10 @@ function combineResiduals(predicates: ScalarPlanNode[]): ScalarPlanNode | undefi
  * Walk a plan tree and call callback for each predicate found
  */
 function walkPlanForPredicates(
-  plan: RelationalPlanNode,
+  plan: PlanNode,
   callback: (predicate: ScalarPlanNode, sourceNode: string) => void
 ): void {
+  if (!plan) return;
   // If node exposes predicates via characteristic, collect them
   if (CapabilityDetectors.isPredicateSource(plan as any)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -670,29 +671,43 @@ function walkPlanForPredicates(
     }
   }
 
-  // Recurse into relational children
-  for (const child of plan.getRelations()) {
-    walkPlanForPredicates(child, callback);
+  // Recurse into all children (scalar and relational)
+  for (const child of plan.getChildren()) {
+    walkPlanForPredicates(child as unknown as PlanNode, callback);
   }
 }
 
 /**
  * Create table information from a relational plan
  */
-function createTableInfosFromPlan(plan: RelationalPlanNode): TableInfo[] {
+function createTableInfosFromPlan(plan: RelationalPlanNode | PlanNode): TableInfo[] {
   const tableInfos: TableInfo[] = [];
 
-  function visit(node: RelationalPlanNode): void {
-    if (node instanceof TableReferenceNode) {
-      tableInfos.push(createTableInfoFromNode(node, `${node.tableSchema.schemaName}.${node.tableSchema.name}`));
-      return;
+  const seen = new Set<string>();
+
+  function visitAny(node: PlanNode): void {
+    const id = (node as any).id ?? null;
+    if (id !== null) {
+      const k = String(id);
+      if (seen.has(k)) return;
+      seen.add(k);
     }
+
+    if (node instanceof TableReferenceNode) {
+      const tr = node as unknown as { tableSchema: { schemaName: string; name: string } };
+      tableInfos.push(createTableInfoFromNode(node as unknown as RelationalPlanNode, `${tr.tableSchema.schemaName}.${tr.tableSchema.name}`));
+    }
+
     for (const rel of node.getRelations()) {
-      visit(rel);
+      visitAny(rel as unknown as PlanNode);
+    }
+
+    for (const child of node.getChildren()) {
+      visitAny(child as unknown as PlanNode);
     }
   }
 
-  visit(plan);
+  visitAny(plan as unknown as PlanNode);
   return tableInfos;
 }
 

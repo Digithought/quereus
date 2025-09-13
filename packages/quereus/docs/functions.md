@@ -558,6 +558,35 @@ These table-valued functions provide introspection and debugging capabilities fo
 
 **Note:** These diagnostic functions are primarily intended for development, debugging, and performance analysis. The `stack_trace` and `execution_trace` functions are non-deterministic and may have performance overhead.
 
+### Assertion Diagnostics
+
+*   `explain_assertion(name)`
+    *   Description: Explains how a named integrity assertion will be analyzed and executed at COMMIT time. Returns one row per table reference instance within the assertion’s violation query with its classification and prepared binding info.
+    *   Arguments: `name` (TEXT - assertion name)
+    *   Returns: A table with columns:
+        *   `assertion` (TEXT) - Assertion name
+        *   `relation_key` (TEXT) - Instance-unique table reference key (e.g., `main.users#17`)
+        *   `base` (TEXT) - Base table name (e.g., `main.users`)
+        *   `classification` (TEXT) - 'row' if row-specific (unique key fully covered), otherwise 'global'
+        *   `prepared_pk_params` (TEXT, nullable) - JSON array of parameter names (e.g., `["pk0","pk1"]`) when row-specific; NULL if global
+        *   `violation_sql` (TEXT) - Stored violation SQL (SELECT returns rows when violated)
+    *   Example:
+        ```sql
+        -- Global-style assertion
+        create assertion a_global check ((select count(*) from t2) = (select count(*) from t2));
+        select exists(
+          select 1 from explain_assertion('a_global')
+          where classification = 'global'
+        ) as ok;
+
+        -- Row-specific-style assertion (PK equality)
+        create assertion a_row check (exists (select 1 from t1 where id = 1));
+        select prepared_pk_params
+        from explain_assertion('a_row')
+        where classification = 'row'
+        limit 1;
+        ```
+
 ### Schema Introspection Functions
 
 *   `schema()`

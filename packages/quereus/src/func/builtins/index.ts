@@ -18,7 +18,7 @@ import { jsonValidFunc, jsonTypeFunc, jsonExtractFunc, jsonQuoteFunc, jsonArrayF
 	jsonArrayLengthFunc, jsonPatchFunc,
 	jsonGroupArrayFunc, jsonGroupObjectFunc } from './json.js';
 import { generateSeriesFunc } from './generation.js';
-import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc, rowTraceFunc } from './explain.js';
+import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc, rowTraceFunc, explainAssertionFunc } from './explain.js';
 import { schemaFunc, tableInfoFunc, functionInfoFunc } from './schema.js';
 import { jsonEachFunc, jsonTreeFunc } from './json-tvf.js';
 
@@ -108,6 +108,7 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	stackTraceFunc,
 	executionTraceFunc,
 	rowTraceFunc,
+	explainAssertionFunc,
 	// Schema introspection functions
 	schemaFunc,
 	tableInfoFunc,

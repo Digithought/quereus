@@ -1,0 +1,42 @@
+{
+	"name": "@quereus/quereus-vscode",
+	"displayName": "Quereus SQL",
+	"description": "Language support for Quereus SQL: syntax, diagnostics, completions, hovers, semantic tokens",
+	"version": "0.1.0",
+	"private": true,
+	"publisher": "quereus",
+	"license": "MIT",
+	"engines": { "vscode": "^1.84.0" },
+	"categories": ["Programming Languages"],
+	"main": "./client/out/extension.js",
+	"contributes": {
+		"languages": [
+			{ "id": "quereus-sql", "aliases": ["Quereus SQL", "qsql"], "extensions": [".qsql", ".quereus.sql"], "configuration": "./language-configuration.json" },
+			{ "id": "sql", "aliases": ["SQL"], "extensions": [".sql"] }
+		],
+		"grammars": [
+			{ "language": "quereus-sql", "scopeName": "source.quereus", "path": "./syntaxes/quereus.tmLanguage.json" }
+		]
+	},
+	"scripts": {
+		"clean": "rimraf client/out server/out",
+		"build": "yarn run build:server && yarn run build:client",
+		"build:server": "tsc -p server/tsconfig.json",
+		"build:client": "tsc -p client/tsconfig.json",
+		"lint": "echo 'No lint configured for extension'",
+		"typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@quereus/quereus": "*",
+		"vscode-languageclient": "^9.0.1",
+		"vscode-languageserver": "^9.0.1",
+		"vscode-languageserver-textdocument": "^1.0.11"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.103.0",
+		"rimraf": "^6.0.1",
+		"typescript": "^5.8.3"
+	}
+}
+
+

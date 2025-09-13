@@ -32,7 +32,6 @@ CREATE ASSERTION always_fails CHECK (1 = 0);
 -- Try to commit with the failing assertion
 BEGIN;
 INSERT INTO numbers VALUES (5);
-
 COMMIT;
 -- error: Integrity assertion failed: always_fails
 
@@ -52,3 +51,22 @@ SELECT value FROM numbers;
 → [{ "value": 5 }]
 
 DROP TABLE numbers;
+
+-- Explain assertion classification shows per-reference row/global and prepared params
+CREATE TABLE t1 (id INTEGER PRIMARY KEY, u TEXT UNIQUE);
+CREATE TABLE t2 (id INTEGER PRIMARY KEY, t1_id INTEGER, FOREIGN KEY (t1_id) REFERENCES t1(id));
+
+-- Global-style assertion (aggregate): should classify t2 as global
+CREATE ASSERTION a_global CHECK ((SELECT COUNT(*) FROM t2) = (SELECT COUNT(*) FROM t2));
+SELECT EXISTS(SELECT 1 FROM explain_assertion('a_global') WHERE classification = 'global') AS ok;
+→ [{ "ok": 1 }]
+DROP ASSERTION a_global;
+
+-- Row-specific-style assertion: equality on PK reduces to row-specific and exposes pk params
+CREATE ASSERTION a_row CHECK (EXISTS (SELECT 1 FROM t1 WHERE id = 1));
+SELECT COALESCE(prepared_pk_params, '[]') AS prepared_pk_params FROM explain_assertion('a_row') WHERE classification = 'row' LIMIT 1;
+→ [{ "prepared_pk_params": "[\"pk0\"]" }]
+DROP ASSERTION a_row;
+
+DROP TABLE t2;
+DROP TABLE t1;
