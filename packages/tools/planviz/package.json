@@ -2,7 +2,12 @@
   "name": "@quereus/planviz",
   "version": "0.1.0",
   "description": "Visual query plan inspection tool for Quereus",
-  "type": "module",
+	"publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/tools/planviz"
+  },  "type": "module",
   "main": "dist/index.js",
   "bin": {
     "quereus-planviz": "./dist/cli.js"

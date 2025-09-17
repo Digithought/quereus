@@ -12,7 +12,7 @@
 	"repository": {
 		"comments": {
 			"patterns": [
-				{ "name": "comment.line.double-dash.sql", "match": "--.*$" },
+				{ "name": "comment.line.double-dash.sql", "begin": "--", "end": "$" },
 				{ "name": "comment.block.sql", "begin": "/\\*", "end": "\\*/" }
 			]
 		},

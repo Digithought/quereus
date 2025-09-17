@@ -113,6 +113,7 @@ export enum TokenType {
 	CAST = 'CAST',
 	OVER = 'OVER',
 	PARTITION = 'PARTITION',
+	LATERAL = 'LATERAL',
 	ROW = 'ROW',
 	ROWS = 'ROWS',
 	RANGE = 'RANGE',
@@ -272,6 +273,7 @@ export const KEYWORDS: Record<string, TokenType> = {
 	'cast': TokenType.CAST,
 	'over': TokenType.OVER,
 	'partition': TokenType.PARTITION,
+	'lateral': TokenType.LATERAL,
 	'row': TokenType.ROW,
 	'rows': TokenType.ROWS,
 	'range': TokenType.RANGE,
@@ -421,8 +423,7 @@ export class Lexer {
 				// Ignore whitespace
 				break;
 			case '\n':
-				this.line++;
-				this.column = 1;
+				// Newline handling already done in advance()
 				break;
 
 			// Default - handle identifiers and numbers
@@ -474,11 +475,6 @@ export class Lexer {
 		let escaping = false;
 
 		while ((!this.isAtEnd() && this.peek() !== quote) || escaping) {
-			if (this.peek() === '\n') {
-				this.line++;
-				this.column = 1;
-			}
-
 			if (escaping) {
 				// Handle escape sequences
 				const c = this.peek();
@@ -528,10 +524,6 @@ export class Lexer {
 		let value = '';
 
 		while (!this.isAtEnd() && this.peek() !== '`') {
-			if (this.peek() === '\n') {
-				this.line++;
-				this.column = 1;
-			}
 			value += this.advance();
 		}
 
@@ -550,10 +542,6 @@ export class Lexer {
 		let value = '';
 
 		while (!this.isAtEnd() && this.peek() !== ']') {
-			if (this.peek() === '\n') {
-				this.line++;
-				this.column = 1;
-			}
 			value += this.advance();
 		}
 
@@ -703,12 +691,7 @@ export class Lexer {
 				this.advance(); // Consume '/'
 				nesting--;
 			} else {
-				if (this.peek() === '\n') {
-					this.line++;
-					this.column = 1;
-				} else {
-					this.column++;
-				}
+				// Advance one character and let advance() maintain line/column
 				this.advance();
 			}
 		}

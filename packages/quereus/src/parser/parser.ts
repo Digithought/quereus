@@ -41,6 +41,8 @@ export class Parser {
 	private current = 0;
 	// Counter for positional parameters
 	private parameterPosition = 1;
+	// Track opening parentheses for accurate error locations
+	private parenStack: Token[] = [];
 
 	/**
 	 * Initialize the parser with tokens from a SQL string
@@ -52,6 +54,7 @@ export class Parser {
 		this.tokens = lexer.scanTokens();
 		this.current = 0;
 		this.parameterPosition = 1; // Reset parameter counter
+		this.parenStack = [];
 
 		// Check for errors from lexer
 		const errorToken = this.tokens.find(t => t.type === TokenType.ERROR);
@@ -107,6 +110,22 @@ export class Parser {
 					e instanceof Error ? e : undefined
 				);
 			}
+		}
+
+		// Report any unterminated parenthesis at EOF with pointer to opening location
+		if (this.parenStack.length > 0) {
+			const openToken = this.parenStack[this.parenStack.length - 1];
+			quereusError(
+				`Unterminated '(' opened at line ${openToken.startLine}, column ${openToken.startColumn}. Expected ')' before end of input.`,
+				StatusCode.ERROR,
+				undefined,
+				{
+					loc: {
+						start: { line: openToken.startLine, column: openToken.startColumn },
+						end: { line: this.peek().endLine, column: this.peek().endColumn },
+					},
+				}
+			);
 		}
 
 		// If we consumed all tokens and didn't parse any statements (e.g., empty input or only comments/whitespace),
@@ -198,7 +217,7 @@ export class Parser {
 			if (!this.check(TokenType.RPAREN)) {
 				do {
 					columns.push(this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'like'], "Expected column name in CTE definition."));
-				} while (this.match(TokenType.COMMA));
+				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CTE column list.");
 		}
@@ -721,7 +740,7 @@ export class Parser {
 			if (!this.check(TokenType.RPAREN)) {
 				do {
 					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in alias column list."));
-				} while (this.match(TokenType.COMMA));
+				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
 		}
@@ -792,7 +811,7 @@ export class Parser {
 			if (!this.check(TokenType.RPAREN)) {
 				do {
 					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in alias column list."));
-				} while (this.match(TokenType.COMMA));
+				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
 		}
@@ -877,6 +896,7 @@ export class Parser {
 
 		// Parse optional alias (same logic as for standard tables)
 		let alias: string | undefined;
+		let columns: string[] | undefined;
 		if (this.match(TokenType.AS)) {
 			if (!this.checkIdentifierLike(contextualKeywords)) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
@@ -894,11 +914,24 @@ export class Parser {
 			endToken = aliasToken;
 		}
 
+		// Optional column list after alias: alias(col1, col2, ...)
+		if (alias && this.match(TokenType.LPAREN)) {
+			columns = [];
+			const colKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					columns.push(this.consumeIdentifier(colKeywords, "Expected column name in alias column list."));
+				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
+			}
+			endToken = this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
+		}
+
 		return {
 			type: 'functionSource',
 			name,
 			args,
 			alias,
+			columns,
 			loc: _createLoc(startToken, endToken),
 		};
 	}
@@ -930,6 +963,8 @@ export class Parser {
 		// Consume JOIN token
 		this.consume(TokenType.JOIN, "Expected 'JOIN'.");
 
+		// Optional LATERAL before right side
+		const isLateral = this.match(TokenType.LATERAL);
 		// Parse right side of join
 		const right = this.tableSource(withClause);
 
@@ -1703,7 +1738,25 @@ export class Parser {
 			return this.advance();
 		}
 
-		this.error(this.peek(), message);
+		// If a ')' was expected, point back to the matching '('
+		if (type === TokenType.RPAREN && this.parenStack.length > 0) {
+			const openToken = this.parenStack[this.parenStack.length - 1];
+			const got = this.peek();
+			quereusError(
+				`${message} Unterminated '(' opened at line ${openToken.startLine}, column ${openToken.startColumn}. Got '${got.lexeme}'.`,
+				StatusCode.ERROR,
+				undefined,
+				{
+					loc: {
+						start: { line: openToken.startLine, column: openToken.startColumn },
+						end: { line: this.peek().endLine, column: this.peek().endColumn },
+					},
+				}
+			);
+		}
+
+		const got = this.peek();
+		this.error(got, `${message} Got '${got.lexeme}'.`);
 	}
 
 	private check(type: TokenType): boolean {
@@ -1718,7 +1771,23 @@ export class Parser {
 
 	private advance(): Token {
 		if (!this.isAtEnd()) this.current++;
-		return this.previous();
+		const tok = this.previous();
+		// Maintain parenthesis balance for precise diagnostics
+		if (tok.type === TokenType.LPAREN) {
+			this.parenStack.push(tok);
+		} else if (tok.type === TokenType.RPAREN) {
+			if (this.parenStack.length === 0) {
+				quereusError(
+					`Unmatched ')' at line ${tok.startLine}, column ${tok.startColumn}.`,
+					StatusCode.ERROR,
+					undefined,
+					{ loc: { start: { line: tok.startLine, column: tok.startColumn }, end: { line: tok.endLine, column: tok.endColumn } } }
+				);
+			} else {
+				this.parenStack.pop();
+			}
+		}
+		return tok;
 	}
 
 	private isAtEnd(): boolean {
@@ -1734,8 +1803,19 @@ export class Parser {
 	}
 
 	private error(token: Token, message: string): never {
+		// If we see common starter tokens for a different clause where a separator/comma or keyword was expected,
+		// enhance the message to hint at likely fixes instead of generic parenthesis errors.
+		const nextLex = token.lexeme?.toUpperCase?.() || token.lexeme;
+		const hintParts: string[] = [];
+		if (this.peekKeyword('CONSTRAINT') || this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN')) {
+			hintParts.push("If you're in CREATE TABLE, you might be missing a comma between elements.");
+		}
+		if (nextLex === 'ON' && !this.peekKeyword('JOIN')) {
+			hintParts.push("'ON' must follow a JOIN. Use WHERE for filters in subqueries.");
+		}
+		const fullMessage = hintParts.length > 0 ? `${message} ${hintParts.join(' ')}` : message;
 		quereusError(
-			message,
+			fullMessage,
 			StatusCode.ERROR,
 			undefined,
 			{
@@ -1895,7 +1975,19 @@ export class Parser {
 				} else {
 					columns.push(this.columnDefinition());
 				}
-			} while (this.match(TokenType.COMMA));
+			// Allow trailing comma before ')'
+			} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
+
+			// If we didn't see a comma and the next token looks like the start of another
+			// column or table constraint, provide a clearer error about a missing comma.
+			if (!this.check(TokenType.RPAREN)) {
+				const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
+				const nextLooksLikeAnotherItem = this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN') || this.peekKeyword('CONSTRAINT') || this.checkIdentifierLike(contextualKeywords);
+				if (nextLooksLikeAnotherItem) {
+					const next = this.peek();
+					throw this.error(next, `Expected ',' between table elements. Did you forget a comma before '${next.lexeme}'?`);
+				}
+			}
 
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 
@@ -2013,7 +2105,7 @@ export class Parser {
 			if (!this.check(TokenType.RPAREN)) {
 				do {
 					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in view column list."));
-				} while (this.match(TokenType.COMMA));
+				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			this.consume(TokenType.RPAREN, "Expected ')' after view column list.");
 		}

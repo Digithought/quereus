@@ -43,6 +43,7 @@ export function buildTableFunctionCall(
     functionName,
     functionSchema,
     args,
-    functionSource.alias
+    functionSource.alias,
+    functionSource.columns
   );
 }

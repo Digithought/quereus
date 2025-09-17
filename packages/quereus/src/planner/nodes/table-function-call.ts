@@ -22,6 +22,7 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     public readonly functionSchema: FunctionSchema,
     public readonly operands: readonly ScalarPlanNode[],
     public readonly alias?: string,
+    public readonly aliasColumns?: readonly string[],
     estimatedCostOverride?: number
   ) {
     super(scope, estimatedCostOverride ?? 1); // Default cost for function calls
@@ -29,12 +30,13 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     this.attributesCache = new Cached(() => {
       // Create attributes from function schema return type
       if (isTableValuedFunctionSchema(this.functionSchema)) {
-        return this.functionSchema.returnType.columns.map((col) => ({
+        const renamed = this.functionSchema.returnType.columns.map((col, i) => ({
           id: PlanNode.nextAttrId(),
-          name: col.name,
+          name: (this.aliasColumns && this.aliasColumns[i]) ? this.aliasColumns[i] : col.name,
           type: col.type,
           sourceRelation: `${this.functionName}()`
         }));
+        return renamed;
       }
       return [];
     });
@@ -93,7 +95,8 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
       this.functionName,
       this.functionSchema,
       newChildren as ScalarPlanNode[],
-      this.alias
+      this.alias,
+      this.aliasColumns
     );
   }
 
@@ -104,7 +107,8 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
 
   override toString(): string {
     const argsStr = formatExpressionList(this.operands);
-    const aliasStr = this.alias ? ` AS ${this.alias}` : '';
+    const aliasColsStr = this.aliasColumns && this.aliasColumns.length > 0 ? `(${this.aliasColumns.join(', ')})` : '';
+    const aliasStr = this.alias ? ` AS ${this.alias}${aliasColsStr}` : '';
     return `${this.functionName}(${argsStr})${aliasStr}`;
   }
 
@@ -116,6 +120,9 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
 
     if (this.alias) {
       props.alias = this.alias;
+    }
+    if (this.aliasColumns && this.aliasColumns.length > 0) {
+      props.aliasColumns = [...this.aliasColumns];
     }
 
     if (isTableValuedFunctionSchema(this.functionSchema)) {

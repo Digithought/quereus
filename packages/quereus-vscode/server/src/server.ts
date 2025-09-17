@@ -83,11 +83,25 @@ async function validate(doc: TextDocument): Promise<void> {
 		parser.parseAll(text);
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
-		// @ts-expect-error runtime error shape may have loc
-		const loc = e?.loc as { start?: { line: number, column: number }, end?: { line: number, column: number } } | undefined;
+		// Prefer QuereusError line/column if present
+		const line = (e as any)?.line as number | undefined;
+		const column = (e as any)?.column as number | undefined;
+		const loc = (e as any)?.loc as { start?: { line: number, column: number }, end?: { line: number, column: number } } | undefined;
+		let range: { start: { line: number, character: number }, end: { line: number, character: number } };
+		if (line !== undefined && column !== undefined) {
+			const docLines = doc.getText().split('\n');
+			const lineIdx = Math.max(0, Math.min(docLines.length - 1, line - 1));
+			const maxChar = (docLines[lineIdx] ?? '').length;
+			const charIdx = Math.max(0, Math.min(maxChar, column - 1));
+			range = { start: { line: lineIdx, character: charIdx }, end: { line: lineIdx, character: Math.min(maxChar, charIdx + 1) } };
+		} else if (loc?.start && loc?.end) {
+			range = toRange({ start: loc.start, end: loc.end });
+		} else {
+			range = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+		}
 		diagnostics.push({
 			severity: DiagnosticSeverity.Error,
-			range: loc ? toRange({ start: loc.start!, end: loc.end! }) : { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+			range,
 			message,
 			source: 'quereus'
 		});
@@ -148,11 +162,7 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 	const commentSpans: Span[] = [];
 	const tokens: Token[] = [];
 
-	for (const m of text.matchAll(reString)) {
-		const start = m.index ?? 0; const end = start + m[0].length;
-		stringSpans.push({ start, end });
-		tokens.push({ start, end, type: 'string' });
-	}
+	// 1) Capture comments first
 	for (const m of text.matchAll(reLineComment)) {
 		const start = m.index ?? 0; const end = start + m[0].length;
 		commentSpans.push({ start, end });
@@ -162,6 +172,19 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 		const start = m.index ?? 0; const end = start + m[0].length;
 		commentSpans.push({ start, end });
 		tokens.push({ start, end, type: 'comment' });
+	}
+
+	function isInsideComment(offset: number): boolean {
+		for (const s of commentSpans) if (offset >= s.start && offset < s.end) return true;
+		return false;
+	}
+
+	// 2) Capture strings, but skip any starting inside comments
+	for (const m of text.matchAll(reString)) {
+		const start = m.index ?? 0; const end = start + m[0].length;
+		if (isInsideComment(start)) continue;
+		stringSpans.push({ start, end });
+		tokens.push({ start, end, type: 'string' });
 	}
 
 	function isInsideSpans(offset: number): boolean {
@@ -234,6 +257,8 @@ function positionAt(doc: TextDocument, offset: number) {
 	}
 	return { line, character };
 }
+
+// removed: sanitizeForParsing - parser handles comments correctly and reports accurate locations
 
 function pushMultiline(builder: SemanticTokensBuilder, doc: TextDocument, startOffset: number, endOffset: number, type: TokenTypeLabel): void {
 	let start = positionAt(doc, startOffset);

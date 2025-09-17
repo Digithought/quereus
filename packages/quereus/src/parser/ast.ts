@@ -160,6 +160,7 @@ export interface FunctionSource extends AstNode {
 	name: IdentifierExpr; // Function name (potentially schema.name)
 	args: Expression[];    // Arguments passed to the function
 	alias?: string;        // Optional alias for the generated table
+	columns?: string[];    // Optional column list after alias: alias(col1, col2, ...)
 }
 
 // SELECT statement
