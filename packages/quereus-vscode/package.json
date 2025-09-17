@@ -4,7 +4,7 @@
 	"description": "Language support for Quereus SQL: syntax, diagnostics, completions, hovers, semantic tokens",
 	"version": "0.1.0",
 	"icon": "images/icon.png",
-	"publisher": "quereus",
+	"publisher": "GotChoicesFoundation",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/gotchoices/quereus.git",
