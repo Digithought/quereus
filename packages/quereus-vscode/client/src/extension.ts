@@ -5,7 +5,7 @@ import { pushSchemaSnapshot, type SchemaSnapshot } from './schema-sync';
 let client: LanguageClient | undefined;
 
 export function activate(context: ExtensionContext): void {
-	const serverModule = context.asAbsolutePath('server/out/server.js');
+	const serverModule = context.asAbsolutePath('server/dist/server.js');
 	const serverOptions: ServerOptions = {
 		run: { module: serverModule, transport: TransportKind.ipc },
 		debug: { module: serverModule, transport: TransportKind.ipc, options: { execArgv: ['--inspect=6009'] } }

@@ -82,6 +82,29 @@ These functions operate on single values and return a single value.
     *   **Returns:** The value of Y or Z depending on X.
     *   **Example:** `iif(1 > 0, 'yes', 'no')` returns `'yes'`, `iif(0, 10, 20)` returns `20`.
 
+*   `IsISODate(text)`
+    *   **Description:** Validates whether `text` is a strict ISO-8601 calendar date in `YYYY-MM-DD` format (e.g., leap years respected). No time or timezone components are allowed.
+    *   **Arguments:** `text` (TEXT).
+    *   **Returns:** INTEGER: `1` if valid, `0` otherwise.
+    *   **Examples:** `IsISODate('2024-02-29')` returns `1`; `IsISODate('2023-02-29')` returns `0`.
+
+*   `IsISODateTime(text)`
+    *   **Description:** Validates whether `text` is a strict ISO-8601 date-time. Supported forms:
+        - `YYYY-MM-DDTHH:MM`
+        - `YYYY-MM-DDTHH:MM:SS`
+        - With fractional seconds up to 9 digits: `YYYY-MM-DDTHH:MM:SS.s{1..9}`
+        - Optional timezone: `Z` or `±HH:MM`
+      A space between date and time is not accepted; must use `T`.
+    *   **Arguments:** `text` (TEXT).
+    *   **Returns:** INTEGER: `1` if valid, `0` otherwise.
+    *   **Examples:**
+        - `IsISODateTime('2024-01-01T00:00')` → `1`
+        - `IsISODateTime('2024-01-01T00:00:00Z')` → `1`
+        - `IsISODateTime('2024-01-01T23:59:59+05:30')` → `1`
+        - `IsISODateTime('2024-01-01 00:00:00')` → `0` (space not allowed)
+        - `IsISODateTime('2024-01-01T10:00:00.123456789')` → `1`
+        - `IsISODateTime('2024-01-01T10:00:00.1234567890')` → `0` (too many fraction digits)
+
 *   `instr(X, Y)`
     *   **Description:** Returns the 1-based index of the first occurrence of string Y within string X. Case-sensitive.
     *   **Arguments:** `X` (TEXT), `Y` (TEXT).
