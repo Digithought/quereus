@@ -2,9 +2,17 @@
 	"name": "quereus-vscode",
 	"displayName": "Quereus SQL",
 	"description": "Language support for Quereus SQL: syntax, diagnostics, completions, hovers, semantic tokens",
-	"version": "0.1.0",
-	"icon": "images/icon.png",
+	"version": "0.1.1",
+	"icon": "images/icon.ico",
 	"publisher": "GotChoicesFoundation",
+	"files": [
+		"client/out",
+		"server/dist",
+		"images",
+		"syntaxes",
+		"language-configuration.json",
+		"LICENSE"
+	],
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/gotchoices/quereus.git",
@@ -23,24 +31,29 @@
 			{ "language": "quereus-sql", "scopeName": "source.quereus", "path": "./syntaxes/quereus.tmLanguage.json" }
 		]
 	},
+	"activationEvents": [
+		"onLanguage:quereus-sql",
+		"onLanguage:sql"
+	],
 	"scripts": {
-		"clean": "rimraf client/out server/out",
-		"build": "yarn run build:server && yarn run build:client",
-		"build:server": "tsc -p server/tsconfig.json",
+		"clean": "rimraf client/out server/dist",
+		"build:server": "esbuild ./server/src/server.ts --bundle --outfile=server/dist/server.js --external:vscode --platform=node --format=cjs",
 		"build:client": "tsc -p client/tsconfig.json",
+		"build": "yarn run build:server && yarn run build:client",
+		"package": "npx --yes @vscode/vsce package --no-yarn --no-dependencies",
 		"lint": "echo 'No lint configured for extension'",
 		"typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit"
 	},
 	"dependencies": {
-		"@quereus/quereus": "*",
-		"vscode-languageclient": "^9.0.1",
-		"vscode-languageserver": "^9.0.1",
-		"vscode-languageserver-textdocument": "^1.0.11"
+		"vscode-languageclient": "^9.0.1"
 	},
 	"devDependencies": {
-		"@types/vscode": "^1.103.0",
+		"@quereus/quereus": "^0.2.1",
+		"@types/vscode": "^1.84.0",
 		"rimraf": "^6.0.1",
-		"typescript": "^5.8.3"
+		"typescript": "^5.8.3",
+		"vscode-languageserver": "^9.0.1",
+		"vscode-languageserver-textdocument": "^1.0.11"
 	}
 }
 

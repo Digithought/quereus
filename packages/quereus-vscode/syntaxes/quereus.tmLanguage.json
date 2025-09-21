@@ -18,7 +18,18 @@
 		},
 		"strings": {
 			"patterns": [
-				{ "name": "string.quoted.single.sql", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sql" }] },
+				{
+					"name": "string.quoted.single.sql",
+					"begin": "'",
+					"beginCaptures": { "0": { "name": "punctuation.definition.string.begin.sql" } },
+					"end": "'",
+					"endCaptures": { "0": { "name": "punctuation.definition.string.end.sql" } },
+					"applyEndPatternLast": true,
+					"patterns": [
+						{ "match": "''", "name": "constant.character.escape.apostrophe.sql" },
+						{ "match": "\\\\.", "name": "constant.character.escape.sql" }
+					]
+				},
 				{ "name": "string.quoted.double.sql", "begin": "\"", "end": "\"", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sql" }] }
 			]
 		},

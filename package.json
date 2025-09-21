@@ -25,6 +25,7 @@
     "preview:web": "yarn workspace @quereus/quoomb-web preview"
   },
   "devDependencies": {
+    "esbuild": "^0.23.0",
     "typescript": "^5.8.3"
   }
 }

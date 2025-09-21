@@ -13,7 +13,7 @@ import { lengthFunc, substrFunc, substringFunc, likeFunc, globFunc, trimFunc, lt
 import { countStarFunc, sumFunc, avgFunc, minFunc, maxFunc, countXFunc, groupConcatFuncRev, totalFunc,
 	varPopFunc, varSampFunc, stdDevPopFunc, stdDevSampFunc } from './aggregate.js';
 import type { FunctionSchema } from '../../schema/function.js';
-import { dateFunc, timeFunc, datetimeFunc, juliandayFunc, strftimeFunc } from './datetime.js';
+import { dateFunc, timeFunc, datetimeFunc, juliandayFunc, strftimeFunc, isISODateFunc, isISODateTimeFunc } from './datetime.js';
 import { jsonValidFunc, jsonTypeFunc, jsonExtractFunc, jsonQuoteFunc, jsonArrayFunc, jsonObjectFunc, jsonInsertFunc, jsonReplaceFunc, jsonSetFunc, jsonRemoveFunc,
 	jsonArrayLengthFunc, jsonPatchFunc,
 	jsonGroupArrayFunc, jsonGroupObjectFunc } from './json.js';
@@ -82,6 +82,8 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	datetimeFunc,
 	juliandayFunc,
 	strftimeFunc,
+	isISODateFunc,
+	isISODateTimeFunc,
 	// JSON Functions
 	jsonValidFunc,
 	jsonTypeFunc,

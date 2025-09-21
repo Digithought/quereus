@@ -151,7 +151,8 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 	const reWord = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
 	const reFuncName = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g; // capture identifier before '('
 	const reNumber = /\b\d+(?:\.\d+)?\b/g;
-	const reString = /'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g;
+	// Do not allow strings to span newlines; support doubled quotes inside
+	const reString = /'(?:''|[^'\r\n])*'|"(?:""|[^"\r\n])*"/g;
 	const reLineComment = /--[^\n\r]*/g;
 	const reBlockComment = /\/\*[\s\S]*?\*\//g;
 	const reOperator = /==|!=|<>|<=|>=|\|\||[=<>+\-*\/%]/g;
