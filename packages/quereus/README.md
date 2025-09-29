@@ -139,7 +139,7 @@ The `CollectingInstructionTracer` captures detailed information about each instr
 ## Documentation
 
 * [Usage Guide](docs/usage.md): Detailed usage examples and API reference
-* [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide
+* [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide (includes Declarative Schema)
 * [Functions](docs/functions.md): Details on the built-in functions
 * [Window Function Architecture](docs/window-functions.md): Details on the window function architecture and implementation.
 * [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
@@ -155,6 +155,7 @@ The `CollectingInstructionTracer` captures detailed information about each instr
 *   **Async Core**: Core operations are asynchronous. Cursors are `AsyncIterable<Row>`.
 *   **Key-Based Addressing**: Rows are identified by their defined Primary Key. No separate implicit `rowid`.
 *   **Relational Orthogonality**: Any statement that results in a relation can be used anywhere that expects a relation value, including mutating statements with RETURNING clauses.
+*   **Declarative Schema (Optional)**: Keep using DDL normally. Optionally use order‑independent `declare schema { ... }` to describe end‑state; the engine computes diffs against current state using module‑reported catalogs and emits canonical DDL. You may auto‑apply via `apply schema` or fetch the DDL and run it yourself (enabling custom backfills). Supports seeds, imports (URL + cache), versioning, and schema hashing. Destructive changes require explicit acknowledgement.
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
 *   **Object-Based API**: Uses classes (`Database`, `Statement`) to represent resources with lifecycles, rather than handles.
 *   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Emission of schema SQL export is supported.

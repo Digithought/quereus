@@ -299,6 +299,31 @@ CREATE TABLE users USING my_table();
 SELECT * FROM users WHERE id > 1;
 ```
 
+## Catalog Introspection for Declarative Schema
+
+Declarative schema diffing is performed in the engine. Modules continue to use the DDL‑oriented interface for creation and alteration. Optionally, a module can expose its current catalog so Quereus can compute precise diffs and produce canonical DDL.
+
+Optional API:
+
+```typescript
+interface CatalogObject {
+  kind: 'table' | 'index' | 'view' | 'domain' | 'collation';
+  schemaName: string;
+  name: string;
+  ddl: string;                // Canonical DDL for this object
+}
+
+interface VirtualTableModule<...> {
+  // Return module's catalog across all schemas or limited to one
+  xGetCatalog?(db: Database, options?: { schema?: string }): Promise<ReadonlyArray<CatalogObject>> | ReadonlyArray<CatalogObject>;
+}
+```
+
+Notes:
+- Engine diff compares declared schema against the union of module catalogs and in‑engine state.
+- `diff schema` outputs canonical DDL statements; users may run them or invoke `apply schema` to auto‑execute.
+- `using ...` remains optional in declarations; default module selection is respected.
+
 ## Function Plugins
 
 Functions extend SQL with custom computational logic.

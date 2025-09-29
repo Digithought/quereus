@@ -22,6 +22,95 @@ Key features:
 - **Third Manifesto Aligned:** Embraces principles like default NOT NULL columns and key-based addressing.
 
 ## 2. SQL Statement Reference
+### 2.0 Declarative Schema (Optional, Order-Independent)
+
+Quereus keeps traditional DDL fully intact. Declarative schema is an optional alternative for describing the desired end‑state in a single, order‑independent block. Modules continue to use DDL‑based interfaces; declarative workflows operate entirely in the engine and produce DDL.
+
+Concepts:
+- **Schema**: named logical grouping of objects; may span multiple modules.
+- **Catalog**: the set of objects owned by a module; may span multiple schemas.
+
+Key statements:
+
+1) `declare schema` – describes desired end‑state (forward references allowed).
+2) `diff schema` – compares declared schema with current state via module catalogs and produces canonical DDL.
+3) `apply schema` – optional helper that executes the generated DDL (when supported); users may also fetch and run DDL themselves.
+4) `explain schema` – shows canonical graph and content hash.
+
+Syntax (declaration):
+```sql
+declare schema schema_name
+  [version 'major.minor.patch']
+  [using (default_vtab_module = 'memory', default_vtab_args = '[]')]
+{
+  -- Tables (using optional; defaults respected)
+  table users using memory (
+    id integer primary key,
+    email text not null unique,
+    name text not null,
+    created_at datetime not null default (datetime('now'))
+  ) [id 'stable-guid-optional'] [old name main.old_users];
+
+  table roles (
+    id integer primary key,
+    name text not null unique
+  );
+
+  table user_roles (
+    user_id integer not null,
+    role_id integer not null,
+    constraint pk_user_roles primary key (user_id, role_id),
+    constraint fk_user foreign key (user_id) references users(id),
+    constraint fk_role foreign key (role_id) references roles(id)
+  );
+
+  index users_email on users(email);
+
+  view v_user_roles as
+    select u.id as user_id, u.email, r.name as role
+    from users u join user_roles ur on u.id = ur.user_id
+                 join roles r on ur.role_id = r.id;
+
+  -- Optional: domains/collations
+  domain email_address as text check (like(value, '%@%'));
+  collation nocase = nocase();
+
+  -- Seed data (idempotent by default)
+  seed roles values
+    (id, name) values
+    (1, 'admin'),
+    (2, 'viewer');
+
+  -- Imports (URL or file), with optional cache key
+  import schema auth from 'https://example.com/auth-schema.sql' cache 'auth@1' version '^2';
+}
+```
+
+Diffing, applying, and inspecting:
+```sql
+-- Preview changes as DDL
+diff schema main;           -- returns rows of canonical DDL statements
+
+-- Optionally auto-apply the resulting DDL (engine convenience)
+apply schema main to version '1.0.0' options (
+  dry_run = false,
+  validate_only = false,
+  allow_destructive = false,
+  rename_policy = 'require-hint'
+);
+
+-- Explain canonical graph and hash
+explain schema main;
+```
+
+Semantics and safety:
+- Orderless resolution with forward references inside the declaration block.
+- Diffs are computed by comparing the declared schema with module‑reported catalogs (optionally filtered by schema name) plus in‑engine state; output is canonical DDL.
+- Missing required elements are reported at declare/validate time; `apply` refuses to proceed without resolution.
+- Destructive changes (drops, type narrowing, NOT NULL tightening) are blocked unless `allow_destructive` is explicitly set in `apply`.
+- Rename detection prefers explicit `old name` hints; optional stable `id 'guid'` can be used to infer renames when enabled by policy.
+- Schema content hash (SHA‑256 of canonical graph) is shown in `explain schema` and accessible via helper functions.
+
 
 ### 2.1 SELECT Statement
 

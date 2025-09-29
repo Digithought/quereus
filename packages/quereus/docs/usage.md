@@ -341,6 +341,90 @@ const results = await db.prepare("select * from my_memory_table").all();
 
 See the [Memory Table documentation](./memory-table.md) for more details on the built-in memory table implementation.
 
+## Declarative Schema Workflow
+
+Quereus supports an order‑independent declarative schema with a separate apply step. DDL remains primary; declarative is an optional layer that produces canonical DDL. Modules continue to use the DDL interface.
+
+### Quick Start
+
+```typescript
+import { Database } from 'quereus';
+
+const db = new Database();
+
+// Optional: set default module (so `using ...` can be omitted)
+await db.exec("pragma default_vtab_module = 'memory'");
+
+// 1) Declare target schema (no side effects)
+await db.exec(`
+  declare schema main version '1.0.0' {
+    table users (
+      id integer primary key,
+      email text not null unique,
+      name text not null
+    );
+
+    table roles (
+      id integer primary key,
+      name text not null unique
+    );
+
+    table user_roles (
+      user_id integer not null,
+      role_id integer not null,
+      constraint pk_user_roles primary key (user_id, role_id),
+      constraint fk_user foreign key (user_id) references users(id),
+      constraint fk_role foreign key (role_id) references roles(id)
+    );
+
+    index users_email on users(email);
+
+    seed roles values (id, name) values (1, 'admin'), (2, 'viewer');
+  }
+`);
+
+// 2) Preview diff (DDL rows)
+const ddl = await db.prepare('diff schema main').all();
+console.log(ddl);
+
+// 3) Option A: auto-apply (engine convenience, non-destructive by default)
+await db.exec(`
+  apply schema main to version '1.0.0' options (
+    dry_run = false,
+    validate_only = false,
+    allow_destructive = false
+  )
+`);
+
+// 3b) Option B: run DDL yourself (full control / backfills)
+for (const row of ddl) {
+  await db.exec(String(row.ddl));
+}
+
+// 4) Use schema
+await db.exec("insert into users (id, email, name) values (1, 'alice@example.com', 'Alice')");
+const users = await db.prepare('select * from users').all();
+console.log(users);
+```
+
+### Renames and Safety
+
+- Use `old name schema.obj` hints to declare renames; or attach stable `id 'guid'` to allow rename inference by policy.
+- Destructive changes (drops, type narrowing, NOT NULL tightening) require `allow_destructive` in `apply`.
+
+### Imports and Cache
+
+You can import schemas by URL (e.g., GitHub raw file) and pin via version/range:
+
+```sql
+declare schema app {
+  import schema auth from 'https://example.com/auth-schema.sql' cache 'auth@2' version '^2';
+}
+```
+
+Configure a local cache for offline use via tooling/PRAGMA (implementation dependent). The engine validates imports with content hashes.
+
+
 ## User-Defined Functions
 
 Quereus allows you to define custom SQL functions:
