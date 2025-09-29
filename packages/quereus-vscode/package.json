@@ -2,7 +2,7 @@
 	"name": "quereus-vscode",
 	"displayName": "Quereus SQL",
 	"description": "Language support for Quereus SQL: syntax, diagnostics, completions, hovers, semantic tokens",
-	"version": "0.1.1",
+	"version": "0.1.7",
 	"icon": "images/icon.ico",
 	"publisher": "GotChoicesFoundation",
 	"files": [
@@ -38,9 +38,11 @@
 	"scripts": {
 		"clean": "rimraf client/out server/dist",
 		"build:server": "esbuild ./server/src/server.ts --bundle --outfile=server/dist/server.js --external:vscode --platform=node --format=cjs",
-		"build:client": "tsc -p client/tsconfig.json",
+		"build:client": "esbuild ./client/src/extension.ts --bundle --outfile=client/out/extension.js --external:vscode --platform=node --format=cjs",
 		"build": "yarn run build:server && yarn run build:client",
 		"package": "npx --yes @vscode/vsce package --no-yarn --no-dependencies",
+		"pub:ovsx": "yarn run package && npx --yes ovsx publish --packagePath quereus-vscode-%npm_package_version%.vsix -p %OVSX_PAT%",
+		"pub:vsm": "yarn run package && npx --yes @vscode/vsce publish --packagePath quereus-vscode-%npm_package_version%.vsix --pat %VSCE_PAT%",
 		"lint": "echo 'No lint configured for extension'",
 		"typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit"
 	},
