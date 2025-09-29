@@ -113,6 +113,100 @@ Database‑wide integrity assertions deferrable at COMMIT (auto-detected), with 
 4) Diagnostics: `explain_assertion()` and enhanced error messages.
 
 
+## 📐 Declarative Schema System (DECLARE/APPLY)
+
+### Goals
+
+- Keep DDL intact as the primary interface. Declarative schema is optional and outputs canonical DDL.
+- Order‑independent, forward‑referential schema declaration (`declare schema`) that describes desired end‑state.
+- Deterministic diffing (`diff schema`) comparing declared schema with module‑reported catalogs and engine state. Output is DDL; users may auto‑apply or fetch and run themselves.
+- Safe by default: destructive changes require explicit acknowledgement.
+- First‑class seeds, imports (URL + cache), versions, and stable hashes.
+- Schemas are immutable once applied; updates are wholesale replacements via re‑declare + apply.
+
+### MVP Scope
+
+- SQL surface: `declare schema`, `diff schema` (returns DDL), `apply schema` (optional auto‑apply), `explain schema`, `import schema`, `seed` blocks.
+- Default module resolution when `using` omitted (leverages `pragma default_vtab_module`, `default_vtab_args`).
+- Diff engine with rename hints and stable IDs; output is canonical DDL (create/alter/drop/rename etc.).
+- Seeds: idempotent inserts with conflict policy.
+- Versions and schema content hash; imports from HTTP(S) and file URLs with local cache.
+
+### SQL Surface (sketch)
+
+- `declare schema <name> [version '<semver>'] [using (default_vtab_module = 'memory')] { ... }`
+- Inside block: `table`, `index`, `view`, `domain`, `collation`, `seed`, `import`, options.
+- `apply schema <name> [to version '<semver>'] [options (...)]`
+- `diff schema <name> [from current]`
+- `explain schema <name>`
+
+Options (apply): `dry_run`, `validate_only`, `allow_destructive = false`, `rename_policy = 'require-hint'|'infer-id'`, `preserve_data = true`.
+
+Rename hints: `old name <qualified>` within object; Stable IDs: `id '<guid>'` optional.
+
+### Planner/IR
+
+- Parser: New grammar and AST nodes for schema document and statements.
+- IR: `SchemaDocument` → `SchemaGraph` (nodes: Table, Column, Index, View, Domain, Collation, Seed, Import). Namespaced identifiers (`schema.table`, `schema.table.column`).
+- Validation: missing required elements diagnostics (e.g., unnamed PK when required by policy, unresolved references, module arg requirements). Declaration is side‑effect‑free; all effects gated by `apply`.
+- Hashing: canonical serialization of `SchemaGraph` → SHA‑256; stored with version.
+
+### Diff & Migration Engine
+
+- Compute graph diff: create, drop, rename, alter (columns/constraints/indexes), view replace, collation/domain add/drop.
+- Rename detection: prefer explicit `old name`; optionally infer via stable `id` match; never auto‑drop/create on ambiguous rename without `allow_destructive`.
+- Missing required elements: fail `apply` with actionable diagnostics; `validate_only` path emits list.
+- Output canonical DDL for all changes. Optionally auto‑apply in engine; or provide DDL to user for custom runs/backfills.
+
+### Module Integration (Catalogs)
+
+- Modules remain DDL‑based. Optionally expose a catalog for diffing:
+  - `xGetCatalog(options?: { schema?: string }): CatalogObject[]`
+  - Each object supplies canonical `ddl` for engine comparisons.
+
+### Seeds
+
+- `seed <name?> on <table> values (col, ...) values (...), (...);`
+- Idempotent by default: uses PK/UNIQUE for upsert unless `non_idempotent` specified.
+- Execution phase post‑create/alter but pre‑view materialization.
+
+### Imports, Versions, Hashes
+
+- `import schema <alias> from '<url or file>' [cache '<key>'] [version '<semver>']` inside `declare schema` or standalone.
+- Local cache registry API and PRAGMA for mapping URL → cached content; integrity via content hash.
+- Store `{name, version, hash, imports[]}`; expose `schema_hash('<name>')` TVF.
+
+### Safety & Destructiveness
+
+- Default: block destructive changes (drops, type narrowing, NOT NULL tightening) unless `allow_destructive` true or specific `drop ...` options provided in `apply`.
+- Dry runs and validation‑only to preview.
+
+### Diagnostics & Tooling
+
+- Functions/TVFs: `schema_plan(name)`, `schema_diff(name)`, `schema_objects(name)`.
+- CLI (quoomb): `quoomb schema apply --dry-run --show-plan --allow-destructive`.
+
+### Testing
+
+- Parser round‑trips for all new statements and block contents.
+- Diff engine golden tests covering: create, rename (hint/id), additive changes, blocked destructive ops, capability gating.
+- Seeds: idempotence and conflict handling.
+- Imports: URL and cache resolution; hash stability.
+
+### Milestones
+
+1) Parser + IR + hashing (declare/validate/explain)
+2) Catalog export API + diff engine (create/additive changes only) + apply for Memory module
+3) Rename hints + stable ID matching + non‑destructive renames
+4) Destructive gating + options; seeds (idempotent)
+5) Imports + cache + versioning + CLI/TVFs
+
+### Open Questions
+
+- Rename policy defaults: require explicit hints or allow `id` inference by default?
+- Domain/collation versioning semantics across imports.
+- Minimal primitive set for v1 across popular modules.
+
 ## 📋 Future Development Areas
 
 **Optimizer Enhancements (Near-term)**
