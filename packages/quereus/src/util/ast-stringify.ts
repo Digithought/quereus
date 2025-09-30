@@ -84,6 +84,27 @@ export function astToString(node: AST.AstNode): string {
 			return releaseToString(node as AST.ReleaseStmt);
 		case 'pragma':
 			return pragmaToString(node as AST.PragmaStmt);
+		case 'declareSchema':
+			return declareSchemaToString(node as unknown as AST.DeclareSchemaStmt);
+		case 'diffSchema':
+			return `diff schema ${(node as unknown as AST.DiffSchemaStmt).name}`;
+		case 'applySchema': {
+			const n = node as unknown as AST.ApplySchemaStmt;
+			let s = `apply schema ${n.name}`;
+			if (n.toVersion) s += ` to version '${n.toVersion}'`;
+			if (n.options) {
+				s += ' options (';
+				const parts: string[] = [];
+				if (n.options.dryRun !== undefined) parts.push(`dry_run = ${n.options.dryRun ? 'true' : 'false'}`);
+				if (n.options.validateOnly !== undefined) parts.push(`validate_only = ${n.options.validateOnly ? 'true' : 'false'}`);
+				if (n.options.allowDestructive !== undefined) parts.push(`allow_destructive = ${n.options.allowDestructive ? 'true' : 'false'}`);
+				if (n.options.renamePolicy) parts.push(`rename_policy = '${n.options.renamePolicy}'`);
+				s += parts.join(', ') + ')';
+			}
+			return s;
+		}
+		case 'explainSchema':
+			return `explain schema ${(node as unknown as AST.ExplainSchemaStmt).name}`;
 
 		default:
 			return `[${node.type}]`; // Fallback for unknown node types
@@ -666,6 +687,64 @@ function pragmaToString(stmt: AST.PragmaStmt): string {
 		result += ` = ${expressionToString(stmt.value)}`;
 	}
 	return result;
+}
+
+function declareSchemaToString(stmt: AST.DeclareSchemaStmt): string {
+	let s = `declare schema ${quoteIdentifierIfNeeded(stmt.name)}`;
+	if (stmt.version) s += ` version '${stmt.version}'`;
+	if (stmt.using && (stmt.using.defaultVtabModule || stmt.using.defaultVtabArgs)) {
+		const opts: string[] = [];
+		if (stmt.using.defaultVtabModule) opts.push(`default_vtab_module = '${stmt.using.defaultVtabModule}'`);
+		if (stmt.using.defaultVtabArgs) opts.push(`default_vtab_args = '${stmt.using.defaultVtabArgs}'`);
+		s += ` using (${opts.join(', ')})`;
+	}
+	s += ' {';
+	for (const it of stmt.items) {
+		s += ' ' + declareItemToString(it) + ';';
+	}
+	s += ' }';
+	return s;
+}
+
+function declareItemToString(it: AST.DeclareItem): string {
+	if (it.type === 'declareTable') {
+		let s = `table ${quoteIdentifierIfNeeded(it.name)}`;
+		if (it.moduleName) {
+			s += ` using ${it.moduleName}`;
+			if (it.moduleArgs && Object.keys(it.moduleArgs).length) {
+				const args = Object.entries(it.moduleArgs).map(([k, v]) => `${quoteIdentifierIfNeeded(k)} = ${JSON.stringify(v)}`).join(', ');
+				s += `(${args})`;
+			}
+		}
+		s += ' (';
+		const parts: string[] = [];
+		for (const c of it.columns) {
+			let col = quoteIdentifierIfNeeded(c.name);
+			if (c.dataType) col += ` ${c.dataType}`;
+			const con = columnConstraintsToString(c.constraints);
+			if (con) col += ` ${con}`;
+			parts.push(col);
+		}
+		const tcon = tableConstraintsToString(it.constraints as unknown as AST.TableConstraint[]);
+		if (tcon) parts.push(tcon);
+		s += parts.join(', ') + ')';
+		return s;
+	}
+	if (it.type === 'declareIndex') {
+		const cols = it.columns.map(c => c.name ? quoteIdentifierIfNeeded(c.name) : (c.expr ? expressionToString(c.expr) : '')).join(', ');
+		return `index ${quoteIdentifierIfNeeded(it.name)} on ${quoteIdentifierIfNeeded(it.onTable)}(${cols})`;
+	}
+	if (it.type === 'declareView') {
+		let s = `view ${quoteIdentifierIfNeeded(it.name)}`;
+		if (it.columns && it.columns.length) s += ` (${it.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+		s += ` as ${selectToString(it.select)}`;
+		return s;
+	}
+	if (it.type === 'declareSeed') {
+		const rows = it.rows.map(r => `(${r.map(expressionToString).join(', ')})`).join(', ');
+		return `seed ${quoteIdentifierIfNeeded(it.table)} values (${it.columns.map(quoteIdentifierIfNeeded).join(', ')}) values ${rows}`;
+	}
+	return (it as unknown as AST.DeclareIgnoredItem).text || '-- ignored';
 }
 
 // Helper to stringify conflict clauses
