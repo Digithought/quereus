@@ -122,6 +122,14 @@ export enum TokenType {
 	FOLLOWING = 'FOLLOWING',
 	CURRENT = 'CURRENT',
 
+	// Declarative schema
+	DECLARE = 'DECLARE',
+	SCHEMA = 'SCHEMA',
+	APPLY = 'APPLY',
+	EXPLAIN = 'EXPLAIN',
+	VERSION = 'VERSION',
+	SEED = 'SEED',
+
 	// Operators and punctuation
 	PLUS = 'PLUS',               // +
 	MINUS = 'MINUS',             // -
@@ -149,6 +157,8 @@ export enum TokenType {
 	COLON = 'COLON',             // : (for named parameters)
 	DOLLAR = 'DOLLAR',           // $ (for named parameters)
 	ARROW = 'ARROW',             // -> (JSON operator)
+	LBRACE = 'LBRACE',           // {
+	RBRACE = 'RBRACE',           // }
 
 	// Special
 	EOF = 'EOF',
@@ -283,6 +293,12 @@ export const KEYWORDS: Record<string, TokenType> = {
 	'current': TokenType.CURRENT,
 	'intersect': TokenType.INTERSECT,
 	'except': TokenType.EXCEPT,
+	'declare': TokenType.DECLARE,
+	'schema': TokenType.SCHEMA,
+	'apply': TokenType.APPLY,
+	'explain': TokenType.EXPLAIN,
+	'version': TokenType.VERSION,
+	'seed': TokenType.SEED,
 };
 
 /**
@@ -338,6 +354,8 @@ export class Lexer {
 			// Single-character tokens
 			case '(': this.addToken(TokenType.LPAREN); break;
 			case ')': this.addToken(TokenType.RPAREN); break;
+				case '{': this.addToken(TokenType.LBRACE); break;
+				case '}': this.addToken(TokenType.RBRACE); break;
 			case ',': this.addToken(TokenType.COMMA); break;
 			case '.': this.addToken(TokenType.DOT); break;
 			case ';': this.addToken(TokenType.SEMICOLON); break;

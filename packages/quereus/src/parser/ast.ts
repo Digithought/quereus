@@ -11,6 +11,7 @@ export interface AstNode {
 	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select'
 		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'createAssertion' | 'alterTable' | 'drop' | 'begin' | 'commit'
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
+		| 'declareSchema' | 'diffSchema' | 'applySchema' | 'explainSchema'
 		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between';
@@ -487,4 +488,80 @@ export type Statement =
 	| RollbackStmt
 	| SavepointStmt
 	| ReleaseStmt
-	| PragmaStmt;
+	| PragmaStmt
+	| DeclareSchemaStmt
+	| DiffSchemaStmt
+	| ApplySchemaStmt
+	| ExplainSchemaStmt;
+
+// === Declarative Schema AST ===
+
+export interface DeclareSchemaStmt extends AstNode {
+	type: 'declareSchema';
+	name: string;
+	version?: string;
+	using?: { defaultVtabModule?: string; defaultVtabArgs?: string };
+	items: readonly DeclareItem[];
+}
+
+export type DeclareItem = DeclareTable | DeclareIndex | DeclareView | DeclareSeed | DeclareIgnoredItem;
+
+export interface DeclareTable extends AstNode {
+	type: 'declareTable';
+	name: string;
+	moduleName?: string;
+	moduleArgs?: Record<string, SqlValue>;
+	columns: readonly ColumnDef[];
+	constraints: readonly TableConstraint[];
+}
+
+export interface DeclareIndex extends AstNode {
+	type: 'declareIndex';
+	name: string;
+	onTable: string;
+	columns: readonly IndexedColumn[];
+	isUnique?: boolean;
+}
+
+export interface DeclareView extends AstNode {
+	type: 'declareView';
+	name: string;
+	columns?: readonly string[];
+	select: SelectStmt;
+}
+
+export interface DeclareSeed extends AstNode {
+	type: 'declareSeed';
+	table: string;
+	columns: readonly string[];
+	rows: readonly Expression[][];
+}
+
+/** Placeholder for domain/collation/import items to keep parser forward-compatible */
+export interface DeclareIgnoredItem extends AstNode {
+	type: 'declareIgnored';
+	kind: 'domain' | 'collation' | 'import';
+	text: string; // original text snippet for hashing/canonicalization if needed
+}
+
+export interface DiffSchemaStmt extends AstNode {
+	type: 'diffSchema';
+	name: string;
+}
+
+export interface ApplySchemaStmt extends AstNode {
+	type: 'applySchema';
+	name: string;
+	toVersion?: string;
+	options?: {
+		dryRun?: boolean;
+		validateOnly?: boolean;
+		allowDestructive?: boolean;
+		renamePolicy?: 'require-hint' | 'infer-id';
+	};
+}
+
+export interface ExplainSchemaStmt extends AstNode {
+	type: 'explainSchema';
+	name: string;
+}

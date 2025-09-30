@@ -51,6 +51,7 @@ import { emitSink } from './emit/sink.js';
 import { emitBetween } from './emit/between.js';
 import { emitRetrieve } from './emit/retrieve.js';
 import { emitRemoteQuery } from './emit/remote-query.js';
+import { emitDeclareSchema, emitDiffSchema, emitApplySchema, emitExplainSchema } from './emit/schema-declarative.js';
 
 let registered = false;
 
@@ -128,6 +129,12 @@ export function registerEmitters() {
 	// Transaction control emitters
 	registerEmitter(PlanNodeType.Transaction, emitTransaction as EmitterFunc);
 	registerEmitter(PlanNodeType.Pragma, emitPragma as EmitterFunc);
+
+	// Declarative schema
+	registerEmitter(PlanNodeType.DeclareSchema, emitDeclareSchema as EmitterFunc);
+	registerEmitter(PlanNodeType.DiffSchema, emitDiffSchema as EmitterFunc);
+	registerEmitter(PlanNodeType.ApplySchema, emitApplySchema as EmitterFunc);
+	registerEmitter(PlanNodeType.ExplainSchema, emitExplainSchema as EmitterFunc);
 
 	// Set operation emitter
 	registerEmitter(PlanNodeType.SetOperation, emitSetOperation as EmitterFunc);

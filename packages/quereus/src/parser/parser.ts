@@ -291,6 +291,10 @@ export class Parser {
 			case 'RELEASE': this.advance(); stmt = this.releaseStatement(startToken, withClause); break;
 			// TODO: Replace pragmas with build-in functions
 			case 'PRAGMA': this.advance(); stmt = this.pragmaStatement(startToken, withClause); break;
+			case 'DECLARE': this.advance(); stmt = this.declareSchemaStatement(startToken); break;
+			case 'DIFF': this.advance(); stmt = this.diffSchemaStatement(startToken); break;
+			case 'APPLY': this.advance(); stmt = this.applySchemaStatement(startToken); break;
+			case 'EXPLAIN': this.advance(); stmt = this.explainSchemaStatement(startToken); break;
 			// --- Add default case ---
 			default:
 				// If it wasn't a recognized keyword starting the statement
@@ -2315,6 +2319,235 @@ export class Parser {
 	private pragmaStatement(startToken: Token, _withClause?: AST.WithClause): AST.PragmaStmt {
 		const nameValue = this.nameValueItem("pragma");
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
+	}
+
+	// === Declarative schema parsing ===
+
+	private declareSchemaStatement(startToken: Token): AST.DeclareSchemaStmt {
+		this.consume(TokenType.SCHEMA, "Expected 'SCHEMA' after DECLARE.");
+		const name = this.consumeIdentifier("Expected schema name after DECLARE SCHEMA.");
+		let version: string | undefined;
+		let using: { defaultVtabModule?: string; defaultVtabArgs?: string } | undefined;
+
+		// Optional: version 'semver'
+        // no-op
+		if (this.matchKeyword('VERSION')) {
+			const tok = this.consume(TokenType.STRING, "Expected version string after VERSION.");
+			version = String(tok.literal);
+		}
+
+		// Optional: using ( default_vtab_module = 'memory', default_vtab_args = '[]' )
+        if (this.match(TokenType.USING)) {
+			this.consume(TokenType.LPAREN, "Expected '(' after USING.");
+			using = {};
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					const optName = this.consumeIdentifier("Expected option name inside USING().").toLowerCase();
+					this.consume(TokenType.EQUAL, "Expected '=' after option name in USING().");
+					if (optName === 'default_vtab_module') {
+						const t = this.consume(TokenType.STRING, "Expected string for default_vtab_module.");
+						using.defaultVtabModule = String(t.literal);
+					} else if (optName === 'default_vtab_args') {
+						const t = this.consume(TokenType.STRING, "Expected JSON string for default_vtab_args.");
+						using.defaultVtabArgs = String(t.literal);
+					} else {
+						// Consume simple literal/identifier for forward compatibility
+						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT) || this.check(TokenType.IDENTIFIER)) {
+							this.advance();
+						}
+					}
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after USING options.");
+		}
+
+		// Block
+        // Parse declaration block delimited by '{' '}'
+        this.consume(TokenType.LBRACE, "Expected '{' to start schema declaration block.");
+        let items: AST.DeclareItem[] = [];
+
+        while (!this.check(TokenType.RBRACE)) {
+			if (this.isAtEnd()) break;
+			// table ...
+			if (this.peekKeyword('TABLE')) {
+				this.advance();
+				items.push(this.declareTableItem());
+			} else if (this.peekKeyword('INDEX')) {
+				this.advance();
+				items.push(this.declareIndexItem());
+			} else if (this.peekKeyword('VIEW')) {
+				this.advance();
+				items.push(this.declareViewItem());
+			} else if (this.peekKeyword('SEED')) {
+				this.advance();
+				items.push(this.declareSeedItem());
+			} else {
+				// Fallback: ignore unrecognized item (domain, collation, import)
+				const start = this.peek();
+				// consume until semicolon
+				while (!this.isAtEnd() && !this.check(TokenType.SEMICOLON) && !(this.check(TokenType.IDENTIFIER) && this.peek().lexeme === '}')) {
+					this.advance();
+				}
+				const endTok = this.previous();
+				items.push({ type: 'declareIgnored', kind: 'domain', text: this.sourceSlice(start.startOffset, endTok.endOffset) } as unknown as AST.DeclareIgnoredItem);
+			}
+            this.match(TokenType.SEMICOLON);
+		}
+
+        this.consume(TokenType.RBRACE, "Expected '}' to close schema declaration block.");
+
+		const endTok = this.previous();
+		return { type: 'declareSchema', name, version, using, items, loc: _createLoc(startToken, endTok) };
+	}
+
+	private declareTableItem(): AST.DeclareTable {
+		const tableName = this.consumeIdentifier([ 'key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like' ], 'Expected table name in declaration.');
+		let moduleName: string | undefined;
+		let moduleArgs: Record<string, SqlValue> | undefined;
+		let columns: AST.ColumnDef[] = [];
+		let constraints: AST.TableConstraint[] = [];
+		// Optional USING module
+        if (this.match(TokenType.USING)) {
+			if (this.check(TokenType.IDENTIFIER)) {
+				moduleName = this.advance().lexeme;
+			}
+			if (this.match(TokenType.LPAREN)) {
+				moduleArgs = {};
+				if (!this.check(TokenType.RPAREN)) {
+					do {
+						const nv = this.nameValueItem('module argument');
+						moduleArgs[nv.name] = nv.value && nv.value.type === 'literal' ? getSyncLiteral(nv.value) : (nv.value && nv.value.type === 'identifier' ? nv.value.name : null);
+					} while (this.match(TokenType.COMMA));
+				}
+				this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
+			}
+		}
+		// Column list in parens
+		this.consume(TokenType.LPAREN, "Expected '(' before column definitions.");
+		if (!this.check(TokenType.RPAREN)) {
+			do {
+				// Distinguish table constraint vs column definition by lookahead for '(' or constraint keywords
+				if (this.peekKeyword('CONSTRAINT') || this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN')) {
+					constraints.push(this.tableConstraint());
+				} else {
+					columns.push(this.columnDefinition());
+				}
+			} while (this.match(TokenType.COMMA));
+		}
+		this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
+		return { type: 'declareTable', name: tableName, moduleName, moduleArgs, columns, constraints };
+	}
+
+	private declareIndexItem(): AST.DeclareIndex {
+		const indexName = this.consumeIdentifier('Expected index name.');
+		this.consume(TokenType.ON, "Expected 'ON' after index name.");
+		const tableName = this.consumeIdentifier('Expected table name after ON.');
+		this.consume(TokenType.LPAREN, "Expected '(' before index columns.");
+		const columns = this.indexedColumnList();
+		this.consume(TokenType.RPAREN, "Expected ')' after index columns.");
+		const isUnique = false;
+		return { type: 'declareIndex', name: indexName, onTable: tableName, columns, isUnique };
+	}
+
+	private declareViewItem(): AST.DeclareView {
+		const viewName = this.consumeIdentifier('Expected view name.');
+		let columns: string[] | undefined;
+		if (this.match(TokenType.LPAREN)) {
+			columns = this.identifierList();
+			this.consume(TokenType.RPAREN, "Expected ')' after view columns.");
+		}
+		this.consume(TokenType.AS, "Expected AS before SELECT in view declaration.");
+		const selTok = this.consume(TokenType.SELECT, "Expected SELECT after AS in view declaration.");
+		const select = this.selectStatement(selTok);
+		return { type: 'declareView', name: viewName, columns, select };
+	}
+
+	private declareSeedItem(): AST.DeclareSeed {
+		// seed <table> values (col, ...) values (...), (...)
+		const table = this.consumeIdentifier('Expected table name after SEED.');
+		this.consume(TokenType.VALUES, "Expected VALUES after SEED <table>.");
+		this.consume(TokenType.LPAREN, "Expected '(' before seed column list.");
+		const columns = this.identifierList();
+		this.consume(TokenType.RPAREN, "Expected ')' after seed column list.");
+		this.consume(TokenType.VALUES, "Expected VALUES to introduce seed rows.");
+		const rows: AST.Expression[][] = [];
+		do {
+			this.consume(TokenType.LPAREN, "Expected '(' before seed row values.");
+			const exprs: AST.Expression[] = [];
+			if (!this.check(TokenType.RPAREN)) {
+				do { exprs.push(this.expression()); } while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after seed row values.");
+			rows.push(exprs);
+		} while (this.match(TokenType.COMMA));
+		return { type: 'declareSeed', table, columns, rows };
+	}
+
+	private diffSchemaStatement(startToken: Token): AST.DiffSchemaStmt {
+		this.consume(TokenType.SCHEMA, "Expected SCHEMA after DIFF.");
+		const name = this.consumeIdentifier('Expected schema name after DIFF SCHEMA.');
+		return { type: 'diffSchema', name, loc: _createLoc(startToken, this.previous()) };
+	}
+
+	private applySchemaStatement(startToken: Token): AST.ApplySchemaStmt {
+		this.consume(TokenType.SCHEMA, "Expected SCHEMA after APPLY.");
+		const name = this.consumeIdentifier('Expected schema name after APPLY SCHEMA.');
+		let toVersion: string | undefined;
+		let options: AST.ApplySchemaStmt['options'] | undefined;
+		if (this.matchKeyword('TO')) {
+			this.consume(TokenType.VERSION, "Expected VERSION after TO.");
+			const tok = this.consume(TokenType.STRING, "Expected version string after TO VERSION.");
+			toVersion = String(tok.literal);
+		}
+		if (this.matchKeyword('OPTIONS')) {
+			this.consume(TokenType.LPAREN, "Expected '(' after OPTIONS.");
+			options = {};
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					const key = this.consumeIdentifier('Expected option key.').toLowerCase();
+					this.consume(TokenType.EQUAL, "Expected '=' after option key.");
+					if (key === 'dry_run') options.dryRun = this.consumeBooleanLiteral();
+					else if (key === 'validate_only') options.validateOnly = this.consumeBooleanLiteral();
+					else if (key === 'allow_destructive') options.allowDestructive = this.consumeBooleanLiteral();
+					else if (key === 'rename_policy') {
+						const vtok = this.consume(TokenType.STRING, "Expected string for rename_policy.");
+						options.renamePolicy = String(vtok.literal) as 'require-hint' | 'infer-id';
+					} else {
+						// consume literal
+						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT) || this.check(TokenType.IDENTIFIER)) this.advance();
+					}
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after OPTIONS.");
+		}
+		return { type: 'applySchema', name, toVersion, options, loc: _createLoc(startToken, this.previous()) };
+	}
+
+	private explainSchemaStatement(startToken: Token): AST.ExplainSchemaStmt {
+		this.consume(TokenType.SCHEMA, "Expected SCHEMA after EXPLAIN.");
+		const name = this.consumeIdentifier('Expected schema name after EXPLAIN SCHEMA.');
+		return { type: 'explainSchema', name, loc: _createLoc(startToken, this.previous()) };
+	}
+
+	private consumeBooleanLiteral(): boolean {
+		if (this.match(TokenType.TRUE)) return true;
+		if (this.match(TokenType.FALSE)) return false;
+		if (this.check(TokenType.STRING)) {
+			const t = this.advance();
+			const v = String(t.literal).toLowerCase();
+			return v === 'true' || v === '1';
+		}
+		if (this.check(TokenType.INTEGER)) {
+			const t = this.advance();
+			return Number(t.literal) !== 0;
+		}
+		return false;
+	}
+
+	private sourceSlice(start: number, end: number): string {
+		// Lexer tokens include offsets; this.tokens array belongs to this parser, but we don't have direct source here.
+		// Return an empty string as placeholder; canonicalization is future work.
+		return '';
 	}
 
 	private nameValueItem(context: string): { name: string, value?: AST.IdentifierExpr | AST.LiteralExpr } {
