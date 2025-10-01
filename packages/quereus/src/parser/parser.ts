@@ -1967,6 +1967,7 @@ export class Parser {
 		const columns: AST.ColumnDef[] = [];
 		const constraints: AST.TableConstraint[] = [];
 
+		let sawStructureFromParens = false;
 		if (this.check(TokenType.LPAREN)) {
 			this.consume(TokenType.LPAREN, "Expected '(' to start table definition.");
 			do {
@@ -1990,6 +1991,7 @@ export class Parser {
 			}
 
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
+			sawStructureFromParens = true;
 
 		} else if (this.matchKeyword('AS')) {
 			const token = this.previous();
@@ -1999,23 +2001,32 @@ export class Parser {
 				undefined,
 				{ loc: { start: { line: token.startLine, column: token.startColumn } } }
 			);
-		} else {
-			throw this.error(this.peek(), "Expected '(' or 'AS' after table name.");
+		} else if (!this.peekKeyword('USING')) {
+			// If not followed by USING, then we require a column definition
+			throw this.error(this.peek(), "Expected 'USING' or '(' after table name.");
 		}
 
 		let moduleName: string | undefined;
 		const moduleArgs: Record<string, SqlValue> = {};
 		if (this.matchKeyword('USING')) {
 			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
-			if (this.matchKeyword('(')) {
-				while (!this.match(TokenType.RPAREN)) {
-					const nameValue = this.nameValueItem("module argument");
-					moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
-						? getSyncLiteral(nameValue.value) : nameValue.name;
-					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
-						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
+			if (this.match(TokenType.LPAREN)) {
+				let argIndex = 0;
+				while (!this.check(TokenType.RPAREN)) {
+					const nameValue = this.nameValueItem("module argument", true);
+					if (nameValue.value) {
+						moduleArgs[nameValue.name] = nameValue.value.type === 'literal' ? getSyncLiteral(nameValue.value) : nameValue.value.name;
+					} else {
+						// Bare identifier without '=' – treat as flag true
+						moduleArgs[nameValue.name] = nameValue.name;
+					}
+					if (this.match(TokenType.COMMA)) {
+						// continue
+					} else {
+						break;
 					}
 				}
+				this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
 			}
 		}
 
@@ -2317,7 +2328,7 @@ export class Parser {
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
 	}
 
-	private nameValueItem(context: string): { name: string, value?: AST.IdentifierExpr | AST.LiteralExpr } {
+	private nameValueItem(context: string, allowBare = false): { name: string, value?: AST.IdentifierExpr | AST.LiteralExpr } {
 		const name = this.consumeIdentifier(`Expected ${context} name.`);
 
 		let value: AST.LiteralExpr | AST.IdentifierExpr | undefined;
@@ -2348,7 +2359,9 @@ export class Parser {
 				throw this.error(this.peek(), `Expected ${context} value (identifier, string, number, or NULL).`);
 			}
 		}
-		// If no '=' is found, value remains undefined (reading mode)
+		// If no '=' is found:
+		//  - when allowBare is true, return just the name with undefined value (caller may treat as flag)
+		//  - otherwise keep value undefined for reading mode
 
 		return { name: name.toLowerCase(), value };
 	}

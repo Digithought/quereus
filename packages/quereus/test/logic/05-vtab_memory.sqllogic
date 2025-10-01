@@ -3,7 +3,7 @@
 PRAGMA default_vtab_module='memory';
 
 -- Setup with PRIMARY KEY and another index potential
-CREATE TABLE mem_t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, city TEXT);
+CREATE TABLE mem_t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, city TEXT) USING memory();
 INSERT INTO mem_t VALUES (1, 'Alice', 30, 'New York'), (2, 'Bob', 25, 'London'), (3, 'Charlie', 35, 'New York'), (4, 'David', 30, 'Paris');
 
 -- Expect PK point lookup (idxNum=1 likely)
