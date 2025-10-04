@@ -84,6 +84,28 @@ export function astToString(node: AST.AstNode): string {
 			return releaseToString(node as AST.ReleaseStmt);
 		case 'pragma':
 			return pragmaToString(node as AST.PragmaStmt);
+		case 'declareSchema':
+			return declareSchemaToString(node as unknown as AST.DeclareSchemaStmt);
+		case 'diffSchema':
+			return `diff schema ${(node as unknown as AST.DiffSchemaStmt).schemaName || 'main'}`;
+		case 'applySchema': {
+			const n = node as unknown as AST.ApplySchemaStmt;
+			let s = `apply schema ${n.schemaName || 'main'}`;
+			if (n.toVersion) s += ` to version '${n.toVersion}'`;
+			if (n.withSeed) s += ' with seed';
+			if (n.options) {
+				s += ' options (';
+				const parts: string[] = [];
+				if (n.options.dryRun !== undefined) parts.push(`dry_run = ${n.options.dryRun ? 'true' : 'false'}`);
+				if (n.options.validateOnly !== undefined) parts.push(`validate_only = ${n.options.validateOnly ? 'true' : 'false'}`);
+				if (n.options.allowDestructive !== undefined) parts.push(`allow_destructive = ${n.options.allowDestructive ? 'true' : 'false'}`);
+				if (n.options.renamePolicy) parts.push(`rename_policy = '${n.options.renamePolicy}'`);
+				s += parts.join(', ') + ')';
+			}
+			return s;
+		}
+		case 'explainSchema':
+			return `explain schema ${(node as unknown as AST.ExplainSchemaStmt).schemaName || 'main'}`;
 
 		default:
 			return `[${node.type}]`; // Fallback for unknown node types
@@ -668,6 +690,40 @@ function pragmaToString(stmt: AST.PragmaStmt): string {
 	return result;
 }
 
+function declareSchemaToString(stmt: AST.DeclareSchemaStmt): string {
+	let s = `declare schema ${quoteIdentifierIfNeeded(stmt.schemaName || 'main')}`;
+	if (stmt.version) s += ` version '${stmt.version}'`;
+	if (stmt.using && (stmt.using.defaultVtabModule || stmt.using.defaultVtabArgs)) {
+		const opts: string[] = [];
+		if (stmt.using.defaultVtabModule) opts.push(`default_vtab_module = '${stmt.using.defaultVtabModule}'`);
+		if (stmt.using.defaultVtabArgs) opts.push(`default_vtab_args = '${stmt.using.defaultVtabArgs}'`);
+		s += ` using (${opts.join(', ')})`;
+	}
+	s += ' {';
+	for (const it of stmt.items) {
+		s += ' ' + declareItemToString(it) + ';';
+	}
+	s += ' }';
+	return s;
+}
+
+function declareItemToString(it: AST.DeclareItem): string {
+	if (it.type === 'declaredTable') {
+		return `table ${it.tableStmt.table.name} { ... }`;
+	}
+	if (it.type === 'declaredIndex') {
+		return `index ${it.indexStmt.index.name} on ${it.indexStmt.table.name} (...)`;
+	}
+	if (it.type === 'declaredView') {
+		return `view ${it.viewStmt.view.name} as ...`;
+	}
+	if (it.type === 'declaredSeed') {
+		const rowsStr = it.seedData?.map(r => `(${r.map(v => JSON.stringify(v)).join(', ')})`).join(', ') || '';
+		return `seed ${it.tableName} (${rowsStr})`;
+	}
+	return (it as unknown as AST.DeclareIgnoredItem).text || '-- ignored';
+}
+
 // Helper to stringify conflict clauses
 function conflictToString(res: ConflictResolution | undefined): string {
 	// ABORT is the default, so don't emit it
@@ -710,8 +766,16 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 			case 'collate':
 				s += `collate ${c.collation!.toLowerCase()}`;
 				break;
-			case 'foreignKey': // References clause needs more detail
-				s += 'references ?'; // Placeholder
+			case 'foreignKey':
+				if (c.foreignKey) {
+					const fk = c.foreignKey;
+					s += `references ${quoteIdentifierIfNeeded(fk.table)}`;
+					if (fk.columns && fk.columns.length > 0) {
+						s += `(${fk.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+					}
+					if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
+					if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
+				}
 				break;
 			case 'generated':
 				s += `generated always as (${expressionToString(c.generated!.expr)})`;
@@ -742,11 +806,29 @@ function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 				s += `check (${expressionToString(c.expr!)})`;
 				break;
 			case 'foreignKey':
-				s += `foreign key (${c.columns!.map(col => quoteIdentifierIfNeeded(col.name)).join(', ')}) references ?`; // Placeholder
+				if (c.foreignKey) {
+					const fk = c.foreignKey;
+					s += `foreign key (${c.columns!.map(col => quoteIdentifierIfNeeded(col.name)).join(', ')}) references ${quoteIdentifierIfNeeded(fk.table)}`;
+					if (fk.columns && fk.columns.length > 0) {
+						s += `(${fk.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+					}
+					if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
+					if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
+				}
 				break;
 		}
 		return s;
 	}).filter(s => s.length > 0).join(', ');
+}
+
+function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
+	switch (action) {
+		case 'setNull': return 'set null';
+		case 'setDefault': return 'set default';
+		case 'cascade': return 'cascade';
+		case 'restrict': return 'restrict';
+		case 'noAction': return 'no action';
+	}
 }
 
 export function createTableToString(stmt: AST.CreateTableStmt): string {

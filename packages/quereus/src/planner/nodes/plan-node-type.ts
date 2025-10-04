@@ -81,6 +81,10 @@ export enum PlanNodeType {
 
   // Utility
   Pragma = 'Pragma',
+  DeclareSchema = 'DeclareSchema',
+  DiffSchema = 'DiffSchema',
+  ApplySchema = 'ApplySchema',
+  ExplainSchema = 'ExplainSchema',
 
   // Query execution
   Cache = 'Cache',

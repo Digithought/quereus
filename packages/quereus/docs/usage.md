@@ -355,19 +355,19 @@ const db = new Database();
 // Optional: set default module (so `using ...` can be omitted)
 await db.exec("pragma default_vtab_module = 'memory'");
 
-// 1) Declare target schema (no side effects)
+// 1) Declare target schema
 await db.exec(`
   declare schema main version '1.0.0' {
-    table users (
+    table users {
       id integer primary key,
       email text not null unique,
       name text not null
-    );
+    }
 
-    table roles (
+    table roles {
       id integer primary key,
       name text not null unique
-    );
+    }
 
     table user_roles (
       user_id integer not null,
@@ -379,50 +379,63 @@ await db.exec(`
 
     index users_email on users(email);
 
-    seed roles values (id, name) values (1, 'admin'), (2, 'viewer');
+    seed roles (
+      (1, 'admin'),
+      (2, 'viewer')
+    )
   }
 `);
 
-// 2) Preview diff (DDL rows)
-const ddl = await db.prepare('diff schema main').all();
-console.log(ddl);
+// 2) Get migration DDL statements
+const ddlStatements = [];
+for await (const row of db.eval('diff schema main')) {
+  ddlStatements.push(row.ddl);
+}
+console.log('Migration DDL:', ddlStatements);
 
-// 3) Option A: auto-apply (engine convenience, non-destructive by default)
-await db.exec(`
-  apply schema main to version '1.0.0' options (
-    dry_run = false,
-    validate_only = false,
-    allow_destructive = false
-  )
-`);
-
-// 3b) Option B: run DDL yourself (full control / backfills)
-for (const row of ddl) {
-  await db.exec(String(row.ddl));
+// 3) Option A: Execute DDL manually with custom logic
+for (const ddl of ddlStatements) {
+  console.log('Executing:', ddl);
+  await db.exec(ddl);
+  // Insert custom migration logic here (backfills, data transforms, etc.)
 }
 
-// 4) Use schema
+// 3) Option B: Auto-apply (convenience)
+await db.exec('apply schema main');
+
+// 4) Apply with seed data (clears and repopulates)
+await db.exec('apply schema main with seed');
+
+// 5) Verify schema hash
+const hashResult = await db.prepare('explain schema main').get();
+console.log(hashResult.info); // e.g., "hash:a1b2c3d4e5f6"
+
+// 6) Use the schema
 await db.exec("insert into users (id, email, name) values (1, 'alice@example.com', 'Alice')");
 const users = await db.prepare('select * from users').all();
 console.log(users);
 ```
 
-### Renames and Safety
+### Working with Declarative Schemas
 
-- Use `old name schema.obj` hints to declare renames; or attach stable `id 'guid'` to allow rename inference by policy.
-- Destructive changes (drops, type narrowing, NOT NULL tightening) require `allow_destructive` in `apply`.
+**Declaring Schemas:**
+- Use `{...}` braces or `(...)` parentheses for table column definitions.
+- All declarations are stored but have no side effects until `apply`.
+- Tables, indexes, and views can be declared in any order.
 
-### Imports and Cache
+**Viewing Changes:**
+- `diff schema` returns a JSON object showing all required changes.
+- Review the diff before applying to understand impact.
 
-You can import schemas by URL (e.g., GitHub raw file) and pin via version/range:
+**Applying Migrations:**
+- `apply schema main` executes the migration DDL automatically.
+- `apply schema main with seed` also clears tables and inserts seed data.
+- Migrations execute in safe order: drops, creates, then alters.
 
-```sql
-declare schema app {
-  import schema auth from 'https://example.com/auth-schema.sql' cache 'auth@2' version '^2';
-}
-```
-
-Configure a local cache for offline use via tooling/PRAGMA (implementation dependent). The engine validates imports with content hashes.
+**Seed Data:**
+- Seed blocks define initial data for tables.
+- Application clears existing data before inserting seeds.
+- Use for test fixtures, reference data, or initial configurations.
 
 
 ## User-Defined Functions

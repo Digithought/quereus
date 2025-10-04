@@ -245,6 +245,42 @@ textarea:focus {
 }
 
 /* Monaco editor container */
+.monaco-editor .token.keyword {
+	color: var(--editor-keyword-color, #569cd6);
+}
+
+.monaco-editor .token.keyword\.declarative {
+	color: var(--editor-declarative-keyword-color, #d19a66);
+}
+
+.monaco-editor .token.keyword\.ddl {
+	color: var(--editor-ddl-keyword-color, #61afef);
+}
+
+.monaco-editor .token.keyword\.dml {
+	color: var(--editor-dml-keyword-color, #c678dd);
+}
+
+.monaco-editor .token.keyword\.constraint {
+	color: var(--editor-constraint-keyword-color, #e06c75);
+}
+
+.monaco-editor .token.keyword\.join {
+	color: var(--editor-join-keyword-color, #98c379);
+}
+
+.monaco-editor .token.keyword\.query {
+	color: var(--editor-query-keyword-color, #56b6c2);
+}
+
+.monaco-editor .token.keyword\.boolean {
+	color: var(--editor-boolean-keyword-color, #c678dd);
+}
+
+.monaco-editor .token.keyword\.other {
+	color: var(--editor-keyword-color, #569cd6);
+}
+
 .monaco-editor-container {
   height: 100%;
   width: 100%;

@@ -213,3 +213,51 @@ SELECT count(*) FROM inventory WHERE loc = 'W1' AND sku = 'A1';
 
 DROP TABLE inventory;
 DROP TABLE products;
+
+-- === CHECK with EXISTS subquery referencing another table (INSERT/UPDATE) ===
+
+CREATE TABLE ref_table (
+    id TEXT PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE dependent (
+    id INTEGER PRIMARY KEY,
+    ref_id TEXT,
+    CONSTRAINT ref_must_exist CHECK ON INSERT, UPDATE (
+        EXISTS (SELECT 1 FROM ref_table WHERE ref_table.id = NEW.ref_id)
+    )
+);
+
+-- Insert into empty dependent table should fail (ref_table is empty)
+INSERT INTO dependent (id, ref_id) VALUES (1, 'abc');
+-- error: CHECK constraint failed: ref_must_exist
+
+-- Populate ref_table
+INSERT INTO ref_table VALUES ('abc', 'Valid Reference');
+SELECT * FROM ref_table;
+→ [{"id":"abc","name":"Valid Reference"}]
+
+-- Now insert should succeed
+INSERT INTO dependent (id, ref_id) VALUES (1, 'abc');
+SELECT * FROM dependent;
+→ [{"id":1,"ref_id":"abc"}]
+
+-- Try to update to non-existent reference
+UPDATE dependent SET ref_id = 'xyz' WHERE id = 1;
+-- error: CHECK constraint failed: ref_must_exist
+
+-- Verify state unchanged
+SELECT ref_id FROM dependent WHERE id = 1;
+→ [{"ref_id":"abc"}]
+
+-- Add another valid reference
+INSERT INTO ref_table VALUES ('xyz', 'Another Valid');
+
+-- Now update should succeed
+UPDATE dependent SET ref_id = 'xyz' WHERE id = 1;
+SELECT ref_id FROM dependent WHERE id = 1;
+→ [{"ref_id":"xyz"}]
+
+DROP TABLE dependent;
+DROP TABLE ref_table;

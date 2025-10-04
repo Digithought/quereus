@@ -26,35 +26,45 @@ Key features:
 
 Quereus keeps traditional DDL fully intact. Declarative schema is an optional alternative for describing the desired end‑state in a single, order‑independent block. Modules continue to use DDL‑based interfaces; declarative workflows operate entirely in the engine and produce DDL.
 
-Concepts:
-- **Schema**: named logical grouping of objects; may span multiple modules.
-- **Catalog**: the set of objects owned by a module; may span multiple schemas.
+**Concepts:**
+- **Schema**: Named logical grouping of objects; may span multiple modules.
+- **Catalog**: The set of objects owned by a module; may span multiple schemas.
+- **Diff**: JSON representation of changes needed to align actual state with declared schema.
+- **Apply**: Automatic execution of migration DDL statements.
 
-Key statements:
+**Key Statements:**
 
-1) `declare schema` – describes desired end‑state (forward references allowed).
-2) `diff schema` – compares declared schema with current state via module catalogs and produces canonical DDL.
-3) `apply schema` – optional helper that executes the generated DDL (when supported); users may also fetch and run DDL themselves.
-4) `explain schema` – shows canonical graph and content hash.
+1. `declare schema` – Describes desired end‑state and stores declaration with optional seed data.
+2. `diff schema` – Compares declared schema with current state and returns JSON diff.
+3. `apply schema` – Executes the generated migration DDL, optionally applying seed data.
+4. `explain schema` – Returns the schema content hash for versioning.
 
-Syntax (declaration):
+#### Declaration Syntax
+
 ```sql
 declare schema schema_name
   [version 'major.minor.patch']
-  [using (default_vtab_module = 'memory', default_vtab_args = '[]')]
+  [using (default_vtab_module = 'memory', default_vtab_args = '{}')]
 {
-  -- Tables (using optional; defaults respected)
-  table users using memory (
+  -- Tables: use {...} or (...) for column definitions
+  table users {
     id integer primary key,
     email text not null unique,
     name text not null,
-    created_at datetime not null default (datetime('now'))
-  ) [id 'stable-guid-optional'] [old name main.old_users];
+    created_at text not null default (datetime('now'))
+  }
+  
+  -- Or with explicit USING clause
+  table sessions (
+    id text primary key,
+    user_id integer not null,
+    expires_at integer
+  ) using memory;
 
-  table roles (
+  table roles {
     id integer primary key,
     name text not null unique
-  );
+  }
 
   table user_roles (
     user_id integer not null,
@@ -64,52 +74,104 @@ declare schema schema_name
     constraint fk_role foreign key (role_id) references roles(id)
   );
 
+  -- Indexes
   index users_email on users(email);
 
+  -- Views
   view v_user_roles as
     select u.id as user_id, u.email, r.name as role
     from users u join user_roles ur on u.id = ur.user_id
                  join roles r on ur.role_id = r.id;
 
-  -- Optional: domains/collations
-  domain email_address as text check (like(value, '%@%'));
-  collation nocase = nocase();
-
-  -- Seed data (idempotent by default)
-  seed roles values
-    (id, name) values
+  -- Seed data: ( (row1_values), (row2_values), ... )
+  seed roles (
     (1, 'admin'),
-    (2, 'viewer');
+    (2, 'viewer')
+  )
+  
+  -- Or with explicit column names
+  seed users values (id, email, name) values
+    (1, 'admin@example.com', 'Admin'),
+    (2, 'viewer@example.com', 'Viewer');
 
-  -- Imports (URL or file), with optional cache key
-  import schema auth from 'https://example.com/auth-schema.sql' cache 'auth@1' version '^2';
+  -- Future: domains, collations, and imports
+  -- domain email_address as text check (like(value, '%@%'));
+  -- collation nocase = nocase();
+  -- import schema auth from 'https://example.com/auth-schema.sql' cache 'auth@1' version '^2';
 }
 ```
 
-Diffing, applying, and inspecting:
-```sql
--- Preview changes as DDL
-diff schema main;           -- returns rows of canonical DDL statements
+#### Diffing and Applying
 
--- Optionally auto-apply the resulting DDL (engine convenience)
+```sql
+-- Get migration DDL as result rows (one DDL statement per row)
+diff schema main;
+-- Returns rows like:
+--   {"ddl": "CREATE TABLE users (...)"}
+--   {"ddl": "DROP TABLE old_table"}
+-- Returns no rows if schema is already aligned
+
+-- Execute DDL yourself with custom migration logic
+-- TypeScript example:
+--   for await (const {ddl} of db.eval('diff schema main')) {
+--     console.log('Executing:', ddl);
+--     await db.exec(ddl);
+--     // Insert custom backfill/transform logic here
+--   }
+
+-- Or use apply to execute automatically (no result rows)
+apply schema main;
+
+-- Apply with seed data (clears and repopulates)
+apply schema main with seed;
+
+-- Get schema hash for versioning
+explain schema main;
+-- Returns: {"info": "hash:a1b2c3d4e5f6"}
+
+-- Future: versioned apply with options
 apply schema main to version '1.0.0' options (
   dry_run = false,
   validate_only = false,
   allow_destructive = false,
   rename_policy = 'require-hint'
 );
-
--- Explain canonical graph and hash
-explain schema main;
 ```
 
-Semantics and safety:
-- Orderless resolution with forward references inside the declaration block.
-- Diffs are computed by comparing the declared schema with module‑reported catalogs (optionally filtered by schema name) plus in‑engine state; output is canonical DDL.
-- Missing required elements are reported at declare/validate time; `apply` refuses to proceed without resolution.
-- Destructive changes (drops, type narrowing, NOT NULL tightening) are blocked unless `allow_destructive` is explicitly set in `apply`.
-- Rename detection prefers explicit `old name` hints; optional stable `id 'guid'` can be used to infer renames when enabled by policy.
-- Schema content hash (SHA‑256 of canonical graph) is shown in `explain schema` and accessible via helper functions.
+#### Semantics and Features
+
+**Order Independence:**
+- Tables, indexes, and views can be declared in any order within the `{...}` block.
+- Forward references are allowed (e.g., foreign keys to tables declared later).
+
+**Flexible Syntax:**
+- Column definitions accept brace syntax `{...}` or traditional parentheses `(...)`.
+- Identifiers are only quoted when they are reserved keywords or contain special characters.
+
+**Schema Diffing:**
+- Compares the declared schema against the current database catalog.
+- Generates a JSON diff showing tables/views/indexes to create, drop, or alter.
+- Produces canonical DDL statements for all required changes.
+
+**Migration Application:**
+- `apply schema` executes the migration DDL automatically.
+- Migrations are applied in safe order: drops first, then creates, then alters.
+- Seed data application: `with seed` clears existing data and inserts declared seed rows.
+
+**Versioning and Hashing:**
+- Schema declarations can include semantic versions.
+- `explain schema` computes a SHA-256 hash of the canonical schema representation.
+- Enables tracking schema changes and ensuring consistency across environments.
+
+**Safety:**
+- Seed data application is destructive (clears table before inserting).
+- Future enhancements will add `allow_destructive` gating for schema changes.
+- Rename hints and stable IDs (planned) will prevent accidental drops during renames.
+
+**Notes:**
+- Keywords `schema`, `version`, and `seed` are contextual and don't conflict with column names or function calls like `schema()`.
+- DDL remains the primary interface; declarative schema is a convenience layer that generates DDL.
+- Modules are unaware of declarative schemas; they receive standard DDL commands.
 
 
 ### 2.1 SELECT Statement

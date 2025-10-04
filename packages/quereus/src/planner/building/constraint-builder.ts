@@ -104,11 +104,27 @@ export function buildConstraintChecks(
     });
 
     // Build the constraint expression using the specialized scope
-    const expression = buildExpression(
-      { ...ctx, scope: constraintScope },
-      constraint.expr
-    ) as ScalarPlanNode;
+    // Temporarily set the current schema to match the table's schema
+    // This ensures unqualified table references in CHECK constraints resolve correctly
+    const originalCurrentSchema = ctx.schemaManager.getCurrentSchemaName();
+    const needsSchemaSwitch = tableSchema.schemaName !== originalCurrentSchema;
 
-    return { constraint, expression };
+    if (needsSchemaSwitch) {
+      ctx.schemaManager.setCurrentSchema(tableSchema.schemaName);
+    }
+
+    try {
+      const expression = buildExpression(
+        { ...ctx, scope: constraintScope },
+        constraint.expr
+      ) as ScalarPlanNode;
+
+      return { constraint, expression };
+    } finally {
+      // Restore original schema context
+      if (needsSchemaSwitch) {
+        ctx.schemaManager.setCurrentSchema(originalCurrentSchema);
+      }
+    }
   });
 }

@@ -1,10 +1,11 @@
 import React, { useCallback, useRef, useMemo, useState, useEffect } from 'react';
-import { Editor } from '@monaco-editor/react';
+import { Editor, loader } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { useSettingsStore } from '../stores/settingsStore.js';
 import { TabBar } from './TabBar.js';
 import { Play, Square } from 'lucide-react';
+import { registerQuereusSql } from '../editor/registerQuereusSql.js';
 
 export const EditorPanel: React.FC = () => {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -12,6 +13,17 @@ export const EditorPanel: React.FC = () => {
   const [systemIsDark, setSystemIsDark] = useState(
     () => window.matchMedia('(prefers-color-scheme: dark)').matches
   );
+
+  useEffect(() => {
+    loader
+      .init()
+      .then((monaco) => {
+        registerQuereusSql(monaco);
+      })
+      .catch((error) => {
+        console.error('Failed to initialize Monaco language configuration:', error);
+      });
+  }, []);
 
   const {
     tabs,
@@ -87,7 +99,7 @@ export const EditorPanel: React.FC = () => {
       if (selection && !selection.isEmpty()) {
         const selectedText = editor.getModel()?.getValueInRange(selection);
         sqlToExecute = selectedText?.trim() || '';
-        
+
         // Create selection info for error navigation
         selectionInfo = {
           isSelection: true,
@@ -99,7 +111,7 @@ export const EditorPanel: React.FC = () => {
       } else {
         // Get current full content from editor
         sqlToExecute = editor.getValue().trim();
-        
+
         // When executing full content, selection starts from line 1
         selectionInfo = {
           isSelection: false,
@@ -165,7 +177,7 @@ export const EditorPanel: React.FC = () => {
             {/* Editor */}
             <Editor
               height="100%"
-              language="sql"
+              language="quereus-sql"
               value={activeTab.content}
               onChange={handleEditorChange}
               onMount={handleEditorDidMount}

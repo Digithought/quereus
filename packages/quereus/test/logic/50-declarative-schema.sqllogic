@@ -1,0 +1,275 @@
+-- Test declarative schema full lifecycle
+
+-- Step 1: Declare a schema with a table
+declare schema main {
+	table users {
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		email TEXT
+	}
+}
+
+-- run
+
+-- Step 2: Diff against empty database (should show CREATE TABLE as DDL row)
+diff schema main;
+→ [{"ddl": "create table users (id INTEGER primary key, name TEXT not null, email TEXT)"}]
+
+-- Step 3: Apply the schema (creates the table, returns nothing)
+apply schema main;
+
+-- run
+
+-- Step 4: Verify table was created
+select count(*) from users;
+→ [{"count(*)": 0}]
+
+-- Step 5: Diff again - should now be empty (no rows) since schema matches
+diff schema main;
+→ []
+
+-- Step 6: Declare schema with seed data
+declare schema main {
+	table users {
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		email TEXT
+	}
+
+	seed users (
+		(1, 'Alice', 'alice@example.com'),
+		(2, 'Bob', 'bob@example.com')
+	)
+}
+
+-- run
+
+-- Step 7: Apply with seed (no rows returned)
+apply schema main with seed;
+
+-- run
+
+-- Step 8: Verify seed data was inserted
+select * from users order by id;
+→ [{"id": 1, "name": "Alice", "email": "alice@example.com"}, {"id": 2, "name": "Bob", "email": "bob@example.com"}]
+
+-- Step 9: Test forward references - declare tables out of order with foreign keys
+declare schema main {
+	table posts {
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL,
+		title TEXT NOT NULL,
+		content TEXT,
+		constraint fk_user foreign key (user_id) references users(id)
+	}
+
+	table users {
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		email TEXT
+	}
+
+	table comments {
+		id INTEGER PRIMARY KEY,
+		post_id INTEGER NOT NULL,
+		user_id INTEGER NOT NULL,
+		text TEXT NOT NULL,
+		constraint fk_post foreign key (post_id) references posts(id),
+		constraint fk_comment_user foreign key (user_id) references users(id)
+	}
+}
+
+-- run
+
+-- Step 10: Diff should show posts and comments to create (users already exists)
+diff schema main;
+→ [{"ddl": "create table posts (id INTEGER primary key, user_id INTEGER not null, title TEXT not null, content TEXT, constraint fk_user foreign key (user_id) references users(id))"}, {"ddl": "create table comments (id INTEGER primary key, post_id INTEGER not null, user_id INTEGER not null, text TEXT not null, constraint fk_post foreign key (post_id) references posts(id), constraint fk_comment_user foreign key (user_id) references users(id))"}]
+
+-- Step 11: Apply the forward-referenced schema
+apply schema main;
+
+-- run
+
+-- Step 12: Verify all three tables exist
+select count(*) from users;
+→ [{"count(*)": 2}]
+
+select count(*) from posts;
+→ [{"count(*)": 0}]
+
+select count(*) from comments;
+→ [{"count(*)": 0}]
+
+-- Step 13: Insert data respecting foreign key order
+insert into posts (id, user_id, title, content) values (1, 1, 'First Post', 'This is the content');
+insert into comments (id, post_id, user_id, text) values (1, 1, 2, 'Great post!');
+
+select p.title, c.text, u.name as commenter
+from posts p
+join comments c on p.id = c.post_id
+join users u on c.user_id = u.id;
+→ [{"title": "First Post", "text": "Great post!", "commenter": "Bob"}]
+
+-- Step 14: Test table removal via redeclaration (only keep users)
+declare schema main {
+	table users {
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		email TEXT
+	}
+}
+
+-- run
+
+-- Step 15: Diff should show DROP statements for posts and comments
+diff schema main;
+→ [{"ddl": "DROP TABLE IF EXISTS posts"}, {"ddl": "DROP TABLE IF EXISTS comments"}]
+
+-- Step 16: Apply to drop extra tables
+apply schema main;
+
+-- run
+
+-- Step 17: Verify posts and comments are gone
+select count(*) from users;
+→ [{"count(*)": 2}]
+
+select count(*) from posts;
+-- error: Table not found
+
+select count(*) from comments;
+-- error: Table not found
+
+-- Step 18: Test composite schema with multiple seeds and forward refs
+-- Declare a completely new schema (replacing the previous one)
+declare schema main {
+	table categories {
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL
+	}
+
+	table products {
+		id INTEGER PRIMARY KEY,
+		category_id INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		price REAL NOT NULL,
+		constraint fk_category foreign key (category_id) references categories(id)
+	}
+
+	seed categories (
+		(1, 'Electronics'),
+		(2, 'Books'),
+		(3, 'Clothing')
+	)
+
+	seed products (
+		(1, 1, 'Laptop', 999.99),
+		(2, 1, 'Mouse', 29.99),
+		(3, 2, 'SQL Guide', 49.99)
+	)
+}
+
+-- run
+
+-- Step 19: Apply complete replacement (drops users, creates categories/products)
+apply schema main with seed;
+
+-- run
+
+-- Step 20: Verify relational integrity with join
+select p.name as product, c.name as category, p.price
+from products p
+join categories c on p.category_id = c.id
+order by c.id, p.id;
+→ [{"product": "Laptop", "category": "Electronics", "price": 999.99}, {"product": "Mouse", "category": "Electronics", "price": 29.99}, {"product": "SQL Guide", "category": "Books", "price": 49.99}]
+
+-- Step 21: Verify old tables are gone
+select count(*) from users;
+-- error: Table not found
+
+-- Step 22: Test trailing commas in table definitions
+declare schema main {
+	table config {
+		config_key TEXT PRIMARY KEY,
+		value TEXT,
+		description TEXT,
+	}
+}
+
+-- run
+
+apply schema main with seed;
+
+-- run
+
+select count(*) from config;
+→ [{"count(*)": 0}]
+
+-- Step 23: Test explicit main schema qualification
+select count(*) from main.config;
+→ [{"count(*)": 0}]
+
+-- Step 24: Verify trailing comma test passed
+declare schema main {
+	table test_trailing {
+		a INTEGER PRIMARY KEY,
+		b TEXT,
+		c TEXT,
+	}
+}
+
+-- run
+
+apply schema main;
+
+-- run
+
+select count(*) from test_trailing;
+→ [{"count(*)": 0}]
+
+-- Step 25: Test custom schema with forward references and CHECK constraints
+declare schema Test2 {
+	table A {
+		Col1 TEXT,
+		constraint Col1InB check on insert, update (exists (select 1 from B where new.Col1 = B.Col1))
+	}
+
+	table B {
+		Col1 TEXT,
+		primary key (Col1)
+	}
+
+	seed B (
+		('valid1'),
+		('valid2')
+	)
+}
+
+-- run
+
+apply schema Test2 with seed;
+
+-- run
+
+-- Verify B has seed data
+select * from Test2.B order by Col1;
+→ [{"Col1": "valid1"}, {"Col1": "valid2"}]
+
+-- Insert into A with value that exists in B (should succeed)
+insert into Test2.A (Col1) values ('valid1');
+
+select * from Test2.A;
+→ [{"Col1": "valid1"}]
+
+-- Insert into A with value that doesn't exist in B (should fail)
+insert into Test2.A (Col1) values ('invalid');
+-- error: CHECK constraint failed
+
+-- Verify schema isolation: Test2 and main are separate
+select count(*) from Test2.A;
+→ [{"count(*)": 1}]
+
+select count(*) from main.test_trailing;
+→ [{"count(*)": 0}]
+
+

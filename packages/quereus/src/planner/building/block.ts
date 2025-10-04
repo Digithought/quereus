@@ -19,6 +19,7 @@ import { buildPragmaStmt } from './pragma.js';
 import { buildValuesStmt } from './select.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { buildDeclareSchemaStmt, buildDiffSchemaStmt, buildApplySchemaStmt, buildExplainSchemaStmt } from './declare-schema.js';
 
 export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): BlockNode {
 	const plannedStatements = statements.map((stmt) => {
@@ -65,6 +66,14 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildAlterTableStmt(ctx, stmt as AST.AlterTableStmt);
 			case 'values':
 				return buildValuesStmt(ctx, stmt as AST.ValuesStmt);
+			case 'declareSchema':
+				return buildDeclareSchemaStmt(ctx, stmt as unknown as AST.DeclareSchemaStmt);
+			case 'diffSchema':
+				return buildDiffSchemaStmt(ctx, stmt as unknown as AST.DiffSchemaStmt);
+			case 'applySchema':
+				return buildApplySchemaStmt(ctx, stmt as unknown as AST.ApplySchemaStmt);
+			case 'explainSchema':
+				return buildExplainSchemaStmt(ctx, stmt as unknown as AST.ExplainSchemaStmt);
 			default:
 				// Throw an exception for unsupported statement types
 				quereusError(

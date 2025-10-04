@@ -38,6 +38,7 @@ import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-
 import { DatabaseOptionsManager } from './database-options.js';
 import type { InstructionTracer } from '../runtime/types.js';
 import { isAsyncIterable } from '../runtime/utils.js';
+import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -50,6 +51,7 @@ const debugLog = log.extend('debug');
  */
 export class Database {
 	public readonly schemaManager: SchemaManager;
+	public readonly declaredSchemaManager: DeclaredSchemaManager;
 	private isOpen = true;
 	private statements = new Set<Statement>();
 	private isAutocommit = true; // Manages transaction state
@@ -66,6 +68,7 @@ export class Database {
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
+		this.declaredSchemaManager = new DeclaredSchemaManager();
 		this.options = new DatabaseOptionsManager();
 		log("Database instance created.");
 

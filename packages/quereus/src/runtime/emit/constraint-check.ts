@@ -132,7 +132,8 @@ async function checkCheckConstraints(
 
 		try {
 			// Use the evaluator function to get the constraint result
-			const result = evaluator(rctx) as SqlValue;
+			// Await since evaluator may return async value (e.g., subqueries)
+			const result = await evaluator(rctx) as SqlValue;
 
 			// CHECK constraint passes if result is truthy or NULL
 			// It fails only if result is false or 0 (SQLite-style numeric boolean)

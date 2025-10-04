@@ -13,7 +13,9 @@ export interface AstNode {
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
-		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between';
+		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between'
+		| 'declareSchema' | 'diffSchema' | 'applySchema' | 'explainSchema'
+		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declareIgnored';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -487,4 +489,73 @@ export type Statement =
 	| RollbackStmt
 	| SavepointStmt
 	| ReleaseStmt
-	| PragmaStmt;
+	| PragmaStmt
+	| DeclareSchemaStmt
+	| DiffSchemaStmt
+	| ApplySchemaStmt
+	| ExplainSchemaStmt;
+
+// === Declarative Schema AST ===
+
+export interface DeclareSchemaStmt extends AstNode {
+	type: 'declareSchema';
+	schemaName?: string;
+	version?: string;
+	using?: { defaultVtabModule?: string; defaultVtabArgs?: string };
+	items: readonly DeclareItem[];
+}
+
+export type DeclareItem = DeclaredTable | DeclaredIndex | DeclaredView | DeclaredSeed | DeclareIgnoredItem;
+
+export interface DeclaredTable extends AstNode {
+	type: 'declaredTable';
+	tableStmt: CreateTableStmt;
+}
+
+export interface DeclaredIndex extends AstNode {
+	type: 'declaredIndex';
+	indexStmt: CreateIndexStmt;
+}
+
+export interface DeclaredView extends AstNode {
+	type: 'declaredView';
+	viewStmt: CreateViewStmt;
+}
+
+export interface DeclaredSeed extends AstNode {
+	type: 'declaredSeed';
+	tableName: string;
+	columns?: readonly string[];
+	seedData?: readonly SqlValue[][];
+}
+
+/** Placeholder for domain/collation/import items to keep parser forward-compatible */
+export interface DeclareIgnoredItem extends AstNode {
+	type: 'declareIgnored';
+	kind: 'domain' | 'collation' | 'import';
+	text: string; // original text snippet for hashing/canonicalization if needed
+}
+
+export interface DiffSchemaStmt extends AstNode {
+	type: 'diffSchema';
+	schemaName?: string;
+}
+
+export interface ApplySchemaStmt extends AstNode {
+	type: 'applySchema';
+	schemaName?: string;
+	toVersion?: string;
+	withSeed?: boolean;
+	options?: {
+		dryRun?: boolean;
+		validateOnly?: boolean;
+		allowDestructive?: boolean;
+		renamePolicy?: 'require-hint' | 'infer-id';
+	};
+}
+
+export interface ExplainSchemaStmt extends AstNode {
+	type: 'explainSchema';
+	schemaName?: string;
+	version?: string;
+}
