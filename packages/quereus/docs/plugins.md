@@ -1,85 +1,94 @@
-# Quereus Plugin System
+# Quereus Plugin System (package.json–centric)
 
-Quereus provides a comprehensive plugin system that allows you to extend the database engine with custom functionality. Plugins can register three types of components:
+Quereus plugins are standard ESM packages that declare their capabilities in `package.json` and expose a single runtime entry. At runtime, the module provides registrations for:
 
-- **Virtual Tables** - Custom data sources that appear as SQL tables
-- **Functions** - Custom SQL functions (scalar, aggregate, table-valued)
-- **Collations** - Custom text sorting and comparison behaviors
+- **Virtual Tables** — Custom data sources that appear as SQL tables
+- **Functions** — Custom SQL functions (scalar, aggregate, table-valued)
+- **Collations** — Custom text sorting and comparison behaviors
 
-## Plugin Architecture
+This document standardizes how plugins are published, discovered, and loaded using `package.json`. There is no legacy mode to support.
 
-### Plugin Module Structure
+## Authoring a plugin
 
-A Quereus plugin is an ES module that exports:
+### package.json requirements
 
-1. **Manifest** - Metadata about the plugin
-2. **Default export** - A registration function that returns what to register
+- Use ESM: set `"type": "module"`.
+- Add `keywords: ["quereus-plugin"]` for discovery.
+- Expose a dedicated plugin entry using the `exports` subpath `./plugin`:
 
-```javascript
-// Basic plugin structure
-export const manifest = {
-  name: 'My Plugin',
-  version: '1.0.0',
-  description: 'Example plugin',
-  provides: {
-    vtables: ['my_table'],
-    functions: ['my_func'],
-    collations: ['MY_COLLATION']
+```json
+{
+  "name": "@acme/quereus-plugin-foo",
+  "type": "module",
+  "version": "1.2.3",
+  "description": "Foo sources as virtual tables + helpers",
+  "author": "Acme Inc.",
+  "keywords": ["quereus-plugin"],
+  "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "browser": "./dist/plugin.browser.js",
+      "default": "./dist/plugin.js"
+    }
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "^0.24.0"
+  },
+  "engines": {
+    "quereus": "^0.24.0"
+  },
+  "quereus": {
+    "provides": {
+      "vtables": ["foo_items"],
+      "functions": ["foo_hash"],
+      "collations": ["FOO_NATURAL"]
+    },
+    "settings": [
+      { "key": "api_key", "label": "API Key", "type": "string" },
+      { "key": "timeout", "label": "Timeout (ms)", "type": "number", "default": 5000 },
+      { "key": "debug", "label": "Debug", "type": "boolean", "default": false }
+    ]
   }
-};
-
-export default function register(db, config) {
-  // Plugin logic here
-  return {
-    vtables: [...],
-    functions: [...],
-    collations: [...]
-  };
 }
 ```
 
-### Plugin Manifest
+Notes:
+- Root fields like `name`, `version`, `description`, `author` are canonical — do not duplicate them under `quereus`.
+- Place plugin‑specific metadata under the top‑level `quereus` object:
+  - `quereus.provides` — capabilities for display and review
+  - `quereus.settings` — configuration schema for UIs/hosts
+- Version gating should be declared at the root via `engines.quereus` or `peerDependencies['@quereus/quereus']`. Hosts should error if the declared range is incompatible.
 
-The manifest provides metadata about your plugin:
+### Runtime module contract
 
-```javascript
+The export at `exports['./plugin']` must be an ES module that:
+
+1) Exports a `manifest` object mirroring display metadata required by the host UI (it can be generated at build time from `package.json`).
+2) Exports a default `register(db, config)` function that returns what to register.
+
+```typescript
+// ./dist/plugin.js
+import type { Database, SqlValue } from '@quereus/quereus';
+
 export const manifest = {
-  name: 'Plugin Name',           // Required: Display name
-  version: '1.0.0',              // Required: Version string
-  author: 'Your Name',           // Optional: Author name
-  description: 'What it does',   // Optional: Description
-  pragmaPrefix: 'my_plugin',     // Optional: PRAGMA prefix (defaults to name)
-  
-  // Configuration options
-  settings: [
-    {
-      key: 'timeout',
-      label: 'Request Timeout',
-      type: 'number',
-      default: 5000,
-      help: 'HTTP request timeout in milliseconds'
-    }
-  ],
-  
-  // What the plugin provides (for UI display)
+  name: 'Acme Foo',
+  version: '1.2.3',
+  description: 'Foo sources as virtual tables + helpers',
   provides: {
-    vtables: ['table1', 'table2'],
-    functions: ['func1', 'func2'],
-    collations: ['COLLATION1']
-  }
+    vtables: ['foo_items'],
+    functions: ['foo_hash'],
+    collations: ['FOO_NATURAL']
+  },
+  settings: [
+    { key: 'api_key', label: 'API Key', type: 'string' },
+    { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 5000 }
+  ]
 };
-```
 
-### Registration Function
-
-The default export function receives the database instance and user configuration:
-
-```javascript
-export default function register(db, config = {}) {
-  // Access config values
-  const timeout = config.timeout || 5000;
-  
-  // Return what to register
+export default function register(
+  db: Database,
+  config: Record<string, SqlValue> = {}
+) {
   return {
     vtables: [/* vtable registrations */],
     functions: [/* function registrations */],
@@ -87,6 +96,10 @@ export default function register(db, config = {}) {
   };
 }
 ```
+
+### Registration Function
+
+The default export receives the database instance and user configuration and returns registrations. See examples below for virtual tables, functions, and collations.
 
 ## Virtual Table Plugins
 
@@ -796,32 +809,37 @@ function safeFunction(input) {
 - Provide usage examples
 - Include performance characteristics
 
-## Installation
+## Installation & loading
 
-### Loading Plugins
+### Programmatic loading
 
 ```typescript
-import { Database, dynamicLoadModule } from 'quereus';
+import { Database } from '@quereus/quereus';
+import { loadPlugin, dynamicLoadModule } from '@quereus/quereus/util/plugin-loader.js';
 
 const db = new Database();
 
-// Load from URL
-await dynamicLoadModule('https://example.com/plugin.js', db, {
-  timeout: 10000,
-  debug: true
-});
+// 1) Load from npm package name (Node):
+await loadPlugin('npm:@acme/quereus-plugin-foo@^1', db, { api_key: '...' });
 
-// Load from local file
-await dynamicLoadModule('file:///path/to/plugin.js', db);
+// 2) Load from direct URL (Node or Browser):
+await dynamicLoadModule('https://example.com/plugin.js', db, { timeout: 10000 });
+
+// 3) Browser npm via CDN (opt-in only):
+await loadPlugin('npm:@acme/quereus-plugin-foo@^1', db, { timeout: 8000 }, { allowCdn: true, cdn: 'jsdelivr' });
 ```
+
+Behavior:
+- npm package resolution prefers the `exports['./plugin']` subpath. In Node, the package is loaded directly. In browsers, npm resolution is disabled by default; enabling it requires `{ allowCdn: true }` and maps to a CDN URL.
+- Version compatibility: if the package declares `engines.quereus` or a `peerDependency` on `@quereus/quereus`, hosts should throw when incompatible (error, not warning).
 
 ### Web UI
 
-In Quoomb Web, use the Plugin Manager to:
-1. Install plugins from URLs
-2. Configure plugin settings
-3. Enable/disable plugins
-4. View plugin capabilities
+In Quoomb Web, the Plugin Manager accepts either:
+- An npm package spec (e.g. `@acme/quereus-plugin-foo@^1`) — may require a CDN if running fully in-browser
+- A direct ESM URL (e.g. a GitHub raw link)
+
+The UI reads `manifest.settings` or `package.json.quereus.settings` to render configuration, and surfaces `quereus.provides` as capability badges.
 
 
 
