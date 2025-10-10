@@ -1,6 +1,6 @@
 import { createLogger } from '../common/logger.js';
 import { MisuseError, quereusError, QuereusError } from '../common/errors.js';
-import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
+import { StatusCode, type SqlParameters, type SqlValue, type OutputValue } from '../common/types.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import { SchemaManager } from '../schema/manager.js';

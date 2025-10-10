@@ -1,0 +1,30 @@
+{
+  "name": "@quereus/quereus-plugin-comprehensive-demo",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Demonstrates vtables, functions, and collations in one plugin",
+  "author": "Quereus Team",
+  "keywords": ["quereus-plugin", "quereus", "demo", "examples"],
+  "exports": {
+    "./plugin": {
+      "default": "./index.js"
+    }
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "*"
+  },
+  "engines": {
+    "quereus": ">=0.0.0"
+  },
+  "quereus": {
+    "provides": {
+      "vtables": ["key_value_store"],
+      "functions": ["math_round_to", "hex_to_int", "int_to_hex", "data_summary"],
+      "collations": ["UNICODE_CI"]
+    },
+    "settings": [
+      { "key": "default_precision", "label": "Default Precision", "type": "number", "default": 2 },
+      { "key": "enable_debug", "label": "Enable Debug Logging", "type": "boolean", "default": false }
+    ]
+  }
+}

@@ -2009,18 +2009,19 @@ export class Parser {
 
 		let moduleName: string | undefined;
 		const moduleArgs: Record<string, SqlValue> = {};
-		if (this.matchKeyword('USING')) {
+        if (this.matchKeyword('USING')) {
 			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
-			if (this.matchKeyword('(')) {
-				while (!this.match(TokenType.RPAREN)) {
-					const nameValue = this.nameValueItem("module argument");
-					moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
-						? getSyncLiteral(nameValue.value) : nameValue.name;
-					if (!this.match(TokenType.COMMA) || this.check(TokenType.RPAREN)) {
-						throw this.error(this.peek(), "Expected ',' or ')' after module argument.");
-					}
-				}
-			}
+            if (this.match(TokenType.LPAREN)) {
+                if (!this.check(TokenType.RPAREN)) {
+                    do {
+                        const nameValue = this.nameValueItem('module argument');
+                        moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
+                            ? getSyncLiteral(nameValue.value)
+                            : (nameValue.value && nameValue.value.type === 'identifier' ? nameValue.value.name : nameValue.name);
+                    } while (this.match(TokenType.COMMA));
+                }
+                this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
+            }
 		}
 
 		return {

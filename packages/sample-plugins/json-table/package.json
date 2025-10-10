@@ -1,0 +1,28 @@
+{
+  "name": "@quereus/quereus-plugin-json-table",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Virtual table for JSON data",
+  "author": "Quereus Team",
+  "keywords": ["quereus-plugin", "quereus", "virtual-table", "json"],
+  "exports": {
+    "./plugin": {
+      "default": "./index.js"
+    }
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "*"
+  },
+  "engines": {
+    "quereus": ">=0.0.0"
+  },
+  "quereus": {
+    "provides": { "vtables": ["json_table"] },
+    "settings": [
+      { "key": "timeout", "label": "HTTP Timeout (ms)", "type": "number", "default": 30000 },
+      { "key": "cache_ttl", "label": "Cache TTL (seconds)", "type": "number", "default": 300 },
+      { "key": "user_agent", "label": "User Agent", "type": "string", "default": "Quereus JSON_TABLE Plugin/1.0.0" },
+      { "key": "enable_cache", "label": "Enable Caching", "type": "boolean", "default": true }
+    ]
+  }
+}
