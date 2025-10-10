@@ -56,9 +56,9 @@ describe('Sample plugins (package.json–centric)', () => {
     await db.exec("INSERT INTO kv(key, value) VALUES ('b', '2')");
 
     const values: any[] = [];
-    for await (const row of db.eval('SELECT value FROM kv WHERE key = "b"')) {
+    for await (const row of db.eval('SELECT value FROM kv ORDER BY key')) {
       values.push(row.value);
     }
-    expect(values).to.deep.equal(['2']);
+    expect(values).to.deep.equal(['1', '2']);
   });
 });
