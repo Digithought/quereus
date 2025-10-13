@@ -69,6 +69,7 @@ class KeyValueStore {
 
   insert(row) {
     this.store.set(row.key, row.value);
+    return { key: row.key, value: row.value };
   }
 
   update(oldRow, newRow) {
@@ -86,20 +87,62 @@ class KeyValueStore {
 }
 
 const keyValueModule = {
-  create: async (tableName, args, config) => {
-    const table = new KeyValueStore(args, config);
+  xCreate: (db, tableSchema) => {
+    const args = [tableSchema.vtabArgs && tableSchema.vtabArgs.store ? tableSchema.vtabArgs.store : 'default'];
+    const table = new KeyValueStore(args, tableSchema.vtabArgs || {});
+    // Minimal instance compatible with VirtualTable
     return {
-      schema: table.getSchema(),
-      vtable: table
+      db,
+      module: keyValueModule,
+      schemaName: tableSchema.schemaName,
+      tableName: tableSchema.name,
+      tableSchema,
+      xDisconnect: async () => {},
+      async xUpdate(op, values) {
+        if (op === 'insert' && values) {
+          table.insert({ key: values[0], value: values[1] });
+          return values;
+        }
+        return undefined;
+      },
+      *xQuery() {
+        for (const row of table.scan()) {
+          yield [row.key, row.value];
+        }
+      },
+      async createConnection() {
+        return {
+          connectionId: 'kv:' + tableSchema.schemaName + '.' + tableSchema.name,
+          tableName: tableSchema.name,
+          begin: async () => {},
+          commit: async () => {},
+          rollback: async () => {},
+          createSavepoint: async () => {},
+          releaseSavepoint: async () => {},
+          rollbackToSavepoint: async () => {},
+          disconnect: async () => {}
+        };
+      }
     };
   },
-
-  connect: async (tableName, args, config) => {
-    const table = new KeyValueStore(args, config);
-    return {
-      schema: table.getSchema(),
-      vtable: table
+  xConnect: (db, _pAux, _moduleName, schemaName, tableName, options) => {
+    const tableSchema = {
+      name: tableName,
+      schemaName,
+      columns: [
+        { name: 'key', type: 3, notNull: false },
+        { name: 'value', type: 3, notNull: false }
+      ],
+      columnIndexMap: new Map([[0,0],[1,1]]),
+      primaryKeyDefinition: [{ name: 'key', index: 0 }],
+      checkConstraints: [],
+      isTemporary: false,
+      isView: false,
+      vtabModuleName: 'key_value_store',
+      vtabArgs: options || {},
+      estimatedRows: 0
     };
+    return keyValueModule.xCreate(db, tableSchema);
   }
 };
 
