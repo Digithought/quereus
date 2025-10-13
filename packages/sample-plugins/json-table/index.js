@@ -59,6 +59,9 @@ export const manifest = {
 
 // Simple in-memory cache
 const cache = new Map();
+function isFileUrl(u) {
+  return u.startsWith('file:///') || u.startsWith('file://');
+}
 
 /**
  * Fetches JSON data from a URL or file path
@@ -105,11 +108,11 @@ async function fetchJsonData(url, config) {
       clearTimeout(timeoutId);
       throw new Error(`Failed to fetch JSON from ${url}: ${error.message}`);
     }
-  } else if (url.startsWith('file://')) {
+  } else if (isFileUrl(url)) {
     // Read from file (Node.js environment)
     try {
       const fs = await import('fs/promises');
-      const filePath = url.replace('file://', '');
+      const filePath = url.replace(/^file:\/\//, '');
       const content = await fs.readFile(filePath, 'utf-8');
       data = JSON.parse(content);
     } catch (error) {
@@ -255,23 +258,73 @@ class JsonTable {
  * Virtual table module implementation
  */
 const jsonTableModule = {
-  create: async (tableName, args, config) => {
-    const table = new JsonTable(args, config);
-    await table.initialize();
-    return {
-      schema: table.getSchema(),
-      vtable: table
-    };
-  },
+  // Engine calls xCreate(db, tableSchema)
+  xCreate: (db, tableSchema) => {
+    // Build instance compatible with VirtualTable interface shape
+    const instance = {
+      db,
+      module: jsonTableModule,
+      schemaName: tableSchema.schemaName,
+      tableName: tableSchema.name,
+      tableSchema,
+      _data: null,
+      _columns: null,
+      async _init() {
+        const args = tableSchema.vtabArgs || {};
+        const url = typeof args.url === 'string' ? args.url : '';
+        const inline = typeof args.inline === 'string' ? args.inline : undefined;
+        const path = typeof args.path === 'string' ? args.path : '$';
+        const config = args;
 
-  connect: async (tableName, args, config) => {
-    // Same as create for this simple implementation
-    const table = new JsonTable(args, config);
-    await table.initialize();
-    return {
-      schema: table.getSchema(),
-      vtable: table
+        let rawData;
+        if (inline !== undefined) {
+          try { rawData = JSON.parse(inline); } catch { rawData = []; }
+        } else {
+          rawData = await fetchJsonData(url, config);
+        }
+        const items = evaluateJsonPath(rawData, path);
+        this._data = Array.isArray(items) ? items : [];
+        // Use declared columns; if none, default to single 'value'
+        this._columns = tableSchema.columns && tableSchema.columns.length > 0
+          ? tableSchema.columns.map(c => c.name)
+          : ['value'];
+      },
+      async xDisconnect() { /* no-op */ },
+      async xUpdate() { return undefined; },
+      async *xQuery() {
+        if (!this._data) {
+          await this._init();
+        }
+        const cols = this._columns;
+        for (const item of this._data) {
+          if (cols.length === 1 && cols[0] === 'value') {
+            yield [typeof item === 'object' ? JSON.stringify(item) : item];
+          } else {
+            // Map by flattened object properties when multiple columns declared
+            const flat = typeof item === 'object' ? flattenObject(item) : { value: item };
+            yield cols.map(name => Object.prototype.hasOwnProperty.call(flat, name) ? flat[name] : null);
+          }
+        }
+      }
     };
+    return instance;
+  },
+  // Connect is same as create for this simple module
+  xConnect: (db, _pAux, _moduleName, schemaName, tableName, options) => {
+    const tableSchema = {
+      name: tableName,
+      schemaName,
+      columns: [{ name: 'value', type: 3, notNull: false, defaultValue: undefined, collate: undefined, hidden: false }],
+      columnIndexMap: new Map([[0, 0]]),
+      primaryKeyDefinition: [],
+      checkConstraints: [],
+      isTemporary: false,
+      isView: false,
+      vtabModuleName: 'json_table',
+      vtabArgs: options || {},
+      estimatedRows: 0
+    };
+    return jsonTableModule.xCreate(db, tableSchema);
   }
 };
 

@@ -82,7 +82,7 @@ export { Latches } from './util/latches.js';
 import './runtime/register.js';
 
 // Re-export plugin system
-export { dynamicLoadModule, validatePluginUrl } from './util/plugin-loader.js';
+export { dynamicLoadModule, validatePluginUrl, loadPlugin } from './util/plugin-loader.js';
 export type {
 	PluginManifest,
 	PluginRecord,
