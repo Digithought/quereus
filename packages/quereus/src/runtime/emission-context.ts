@@ -106,7 +106,10 @@ export class EmissionContext {
 	constructor(
 		public readonly db: Database,
 	) {
-		this.tracePlanStack = !!db.getOption('trace_plan_stack').value;
+		const option = db.getOption('trace_plan_stack');
+		this.tracePlanStack = typeof option === 'object' && option !== null && 'value' in option
+			? Boolean((option as { value: unknown }).value)
+			: Boolean(option);
 		this.schemaManager = db.schemaManager;
 	}
 

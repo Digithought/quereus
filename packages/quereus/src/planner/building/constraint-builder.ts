@@ -5,6 +5,7 @@ import type { Attribute, RowDescriptor } from '../nodes/plan-node.js';
 import type { ConstraintCheck } from '../nodes/constraint-check-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { buildExpression } from './expression.js';
+import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
 import * as AST from '../../parser/ast.js';
@@ -119,7 +120,16 @@ export function buildConstraintChecks(
         constraint.expr
       ) as ScalarPlanNode;
 
-      return { constraint, expression };
+      // Heuristic: auto-defer if the expression contains a subquery
+      // or references a different relation via attribute bindings (NEW/OLD already localized).
+      const needsDeferred = containsSubquery(expression);
+
+      return {
+        constraint,
+        expression,
+        deferrable: needsDeferred,
+        initiallyDeferred: needsDeferred
+      } satisfies ConstraintCheck;
     } finally {
       // Restore original schema context
       if (needsSchemaSwitch) {
@@ -127,4 +137,19 @@ export function buildConstraintChecks(
       }
     }
   });
+}
+
+function containsSubquery(expr: ScalarPlanNode): boolean {
+  const stack: ScalarPlanNode[] = [expr];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.nodeType === PlanNodeType.ScalarSubquery || n.nodeType === PlanNodeType.Exists) {
+      return true;
+    }
+    for (const c of n.getChildren()) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stack.push(c as any);
+    }
+  }
+  return false;
 }

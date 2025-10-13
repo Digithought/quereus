@@ -1,17 +1,18 @@
 import type { EmissionContext } from '../emission-context.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { createLogger } from '../../common/logger.js';
-import { StatusCode, type Row } from '../../common/types.js';
+import { StatusCode, type Row, type SqlValue } from '../../common/types.js';
 import { QuereusError } from '../../common/errors.js';
-import * as AST from '../../parser/ast.js';
 import { collectSchemaCatalog } from '../../schema/catalog.js';
-import { computeSchemaDiff, serializeSchemaDiff, generateMigrationDDL } from '../../schema/schema-differ.js';
+import { computeSchemaDiff, generateMigrationDDL } from '../../schema/schema-differ.js';
 import { computeShortSchemaHash } from '../../schema/schema-hasher.js';
+import type * as AST from '../../parser/ast.js';
+import type { PlanNode } from '../../planner/nodes/plan-node.js';
 
 const log = createLogger('runtime:emit:declare');
 
-export function emitDeclareSchema(plan: any, _ctx: EmissionContext): Instruction {
-	const declareStmt = plan.statementAst as AST.DeclareSchemaStmt;
+export function emitDeclareSchema(plan: PlanNode, _ctx: EmissionContext): Instruction {
+	const declareStmt = (plan as unknown as { statementAst: AST.DeclareSchemaStmt }).statementAst;
 
 	const run = (rctx: RuntimeContext): Row => {
 		const schemaName = declareStmt.schemaName || 'main';
@@ -27,7 +28,7 @@ export function emitDeclareSchema(plan: any, _ctx: EmissionContext): Instruction
 		for (const item of declareStmt.items) {
 			if (item.type === 'declaredSeed' && item.seedData) {
 				const tableName = item.tableName;
-				const rows = Array.from(item.seedData);
+				const rows = Array.from(item.seedData) as Array<SqlValue[]>;
 				rctx.db.declaredSchemaManager.setSeedData(schemaName, tableName, rows);
 				log('Stored seed data for %s.%s (%d rows)', schemaName, tableName, rows.length);
 			}
@@ -44,8 +45,8 @@ export function emitDeclareSchema(plan: any, _ctx: EmissionContext): Instruction
 	};
 }
 
-export function emitDiffSchema(plan: any, _ctx: EmissionContext): Instruction {
-	const diffStmt = plan.statementAst as AST.DiffSchemaStmt;
+export function emitDiffSchema(plan: PlanNode, _ctx: EmissionContext): Instruction {
+	const diffStmt = (plan as unknown as { statementAst: AST.DiffSchemaStmt }).statementAst;
 
 	const run = async function* (rctx: RuntimeContext): AsyncIterable<Row> {
 		const schemaName = diffStmt.schemaName || 'main';
@@ -80,8 +81,8 @@ export function emitDiffSchema(plan: any, _ctx: EmissionContext): Instruction {
 	};
 }
 
-export function emitApplySchema(plan: any, _ctx: EmissionContext): Instruction {
-	const applyStmt = plan.statementAst as AST.ApplySchemaStmt;
+export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruction {
+	const applyStmt = (plan as unknown as { statementAst: AST.ApplySchemaStmt }).statementAst;
 
 	const run = async (rctx: RuntimeContext): Promise<Row> => {
 		const schemaName = applyStmt.schemaName || 'main';
@@ -170,8 +171,8 @@ export function emitApplySchema(plan: any, _ctx: EmissionContext): Instruction {
 	};
 }
 
-export function emitExplainSchema(plan: any, _ctx: EmissionContext): Instruction {
-	const explainStmt = plan.statementAst as AST.ExplainSchemaStmt;
+export function emitExplainSchema(plan: PlanNode, _ctx: EmissionContext): Instruction {
+	const explainStmt = (plan as unknown as { statementAst: AST.ExplainSchemaStmt }).statementAst;
 
 	const run = async function* (rctx: RuntimeContext): AsyncIterable<Row> {
 		const schemaName = explainStmt.schemaName || 'main';

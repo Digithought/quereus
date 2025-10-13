@@ -16,7 +16,6 @@ import { getSyncLiteral } from '../../parser/utils.js';
 import type { ConstraintOp, PredicateConstraint as VtabPredicateConstraint } from '../../vtab/best-access-plan.js';
 import { TableReferenceNode, ColumnReferenceNode as _ColumnRef } from '../nodes/reference.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
-import type { Scope } from '../scopes/scope.js';
 
 const log = createLogger('planner:analysis:constraint-extractor');
 

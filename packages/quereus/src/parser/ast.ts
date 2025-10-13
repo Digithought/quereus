@@ -381,6 +381,8 @@ export interface ColumnConstraint extends AstNode {
 		expr: Expression;
 		stored: boolean;          // STORED or VIRTUAL
 	};
+	deferrable?: boolean;
+	initiallyDeferred?: boolean;
 }
 
 // Table constraint (PRIMARY KEY, UNIQUE, etc.)
@@ -392,6 +394,8 @@ export interface TableConstraint extends AstNode {
 	operations?: RowOp[];       // ADDED: For CHECK ON (...)
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;
+	deferrable?: boolean;
+	initiallyDeferred?: boolean;
 }
 
 // Foreign key clause

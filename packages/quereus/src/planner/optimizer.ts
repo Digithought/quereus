@@ -6,7 +6,7 @@ import { OptimizerTuning, DEFAULT_TUNING } from './optimizer-tuning.js';
 // Re-export for convenience
 export { DEFAULT_TUNING };
 
-import { applyRules, registerRules, createRule } from './framework/registry.js';
+import { applyRules } from './framework/registry.js';
 import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
 import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
 import { createOptContext, type OptContext } from './framework/context.js';
@@ -41,17 +41,23 @@ const log = createLogger('optimizer');
 export class Optimizer {
 	private readonly stats: StatsProvider;
 	private readonly passManager: PassManager;
-  private lastDiagnostics: OptimizerDiagnostics | null = null;
+	private lastDiagnostics: OptimizerDiagnostics | null = null;
+	public tuning: OptimizerTuning;
 
 	constructor(
-		public readonly tuning: OptimizerTuning = DEFAULT_TUNING,
+		tuning: OptimizerTuning = DEFAULT_TUNING,
 		stats?: StatsProvider
 	) {
 		this.stats = stats ?? defaultStatsProvider;
 		this.passManager = new PassManager();
+		this.tuning = tuning;
 
 		// Register rules to their appropriate passes only (no legacy globals)
 		this.registerRulesToPasses();
+	}
+
+	updateTuning(tuning: OptimizerTuning): void {
+		this.tuning = tuning;
 	}
 
 	private static globalRulesRegistered = false;

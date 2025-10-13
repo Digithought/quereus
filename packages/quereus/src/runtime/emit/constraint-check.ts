@@ -6,8 +6,19 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.js';
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { RowOpFlag } from '../../schema/table.js';
+import { constraintPlanContainsSubquery } from '../../planner/util/deferred-constraint.js';
 import { withAsyncRowContext } from '../context-helpers.js';
+
+interface ConstraintMetadataEntry {
+	schema: RowConstraintSchema;
+	flatRowDescriptor: RowDescriptor;
+	evaluator: (ctx: RuntimeContext) => OutputValue;
+	constraintName: string;
+	shouldDefer: boolean;
+	baseTable: string;
+}
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
 	// Get the table schema to access constraints
@@ -21,8 +32,19 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 		emitCallFromPlan(check.expression, ctx)
 	);
 
-	// Extract just the constraint metadata for the runtime checker
-	const constraintMetadata = plan.constraintChecks.map(c => c.constraint);
+	const constraintMetadata = plan.constraintChecks.map((check, idx) => {
+		const evaluatorInstruction = checkEvaluators[idx];
+		const containsSubquery = constraintPlanContainsSubquery(ctx.db, tableSchema, check.constraint.expr);
+		const constraintName = check.constraint.name ?? generateDefaultConstraintName(tableSchema, check.constraint);
+		return {
+			schema: check.constraint,
+			flatRowDescriptor: plan.flatRowDescriptor,
+			evaluator: evaluatorInstruction.run,
+			constraintName,
+			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || containsSubquery),
+			baseTable: `${tableSchema.schemaName}.${tableSchema.name}`
+		};
+	});
 
 	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>, ...evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		if (!inputRows) {
@@ -32,9 +54,9 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 		for await (const inputRow of inputRows) {
 			const flatRow = inputRow;
 
-			const result = await withAsyncRowContext(rctx, flatRowDescriptor, () => flatRow, async () => {
-				// Check all constraints that apply to this operation
-				await checkConstraints(rctx, plan, tableSchema, flatRow, constraintMetadata, evaluatorFunctions);
+	const result = await withAsyncRowContext(rctx, flatRowDescriptor, () => flatRow, async () => {
+		// Check all constraints that apply to this operation
+		await checkConstraints(rctx, plan, tableSchema, flatRow, constraintMetadata, evaluatorFunctions);
 
 				// If all constraints pass, yield the flat row for downstream processing
 				// All downstream operations (INSERT executor, DELETE executor, RETURNING) expect flat rows
@@ -60,7 +82,7 @@ async function checkConstraints(
 	plan: ConstraintCheckNode,
 	tableSchema: TableSchema,
 	row: Row,
-	constraintMetadata: Array<RowConstraintSchema>,
+	constraintMetadata: ConstraintMetadataEntry[],
 	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
 ): Promise<void> {
 	// Check PRIMARY KEY constraints (UNIQUE constraints on PK columns)
@@ -70,7 +92,7 @@ async function checkConstraints(
 	await checkNotNullConstraints(rctx, plan, tableSchema, row);
 
 	// Check CHECK constraints (both column-level and table-level)
-	await checkCheckConstraints(rctx, plan, tableSchema, constraintMetadata, evaluatorFunctions);
+	await checkCheckConstraints(rctx, plan, tableSchema, row, constraintMetadata, evaluatorFunctions);
 }
 
 async function checkNotNullConstraints(
@@ -122,26 +144,36 @@ async function checkCheckConstraints(
 	rctx: RuntimeContext,
 	plan: ConstraintCheckNode,
 	tableSchema: TableSchema,
-	constraintMetadata: Array<RowConstraintSchema>,
+	row: Row,
+	constraintMetadata: ConstraintMetadataEntry[],
 	evaluatorFunctions: Array<(ctx: RuntimeContext) => OutputValue>
 ): Promise<void> {
 	// Evaluate each CHECK constraint using pre-built evaluators
 	for (let i = 0; i < constraintMetadata.length; i++) {
-		const constraint = constraintMetadata[i];
-		const evaluator = evaluatorFunctions[i];
+		const metadata = constraintMetadata[i];
+		const evaluator = evaluatorFunctions[i] ?? metadata.evaluator;
+
+		if (metadata.shouldDefer) {
+			const activeConnectionId = rctx.activeConnection?.connectionId;
+			rctx.db._queueDeferredConstraintRow(
+				metadata.baseTable,
+				metadata.constraintName,
+				row.slice() as Row,
+				metadata.flatRowDescriptor,
+				evaluator,
+				activeConnectionId
+			);
+			continue;
+		}
 
 		try {
-			// Use the evaluator function to get the constraint result
-			// Await since evaluator may return async value (e.g., subqueries)
 			const result = await evaluator(rctx) as SqlValue;
 
 			// CHECK constraint passes if result is truthy or NULL
 			// It fails only if result is false or 0 (SQLite-style numeric boolean)
 			if (result === false || result === 0) {
-				// Generate a proper constraint name if none was provided
-				const constraintName = constraint.name || generateDefaultConstraintName(tableSchema, constraint);
 				throw new QuereusError(
-					`CHECK constraint failed: ${constraintName}`,
+					`CHECK constraint failed: ${metadata.constraintName}`,
 					StatusCode.CONSTRAINT
 				);
 			}

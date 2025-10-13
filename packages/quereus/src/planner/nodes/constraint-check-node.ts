@@ -9,6 +9,8 @@ import type { RowConstraintSchema } from '../../schema/table.js';
 export interface ConstraintCheck {
   constraint: RowConstraintSchema;  // The constraint metadata
   expression: ScalarPlanNode;       // Pre-built expression node
+  deferrable?: boolean;
+  initiallyDeferred?: boolean;
 }
 
 /**

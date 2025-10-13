@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { RuntimeValue, SqlParameters, OutputValue, Row } from "../common/types.js";
 import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
@@ -10,7 +9,7 @@ import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 export type RuntimeContext = {
 	db: Database;
-	stmt: Statement | null; // Can be null for transient exec statements
+	stmt: Statement | undefined; // Undefined for transient exec statements
 	params: SqlParameters; // User-provided values for the current execution
 	/** Row contexts by row descriptor */
 	context: Map<RowDescriptor, RowGetter>;
@@ -183,16 +182,19 @@ export class CollectingInstructionTracer implements InstructionTracer {
 	}
 
 	private cloneResult(result: OutputValue): OutputValue {
-		return this.cloneValue(result);
+		if (result instanceof Promise) {
+			return result.then(resolved => this.cloneValue(resolved as RuntimeValue));
+		}
+		return this.cloneValue(result as RuntimeValue);
 	}
 
-	private cloneValue(value: any): any {
+	private cloneValue(value: RuntimeValue): RuntimeValue {
 		if (value === null || value === undefined) return value;
 		if (typeof value === 'function') return '[Function]';
-		if (typeof value === 'object' && Symbol.asyncIterator in value) return '[AsyncIterable]';
-		if (Array.isArray(value)) return value.map(v => this.cloneValue(v));
+		if (typeof value === 'object' && value && Symbol.asyncIterator in value) return '[AsyncIterable]';
+		if (Array.isArray(value)) return value.map(v => this.cloneValue(v as RuntimeValue)) as RuntimeValue;
 		if (typeof value === 'object') return '[Object]';
-		return value;
+		return value as RuntimeValue;
 	}
 }
 

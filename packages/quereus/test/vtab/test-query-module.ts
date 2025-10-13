@@ -24,13 +24,13 @@ export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseM
 		return new TestQueryTable(db, tableSchema);
 	}
 
-	xConnect(
+xConnect(
 		db: Database,
-		pAux: unknown,
-		moduleName: string,
+		_pAux: unknown,
+		_moduleName: string,
 		schemaName: string,
 		tableName: string,
-		options: BaseModuleConfig
+		_options: BaseModuleConfig
 	): TestQueryTable {
 		// Retrieve schema and create test query table
 		const tableSchema = db.schemaManager.getTable(schemaName, tableName);
@@ -81,17 +81,17 @@ export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseM
 	}
 
 	// Required xBestIndex method (not used for query-based modules but required by interface)
-	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
+xBestIndex(_db: Database, _tableInfo: TableSchema, _indexInfo: IndexInfo): number {
 		// Not implemented for query-based modules
 		return StatusCode.ERROR;
 	}
 
-	xDestroy(
-		db: Database,
-		pAux: unknown,
-		moduleName: string,
-		schemaName: string,
-		tableName: string
+xDestroy(
+		_db: Database,
+		_pAux: unknown,
+		_moduleName: string,
+		_schemaName: string,
+		_tableName: string
 	): Promise<void> {
 		// Nothing to clean up for test module
 		return Promise.resolve();
@@ -124,7 +124,7 @@ export class TestQueryTable extends VirtualTable {
 		operation: RowOp,
 		values: Row | undefined,
 		oldKeyValues?: Row,
-		onConflict?: ConflictResolution
+		_onConflict?: ConflictResolution
 	): Promise<Row | undefined> {
 		// Simple implementation for testing
 		switch (operation) {
@@ -163,7 +163,7 @@ export class TestQueryTable extends VirtualTable {
 	}
 
 	// Optional xQuery method for standard table access
-	async *xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
+	async *xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
 		// Simple implementation - just return all data
 		for (const row of this.data) {
 			yield row;

@@ -3,6 +3,7 @@ import * as AST from "../parser/ast.js";
 import { ColumnReferenceNode, FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference.js";
 import { QuereusError } from "../common/errors.js";
 import { StatusCode } from "../common/types.js";
+import { isScalarNode, type ScalarPlanNode } from "./nodes/plan-node.js";
 
 export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSchema: string = 'main'): TableReferenceNode | typeof Ambiguous | undefined {
 	// table: [schema.]name
@@ -28,7 +29,7 @@ export function resolveTable(scope: Scope, exp: AST.IdentifierExpr, selectedSche
 // 	throw new QuereusError(`${idName} isn't a pragma`, StatusCode.ERROR);
 // }
 
-export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema: string = 'main'): ColumnReferenceNode | typeof Ambiguous | undefined {
+export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema: string = 'main'): ScalarPlanNode | typeof Ambiguous | undefined {
 	const schemaQualifier = exp.schema;
 	const tableQualifier = exp.table;
 	const columnName = exp.name;
@@ -38,8 +39,8 @@ export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema:
 			// Fully qualified: schema.table.column
 			const symbolKey = `${schemaQualifier}.${tableQualifier}.${columnName}`;
 			const result = scope.resolveSymbol(symbolKey, exp);
-			if (result === Ambiguous || result instanceof ColumnReferenceNode) {
-				return result;
+			if (result === Ambiguous || (result && isScalarNode(result))) {
+				return result as ScalarPlanNode | typeof Ambiguous;
 			}
 			throw new QuereusError(`${symbolKey} isn't a column`, StatusCode.ERROR);
 		} else {
@@ -47,15 +48,15 @@ export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema:
 			// Try without schema first, then with schema if that fails
 			const unqualifiedKey = `${tableQualifier}.${columnName}`;
 			const result = scope.resolveSymbol(unqualifiedKey, exp);
-			if (result === Ambiguous || result instanceof ColumnReferenceNode) {
-				return result;
+			if (result === Ambiguous || (result && isScalarNode(result))) {
+				return result as ScalarPlanNode | typeof Ambiguous;
 			}
 
 			// If unqualified fails, try with the selected schema
 			const qualifiedKey = `${selectedSchema}.${tableQualifier}.${columnName}`;
 			const qualifiedResult = scope.resolveSymbol(qualifiedKey, exp);
-			if (qualifiedResult === Ambiguous || qualifiedResult instanceof ColumnReferenceNode) {
-				return qualifiedResult;
+			if (qualifiedResult === Ambiguous || (qualifiedResult && isScalarNode(qualifiedResult))) {
+				return qualifiedResult as ScalarPlanNode | typeof Ambiguous;
 			}
 
 			throw new QuereusError(`${unqualifiedKey} isn't a column`, StatusCode.ERROR);
@@ -63,8 +64,8 @@ export function resolveColumn(scope: Scope, exp: AST.ColumnExpr, selectedSchema:
 	} else {
 		// Unqualified: column
 		const result = scope.resolveSymbol(columnName, exp);
-		if (result === Ambiguous || result instanceof ColumnReferenceNode) {
-			return result;
+		if (result === Ambiguous || (result && isScalarNode(result))) {
+			return result as ScalarPlanNode | typeof Ambiguous;
 		}
 		throw new QuereusError(`Column not found: ${columnName}`, StatusCode.ERROR);
 	}

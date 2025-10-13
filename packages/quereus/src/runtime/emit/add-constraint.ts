@@ -35,6 +35,8 @@ export function emitAddConstraint(plan: AddConstraintNode, _ctx: EmissionContext
 			name: constraint.name || `check_${tableSchema.checkConstraints.length}`,
 			expr: constraint.expr,
 			operations: opsToMask(constraint.operations), // Convert operations array to bitmask
+			deferrable: constraint.deferrable ?? false,
+			initiallyDeferred: constraint.initiallyDeferred,
 		};
 
 		// Create a new table schema with the additional constraint (honor immutability)

@@ -242,7 +242,7 @@ export class Statement {
 				context: new Map(),
 				tableContexts: new Map(),
 				tracer: this.db.getInstructionTracer(),
-				enableMetrics: this.db.getOption('runtime_metrics'),
+				enableMetrics: Boolean(this.db.getOption('runtime_metrics')),
 			};
 
 			const results = await scheduler.run(runtimeCtx);
@@ -256,7 +256,7 @@ export class Statement {
 					yield* results as AsyncIterable<Row>;
 				}
 			}
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (e: any) {
 			errorLog('Runtime execution failed in iterateRows for current statement: %O', e);
 			if (e instanceof QuereusError) throw e;

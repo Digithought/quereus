@@ -20,10 +20,10 @@ describe('Key propagation and estimatedRows reduction', () => {
 	it('Project preserves PK-based uniqueness', async () => {
 		await setup();
 		// Estimated rows should be 1 for full-PK equality seek
-		const rows: any[] = [];
+		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval(
 			"SELECT count(*) AS c FROM query_plan('SELECT id FROM t WHERE id = 2') WHERE properties LIKE '%\"estimatedRows\":1%'"
-		)) rows.push(r);
+		)) rows.push(r as Record<string, unknown>);
 		expect(rows[0].c).to.be.greaterThan(0);
 	});
 
@@ -32,10 +32,10 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("CREATE TABLE u (uid INTEGER PRIMARY KEY, t_id INTEGER) USING memory");
 		await db.exec("INSERT INTO u VALUES (10,1),(11,2)");
 		// Verify uniqueKeys presence in plan properties
-		const rows: any[] = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM t INNER JOIN u ON t.id = u.t_id')")) rows.push(r);
-		const props = String(rows[0].props);
-		expect(props).to.match(/\"uniqueKeys\":/);
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM t INNER JOIN u ON t.id = u.t_id')")) rows.push(r as Record<string, unknown>);
+		const props = String(rows[0].props as unknown as string);
+		expect(props).to.match(/"uniqueKeys":/);
 	});
 
 	it('Composite PK join preserves left keys when right PK covered', async () => {
@@ -43,30 +43,30 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("INSERT INTO p VALUES (1,10),(2,20)");
 		await db.exec("CREATE TABLE c (x INTEGER, y INTEGER) USING memory");
 		await db.exec("INSERT INTO c VALUES (1,10),(1,99),(2,20)");
-		const rows: any[] = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM c INNER JOIN p ON c.x = p.a AND c.y = p.b')")) rows.push(r);
-		const props = String(rows[0].props);
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM c INNER JOIN p ON c.x = p.a AND c.y = p.b')")) rows.push(r as Record<string, unknown>);
+		const props = String(rows[0].props as unknown as string);
 		// Expect uniqueKeys present (at least one side preserved)
-		expect(props).to.match(/\"uniqueKeys\":/);
+		expect(props).to.match(/"uniqueKeys":/);
 	});
 
 	it('Distinct declares all-columns key', async () => {
 		// Use an explicit primary key column so duplicate (id,v) rows are allowed
 		await db.exec("CREATE TABLE d (k INTEGER PRIMARY KEY, id INTEGER, v INTEGER) USING memory");
 		await db.exec("INSERT INTO d VALUES (1,1,1),(2,1,1),(3,2,2)");
-		const rows: any[] = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT DISTINCT id, v FROM d')")) rows.push(r);
-		const props = String(rows[0].props);
-		expect(props).to.match(/\"uniqueKeys\":\[\[/);
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT DISTINCT id, v FROM d')")) rows.push(r as Record<string, unknown>);
+		const props = String(rows[0].props as unknown as string);
+		expect(props).to.match(/"uniqueKeys":\[\[/);
 	});
 
 	it('GROUP BY declares group key', async () => {
 		await db.exec("CREATE TABLE g (id INTEGER, v INTEGER) USING memory");
 		await db.exec("INSERT INTO g VALUES (1,1),(1,2),(2,3)");
-		const rows: any[] = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT id, COUNT(*) FROM g GROUP BY id')")) rows.push(r);
-		const props = String(rows[0].props);
-		expect(props).to.match(/\"uniqueKeys\":\[\[/);
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT id, COUNT(*) FROM g GROUP BY id')")) rows.push(r as Record<string, unknown>);
+		const props = String(rows[0].props as unknown as string);
+		expect(props).to.match(/"uniqueKeys":\[\[/);
 	});
 });
 

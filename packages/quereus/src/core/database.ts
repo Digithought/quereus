@@ -1,6 +1,7 @@
 import { createLogger } from '../common/logger.js';
 import { MisuseError, quereusError, QuereusError } from '../common/errors.js';
-import { StatusCode, type SqlParameters, type SqlValue } from '../common/types.js';
+import { StatusCode, type SqlParameters, type SqlValue, type Row, type OutputValue } from '../common/types.js';
+import type { ScalarType } from '../common/datatype.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import { SchemaManager } from '../schema/manager.js';
@@ -11,14 +12,15 @@ import { createScalarFunction, createAggregateFunction } from '../func/registrat
 import { FunctionFlags } from '../common/constants.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { VirtualTableConnection } from '../vtab/connection.js';
-
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { Parser, ParseError } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
 import { buildBlock } from '../planner/building/block.js';
-import { emitPlanNode } from '../runtime/emitters.js';
+import { buildExpression } from '../planner/building/expression.js';
+import { emitPlanNode, emitCallFromPlan } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
+import type { RowDescriptor } from '../planner/nodes/plan-node.js';
 import { BlockNode } from '../planner/nodes/block.js';
 import type { PlanningContext } from '../planner/planning-context.js';
 import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
@@ -27,18 +29,24 @@ import { GlobalScope } from '../planner/scopes/global.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { FilterNode } from '../planner/nodes/filter.js';
 import { BinaryOpNode } from '../planner/nodes/scalar.js';
-import { ColumnReferenceNode, ParameterReferenceNode } from '../planner/nodes/reference.js';
+import { ParameterReferenceNode, ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/reference.js';
 import { registerEmitters } from '../runtime/register.js';
 import { serializePlanTree, formatPlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { Optimizer, DEFAULT_TUNING } from '../planner/optimizer.js';
-import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
+import type { OptimizerTuning } from '../planner/optimizer-tuning.js';
 import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-functions.js';
 import { DatabaseOptionsManager } from './database-options.js';
 import type { InstructionTracer } from '../runtime/types.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
+import type { RowConstraintSchema } from '../schema/table.js';
+import { constraintPlanContainsSubquery, createDeferredConstraintSetup } from '../planner/util/deferred-constraint.js';
+import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
+import type { Scope } from '../planner/scopes/scope.js';
+import { withRowContext } from '../runtime/context-helpers.js';
+import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -65,6 +73,8 @@ export class Database {
 	private changeLog: Map<string, Set<string>> = new Map();
 	/** Savepoint layers for change tracking */
 	private changeLogLayers: Array<Map<string, Set<string>>> = [];
+	/** Deferred constraint evaluation queue */
+	private readonly deferredConstraints = new DeferredConstraintQueue(this);
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -122,10 +132,8 @@ export class Database {
 						validatePlan: event.newValue as boolean
 					}
 				};
-				// Recreate optimizer with new tuning
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				(this as any).optimizer = new Optimizer(newTuning);
-				log('Optimizer recreated with validate_plan = %s', event.newValue);
+				this.updateOptimizerTuning(newTuning as OptimizerTuning);
+				log('Optimizer tuning updated with validate_plan = %s', event.newValue);
 			}
 		});
 
@@ -233,7 +241,7 @@ export class Database {
 
 		if (batch.length === 0) return;
 
-		const needsImplicitTransaction = batch.length > 1
+		const needsImplicitTransaction = batch.length >= 1
 			&& this.isAutocommit
 			// has explicit transaction
 			&& !batch.some(
@@ -264,8 +272,7 @@ export class Database {
 
 					const runtimeCtx: RuntimeContext = {
 						db: this,
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						stmt: null as any, // No persistent Statement object for transient exec statements
+						stmt: undefined,
 						params: params ?? {},
 						context: new Map(),
 						tableContexts: new Map(),
@@ -275,10 +282,9 @@ export class Database {
 
 					void await scheduler.run(runtimeCtx);
 					// Nothing to do with the result, this is executed for side effects only
-
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				} catch (err: any) {
-					executionError = err instanceof QuereusError ? err : new QuereusError(err.message, StatusCode.ERROR, err);
+				} catch (err) {
+					const error = err instanceof Error ? err : new Error(String(err));
+					executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
 					break; // Stop processing further statements on error
 				}
 				// No explicit finalize for transient plan/scheduler used in exec loop
@@ -425,8 +431,7 @@ export class Database {
 			deterministic?: boolean;
 			flags?: number;
 		},
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		func: (...args: any[]) => SqlValue
+		func: (...args: SqlValue[]) => SqlValue
 	): void {
 		this.checkOpen();
 
@@ -450,7 +455,7 @@ export class Database {
 	 * Registers a user-defined aggregate function.
 	 *
 	 * @param name The name of the SQL function.
-	 * @param options Configuration: { numArgs: number, flags?: number, initialState?: any }.
+	 * @param options Configuration: { numArgs: number, flags?: number, initialState?: unknown }.
 	 * @param stepFunc The function called for each row (accumulator, ...args) => newAccumulator.
 	 * @param finalFunc The function called at the end (accumulator) => finalResult.
 	 */
@@ -459,13 +464,10 @@ export class Database {
 		options: {
 			numArgs: number;
 			flags?: number;
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			initialState?: any;
+			initialState?: unknown;
 		},
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		stepFunc: (acc: any, ...args: any[]) => any,
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		finalFunc: (acc: any) => SqlValue
+		stepFunc: (acc: unknown, ...args: SqlValue[]) => unknown,
+		finalFunc: (acc: unknown) => SqlValue
 	): void {
 		this.checkOpen();
 
@@ -533,8 +535,7 @@ export class Database {
 	 * @param option The option name
 	 * @param value The option value
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	setOption(option: string, value: any): void {
+	setOption(option: string, value: unknown): void {
 		this.checkOpen();
 		this.options.setOption(option, value);
 	}
@@ -544,10 +545,14 @@ export class Database {
 	 * @param option The option name
 	 * @returns The option value
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	getOption(option: string): any {
+	getOption(option: string): unknown {
 		this.checkOpen();
 		return this.options.getOption(option);
+	}
+
+	/** Update optimizer tuning in place */
+	private updateOptimizerTuning(tuning: OptimizerTuning): void {
+		this.optimizer.updateTuning(tuning);
 	}
 
 	/**
@@ -612,6 +617,45 @@ export class Database {
 		target.get(key)!.add(this.serializeKeyTuple(keyTuple));
 	}
 
+	public _queueDeferredConstraintRow(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string): void {
+		this.deferredConstraints.enqueue(baseTable, constraintName, row, descriptor, evaluator, connectionId);
+	}
+
+
+	/** @internal Flag to prevent new connections from starting transactions during constraint evaluation */
+	private evaluatingDeferredConstraints = false;
+	/** @internal Flag indicating we're in a coordinated multi-connection commit */
+	private inCoordinatedCommit = false;
+
+	public async runDeferredRowConstraints(): Promise<void> {
+		this.evaluatingDeferredConstraints = true;
+		try {
+			await this.deferredConstraints.runDeferredRows();
+		} finally {
+			this.evaluatingDeferredConstraints = false;
+		}
+	}
+
+	/** @internal Check if we should skip auto-beginning transactions on newly registered connections */
+	public _isEvaluatingDeferredConstraints(): boolean {
+		return this.evaluatingDeferredConstraints;
+	}
+
+	/** @internal Mark start of coordinated multi-connection commit */
+	public _beginCoordinatedCommit(): void {
+		this.inCoordinatedCommit = true;
+	}
+
+	/** @internal Mark end of coordinated multi-connection commit */
+	public _endCoordinatedCommit(): void {
+		this.inCoordinatedCommit = false;
+	}
+
+	/** @internal Check if we're in a coordinated commit (allows sibling layer validation) */
+	public _inCoordinatedCommit(): boolean {
+		return this.inCoordinatedCommit;
+	}
+
 	/** Public API used by DML emitters to record changes */
 	public _recordInsert(baseTable: string, newKey: SqlValue[]): void {
 		this.addChange(baseTable, newKey);
@@ -632,11 +676,13 @@ export class Database {
 	/** Savepoint change tracking */
 	public _beginSavepointLayer(): void {
 		this.changeLogLayers.push(new Map());
+		this.deferredConstraints.beginLayer();
 	}
 
 	public _rollbackSavepointLayer(): void {
 		// Discard the top layer
 		this.changeLogLayers.pop();
+		this.deferredConstraints.rollbackLayer();
 	}
 
 	public _releaseSavepointLayer(): void {
@@ -649,6 +695,7 @@ export class Database {
 			const tgt = target.get(table)!;
 			for (const k of set) tgt.add(k);
 		}
+		this.deferredConstraints.releaseLayer();
 	}
 
 	private getChangedBaseTables(): Set<string> {
@@ -664,6 +711,7 @@ export class Database {
 	public _clearChangeLog(): void {
 		this.changeLog.clear();
 		this.changeLogLayers = [];
+		this.deferredConstraints.clear();
 	}
 
 	/**
@@ -740,10 +788,10 @@ export class Database {
 			const parser = new Parser();
 			try {
 				ast = parser.parse(originalSqlString);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			} catch (e: any) {
-				errorLog("Failed to parse SQL for query plan: %O", e);
-				throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+			} catch (err) {
+				const error = err instanceof Error ? err : new Error(String(err));
+				errorLog("Failed to parse SQL for query plan: %O", error);
+				throw error;
 			}
 		} else {
 			ast = sqlOrAst;
@@ -792,8 +840,7 @@ export class Database {
 
 		const stmt = new Statement(this, sql);
 		// Set debug options on the statement
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(stmt as any)._debugOptions = debug;
+		(stmt as Statement & { _debugOptions?: DebugOptions })._debugOptions = debug;
 
 		this.statements.add(stmt);
 		return stmt;
@@ -848,8 +895,9 @@ export class Database {
 		debugLog(`Registered connection ${connection.connectionId} for table ${connection.tableName}`);
 
 		// If we're already in a transaction (implicit or explicit),
-		// start a transaction on this new connection
-		if (this.inTransaction) {
+		// start a transaction on this new connection UNLESS we're evaluating deferred constraints
+		// (during which subqueries should read committed state without creating new transaction layers)
+		if (this.inTransaction && !this.evaluatingDeferredConstraints) {
 			try {
 				await connection.begin();
 				debugLog(`Started transaction on newly registered connection ${connection.connectionId}`);
@@ -857,6 +905,8 @@ export class Database {
 				errorLog(`Error starting transaction on newly registered connection ${connection.connectionId}: %O`, error);
 				// Don't throw here - just log the error to avoid breaking connection registration
 			}
+		} else if (this.evaluatingDeferredConstraints) {
+			debugLog(`Skipped transaction begin on connection ${connection.connectionId} (evaluating deferred constraints)`);
 		}
 	}
 
@@ -893,8 +943,13 @@ export class Database {
 	 * @returns Array of connections for the table
 	 */
 	getConnectionsForTable(tableName: string): VirtualTableConnection[] {
+		const normalized = tableName.toLowerCase();
+		const simpleName = normalized.includes('.') ? normalized.substring(normalized.lastIndexOf('.') + 1) : normalized;
 		return Array.from(this.activeConnections.values())
-			.filter(conn => conn.tableName === tableName);
+			.filter(conn => {
+				const connName = conn.tableName.toLowerCase();
+				return connName === normalized || connName === simpleName;
+			});
 	}
 
 	/**
@@ -960,34 +1015,38 @@ export class Database {
 		debugLog("Database: Committing implicit transaction.");
 
 		try {
-			// Evaluate global assertions BEFORE committing connections. If violated, rollback and abort.
+			const connectionsToCommit = this.getAllConnections();
+
+			// Evaluate global assertions and deferred row constraints BEFORE committing connections. If violated, rollback and abort.
 			await this.runGlobalAssertions();
+			await this.runDeferredRowConstraints();
 
-			// Commit all active connections
-			const connections = this.getAllConnections();
-			const commitPromises = connections.map(async (connection) => {
-				try {
-					await connection.commit();
-				} catch (error) {
-					errorLog(`Error committing transaction on connection ${connection.connectionId}: %O`, error);
-					throw error;
+			// Mark coordinated commit to relax layer validation for sibling layers
+			this._beginCoordinatedCommit();
+			try {
+				// Commit only the original connections (not any opened during constraint evaluation)
+				// Commit sequentially to avoid race conditions with layer promotion
+				for (const connection of connectionsToCommit) {
+					try {
+						await connection.commit();
+					} catch (error) {
+						errorLog(`Error committing transaction on connection ${connection.connectionId}: %O`, error);
+						throw error;
+					}
 				}
-			});
-
-			await Promise.all(commitPromises);
+			} finally {
+				this._endCoordinatedCommit();
+			}
 		} catch (e) {
 			// On pre-commit assertion failure (or commit error), rollback all connections
 			const conns = this.getAllConnections();
 			await Promise.allSettled(conns.map(c => c.rollback()));
 			throw e;
 		} finally {
-			// Always reset database state at implicit boundary
 			this.inTransaction = false;
 			this.isAutocommit = true;
 			this.inImplicitTransaction = false;
-			// Clear change tracking on implicit boundary completion
 			this._clearChangeLog();
-			// DON'T disconnect connections here; keep for subsequent queries
 		}
 	}
 
@@ -1000,16 +1059,18 @@ export class Database {
 		if (changedBases.size === 0) return;
 
 		for (const assertion of assertions) {
-			// Build plan for analysis
-			let plansql = assertion.violationSql;
+			const planSql = assertion.violationSql;
 			const parser = new Parser();
 			let ast: AST.Statement;
 			try {
-				ast = parser.parse(plansql) as AST.Statement;
-			} catch (e) {
-				// If we cannot parse, fall back to executing the violation SQL once
-				await this.executeViolationOnce(assertion.name, assertion.violationSql);
-				continue;
+				ast = parser.parse(planSql) as AST.Statement;
+			} catch (err) {
+				const error = err instanceof Error ? err : new Error(String(err));
+				throw new QuereusError(
+					`Failed to parse deferred assertion '${assertion.name}': ${error.message}`,
+					StatusCode.INTERNAL,
+					error
+				);
 			}
 			const plan = this._buildPlan([ast]) as BlockNode;
 			const analyzed = this.optimizer.optimizeForAnalysis(plan, this) as BlockNode;
@@ -1028,7 +1089,6 @@ export class Database {
 			if (!impacted) continue;
 
 			// Classify instances as row/global
-			const { analyzeRowSpecific } = await import('../planner/analysis/constraint-extractor.js');
 			const classifications: Map<string, 'row' | 'global'> = analyzeRowSpecific(analyzed as unknown as RelationalPlanNode);
 
 			// If any changed base appears as a global instance, run full violation query once
@@ -1077,6 +1137,82 @@ export class Database {
 		}
 	}
 
+	private async executeViolationOnceFromPlan(assertionName: string, plan: BlockNode): Promise<void> {
+		const optimizedPlan = this.optimizer.optimize(plan, this) as BlockNode;
+		const emissionContext = new EmissionContext(this);
+		const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
+		const scheduler = new Scheduler(rootInstruction);
+
+		const runtimeCtx: RuntimeContext = {
+			db: this,
+			stmt: undefined,
+			params: {},
+			context: new Map(),
+			tableContexts: new Map(),
+			tracer: this.instructionTracer,
+			enableMetrics: this.options.getBooleanOption('runtime_stats'),
+		};
+
+		const result = await scheduler.run(runtimeCtx);
+		if (isAsyncIterable(result)) {
+			for await (const _ of result as AsyncIterable<unknown>) {
+				throw new QuereusError(`CHECK constraint failed: ${assertionName}`, StatusCode.CONSTRAINT);
+			}
+		}
+	}
+
+	private async executeViolationPerChangedKeysFromPlan(
+		assertionName: string,
+		analyzed: BlockNode,
+		targetRelationKey: string,
+		base: string
+	): Promise<void> {
+		const changedKeyTuples = this.getChangedKeyTuples(base);
+		if (changedKeyTuples.length === 0) return;
+
+		// Find PK indices for the base table
+		const [schemaName, tableName] = base.split('.');
+		const table = this._findTable(tableName, schemaName);
+		if (!table) {
+			throw new QuereusError(`Constraint references unknown table ${base}`, StatusCode.INTERNAL);
+		}
+		const pkIndices = table.primaryKeyDefinition.map(def => def.index);
+
+		// Prepare a rewritten plan with an injected Filter on the target relationKey
+		const rewritten = this.injectPkFilter(analyzed, targetRelationKey, base, pkIndices);
+		const optimizedPlan = this.optimizer.optimize(rewritten, this) as BlockNode;
+
+		// Emit and execute for each changed PK tuple; stop on first violation row.
+		const emissionContext = new EmissionContext(this);
+		const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
+		const scheduler = new Scheduler(rootInstruction);
+
+		for (const tuple of changedKeyTuples) {
+			const params: Record<string, SqlValue> = {};
+			for (let i = 0; i < pkIndices.length; i++) {
+				params[`pk${i}`] = tuple[i];
+			}
+
+			const runtimeCtx: RuntimeContext = {
+				db: this,
+				stmt: undefined,
+				params,
+				context: new Map(),
+				tableContexts: new Map(),
+				tracer: this.instructionTracer,
+				enableMetrics: this.options.getBooleanOption('runtime_stats'),
+			};
+
+			// Run and detect first output row (violation)
+			const result = await scheduler.run(runtimeCtx);
+			if (isAsyncIterable(result)) {
+				for await (const _ of result as AsyncIterable<unknown>) {
+					throw new QuereusError(`CHECK constraint failed: ${assertionName}`, StatusCode.CONSTRAINT);
+				}
+			}
+		}
+	}
+
 	/** Execute a parameterized variant of the assertion once per changed key for a specific row-specific relationKey. */
 	private async executeViolationPerChangedKeys(
 		assertionName: string,
@@ -1113,8 +1249,7 @@ export class Database {
 
 			const runtimeCtx: RuntimeContext = {
 				db: this,
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				stmt: null as any,
+				stmt: undefined,
 				params,
 				context: new Map(),
 				tableContexts: new Map(),
@@ -1150,7 +1285,7 @@ export class Database {
 	private injectPkFilter(block: BlockNode, targetRelationKey: string, base: string, pkIndices: number[]): BlockNode {
 		const newStatements = block.getChildren().map(stmt => this.rewriteForPkFilter(stmt, targetRelationKey, base, pkIndices));
 		if (newStatements.every((s, i) => s === block.getChildren()[i])) return block;
-		return new BlockNode((block as unknown as { scope: unknown }).scope as unknown as any, newStatements, block.parameters);
+		return this.createBlockWithNewStatements(block, newStatements);
 	}
 
 	private rewriteForPkFilter(node: PlanNode, targetRelationKey: string, base: string, pkIndices: number[]): PlanNode {
@@ -1166,67 +1301,58 @@ export class Database {
 	}
 
 	private tryWrapTableReference(node: PlanNode, targetRelationKey: string, base: string, pkIndices: number[]): PlanNode | null {
-		// Duck-type TableReferenceNode: presence of tableSchema and no relations
-		const anyNode = node as unknown as { tableSchema?: { schemaName: string; name: string; columns: unknown[] }; id?: string };
-		if (!anyNode?.tableSchema || anyNode.tableSchema.name === undefined) return null;
-		const schemaName = anyNode.tableSchema.schemaName;
-		const tableName = anyNode.tableSchema.name;
+		if (!(node instanceof TableReferenceNode)) return null;
+		const tableSchema = node.tableSchema;
+		const schemaName = tableSchema.schemaName;
+		const tableName = tableSchema.name;
 		const relName = `${schemaName}.${tableName}`.toLowerCase();
-		const relKey = `${relName}#${anyNode.id ?? 'unknown'}`;
+		const relKey = `${relName}#${node.id ?? 'unknown'}`;
 		if (relKey !== targetRelationKey) return null;
 
 		// Build predicate: AND(col_pk_i = :pk{i}) for all PK columns
-		const scope = (node as unknown as { scope: unknown }).scope as unknown as any;
-		const attributes = (node as unknown as { getAttributes: () => { id: number; name: string; type: unknown }[] }).getAttributes();
+		const relational = node as RelationalPlanNode;
+		const scope = relational.scope;
+		const attributes = relational.getAttributes();
 
 		const makeColumnRef = (colIndex: number): ScalarPlanNode => {
 			const attr = attributes[colIndex];
-			const expr: AST.ColumnExpr = { type: 'column', name: attr.name, table: tableName, schema: schemaName } as unknown as AST.ColumnExpr;
-			return new (ColumnReferenceNode as unknown as { new(scope: any, expr: AST.ColumnExpr, type: any, attributeId: number, columnIndex: number): ScalarPlanNode })(scope, expr, (attr as any).type, attr.id, colIndex);
+			const expr: AST.ColumnExpr = { type: 'column', name: attr.name, table: tableName, schema: schemaName };
+			return new ColumnReferenceNode(scope, expr, attr.type, attr.id, colIndex);
 		};
 
-		const makeParamRef = (i: number, type: unknown): ScalarPlanNode => {
-			const pexpr: AST.ParameterExpr = { type: 'parameter', name: `pk${i}` } as unknown as AST.ParameterExpr;
-			return new (ParameterReferenceNode as unknown as { new(scope: any, expr: AST.ParameterExpr, nameOrIndex: string | number, targetType: unknown): ScalarPlanNode })(scope, pexpr, `pk${i}`, type as unknown);
+		const makeParamRef = (i: number, type: ScalarType): ScalarPlanNode => {
+			const pexpr: AST.ParameterExpr = { type: 'parameter', name: `pk${i}` };
+			return new ParameterReferenceNode(scope, pexpr, `pk${i}`, type);
 		};
 
 		let predicate: ScalarPlanNode | null = null;
 		for (let i = 0; i < pkIndices.length; i++) {
 			const colIdx = pkIndices[i];
 			const left = makeColumnRef(colIdx);
-			const right = makeParamRef(i, (attributes[colIdx] as any).type);
-			const bexpr: AST.BinaryExpr = { type: 'binary', operator: '=', left: (left as unknown as { expression: AST.Expression }).expression, right: (right as unknown as { expression: AST.Expression }).expression } as unknown as AST.BinaryExpr;
-			const eqNode = new (BinaryOpNode as unknown as { new(scope: any, expr: AST.BinaryExpr, left: ScalarPlanNode, right: ScalarPlanNode): ScalarPlanNode })(scope, bexpr, left, right);
-			if (!predicate) predicate = eqNode; else {
-				const andExpr: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (predicate as unknown as { expression: AST.Expression }).expression, right: (eqNode as unknown as { expression: AST.Expression }).expression } as unknown as AST.BinaryExpr;
-				predicate = new (BinaryOpNode as unknown as { new(scope: any, expr: AST.BinaryExpr, left: ScalarPlanNode, right: ScalarPlanNode): ScalarPlanNode })(scope, andExpr, predicate, eqNode);
-			}
+			const right = makeParamRef(i, attributes[colIdx].type);
+			const bexpr: AST.BinaryExpr = { type: 'binary', operator: '=', left: left.expression, right: right.expression };
+			const eqNode = new BinaryOpNode(scope, bexpr, left, right);
+			predicate = predicate
+				? new BinaryOpNode(scope, { type: 'binary', operator: 'AND', left: predicate.expression, right: eqNode.expression }, predicate, eqNode)
+				: eqNode;
 		}
 
 		if (!predicate) return null;
 
 		// Wrap the table reference with a FilterNode
-		const FilterCtor = FilterNode as unknown as { new(scope: any, source: RelationalPlanNode, predicate: ScalarPlanNode): RelationalPlanNode };
-		return new FilterCtor(scope, node as unknown as RelationalPlanNode, predicate);
+		return new FilterNode(scope, relational, predicate);
 	}
 
 	private collectTables(node: PlanNode, relToBase: Map<string, string>, bases: Set<string>): void {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const anyNode = node as any;
-		if (anyNode && typeof anyNode.getRelations === 'function') {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			for (const child of (anyNode as any).getRelations()) {
-				this.collectTables(child as PlanNode, relToBase, bases);
-			}
+		for (const child of node.getChildren()) {
+			this.collectTables(child, relToBase, bases);
 		}
-		// Detect TableReferenceNode by duck-typing on presence of tableSchema
-		if ((anyNode?.tableSchema) && (anyNode?.tableSchema?.name)) {
-			const schemaName = anyNode.tableSchema.schemaName as string;
-			const tableName = anyNode.tableSchema.name as string;
-			const base = `${schemaName}.${tableName}`.toLowerCase();
-			bases.add(base);
-			const relKey = `${base}#${anyNode.id ?? 'unknown'}`;
-			relToBase.set(relKey, base);
+		if (node instanceof TableReferenceNode) {
+			const schema = node.tableSchema;
+			const baseName = `${schema.schemaName}.${schema.name}`.toLowerCase();
+			bases.add(baseName);
+			const relKey = `${baseName}#${node.id ?? 'unknown'}`;
+			relToBase.set(relKey, baseName);
 		}
 	}
 
@@ -1243,7 +1369,7 @@ export class Database {
 				await connection.rollback();
 			} catch (error) {
 				errorLog(`Error rolling back transaction on connection ${connection.connectionId}: %O`, error);
-				// Don't throw here - we want to rollback as many as possible
+				// Continue attempting rollback for other connections.
 			}
 		});
 
@@ -1253,6 +1379,10 @@ export class Database {
 		this.inTransaction = false;
 		this.isAutocommit = true;
 		this.inImplicitTransaction = false;
+	}
+
+	private createBlockWithNewStatements(block: BlockNode, statements: PlanNode[]): BlockNode {
+		return new BlockNode(block.scope, statements, block.parameters);
 	}
 }
 

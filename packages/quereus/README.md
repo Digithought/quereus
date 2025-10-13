@@ -175,6 +175,11 @@ The `CollectingInstructionTracer` captures detailed information about each instr
     *   Triggers
     *   Persistent file storage (can be a VTab module)
 
+### Row-Level Constraints
+
+- Row-level CHECKs that reference only the current row are enforced immediately.
+- Row-level CHECKs that reference other tables (e.g., via subqueries) are automatically deferred and enforced at COMMIT using the same optimized engine as global assertions. No `DEFERRABLE` or `SET CONSTRAINTS` management is required by the user.
+
 ## Current Status
 
 Quereus is a feature-complete SQL query processor with a modern planner and instruction-based runtime architecture. The engine successfully handles complex SQL workloads including joins, window functions, subqueries, CTEs, constraints, and comprehensive DML/DDL operations.

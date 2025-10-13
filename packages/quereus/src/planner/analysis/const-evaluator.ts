@@ -37,7 +37,7 @@ export function createRuntimeExpressionEvaluator(db: Database): (expr: PlanNode)
 			// No row context is needed since we only evaluate constant expressions
 			const runtimeCtx: RuntimeContext = {
 				db,
-				stmt: null, // No statement context needed for constants
+				stmt: undefined,
 				params: {}, // No parameters needed for constants
 				context: new Map(), // No row context needed
 				tableContexts: new Map(), // No table contexts needed for constants

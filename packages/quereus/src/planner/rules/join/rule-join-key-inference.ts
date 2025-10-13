@@ -2,7 +2,6 @@ import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { JoinNode } from '../../nodes/join-node.js';
-import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
 

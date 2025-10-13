@@ -627,7 +627,9 @@ export class SchemaManager {
 					checkConstraintsSchema.push({
 						name: con.name ?? `_check_${colDef.name}`,
 						expr: con.expr,
-						operations: opsToMask(con.operations)
+						operations: opsToMask(con.operations),
+						deferrable: con.deferrable,
+						initiallyDeferred: con.initiallyDeferred
 					});
 				}
 			});
@@ -637,7 +639,9 @@ export class SchemaManager {
 				checkConstraintsSchema.push({
 					name: con.name,
 					expr: con.expr,
-					operations: opsToMask(con.operations)
+					operations: opsToMask(con.operations),
+					deferrable: con.deferrable,
+					initiallyDeferred: con.initiallyDeferred
 				});
 			}
 		});

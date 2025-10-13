@@ -261,3 +261,49 @@ SELECT ref_id FROM dependent WHERE id = 1;
 
 DROP TABLE dependent;
 DROP TABLE ref_table;
+
+-- === Deferred row-level CHECK (EXISTS) commit-time enforcement ===
+
+-- Recreate tables
+CREATE TABLE ref_table (
+    id TEXT PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE dependent (
+    id INTEGER PRIMARY KEY,
+    ref_id TEXT,
+    CONSTRAINT ref_must_exist CHECK ON INSERT, UPDATE (
+        EXISTS (SELECT 1 FROM ref_table WHERE ref_table.id = NEW.ref_id)
+    )
+);
+
+-- Case A: Violation allowed within transaction, rejected at COMMIT
+BEGIN;
+INSERT INTO dependent (id, ref_id) VALUES (100, 'missing');
+COMMIT;
+-- error: CHECK constraint failed: ref_must_exist
+
+-- Ensure nothing was committed
+SELECT count(*) FROM dependent WHERE id = 100;
+→ [{"count(*)":0}]
+
+-- Case B: Fix violation before COMMIT → succeeds
+BEGIN;
+INSERT INTO dependent (id, ref_id) VALUES (101, 'later');
+INSERT INTO ref_table VALUES ('later', 'OK');
+COMMIT;
+SELECT ref_id FROM dependent WHERE id = 101;
+→ [{"ref_id":"later"}]
+
+-- Case C: Savepoint rollback of violating change → COMMIT succeeds
+BEGIN;
+SAVEPOINT sp;
+INSERT INTO dependent (id, ref_id) VALUES (102, 'nope');
+ROLLBACK TO SAVEPOINT sp;
+COMMIT;
+SELECT count(*) FROM dependent WHERE id = 102;
+→ [{"count(*)":0}]
+
+DROP TABLE dependent;
+DROP TABLE ref_table;

@@ -18,6 +18,7 @@ import { scanTransactionLayer } from './transaction-cursor.js';
 import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFunctions } from '../utils/primary-key.js';
 import { createMemoryTableLoggers } from '../utils/logging.js';
 import { getSyncLiteral } from '../../../parser/utils.js';
+import { createLogger } from '../../../common/logger.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
@@ -130,12 +131,31 @@ export class MemoryTableManager {
 				currentParent = currentParent.getParent();
 			}
 
+			// Also check if the current committed layer and pending layer are siblings
+			// (both children of the same parent) - this handles coordinated multi-connection commits
 			if (!foundCommittedLayer) {
-				connection.pendingTransactionLayer = null;
-				connection.clearSavepoints();
-				logger.warn('Commit Transaction', this._tableName, 'Stale commit detected, rolling back', { connectionId: connection.connectionId });
-				throw new QuereusError(`Commit failed: concurrent update on table ${this._tableName}. Retry.`, StatusCode.BUSY);
+				const pendingParent = pendingLayer.getParent();
+				let committedAncestor: Layer | null = this._currentCommittedLayer;
+				while (committedAncestor) {
+					if (committedAncestor === pendingParent) {
+						foundCommittedLayer = true;
+						break;
+					}
+					committedAncestor = committedAncestor.getParent();
+				}
 			}
+
+			if (!foundCommittedLayer) {
+				// During coordinated multi-connection commits (explicit COMMIT or implicit transaction commit),
+				// sibling layers are allowed. Only enforce strict validation outside coordinated commits.
+				if (!this.db._inCoordinatedCommit()) {
+					connection.pendingTransactionLayer = null;
+					connection.clearSavepoints();
+					logger.warn('Commit Transaction', this._tableName, 'Stale commit detected, rolling back', { connectionId: connection.connectionId });
+					throw new QuereusError(`Commit failed: concurrent update on table ${this._tableName}. Retry.`, StatusCode.BUSY);
+				}
+			}
+
 			pendingLayer.markCommitted();
 			this._currentCommittedLayer = pendingLayer;
 			logger.debugLog(`[Commit ${connection.connectionId}] CurrentCommittedLayer set to ${pendingLayer.getLayerId()} for ${this._tableName}`);

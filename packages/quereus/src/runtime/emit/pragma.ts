@@ -1,7 +1,7 @@
 import type { EmissionContext } from '../emission-context.js';
 import type { PragmaPlanNode } from '../../planner/nodes/pragma.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
-import type { Row } from '../../common/types.js';
+import type { Row, SqlValue } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -32,7 +32,7 @@ export function emitPragma(plan: PragmaPlanNode, _ctx: EmissionContext): Instruc
 			log(`PRAGMA ${pragmaName} (reading)`);
 
 			try {
-				const currentValue = rctx.db.getOption(pragmaName);
+				const currentValue = rctx.db.getOption(pragmaName) as SqlValue;
 				log(`Read option ${pragmaName} = ${currentValue}`);
 				// Return as a single-row result with the pragma name as column
 				yield [pragmaName, currentValue];

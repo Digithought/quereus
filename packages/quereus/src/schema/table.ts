@@ -254,6 +254,10 @@ export interface RowConstraintSchema {
 	expr: Expression;
 	/** Bitmask of operations the constraint applies to */
 	operations: RowOpMask;
+	/** Whether the constraint is deferrable */
+	deferrable?: boolean;
+	/** Whether the constraint is initially deferred */
+	initiallyDeferred?: boolean;
 }
 
 export interface PrimaryKeyColumnDefinition {

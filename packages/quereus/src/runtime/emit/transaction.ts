@@ -50,25 +50,35 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 		}
 		case 'commit': {
 			run = async (rctx: RuntimeContext) => {
-				const connections = rctx.db.getAllConnections();
-				log(`COMMIT: Found ${connections.length} active connections`);
+				// Snapshot connections before evaluating deferred constraints
+				// (constraint evaluation may open additional connections that shouldn't be committed)
+				const connectionsToCommit = rctx.db.getAllConnections();
+				log(`COMMIT: Found ${connectionsToCommit.length} active connections`);
 
 				try {
-					// Evaluate global assertions BEFORE committing connections. If violated, abort commit.
+					// Evaluate global assertions and deferred row-level constraints BEFORE committing connections.
 					await rctx.db.runGlobalAssertions();
+					await rctx.db.runDeferredRowConstraints();
 
-					for (const connection of connections) {
-						try {
-							await connection.commit();
-							log(`COMMIT: Successfully called on connection ${connection.connectionId}`);
-						} catch (error) {
-							log(`COMMIT: Error on connection ${connection.connectionId}: %O`, error);
-							throw error;
+					// Mark coordinated commit to relax layer validation for sibling layers
+					rctx.db._beginCoordinatedCommit();
+					try {
+						// Commit sequentially to avoid race conditions with layer promotion
+						for (const connection of connectionsToCommit) {
+							try {
+								await connection.commit();
+								log(`COMMIT: Successfully called on connection ${connection.connectionId}`);
+							} catch (error) {
+								log(`COMMIT: Error on connection ${connection.connectionId}: %O`, error);
+								throw error;
+							}
 						}
+					} finally {
+						rctx.db._endCoordinatedCommit();
 					}
 				} catch (e) {
-					// If assertions fail (or a commit throws), rollback all connections and rethrow
-					await Promise.allSettled(connections.map(c => c.rollback()));
+					// If assertions fail (or a commit throws), rollback all connections
+					await Promise.allSettled(rctx.db.getAllConnections().map(c => c.rollback()));
 					throw e;
 				} finally {
 					// Always mark end of explicit transaction and clear change tracking
@@ -144,6 +154,8 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 						throw error;
 					}
 				}
+				// Mark database as in explicit transaction (savepoints require explicit transaction context)
+				rctx.db.markExplicitTransactionStart();
 				// Track change layer
 				rctx.db._beginSavepointLayer();
 				return null;

@@ -745,7 +745,7 @@ await withAsyncRowContext(rctx, flatRowDescriptor, () => flatRow, async () => {
 - Qualified `OLD.column` → OLD section of flat row
 - Qualified `NEW.column` → NEW section of flat row
 
-**Constraint Evaluation**: All constraints (CHECK, NOT NULL) evaluate against the flat row context without conditional logic.
+**Constraint Evaluation**: All constraints (CHECK, NOT NULL) evaluate against the flat row context without conditional logic. CHECK constraints that reference other relations automatically defer to transaction boundaries via the `DeferredConstraintQueue`, so emitters simply enqueue the evaluator and continue streaming. Deferred rows reuse a single runtime context and row slot for efficiency while preserving scope isolation.
 
 ### Benefits
 

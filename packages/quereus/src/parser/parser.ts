@@ -968,7 +968,7 @@ export class Parser {
 		this.consume(TokenType.JOIN, "Expected 'JOIN'.");
 
 		// Optional LATERAL before right side
-		const isLateral = this.match(TokenType.LATERAL);
+		const _isLateral = this.match(TokenType.LATERAL);
 		// Parse right side of join
 		const right = this.tableSource(withClause);
 
@@ -1979,7 +1979,7 @@ export class Parser {
 				} else {
 					columns.push(this.columnDefinition());
 				}
-			// Allow trailing comma before ')'
+				// Allow trailing comma before ')'
 			} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 
 			// If we didn't see a comma and the next token looks like the start of another
@@ -2330,14 +2330,14 @@ export class Parser {
 		let using: { defaultVtabModule?: string; defaultVtabArgs?: string } | undefined;
 
 		// Optional: version 'semver'
-        // no-op
+		// no-op
 		if (this.matchKeyword('VERSION')) {
 			const tok = this.consume(TokenType.STRING, "Expected version string after VERSION.");
 			version = String(tok.literal);
 		}
 
 		// Optional: using ( default_vtab_module = 'memory', default_vtab_args = '[]' )
-        if (this.match(TokenType.USING)) {
+		if (this.match(TokenType.USING)) {
 			this.consume(TokenType.LPAREN, "Expected '(' after USING.");
 			using = {};
 			if (!this.check(TokenType.RPAREN)) {
@@ -2362,11 +2362,11 @@ export class Parser {
 		}
 
 		// Block
-        // Parse declaration block delimited by '{' '}'
-        this.consume(TokenType.LBRACE, "Expected '{' to start schema declaration block.");
-        let items: AST.DeclareItem[] = [];
+		// Parse declaration block delimited by '{' '}'
+		this.consume(TokenType.LBRACE, "Expected '{' to start schema declaration block.");
+		const items: AST.DeclareItem[] = [];
 
-        while (!this.check(TokenType.RBRACE)) {
+		while (!this.check(TokenType.RBRACE)) {
 			if (this.isAtEnd()) break;
 			// table ...
 			if (this.peekKeyword('TABLE')) {
@@ -2391,7 +2391,7 @@ export class Parser {
 				const endTok = this.previous();
 				items.push({ type: 'declareIgnored', kind: 'domain', text: this.sourceSlice(start.startOffset, endTok.endOffset) } as unknown as AST.DeclareIgnoredItem);
 			}
-            this.match(TokenType.SEMICOLON);
+			this.match(TokenType.SEMICOLON);
 		}
 
 		this.consume(TokenType.RBRACE, "Expected '}' to close schema declaration block.");
@@ -2401,11 +2401,11 @@ export class Parser {
 	}
 
 	private declareTableItem(): AST.DeclaredTable {
-		const tableName = this.consumeIdentifier([ 'key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like' ], 'Expected table name in declaration.');
+		const tableName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], 'Expected table name in declaration.');
 		let moduleName: string | undefined;
 		let moduleArgs: Record<string, SqlValue> | undefined;
-		let columns: AST.ColumnDef[] = [];
-		let constraints: AST.TableConstraint[] = [];
+		const columns: AST.ColumnDef[] = [];
+		const constraints: AST.TableConstraint[] = [];
 
 		// Optional USING module
 		if (this.match(TokenType.USING)) {
@@ -2626,7 +2626,7 @@ export class Parser {
 		return false;
 	}
 
-	private sourceSlice(start: number, end: number): string {
+	private sourceSlice(_start: number, _end: number): string {
 		// Lexer tokens include offsets; this.tokens array belongs to this parser, but we don't have direct source here.
 		// Return an empty string as placeholder; canonicalization is future work.
 		return '';
@@ -2639,19 +2639,19 @@ export class Parser {
 		if (this.match(TokenType.EQUAL)) {
 			if (this.check(TokenType.IDENTIFIER)) {
 				value = { type: 'identifier', name: this.advance().lexeme };
-					} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL, TokenType.TRUE, TokenType.FALSE)) {
-			const token = this.previous();
-			let literal_value: SqlValue;
-			if (token.type === TokenType.NULL) {
-				literal_value = null;
-			} else if (token.type === TokenType.TRUE) {
-				literal_value = 1;
-			} else if (token.type === TokenType.FALSE) {
-				literal_value = 0;
-			} else {
-				literal_value = token.literal;
-			}
-			value = { type: 'literal', value: literal_value };
+			} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL, TokenType.TRUE, TokenType.FALSE)) {
+				const token = this.previous();
+				let literal_value: SqlValue;
+				if (token.type === TokenType.NULL) {
+					literal_value = null;
+				} else if (token.type === TokenType.TRUE) {
+					literal_value = 1;
+				} else if (token.type === TokenType.FALSE) {
+					literal_value = 0;
+				} else {
+					literal_value = token.literal;
+				}
+				value = { type: 'literal', value: literal_value };
 			} else if (this.match(TokenType.MINUS)) {
 				if (this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
 					const token = this.advance();
@@ -2894,7 +2894,14 @@ export class Parser {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			return { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
+			// No DEFERRABLE syntax supported; deferral is auto-detected by the planner
+			return {
+				type: 'check',
+				name,
+				expr,
+				operations,
+				loc: _createLoc(startToken, endToken)
+			};
 		} else if (this.match(TokenType.DEFAULT)) {
 			const expr = this.expression();
 			endToken = this.previous();
@@ -2973,7 +2980,14 @@ export class Parser {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			return { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
+			// No DEFERRABLE syntax supported; deferral is auto-detected by the planner
+			return {
+				type: 'check',
+				name,
+				expr,
+				operations,
+				loc: _createLoc(startToken, endToken)
+			};
 		} else if (this.match(TokenType.FOREIGN)) {
 			this.consume(TokenType.KEY, "Expected KEY after FOREIGN.");
 			this.consume(TokenType.LPAREN, "Expected '(' before FOREIGN KEY columns.");
@@ -3135,7 +3149,7 @@ export class Parser {
 		throw this.error(this.peek(), message);
 	}
 
-			/** Parses the list of operations for CHECK ON */
+	/** Parses the list of operations for CHECK ON */
 	private parseRowOpList(): RowOp[] {
 		const operations: RowOp[] = [];
 
@@ -3208,8 +3222,10 @@ export class Parser {
 
 	private statementSupportsWithClause(statement: AST.AstNode): boolean {
 		return statement.type === 'select' ||
-			   statement.type === 'insert' ||
-			   statement.type === 'update' ||
-			   statement.type === 'delete';
+			statement.type === 'insert' ||
+			statement.type === 'update' ||
+			statement.type === 'delete';
 	}
+
+	// DEFERRABLE syntax not supported for CHECK constraints in Quereus.
 }

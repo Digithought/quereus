@@ -113,51 +113,7 @@ Database‑wide integrity assertions deferrable at COMMIT (auto-detected), with 
 4) Diagnostics: `explain_assertion()` and enhanced error messages.
 
 
-## 📐 Declarative Schema System (DECLARE/APPLY) ✅ MVP Complete
-
-### Implementation Status
-
-**✅ Completed (MVP)**
-- [x] Parser: Full grammar support for `declare schema`, `diff schema`, `apply schema`, `explain schema`
-- [x] AST nodes for all declarative schema constructs (table, index, view, seed items)
-- [x] Schema catalog collector: introspects current database state
-- [x] Canonical DDL generation from TableSchema and declared AST
-- [x] Schema differ: computes delta between declared and actual state
-- [x] Migration DDL generation from computed diffs
-- [x] SHA-256 hashing for schema versioning (cross-platform)
-- [x] Seed data storage and application with `apply schema ... with seed`
-- [x] Declared schema manager integrated into Database
-- [x] Comprehensive tests covering full declare/diff/apply/seed lifecycle
-- [x] Contextual keywords (schema, version, seed) to avoid breaking existing code
-- [x] Clean identifier quoting (only when reserved or invalid)
-
-**Current Capabilities:**
-```sql
--- Declare desired schema state
-declare schema main {
-  table users {
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT
-  }
-  
-  seed users (
-    (1, 'Alice', 'alice@example.com'),
-    (2, 'Bob', 'bob@example.com')
-  )
-}
-
--- See what needs to change (returns JSON diff)
-diff schema main;
-
--- Apply migrations with seed data
-apply schema main with seed;
-
--- Get schema hash for versioning
-explain schema main;
-```
-
-### Remaining Work (Future Enhancements)
+## Declarative Schema - Remaining Work (Future Enhancements)
 
 **Planned:**
 - [ ] Rename detection with `old name` hints and stable `id` matching
@@ -246,4 +202,6 @@ explain schema main;
 - [ ] **Range Seeks**: Pass dynamic lower/upper bounds and extend Memory module scan/seek plan to use them
 - [ ] **IN-list strategy**: Choose between seek-union vs residual based on index coverage and list size
 
+## Misc
 
+- [ ] Improve constraintPlanContainsSubquery() (hard-coded AST traversal may not capture all table references and doesn't honor the spirit of capabilities for dealing robustly with new nodes)

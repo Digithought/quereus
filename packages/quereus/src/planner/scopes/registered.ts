@@ -37,6 +37,14 @@ export class RegisteredScope implements Scope {
 		this.registeredSymbols.set(lowerSymbolKey, getReference);
 	}
 
+	subscribeFactory(symbolKey: string, factory: ReferenceCallback): void {
+		const lower = symbolKey.toLowerCase();
+		if (this.registeredSymbols.has(lower)) {
+			throw new QuereusError(`Symbol '${lower}' already exists in the same scope.`, StatusCode.ERROR);
+		}
+		this.registeredSymbols.set(lower, factory);
+	}
+
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
 		const reference = this.registeredSymbols.get(symbolKey.toLowerCase());
 		if (reference) {

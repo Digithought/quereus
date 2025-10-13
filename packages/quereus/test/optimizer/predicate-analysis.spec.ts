@@ -89,7 +89,7 @@ describe('Predicate analysis', () => {
 			columnIndexMap: new Map([[201, 1]])
 		};
 		const res = extractConstraints(pred, [tableInfo]);
-		expect(res.allConstraints.length).to.equal(1);
+		void expect(res.allConstraints.length).to.equal(1);
 		expect(res.allConstraints[0].op).to.equal('=');
 		expect(res.allConstraints[0].columnIndex).to.equal(1);
 		expect(res.supportedPredicateByTable?.get('main.t#test')).to.exist;
@@ -97,7 +97,7 @@ describe('Predicate analysis', () => {
 
 	it('extractConstraints handles BETWEEN into range constraints', () => {
 		const c = colRef(301, 'score', 2);
-		const ast: AST.BetweenExpr = { type: 'between', expr: (c as any).expression, lower: (lit(10) as any).expression, upper: (lit(20) as any).expression } as unknown as AST.BetweenExpr;
+	const ast: AST.BetweenExpr = { type: 'between', expr: c.expression, lower: lit(10).expression, upper: lit(20).expression };
 		const between = new BetweenNode(scope, ast, c, lit(10), lit(20));
 		const tableInfo: TableInfo = {
 			relationName: 'main.t',
@@ -105,10 +105,10 @@ describe('Predicate analysis', () => {
 			attributes: [{ id: 301, name: 'score' }],
 			columnIndexMap: new Map([[301, 2]])
 		};
-		const res = extractConstraints(between, [tableInfo]);
-		expect(res.allConstraints.length).to.equal(2);
-		const ops = res.allConstraints.map(cn => cn.op).sort();
-		expect(ops).to.deep.equal(['<=', '>=']);
+	const res = extractConstraints(between, [tableInfo]);
+	void expect(res.allConstraints.length).to.equal(2);
+	const ops = res.allConstraints.map(cn => cn.op).sort();
+	expect(ops).to.deep.equal(['<=', '>=']);
 	});
 });
 
