@@ -14,7 +14,7 @@
     "@quereus/quereus": "*"
   },
   "engines": {
-    "quereus": ">=0.0.0"
+    "quereus": "^0.3.0"
   },
   "quereus": {
     "provides": { "collations": ["NUMERIC", "LENGTH", "REVERSE", "ALPHANUM", "PHONETIC"] }

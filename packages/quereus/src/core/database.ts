@@ -16,8 +16,7 @@ import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RT
 import { Parser, ParseError } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
 import { buildBlock } from '../planner/building/block.js';
-import { buildExpression } from '../planner/building/expression.js';
-import { emitPlanNode, emitCallFromPlan } from '../runtime/emitters.js';
+import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
 import type { RowDescriptor } from '../planner/nodes/plan-node.js';
@@ -41,11 +40,7 @@ import { DatabaseOptionsManager } from './database-options.js';
 import type { InstructionTracer } from '../runtime/types.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
-import type { RowConstraintSchema } from '../schema/table.js';
-import { constraintPlanContainsSubquery, createDeferredConstraintSetup } from '../planner/util/deferred-constraint.js';
 import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
-import type { Scope } from '../planner/scopes/scope.js';
-import { withRowContext } from '../runtime/context-helpers.js';
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 
 const log = createLogger('core:database');

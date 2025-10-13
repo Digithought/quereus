@@ -202,6 +202,3 @@ Database‑wide integrity assertions deferrable at COMMIT (auto-detected), with 
 - [ ] **Range Seeks**: Pass dynamic lower/upper bounds and extend Memory module scan/seek plan to use them
 - [ ] **IN-list strategy**: Choose between seek-union vs residual based on index coverage and list size
 
-## Misc
-
-- [ ] Improve constraintPlanContainsSubquery() (hard-coded AST traversal may not capture all table references and doesn't honor the spirit of capabilities for dealing robustly with new nodes)

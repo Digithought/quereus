@@ -60,9 +60,8 @@ export const manifest = {
 // Simple in-memory cache
 const cache = new Map();
 function isFileUrl(u) {
-  return u.startsWith('file:///') || u.startsWith('file://');
+  return u.startsWith('file:');
 }
-
 /**
  * Fetches JSON data from a URL or file path
  */

@@ -8,7 +8,6 @@ import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { RowOpFlag } from '../../schema/table.js';
-import { constraintPlanContainsSubquery } from '../../planner/util/deferred-constraint.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 
 interface ConstraintMetadataEntry {
@@ -34,14 +33,13 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 
 	const constraintMetadata = plan.constraintChecks.map((check, idx) => {
 		const evaluatorInstruction = checkEvaluators[idx];
-		const containsSubquery = constraintPlanContainsSubquery(ctx.db, tableSchema, check.constraint.expr);
 		const constraintName = check.constraint.name ?? generateDefaultConstraintName(tableSchema, check.constraint);
 		return {
 			schema: check.constraint,
 			flatRowDescriptor: plan.flatRowDescriptor,
 			evaluator: evaluatorInstruction.run,
 			constraintName,
-			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || containsSubquery),
+			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || check.containsSubquery),
 			baseTable: `${tableSchema.schemaName}.${tableSchema.name}`
 		};
 	});

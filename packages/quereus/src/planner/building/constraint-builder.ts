@@ -128,7 +128,8 @@ export function buildConstraintChecks(
         constraint,
         expression,
         deferrable: needsDeferred,
-        initiallyDeferred: needsDeferred
+        initiallyDeferred: needsDeferred,
+        containsSubquery: needsDeferred
       } satisfies ConstraintCheck;
     } finally {
       // Restore original schema context
