@@ -612,8 +612,8 @@ export class Database {
 		target.get(key)!.add(this.serializeKeyTuple(keyTuple));
 	}
 
-	public _queueDeferredConstraintRow(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string): void {
-		this.deferredConstraints.enqueue(baseTable, constraintName, row, descriptor, evaluator, connectionId);
+	public _queueDeferredConstraintRow(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string, contextRow?: Row, contextDescriptor?: RowDescriptor): void {
+		this.deferredConstraints.enqueue(baseTable, constraintName, row, descriptor, evaluator, connectionId, contextRow, contextDescriptor);
 	}
 
 

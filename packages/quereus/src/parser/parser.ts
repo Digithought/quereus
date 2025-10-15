@@ -341,6 +341,17 @@ export class Parser {
 			this.consume(TokenType.RPAREN, "Expected ')' after column list.");
 		}
 
+		// Parse mutation context assignments if present (after column list, before VALUES/SELECT)
+		let contextValues: AST.ContextAssignment[] | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				contextValues = this.parseContextAssignments();
+			} else {
+				// Not a WITH CONTEXT clause, backtrack
+				this.current--;
+			}
+		}
+
 		// Parse VALUES clause
 		let values: AST.Expression[][] | undefined;
 		let select: AST.SelectStmt | undefined;
@@ -388,6 +399,7 @@ export class Parser {
 			values,
 			select,
 			returning,
+			contextValues,
 			loc: _createLoc(startToken, lastConsumedToken),
 		};
 	}
@@ -1864,6 +1876,18 @@ export class Parser {
 	/** @internal */
 	private updateStatement(startToken: Token, _withClause?: AST.WithClause): AST.UpdateStmt {
 		const table = this.tableIdentifier();
+
+		// Parse mutation context assignments if present
+		let contextValues: AST.ContextAssignment[] | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				contextValues = this.parseContextAssignments();
+			} else {
+				// Not a WITH CONTEXT clause, backtrack
+				this.current--;
+			}
+		}
+
 		this.consume(TokenType.SET, "Expected 'SET' after table name in UPDATE.");
 		const assignments: { column: string; value: AST.Expression }[] = [];
 		do {
@@ -1882,13 +1906,25 @@ export class Parser {
 			returning = this.columnList();
 		}
 		const endToken = this.previous();
-		return { type: 'update', table, assignments, where, returning, loc: _createLoc(startToken, endToken) };
+		return { type: 'update', table, assignments, where, returning, contextValues, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
 	private deleteStatement(startToken: Token, _withClause?: AST.WithClause): AST.DeleteStmt {
 		this.matchKeyword('FROM');
 		const table = this.tableIdentifier();
+
+		// Parse mutation context assignments if present
+		let contextValues: AST.ContextAssignment[] | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				contextValues = this.parseContextAssignments();
+			} else {
+				// Not a WITH CONTEXT clause, backtrack
+				this.current--;
+			}
+		}
+
 		let where: AST.Expression | undefined;
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
@@ -1901,7 +1937,7 @@ export class Parser {
 		}
 
 		const endToken = this.previous();
-		return { type: 'delete', table, where, returning, loc: _createLoc(startToken, endToken) };
+		return { type: 'delete', table, where, returning, contextValues, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
@@ -2024,6 +2060,17 @@ export class Parser {
             }
 		}
 
+		// Parse mutation context definitions if present
+		let contextDefinitions: AST.MutationContextVar[] | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				contextDefinitions = this.parseMutationContextDefinitions();
+			} else {
+				// Not a WITH CONTEXT clause, backtrack
+				this.current--;
+			}
+		}
+
 		return {
 			type: 'createTable',
 			table,
@@ -2033,6 +2080,7 @@ export class Parser {
 			isTemporary,
 			moduleName,
 			moduleArgs,
+			contextDefinitions,
 			loc: _createLoc(startToken, this.previous()),
 		};
 	}
@@ -2824,6 +2872,62 @@ export class Parser {
 		const constraints = this.columnConstraintList();
 
 		return { name, dataType, constraints };
+	}
+
+	/** @internal Parses mutation context variable definitions: WITH CONTEXT (var type [NULL], ...) */
+	private parseMutationContextDefinitions(): AST.MutationContextVar[] {
+		this.consume(TokenType.LPAREN, "Expected '(' after WITH CONTEXT.");
+
+		const contextVars: AST.MutationContextVar[] = [];
+
+		do {
+			const name = this.consumeIdentifier("Expected context variable name.");
+
+			let dataType: string | undefined;
+			if (this.check(TokenType.IDENTIFIER)) {
+				dataType = this.advance().lexeme;
+				if (this.match(TokenType.LPAREN)) {
+					dataType += '(';
+					let parenLevel = 1;
+					while (parenLevel > 0 && !this.isAtEnd()) {
+						const token = this.peek();
+						if (token.type === TokenType.LPAREN) parenLevel++;
+						if (token.type === TokenType.RPAREN) parenLevel--;
+						if (parenLevel > 0) {
+							dataType += this.advance().lexeme;
+						}
+					}
+					dataType += ')';
+					this.consume(TokenType.RPAREN, "Expected ')' after type parameters.");
+				}
+			}
+
+			// Check for NULL keyword (explicit nullable marker)
+			const notNull = !this.match(TokenType.NULL);
+
+			contextVars.push({ name, dataType, notNull });
+
+		} while (this.match(TokenType.COMMA));
+
+		this.consume(TokenType.RPAREN, "Expected ')' after mutation context definitions.");
+
+		return contextVars;
+	}
+
+	/** @internal Parses mutation context assignments: WITH CONTEXT var = expr, ... */
+	private parseContextAssignments(): AST.ContextAssignment[] {
+		const assignments: AST.ContextAssignment[] = [];
+
+		do {
+			const name = this.consumeIdentifier("Expected context variable name.");
+			this.consume(TokenType.EQUAL, `Expected '=' after context variable '${name}'.`);
+			const value = this.expression();
+
+			assignments.push({ name, value });
+
+		} while (this.match(TokenType.COMMA));
+
+		return assignments;
 	}
 
 	/** @internal Parses column constraints */

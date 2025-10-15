@@ -8,7 +8,7 @@ import { StatusCode, type SqlValue, type OutputValue } from '../../common/types.
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { RowOpFlag } from '../../schema/table.js';
-import { withAsyncRowContext } from '../context-helpers.js';
+import { withAsyncRowContext, createRowSlot } from '../context-helpers.js';
 
 interface ConstraintMetadataEntry {
 	schema: RowConstraintSchema;
@@ -17,6 +17,8 @@ interface ConstraintMetadataEntry {
 	constraintName: string;
 	shouldDefer: boolean;
 	baseTable: string;
+	contextRow?: Row; // Mutation context row if present
+	contextDescriptor?: RowDescriptor; // Mutation context row descriptor
 }
 
 export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionContext): Instruction {
@@ -26,12 +28,28 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	// Use the pre-built flat row descriptor from the plan
 	const flatRowDescriptor = plan.flatRowDescriptor;
 
+	// Get mutation context from the plan (passed from DML builders)
+	const mutationContextValues = plan.mutationContextValues;
+	const contextAttributes = plan.contextAttributes;
+	const contextDescriptor = plan.contextDescriptor;
+
+	// Emit mutation context value evaluators if present
+	const contextEvaluatorInstructions: Instruction[] = [];
+	if (mutationContextValues && contextAttributes) {
+		for (const attr of contextAttributes) {
+			const valueExpr = mutationContextValues.get(attr.name);
+			if (valueExpr) {
+				contextEvaluatorInstructions.push(emitCallFromPlan(valueExpr, ctx));
+			}
+		}
+	}
+
 	// Emit evaluator instructions for each pre-built constraint expression
 	const checkEvaluators = plan.constraintChecks.map(check =>
 		emitCallFromPlan(check.expression, ctx)
 	);
 
-	const constraintMetadata = plan.constraintChecks.map((check, idx) => {
+	const constraintMetadata: ConstraintMetadataEntry[] = plan.constraintChecks.map((check, idx) => {
 		const evaluatorInstruction = checkEvaluators[idx];
 		const constraintName = check.constraint.name ?? generateDefaultConstraintName(tableSchema, check.constraint);
 		return {
@@ -40,7 +58,9 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			evaluator: evaluatorInstruction.run,
 			constraintName,
 			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || check.containsSubquery),
-			baseTable: `${tableSchema.schemaName}.${tableSchema.name}`
+			baseTable: `${tableSchema.schemaName}.${tableSchema.name}`,
+			contextRow: undefined,
+			contextDescriptor
 		};
 	});
 
@@ -49,19 +69,61 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			return;
 		}
 
-		for await (const inputRow of inputRows) {
-			const flatRow = inputRow;
+		// Evaluate mutation context values once per statement (not per row)
+		let contextRow: Row | undefined;
+		let contextSlot: ReturnType<typeof createRowSlot> | undefined;
 
-	const result = await withAsyncRowContext(rctx, flatRowDescriptor, () => flatRow, async () => {
-		// Check all constraints that apply to this operation
-		await checkConstraints(rctx, plan, tableSchema, flatRow, constraintMetadata, evaluatorFunctions);
+		if (contextEvaluatorInstructions.length > 0 && contextDescriptor) {
+			// Split evaluatorFunctions into context evaluators and constraint evaluators
+			const contextEvalFunctions = evaluatorFunctions.slice(0, contextEvaluatorInstructions.length);
+			const constraintEvalFunctions = evaluatorFunctions.slice(contextEvaluatorInstructions.length);
 
-				// If all constraints pass, yield the flat row for downstream processing
-				// All downstream operations (INSERT executor, DELETE executor, RETURNING) expect flat rows
-				return flatRow;
+			// Evaluate all context values
+			contextRow = [];
+			for (const contextEvaluator of contextEvalFunctions) {
+				const value = await contextEvaluator(rctx) as SqlValue;
+				contextRow.push(value);
+			}
+
+			// Store context row in metadata for deferred constraints
+			constraintMetadata.forEach(meta => {
+				meta.contextRow = contextRow;
 			});
 
-			yield result;
+			// Create a row slot for the mutation context that persists for the whole statement
+			contextSlot = createRowSlot(rctx, contextDescriptor);
+			contextSlot.set(contextRow);
+
+			// Use constraint evaluators for the rest of the function
+			evaluatorFunctions = constraintEvalFunctions;
+		}
+
+		try {
+			for await (const inputRow of inputRows) {
+				const flatRow = inputRow;
+
+				// If we have mutation context, compose it with the flat row for constraint evaluation
+				const combinedRow = contextRow ? [...contextRow, ...flatRow] : flatRow;
+				const combinedDescriptor = contextDescriptor && contextRow
+					? composeCombinedDescriptor(contextDescriptor, flatRowDescriptor)
+					: flatRowDescriptor;
+
+				const result = await withAsyncRowContext(rctx, combinedDescriptor, () => combinedRow, async () => {
+					// Check all constraints that apply to this operation
+					await checkConstraints(rctx, plan, tableSchema, flatRow, constraintMetadata, evaluatorFunctions);
+
+					// If all constraints pass, yield the flat row for downstream processing
+					// All downstream operations (INSERT executor, DELETE executor, RETURNING) expect flat rows
+					return flatRow;
+				});
+
+				yield result;
+			}
+		} finally {
+			// Clean up context slot if we created one
+			if (contextSlot) {
+				contextSlot.close();
+			}
 		}
 	}
 
@@ -69,10 +131,37 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	return {
-		params: [sourceInstruction, ...checkEvaluators],
+		params: [sourceInstruction, ...contextEvaluatorInstructions, ...checkEvaluators],
 		run: run as InstructionRun,
-		note: `constraintCheck(${plan.operation}, ${plan.constraintChecks.length} checks)`
+		note: `constraintCheck(${plan.operation}, ${contextEvaluatorInstructions.length} ctx, ${plan.constraintChecks.length} checks)`
 	};
+}
+
+/**
+ * Composes a combined row descriptor that includes both context and flat (OLD/NEW) descriptors.
+ * Context attributes come first, followed by OLD/NEW attributes with offset indices.
+ */
+function composeCombinedDescriptor(contextDescriptor: RowDescriptor, flatRowDescriptor: RowDescriptor): RowDescriptor {
+	const combined: RowDescriptor = [];
+	const contextLength = Object.keys(contextDescriptor).filter(k => contextDescriptor[parseInt(k)] !== undefined).length;
+
+	// Copy context descriptor as-is (indices 0..contextLength-1)
+	for (const attrIdStr in contextDescriptor) {
+		const attrId = parseInt(attrIdStr);
+		if (contextDescriptor[attrId] !== undefined) {
+			combined[attrId] = contextDescriptor[attrId];
+		}
+	}
+
+	// Copy flat descriptor with offset indices (indices contextLength..end)
+	for (const attrIdStr in flatRowDescriptor) {
+		const attrId = parseInt(attrIdStr);
+		if (flatRowDescriptor[attrId] !== undefined) {
+			combined[attrId] = flatRowDescriptor[attrId] + contextLength;
+		}
+	}
+
+	return combined;
 }
 
 async function checkConstraints(
@@ -159,7 +248,9 @@ async function checkCheckConstraints(
 				row.slice() as Row,
 				metadata.flatRowDescriptor,
 				evaluator,
-				activeConnectionId
+				activeConnectionId,
+				metadata.contextRow,
+				metadata.contextDescriptor
 			);
 			continue;
 		}

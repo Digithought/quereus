@@ -775,6 +775,201 @@ yield* withRowContextGenerator(rctx, flatRowDescriptor, flatRows, async function
 
 This eliminates the break-fix cycle where attribute ID conflicts caused unpredictable column resolution behavior.
 
+## Mutation Context
+
+Quereus supports table-level mutation context variables that provide per-operation parameters for default values and constraints. This feature integrates seamlessly with the existing attribute-based context system.
+
+### Overview
+
+Mutation context allows you to:
+- Define reusable parameters in table definitions
+- Pass different values for each DML operation
+- Use context in default value expressions
+- Reference context in CHECK constraints (both immediate and deferred)
+- Provide runtime-specific validation rules
+
+### Architecture
+
+**Planning Phase:**
+- Context variables are parsed from `WITH CONTEXT (...)` clauses
+- Variables converted to attributes with unique attribute IDs
+- Context scope created using `RegisteredScope`
+- Both unqualified (`varName`) and qualified (`context.varName`) symbols registered
+- Context variables registered BEFORE OLD/NEW columns (giving them shadowing precedence)
+
+**Runtime Phase:**
+- Context values evaluated once per statement (not per row)
+- Context stored in row descriptor using attribute ID mapping
+- Context made available via `createRowSlot()` for the statement lifetime
+- Context composed with OLD/NEW rows for constraint evaluation: `[context..., old..., new...]`
+
+### Scope Resolution
+
+Mutation context variables are registered in scopes using the same mechanism as table columns:
+
+```typescript
+// In constraint-builder.ts
+contextAttributes.forEach((attr, contextVarIndex) => {
+  const contextVar = tableSchema.mutationContext![contextVarIndex];
+  const varNameLower = contextVar.name.toLowerCase();
+
+  // Register both unqualified and qualified names
+  constraintScope.subscribeFactory(varNameLower, (exp, s) =>
+    new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
+  );
+  constraintScope.subscribeFactory(`context.${varNameLower}`, (exp, s) =>
+    new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
+  );
+});
+```
+
+**Resolution Order:**
+1. Context variables registered first (in constraint scopes)
+2. OLD/NEW columns registered after
+3. Unqualified references resolve to context if name matches
+4. Qualified `context.varName` always resolves to context
+
+### Runtime Integration
+
+**Context Evaluation:**
+```typescript
+// In constraint-check emitter
+// Evaluate context once per statement
+const contextRow: Row = [];
+for (const contextEvaluator of contextEvalFunctions) {
+  const value = await contextEvaluator(rctx) as SqlValue;
+  contextRow.push(value);
+}
+
+// Install context for statement duration
+const contextSlot = createRowSlot(rctx, contextDescriptor);
+contextSlot.set(contextRow);
+
+try {
+  // Process rows - context available to all child operations
+  for await (const row of inputRows) {
+    // Defaults and constraints can reference context variables
+  }
+} finally {
+  contextSlot.close();
+}
+```
+
+**Combined Row Composition:**
+For constraint evaluation, context is composed with OLD/NEW rows:
+```typescript
+const combinedRow = [...contextRow, ...oldRow, ...newRow];
+const combinedDescriptor = composeCombinedDescriptor(contextDescriptor, flatRowDescriptor);
+```
+
+**Descriptor Composition:**
+```typescript
+function composeCombinedDescriptor(
+  contextDescriptor: RowDescriptor, 
+  flatRowDescriptor: RowDescriptor
+): RowDescriptor {
+  const combined: RowDescriptor = [];
+  const contextLength = Object.keys(contextDescriptor).length;
+
+  // Context attributes: indices 0..contextLength-1
+  for (const attrIdStr in contextDescriptor) {
+    const attrId = parseInt(attrIdStr);
+    combined[attrId] = contextDescriptor[attrId];
+  }
+
+  // OLD/NEW attributes: offset by contextLength
+  for (const attrIdStr in flatRowDescriptor) {
+    const attrId = parseInt(attrIdStr);
+    combined[attrId] = flatRowDescriptor[attrId] + contextLength;
+  }
+
+  return combined;
+}
+```
+
+### Deferred Constraints
+
+Mutation context is captured and preserved for deferred constraints:
+
+**Queueing:**
+```typescript
+rctx.db._queueDeferredConstraintRow(
+  baseTable,
+  constraintName,
+  row.slice() as Row,
+  flatRowDescriptor,
+  evaluator,
+  connectionId,
+  contextRow,        // Captured context values
+  contextDescriptor  // Context row descriptor
+);
+```
+
+**Evaluation at COMMIT:**
+```typescript
+// Compose context with flat row for deferred evaluation
+const evaluationRow = entry.contextRow 
+  ? [...entry.contextRow, ...entry.row] 
+  : entry.row;
+const evaluationDescriptor = entry.contextRow && entry.contextDescriptor
+  ? composeCombinedDescriptor(entry.contextDescriptor, entry.descriptor)
+  : entry.descriptor;
+
+// Evaluate with context available
+const slot = createRowSlot(runtimeCtx, evaluationDescriptor);
+slot.set(evaluationRow);
+const value = await entry.evaluator(runtimeCtx);
+```
+
+### Plan Node Structure
+
+**DML Nodes (InsertNode, UpdateNode, DeleteNode):**
+- `mutationContextValues?: Map<string, ScalarPlanNode>` - Value expressions for each variable
+- `contextAttributes?: Attribute[]` - Attribute metadata for context variables
+- `contextDescriptor?: RowDescriptor` - Maps attribute IDs to row indices
+
+**ConstraintCheckNode:**
+- Receives mutation context from parent DML node
+- Stores context for use during emission
+- Passes context through optimizer transformations
+
+### Integration with Existing Systems
+
+**Attribute-Based Context:**
+- Mutation context uses the same attribute ID system as OLD/NEW rows
+- Context attributes have unique, stable IDs
+- No special handling needed - integrates with existing `resolveAttribute()`
+
+**Row Descriptors:**
+- Context uses standard row descriptors
+- Context row composed with OLD/NEW rows for constraint evaluation
+- Single combined descriptor provides unified attribute lookup
+
+**Transaction Support:**
+- Context evaluated per statement
+- Captured for deferred constraints
+- Preserved across savepoints (part of queued row data)
+
+### Implementation Guidelines for Emitter Authors
+
+**When adding new mutation operations:**
+1. Process `stmt.contextValues` in the builder
+2. Create context attributes with unique IDs
+3. Build context expression plan nodes
+4. Create context scope and register variables (both forms)
+5. Pass context scope when evaluating defaults
+6. Pass context attributes to `buildConstraintChecks()`
+7. Create context descriptor from attributes
+8. Pass mutation context to plan node constructors
+9. Pass mutation context to ConstraintCheckNode
+
+**Key Points:**
+- Context is evaluated once per statement (performance)
+- Context persists for entire statement via row slot
+- Context composed with OLD/NEW for constraints
+- Deferred constraints capture and preserve context
+- Use existing context helpers - no special APIs needed
+
 ## Common Patterns
 
 ### Row Processing with Context

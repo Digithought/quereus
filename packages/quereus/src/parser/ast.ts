@@ -194,6 +194,7 @@ export interface InsertStmt extends AstNode {
 	select?: SelectStmt;      // For INSERT ... SELECT
 	onConflict?: ConflictResolution;
 	returning?: ResultColumn[];
+	contextValues?: ContextAssignment[]; // Optional mutation context assignments
 }
 
 // UPDATE statement
@@ -205,6 +206,7 @@ export interface UpdateStmt extends AstNode {
 	where?: Expression;
 	onConflict?: ConflictResolution;
 	returning?: ResultColumn[];
+	contextValues?: ContextAssignment[]; // Optional mutation context assignments
 }
 
 // DELETE statement
@@ -214,6 +216,7 @@ export interface DeleteStmt extends AstNode {
 	table: IdentifierExpr;
 	where?: Expression;
 	returning?: ResultColumn[];
+	contextValues?: ContextAssignment[]; // Optional mutation context assignments
 }
 
 // VALUES statement
@@ -232,6 +235,7 @@ export interface CreateTableStmt extends AstNode {
 	isTemporary?: boolean;
 	moduleName?: string;   // Optional module name from USING clause
 	moduleArgs?: Record<string, SqlValue>; // Optional module arguments from USING clause
+	contextDefinitions?: MutationContextVar[]; // Optional mutation context variables
 }
 
 // CREATE INDEX statement
@@ -364,6 +368,19 @@ export interface ColumnDef {
 	name: string;
 	dataType?: string;
 	constraints: ColumnConstraint[];
+}
+
+// Mutation context variable definition
+export interface MutationContextVar {
+	name: string;
+	dataType?: string;
+	notNull?: boolean;
+}
+
+// Mutation context assignment
+export interface ContextAssignment {
+	name: string;
+	value: Expression;
 }
 
 // Column constraint (PRIMARY KEY, NOT NULL, etc.)

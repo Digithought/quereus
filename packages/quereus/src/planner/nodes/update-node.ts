@@ -30,6 +30,9 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     public readonly oldRowDescriptor: RowDescriptor, // For constraint checking
     public readonly newRowDescriptor: RowDescriptor, // For constraint checking
     public readonly flatRowDescriptor: RowDescriptor, // For flat OLD/NEW row attributes
+    public readonly mutationContextValues?: Map<string, ScalarPlanNode>, // Mutation context value expressions
+    public readonly contextAttributes?: Attribute[], // Mutation context attributes
+    public readonly contextDescriptor?: RowDescriptor, // Mutation context row descriptor
   ) {
     super(scope);
   }
@@ -95,7 +98,10 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
       this.onConflict,
       this.oldRowDescriptor,
       this.newRowDescriptor,
-      this.flatRowDescriptor
+      this.flatRowDescriptor,
+      this.mutationContextValues,
+      this.contextAttributes,
+      this.contextDescriptor
     );
   }
 

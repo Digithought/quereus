@@ -7,7 +7,7 @@ import { StatusCode } from '../../common/types.js';
 import { buildSelectStmt } from './select.js';
 import { buildWithClause } from './with.js';
 import { ValuesNode } from '../nodes/values-node.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute, type RowDescriptor } from '../nodes/plan-node.js';
 import { buildExpression } from './expression.js';
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
 import type { ColumnDef } from '../../common/datatype.js';
@@ -32,7 +32,8 @@ function createRowExpansionProjection(
 	ctx: PlanningContext,
 	sourceNode: RelationalPlanNode,
 	targetColumns: ColumnDef[],
-	tableReference: TableReferenceNode
+	tableReference: TableReferenceNode,
+	contextScope?: RegisteredScope
 ): RelationalPlanNode {
 	const tableSchema = tableReference.tableSchema;
 
@@ -49,6 +50,20 @@ function createRowExpansionProjection(
 	// Create projection expressions for each table column
 	const projections: Projection[] = [];
 	const sourceAttributes = sourceNode.getAttributes();
+
+	// If we have a context scope, we need to also register source columns in it
+	// so that defaults can reference them (e.g., DEFAULT base_price + markup)
+	if (contextScope) {
+		targetColumns.forEach((targetCol, index) => {
+			if (index < sourceAttributes.length) {
+				const sourceAttr = sourceAttributes[index];
+				const colNameLower = targetCol.name.toLowerCase();
+				contextScope.registerSymbol(colNameLower, (exp, s) =>
+					new ColumnReferenceNode(s, exp as AST.ColumnExpr, sourceAttr.type, sourceAttr.id, index)
+				);
+			}
+		});
+	}
 
 	tableSchema.columns.forEach((tableColumn) => {
 		// Find if this table column is in the target columns
@@ -81,18 +96,20 @@ function createRowExpansionProjection(
 		} else {
 			// This column is omitted - use default value or NULL
 			let defaultNode: ScalarPlanNode;
+			// Use context scope for default evaluation if available
+			const defaultCtx = contextScope ? { ...ctx, scope: contextScope } : ctx;
 			if (tableColumn.defaultValue !== undefined) {
 				// Use default value
 				if (typeof tableColumn.defaultValue === 'object' && tableColumn.defaultValue !== null && 'type' in tableColumn.defaultValue) {
-					// It's an AST.Expression - build it into a plan node
-					defaultNode = buildExpression(ctx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
+					// It's an AST.Expression - build it into a plan node with context scope
+					defaultNode = buildExpression(defaultCtx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
 				} else {
 					// Literal default value
-					defaultNode = buildExpression(ctx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
+					defaultNode = buildExpression(defaultCtx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
 				}
 			} else {
 				// No default value - use NULL
-				defaultNode = buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode;
+				defaultNode = buildExpression(defaultCtx, { type: 'literal', value: null }) as ScalarPlanNode;
 			}
 			projections.push({
 				node: defaultNode,
@@ -167,6 +184,52 @@ export function buildInsertStmt(
 	const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
 	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
+	// Process mutation context assignments if present
+	const mutationContextValues = new Map<string, ScalarPlanNode>();
+	const contextAttributes: Attribute[] = [];
+	let contextScope: RegisteredScope | undefined;
+
+	if (stmt.contextValues && tableReference.tableSchema.mutationContext) {
+		// Create context attributes
+		tableReference.tableSchema.mutationContext.forEach((contextVar) => {
+			contextAttributes.push({
+				id: PlanNode.nextAttrId(),
+				name: contextVar.name,
+				type: {
+					typeClass: 'scalar' as const,
+					affinity: contextVar.affinity,
+					nullable: !contextVar.notNull,
+					isReadOnly: true
+				},
+				sourceRelation: `context.${tableReference.tableSchema.name}`
+			});
+		});
+
+		// Create a new scope for mutation context
+		contextScope = new RegisteredScope(ctx.scope);
+
+		// Register mutation context variables in the scope (before evaluating expressions)
+		contextAttributes.forEach((attr, index) => {
+			const contextVar = tableReference.tableSchema.mutationContext![index];
+			const varNameLower = contextVar.name.toLowerCase();
+
+			// Register both unqualified and qualified names
+			contextScope!.subscribeFactory(varNameLower, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, index)
+			);
+			contextScope!.subscribeFactory(`context.${varNameLower}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, index)
+			);
+		});
+
+		// Build context value expressions using the context scope
+		const contextWithScope = { ...ctx, scope: contextScope };
+		stmt.contextValues.forEach((assignment) => {
+			const valueExpr = buildExpression(contextWithScope, assignment.value) as ScalarPlanNode;
+			mutationContextValues.set(assignment.name, valueExpr);
+		});
+	}
+
 	let targetColumns: ColumnDef[] = [];
 	if (stmt.columns && stmt.columns.length > 0) {
 		// Explicit columns specified
@@ -213,7 +276,7 @@ export function buildInsertStmt(
 	}
 
 	// ORTHOGONAL ROW EXPANSION: Apply uniform row expansion to map any source to table structure with defaults
-	const expandedSourceNode = createRowExpansionProjection(ctx, sourceNode, targetColumns, tableReference);
+	const expandedSourceNode = createRowExpansionProjection(ctx, sourceNode, targetColumns, tableReference, contextScope);
 
 	// Update targetColumns to reflect all table columns since we've expanded the source
 	const finalTargetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
@@ -245,6 +308,14 @@ export function buildInsertStmt(
 
 	const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
 
+	// Build context descriptor if we have context attributes
+	const contextDescriptor: RowDescriptor = contextAttributes.length > 0 ? [] : undefined as any;
+	if (contextDescriptor) {
+		contextAttributes.forEach((attr, index) => {
+			contextDescriptor[attr.id] = index;
+		});
+	}
+
 	// Build constraint checks at plan time
 	const constraintChecks = buildConstraintChecks(
 		ctx,
@@ -252,7 +323,8 @@ export function buildInsertStmt(
 		RowOpFlag.INSERT,
 		oldAttributes,
 		newAttributes,
-		flatRowDescriptor
+		flatRowDescriptor,
+		contextAttributes
 	);
 
 	const insertNode = new InsertNode(
@@ -260,7 +332,10 @@ export function buildInsertStmt(
 		tableReference,
 		finalTargetColumns,
 		expandedSourceNode,
-		flatRowDescriptor
+		flatRowDescriptor,
+		mutationContextValues.size > 0 ? mutationContextValues : undefined,
+		contextAttributes.length > 0 ? contextAttributes : undefined,
+		contextDescriptor
 	);
 
 	const constraintCheckNode = new ConstraintCheckNode(
@@ -271,7 +346,10 @@ export function buildInsertStmt(
 		oldRowDescriptor,
 		newRowDescriptor,
 		flatRowDescriptor,
-		constraintChecks
+		constraintChecks,
+		mutationContextValues.size > 0 ? mutationContextValues : undefined,
+		contextAttributes.length > 0 ? contextAttributes : undefined,
+		contextDescriptor
 	);
 
 	// Add DML executor node to perform the actual database insert operations

@@ -13,6 +13,8 @@ export interface DeferredConstraintRow {
 	evaluator: (ctx: RuntimeContext) => OutputValue;
 	constraintName: string;
 	connectionId?: string;
+	contextRow?: Row; // Mutation context values
+	contextDescriptor?: RowDescriptor; // Mutation context row descriptor
 }
 
 type DeferredConstraintBuckets = Map<string, Map<string, DeferredConstraintRow[]>>;
@@ -23,13 +25,21 @@ export class DeferredConstraintQueue {
 
 	constructor(private readonly db: Database) { }
 
-	enqueue(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string): void {
+	enqueue(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string, contextRow?: Row, contextDescriptor?: RowDescriptor): void {
 		const store = this.getActiveStore();
 		const tableKey = baseTable.toLowerCase();
 		if (!store.has(tableKey)) store.set(tableKey, new Map());
 		const constraints = store.get(tableKey)!;
 		if (!constraints.has(constraintName)) constraints.set(constraintName, []);
-		constraints.get(constraintName)!.push({ row: row.slice() as Row, descriptor, evaluator, constraintName, connectionId });
+		constraints.get(constraintName)!.push({
+			row: row.slice() as Row,
+			descriptor,
+			evaluator,
+			constraintName,
+			connectionId,
+			contextRow: contextRow ? contextRow.slice() as Row : undefined,
+			contextDescriptor
+		});
 	}
 
 	beginLayer(): void {
@@ -78,9 +88,16 @@ export class DeferredConstraintQueue {
 	}
 
 	private async evaluateEntry(runtimeCtx: RuntimeContext, entry: DeferredConstraintRow): Promise<void> {
-		const slot = createRowSlot(runtimeCtx, entry.descriptor);
+		// Compose context row with the flat row if context is present
+		const evaluationRow = entry.contextRow ? [...entry.contextRow, ...entry.row] : entry.row;
+		const evaluationDescriptor = entry.contextRow && entry.contextDescriptor
+			? this.composeCombinedDescriptor(entry.contextDescriptor, entry.descriptor)
+			: entry.descriptor;
+
+
+		const slot = createRowSlot(runtimeCtx, evaluationDescriptor);
 		try {
-			slot.set(entry.row);
+			slot.set(evaluationRow);
 			const value = await entry.evaluator(runtimeCtx) as SqlValue;
 			if (value === false || value === 0) {
 				throw new QuereusError(`CHECK constraint failed: ${entry.constraintName}`, StatusCode.CONSTRAINT);
@@ -88,6 +105,29 @@ export class DeferredConstraintQueue {
 		} finally {
 			slot.close();
 		}
+	}
+
+	private composeCombinedDescriptor(contextDescriptor: RowDescriptor, flatRowDescriptor: RowDescriptor): RowDescriptor {
+		const combined: RowDescriptor = [];
+		const contextLength = Object.keys(contextDescriptor).filter(k => contextDescriptor[parseInt(k)] !== undefined).length;
+
+		// Copy context descriptor as-is (indices 0..contextLength-1)
+		for (const attrIdStr in contextDescriptor) {
+			const attrId = parseInt(attrIdStr);
+			if (contextDescriptor[attrId] !== undefined) {
+				combined[attrId] = contextDescriptor[attrId];
+			}
+		}
+
+		// Copy flat descriptor with offset indices (indices contextLength..end)
+		for (const attrIdStr in flatRowDescriptor) {
+			const attrId = parseInt(attrIdStr);
+			if (flatRowDescriptor[attrId] !== undefined) {
+				combined[attrId] = flatRowDescriptor[attrId] + contextLength;
+			}
+		}
+
+		return combined;
 	}
 
 	private getActiveStore(): DeferredConstraintBuckets {
@@ -114,6 +154,8 @@ export class DeferredConstraintQueue {
 						evaluator: entry.evaluator,
 						constraintName: entry.constraintName,
 						connectionId: entry.connectionId,
+						contextRow: entry.contextRow ? entry.contextRow.slice() as Row : undefined,
+						contextDescriptor: entry.contextDescriptor,
 					})));
 				}
 			}

@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute, type RowDescriptor, type PhysicalProperties, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { ColumnDef, RelationType } from '../../common/datatype.js';
@@ -17,6 +17,9 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
     public readonly targetColumns: ColumnDef[],
     public readonly source: RelationalPlanNode, // Could be ValuesNode or output of a SELECT
     public readonly flatRowDescriptor?: RowDescriptor, // For flat OLD/NEW row output
+    public readonly mutationContextValues?: Map<string, ScalarPlanNode>, // Mutation context value expressions
+    public readonly contextAttributes?: Attribute[], // Mutation context attributes
+    public readonly contextDescriptor?: RowDescriptor, // Mutation context row descriptor
   ) {
     super(scope);
   }
@@ -90,7 +93,10 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
       this.table,
       this.targetColumns,
       newSource,
-      this.flatRowDescriptor
+      this.flatRowDescriptor,
+      this.mutationContextValues,
+      this.contextAttributes,
+      this.contextDescriptor
     );
   }
 

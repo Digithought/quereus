@@ -8,7 +8,7 @@ import { StatusCode, type SqlValue } from '../common/types.js';
 import type { AnyVirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
-import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask } from './table.js';
+import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema } from './table.js';
 import type { ViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
@@ -646,6 +646,11 @@ export class SchemaManager {
 			}
 		});
 
+		// Process mutation context definitions if present
+		const mutationContextSchemas = stmt.contextDefinitions
+			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
+			: undefined;
+
 		const baseTableSchema: TableSchema = {
 			name: tableName,
 			schemaName: targetSchemaName,
@@ -660,6 +665,7 @@ export class SchemaManager {
 			vtabModule: moduleInfo.module,
 			vtabAuxData: moduleInfo.auxData,
 			estimatedRows: 0,
+			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
 		};
 
 		let tableInstance: VirtualTable;

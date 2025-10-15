@@ -3,7 +3,7 @@ import type { PlanningContext } from '../planning-context.js';
 import { DeleteNode } from '../nodes/delete-node.js';
 import { buildTableReference } from './table.js';
 import { buildExpression } from './expression.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute, type RowDescriptor } from '../nodes/plan-node.js';
 import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -23,6 +23,33 @@ export function buildDeleteStmt(
 ): PlanNode {
   const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
   const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
+
+  // Process mutation context assignments if present
+  const mutationContextValues = new Map<string, ScalarPlanNode>();
+  const contextAttributes: Attribute[] = [];
+
+  if (stmt.contextValues && tableReference.tableSchema.mutationContext) {
+    // Create context attributes
+    tableReference.tableSchema.mutationContext.forEach((contextVar) => {
+      contextAttributes.push({
+        id: PlanNode.nextAttrId(),
+        name: contextVar.name,
+        type: {
+          typeClass: 'scalar' as const,
+          affinity: contextVar.affinity,
+          nullable: !contextVar.notNull,
+          isReadOnly: true
+        },
+        sourceRelation: `context.${tableReference.tableSchema.name}`
+      });
+    });
+
+    // Build context value expressions (evaluated in the base scope, before table scope)
+    stmt.contextValues.forEach((assignment) => {
+      const valueExpr = buildExpression(ctx, assignment.value) as ScalarPlanNode;
+      mutationContextValues.set(assignment.name, valueExpr);
+    });
+  }
 
   // Plan the source of rows to delete. This is typically the table itself, potentially filtered.
   let sourceNode: RelationalPlanNode = tableRetrieve; // Use the RetrieveNode as source
@@ -71,6 +98,14 @@ export function buildDeleteStmt(
 
   const { oldRowDescriptor, newRowDescriptor, flatRowDescriptor } = buildOldNewRowDescriptors(oldAttributes, newAttributes);
 
+  // Build context descriptor if we have context attributes
+  const contextDescriptor: RowDescriptor = contextAttributes.length > 0 ? [] : undefined as any;
+  if (contextDescriptor) {
+    contextAttributes.forEach((attr, index) => {
+      contextDescriptor[attr.id] = index;
+    });
+  }
+
   // Build constraint checks at plan time
   const constraintChecks = buildConstraintChecks(
     deleteCtx,
@@ -78,7 +113,8 @@ export function buildDeleteStmt(
     RowOpFlag.DELETE,
     oldAttributes,
     newAttributes,
-    flatRowDescriptor
+    flatRowDescriptor,
+    contextAttributes
   );
 
   // Always inject ConstraintCheckNode for DELETE operations
@@ -90,7 +126,10 @@ export function buildDeleteStmt(
     oldRowDescriptor,
     newRowDescriptor,
     flatRowDescriptor,
-    constraintChecks
+    constraintChecks,
+    mutationContextValues.size > 0 ? mutationContextValues : undefined,
+    contextAttributes.length > 0 ? contextAttributes : undefined,
+    contextDescriptor
   );
 
   const deleteNode = new DeleteNode(
@@ -98,7 +137,10 @@ export function buildDeleteStmt(
     tableReference,
     constraintCheckNode,
     oldRowDescriptor,
-    flatRowDescriptor
+    flatRowDescriptor,
+    mutationContextValues.size > 0 ? mutationContextValues : undefined,
+    contextAttributes.length > 0 ? contextAttributes : undefined,
+    contextDescriptor
   );
 
   // Add DML executor node to perform the actual database delete operations

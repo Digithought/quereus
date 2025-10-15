@@ -52,6 +52,8 @@ export interface TableSchema {
 	readonly estimatedRows?: number;
 	/** Whether the table is read-only */
 	isReadOnly?: boolean;	// default false
+	/** Mutation context variables for this table */
+	mutationContext?: ReadonlyArray<MutationContextDefinition>;
 	/** Foreign key constraints (parsed but not yet enforced by engine) */
 	// foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
 	/** Unique constraints (beyond primary key) */
@@ -143,6 +145,33 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 	}
 
 	return schema as ColumnSchema;
+}
+
+/**
+ * Mutation context variable definition
+ */
+export interface MutationContextDefinition {
+	/** Variable name */
+	name: string;
+	/** Type affinity of the variable */
+	affinity: SqlDataType;
+	/** Whether the variable is NOT NULL */
+	notNull: boolean;
+}
+
+/**
+ * Converts AST mutation context variable to schema definition
+ *
+ * @param varDef AST mutation context variable definition
+ * @param defaultNotNull Whether variables should be NOT NULL by default
+ * @returns Mutation context definition schema object
+ */
+export function mutationContextVarToSchema(varDef: AST.MutationContextVar, defaultNotNull: boolean = true): MutationContextDefinition {
+	return {
+		name: varDef.name,
+		affinity: getAffinity(varDef.dataType),
+		notNull: varDef.notNull !== undefined ? varDef.notNull : defaultNotNull,
+	};
 }
 
 /**

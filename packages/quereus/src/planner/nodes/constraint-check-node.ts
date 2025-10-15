@@ -29,7 +29,10 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
     public readonly oldRowDescriptor: RowDescriptor | undefined,
     public readonly newRowDescriptor: RowDescriptor | undefined,
     public readonly flatRowDescriptor: RowDescriptor,
-    public readonly constraintChecks: ConstraintCheck[]
+    public readonly constraintChecks: ConstraintCheck[],
+    public readonly mutationContextValues?: Map<string, ScalarPlanNode>, // Mutation context value expressions
+    public readonly contextAttributes?: Attribute[], // Mutation context attributes
+    public readonly contextDescriptor?: RowDescriptor, // Mutation context row descriptor
   ) {
     super(scope);
   }
@@ -98,7 +101,10 @@ export class ConstraintCheckNode extends PlanNode implements RelationalPlanNode 
       this.oldRowDescriptor,
       this.newRowDescriptor,
       this.flatRowDescriptor,
-      newConstraintChecks
+      newConstraintChecks,
+      this.mutationContextValues,
+      this.contextAttributes,
+      this.contextDescriptor
     );
   }
 

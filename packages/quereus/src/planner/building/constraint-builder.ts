@@ -28,7 +28,8 @@ export function buildConstraintChecks(
   operation: RowOpFlag,
   oldAttributes: Attribute[],
   newAttributes: Attribute[],
-  _flatRowDescriptor: RowDescriptor
+  _flatRowDescriptor: RowDescriptor,
+  contextAttributes: Attribute[] = []
 ): ConstraintCheck[] {
   // Build attribute ID mappings for column registration
   const newAttrIdByCol: Record<string, number> = {};
@@ -56,6 +57,22 @@ export function buildConstraintChecks(
   return applicableConstraints.map(constraint => {
     // Create scope with OLD/NEW column access for constraint evaluation
     const constraintScope = new RegisteredScope(ctx.scope);
+
+    // Register mutation context variables FIRST (so they shadow column names if conflicts exist)
+    contextAttributes.forEach((attr, contextVarIndex) => {
+      if (contextVarIndex < (tableSchema.mutationContext?.length || 0)) {
+        const contextVar = tableSchema.mutationContext![contextVarIndex];
+        const varNameLower = contextVar.name.toLowerCase();
+
+        // Register both unqualified and qualified names
+        constraintScope.subscribeFactory(varNameLower, (exp, s) =>
+          new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
+        );
+        constraintScope.subscribeFactory(`context.${varNameLower}`, (exp, s) =>
+          new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
+        );
+      }
+    });
 
     // Register column symbols (similar to current emitConstraintCheck logic)
     tableSchema.columns.forEach((tableColumn, tableColIndex) => {
