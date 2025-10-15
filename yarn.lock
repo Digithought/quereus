@@ -768,6 +768,17 @@
   resolved "https://registry.npmjs.org/@pkgjs/parseargs/-/parseargs-0.11.0.tgz"
   integrity sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==
 
+"@quereus/quereus@^0.2.1":
+  version "0.2.1"
+  resolved "https://registry.yarnpkg.com/@quereus/quereus/-/quereus-0.2.1.tgz#e9036f7e804c33f180aa6d1c4f6a06bff64dc639"
+  integrity sha512-iRq2y+5m6cMEAxtm+mUVfaRyFAhR1eL4KECsTFNPvbVHyExC92O+P3JhQrFM6nL+XjWZKpWfvTuKM9ifxJ8TUg==
+  dependencies:
+    debug "^4.4.1"
+    fast-json-patch "^3.1.1"
+    inheritree "^0.3.2"
+    temporal-polyfill "^0.3.0"
+    uint8arrays "^5.1.0"
+
 "@rolldown/pluginutils@1.0.0-beta.9":
   version "1.0.0-beta.9"
   resolved "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.9.tgz"
