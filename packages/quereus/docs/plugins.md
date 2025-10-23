@@ -61,29 +61,11 @@ Notes:
 
 ### Runtime module contract
 
-The export at `exports['./plugin']` must be an ES module that:
-
-1) Exports a `manifest` object mirroring display metadata required by the host UI (it can be generated at build time from `package.json`).
-2) Exports a default `register(db, config)` function that returns what to register.
+The export at `exports['./plugin']` must be an ES module that exports a default `register(db, config)` function. Plugin metadata is read from `package.json` at load time.
 
 ```typescript
-// ./dist/plugin.js
+// ./dist/plugin.ts
 import type { Database, SqlValue } from '@quereus/quereus';
-
-export const manifest = {
-  name: 'Acme Foo',
-  version: '1.2.3',
-  description: 'Foo sources as virtual tables + helpers',
-  provides: {
-    vtables: ['foo_items'],
-    functions: ['foo_hash'],
-    collations: ['FOO_NATURAL']
-  },
-  settings: [
-    { key: 'api_key', label: 'API Key', type: 'string' },
-    { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 5000 }
-  ]
-};
 
 export default function register(
   db: Database,
@@ -96,6 +78,10 @@ export default function register(
   };
 }
 ```
+
+The plugin's metadata is automatically extracted from `package.json` when the plugin is loaded. The loader looks for:
+- Root fields: `name`, `version`, `description`, `author`
+- Plugin-specific metadata under `quereus` object: `provides`, `settings`, `pragmaPrefix`, `capabilities`
 
 ### Registration Function
 
@@ -612,95 +598,114 @@ export default function register(db, config) {
 
 ## Complete Example
 
-Here's a comprehensive plugin that demonstrates all three types:
+Here's a comprehensive plugin that demonstrates all three types. Note that metadata is defined in `package.json`, not in the plugin code:
 
-```javascript
-export const manifest = {
-  name: 'Demo Plugin',
-  version: '1.0.0',
-  description: 'Demonstrates all plugin types',
-  settings: [
-    {
-      key: 'debug',
-      label: 'Debug Mode',
-      type: 'boolean',
-      default: false
+**package.json:**
+```json
+{
+  "name": "@acme/quereus-plugin-demo",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Demonstrates all plugin types",
+  "exports": {
+    "./plugin": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
-  ],
-  provides: {
-    vtables: ['key_value'],
-    functions: ['upper_reverse'],
-    collations: ['LENGTH']
+  },
+  "quereus": {
+    "provides": {
+      "vtables": ["key_value"],
+      "functions": ["upper_reverse"],
+      "collations": ["LENGTH"]
+    },
+    "settings": [
+      {
+        "key": "debug",
+        "label": "Debug Mode",
+        "type": "boolean",
+        "default": false
+      }
+    ]
   }
-};
+}
+```
+
+**index.ts:**
+```typescript
+import type { Database, SqlValue, CollationFunction } from '@quereus/quereus';
 
 // Virtual table: simple key-value store
 class KeyValueStore {
-  constructor(args, config) {
-    this.store = new Map();
-  }
+  private store = new Map<string, string>();
 
-  getSchema() {
+  getSchema(): string {
     return 'CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT)';
   }
 
-  * scan() {
+  *scan(): Generator<Record<string, string>> {
     for (const [key, value] of this.store) {
       yield { key, value };
     }
   }
 
-  insert(row) {
+  insert(row: Record<string, string>): void {
     this.store.set(row.key, row.value);
   }
 
-  delete(row) {
+  delete(row: Record<string, string>): void {
     this.store.delete(row.key);
   }
 }
 
 // Function: uppercase and reverse
-function upperReverse(text) {
+function upperReverse(text: SqlValue): SqlValue {
   if (text === null || text === undefined) return null;
   return String(text).toUpperCase().split('').reverse().join('');
 }
 
 // Collation: sort by length
-function lengthCollation(a, b) {
+const lengthCollation: CollationFunction = (a: string, b: string): number => {
   if (a.length !== b.length) {
     return a.length - b.length;
   }
   return a < b ? -1 : a > b ? 1 : 0;
-}
+};
 
-export default function register(db, config) {
+export default function register(db: Database, config: Record<string, SqlValue> = {}) {
   if (config.debug) {
     console.log('Demo plugin loading...');
   }
-  
+
   return {
     vtables: [
       {
         name: 'key_value',
         module: {
-          create: async (tableName, args, config) => {
-            const table = new KeyValueStore(args, config);
+          xCreate: (db: Database, tableSchema: any) => {
+            const table = new KeyValueStore();
             return {
-              schema: table.getSchema(),
-              vtable: table
+              db,
+              module: this,
+              schemaName: tableSchema.schemaName,
+              tableName: tableSchema.name,
+              async xDisconnect() {},
+              async xUpdate() { return undefined; },
+              async *xQuery() {
+                for (const row of table.scan()) {
+                  yield [row.key, row.value];
+                }
+              }
             };
           },
-          connect: async (tableName, args, config) => {
-            const table = new KeyValueStore(args, config);
-            return {
-              schema: table.getSchema(),
-              vtable: table
-            };
+          xConnect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
+            // Similar to xCreate
+            return this.xCreate(db, { schemaName, name: tableName });
           }
         }
       }
     ],
-    
+
     functions: [
       {
         schema: {
@@ -712,7 +717,7 @@ export default function register(db, config) {
         }
       }
     ],
-    
+
     collations: [
       {
         name: 'LENGTH',
@@ -725,26 +730,42 @@ export default function register(db, config) {
 
 ## TypeScript Benefits
 
-With the exported types, plugin development gains several advantages:
+Plugins are now best developed in TypeScript for full type safety and IDE support. The build process compiles TypeScript to JavaScript for distribution.
 
 ### Full Type Safety
 
 ```typescript
-// Compile-time checking of vtable implementations
-class MyTable extends VirtualTable {
-  // TypeScript ensures all required methods are implemented
-  async xUpdate(operation: RowOp, values: Row | undefined): Promise<Row | undefined> {
-    // Type-safe parameter handling
-    if (operation === 'INSERT' && values) {
-      return this.handleInsert(values);
-    }
-    return undefined;
-  }
+import type { Database, SqlValue, CollationFunction } from '@quereus/quereus';
+
+// Compile-time checking of function implementations
+function myFunction(text: SqlValue): SqlValue {
+  // Type-safe parameter handling
+  if (text === null || text === undefined) return null;
+  return String(text).toUpperCase();
 }
 
-// Interface compliance is checked at compile time
-class MyModule implements VirtualTableModule<MyTable, MyConfig> {
-  // All required methods must be implemented with correct signatures
+// Type-safe collation function
+const myCollation: CollationFunction = (a: string, b: string): number => {
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
+// Type-safe registration
+export default function register(db: Database, config: Record<string, SqlValue> = {}) {
+  return {
+    functions: [{
+      schema: {
+        name: 'my_function',
+        numArgs: 1,
+        flags: 1,
+        returnType: { typeClass: 'scalar', sqlType: 'TEXT' },
+        implementation: myFunction  // Type-checked at compile time
+      }
+    }],
+    collations: [{
+      name: 'MY_COLLATION',
+      func: myCollation  // Type-checked at compile time
+    }]
+  };
 }
 ```
 
@@ -752,23 +773,35 @@ class MyModule implements VirtualTableModule<MyTable, MyConfig> {
 
 IDEs provide rich autocomplete and inline documentation for all exported types:
 
-- Method signatures with parameter types
-- Enum values with descriptions  
+- Function signatures with parameter types
+- Enum values with descriptions
 - Interface properties with documentation
 - Import suggestions for missing types
 
-### Modern Planning Features
+### Build Configuration
 
-Access advanced query optimization through the modern planning API:
+Each plugin should have a `tsconfig.json` and build script:
 
-```typescript
-// Use builder pattern for clean, type-safe plan construction
-const plan = AccessPlanBuilder.eqMatch(1)
-  .setHandledFilters([true, false, true])
-  .setOrdering([{ columnIndex: 0, desc: false }])
-  .setIsSet(true)
-  .setExplanation('Primary key lookup')
-  .build();
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "declaration": true,
+    "outDir": "./dist",
+    "strict": true
+  },
+  "include": ["index.ts"]
+}
+```
+
+```json
+{
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  }
+}
 ```
 
 ## Best Practices
@@ -839,7 +872,7 @@ In Quoomb Web, the Plugin Manager accepts either:
 - An npm package spec (e.g. `@acme/quereus-plugin-foo@^1`) — may require a CDN if running fully in-browser
 - A direct ESM URL (e.g. a GitHub raw link)
 
-The UI reads `manifest.settings` or `package.json.quereus.settings` to render configuration, and surfaces `quereus.provides` as capability badges.
+The UI reads `package.json.quereus.settings` to render configuration, and surfaces `quereus.provides` as capability badges. The manifest is automatically extracted from the plugin's `package.json` when loaded.
 
 
 

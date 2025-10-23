@@ -7,16 +7,25 @@
   "keywords": ["quereus-plugin", "quereus", "functions", "strings"],
   "exports": {
     "./plugin": {
-      "default": "./index.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "peerDependencies": {
     "@quereus/quereus": "*"
   },
   "engines": {
-    "quereus": ">=0.0.0"
+    "quereus": "^0.4.0"
   },
   "quereus": {
     "provides": { "functions": ["reverse", "title_case", "repeat", "slugify", "word_count", "str_concat", "str_stats"] }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "typescript": "^5.0.0"
   }
 }

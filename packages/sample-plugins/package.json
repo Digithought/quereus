@@ -5,7 +5,8 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "build": "echo \"Sample plugins are ES modules - no build needed\"",
+    "build": "tsc",
+    "dev": "tsc --watch",
     "serve": "npx http-server -p 8080 --cors",
     "test": "echo \"No tests specified\" && exit 0"
   },

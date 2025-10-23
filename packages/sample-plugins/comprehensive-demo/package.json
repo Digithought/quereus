@@ -7,14 +7,23 @@
   "keywords": ["quereus-plugin", "quereus", "demo", "examples"],
   "exports": {
     "./plugin": {
-      "default": "./index.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "peerDependencies": {
     "@quereus/quereus": "*"
   },
   "engines": {
-    "quereus": ">=0.0.0"
+    "quereus": "0.4.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "typescript": "^5.0.0"
   },
   "quereus": {
     "provides": {

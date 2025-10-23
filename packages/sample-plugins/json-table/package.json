@@ -7,14 +7,15 @@
   "keywords": ["quereus-plugin", "quereus", "virtual-table", "json"],
   "exports": {
     "./plugin": {
-      "default": "./index.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "peerDependencies": {
     "@quereus/quereus": "*"
   },
   "engines": {
-    "quereus": ">=0.0.0"
+    "quereus": "~0.4.0"
   },
   "quereus": {
     "provides": { "vtables": ["json_table"] },
@@ -24,5 +25,13 @@
       { "key": "user_agent", "label": "User Agent", "type": "string", "default": "Quereus JSON_TABLE Plugin/1.0.0" },
       { "key": "enable_cache", "label": "Enable Caching", "type": "boolean", "default": true }
     ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "typescript": "^5.0.0"
   }
 }

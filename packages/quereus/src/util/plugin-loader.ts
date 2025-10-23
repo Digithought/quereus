@@ -10,11 +10,27 @@ const log = createLogger('util:plugin-loader');
  * Plugin module interface - what we expect from a plugin module
  */
 export interface PluginModule {
-	/** Plugin manifest with metadata */
-	manifest?: PluginManifest;
-	
 	/** Default export - the plugin registration function */
 	default: (db: Database, config: Record<string, SqlValue>) => Promise<PluginRegistrations> | PluginRegistrations;
+}
+
+/**
+ * Extracts plugin manifest from package.json metadata
+ * Looks for metadata in package.json root fields and quereus.provides/settings
+ */
+function extractManifestFromPackageJson(pkg: any): PluginManifest {
+	const quereus = pkg.quereus || {};
+
+	return {
+		name: pkg.name || 'Unknown Plugin',
+		version: pkg.version || '0.0.0',
+		author: pkg.author,
+		description: pkg.description,
+		pragmaPrefix: quereus.pragmaPrefix,
+		settings: quereus.settings,
+		provides: quereus.provides,
+		capabilities: quereus.capabilities
+	};
 }
 
 /**
@@ -53,7 +69,7 @@ export async function dynamicLoadModule(
 
 		log('Successfully loaded plugin from %s', url);
 		if (registrations.vtables?.length) {
-			log('  Registered %d vtable module(s): %s', registrations.vtables.length, 
+			log('  Registered %d vtable module(s): %s', registrations.vtables.length,
 				registrations.vtables.map(v => v.name).join(', '));
 		}
 		if (registrations.functions?.length) {
@@ -65,8 +81,21 @@ export async function dynamicLoadModule(
 				registrations.collations.map(c => c.name).join(', '));
 		}
 
-		// Return the manifest if available
-		return mod.manifest;
+		// Try to extract manifest from package.json
+		let manifest: PluginManifest | undefined;
+		try {
+			const packageJsonUrl = new URL('package.json', moduleUrl);
+			const packageJsonResponse = await fetch(packageJsonUrl.toString());
+			if (packageJsonResponse.ok) {
+				const pkg = await packageJsonResponse.json();
+				manifest = extractManifestFromPackageJson(pkg);
+			}
+		} catch {
+			// package.json not found or not accessible - that's okay
+			log('Could not load package.json for plugin at %s', url);
+		}
+
+		return manifest;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		quereusError(`Failed to load plugin from ${url}: ${message}`);
@@ -75,7 +104,7 @@ export async function dynamicLoadModule(
 
 /**
  * Registers all items provided by a plugin
- * 
+ *
  * @param db Database instance to register with
  * @param registrations The items to register
  */
@@ -215,7 +244,7 @@ export async function loadPlugin(
         await registerPluginItems(db, registrations);
         log('Successfully loaded plugin from package %s', npm.name);
         if (registrations.vtables?.length) {
-            log('  Registered %d vtable module(s): %s', registrations.vtables.length, 
+            log('  Registered %d vtable module(s): %s', registrations.vtables.length,
                 registrations.vtables.map(v => v.name).join(', '));
         }
         if (registrations.functions?.length) {
@@ -226,7 +255,19 @@ export async function loadPlugin(
             log('  Registered %d collation(s): %s', registrations.collations.length,
                 registrations.collations.map(c => c.name).join(', '));
         }
-        return mod.manifest;
+
+        // Try to extract manifest from package.json
+        let manifest: PluginManifest | undefined;
+        try {
+            // Try to import package.json directly
+            const pkg = await import(`${npm.name}/package.json`, { assert: { type: 'json' } });
+            manifest = extractManifestFromPackageJson(pkg.default);
+        } catch {
+            // package.json not found - that's okay
+            log('Could not load package.json for plugin %s', npm.name);
+        }
+
+        return manifest;
     }
 
     // Browser path: npm spec requires CDN; only if explicitly allowed
