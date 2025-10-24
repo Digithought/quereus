@@ -4,7 +4,7 @@ The Quereus optimizer transforms logical query plans into efficient physical exe
 
 ## Philosophy
 
-The Titan optimizer embodies several core principles that guide its design and implementation:
+The Quereus optimizer embodies several core principles that guide its design and implementation:
 
 ### Virtual Table Centric
 The optimizer is built around the premise that all data access happens through virtual tables. This means optimization decisions must respect the capabilities and constraints exposed by each virtual table module through the `BestAccessPlan` API.

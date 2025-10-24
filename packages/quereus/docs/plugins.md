@@ -91,6 +91,8 @@ The default export receives the database instance and user configuration and ret
 
 Virtual tables allow you to expose external data sources as SQL tables. Use the exported TypeScript types for full type safety.
 
+**For comprehensive module authoring guidance**, including optimization integration, the Retrieve boundary architecture, and best practices, see the [Module Authoring Guide](module-authoring.md). This section covers plugin packaging; the authoring guide covers module implementation details.
+
 ### Basic Virtual Table
 
 ```typescript
