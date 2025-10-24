@@ -22,7 +22,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		try {
 			for await (const flatRow of rows) {
 				const newRow = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
-				await vtab.xUpdate!('insert', newRow, undefined, plan.onConflict ?? ConflictResolution.ABORT);
+				await vtab.update!('insert', newRow, undefined, plan.onConflict ?? ConflictResolution.ABORT);
 				// Track change (INSERT): record NEW primary key
 				const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
 				ctx.db._recordInsert(`${tableSchema.schemaName}.${tableSchema.name}`, pkValues);
@@ -48,7 +48,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 					return oldRow[pkColIdx];
 				});
-				await vtab.xUpdate!('update', newRow, keyValues, ConflictResolution.ABORT);
+				await vtab.update!('update', newRow, keyValues, ConflictResolution.ABORT);
 				// Track change (UPDATE): record OLD and NEW primary keys
 				const newKeyValues: SqlValue[] = tableSchema.primaryKeyDefinition.map(pkColDef => newRow[pkColDef.index]);
 				ctx.db._recordUpdate(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues, newKeyValues);
@@ -72,7 +72,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 					return oldRow[pkColIdx];
 				});
-				await vtab.xUpdate!('delete', undefined, keyValues, ConflictResolution.ABORT);
+				await vtab.update!('delete', undefined, keyValues, ConflictResolution.ABORT);
 				// Track change (DELETE): record OLD primary key
 				ctx.db._recordDelete(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues);
 				yield flatRow;

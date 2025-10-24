@@ -8,7 +8,7 @@ import { RowOp } from '../../common/types.js';
 
 /**
  * Executes actual database insert/update/delete operations after constraint validation.
- * This node performs the actual vtab.xUpdate operations and yields the affected rows.
+ * This node performs the actual vtab.update operations and yields the affected rows.
  * All data transformations (defaults, conversions, etc.) happen before this node.
  */
 export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {

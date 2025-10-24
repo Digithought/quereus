@@ -26,12 +26,12 @@ class KeyValueStore {
   constructor(args: string[], config: Record<string, SqlValue>) {
     this.storeName = args[0] || 'default';
     this.config = config;
-    
+
     // Initialize store if it doesn't exist
     if (!stores.has(this.storeName)) {
       stores.set(this.storeName, new Map());
     }
-    
+
     this.store = stores.get(this.storeName)!;
   }
 
@@ -65,7 +65,7 @@ class KeyValueStore {
 }
 
 const keyValueModule = {
-  xCreate: (db: Database, tableSchema: any) => {
+  create: (db: Database, tableSchema: any) => {
     const args = [tableSchema.vtabArgs && tableSchema.vtabArgs.store ? tableSchema.vtabArgs.store : 'default'];
     const table = new KeyValueStore(args, tableSchema.vtabArgs || {});
     // Minimal instance compatible with VirtualTable
@@ -75,15 +75,15 @@ const keyValueModule = {
       schemaName: tableSchema.schemaName,
       tableName: tableSchema.name,
       tableSchema,
-      xDisconnect: async () => {},
-      async xUpdate(op: string, values: any) {
+      disconnect: async () => {},
+      async update(op: string, values: any) {
         if (op === 'insert' && values) {
           table.insert({ key: values[0], value: values[1] });
           return values;
         }
         return undefined;
       },
-      *xQuery() {
+      *query() {
         for (const row of table.scan()) {
           yield [row.key, row.value];
         }
@@ -103,7 +103,7 @@ const keyValueModule = {
       }
     };
   },
-  xConnect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
+  connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
     const tableSchema = {
       name: tableName,
       schemaName,
@@ -120,7 +120,7 @@ const keyValueModule = {
       vtabArgs: options || {},
       estimatedRows: 0
     };
-    return keyValueModule.xCreate(db, tableSchema);
+    return keyValueModule.create(db, tableSchema);
   }
 };
 
@@ -132,38 +132,38 @@ const keyValueModule = {
 function mathRoundTo(value: SqlValue, precision: SqlValue): SqlValue {
   if (value === null || value === undefined) return null;
   if (precision === null || precision === undefined) return null;
-  
+
   const num = Number(value);
   const prec = Math.max(0, Math.floor(Number(precision)));
   const factor = Math.pow(10, prec);
-  
+
   return Math.round(num * factor) / factor;
 }
 
 // Convert hex string to integer
 function hexToInt(hexStr: SqlValue): SqlValue {
   if (hexStr === null || hexStr === undefined) return null;
-  
+
   const str = String(hexStr).replace(/^0x/i, '');
   const result = parseInt(str, 16);
-  
+
   return isNaN(result) ? null : result;
 }
 
 // Convert integer to hex string
 function intToHex(intVal: SqlValue): SqlValue {
   if (intVal === null || intVal === undefined) return null;
-  
+
   const num = Number(intVal);
   if (!Number.isInteger(num)) return null;
-  
+
   return '0x' + num.toString(16).toUpperCase();
 }
 
 // Table-valued function that returns data summary
 function* dataSummary(jsonData: SqlValue): Generator<Record<string, SqlValue>> {
   if (jsonData === null || jsonData === undefined) return;
-  
+
   let data: any;
   try {
     data = JSON.parse(String(jsonData));
@@ -171,11 +171,11 @@ function* dataSummary(jsonData: SqlValue): Generator<Record<string, SqlValue>> {
     yield { property: 'error', value: 'Invalid JSON' };
     return;
   }
-  
+
   if (Array.isArray(data)) {
     yield { property: 'type', value: 'array' };
     yield { property: 'length', value: data.length };
-    
+
     if (data.length > 0) {
       const firstType = typeof data[0];
       yield { property: 'first_element_type', value: firstType };
@@ -184,7 +184,7 @@ function* dataSummary(jsonData: SqlValue): Generator<Record<string, SqlValue>> {
     yield { property: 'type', value: 'object' };
     const keys = Object.keys(data);
     yield { property: 'key_count', value: keys.length };
-    
+
     if (keys.length > 0) {
       yield { property: 'first_key', value: keys[0] };
     }
@@ -202,10 +202,10 @@ const unicodeCaseInsensitive: CollationFunction = (a: string, b: string): number
   const normalize = (str: string): string => {
     return str.normalize('NFD').toLowerCase().normalize('NFC');
   };
-  
+
   const normA = normalize(a);
   const normB = normalize(b);
-  
+
   return normA < normB ? -1 : normA > normB ? 1 : 0;
 };
 
@@ -215,11 +215,11 @@ const unicodeCaseInsensitive: CollationFunction = (a: string, b: string): number
 export default function register(db: Database, config: Record<string, SqlValue> = {}) {
   const precision = (config.default_precision as number) || 2;
   const debug = (config.enable_debug as boolean) || false;
-  
+
   if (debug) {
     console.log('Comprehensive Demo plugin loaded with config:', config);
   }
-  
+
   return {
     // Virtual table registration
     vtables: [
@@ -229,7 +229,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
         auxData: config
       }
     ],
-    
+
     // Function registrations
     functions: [
       {
@@ -264,7 +264,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
           name: 'data_summary',
           numArgs: 1,
           flags: 1, // FunctionFlags.UTF8
-          returnType: { 
+          returnType: {
             typeClass: 'relation',
             columns: [
               { name: 'property', type: 'TEXT' },
@@ -275,7 +275,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
         }
       }
     ],
-    
+
     // Collation registrations
     collations: [
       {

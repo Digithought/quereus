@@ -238,34 +238,4 @@ export function validateAccessPlan(
 	}
 }
 
-/**
- * Helper to convert old IndexConstraint to new PredicateConstraint
- * @deprecated Use direct PredicateConstraint construction instead
- */
-export function convertIndexConstraint(
-	constraint: any, // Old IndexConstraint type
-	value?: SqlValue
-): PredicateConstraint {
-	// Map old constraint operators to new ones
-	const opMap: Record<string, ConstraintOp> = {
-		'EQ': '=',
-		'GT': '>',
-		'GE': '>=',
-		'LT': '<',
-		'LE': '<=',
-		'MATCH': 'MATCH',
-		'LIKE': 'LIKE',
-		'GLOB': 'GLOB',
-		'ISNULL': 'IS NULL',
-		'ISNOTNULL': 'IS NOT NULL'
-	};
 
-	const op = opMap[constraint.op] || '=';
-
-	return {
-		columnIndex: constraint.iColumn,
-		op,
-		value,
-		usable: constraint.usable
-	};
-}

@@ -368,23 +368,23 @@ export class SchemaManager {
 
 		let destroyPromise: Promise<void> | null = null;
 
-		// Call xDestroy on the module, providing table details
+		// Call destroy on the module, providing table details
 		if (tableSchema.vtabModuleName) { // tableSchema is guaranteed to be defined here
 			const moduleRegistration = this.getModule(tableSchema.vtabModuleName);
-			if (moduleRegistration && moduleRegistration.module && moduleRegistration.module.xDestroy) {
-				log(`Calling xDestroy for VTab %s.%s via module %s`, schemaName, tableName, tableSchema.vtabModuleName);
-				destroyPromise = moduleRegistration.module.xDestroy(
+			if (moduleRegistration && moduleRegistration.module && moduleRegistration.module.destroy) {
+				log(`Calling destroy for VTab %s.%s via module %s`, schemaName, tableName, tableSchema.vtabModuleName);
+				destroyPromise = moduleRegistration.module.destroy(
 					this.db,
 					moduleRegistration.auxData,
 					tableSchema.vtabModuleName,
 					schemaName,
 					tableName
 				).catch(err => {
-					errorLog(`Error during VTab module xDestroy for %s.%s: %O`, schemaName, tableName, err);
-					// Potentially re-throw or handle as a critical error if xDestroy failure is problematic
+					errorLog(`Error during VTab module destroy for %s.%s: %O`, schemaName, tableName, err);
+					// Potentially re-throw or handle as a critical error if destroy failure is problematic
 				});
 			} else {
-				warnLog(`VTab module %s (for table %s.%s) or its xDestroy method not found during dropTable.`, tableSchema.vtabModuleName, schemaName, tableName);
+				warnLog(`VTab module %s (for table %s.%s) or its destroy method not found during dropTable.`, tableSchema.vtabModuleName, schemaName, tableName);
 			}
 		}
 
@@ -408,7 +408,7 @@ export class SchemaManager {
 
 		// Process destruction asynchronously
 		if (destroyPromise) {
-			void destroyPromise.then(() => log(`xDestroy completed for VTab %s.%s`, schemaName, tableName));
+			void destroyPromise.then(() => log(`destroy completed for VTab %s.%s`, schemaName, tableName));
 		}
 
 		return removed; // True if removed from schema, false if not found and ifExists was true.
@@ -469,11 +469,11 @@ export class SchemaManager {
 
 	/**
 	 * Creates a new index on an existing table based on an AST.CreateIndexStmt.
-	 * This method validates the index definition and calls the virtual table's xCreateIndex method.
+	 * This method validates the index definition and calls the virtual table's createIndex method.
 	 *
 	 * @param stmt The AST node for the CREATE INDEX statement.
 	 * @returns A Promise that resolves when the index is created.
-	 * @throws QuereusError on errors (e.g., table not found, column not found, xCreateIndex fails).
+	 * @throws QuereusError on errors (e.g., table not found, column not found, createIndex fails).
 	 */
 	async createIndex(stmt: AST.CreateIndexStmt): Promise<void> {
 		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
@@ -486,8 +486,8 @@ export class SchemaManager {
 			throw new QuereusError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 
-		// Check if the virtual table module supports xCreateIndex
-		if (!tableSchema.vtabModule.xCreateIndex) {
+		// Check if the virtual table module supports createIndex
+		if (!tableSchema.vtabModule.createIndex) {
 			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 
@@ -531,8 +531,8 @@ export class SchemaManager {
 		};
 
 		try {
-			// Call xCreateIndex on the virtual table module
-			await tableSchema.vtabModule.xCreateIndex(
+			// Call createIndex on the virtual table module
+			await tableSchema.vtabModule.createIndex(
 				this.db,
 				targetSchemaName,
 				tableName,
@@ -563,18 +563,18 @@ export class SchemaManager {
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
-			throw new QuereusError(`xCreateIndex failed for index '${indexName}' on table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			throw new QuereusError(`createIndex failed for index '${indexName}' on table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
 	}
 
 	/**
 	 * Defines a new table in the schema based on an AST.CreateTableStmt.
-	 * This method encapsulates the logic for interacting with VTab modules (xCreate)
+	 * This method encapsulates the logic for interacting with VTab modules (create)
 	 * and registering the new table schema.
 	 *
 	 * @param stmt The AST node for the CREATE TABLE statement.
 	 * @returns A Promise that resolves to the created TableSchema.
-	 * @throws QuereusError on errors (e.g., module not found, xCreate fails, table exists).
+	 * @throws QuereusError on errors (e.g., module not found, create fails, table exists).
 	 */
 	async createTable(stmt: AST.CreateTableStmt): Promise<TableSchema> {
 		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
@@ -670,14 +670,14 @@ export class SchemaManager {
 
 		let tableInstance: VirtualTable;
 		try {
-			tableInstance = moduleInfo.module.xCreate(
+			tableInstance = moduleInfo.module.create(
 				this.db,
 				baseTableSchema
 			);
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
-			throw new QuereusError(`Module '${moduleName}' xCreate failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			throw new QuereusError(`Module '${moduleName}' create failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
 
 		const schema = this.getSchema(targetSchemaName);
@@ -687,7 +687,7 @@ export class SchemaManager {
 
 		const finalRegisteredSchema = tableInstance.tableSchema;
 		if (!finalRegisteredSchema) {
-			throw new QuereusError(`Module '${moduleName}' xCreate did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
+			throw new QuereusError(`Module '${moduleName}' create did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
 		}
 
 		// Create a properly typed schema object instead of mutating properties

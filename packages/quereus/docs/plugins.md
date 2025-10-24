@@ -141,14 +141,14 @@ class MyTable extends VirtualTable {
   }
 
   // Query implementation using async iterator
-  async* xQuery(): AsyncIterable<Row> {
+  async* query(): AsyncIterable<Row> {
     for (const row of this.data) {
       yield row;
     }
   }
 
   // Update operations (INSERT, UPDATE, DELETE)
-  async xUpdate(operation: any, values: Row | undefined, oldKeyValues?: Row, onConflict?: ConflictResolution): Promise<Row | undefined> {
+  async update(operation: any, values: Row | undefined, oldKeyValues?: Row, onConflict?: ConflictResolution): Promise<Row | undefined> {
     if (operation === 'INSERT' && values) {
       this.data.push(values);
       return values;
@@ -157,19 +157,19 @@ class MyTable extends VirtualTable {
     return undefined;
   }
 
-  async xDisconnect(): Promise<void> {
+  async disconnect(): Promise<void> {
     // Cleanup resources
   }
 }
 
 // Module implementation
 class MyTableModule implements VirtualTableModule<MyTable, MyTableConfig> {
-  xCreate(db: Database, tableSchema: TableSchema): MyTable {
+  create(db: Database, tableSchema: TableSchema): MyTable {
     const config: MyTableConfig = {}; // Parse from tableSchema if needed
     return new MyTable(db, this, tableSchema.schemaName, tableSchema.tableName, config);
   }
 
-  xConnect(
+  connect(
     db: Database,
     pAux: unknown,
     moduleName: string,
@@ -190,9 +190,7 @@ class MyTableModule implements VirtualTableModule<MyTable, MyTableConfig> {
       .build();
   }
 
-  xBestIndex(): number { return 0; } // Legacy compatibility
-
-  async xDestroy(): Promise<void> {
+  async destroy(): Promise<void> {
     // Cleanup persistent resources
   }
 }
@@ -684,25 +682,25 @@ export default function register(db: Database, config: Record<string, SqlValue> 
       {
         name: 'key_value',
         module: {
-          xCreate: (db: Database, tableSchema: any) => {
+          create: (db: Database, tableSchema: any) => {
             const table = new KeyValueStore();
             return {
               db,
               module: this,
               schemaName: tableSchema.schemaName,
               tableName: tableSchema.name,
-              async xDisconnect() {},
-              async xUpdate() { return undefined; },
-              async *xQuery() {
+              async disconnect() {},
+              async update() { return undefined; },
+              async *query() {
                 for (const row of table.scan()) {
                   yield [row.key, row.value];
                 }
               }
             };
           },
-          xConnect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
-            // Similar to xCreate
-            return this.xCreate(db, { schemaName, name: tableName });
+          connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
+            // Similar to create
+            return this.create(db, { schemaName, name: tableName });
           }
         }
       }
@@ -923,26 +921,25 @@ All types are exported from the main `quereus` package for external plugin devel
 // Base class for virtual table implementations
 abstract class VirtualTable {
   constructor(db: Database, module: VirtualTableModule<any, any>, schemaName: string, tableName: string);
-  abstract xDisconnect(): Promise<void>;
-  abstract xUpdate(operation: RowOp, values: Row | undefined, oldKeyValues?: Row): Promise<Row | undefined>;
-  
+  abstract disconnect(): Promise<void>;
+  abstract update(operation: RowOp, values: Row | undefined, oldKeyValues?: Row): Promise<Row | undefined>;
+
   // Optional methods
-  xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
+  query?(filterInfo: FilterInfo): AsyncIterable<Row>;
   createConnection?(): MaybePromise<VirtualTableConnection>;
   getBestAccessPlan?(request: BestAccessPlanRequest): BestAccessPlanResult;
-  xBegin?(): Promise<void>;
-  xCommit?(): Promise<void>;
-  xRollback?(): Promise<void>;
+  begin?(): Promise<void>;
+  commit?(): Promise<void>;
+  rollback?(): Promise<void>;
   // ... other optional methods
 }
 
 // Module interface for creating and managing virtual table instances
 interface VirtualTableModule<TTable extends VirtualTable, TConfig extends BaseModuleConfig> {
-  xCreate(db: Database, tableSchema: TableSchema): TTable;
-  xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: TConfig): TTable;
+  create(db: Database, tableSchema: TableSchema): TTable;
+  connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: TConfig): TTable;
   getBestAccessPlan?(db: Database, tableInfo: TableSchema, request: BestAccessPlanRequest): BestAccessPlanResult;
-  xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number;
-  xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void>;
+  destroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void>;
 }
 
 // Base configuration interface

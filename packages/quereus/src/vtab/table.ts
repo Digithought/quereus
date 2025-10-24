@@ -41,16 +41,16 @@ export abstract class VirtualTable {
 	 * Called when the database connection closes or the statement is finalized
 	 * @throws QuereusError on failure
 	 */
-	abstract xDisconnect(): Promise<void>;
+	abstract disconnect(): Promise<void>;
 
 	/**
 	 * (Optional) Opens a direct data stream for this virtual table based on filter criteria.
-	 * This is an alternative to the cursor-based xOpen/filter/next model.
-	 * @param filterInfo Information from xBestIndex and query parameters.
+	 * This is an alternative to the cursor-based open/filter/next model.
+	 * @param filterInfo Information from getBestAccessPlan and query parameters.
 	 * @returns An AsyncIterable yielding Row tuples.
 	 * @throws QuereusError on failure
 	 */
-	xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
+	query?(filterInfo: FilterInfo): AsyncIterable<Row>;
 
 	/**
 	 * Executes a pushed-down plan subtree.
@@ -61,7 +61,7 @@ export abstract class VirtualTable {
 	 * @param ctx Optional context from supports() assessment
 	 * @returns Async iterable of rows resulting from the plan execution
 	 */
-	xExecutePlan?(
+	executePlan?(
 		db: Database,
 		plan: PlanNode,
 		ctx?: unknown
@@ -76,7 +76,7 @@ export abstract class VirtualTable {
 	 * @returns new row for INSERT/UPDATE, undefined for DELETE
 	 * @throws QuereusError or ConstraintError on failure
 	 */
-	abstract xUpdate(
+	abstract update(
 		operation: RowOp,
 		values: Row | undefined,
 		oldKeyValues?: Row,
@@ -100,63 +100,63 @@ export abstract class VirtualTable {
 	/**
 	 * Begins a transaction on this virtual table
 	 */
-	xBegin?(): Promise<void>;
+	begin?(): Promise<void>;
 
 	/**
 	 * Syncs changes within the virtual table transaction
 	 */
-	xSync?(): Promise<void>;
+	sync?(): Promise<void>;
 
 	/**
 	 * Commits the virtual table transaction
 	 */
-	xCommit?(): Promise<void>;
+	commit?(): Promise<void>;
 
 	/**
 	 * Rolls back the virtual table transaction
 	 */
-	xRollback?(): Promise<void>;
+	rollback?(): Promise<void>;
 
 	/**
 	 * Renames the virtual table
 	 * @param newName The new name for the table
 	 */
-	xRename?(newName: string): Promise<void>;
+	rename?(newName: string): Promise<void>;
 
 	/**
 	 * Begins a savepoint
 	 * @param savepointIndex The savepoint identifier
 	 */
-	xSavepoint?(savepointIndex: number): Promise<void>;
+	savepoint?(savepointIndex: number): Promise<void>;
 
 	/**
 	 * Releases a savepoint
 	 * @param savepointIndex The savepoint identifier
 	 */
-	xRelease?(savepointIndex: number): Promise<void>;
+	release?(savepointIndex: number): Promise<void>;
 
 	/**
 	 * Rolls back to a savepoint
 	 * @param savepointIndex The savepoint identifier
 	 */
-	xRollbackTo?(savepointIndex: number): Promise<void>;
+	rollbackTo?(savepointIndex: number): Promise<void>;
 
 	/**
 	 * Modifies the schema of this virtual table
 	 * @param changeInfo Object describing the schema modification
 	 * @throws QuereusError or ConstraintError on failure
 	 */
-	xAlterSchema?(changeInfo: SchemaChangeInfo): Promise<void>;
+	alterSchema?(changeInfo: SchemaChangeInfo): Promise<void>;
 
 	/**
 	 * Creates a secondary index on the virtual table
 	 * @param indexInfo The index definition
 	 */
-	xCreateIndex?(indexInfo: IndexSchema): Promise<void>;
+	createIndex?(indexInfo: IndexSchema): Promise<void>;
 
 	/**
 	 * Drops a secondary index from the virtual table
 	 * @param indexName The name of the index to drop
 	 */
-	xDropIndex?(indexName: string): Promise<void>;
+	dropIndex?(indexName: string): Promise<void>;
 }

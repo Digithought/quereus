@@ -8,7 +8,7 @@ import type { AnyVirtualTableModule } from '../../vtab/module.js';
 
 /**
  * Emitter for RemoteQueryNode.
- * Calls the virtual table's xExecutePlan() method to execute the pushed-down pipeline.
+ * Calls the virtual table's executePlan() method to execute the pushed-down pipeline.
  */
 export function emitRemoteQuery(plan: RemoteQueryNode, _ctx: EmissionContext): Instruction {
 	async function* run(rctx: RuntimeContext): AsyncIterable<Row> {
@@ -19,7 +19,7 @@ export function emitRemoteQuery(plan: RemoteQueryNode, _ctx: EmissionContext): I
 		const vtabModule = (moduleCtx as { vtabModule?: AnyVirtualTableModule } | undefined)?.vtabModule ?? tableRef.vtabModule;
 
 		// Connect to the table to get the instance
-		const table = vtabModule.xConnect(
+		const table = vtabModule.connect(
 			rctx.db,
 			undefined, // pAux
 			tableSchema.vtabModuleName,
@@ -28,15 +28,15 @@ export function emitRemoteQuery(plan: RemoteQueryNode, _ctx: EmissionContext): I
 			{} // empty config for now
 		);
 
-		if (!table.xExecutePlan) {
+		if (!table.executePlan) {
 			throw new QuereusError(
-				`Virtual table module for '${tableSchema.name}' does not implement xExecutePlan() ` +
+				`Virtual table module for '${tableSchema.name}' does not implement executePlan() ` +
 				`despite indicating support via supports() method.`,
 				StatusCode.INTERNAL
 			);
 		}
 
-		yield* table.xExecutePlan(rctx.db, plan.source, plan.moduleCtx);
+		yield* table.executePlan(rctx.db, plan.source, plan.moduleCtx);
 	}
 
 	return {

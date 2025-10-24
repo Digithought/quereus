@@ -1025,21 +1025,21 @@ interface SupportAssessment {
 ```typescript
 interface VirtualTable {
   // Runtime execution of pushed-down pipelines
-  xExecutePlan?(db: Database, plan: PlanNode, ctx?: unknown): AsyncIterable<Row>;
-  
+  executePlan?(db: Database, plan: PlanNode, ctx?: unknown): AsyncIterable<Row>;
+
   // Standard index-based query execution
-  xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
+  query?(filterInfo: FilterInfo): AsyncIterable<Row>;
 }
 ```
 
 ### Architecture Modes
 
-**1. Query-based Push-down** (implements `supports()` + `xExecutePlan()`)
+**1. Query-based Push-down** (implements `supports()` + `executePlan()`)
 - Module analyzes entire query pipelines
 - Returns cost assessment for execution within module
 - Examples: SQL federation modules, document databases, remote APIs
 
-**2. Index-based Access** (implements `getBestAccessPlan()` + `xQuery()`)
+**2. Index-based Access** (implements `getBestAccessPlan()` + `query()`)
 - Module exposes index capabilities
 - Quereus pushes individual predicates via BestAccessPlan API
 - Examples: MemoryTable, SQLite vtabs, file-based storage
@@ -1105,15 +1105,15 @@ This establishes a clean “call-like” boundary: `Retrieve.bindings` declares 
 // emitRemoteQuery.ts
 export function emitRemoteQuery(plan: RemoteQueryNode, ctx: EmissionContext): Instruction {
   async function* run(rctx: RuntimeContext): AsyncIterable<Row> {
-    const table = plan.vtabModule.xConnect(/* ... */);
-    yield* table.xExecutePlan!(rctx.db, plan.source, plan.moduleCtx);
+    const table = plan.vtabModule.connect(/* ... */);
+    yield* table.executePlan!(rctx.db, plan.source, plan.moduleCtx);
   }
   return { params: [], run, note: `remoteQuery(${plan.tableRef.tableSchema.name})` };
 }
 ```
 
 **Index-based Execution**:
-- Uses existing `xQuery()` with `FilterInfo` parameter
+- Uses existing `query()` with `FilterInfo` parameter
 - Leverages `BestAccessPlan` API for predicate push-down
 
 ### Integration Points
@@ -1204,9 +1204,9 @@ const correlatedConstraints = extractCorrelationConstraints(leftRow, rightPipeli
 const assessment = vtabModule.supports(rightPipeline, correlatedConstraints);
 if (assessment) {
   // Module can optimize correlated access (e.g., index seek)
-  yield* table.xExecutePlan(db, rightPipeline, { 
-    ...assessment.ctx, 
-    correlation: correlatedConstraints 
+  yield* table.executePlan(db, rightPipeline, {
+    ...assessment.ctx,
+    correlation: correlatedConstraints
   });
 }
 ```

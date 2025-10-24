@@ -257,8 +257,8 @@ class JsonTable {
  * Virtual table module implementation
  */
 const jsonTableModule = {
-  // Engine calls xCreate(db, tableSchema)
-  xCreate: (db, tableSchema) => {
+  // Engine calls create(db, tableSchema)
+  create: (db, tableSchema) => {
     // Build instance compatible with VirtualTable interface shape
     const instance = {
       db,
@@ -288,9 +288,9 @@ const jsonTableModule = {
           ? tableSchema.columns.map(c => c.name)
           : ['value'];
       },
-      async xDisconnect() { /* no-op */ },
-      async xUpdate() { return undefined; },
-      async *xQuery() {
+      async disconnect() { /* no-op */ },
+      async update() { return undefined; },
+      async *query() {
         if (!this._data) {
           await this._init();
         }
@@ -309,7 +309,7 @@ const jsonTableModule = {
     return instance;
   },
   // Connect is same as create for this simple module
-  xConnect: (db, _pAux, _moduleName, schemaName, tableName, options) => {
+  connect: (db, _pAux, _moduleName, schemaName, tableName, options) => {
     const tableSchema = {
       name: tableName,
       schemaName,
@@ -323,7 +323,7 @@ const jsonTableModule = {
       vtabArgs: options || {},
       estimatedRows: 0
     };
-    return jsonTableModule.xCreate(db, tableSchema);
+    return jsonTableModule.create(db, tableSchema);
   }
 };
 

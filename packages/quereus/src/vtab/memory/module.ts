@@ -27,7 +27,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Creates a new memory table definition
 	 */
-	xCreate(db: Database, tableSchema: TableSchema): MemoryTable {
+	create(db: Database, tableSchema: TableSchema): MemoryTable {
 		// Ensure table doesn't already exist
 		const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 		if (this.tables.has(tableKey)) {
@@ -58,7 +58,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Connects to an existing memory table definition
 	 */
-	xConnect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig): MemoryTable {
+	connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig): MemoryTable {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const existingManager = this.tables.get(tableKey);
 
@@ -305,20 +305,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return true;
 	}
 
-	/**
-	 * Determines the best query plan for executing a query against a memory table
-	 * @deprecated Use getBestAccessPlan instead for better type safety and extensibility
-	 */
-	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number {
-		const planningContext = this.createPlanningContext(tableInfo, indexInfo);
-		const availableIndexes = this.gatherAvailableIndexes(tableInfo);
-		const bestPlan = this.findBestPlan(planningContext, availableIndexes, indexInfo);
-		this.populateIndexInfoOutput(indexInfo, bestPlan, availableIndexes);
 
-		logger.debugLog(`[xBestIndex] Selected plan for ${tableInfo.name}: ${bestPlan.planType} on index ${bestPlan.indexId} (cost: ${bestPlan.cost})`);
-
-		return StatusCode.OK;
-	}
 
 	private createPlanningContext(_tableInfo: TableSchema, _indexInfo: IndexInfo) {
 		return {
@@ -644,7 +631,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Destroys a memory table and frees associated resources
 	 */
-	async xDestroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
+	async destroy(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string): Promise<void> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const manager = this.tables.get(tableKey);
 
@@ -659,7 +646,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Creates an index on a memory table
 	 */
-	async xCreateIndex(db: Database, schemaName: string, tableName: string, indexSchema: IndexSchema): Promise<void> {
+	async createIndex(db: Database, schemaName: string, tableName: string, indexSchema: IndexSchema): Promise<void> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const manager = this.tables.get(tableKey);
 

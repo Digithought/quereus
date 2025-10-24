@@ -86,11 +86,11 @@ export async function getVTable(ctx: RuntimeContext, tableSchema: TableSchema): 
 		throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' not found for table '${tableSchema.name}'`, StatusCode.ERROR);
 	}
 	const module = moduleInfo.module;
-	if (typeof module.xConnect !== 'function') {
-		throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
+	if (typeof module.connect !== 'function') {
+		throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement connect`, StatusCode.MISUSE);
 	}
 	const vtabArgs = tableSchema.vtabArgs || {};
-	const vtabInstance = module.xConnect(ctx.db, moduleInfo.auxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, vtabArgs);
+	const vtabInstance = module.connect(ctx.db, moduleInfo.auxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, vtabArgs);
 
 	// If we have an active connection for this table, inject it into the VirtualTable
 	const tableName = tableSchema.name;
@@ -112,9 +112,9 @@ export async function getVTable(ctx: RuntimeContext, tableSchema: TableSchema): 
  */
 export async function disconnectVTable(ctx: RuntimeContext, vtab: VirtualTable): Promise<void> {
 	// Disconnect the VirtualTable instance
-	if (typeof vtab.xDisconnect === 'function') {
-		await vtab.xDisconnect().catch((e: any) => {
-			errorLog(`Error during xDisconnect for table '${vtab.tableName}': ${e}`);
+	if (typeof vtab.disconnect === 'function') {
+		await vtab.disconnect().catch((e: any) => {
+			errorLog(`Error during disconnect for table '${vtab.tableName}': ${e}`);
 		});
 	}
 }

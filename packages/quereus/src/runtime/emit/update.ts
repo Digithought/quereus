@@ -51,7 +51,7 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 
 			// Yield the flat row for constraint checking
 			// NOTE: UpdateNode only transforms rows - it does NOT execute the actual update
-			// The UpdateExecutorNode is responsible for calling vtab.xUpdate
+			// The UpdateExecutorNode is responsible for calling vtab.update
 			yield flatRow;
 		});
 	}

@@ -30,7 +30,7 @@ export class MemoryTable extends VirtualTable {
 	private connection: MemoryTableConnection | null = null;
 
 	/**
-	 * @internal - Use MemoryTableModule.xConnect or xCreate
+	 * @internal - Use MemoryTableModule.connect or create
 	 * Creates a connection-specific instance linked to a manager.
 	 */
 	constructor(
@@ -101,29 +101,29 @@ export class MemoryTable extends VirtualTable {
 		return new MemoryVirtualTableConnection(this.tableName, this.connection);
 	}
 
-	// New xQuery method for direct async iteration
-	async* xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
+	// Direct async iteration for query execution
+	async* query(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const conn = await this.ensureConnection();
-		logger.debugLog(`xQuery using connection ${conn.connectionId} (pending: ${conn.pendingTransactionLayer?.getLayerId()}, read: ${conn.readLayer.getLayerId()})`);
+		logger.debugLog(`query using connection ${conn.connectionId} (pending: ${conn.pendingTransactionLayer?.getLayerId()}, read: ${conn.readLayer.getLayerId()})`);
 		const currentSchema = this.manager.tableSchema;
 		if (!currentSchema) {
-			logger.error('xQuery', this.tableName, 'Table schema is undefined');
+			logger.error('query', this.tableName, 'Table schema is undefined');
 			return;
 		}
 		const plan = buildScanPlanFromFilterInfo(filterInfo, currentSchema);
-		logger.debugLog(`xQuery invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
+		logger.debugLog(`query invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
 
 		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
-		logger.debugLog(`xQuery reading from layer ${startLayer.getLayerId()}`);
+		logger.debugLog(`query reading from layer ${startLayer.getLayerId()}`);
 
 		// Delegate scanning to the manager, which handles layer recursion
 		yield* this.manager.scanLayer(startLayer, plan);
 	}
 
-	// Note: xBestIndex is handled by the MemoryTableModule, not the table instance.
+	// Note: getBestAccessPlan is handled by the MemoryTableModule, not the table instance.
 
 	/** Performs mutation through the connection's transaction layer */
-	async xUpdate(
+	async update(
 		operation: 'insert' | 'update' | 'delete',
 		values: Row | undefined,
 		oldKeyValues?: Row,
@@ -136,12 +136,12 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	/** Begins a transaction for this connection */
-	async xBegin(): Promise<void> {
+	async begin(): Promise<void> {
 		(await this.ensureConnection()).begin();
 	}
 
 	/** Commits this connection's transaction */
-	async xCommit(): Promise<void> {
+	async commit(): Promise<void> {
 		// Only commit if a connection has actually been established
 		if (this.connection) {
 			await this.connection.commit();
@@ -149,7 +149,7 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	/** Rolls back this connection's transaction */
-	async xRollback(): Promise<void> {
+	async rollback(): Promise<void> {
 		// Only rollback if a connection has actually been established
 		if (this.connection) {
 			this.connection.rollback();
@@ -157,14 +157,14 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	/** Sync operation (currently no-op for memory table layers) */
-	async xSync(): Promise<void> {
+	async sync(): Promise<void> {
 		// This might trigger background collapse in the manager in the future
 		// await this.manager.tryCollapseLayers(); // Optional: trigger collapse on sync?
 		return Promise.resolve();
 	}
 
 	/** Renames the underlying table via the manager */
-	async xRename(newName: string): Promise<void> {
+	async rename(newName: string): Promise<void> {
 		logger.operation('Rename', this.tableName, { newName });
 		await this.manager.renameTable(newName);
 		// Update this instance's schema reference after rename
@@ -172,17 +172,17 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	// --- Savepoint operations ---
-	async xSavepoint(savepointIndex: number): Promise<void> {
+	async savepoint(savepointIndex: number): Promise<void> {
 		const conn = await this.ensureConnection();
 		conn.createSavepoint(savepointIndex);
 	}
 
-	async xRelease(savepointIndex: number): Promise<void> {
+	async release(savepointIndex: number): Promise<void> {
 		if (!this.connection) return; // No connection, no savepoints to release
 		this.connection.releaseSavepoint(savepointIndex);
 	}
 
-	async xRollbackTo(savepointIndex: number): Promise<void> {
+	async rollbackTo(savepointIndex: number): Promise<void> {
 		if (!this.connection) return; // No connection, no savepoints to rollback to
 		this.connection.rollbackToSavepoint(savepointIndex);
 	}
@@ -190,7 +190,7 @@ export class MemoryTable extends VirtualTable {
 
 
 	/** Handles schema changes via the manager */
-	async xAlterSchema(changeInfo: SchemaChangeInfo): Promise<void> {
+	async alterSchema(changeInfo: SchemaChangeInfo): Promise<void> {
 		const originalManagerSchema = this.manager.tableSchema; // For potential error recovery
 		try {
 			switch (changeInfo.type) {
@@ -226,7 +226,7 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	/** Disconnects this connection instance from the manager */
-	async xDisconnect(): Promise<void> {
+	async disconnect(): Promise<void> {
 		if (this.connection) {
 			// Manager handles cleanup and potential layer collapse trigger
 			await this.manager.disconnect(this.connection.connectionId);
@@ -235,13 +235,13 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	// --- Index DDL methods delegate to the manager ---
-	async xCreateIndex(indexSchema: IndexSchema): Promise<void> {
+	async createIndex(indexSchema: IndexSchema): Promise<void> {
 		logger.operation('Create Index', this.tableName, { indexName: indexSchema.name });
 		await this.manager.createIndex(indexSchema);
 		this.tableSchema = this.manager.tableSchema; // Refresh local schema ref
 	}
 
-	async xDropIndex(indexName: string): Promise<void> {
+	async dropIndex(indexName: string): Promise<void> {
 		logger.operation('Drop Index', this.tableName, { indexName });
 		await this.manager.dropIndex(indexName);
 		// Update schema reference

@@ -8,8 +8,8 @@ Virtual table modules are the primary extension point for custom data sources in
 
 ### Key Concepts
 
-- **Module**: Factory that creates table instances; implements `xCreate()`, `xConnect()`, and optimization methods
-- **Table Instance**: Represents a specific table; implements `xQuery()`, `xUpdate()`, and transaction support
+- **Module**: Factory that creates table instances; implements `create()`, `connect()`, and optimization methods
+- **Table Instance**: Represents a specific table; implements `query()`, `update()`, and transaction support
 - **Optimization Integration**: Modules communicate capabilities to the optimizer via `BestAccessPlan` API or `supports()` method
 - **Retrieve Boundary**: The optimizer wraps all table references in `RetrieveNode`, marking where data transitions from module execution to Quereus execution
 
@@ -89,7 +89,7 @@ interface SupportAssessment {
 
 **When to use**: SQL federation, document databases, remote APIs that can execute complex queries.
 
-**Important**: If `supports()` returns a result, the module **must** implement `xExecutePlan()` to execute the pipeline. The optimizer will call `xExecutePlan()` at runtime with the same plan node and context.
+**Important**: If `supports()` returns a result, the module **must** implement `executePlan()` to execute the pipeline. The optimizer will call `executePlan()` at runtime with the same plan node and context.
 
 **Example**: A PostgreSQL federation module analyzing a Filter+Project+Sort pipeline:
 ```typescript
@@ -103,8 +103,8 @@ supports(node: PlanNode): SupportAssessment | undefined {
   return undefined; // Can't handle this pipeline
 }
 
-// At runtime, xExecutePlan() receives the same node and ctx
-async* xExecutePlan(db: Database, node: PlanNode, ctx?: unknown): AsyncIterable<Row> {
+// At runtime, executePlan() receives the same node and ctx
+async* executePlan(db: Database, node: PlanNode, ctx?: unknown): AsyncIterable<Row> {
   const sql = (ctx as any)?.sql;
   // Execute the SQL against the remote database
   const results = await this.executeRemoteSQL(sql);
@@ -184,11 +184,11 @@ getBestAccessPlan(
 
 ### Query-Based Execution
 
-If module implements `supports()`, implement `xExecutePlan()`:
+If module implements `supports()`, implement `executePlan()`:
 
 ```typescript
 interface VirtualTable {
-  xExecutePlan?(
+  executePlan?(
     db: Database,
     plan: PlanNode,
     ctx?: unknown
@@ -200,11 +200,11 @@ The module receives the entire pipeline and executes it within its own context.
 
 ### Index-Based Execution
 
-If module implements `getBestAccessPlan()`, implement `xQuery()`:
+If module implements `getBestAccessPlan()`, implement `query()`:
 
 ```typescript
 interface VirtualTable {
-  xQuery?(filterInfo: FilterInfo): AsyncIterable<Row>;
+  query?(filterInfo: FilterInfo): AsyncIterable<Row>;
 }
 
 interface FilterInfo {
@@ -246,12 +246,12 @@ Modules can implement transaction methods for ACID compliance:
 
 ```typescript
 interface VirtualTable {
-  xBegin?(): Promise<void>;
-  xCommit?(): Promise<void>;
-  xRollback?(): Promise<void>;
-  createSavepoint?(index: number): Promise<void>;
-  rollbackToSavepoint?(index: number): Promise<void>;
-  releaseSavepoint?(index: number): Promise<void>;
+  begin?(): Promise<void>;
+  commit?(): Promise<void>;
+  rollback?(): Promise<void>;
+  savepoint?(index: number): Promise<void>;
+  rollbackTo?(index: number): Promise<void>;
+  release?(index: number): Promise<void>;
 }
 ```
 
@@ -312,16 +312,16 @@ class SimpleTable extends VirtualTable {
     };
   }
 
-  async* xQuery(): AsyncIterable<Row> {
+  async* query(): AsyncIterable<Row> {
     for (const row of this.data) yield row;
   }
 
-  async xUpdate(op: string, values?: Row, oldKeys?: Row): Promise<Row | undefined> {
+  async update(op: string, values?: Row, oldKeys?: Row): Promise<Row | undefined> {
     if (op === 'insert' && values) this.data.push(values);
     return undefined;
   }
 
-  async xDisconnect(): Promise<void> {}
+  async disconnect(): Promise<void> {}
 }
 ```
 
@@ -350,7 +350,7 @@ class IndexedTable extends VirtualTable {
     };
   }
 
-  async* xQuery(filterInfo: FilterInfo): AsyncIterable<Row> {
+  async* query(filterInfo: FilterInfo): AsyncIterable<Row> {
     if (filterInfo.argIndices.length > 0) {
       const key = filterInfo.args[0];
       yield* this.index.get(key) || [];
@@ -361,7 +361,7 @@ class IndexedTable extends VirtualTable {
     }
   }
 
-  async xUpdate(op: string, values?: Row, oldKeys?: Row): Promise<Row | undefined> {
+  async update(op: string, values?: Row, oldKeys?: Row): Promise<Row | undefined> {
     if (op === 'insert' && values) {
       const key = values[0];
       if (!this.index.has(key)) this.index.set(key, []);
@@ -370,7 +370,7 @@ class IndexedTable extends VirtualTable {
     return undefined;
   }
 
-  async xDisconnect(): Promise<void> {}
+  async disconnect(): Promise<void> {}
 }
 ```
 

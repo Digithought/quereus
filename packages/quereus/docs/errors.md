@@ -14,15 +14,15 @@ Quereus employs a structured approach to error handling to provide context and a
     *   Semantic errors detected during compilation (e.g., "table not found", "ambiguous column", "type mismatch") also throw `QuereusError`.
     *   These compiler-generated errors attempt to include the location (`line`, `column`) derived from the relevant Abstract Syntax Tree (AST) node (`loc` property) where the error was detected.
 
-3.  **VDBE Runtime Errors:**
-    *   The Virtual Database Engine (VDBE) (`src/vdbe/engine.ts`) executes the compiled bytecode.
+3.  **Runtime Errors:**
+    *   The runtime executes the compiled plan.
     *   Calls to potentially error-prone operations are wrapped in `try-catch` blocks:
-        *   User-Defined Functions (UDFs) via `Opcode.Function`, `Opcode.AggStep`, `Opcode.AggFinal`.
-        *   Virtual Table methods (`xFilter`, `xNext`, `xColumn`, `xUpdate`, etc.) via VTab opcodes.
+        *   User-Defined Functions (UDFs) via function calls.
+        *   Virtual Table methods (`query`, `update`, `disconnect`, etc.) via runtime emitters.
     *   If an error occurs within a UDF or VTab method:
-        *   The VDBE catches the exception.
+        *   The runtime catches the exception.
         *   If it's not already a `QuereusError`, it's wrapped in one.
-        *   Contextual information (e.g., "Error in function X:", "Error in VTab Y.xFilter:", Program Counter) is added to the error message.
+        *   Contextual information (e.g., "Error in function X:", "Error in VTab Y.query:", location) is added to the error message.
         *   The original caught error is attached as the `cause` property.
         *   The VDBE halts execution and surfaces the `QuereusError`.
     *   Internal VDBE errors (e.g., stack issues, invalid opcode) are also caught and reported as `QuereusError` with an `INTERNAL` status code.

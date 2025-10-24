@@ -83,7 +83,7 @@ describe("Memory VTable Module", () => {
 	describe("Module Creation and Connection", () => {
 		it("should create a new memory table", async () => {
 			const schema = createTableSchema('users');
-			const table = module.xCreate(db, schema);
+			const table = module.create(db, schema);
 
 			expect(table).to.be.instanceOf(MemoryTable);
 			expect(table.tableName).to.equal('users');
@@ -92,16 +92,16 @@ describe("Memory VTable Module", () => {
 
 		it("should connect to an existing memory table", async () => {
 			const schema = createTableSchema('users');
-			module.xCreate(db, schema);
+			module.create(db, schema);
 
-			const table2 = module.xConnect(db, null, 'memory', 'main', 'users', {});
+			const table2 = module.connect(db, null, 'memory', 'main', 'users', {});
 			expect(table2).to.be.instanceOf(MemoryTable);
 			expect(table2.tableName).to.equal('users');
 		});
 
 		it("should fail to connect to non-existent table", async () => {
 			try {
-				module.xConnect(db, null, 'memory', 'main', 'nonexistent', {});
+				module.connect(db, null, 'memory', 'main', 'nonexistent', {});
 				expect.fail("Should have thrown error");
 			} catch (error: any) {
 				expect(error.message).to.include('not found');
@@ -109,7 +109,7 @@ describe("Memory VTable Module", () => {
 		});
 	});
 
-	describe("Basic CRUD Operations via xQuery and xUpdate", () => {
+	describe("Basic CRUD Operations via query and update", () => {
 		let table: MemoryTable;
 		let schema: TableSchema;
 
@@ -120,25 +120,25 @@ describe("Memory VTable Module", () => {
 				{ name: 'price', affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'category', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.xCreate(db, schema);
+			table = module.create(db, schema);
 		});
 
-		it("should insert data via xUpdate", async () => {
+		it("should insert data via update", async () => {
 			const newRow = [1, 'Laptop', 999.99, 'Electronics'];
-			const result = await table.xUpdate('insert', newRow);
+			const result = await table.update('insert', newRow);
 
 			expect(result).to.deep.equal(newRow);
 		});
 
-		it("should query data via xQuery", async () => {
+		it("should query data via query", async () => {
 			// Insert test data
-			await table.xUpdate('insert', [1, 'Laptop', 999.99, 'Electronics']);
-			await table.xUpdate('insert', [2, 'Mouse', 29.99, 'Electronics']);
+			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
+			await table.update('insert', [2, 'Mouse', 29.99, 'Electronics']);
 
 			// Query all data
 			const rows = [];
 			const filterInfo = createFilterInfo();
-			for await (const row of table.xQuery(filterInfo)) {
+			for await (const row of table.query(filterInfo)) {
 				rows.push(row);
 			}
 
@@ -147,19 +147,19 @@ describe("Memory VTable Module", () => {
 			expect(rows[1]).to.deep.equal([2, 'Mouse', 29.99, 'Electronics']);
 		});
 
-		it("should update existing data via xUpdate", async () => {
-			await table.xUpdate('insert', [1, 'Laptop', 999.99, 'Electronics']);
+		it("should update existing data via update", async () => {
+			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
 
 			// Update the row
 			const updatedRow = [1, 'Gaming Laptop', 1199.99, 'Electronics'];
 			const oldKeyValues = [1]; // Primary key values
-			const result = await table.xUpdate('update', updatedRow, oldKeyValues);
+			const result = await table.update('update', updatedRow, oldKeyValues);
 
 			expect(result).to.deep.equal(updatedRow);
 
 			// Verify the update
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -168,19 +168,19 @@ describe("Memory VTable Module", () => {
 			expect(rows[0][2]).to.equal(1199.99);
 		});
 
-		it("should delete data via xUpdate", async () => {
-			await table.xUpdate('insert', [1, 'Laptop', 999.99, 'Electronics']);
-			await table.xUpdate('insert', [2, 'Mouse', 29.99, 'Electronics']);
+		it("should delete data via update", async () => {
+			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
+			await table.update('insert', [2, 'Mouse', 29.99, 'Electronics']);
 
 			// Delete first row
 			const oldKeyValues = [1];
-			const result = await table.xUpdate('delete', undefined, oldKeyValues);
+			const result = await table.update('delete', undefined, oldKeyValues);
 
 			expect(result).to.deep.equal([1, 'Laptop', 999.99, 'Electronics']);
 
 			// Verify deletion
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -189,18 +189,18 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should handle update with primary key change", async () => {
-			await table.xUpdate('insert', [1, 'Laptop', 999.99, 'Electronics']);
+			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
 
 			// Update with new primary key
 			const updatedRow = [10, 'Laptop', 999.99, 'Electronics'];
 			const oldKeyValues = [1];
-			const result = await table.xUpdate('update', updatedRow, oldKeyValues);
+			const result = await table.update('update', updatedRow, oldKeyValues);
 
 			expect(result).to.deep.equal(updatedRow);
 
 			// Verify old key is gone and new key exists
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -217,14 +217,14 @@ describe("Memory VTable Module", () => {
 				{ name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'email', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.xCreate(db, schema);
+			table = module.create(db, schema);
 		});
 
 		it("should enforce primary key uniqueness", async () => {
-			await table.xUpdate('insert', [1, 'user@example.com']);
+			await table.update('insert', [1, 'user@example.com']);
 
 			try {
-				await table.xUpdate('insert', [1, 'other@example.com']);
+				await table.update('insert', [1, 'other@example.com']);
 				expect.fail("Should have thrown constraint error");
 			} catch (error: any) {
 				expect(error.message).to.include('UNIQUE constraint failed');
@@ -232,16 +232,16 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should handle conflict resolution with INSERT OR IGNORE", async () => {
-			await table.xUpdate('insert', [1, 'user@example.com']);
+			await table.update('insert', [1, 'user@example.com']);
 
 			// Simulate INSERT OR IGNORE by passing conflict resolution
 			const rowWithConflictRes = [1, 'other@example.com'];
-			const result = await table.xUpdate('insert', rowWithConflictRes, undefined, ConflictResolution.IGNORE);
+			const result = await table.update('insert', rowWithConflictRes, undefined, ConflictResolution.IGNORE);
 			void expect(result).to.be.undefined; // IGNORE should return undefined
 
 			// Verify original data unchanged
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -259,16 +259,16 @@ describe("Memory VTable Module", () => {
 				{ name: 'session_id', affinity: SqlDataType.TEXT, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'created_at', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['user_id', 'session_id']);
-			table = module.xCreate(db, schema);
+			table = module.create(db, schema);
 		});
 
 		it("should handle composite primary key operations", async () => {
-			await table.xUpdate('insert', [1, 'sess_123', '2024-01-01']);
-			await table.xUpdate('insert', [1, 'sess_456', '2024-01-02']);
-			await table.xUpdate('insert', [2, 'sess_123', '2024-01-01']);
+			await table.update('insert', [1, 'sess_123', '2024-01-01']);
+			await table.update('insert', [1, 'sess_456', '2024-01-02']);
+			await table.update('insert', [2, 'sess_123', '2024-01-01']);
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -276,10 +276,10 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should enforce composite primary key uniqueness", async () => {
-			await table.xUpdate('insert', [1, 'sess_123', '2024-01-01']);
+			await table.update('insert', [1, 'sess_123', '2024-01-01']);
 
 			try {
-				await table.xUpdate('insert', [1, 'sess_123', '2024-01-02']);
+				await table.update('insert', [1, 'sess_123', '2024-01-02']);
 				expect.fail("Should have thrown constraint error");
 			} catch (error: any) {
 				expect(error.message).to.include('UNIQUE constraint failed');
@@ -287,26 +287,26 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should update with composite primary key", async () => {
-			await table.xUpdate('insert', [1, 'sess_123', '2024-01-01']);
+			await table.update('insert', [1, 'sess_123', '2024-01-01']);
 
 			const updatedRow = [1, 'sess_123', '2024-01-01-updated'];
 			const oldKeyValues = [1, 'sess_123'];
-			const result = await table.xUpdate('update', updatedRow, oldKeyValues);
+			const result = await table.update('update', updatedRow, oldKeyValues);
 
 			expect(result).to.deep.equal(updatedRow);
 		});
 
 		it("should delete with composite primary key", async () => {
-			await table.xUpdate('insert', [1, 'sess_123', '2024-01-01']);
-			await table.xUpdate('insert', [1, 'sess_456', '2024-01-02']);
+			await table.update('insert', [1, 'sess_123', '2024-01-01']);
+			await table.update('insert', [1, 'sess_456', '2024-01-02']);
 
 			const oldKeyValues = [1, 'sess_123'];
-			const result = await table.xUpdate('delete', undefined, oldKeyValues);
+			const result = await table.update('delete', undefined, oldKeyValues);
 
 			expect(result).to.deep.equal([1, 'sess_123', '2024-01-01']);
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -326,7 +326,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'department', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'salary', affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.xCreate(db, schema);
+			table = module.create(db, schema);
 		});
 
 		it("should create secondary indexes", async () => {
@@ -335,7 +335,7 @@ describe("Memory VTable Module", () => {
 				columns: [{ index: 2, desc: false }]
 			};
 
-			await table.xCreateIndex(deptIndex);
+			await table.createIndex(deptIndex);
 
 			// Verify the index is in the schema
 			const currentSchema = table.getSchema();
@@ -352,7 +352,7 @@ describe("Memory VTable Module", () => {
 				]
 			};
 
-			await table.xCreateIndex(compositeIndex);
+			await table.createIndex(compositeIndex);
 
 			const currentSchema = table.getSchema();
 			expect(currentSchema?.indexes).to.have.length(1);
@@ -365,106 +365,11 @@ describe("Memory VTable Module", () => {
 				columns: [{ index: 2, desc: false }]
 			};
 
-			await table.xCreateIndex(deptIndex);
-			await table.xDropIndex('idx_department');
+			await table.createIndex(deptIndex);
+			await table.dropIndex('idx_department');
 
 			const currentSchema = table.getSchema();
 			expect(currentSchema?.indexes).to.have.length(0);
-		});
-	});
-
-	describe("xBestIndex Query Planning", () => {
-		let schema: TableSchema;
-
-		beforeEach(async () => {
-			schema = createTableSchema('test_planning', [
-				{ name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'category', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'value', affinity: SqlDataType.INTEGER, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
-			], ['id']);
-
-			// Add a secondary index
-			schema = {
-				...schema,
-				indexes: [{
-					name: 'idx_category',
-					columns: [{ index: 1, desc: false }]
-				}]
-			};
-		});
-
-		it("should handle full table scan planning", async () => {
-			const indexInfo: IndexInfo = {
-				nConstraint: 0,
-				aConstraint: [],
-				nOrderBy: 0,
-				aOrderBy: [],
-				colUsed: 0n,
-				aConstraintUsage: [],
-				idxNum: 0,
-				idxStr: '',
-				orderByConsumed: false,
-				estimatedCost: 0,
-				estimatedRows: BigInt(0),
-				idxFlags: 0
-			};
-
-			const result = module.xBestIndex(db, schema, indexInfo);
-			expect(result).to.equal(StatusCode.OK);
-			expect(indexInfo.estimatedCost).to.be.greaterThan(0);
-		});
-
-		it("should handle equality constraint planning", async () => {
-			const indexInfo: IndexInfo = {
-				nConstraint: 1,
-				aConstraint: [{
-					iColumn: 1, // category column
-					op: IndexConstraintOp.EQ,
-					usable: true
-				}],
-				nOrderBy: 0,
-				aOrderBy: [],
-				colUsed: 0n,
-				aConstraintUsage: [{ argvIndex: 0, omit: false }],
-				idxNum: 0,
-				idxStr: '',
-				orderByConsumed: false,
-				estimatedCost: 0,
-				estimatedRows: BigInt(0),
-				idxFlags: 0
-			};
-
-			const result = module.xBestIndex(db, schema, indexInfo);
-			expect(result).to.equal(StatusCode.OK);
-			expect(indexInfo.estimatedCost).to.be.greaterThan(0);
-			expect(indexInfo.idxStr).to.include('idx_category');
-		});
-
-		it("should handle range constraint planning", async () => {
-			const indexInfo: IndexInfo = {
-				nConstraint: 2,
-				aConstraint: [
-					{ iColumn: 2, op: IndexConstraintOp.GT, usable: true },
-					{ iColumn: 2, op: IndexConstraintOp.LT, usable: true }
-				],
-				nOrderBy: 0,
-				aOrderBy: [],
-				colUsed: 0n,
-				aConstraintUsage: [
-					{ argvIndex: 0, omit: false },
-					{ argvIndex: 0, omit: false }
-				],
-				idxNum: 0,
-				idxStr: '',
-				orderByConsumed: false,
-				estimatedCost: 0,
-				estimatedRows: BigInt(0),
-				idxFlags: 0
-			};
-
-			const result = module.xBestIndex(db, schema, indexInfo);
-			expect(result).to.equal(StatusCode.OK);
-			expect(indexInfo.estimatedCost).to.be.greaterThan(0);
 		});
 	});
 
@@ -476,21 +381,21 @@ describe("Memory VTable Module", () => {
 				{ name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'balance', affinity: SqlDataType.REAL, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.xCreate(db, schema);
+			table = module.create(db, schema);
 
 			// Insert initial data
-			await table.xUpdate('insert', [1, 1000.0]);
-			await table.xUpdate('insert', [2, 500.0]);
+			await table.update('insert', [1, 1000.0]);
+			await table.update('insert', [2, 500.0]);
 		});
 
 		it("should handle basic transactions", async () => {
-			await table.xBegin();
-			await table.xUpdate('update', [1, 900.0], [1]);
-			await table.xUpdate('update', [2, 600.0], [2]);
-			await table.xCommit();
+			await table.begin();
+			await table.update('update', [1, 900.0], [1]);
+			await table.update('update', [2, 600.0], [2]);
+			await table.commit();
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -499,12 +404,12 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should rollback transactions", async () => {
-			await table.xBegin();
-			await table.xUpdate('update', [1, 0.0], [1]);
-			await table.xRollback();
+			await table.begin();
+			await table.update('update', [1, 0.0], [1]);
+			await table.rollback();
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -512,15 +417,15 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should handle savepoints", async () => {
-			await table.xBegin();
-			await table.xUpdate('update', [1, 950.0], [1]);
-			await table.xSavepoint(1);
-			await table.xUpdate('update', [1, 850.0], [1]);
-			await table.xRollbackTo(1);
-			await table.xCommit();
+			await table.begin();
+			await table.update('update', [1, 950.0], [1]);
+			await table.savepoint(1);
+			await table.update('update', [1, 850.0], [1]);
+			await table.rollbackTo(1);
+			await table.commit();
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -528,15 +433,15 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should release savepoints", async () => {
-			await table.xBegin();
-			await table.xUpdate('update', [1, 950.0], [1]);
-			await table.xSavepoint(1);
-			await table.xUpdate('update', [1, 850.0], [1]);
-			await table.xRelease(1);
-			await table.xCommit();
+			await table.begin();
+			await table.update('update', [1, 950.0], [1]);
+			await table.savepoint(1);
+			await table.update('update', [1, 850.0], [1]);
+			await table.release(1);
+			await table.commit();
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -544,7 +449,7 @@ describe("Memory VTable Module", () => {
 		});
 	});
 
-	describe("Schema Changes via xAlterSchema", () => {
+	describe("Schema Changes via alterSchema", () => {
 		let table: MemoryTable;
 
 		beforeEach(async () => {
@@ -552,8 +457,8 @@ describe("Memory VTable Module", () => {
 				{ name: 'id', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'name', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.xCreate(db, schema);
-			await table.xUpdate('insert', [1, 'test']);
+			table = module.create(db, schema);
+			await table.update('insert', [1, 'test']);
 		});
 
 		it("should add columns", async () => {
@@ -565,10 +470,10 @@ describe("Memory VTable Module", () => {
 				]
 			};
 
-			await table.xAlterSchema({ type: 'addColumn', columnDef });
+			await table.alterSchema({ type: 'addColumn', columnDef });
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -584,8 +489,8 @@ describe("Memory VTable Module", () => {
 				constraints: [{ type: 'null' as const }]
 			};
 
-			await table.xAlterSchema({ type: 'addColumn', columnDef });
-			await table.xAlterSchema({ type: 'dropColumn', columnName: 'temp_col' });
+			await table.alterSchema({ type: 'addColumn', columnDef });
+			await table.alterSchema({ type: 'dropColumn', columnName: 'temp_col' });
 
 			const schema = table.getSchema();
 			void expect(schema?.columns).to.have.length(2);
@@ -593,7 +498,7 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should rename columns", async () => {
-			await table.xAlterSchema({
+			await table.alterSchema({
 				type: 'renameColumn',
 				oldName: 'name',
 				newName: 'full_name',
@@ -611,7 +516,7 @@ describe("Memory VTable Module", () => {
 
 		it("should prevent dropping primary key columns", async () => {
 			try {
-				await table.xAlterSchema({ type: 'dropColumn', columnName: 'id' });
+				await table.alterSchema({ type: 'dropColumn', columnName: 'id' });
 				void expect.fail("Should not allow dropping PK column");
 			} catch (error: any) {
 				void expect(error.message).to.include('Cannot drop PK column');
@@ -630,16 +535,16 @@ describe("Memory VTable Module", () => {
 				{ name: 'blob_col', affinity: SqlDataType.BLOB, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'null_col', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.xCreate(db, schema);
+			table = module.create(db, schema);
 		});
 
 		it("should handle various data types", async () => {
 			const blobData = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-			await table.xUpdate('insert', [1, 'hello', 3.14, blobData, null]);
-			await table.xUpdate('insert', [2, '', 0.0, new Uint8Array(0), 'not null']);
+			await table.update('insert', [1, 'hello', 3.14, blobData, null]);
+			await table.update('insert', [2, '', 0.0, new Uint8Array(0), 'not null']);
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -657,13 +562,13 @@ describe("Memory VTable Module", () => {
 				{ name: 'part2', affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'value', affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['part1', 'part2']);
-			const table2 = module.xCreate(db, schema);
+			const table2 = module.create(db, schema);
 
-			await table2.xUpdate('insert', ['a', 1, 'value1']);
-			await table2.xUpdate('insert', [null, 2, 'value2']);
+			await table2.update('insert', ['a', 1, 'value1']);
+			await table2.update('insert', [null, 2, 'value2']);
 
 			const rows = [];
-			for await (const row of table2.xQuery(createFilterInfo())) {
+			for await (const row of table2.query(createFilterInfo())) {
 				rows.push(row);
 			}
 
@@ -674,11 +579,11 @@ describe("Memory VTable Module", () => {
 
 		it("should handle empty table operations", async () => {
 			// Operations on empty table should not error
-			await table.xUpdate('update', [999, 'new'], [999]);
-			await table.xUpdate('delete', undefined, [999]);
+			await table.update('update', [999, 'new'], [999]);
+			await table.update('delete', undefined, [999]);
 
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 			void expect(rows).to.have.length(0);
@@ -691,13 +596,13 @@ describe("Memory VTable Module", () => {
 				...createTableSchema('readonly_data'),
 				isReadOnly: true
 			};
-			const table = module.xCreate(db, schema);
+			const table = module.create(db, schema);
 
 			void expect(table.isReadOnly()).to.be.true;
 
 			// Should be able to query empty table
 			const rows = [];
-			for await (const row of table.xQuery(createFilterInfo())) {
+			for await (const row of table.query(createFilterInfo())) {
 				rows.push(row);
 			}
 			void expect(rows).to.have.length(0);
@@ -708,10 +613,10 @@ describe("Memory VTable Module", () => {
 				...createTableSchema('readonly_data'),
 				isReadOnly: true
 			};
-			const table = module.xCreate(db, schema);
+			const table = module.create(db, schema);
 
 			try {
-				await table.xUpdate('insert', [1, 'test']);
+				await table.update('insert', [1, 'test']);
 				expect.fail("Should not allow INSERT on read-only table");
 			} catch (error: any) {
 				expect(error.message).to.include('read-only');
@@ -722,13 +627,13 @@ describe("Memory VTable Module", () => {
 	describe("Module Cleanup", () => {
 		it("should destroy tables and clean up resources", async () => {
 			const schema = createTableSchema('temp_table');
-			module.xCreate(db, schema);
+			module.create(db, schema);
 
-			await module.xDestroy(db, null, 'memory', 'main', 'temp_table');
+			await module.destroy(db, null, 'memory', 'main', 'temp_table');
 
 			// Should not be able to connect to destroyed table
 			try {
-				module.xConnect(db, null, 'memory', 'main', 'temp_table', {});
+				module.connect(db, null, 'memory', 'main', 'temp_table', {});
 				expect.fail("Should not be able to connect to destroyed table");
 			} catch (error: any) {
 				expect(error.message).to.include('not found');

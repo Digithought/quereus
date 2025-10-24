@@ -28,13 +28,13 @@ Quereus is built on a modern architecture based on partially immutable PlanNodes
     *   Traverses the AST to construct a tree of immutable `PlanNode` objects representing the logical query structure.
     *   Handles Common Table Expressions (CTEs) and Subqueries by converting them into relational `PlanNode`s.
     *   Resolves table and function references using the Schema Manager.
-    *   Performs query planning, incorporating virtual table `xBestIndex` method and table schema statistics.
+    *   Performs query planning, incorporating virtual table `getBestAccessPlan` method and table schema statistics.
     *   **Optimizer (`src/planner/optimizer`)**: Transforms logical plans into efficient physical execution plans through a rule-based optimization system. See [Optimizer Documentation](docs/optimizer.md) for details.
 4.  **Runtime (`src/runtime`)**:
     *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: Translate `PlanNode`s into a graph of `Instruction` objects.
     *   **Scheduler (`src/runtime/scheduler.ts`)**: Manages the execution flow of the `Instruction` graph.
     *   **Instructions**: JavaScript functions that operate on `RuntimeValue`s (which can be `SqlValue` or `AsyncIterable<Row>`). Async parameters are awaited.
-    *   Invokes virtual table methods (e.g., `xQuery` which returns `AsyncIterable<Row>`, `xUpdate`) to interact with data.
+    *   Invokes virtual table methods (e.g., `query` which returns `AsyncIterable<Row>`, `update`) to interact with data.
     *   Calls User-Defined Functions (UDFs) and aggregate functions.
     *   Handles transaction and savepoint control.
 5.  **Virtual Tables (`src/vtab`)**:

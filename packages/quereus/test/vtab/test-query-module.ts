@@ -19,12 +19,12 @@ import { FilterInfo } from '../../src/vtab/filter-info.js';
  */
 export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseModuleConfig> {
 
-	xCreate(db: Database, tableSchema: TableSchema): TestQueryTable {
+	create(db: Database, tableSchema: TableSchema): TestQueryTable {
 		// Create test query table
 		return new TestQueryTable(db, tableSchema);
 	}
 
-xConnect(
+	connect(
 		db: Database,
 		_pAux: unknown,
 		_moduleName: string,
@@ -86,7 +86,7 @@ xBestIndex(_db: Database, _tableInfo: TableSchema, _indexInfo: IndexInfo): numbe
 		return StatusCode.ERROR;
 	}
 
-xDestroy(
+destroy(
 		_db: Database,
 		_pAux: unknown,
 		_moduleName: string,
@@ -99,7 +99,7 @@ xDestroy(
 }
 
 /**
- * Test virtual table that implements xExecutePlan
+ * Test virtual table that implements executePlan
  */
 export class TestQueryTable extends VirtualTable {
 	private data: Row[] = [];
@@ -114,13 +114,13 @@ export class TestQueryTable extends VirtualTable {
     this.tableSchema = tableSchema;
 	}
 
-	// Required xDisconnect method
-	async xDisconnect(): Promise<void> {
+	// Required disconnect method
+	async disconnect(): Promise<void> {
 		// Nothing to clean up
 	}
 
-	// Required xUpdate method
-	async xUpdate(
+	// Required update method
+	async update(
 		operation: RowOp,
 		values: Row | undefined,
 		oldKeyValues?: Row,
@@ -162,20 +162,20 @@ export class TestQueryTable extends VirtualTable {
 		return undefined;
 	}
 
-	// Optional xQuery method for standard table access
-	async *xQuery(_filterInfo: FilterInfo): AsyncIterable<Row> {
+	// Optional query method for standard table access
+	async *query(_filterInfo: FilterInfo): AsyncIterable<Row> {
 		// Simple implementation - just return all data
 		for (const row of this.data) {
 			yield row;
 		}
 	}
 
-	// Test implementation of xExecutePlan - for now, simulate by logging and returning test data
-	async *xExecutePlan(db: Database, plan: PlanNode, ctx?: unknown): AsyncIterable<Row> {
+	// Test implementation of executePlan - for now, simulate by logging and returning test data
+	async *executePlan(db: Database, plan: PlanNode, ctx?: unknown): AsyncIterable<Row> {
 		console.log(`[TestQueryTable] Executing pushed-down plan: ${plan.nodeType}, ctx: ${JSON.stringify(ctx)}`);
 		// Simulate execution - in real module, would translate plan to module-specific query
 		// For test, return simple test data
-		yield* this.xQuery!({
+		yield* this.query!({
 			idxNum: 0,
 			idxStr: 'test-pushdown',
 			constraints: [],

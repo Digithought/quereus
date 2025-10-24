@@ -337,7 +337,7 @@ const results = await db.prepare("select * from my_memory_table").all();
 // await db.exec("pragma default_vtab_args = null");
 ```
 
-**Note:** When using a default module with `create table`, the module's `xCreate` function receives the table definition (columns, constraints) parsed from the `create table` statement itself, rather than relying solely on arguments passed via `using (...)` or `pragma default_vtab_args`. The `memory` module is designed to work this way.
+**Note:** When using a default module with `create table`, the module's `create` function receives the table definition (columns, constraints) parsed from the `create table` statement itself, rather than relying solely on arguments passed via `using (...)` or `pragma default_vtab_args`. The `memory` module is designed to work this way.
 
 See the [Memory Table documentation](./memory-table.md) for more details on the built-in memory table implementation.
 

@@ -304,7 +304,7 @@ export class Database {
 	 * Registers a virtual table module.
 	 * @param name The name of the module.
 	 * @param module The module implementation.
-	 * @param auxData Optional client data passed to xCreate/xConnect.
+	 * @param auxData Optional client data passed to create/connect.
 	 */
 	registerVtabModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
 		this.checkOpen();
@@ -377,7 +377,7 @@ export class Database {
 		this.statements.clear();
 
 		// Clear schemas, ensuring VTabs are potentially disconnected
-		// This will also call xDestroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
+		// This will also call destroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
 		this.schemaManager.clearAll();
 
 		// this.registeredVTabs.clear(); // Removed, SchemaManager handles module lifecycle

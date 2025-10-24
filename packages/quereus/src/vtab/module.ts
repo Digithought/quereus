@@ -7,7 +7,7 @@ import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 /**
- * Base interface for module-specific configuration passed to xCreate/xConnect.
+ * Base interface for module-specific configuration passed to create/connect.
  * Modules should define their own interface extending this if they need options.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -45,7 +45,7 @@ export interface VirtualTableModule<
 	 * @returns The new VirtualTable instance
 	 * @throws QuereusError on failure
 	 */
-	xCreate(
+	create(
 		db: Database,
 		tableSchema: TableSchema,
 	): TTable;
@@ -63,7 +63,7 @@ export interface VirtualTableModule<
 	 * @returns The connection-specific VirtualTable instance
 	 * @throws QuereusError on failure
 	 */
-	xConnect(
+	connect(
 		db: Database,
 		pAux: unknown,
 		moduleName: string,
@@ -98,17 +98,7 @@ export interface VirtualTableModule<
 		request: BestAccessPlanRequest
 	): BestAccessPlanResult;
 
-	/**
-	 * Determines the best query plan for a given set of constraints and orderings.
-	 * This method MUST be synchronous for performance. It modifies the passed IndexInfo object.
-	 *
-	 * @deprecated Use getBestAccessPlan instead for better type safety and extensibility
-	 * @param db The database connection
-	 * @param tableInfo The schema information for the table being planned
-	 * @param indexInfo Input constraints/orderings and output plan details
-	 * @returns StatusCode.OK on success, or an error code
-	 */
-	xBestIndex(db: Database, tableInfo: TableSchema, indexInfo: IndexInfo): number;
+
 
 	/**
 	 * Destroys the underlying persistent representation of the virtual table.
@@ -121,7 +111,7 @@ export interface VirtualTableModule<
 	 * @param tableName The name of the virtual table being destroyed
 	 * @throws QuereusError on failure
 	 */
-	xDestroy(
+	destroy(
 		db: Database,
 		pAux: unknown,
 		moduleName: string,
@@ -139,7 +129,7 @@ export interface VirtualTableModule<
 	 * @param indexSchema The schema definition for the index being created
 	 * @throws QuereusError on failure
 	 */
-	xCreateIndex?(
+	createIndex?(
 		db: Database,
 		schemaName: string,
 		tableName: string,
@@ -151,7 +141,7 @@ export interface VirtualTableModule<
 	 * @param name The name to check
 	 * @returns true if the name would conflict
 	 */
-	xShadowName?(name: string): boolean;
+	shadowName?(name: string): boolean;
 }
 
 /**

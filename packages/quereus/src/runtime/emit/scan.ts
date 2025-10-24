@@ -38,14 +38,14 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
 		}
 
 		const module = capturedModuleInfo.module;
-		if (typeof module.xConnect !== 'function') {
-			throw new QuereusError(`Virtual table module '${schema.vtabModuleName}' does not implement xConnect`, StatusCode.MISUSE);
+		if (typeof module.connect !== 'function') {
+			throw new QuereusError(`Virtual table module '${schema.vtabModuleName}' does not implement connect`, StatusCode.MISUSE);
 		}
 
 		let vtabInstance: VirtualTable;
     try {
       const options: BaseModuleConfig = (schema.vtabArgs ?? {}) as BaseModuleConfig;
-			vtabInstance = module.xConnect(
+			vtabInstance = module.connect(
 				runtimeCtx.db,
 				capturedModuleInfo.auxData,
 				schema.vtabModuleName,
@@ -55,13 +55,13 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
 			);
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
-			throw new QuereusError(`Module '${schema.vtabModuleName}' xConnect failed for table '${schema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+			throw new QuereusError(`Module '${schema.vtabModuleName}' connect failed for table '${schema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		}
 
-		if (typeof vtabInstance.xQuery !== 'function') {
-			// Fallback or error if xQuery is not available. For now, throwing an error.
-			// Later, we could implement the xOpen/xFilter/xNext loop here as a fallback.
-			throw new QuereusError(`Virtual table '${schema.name}' does not support xQuery.`, StatusCode.UNSUPPORTED);
+		if (typeof vtabInstance.query !== 'function') {
+			// Fallback or error if query is not available. For now, throwing an error.
+			// Later, we could implement the open/filter/next loop here as a fallback.
+			throw new QuereusError(`Virtual table '${schema.name}' does not support query.`, StatusCode.UNSUPPORTED);
 		}
 
 		const rowSlot = createRowSlot(runtimeCtx, rowDescriptor);
@@ -74,14 +74,14 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
         return plan.filterInfo;
       })();
 
-      const asyncRowIterable = vtabInstance.xQuery(effectiveFilterInfo);
+      const asyncRowIterable = vtabInstance.query(effectiveFilterInfo);
 			for await (const row of asyncRowIterable) {
 				rowSlot.set(row);
 				yield row;
 			}
 		} catch (e: any) {
 			const message = e instanceof Error ? e.message : String(e);
-			throw new QuereusError(`Error during xQuery on table '${schema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+			throw new QuereusError(`Error during query on table '${schema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
 		} finally {
 			rowSlot.close();
 			// Properly disconnect the VirtualTable instance

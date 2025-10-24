@@ -154,8 +154,8 @@ export default function register(db: Database, config: Record<string, SqlValue> 
 
   // Virtual table module implementation
   const jsonTableModule = {
-    // Engine calls xCreate(db, tableSchema)
-    xCreate: (db: Database, tableSchema: any) => {
+    // Engine calls create(db, tableSchema)
+    create: (db: Database, tableSchema: any) => {
       // Build instance compatible with VirtualTable interface shape
       const instance = {
         db,
@@ -184,9 +184,9 @@ export default function register(db: Database, config: Record<string, SqlValue> 
             ? tableSchema.columns.map((c: any) => c.name)
             : ['value'];
         },
-        async xDisconnect() { /* no-op */ },
-        async xUpdate() { return undefined; },
-        async *xQuery() {
+        async disconnect() { /* no-op */ },
+        async update() { return undefined; },
+        async *query() {
           if (!this._data) {
             await this._init();
           }
@@ -205,7 +205,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
       return instance;
     },
     // Connect is same as create for this simple module
-    xConnect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
+    connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
       const tableSchema = {
         name: tableName,
         schemaName,
@@ -219,7 +219,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
         vtabArgs: options || {},
         estimatedRows: 0
       };
-      return jsonTableModule.xCreate(db, tableSchema);
+      return jsonTableModule.create(db, tableSchema);
     }
   };
 
