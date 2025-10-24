@@ -7,7 +7,6 @@ import { astToString } from '../../util/ast-stringify.js';
 export interface TransactionNode extends VoidNode {
 	nodeType: PlanNodeType.Transaction;
 	operation: 'begin' | 'commit' | 'rollback' | 'savepoint' | 'release';
-	mode?: 'deferred' | 'immediate' | 'exclusive'; // For BEGIN
 	savepoint?: string; // For ROLLBACK TO, SAVEPOINT, RELEASE
 	statementAst: AST.BeginStmt | AST.CommitStmt | AST.RollbackStmt | AST.SavepointStmt | AST.ReleaseStmt;
 }
@@ -19,7 +18,6 @@ export class TransactionPlanNode extends VoidNode implements TransactionNode {
 		scope: Scope,
 		public readonly operation: 'begin' | 'commit' | 'rollback' | 'savepoint' | 'release',
 		public readonly statementAst: AST.BeginStmt | AST.CommitStmt | AST.RollbackStmt | AST.SavepointStmt | AST.ReleaseStmt,
-		public readonly mode?: 'deferred' | 'immediate' | 'exclusive',
 		public readonly savepoint?: string
 	) {
 		super(scope, 1); // Transaction operations have low cost
@@ -28,7 +26,7 @@ export class TransactionPlanNode extends VoidNode implements TransactionNode {
 	override toString(): string {
 		switch (this.operation) {
 			case 'begin':
-				return this.mode ? `BEGIN ${this.mode.toUpperCase()}` : 'BEGIN';
+				return 'BEGIN';
 			case 'commit':
 				return 'COMMIT';
 			case 'rollback':
@@ -47,10 +45,6 @@ export class TransactionPlanNode extends VoidNode implements TransactionNode {
 			operation: this.operation,
 			statement: astToString(this.statementAst)
 		};
-
-		if (this.mode) {
-			props.mode = this.mode;
-		}
 
 		if (this.savepoint) {
 			props.savepoint = this.savepoint;

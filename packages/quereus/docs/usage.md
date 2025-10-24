@@ -188,7 +188,7 @@ Prepares an SQL statement for execution, returning a `Statement` object. This is
 ### `db.eval(sql: string, params?: SqlValue[] | Record<string, SqlValue>): AsyncIterableIterator<Record<string, SqlValue>>`
 A high-level async generator for executing a query and iterating over its results. Handles statement preparation, parameter binding, and automatic finalization. See the iteration example above.
 
-### `db.beginTransaction(mode?)`, `db.commit()`, `db.rollback()`
+### `db.beginTransaction()`, `db.commit()`, `db.rollback()`
 Standard transaction control methods.
 
 ### `db.registerVtabModule(...)`, `db.createScalarFunction(...)`, `db.createAggregateFunction(...)`, `db.registerCollation(...)`

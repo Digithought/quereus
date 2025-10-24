@@ -2298,21 +2298,10 @@ export class Parser {
 	 * @returns AST for BEGIN statement
 	 */
 	private beginStatement(startToken: Token, _withClause?: AST.WithClause): AST.BeginStmt {
-		let mode: 'deferred' | 'immediate' | 'exclusive' | undefined;
-		if (this.peekKeyword('DEFERRED')) {
-			this.advance();
-			mode = 'deferred';
-		} else if (this.peekKeyword('IMMEDIATE')) {
-			this.advance();
-			mode = 'immediate';
-		} else if (this.peekKeyword('EXCLUSIVE')) {
-			this.advance();
-			mode = 'exclusive';
-		}
-
+		// Skip optional TRANSACTION keyword
 		this.matchKeyword('TRANSACTION');
 
-		return { type: 'begin', mode, loc: _createLoc(startToken, this.previous()) };
+		return { type: 'begin', loc: _createLoc(startToken, this.previous()) };
 	}
 
 	/**

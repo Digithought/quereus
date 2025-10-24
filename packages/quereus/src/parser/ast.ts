@@ -284,7 +284,6 @@ export interface DropStmt extends AstNode {
 // TRANSACTION statements
 export interface BeginStmt extends AstNode {
 	type: 'begin';
-	mode?: 'deferred' | 'immediate' | 'exclusive';
 }
 
 export interface CommitStmt extends AstNode {

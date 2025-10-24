@@ -45,7 +45,7 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 				rctx.db._clearChangeLog();
 				return null;
 			};
-			note = `BEGIN ${plan.mode || 'DEFERRED'}`;
+			note = 'BEGIN';
 			break;
 		}
 		case 'commit': {

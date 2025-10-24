@@ -654,12 +654,7 @@ function dropToString(stmt: AST.DropStmt): string {
 }
 
 function beginToString(stmt: AST.BeginStmt): string {
-	let result = 'begin';
-	if (stmt.mode && stmt.mode !== 'deferred') {
-		result += ` ${stmt.mode.toLowerCase()}`;
-	}
-	result += ' transaction';
-	return result;
+	return 'begin transaction';
 }
 
 function rollbackToString(stmt: AST.RollbackStmt): string {

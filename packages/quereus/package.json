@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "type": "module",
   "description": "Federated SQL query processor",
 	"publisher": "Got Choices Foundation",

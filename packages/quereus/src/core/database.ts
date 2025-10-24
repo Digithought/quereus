@@ -313,16 +313,15 @@ export class Database {
 
 	/**
 	 * Begins a transaction.
-	 * @param mode Transaction mode ('deferred', 'immediate', or 'exclusive').
 	 */
-	async beginTransaction(mode: 'deferred' | 'immediate' | 'exclusive' = 'deferred'): Promise<void> {
+	async beginTransaction(): Promise<void> {
 		this.checkOpen();
 
 		if (this.inTransaction) {
 			throw new QuereusError("Transaction already active", StatusCode.ERROR);
 		}
 
-		await this.exec(`BEGIN ${mode.toUpperCase()} TRANSACTION`);
+		await this.exec("BEGIN TRANSACTION");
 		this.inTransaction = true;
 		this.isAutocommit = false;
 	}

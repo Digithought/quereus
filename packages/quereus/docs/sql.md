@@ -2373,24 +2373,16 @@ Starts a new transaction.
 
 **Syntax:**
 ```sql
-begin [deferred | immediate | exclusive] [transaction]
+begin [transaction]
 ```
-
-**Transaction Types:**
-- `deferred`: Locks are acquired when needed (default)
-- `immediate`: Acquires a write lock immediately
-- `exclusive`: Acquires exclusive access to the database
 
 **Examples:**
 ```sql
--- Start a default transaction
+-- Start a transaction
 begin;
 
--- Start an immediate transaction
-begin immediate transaction;
-
--- Start an exclusive transaction
-begin exclusive;
+-- Start a transaction with explicit keyword
+begin transaction;
 ```
 
 ### 8.2 COMMIT Transaction
