@@ -93,6 +93,15 @@ export type {
 	PluginRegistrations
 } from './vtab/manifest.js';
 
+// Re-export config system
+export {
+	interpolateEnvVars,
+	interpolateConfigEnvVars,
+	loadPluginsFromConfig,
+	validateConfig
+} from './config/loader.js';
+export type { QuoombConfig, PluginConfig } from './config/loader.js';
+
 // Re-export virtual table framework
 export type { VirtualTableModule } from './vtab/module.js';
 

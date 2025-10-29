@@ -2,8 +2,9 @@ import { create } from 'zustand';
 import { subscribeWithSelector, persist } from 'zustand/middleware';
 import type { SqlValue } from '@quereus/quereus';
 import { QuereusWorkerAPI, PlanGraph, PluginRecord, PluginManifest } from '../worker/types.js';
-import { validatePluginUrl, ErrorInfo, unwrapError } from '@quereus/quereus';
+import { validatePluginUrl, ErrorInfo, unwrapError, interpolateConfigEnvVars } from '@quereus/quereus';
 import { useSettingsStore } from './settingsStore.js';
+import { useConfigStore } from './configStore.js';
 import * as Comlink from 'comlink';
 
 export interface QueryResult {
@@ -259,7 +260,7 @@ export const useSessionStore = create<SessionState>()(
           } catch (error) {
             const executionTime = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            
+
             // Unwrap error chain for enhanced error information
             const errorChain = error instanceof Error ? unwrapError(error) : [];
 
@@ -1020,6 +1021,32 @@ export const useSessionStore = create<SessionState>()(
           const { api } = get();
           if (!api) return;
 
+          // First, load plugins from config if available
+          const configState = useConfigStore.getState();
+          if (configState.config && configState.config.plugins && configState.config.autoload !== false) {
+            const config = interpolateConfigEnvVars(configState.config);
+            for (const pluginConfig of config.plugins || []) {
+              try {
+                const sqlConfig: Record<string, SqlValue> = {};
+                if (pluginConfig.config) {
+                  for (const [key, value] of Object.entries(pluginConfig.config)) {
+                    if (value === null || value === undefined) {
+                      sqlConfig[key] = null;
+                    } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                      sqlConfig[key] = value;
+                    } else {
+                      sqlConfig[key] = JSON.stringify(value);
+                    }
+                  }
+                }
+                await api.loadModule(pluginConfig.source, sqlConfig);
+              } catch (error) {
+                console.warn(`Failed to load plugin from config ${pluginConfig.source}:`, error);
+              }
+            }
+          }
+
+          // Then load plugins from settings (legacy plugin storage)
           const plugins = useSettingsStore.getState().plugins;
           const enabledPlugins = plugins.filter(p => p.enabled);
 

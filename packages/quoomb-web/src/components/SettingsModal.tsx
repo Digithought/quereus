@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore.js';
-import { X, Sun, Moon, Monitor, Eye, EyeOff, Type, Zap, Puzzle } from 'lucide-react';
+import { X, Sun, Moon, Monitor, Eye, EyeOff, Type, Zap, Puzzle, Settings2 } from 'lucide-react';
 import { PluginsModal } from './PluginsModal.js';
+import { ConfigModal } from './ConfigModal.js';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -32,6 +33,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   } = useSettingsStore();
 
   const [showPluginsModal, setShowPluginsModal] = useState(false);
+  const [showConfigModal, setShowConfigModal] = useState(false);
 
   if (!isOpen) return null;
 
@@ -110,6 +112,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     </div>
                     <div className="text-sm text-gray-600 dark:text-gray-400">
                       Install and configure virtual table plugins
+                    </div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => setShowConfigModal(true)}
+                  className="flex items-center gap-3 w-full p-3 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                >
+                  <Settings2 size={20} className="text-green-500" />
+                  <div className="text-left">
+                    <div className="font-medium text-gray-900 dark:text-white">
+                      Configuration
+                    </div>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                      Import/export plugin configuration
                     </div>
                   </div>
                 </button>
@@ -287,6 +303,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       <PluginsModal
         isOpen={showPluginsModal}
         onClose={() => setShowPluginsModal(false)}
+      />
+
+      {/* Config Modal */}
+      <ConfigModal
+        isOpen={showConfigModal}
+        onClose={() => setShowConfigModal(false)}
       />
     </>
   );

@@ -2,9 +2,11 @@
 
 import { Command } from 'commander';
 import { REPL } from '../repl.js';
-import { Database } from '@quereus/quereus';
+import { Database, loadPluginsFromConfig, interpolateConfigEnvVars, validateConfig } from '@quereus/quereus';
 import chalk from 'chalk';
 import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 import Table from 'cli-table3';
 
 const program = new Command();
@@ -16,6 +18,8 @@ program
   .option('-j, --json', 'output results as JSON instead of ASCII table')
   .option('-f, --file <path>', 'execute SQL from file and exit')
   .option('-c, --cmd <sql>', 'execute SQL command and exit')
+  .option('--config <path>', 'load configuration from file')
+  .option('--no-autoload', 'do not auto-load plugins from config')
   .option('--no-color', 'disable colored output')
   .action(async (options) => {
     try {
@@ -28,7 +32,24 @@ program
         console.log(chalk.gray('Type .help for available commands or enter SQL to execute'));
         console.log(chalk.gray('Use Ctrl+C or .exit to quit\n'));
 
-        const repl = new REPL(options);
+        // Load config if available
+        let config: any = undefined;
+        const configPath = await resolveConfigPath(options.config);
+        if (configPath) {
+          try {
+            config = await loadConfigFile(configPath);
+            if (!validateConfig(config)) {
+              console.warn(chalk.yellow(`Warning: Invalid config file at ${configPath}`));
+              config = undefined;
+            } else {
+              console.log(chalk.gray(`Loaded config from ${configPath}`));
+            }
+          } catch (error) {
+            console.warn(chalk.yellow(`Warning: ${error instanceof Error ? error.message : 'Failed to load config'}`));
+          }
+        }
+
+        const repl = new REPL({ ...options, config, autoload: options.autoload !== false });
         await repl.start();
       }
     } catch (error) {
@@ -36,6 +57,56 @@ program
       process.exit(1);
     }
   });
+
+/**
+ * Resolve config file path following the resolution strategy
+ */
+async function resolveConfigPath(configOption?: string): Promise<string | null> {
+  // 1. --config CLI argument (highest priority)
+  if (configOption) {
+    return path.resolve(configOption);
+  }
+
+  // 2. QUOOMB_CONFIG environment variable
+  if (process.env.QUOOMB_CONFIG) {
+    return path.resolve(process.env.QUOOMB_CONFIG);
+  }
+
+  // 3. ./quoomb.config.json (current directory)
+  const cwd = process.cwd();
+  const cwdConfig = path.join(cwd, 'quoomb.config.json');
+  try {
+    await fs.access(cwdConfig);
+    return cwdConfig;
+  } catch {
+    // File doesn't exist, continue
+  }
+
+  // 4. ~/.quoomb/config.json (user home directory)
+  const homeDir = os.homedir();
+  const homeConfig = path.join(homeDir, '.quoomb', 'config.json');
+  try {
+    await fs.access(homeConfig);
+    return homeConfig;
+  } catch {
+    // File doesn't exist, continue
+  }
+
+  // 5. No config found
+  return null;
+}
+
+/**
+ * Load and parse config file
+ */
+async function loadConfigFile(configPath: string): Promise<any> {
+  try {
+    const content = await fs.readFile(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch (error) {
+    throw new Error(`Failed to load config from '${configPath}': ${error instanceof Error ? error.message : error}`);
+  }
+}
 
 async function executeFile(filePath: string, options: any): Promise<void> {
   try {

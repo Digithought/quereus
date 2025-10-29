@@ -1,5 +1,5 @@
 import * as readline from 'readline';
-import { Database, formatErrorChain, unwrapError } from '@quereus/quereus';
+import { Database, formatErrorChain, unwrapError, loadPluginsFromConfig, interpolateConfigEnvVars, validateConfig, type QuoombConfig } from '@quereus/quereus';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 import { DotCommands } from './commands/dot-commands.js';
@@ -8,6 +8,8 @@ import { handleDotCommand, loadEnabledPlugins } from './commands/dot-commands.js
 interface REPLOptions {
   json?: boolean;
   color?: boolean;
+  config?: QuoombConfig;
+  autoload?: boolean;
 }
 
 export class REPL {
@@ -17,7 +19,7 @@ export class REPL {
   private options: REPLOptions;
 
   constructor(options: REPLOptions = {}) {
-    this.options = { color: true, ...options };
+    this.options = { color: true, autoload: true, ...options };
     this.db = new Database();
     this.dotCommands = new DotCommands(this.db);
 
@@ -47,7 +49,19 @@ export class REPL {
     console.log('Type .help for available commands, or enter SQL statements');
     console.log('');
 
-    // Load enabled plugins at startup
+    // Load plugins from config if provided and autoload is enabled
+    if (this.options.config && this.options.autoload !== false) {
+      try {
+        const config = interpolateConfigEnvVars(this.options.config);
+        if (config.autoload !== false) {
+          await loadPluginsFromConfig(this.db, config);
+        }
+      } catch (error) {
+        console.log(`Warning: Error loading plugins from config: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+
+    // Load enabled plugins at startup (from legacy plugin storage)
     try {
       await loadEnabledPlugins(this.db);
     } catch (error) {
@@ -250,7 +264,7 @@ Examples:
 
     if (error instanceof Error) {
       const errorChain = unwrapError(error);
-      
+
       if (errorChain.length > 1) {
         // Multiple errors in chain - show formatted chain
         const formattedChain = formatErrorChain(errorChain, false);
@@ -268,11 +282,11 @@ Examples:
         // Single error - use simpler format
         const errorInfo = errorChain[0];
         let message = errorInfo?.message || error.message;
-        
+
         if (errorInfo?.line && errorInfo?.column) {
           message += ` (at line ${errorInfo.line}, column ${errorInfo.column})`;
         }
-        
+
         if (this.options.color) {
           console.error(chalk.red(message));
         } else {
