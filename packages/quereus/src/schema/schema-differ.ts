@@ -1,6 +1,6 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
-import { createTableToString } from '../util/ast-stringify.js';
+import { createTableToString, createViewToString } from '../util/ast-stringify.js';
 
 /**
  * Represents the difference between a declared schema and actual database state
@@ -104,8 +104,8 @@ export function computeSchemaDiff(
 	// Find views to create/drop
 	for (const [name, declaredView] of declaredViews) {
 		if (!actualViews.has(name)) {
-			// TODO: Generate view DDL
-			diff.viewsToCreate.push(`CREATE VIEW "${declaredView.viewStmt.view.name}" AS SELECT 1`);
+			// Generate proper view DDL using AST stringifier
+			diff.viewsToCreate.push(createViewToString(declaredView.viewStmt));
 		}
 	}
 

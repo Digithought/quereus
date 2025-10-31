@@ -629,7 +629,7 @@ function createIndexToString(stmt: AST.CreateIndexStmt): string {
 	return parts.join(' ');
 }
 
-function createViewToString(stmt: AST.CreateViewStmt): string {
+export function createViewToString(stmt: AST.CreateViewStmt): string {
 	const parts: string[] = ['create'];
 	if (stmt.isTemporary) parts.push('temp');
 	parts.push('view');

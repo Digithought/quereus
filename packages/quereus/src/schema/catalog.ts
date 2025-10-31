@@ -2,7 +2,7 @@ import type { Database } from '../core/database.js';
 import type { TableSchema } from './table.js';
 import type { ViewSchema } from './view.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
-import { createTableToString } from '../util/ast-stringify.js';
+import { createTableToString, createViewToString } from '../util/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
 
 /**
@@ -196,9 +196,23 @@ export function generateDeclaredDDL(declaredSchema: AST.DeclareSchemaStmt, targe
 			case 'declaredIndex':
 				// TODO: Implement index DDL generation
 				break;
-			case 'declaredView':
-				// TODO: Implement view DDL generation
+			case 'declaredView': {
+				// Qualify view name with schema if specified
+				const viewStmt = item.viewStmt;
+				if (targetSchema && targetSchema !== 'main' && !viewStmt.view.schema) {
+					const qualifiedStmt: AST.CreateViewStmt = {
+						...viewStmt,
+						view: {
+							...viewStmt.view,
+							schema: targetSchema
+						}
+					};
+					ddlStatements.push(createViewToString(qualifiedStmt));
+				} else {
+					ddlStatements.push(createViewToString(viewStmt));
+				}
 				break;
+			}
 		}
 	}
 

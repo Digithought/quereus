@@ -333,7 +333,35 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 			if (viewSchema) {
 				// Build the view's SELECT statement
-				fromTable = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
+				let viewSelectNode = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
+
+				// If the view has explicit column names, wrap with a projection to rename columns
+				if (viewSchema.columns && viewSchema.columns.length > 0) {
+					const viewAttributes = viewSelectNode.getAttributes();
+					const projections = viewSchema.columns.map((columnName, i) => {
+						if (i >= viewAttributes.length) {
+							throw new QuereusError(
+								`View '${viewSchema.name}' has more explicit column names than SELECT columns`,
+								StatusCode.ERROR
+							);
+						}
+						const attr = viewAttributes[i];
+						const columnRef = new ColumnReferenceNode(
+							parentContext.scope,
+							{ type: 'column', name: attr.name } as AST.ColumnExpr,
+							attr.type,
+							attr.id,
+							i
+						);
+						return {
+							node: columnRef,
+							alias: columnName
+						};
+					});
+					fromTable = new ProjectNode(parentContext.scope, viewSelectNode, projections);
+				} else {
+					fromTable = viewSelectNode;
+				}
 
 				// Create scope for view columns
 				const viewScope = new RegisteredScope(parentContext.scope);
