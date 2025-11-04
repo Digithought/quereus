@@ -2048,12 +2048,23 @@ export class Parser {
         if (this.matchKeyword('USING')) {
 			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
             if (this.match(TokenType.LPAREN)) {
+				let positionalIndex = 0;
                 if (!this.check(TokenType.RPAREN)) {
                     do {
-                        const nameValue = this.nameValueItem('module argument');
-                        moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
-                            ? getSyncLiteral(nameValue.value)
-                            : (nameValue.value && nameValue.value.type === 'identifier' ? nameValue.value.name : nameValue.name);
+						// Check if this is a positional argument (string/number literal) or named argument (identifier=value)
+						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
+							// Positional argument
+							const token = this.advance();
+							moduleArgs[String(positionalIndex++)] = token.literal;
+						} else if (this.check(TokenType.IDENTIFIER)) {
+							// Could be named argument or identifier value
+							const nameValue = this.nameValueItem('module argument');
+							moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
+								? getSyncLiteral(nameValue.value)
+								: (nameValue.value && nameValue.value.type === 'identifier' ? nameValue.value.name : nameValue.name);
+						} else {
+							throw this.error(this.peek(), "Expected module argument (string, number, or name=value pair).");
+						}
                     } while (this.match(TokenType.COMMA));
                 }
                 this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
@@ -2452,10 +2463,21 @@ export class Parser {
 			}
 			if (this.match(TokenType.LPAREN)) {
 				moduleArgs = {};
+				let positionalIndex = 0;
 				if (!this.check(TokenType.RPAREN)) {
 					do {
-						const nv = this.nameValueItem('module argument');
-						moduleArgs[nv.name] = nv.value && nv.value.type === 'literal' ? getSyncLiteral(nv.value) : (nv.value && nv.value.type === 'identifier' ? nv.value.name : null);
+						// Check if this is a positional argument (string/number literal) or named argument (identifier=value)
+						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
+							// Positional argument
+							const token = this.advance();
+							moduleArgs[String(positionalIndex++)] = token.literal;
+						} else if (this.check(TokenType.IDENTIFIER)) {
+							// Could be named argument or identifier value
+							const nv = this.nameValueItem('module argument');
+							moduleArgs[nv.name] = nv.value && nv.value.type === 'literal' ? getSyncLiteral(nv.value) : (nv.value && nv.value.type === 'identifier' ? nv.value.name : null);
+						} else {
+							throw this.error(this.peek(), "Expected module argument (string, number, or name=value pair).");
+						}
 					} while (this.match(TokenType.COMMA));
 				}
 				this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");

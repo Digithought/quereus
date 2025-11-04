@@ -217,6 +217,34 @@ export class Database {
 	 * @returns A Promise resolving when execution completes.
 	 * @throws QuereusError on failure.
 	 */
+	/**
+	 * @internal
+	 * Executes a single AST statement without transaction management.
+	 * Used by both exec() and eval() to avoid code duplication.
+	 */
+	private async _executeStatement(statementAst: AST.Statement, params?: SqlParameters | SqlValue[]): Promise<void> {
+		const plan = this._buildPlan([statementAst], params);
+
+		if (plan.statements.length === 0) return; // No-op for this AST
+
+		const optimizedPlan = this.optimizer.optimize(plan, this) as BlockNode;
+		const emissionContext = new EmissionContext(this);
+		const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
+		const scheduler = new Scheduler(rootInstruction);
+
+		const runtimeCtx: RuntimeContext = {
+			db: this,
+			stmt: undefined,
+			params: params ?? {},
+			context: new Map(),
+			tableContexts: new Map(),
+			tracer: this.instructionTracer,
+			enableMetrics: this.options.getBooleanOption('runtime_stats'),
+		};
+
+		await scheduler.run(runtimeCtx);
+	}
+
 	async exec(
 		sql: string,
 		params?: SqlParameters,
@@ -250,39 +278,13 @@ export class Database {
 			}
 
 			for (let i = 0; i < batch.length; i++) {
-				const statementAst = batch[i];
-				let plan: BlockNode;
-
 				try {
-					plan = this._buildPlan([statementAst], params);
-
-					if (plan.statements.length === 0) continue; // No-op for this AST
-
-					const optimizedPlan = this.optimizer.optimize(plan, this) as BlockNode;
-
-					const emissionContext = new EmissionContext(this);
-					const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
-
-					const scheduler = new Scheduler(rootInstruction);
-
-					const runtimeCtx: RuntimeContext = {
-						db: this,
-						stmt: undefined,
-						params: params ?? {},
-						context: new Map(),
-						tableContexts: new Map(),
-						tracer: this.instructionTracer,
-						enableMetrics: this.options.getBooleanOption('runtime_stats'),
-					};
-
-					void await scheduler.run(runtimeCtx);
-					// Nothing to do with the result, this is executed for side effects only
+					await this._executeStatement(batch[i], params);
 				} catch (err) {
 					const error = err instanceof Error ? err : new Error(String(err));
 					executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
 					break; // Stop processing further statements on error
 				}
-				// No explicit finalize for transient plan/scheduler used in exec loop
 			}
 
 		} finally {
@@ -755,16 +757,34 @@ export class Database {
 		let stmt: Statement | null = null;
 		try {
 			stmt = this.prepare(sql);
-			if (stmt.astBatch.length > 1) {
-				warnLog(`Database.eval called with multi-statement SQL. Only results from the first statement will be yielded.`);
-			}
 
-			if (stmt.astBatch.length > 0) { // Check if there are any statements to execute
-				// If currentAstIndex defaults to 0 and astBatch is not empty, this will run the first statement.
-				yield* stmt.all(params);
-			} else {
+			if (stmt.astBatch.length === 0) {
 				// No statements, yield nothing.
 				return;
+			}
+
+			if (stmt.astBatch.length > 1) {
+				// Multi-statement batch: execute all but the last statement,
+				// then yield results from the last statement
+				const parser = new Parser();
+				const batch = parser.parseAll(sql);
+
+				// Execute all statements except the last one
+				for (let i = 0; i < batch.length - 1; i++) {
+					await this._executeStatement(batch[i], params);
+				}
+
+				// Now prepare and execute the last statement to yield its results
+				const lastStmt = new Statement(this, [batch[batch.length - 1]]);
+				this.statements.add(lastStmt);
+				try {
+					yield* lastStmt.all(params);
+				} finally {
+					await lastStmt.finalize();
+				}
+			} else {
+				// Single statement: execute and yield results
+				yield* stmt.all(params);
 			}
 		} finally {
 			if (stmt) { await stmt.finalize(); }

@@ -122,6 +122,22 @@ async function executeCommand(sql: string, options: any): Promise<void> {
   const startTime = Date.now();
 
   try {
+    // Load config and plugins if available
+    const configPath = await resolveConfigPath(options.config);
+    if (configPath) {
+      try {
+        const config = await loadConfigFile(configPath);
+        if (validateConfig(config)) {
+          const interpolatedConfig = interpolateConfigEnvVars(config);
+          if (interpolatedConfig.autoload !== false && options.autoload !== false) {
+            await loadPluginsFromConfig(db, interpolatedConfig);
+          }
+        }
+      } catch (error) {
+        console.warn(chalk.yellow(`Warning: ${error instanceof Error ? error.message : 'Failed to load config'}`));
+      }
+    }
+
     // Check if this is a query that returns results
     const trimmedSql = sql.trim().toLowerCase();
     if (trimmedSql.startsWith('select') || trimmedSql.startsWith('with')) {
