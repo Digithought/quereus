@@ -600,7 +600,7 @@ export function valuesToString(stmt: AST.ValuesStmt): string {
 	return `values ${valueRows.join(', ')}`;
 }
 
-function createIndexToString(stmt: AST.CreateIndexStmt): string {
+export function createIndexToString(stmt: AST.CreateIndexStmt): string {
 	const parts: string[] = ['create'];
 	if (stmt.isUnique) parts.push('unique');
 	parts.push('index');

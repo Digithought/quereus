@@ -119,7 +119,12 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 				await rctx.db.exec(ddl);
 			} catch (e) {
 				log('Migration failed for DDL: %s', ddl);
-				throw e;
+				const errorMessage = e instanceof Error ? e.message : String(e);
+				throw new QuereusError(
+					`Failed to execute DDL: ${ddl}\nError: ${errorMessage}`,
+					StatusCode.ERROR,
+					e instanceof Error ? e : undefined
+				);
 			}
 		}
 
@@ -155,7 +160,12 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 					log('Seed application succeeded for table %s', tableName);
 				} catch (e) {
 					log('Seed application failed for table %s: %O', tableName, e);
-					throw e;
+					const errorMessage = e instanceof Error ? e.message : String(e);
+					throw new QuereusError(
+						`Failed to apply seed data for table ${tableName}. SQL: ${deleteAndInsertSql}\nError: ${errorMessage}`,
+						StatusCode.ERROR,
+						e instanceof Error ? e : undefined
+					);
 				}
 			}
 		}

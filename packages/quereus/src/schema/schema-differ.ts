@@ -1,6 +1,6 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
-import { createTableToString, createViewToString } from '../util/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString } from '../util/ast-stringify.js';
 
 /**
  * Represents the difference between a declared schema and actual database state
@@ -118,8 +118,8 @@ export function computeSchemaDiff(
 	// Find indexes to create/drop
 	for (const [name, declaredIndex] of declaredIndexes) {
 		if (!actualIndexes.has(name)) {
-			// TODO: Generate index DDL
-			diff.indexesToCreate.push(`CREATE INDEX "${declaredIndex.indexStmt.index.name}" ON "${declaredIndex.indexStmt.table.name}" (...)`);
+			// Generate proper index DDL using AST stringifier
+			diff.indexesToCreate.push(createIndexToString(declaredIndex.indexStmt));
 		}
 	}
 

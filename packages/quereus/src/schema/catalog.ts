@@ -1,8 +1,8 @@
 import type { Database } from '../core/database.js';
-import type { TableSchema } from './table.js';
+import type { TableSchema, IndexSchema } from './table.js';
 import type { ViewSchema } from './view.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
-import { createTableToString, createViewToString } from '../util/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString } from '../util/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
 
 /**
@@ -62,6 +62,17 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 	for (const tableSchema of schema.getAllTables()) {
 		if (!tableSchema.isView) {
 			tables.push(tableSchemaToCatalog(tableSchema));
+
+			// Collect indexes for this table
+			if (tableSchema.indexes && tableSchema.indexes.length > 0) {
+				for (const indexSchema of tableSchema.indexes) {
+					indexes.push({
+						name: indexSchema.name,
+						tableName: tableSchema.name,
+						ddl: generateIndexDDL(indexSchema, tableSchema)
+					});
+				}
+			}
 		}
 	}
 
@@ -114,6 +125,28 @@ function assertionSchemaToCatalog(assertionSchema: IntegrityAssertionSchema): Ca
 		name: assertionSchema.name,
 		ddl: `CREATE ASSERTION ${assertionSchema.name} CHECK (${assertionSchema.violationSql})`
 	};
+}
+
+/**
+ * Generates canonical DDL for an index from its schema
+ */
+function generateIndexDDL(indexSchema: IndexSchema, tableSchema: TableSchema): string {
+	// Convert IndexSchema back to AST CreateIndexStmt for stringification
+	const indexStmt: AST.CreateIndexStmt = {
+		type: 'createIndex',
+		index: { type: 'identifier', name: indexSchema.name },
+		table: { type: 'identifier', name: tableSchema.name },
+		ifNotExists: false,
+		isUnique: false,
+		columns: indexSchema.columns.map(col => ({
+			name: tableSchema.columns[col.index].name,
+			expr: undefined,
+			collation: col.collation,
+			direction: col.desc ? 'desc' : 'asc'
+		}))
+	};
+
+	return createIndexToString(indexStmt);
 }
 
 /**
@@ -193,9 +226,23 @@ export function generateDeclaredDDL(declaredSchema: AST.DeclareSchemaStmt, targe
 				}
 				break;
 			}
-			case 'declaredIndex':
-				// TODO: Implement index DDL generation
+			case 'declaredIndex': {
+				// Generate index DDL using AST stringifier
+				const indexStmt = item.indexStmt;
+				if (targetSchema && targetSchema !== 'main' && !indexStmt.table.schema) {
+					const qualifiedStmt: AST.CreateIndexStmt = {
+						...indexStmt,
+						table: {
+							...indexStmt.table,
+							schema: targetSchema
+						}
+					};
+					ddlStatements.push(createIndexToString(qualifiedStmt));
+				} else {
+					ddlStatements.push(createIndexToString(indexStmt));
+				}
 				break;
+			}
 			case 'declaredView': {
 				// Qualify view name with schema if specified
 				const viewStmt = item.viewStmt;
