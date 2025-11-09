@@ -2,6 +2,37 @@
 
 Quereus provides a lightweight, TypeScript-native SQL interface inspired by SQLite with a focus on virtual tables that can be backed by any data source. This document explains how to use Quereus effectively in your applications.
 
+## Quick Start
+
+Quereus uses native JavaScript types for SQL values. Query results are returned as objects with column names as keys:
+
+```typescript
+import { Database } from 'quereus';
+
+const db = new Database();
+
+// Create a table and insert data
+await db.exec("create table users (id integer primary key, name text, email text)");
+await db.exec("insert into users values (1, 'Alice', 'alice@example.com')");
+
+// Query returns objects: { id: 1, name: 'Alice', email: 'alice@example.com' }
+const user = await db.prepare("select * from users where id = ?").get([1]);
+console.log(user.name); // "Alice"
+
+// Iterate over multiple rows
+for await (const user of db.eval("select * from users")) {
+  console.log(user.name); // Each row is an object
+}
+```
+
+**Key Points:**
+- SQL values use JavaScript types: `string`, `number`, `bigint`, `boolean`, `Uint8Array`, `null`
+- Dates/times are **strings** in ISO format (e.g., `"2024-01-15"`)
+- BLOBs are `Uint8Array` typed arrays
+- Results stream as async iterators - use `for await` to process rows
+
+See [Type System Reference](#type-system-reference) for complete details on type mappings and behavior.
+
 ## Basic Usage
 
 ### Creating a Database
@@ -471,4 +502,274 @@ try {
     console.error(`Unknown error: ${err}`);
   }
 }
-``` 
+```
+
+## Type System Reference
+
+This section provides comprehensive details on how Quereus represents SQL values in JavaScript/TypeScript.
+
+### Core Type Definitions
+
+```typescript
+// All SQL values are represented by this union type
+type SqlValue = string | number | bigint | boolean | Uint8Array | null;
+
+// Rows are arrays of values
+type Row = SqlValue[];
+
+// Parameters can be positional (array) or named (object)
+type SqlParameters = Record<string, SqlValue> | SqlValue[];
+```
+
+### SQL to JavaScript Type Mapping
+
+| SQL Type | JavaScript Type | Notes |
+|----------|----------------|-------|
+| `NULL` | `null` | SQL NULL is JavaScript null |
+| `INTEGER` | `number` or `bigint` | Small integers use `number`, large integers use `bigint` |
+| `REAL` / `FLOAT` | `number` | Floating-point numbers |
+| `TEXT` | `string` | Text strings |
+| `BLOB` | `Uint8Array` | Binary data as typed array |
+| `BOOLEAN` | `boolean` | True/false values (stored as INTEGER in SQL) |
+| Date/Time | `string` | ISO 8601 format: `"2024-01-15"`, `"14:30:00"` |
+
+### Date and Time Values
+
+**Important:** Quereus does not have native date/time types. Date and time values are **always returned as strings** in ISO 8601 format:
+
+```typescript
+// Date functions return strings
+const result = await db.prepare("select date('now') as today").get();
+console.log(result.today); // "2024-01-15" (string)
+
+// DateTime functions return strings
+const dt = await db.prepare("select datetime('now') as now").get();
+console.log(dt.now); // "2024-01-15 14:30:00" (string)
+
+// Time functions return strings
+const time = await db.prepare("select time('now') as current_time").get();
+console.log(time.current_time); // "14:30:00" (string)
+```
+
+When passing date/time values as parameters, use ISO 8601 formatted strings:
+
+```typescript
+await db.exec("insert into events (name, event_date) values (?, ?)",
+  ["Meeting", "2024-01-15"]);
+
+// Date calculations work with string parameters
+const upcoming = await db.prepare(
+  "select * from events where event_date > date(?)"
+).all(["2024-01-01"]);
+```
+
+### Working with BLOBs
+
+Binary data is represented as `Uint8Array`:
+
+```typescript
+// Insert binary data
+const imageData = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG header
+await db.exec("insert into files (name, data) values (?, ?)",
+  ["image.jpg", imageData]);
+
+// Retrieve binary data
+const file = await db.prepare("select data from files where name = ?").get(["image.jpg"]);
+console.log(file.data instanceof Uint8Array); // true
+console.log(file.data); // Uint8Array(4) [255, 216, 255, 224]
+
+// Generate random binary data
+const random = await db.prepare("select randomblob(16) as random_bytes").get();
+console.log(random.random_bytes instanceof Uint8Array); // true
+```
+
+### Working with Large Integers
+
+JavaScript `number` type is limited to safe integers (±2^53 - 1). For larger integers, Quereus uses `bigint`:
+
+```typescript
+// Small integers use number
+const small = await db.prepare("select 42 as value").get();
+console.log(typeof small.value); // "number"
+
+// Large integers use bigint
+const large = await db.prepare("select 9007199254740992 as value").get();
+console.log(typeof large.value); // "bigint"
+
+// You can pass bigint as parameters
+await db.exec("insert into counters (id, count) values (?, ?)",
+  [1, 9007199254740992n]);
+```
+
+### NULL Handling
+
+SQL `NULL` is represented as JavaScript `null`:
+
+```typescript
+// NULL values in results
+const user = await db.prepare("select name, email from users where id = ?").get([1]);
+console.log(user.email === null); // true if email is NULL
+
+// NULL in parameters
+await db.exec("insert into users (name, email) values (?, ?)",
+  ["John", null]); // email will be NULL
+
+// NULL checks in SQL
+const hasEmail = await db.prepare(
+  "select count(*) as count from users where email is not null"
+).get();
+```
+
+### Type Coercion
+
+Quereus follows SQL type coercion rules:
+
+```typescript
+// Numeric strings are coerced in comparisons
+const result = await db.prepare("select 42 = '42' as equal").get();
+console.log(result.equal); // true (boolean)
+
+// String concatenation with ||
+const concat = await db.prepare("select 'Value: ' || 42 as text").get();
+console.log(concat.text); // "Value: 42" (string)
+
+// Arithmetic operations coerce to numbers
+const math = await db.prepare("select '10' + '20' as sum").get();
+console.log(math.sum); // 30 (number)
+```
+
+### Row Representation: Arrays vs Objects
+
+Internally, Quereus represents rows as **arrays of values** (`Row = SqlValue[]`), but the high-level API converts them to **objects** for convenience:
+
+```typescript
+// High-level API returns objects (Record<string, SqlValue>)
+const user = await db.prepare("select id, name, email from users where id = ?").get([1]);
+// user is: { id: 1, name: "Alice", email: "alice@example.com" }
+console.log(user.name); // "Alice"
+
+// Multiple rows as objects
+const users = await db.prepare("select id, name from users").all();
+// users is: [{ id: 1, name: "Alice" }, { id: 2, name: "Bob" }]
+users.forEach(u => console.log(u.name));
+
+// Iteration with db.eval returns objects
+for await (const user of db.eval("select * from users")) {
+  console.log(user.name); // Each user is an object
+}
+
+// Low-level API: getArray() returns raw array
+const stmt = await db.prepare("select id, name, email from users where id = ?");
+stmt.bind(1, 1);
+await stmt.step();
+const rowArray = stmt.getArray();
+// rowArray is: [1, "Alice", "alice@example.com"] (SqlValue[])
+console.log(rowArray[0]); // 1 (access by index)
+await stmt.finalize();
+```
+
+**Key Points:**
+- **High-level API** (`get()`, `all()`, `eval()`) returns objects with column names as keys
+- **Low-level API** (`getArray()`) returns arrays of values in column order
+- Internally, rows are always arrays - objects are created for convenience
+
+### Async Iteration and Streaming
+
+Quereus uses **async iterators** for streaming query results, allowing you to process large result sets without loading everything into memory:
+
+```typescript
+// db.eval returns AsyncIterableIterator<Record<string, SqlValue>>
+const iterator = db.eval("select * from large_table");
+
+// Use for-await-of to stream rows
+for await (const row of iterator) {
+  console.log(row); // Each row is an object
+  // Rows are streamed - not all loaded into memory at once
+}
+
+// Or manually control iteration
+const iter = db.eval("select * from users");
+const first = await iter.next(); // { value: { id: 1, name: "Alice" }, done: false }
+const second = await iter.next(); // { value: { id: 2, name: "Bob" }, done: false }
+```
+
+**Runtime Value Types:**
+
+At the runtime level, Quereus works with these value types:
+
+```typescript
+// SqlValue: primitive values
+type SqlValue = string | number | bigint | boolean | Uint8Array | null;
+
+// Row: array of values
+type Row = SqlValue[];
+
+// RuntimeValue: what instructions can work with
+type RuntimeValue = SqlValue | Row | AsyncIterable<Row> | ((ctx: RuntimeContext) => OutputValue);
+
+// SqlParameters: how you pass parameters
+type SqlParameters = Record<string, SqlValue> | SqlValue[];
+```
+
+This means:
+- **Scalar queries** return a single `SqlValue`
+- **Table queries** return `AsyncIterable<Row>` (streamed rows)
+- **Parameters** can be positional arrays or named objects
+
+### Multi-Statement Execution
+
+When executing multiple statements with `db.eval`, **only the last statement's results are returned**:
+
+```typescript
+// Only the SELECT results are returned
+for await (const row of db.eval(`
+  create table temp_data (id integer, value text);
+  insert into temp_data values (1, 'a'), (2, 'b');
+  select * from temp_data;
+`)) {
+  console.log(row); // { id: 1, value: 'a' }, then { id: 2, value: 'b' }
+}
+
+// The CREATE and INSERT are executed, but their results are discarded
+// Only the final SELECT produces rows to iterate
+
+// If the last statement doesn't return rows, the iterator is empty
+for await (const row of db.eval(`
+  create table users (id integer, name text);
+  insert into users values (1, 'Alice');
+`)) {
+  // This loop never executes - INSERT doesn't return rows
+}
+
+// Use db.exec for multi-statement DDL/DML without results
+await db.exec(`
+  create table users (id integer, name text);
+  insert into users values (1, 'Alice');
+`);
+```
+
+**Best Practices:**
+- Use `db.eval()` when you need results from the last statement
+- Use `db.exec()` for DDL/DML statements that don't return results
+- For multiple statements with results, execute them separately
+
+### TypeScript Type Safety
+
+For better type safety, you can define interfaces for your result types:
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string | null;
+  created_at: string; // Date/time as string
+}
+
+const user = await db.prepare("select * from users where id = ?").get([1]) as User;
+console.log(user.name.toUpperCase()); // TypeScript knows name is a string
+
+// For async iteration
+for await (const user of db.eval("select * from users") as AsyncIterableIterator<User>) {
+  console.log(user.email?.toLowerCase()); // TypeScript knows the shape
+}
+```

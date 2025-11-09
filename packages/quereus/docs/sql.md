@@ -265,7 +265,8 @@ The insert statement adds new rows to a table.
 [ with [recursive] with_clause[,...] ]
   insert into table_name [(column [, column...])]
   { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
-  [ returning expr [, expr...] ]
+  [ with context (variable = expr [, ...]) ]
+  [ returning [qualifier.]expr [, [qualifier.]expr...] ]
 ```
 
 **Options:**
@@ -274,7 +275,8 @@ The insert statement adds new rows to a table.
 - `column`: Optional list of columns to insert into
 - `values`: A list of value sets to insert
 - `select_statement`: A select query whose results are inserted
-- `returning`: Returns specified expressions from the inserted rows
+- `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
+- `returning`: Returns specified expressions from the inserted rows (supports NEW qualifier)
 
 **Examples:**
 ```sql
@@ -326,7 +328,8 @@ The update statement modifies existing rows in a table.
   update table_name
     set column = expr [, column = expr...]
     [ where condition ]
-    [ returning expr [, expr...] ]
+    [ with context (variable = expr [, ...]) ]
+    [ returning [qualifier.]expr [, [qualifier.]expr...] ]
 ```
 
 **Options:**
@@ -334,7 +337,8 @@ The update statement modifies existing rows in a table.
 - `table_name`: Table to be updated
 - `set`: Column assignments with new values
 - `where`: Optional condition to specify which rows to update
-- `returning`: Returns specified expressions from the updated rows
+- `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
+- `returning`: Returns specified expressions from the updated rows (supports OLD and NEW qualifiers)
 
 **Examples:**
 ```sql
@@ -403,14 +407,16 @@ The delete statement removes rows from a table.
 [ with [recursive] with_clause[,...] ]
 delete from table_name
 [ where condition ]
-[ returning expr [, expr...] ]
+[ with context (variable = expr [, ...]) ]
+[ returning [qualifier.]expr [, [qualifier.]expr...] ]
 ```
 
 **Options:**
 - `with clause`: Common Table Expressions for use in the delete
 - `table_name`: Table to delete from
 - `where`: Optional condition to specify which rows to delete
-- `returning`: Returns specified expressions from the deleted rows
+- `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
+- `returning`: Returns specified expressions from the deleted rows (supports OLD qualifier)
 
 **Examples:**
 ```sql
@@ -577,6 +583,47 @@ column_name [data_type] [column_constraint...]
 on conflict { rollback | abort | fail | ignore | replace }
 ```
 
+**Options:**
+- If an empty key column list is provided, the table may have 0 or 1 rows.
+- `temp/temporary`: Creates a temporary table
+- `if not exists`: Creates the table only if it doesn't already exist
+- `column_definition`: Defines a column with optional constraints
+- `table_constraint`: Defines a table-level constraint
+- `using module_name`: Specifies a virtual table module
+
+**Examples:**
+```sql
+-- Basic table with constraints
+create table employees (
+  id integer primary key,
+  name text not null,
+  email text unique collate nocase,
+  department text default 'General',
+  salary real check (salary >= 0),
+  hire_date text,
+  manager_id integer references employees(id)
+);
+
+-- Table with composite key and multiple constraints
+create table order_items (
+  order_id integer,
+  product_id integer,
+  quantity integer not null check on insert (quantity > 0),
+  price real not null check (price >= 0),
+  discount real default 0 check (discount >= 0 and discount <= 1),
+  primary key (order_id, product_id),
+  foreign key (order_id) references orders(id),
+  foreign key (product_id) references products(id)
+);
+
+-- Memory-backed virtual table
+create table cache (
+  key text primary key,
+  value blob,
+  expires_at integer
+) using memory;
+```
+
 ### 2.6.1 CREATE/DROP ASSERTION (Global Integrity Constraints)
 
 Quereus supports database-wide integrity assertions evaluated at COMMIT time.
@@ -612,7 +659,7 @@ select prepared_pk_params from explain_assertion('a_row') where classification =
 
 ### 2.6.2 Mutation Context (Table-Level Parameters)
 
-Quereus supports table-level mutation context variables that provide per-operation parameters for default values and constraints. The primary use case is implementing application-specific security, rights management, and audit mechanisms using signatures, digests, and cryptographic verification - avoiding reliance on built-in authentication systems.
+Quereus supports table-level mutation context variables that provide per-operation parameters for default values and constraints. The primary use case is implementing application-specific security, rights management, and audit mechanisms using signatures, digests, and cryptographic verification.
 
 **Syntax:**
 ```sql
@@ -650,86 +697,6 @@ where condition
 
 **Examples:**
 
-**Rights-Based Access Control:**
-```sql
--- Table with operation signature verification
-create table documents (
-  id integer primary key,
-  title text,
-  content text,
-  created_by text default actor_name,
-  operation_hash blob default null,
-  constraint verify_signature check (
-    verify_hmac(operation_hash, actor_name || new.title, signing_key) = 1
-  )
-) using memory
-with context (
-  actor_name text,
-  signing_key blob,
-  operation_hash blob null
-);
-
--- Insert with actor identity and signature
-insert into documents (id, title, content)
-with context 
-  actor_name = 'alice@example.com',
-  signing_key = x'deadbeef...',
-  operation_hash = x'signature...'
-values (1, 'Confidential Report', 'Contents...');
-```
-
-**User Permissions Enforcement:**
-```sql
--- Table that enforces user permissions via context
-create table sensitive_data (
-  id integer primary key,
-  data text,
-  min_clearance_level integer,
-  constraint access_check check (user_clearance >= min_clearance_level)
-) using memory
-with context (
-  user_clearance integer
-);
-
--- Read operation with user's clearance level
-select * from sensitive_data
-where id = 42
-with context user_clearance = 3;  -- User has clearance level 3
-
--- Insert restricted to high-clearance users
-insert into sensitive_data (id, data, min_clearance_level)
-with context user_clearance = 5
-values (1, 'Top Secret', 5);  -- Passes: 5 >= 5
-```
-
-**Audit Trail with Digital Signatures:**
-```sql
--- Cryptographically signed audit log
-create table audit_log (
-  id integer primary key,
-  action text,
-  user_id text default actor_id,
-  timestamp text default datetime('now'),
-  signature blob default operation_signature,
-  constraint verify_audit check (
-    verify_signature(signature, actor_id || action || datetime('now'), public_key) = 1
-  )
-) using memory
-with context (
-  actor_id text,
-  operation_signature blob,
-  public_key blob
-);
-
--- Log action with cryptographic proof
-insert into audit_log (id, action)
-with context 
-  actor_id = 'user123',
-  operation_signature = x'signed_hash...',
-  public_key = x'pubkey...'
-values (1, 'DELETE_RECORD');
-```
-
 **Multi-Tenant Data Isolation:**
 ```sql
 -- Enforce tenant isolation at database level
@@ -754,109 +721,45 @@ with context current_tenant_id = 'tenant_abc'
 values (2, 'tenant_xyz', 'Data');  -- Fails: tenant mismatch
 ```
 
-**Row-Level Security with Time-Based Tokens:**
+**Audit Trail with Actor Tracking:**
 ```sql
--- Time-limited access tokens
-create table protected_resources (
+-- Audit log with actor identity
+create table audit_log (
   id integer primary key,
-  resource_data text,
-  required_role text,
-  constraint auth_check check (
-    has_role(context.auth_token, required_role) = 1 and
-    token_expired(context.auth_token, context.current_time) = 0
-  )
+  action text,
+  user_id text default actor_id,
+  timestamp text default datetime('now')
 ) using memory
 with context (
-  auth_token text,
-  current_time integer
+  actor_id text
 );
 
--- Access with valid token
-insert into protected_resources (id, resource_data, required_role)
-with context 
-  auth_token = 'Bearer eyJ0eXAi...',
-  current_time = julianday('now')
-values (1, 'Sensitive data', 'admin');
+-- Log action with actor identity
+insert into audit_log (id, action)
+with context actor_id = 'user123'
+values (1, 'DELETE_RECORD');
 ```
 
-**UPDATE with Permission Verification:**
+**Permission Verification:**
 ```sql
 -- Prevent unauthorized modifications
 create table user_profiles (
   user_id integer primary key,
   email text,
-  is_admin integer,
   constraint update_auth check (
-    context.requester_id = old.user_id or context.requester_is_admin = 1
+    context.requester_id = old.user_id or context.is_admin = 1
   )
 ) using memory
 with context (
   requester_id integer,
-  requester_is_admin integer
+  is_admin integer
 );
 
 -- User can update their own profile
 update user_profiles
-with context requester_id = 42, requester_is_admin = 0
+with context requester_id = 42, is_admin = 0
 set email = 'newemail@example.com'
 where user_id = 42;  -- Passes: requester_id matches
-
--- Admin can update any profile
-update user_profiles
-with context requester_id = 1, requester_is_admin = 1
-set email = 'admin_updated@example.com'
-where user_id = 42;  -- Passes: admin privilege
-```
-
-**DELETE with Audit Requirements:**
-```sql
--- Require deletion reason and authorization
-create table customer_data (
-  customer_id integer primary key,
-  data text,
-  constraint delete_auth check on delete (
-    length(deletion_reason) > 10 and
-    verify_admin_token(admin_token) = 1
-  )
-) using memory
-with context (
-  deletion_reason text,
-  admin_token text
-);
-
--- Delete with proper authorization and justification
-delete from customer_data
-with context 
-  deletion_reason = 'GDPR erasure request from customer',
-  admin_token = 'admin_session_xyz'
-where customer_id = 123;
-```
-
-**Deferred Constraints with Security Context:**
-Context values are preserved for deferred constraints evaluated at COMMIT:
-
-```sql
--- Cross-table permission validation
-create table financial_transactions (
-  id integer primary key,
-  amount integer,
-  constraint auth_check check (
-    exists (
-      select 1 from user_permissions 
-      where user_id = context.user_id 
-      and can_transact_amount >= new.amount
-    )
-  )
-) using memory
-with context (
-  user_id integer
-);
-
-begin;
-insert into financial_transactions (id, amount)
-with context user_id = 42
-values (1, 5000);
-commit;  -- Deferred constraint validates user permissions
 ```
 
 **Best Practices:**
@@ -864,60 +767,9 @@ commit;  -- Deferred constraint validates user permissions
 - Implement signature verification, digest validation, and rights checking in constraints
 - Store actor identity, timestamps, and cryptographic proofs in defaults
 - Use qualified `context.varName` for clarity when variable names might conflict
-- Mark signature/token variables as NULL when optional
+- Mark optional context variables as NULL
 - Combine with user-defined functions for custom verification logic
 - Context is required when defaults or constraints reference context variables
-
-**Options:**
-- If an empty key column list is provided, the table may have 0 or 1 rows.
-- `temp/temporary`: Creates a temporary table
-- `if not exists`: Creates the table only if it doesn't already exist
-- `column_definition`: Defines a column with optional constraints
-- `table_constraint`: Defines a table-level transition constraint
-- `using module_name`: Specifies a virtual table module
-
-**Examples:**
-```sql
--- Basic table with constraints
-create table employees (
-  id integer primary key autoincrement,
-  name text not null,
-  email text unique collate nocase,
-  department text default 'General',
-  salary real check (salary >= 0),
-  hire_date text,
-  manager_id integer references employees(id)
-);
-
--- Table with composite key and multiple constraints
-create table order_items (
-  order_id integer,
-  product_id integer,
-  quantity integer not null check on insert (quantity > 0),
-  price real not null check (price >= 0),
-  discount real default 0 check (discount >= 0 and discount <= 1),
-  primary key (order_id, product_id),
-  foreign key (order_id) references orders(id),
-  foreign key (product_id) references products(id)
-);
-
--- Memory-backed virtual table
-create table cache (
-  key text primary key,
-  value blob,
-  expires_at integer
-) using memory;
-
--- JSON virtual table
-create table json_data (
-  id integer primary key,
-  data text,
-  key text,
-  value,
-  type text,
-  path text
-) using json_tree;
-```
 
 ## 3. Clauses and Subclauses
 
@@ -1729,11 +1581,17 @@ Scalar functions operate on single values and return a single value per row.
 - `upper(X)`: Returns the uppercase version of string X
 - `length(X)`: Returns the length of string X in characters
 - `substr(X, Y[, Z])`: Returns a substring of X starting at position Y (1-based) and Z characters long
+- `substring(X, Y[, Z])`: Alias for `substr()`
 - `trim(X[, Y])`: Removes leading and trailing characters Y from X
 - `ltrim(X[, Y])`: Removes leading characters Y from X
 - `rtrim(X[, Y])`: Removes trailing characters Y from X
 - `replace(X, Y, Z)`: Replaces all occurrences of Y in X with Z
 - `instr(X, Y)`: Returns the 1-based position of the first occurrence of Y in X
+- `lpad(X, Y[, Z])`: Left-pads string X to length Y with string Z (default space)
+- `rpad(X, Y[, Z])`: Right-pads string X to length Y with string Z (default space)
+- `reverse(X)`: Returns string X with characters in reverse order
+- `like(X, Y)`: Returns 1 if X matches pattern Y, 0 otherwise
+- `glob(X, Y)`: Returns 1 if X matches glob pattern Y, 0 otherwise
 
 **Examples:**
 ```sql
@@ -1758,7 +1616,11 @@ select
 - `floor(X)`: Returns the largest integer not greater than X
 - `pow(X, Y)`, `power(X, Y)`: Returns X raised to the power of Y
 - `sqrt(X)`: Returns the square root of X
+- `clamp(X, min, max)`: Constrains X to be between min and max
+- `greatest(X, Y, ...)`: Returns the largest value from the arguments
+- `least(X, Y, ...)`: Returns the smallest value from the arguments
 - `random()`: Returns a random integer
+- `randomblob(N)`: Returns a blob containing N bytes of pseudo-random data
 
 **Examples:**
 ```sql
@@ -1781,6 +1643,7 @@ select
 - `coalesce(X, Y, ...)`: Returns the first non-NULL value
 - `nullif(X, Y)`: Returns NULL if X equals Y, otherwise returns X
 - `iif(X, Y, Z)`: If X is true, returns Y, otherwise returns Z
+- `choose(index, val0, val1, ...)`: Returns the value at the given index (0-based)
 
 **Examples:**
 ```sql
@@ -1811,7 +1674,12 @@ Aggregate functions perform a calculation on a set of values and return a single
 - `min(X)`: Returns the minimum value of all non-NULL values of X
 - `max(X)`: Returns the maximum value of all non-NULL values of X
 - `group_concat(X[, Y])`: Returns a string concatenating non-NULL values of X, separated by Y (default ',')
-- `total(X)`: Returns the sum as a floating-point value
+- `total(X)`: Returns the sum as a floating-point value (returns 0.0 for empty set)
+- `var_pop(X)`: Returns the population variance
+- `var_samp(X)`: Returns the sample variance
+- `stddev_pop(X)`: Returns the population standard deviation
+- `stddev_samp(X)`: Returns the sample standard deviation
+- `string_concat(X)`: Concatenates string values with comma separator
 
 **Examples:**
 ```sql
@@ -1840,13 +1708,31 @@ group by department;
 
 Quereus provides comprehensive functions for working with JSON data.
 
-- `json_extract(json, path, ...)`: Extracts values from JSON
-- `json_object(key, value, ...)`: Creates a JSON object
-- `json_array(value, ...)`: Creates a JSON array
-- `json_type(json[, path])`: Returns the type of JSON value
-- `json_valid(json)`: Checks if a string is valid JSON
-- `json_group_array(X)`: Aggregate function that creates a JSON array
-- `json_group_object(key, value)`: Aggregate function that creates a JSON object
+**JSON Query Functions:**
+- `json_extract(json, path, ...)`: Extracts values from JSON using JSONPath
+- `json_type(json[, path])`: Returns the type of JSON value ('object', 'array', 'string', 'number', 'boolean', 'null')
+- `json_valid(json)`: Checks if a string is valid JSON (returns 1 or 0)
+- `json_array_length(json[, path])`: Returns the length of a JSON array
+
+**JSON Construction Functions:**
+- `json_object(key, value, ...)`: Creates a JSON object from key-value pairs
+- `json_array(value, ...)`: Creates a JSON array from values
+- `json_quote(value)`: Converts a SQL value to a JSON-quoted string
+
+**JSON Modification Functions:**
+- `json_insert(json, path, value, ...)`: Inserts values into JSON (does not overwrite existing)
+- `json_replace(json, path, value, ...)`: Replaces existing values in JSON
+- `json_set(json, path, value, ...)`: Sets values in JSON (inserts or replaces)
+- `json_remove(json, path, ...)`: Removes values from JSON
+- `json_patch(json, patch)`: Applies a JSON Patch (RFC 6902) to a JSON document
+
+**JSON Aggregate Functions:**
+- `json_group_array(X)`: Aggregate function that creates a JSON array from values
+- `json_group_object(key, value)`: Aggregate function that creates a JSON object from key-value pairs
+
+**JSON Table-Valued Functions:**
+- `json_each(json[, path])`: Returns one row per element in a JSON array or object
+- `json_tree(json[, path])`: Returns one row per node in the JSON tree structure
 
 **Examples:**
 ```sql
@@ -1878,6 +1764,8 @@ Quereus includes functions for manipulating dates and times.
 - `datetime(timestring[, modifier...])`: Returns the date and time as 'YYYY-MM-DD HH:MM:SS'
 - `julianday(timestring[, modifier...])`: Returns the Julian day number
 - `strftime(format, timestring[, modifier...])`: Returns a formatted date string
+- `is_iso_date(X)`: Returns 1 if X is a valid ISO 8601 date, 0 otherwise
+- `is_iso_datetime(X)`: Returns 1 if X is a valid ISO 8601 datetime, 0 otherwise
 
 **Common modifiers:**
 - `+N days`, `+N hours`, `+N minutes`, `+N seconds`, `+N months`, `+N years`
@@ -1981,6 +1869,45 @@ select
   count(*) over w as running_count
 from sales
 window w as (partition by product_id order by sales_date);
+```
+
+### 5.6 Table-Valued Functions
+
+Table-valued functions return a result set that can be queried like a table.
+
+**Generation Functions:**
+- `generate_series(start, stop[, step])`: Generates a series of integer values from start to stop
+- `split_string(str, delimiter)`: Splits a string into rows based on a delimiter
+
+**Schema Introspection Functions:**
+- `schema()`: Returns information about all tables, views, and functions in the database
+- `table_info(table_name)`: Returns column information for a specific table
+- `function_info()`: Returns information about all registered functions
+
+**Debugging and Analysis Functions:**
+- `query_plan(sql)`: Returns the query execution plan for a SQL statement
+- `scheduler_program(sql)`: Returns the scheduler program for a SQL statement
+- `stack_trace(sql)`: Returns the execution stack trace
+- `execution_trace(sql)`: Returns detailed execution trace information
+- `row_trace(sql)`: Returns row-level trace information
+- `explain_assertion(assertion_name)`: Returns information about a specific assertion
+
+**Examples:**
+```sql
+-- Generate a series of numbers
+select value from generate_series(1, 10);
+
+-- Get schema information
+select type, name, sql from schema() where type = 'table';
+
+-- Get column information for a table
+select cid, name, type, notnull, pk from table_info('users');
+
+-- Get function information
+select name, num_args, type, deterministic from function_info();
+
+-- Analyze query plan
+select * from query_plan('select * from users where id = 1');
 ```
 
 ## 6. Virtual Tables
@@ -2795,21 +2722,27 @@ Below is a formal Extended Backus-Naur Form (EBNF) grammar for Quereus's SQL dia
 /* Top-level constructs */
 sql_script         = { sql_statement ";" } ;
 
-sql_statement      = [ with_clause ] ( select_stmt 
-                    | insert_stmt 
-                    | update_stmt 
-                    | delete_stmt 
-                    | create_table_stmt 
-                    | create_index_stmt 
-                    | create_view_stmt 
-                    | drop_stmt 
-                    | alter_table_stmt 
-                    | begin_stmt 
-                    | commit_stmt 
-                    | rollback_stmt 
-                    | savepoint_stmt 
-                    | release_stmt 
-                    | pragma_stmt ) ;
+sql_statement      = [ with_clause ] ( select_stmt
+                    | insert_stmt
+                    | update_stmt
+                    | delete_stmt
+                    | values_stmt
+                    | create_table_stmt
+                    | create_index_stmt
+                    | create_view_stmt
+                    | create_assertion_stmt
+                    | drop_stmt
+                    | alter_table_stmt
+                    | begin_stmt
+                    | commit_stmt
+                    | rollback_stmt
+                    | savepoint_stmt
+                    | release_stmt
+                    | pragma_stmt
+                    | declare_schema_stmt
+                    | diff_schema_stmt
+                    | apply_schema_stmt
+                    | explain_schema_stmt ) ;
 
 /* WITH clause and CTEs */
 with_clause        = "with" [ "recursive" ] common_table_expr { "," common_table_expr } [ option_clause ] ;
@@ -2867,19 +2800,34 @@ limit_clause       = "limit" expr [ ( "offset" expr ) | ( "," expr ) ] ;
 /* INSERT statement */
 insert_stmt        = "insert" [ "into" ] table_name [ "(" column_name { "," column_name } ")" ]
                      ( values_clause | select_stmt )
-                     [ "returning" expr { "," expr } ] ;
+                     [ context_clause ]
+                     [ returning_clause ] ;
 
 values_clause      = "values" "(" expr { "," expr } ")" { "," "(" expr { "," expr } ")" } ;
 
+values_stmt        = values_clause [ order_by_clause ] [ limit_clause ] ;
+
 /* UPDATE statement */
-update_stmt        = "update" table_name 
+update_stmt        = "update" table_name
                      "set" column_name "=" expr { "," column_name "=" expr }
                      [ where_clause ]
-                     [ "returning" expr { "," expr } ] ;
+                     [ context_clause ]
+                     [ returning_clause ] ;
 
 /* DELETE statement */
 delete_stmt        = "delete" "from" table_name [ where_clause ]
-                     [ "returning" expr { "," expr } ] ;
+                     [ context_clause ]
+                     [ returning_clause ] ;
+
+context_clause     = "with" "context" "(" context_item { "," context_item } ")" ;
+
+context_item       = identifier "=" expr ;
+
+returning_clause   = "returning" [ qualifier "." ] "*" { "," [ qualifier "." ] "*" }
+                   | "returning" [ qualifier "." ] expr [ [ "as" ] column_alias ]
+                     { "," [ qualifier "." ] expr [ [ "as" ] column_alias ] } ;
+
+qualifier          = "old" | "new" ;
 
 /* CREATE TABLE statement */
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
@@ -2930,8 +2878,11 @@ indexed_column     = column_name [ "collate" collation_name ] [ "asc" | "desc" ]
 create_view_stmt   = "create" [ "temp" | "temporary" ] "view" [ "if" "not" "exists" ]
                      view_name [ "(" column_name { "," column_name } ")" ] "as" select_stmt ;
 
+/* CREATE ASSERTION statement */
+create_assertion_stmt = "create" "assertion" assertion_name "check" "(" expr ")" ;
+
 /* DROP statement */
-drop_stmt          = "drop" ( "table" | "index" | "view" ) [ "if" "exists" ] name ;
+drop_stmt          = "drop" ( "table" | "index" | "view" | "assertion" ) [ "if" "exists" ] name ;
 
 /* ALTER TABLE statement */
 alter_table_stmt   = "alter" "table" table_name
@@ -2963,6 +2914,17 @@ release_stmt       = "release" [ "savepoint" ] savepoint_name ;
 pragma_stmt        = "pragma" pragma_name [ "=" pragma_value ] ;
 
 pragma_value       = signed_number | name | string_literal ;
+
+/* Declarative schema statements */
+declare_schema_stmt = "declare" "schema" schema_item { schema_item } "end" ;
+
+schema_item        = create_table_stmt | create_index_stmt | create_view_stmt | create_assertion_stmt ;
+
+diff_schema_stmt   = "diff" "schema" ;
+
+apply_schema_stmt  = "apply" "schema" ;
+
+explain_schema_stmt = "explain" "schema" ;
 
 /* Basic elements */
 expr               = literal_value

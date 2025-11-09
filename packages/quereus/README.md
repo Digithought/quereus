@@ -136,9 +136,33 @@ db.setInstructionTracer(null);
 
 The `CollectingInstructionTracer` captures detailed information about each instruction execution, including inputs, outputs, timing, and any sub-programs. This is particularly useful for performance analysis and debugging complex query plans.
 
+## Type Representations
+
+Quereus uses native JavaScript types for SQL values. Understanding these mappings is essential when working with query results and parameters:
+
+| SQL Type | JavaScript Type | Example |
+|----------|----------------|---------|
+| `NULL` | `null` | `null` |
+| `INTEGER` | `number` or `bigint` | `42`, `9007199254740992n` |
+| `REAL` | `number` | `3.14` |
+| `TEXT` | `string` | `"hello"` |
+| `BLOB` | `Uint8Array` | `new Uint8Array([1, 2, 3])` |
+| Date/Time | `string` | `"2024-01-15"`, `"14:30:00"` |
+
+**Important Notes:**
+- **Dates and times are always strings** in ISO 8601 format (e.g., `date('now')` returns `"2024-01-15"`)
+- **BLOBs are `Uint8Array`** typed arrays for binary data
+- **Large integers use `bigint`** when they exceed JavaScript's safe integer range (±2^53 - 1)
+- **Query results are objects** with column names as keys: `{ id: 1, name: "Alice" }`
+- **Rows are internally arrays** (`SqlValue[]`) but the API returns objects for convenience
+- **Results are async iterators** - use `for await` to stream rows without loading all into memory
+- **Multi-statement `eval`** returns only the last statement's results
+
+See the [Usage Guide](docs/usage.md#type-representations) for detailed information on type handling, row representation, async iteration, and best practices.
+
 ## Documentation
 
-* [Usage Guide](docs/usage.md): Detailed usage examples and API reference
+* [Usage Guide](docs/usage.md): Detailed usage examples, type representations, and API reference
 * [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide (includes Declarative Schema)
 * [Functions](docs/functions.md): Details on the built-in functions
 * [Window Function Architecture](docs/window-functions.md): Details on the window function architecture and implementation.
