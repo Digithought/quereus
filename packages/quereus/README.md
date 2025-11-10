@@ -2,18 +2,19 @@
 
 <img src="docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
-Quereus is a feature-complete SQL query processor, inspired by SQLite but specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It provides rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs, window functions, constraints) over data sources exposed via the virtual table mechanism. Quereus has no persistent file storage, though one could be built as a virtual table module.
+Quereus is a feature-complete SQL query processor specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It provides rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs, window functions, constraints) over data sources exposed via the virtual table mechanism. Quereus features a modern type system with temporal types, JSON support, and plugin-extensible custom types. It has no persistent file storage, though one could be built as a virtual table module.
 
 ## Project Goals
 
 *   **Virtual Table Centric**: Provide a robust and flexible virtual table API as the primary means of interacting with data sources. All tables are virtual tables.
 *   **In-Memory Focus**: Includes a comprehensive in-memory virtual table implementation (`MemoryTable`) with support for transactions and savepoints.
+*   **Modern Type System**: Extensible logical/physical type separation with built-in temporal types (DATE, TIME, DATETIME), native JSON type with deep equality comparison, and plugin support for custom types. See [Type System Documentation](docs/types.md).
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
 *   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
 *   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native.
 *   **Minimal Dependencies**: Avoid heavy external dependencies where possible.
 *   **SQL Compatibility**: Comprehensive support for modern SQL features including joins, window functions, subqueries, CTEs, constraints, views, and advanced DML/DDL operations.
-*   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used (similar to SQLite's `WITHOUT ROWID` tables being the default and only mode).
+*   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used.
 *   **Third Manifesto Friendly**: Embraces some of the principles of the [Third Manifesto](https://www.dcs.warwick.ac.uk/~hugh/TTM/DTATRM.pdf), such as allowing for empty keys. Utilizes algebraic planning.
 
 ## Architecture Overview
@@ -186,18 +187,16 @@ See the [Usage Guide](docs/usage.md#type-representations) for detailed informati
 *   **Bags vs Sets Distinction**: Explicit type-level distinction between relations that guarantee unique rows (sets) and those that allow duplicates (bags), enabling sophisticated optimizations and maintaining algebraic correctness in line with Third Manifesto principles.
 *   **Attribute-Based Context System**: Robust column reference resolution using stable attribute IDs eliminates architectural fragilities and provides deterministic context lookup across plan transformations.
 
-## Major variations from SQLite
+## Key Design Differences
 
-*   Uses `CREATE TABLE ... USING module(...)` syntax (no CREATE VIRTUAL TABLE).
-*   **Default NOT NULL Columns**: Following Third Manifesto principles, columns default to NOT NULL unless explicitly specified otherwise. This behavior can be controlled via `pragma default_column_nullability = 'nullable'` to restore SQL standard behavior. This design choice helps avoid the "billion-dollar mistake" of NULL by default.
-*   `PRAGMA default_vtab_module` can be used.
-*   Supports `ASC`/`DESC` qualifiers on PRIMARY KEY column definitions.
-*   Async core execution.
-*   **No Rowids / `WITHOUT ROWID` by Default**: All tables are addressed by their Primary Key, similar to SQLite's `WITHOUT ROWID` tables being the only mode. The `WITHOUT ROWID` clause is not used.
-*   **Implicit Primary Key Behavior**: When no explicit PRIMARY KEY is defined, Quereus includes all columns in the primary key. This differs from SQLite which uses the first INTEGER column or an implicit rowid. This design choice ensures predictable behavior and avoids potential confusion with SQLite's implicit rules.
-*   No plans for:
-    *   Triggers
-    *   Persistent file storage (can be a VTab module)
+While Quereus supports standard SQL syntax, it has several distinctive design choices:
+
+*   **Modern Type System**: Uses logical/physical type separation instead of SQLite's type affinity model. Includes native temporal types (DATE, TIME, DATETIME) and JSON type with deep equality comparison. Conversion functions (`integer()`, `date()`, `json()`) are preferred over CAST syntax. See [Type System Documentation](docs/types.md).
+*   **Virtual Table Centric**: Uses `CREATE TABLE ... USING module(...)` syntax. All tables are virtual tables.
+*   **Default NOT NULL Columns**: Following Third Manifesto principles, columns default to NOT NULL unless explicitly specified otherwise. This behavior can be controlled via `pragma default_column_nullability = 'nullable'` to restore SQL standard behavior.
+*   **No Rowids**: All tables are addressed by their Primary Key. When no explicit PRIMARY KEY is defined, Quereus includes all columns in the primary key.
+*   **Async API**: Core execution is asynchronous with async/await patterns throughout.
+*   **No Triggers or Built-in Persistence**: Persistent storage can be implemented as a VTab module.
 
 ### Row-Level Constraints
 
@@ -209,9 +208,10 @@ See the [Usage Guide](docs/usage.md#type-representations) for detailed informati
 Quereus is a feature-complete SQL query processor with a modern planner and instruction-based runtime architecture. The engine successfully handles complex SQL workloads including joins, window functions, subqueries, CTEs, constraints, and comprehensive DML/DDL operations.
 
 **Current capabilities include:**
+*   **Modern Type System** - Temporal types (DATE, TIME, DATETIME), JSON with deep equality, plugin-extensible custom types
 *   **Complete JOIN support** - INNER, LEFT, RIGHT, CROSS joins with proper NULL padding
 *   **Advanced window functions** - Ranking, aggregates, and frame specifications
-*   **Full constraint system** - NOT NULL, CHECK constraints with operation-specific triggers  
+*   **Full constraint system** - NOT NULL, CHECK constraints with operation-specific triggers
 *   **Comprehensive subqueries** - Scalar, correlated, EXISTS, and IN subqueries
 *   **Relational orthogonality** - INSERT/UPDATE/DELETE with RETURNING can be used as table sources
 *   **Complete set operations** - UNION, INTERSECT, EXCEPT with proper deduplication

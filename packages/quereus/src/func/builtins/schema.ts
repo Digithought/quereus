@@ -49,7 +49,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				for (const tableSchema of schemaInstance.getAllTables()) {
 					let createSql: string | null = null;
 					try {
-						const columnsStr = tableSchema.columns.map((c: ColumnSchema) => `"${c.name}" ${c.affinity ?? SqlDataType.TEXT}`).join(', ');
+						const columnsStr = tableSchema.columns.map((c: ColumnSchema) => `"${c.name}" ${c.logicalType.name}`).join(', ');
 						const argsStr = Object.entries(tableSchema.vtabArgs ?? {}).map(([key, value]) => `${key}=${value}`).join(', ');
 						createSql = `create table "${tableSchema.name}" (${columnsStr}) using ${tableSchema.vtabModuleName}(${argsStr})`;
 					} catch {

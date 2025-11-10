@@ -1,14 +1,14 @@
 import type { Row, SqlValue } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
+import type { LogicalType, CollationFunction } from '../types/logical-type.js';
+import { StatusCode } from '../common/types.js';
+import { QuereusError } from '../common/errors.js';
 
 const log = createLogger('util:comparison');
 const warnLog = log.extend('warn');
 
-/**
- * Function type for SQLite collation functions.
- * Takes two strings and returns a comparison result (-1, 0, 1)
- */
-export type CollationFunction = (a: string, b: string) => number;
+// Re-export CollationFunction for backward compatibility
+export type { CollationFunction };
 
 // Map to store registered collations
 const collations = new Map<string, CollationFunction>();
@@ -432,6 +432,75 @@ export function compareRows(a: Row, b: Row): number {
 	return 0;
 }
 
-// TODO: The main remaining task for comparison is implementing SQLite's
-// type affinity rules (which affect how values are treated BEFORE comparison)
-// and handling different TEXT collations.
+
+/**
+ * Type-aware comparison function that uses logical type information.
+ * This eliminates runtime type detection and uses type-specific comparison logic.
+ *
+ * @param a First value
+ * @param b Second value
+ * @param typeA Logical type of first value
+ * @param typeB Logical type of second value (should match typeA for strict typing)
+ * @param collation Optional collation function for TEXT types
+ * @returns -1 if a < b, 0 if a === b, 1 if a > b
+ * @throws QuereusError if types don't match (strict typing)
+ */
+export function compareTypedValues(
+	a: SqlValue,
+	b: SqlValue,
+	typeA: LogicalType,
+	typeB: LogicalType,
+	collation?: CollationFunction
+): number {
+	// NULL handling
+	if (a === null && b === null) return 0;
+	if (a === null) return -1;
+	if (b === null) return 1;
+
+	// Type mismatch error (strict typing)
+	if (typeA !== typeB) {
+		throw new QuereusError(
+			`Type mismatch in comparison: ${typeA.name} vs ${typeB.name}`,
+			StatusCode.MISMATCH
+		);
+	}
+
+	// Use type-specific comparison if available
+	if (typeA.compare) {
+		return typeA.compare(a, b, collation);
+	}
+
+	// Fallback to default comparison based on physical type
+	// This shouldn't happen for built-in types, but provides safety for custom types
+	return compareSqlValuesFast(a, b, collation ?? BINARY_COLLATION);
+}
+
+/**
+ * Create a type-aware comparator function for a specific logical type.
+ * This is optimized for use in indexes and sorts where the type is known at creation time.
+ *
+ * @param type The logical type
+ * @param collation Optional collation function for TEXT types
+ * @returns A comparator function
+ */
+export function createTypedComparator(
+	type: LogicalType,
+	collation?: CollationFunction
+): (a: SqlValue, b: SqlValue) => number {
+	// Pre-resolve the comparison function
+	const compareFunc = type.compare;
+
+	if (compareFunc) {
+		// Type has custom comparison
+		return (a: SqlValue, b: SqlValue) => {
+			if (a === null && b === null) return 0;
+			if (a === null) return -1;
+			if (b === null) return 1;
+			return compareFunc(a, b, collation);
+		};
+	}
+
+	// Fallback to default comparison
+	const collationFunc = collation ?? BINARY_COLLATION;
+	return (a: SqlValue, b: SqlValue) => compareSqlValuesFast(a, b, collationFunc);
+}

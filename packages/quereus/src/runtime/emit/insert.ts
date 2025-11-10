@@ -3,12 +3,11 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { SqlDataType, type SqlValue } from '../../common/types.js';
-import { applyIntegerAffinity, applyRealAffinity, applyNumericAffinity, applyTextAffinity, applyBlobAffinity } from '../../util/affinity.js';
 
 export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction {
 	// INSERT node now only handles data transformations and passes flat rows through.
 	// The actual database insert operations are handled by DmlExecutorNode.
+	// Type conversion is handled by the table manager's validateAndParse in performInsert.
 	async function* run(_ctx: RuntimeContext, sourceValue: AsyncIterable<Row>): AsyncIterable<Row> {
 		const tableSchema = plan.table.tableSchema;
 		const colCount = tableSchema.columns.length;
@@ -23,21 +22,10 @@ export function emitInsert(plan: InsertNode, ctx: EmissionContext): Instruction 
 				flatRow[i] = null;
 			}
 
-			// Fill NEW section with source values and apply type affinity (indices n..2n-1)
+			// Fill NEW section with source values (indices n..2n-1)
+			// No affinity conversion here - let the type system handle it
 			for (let colIdx = 0; colIdx < colCount; colIdx++) {
-				const sourceValue: SqlValue = sourceRow[colIdx];
-
-				let converted: SqlValue;
-				switch (tableSchema.columns[colIdx].affinity) {
-					case SqlDataType.INTEGER: converted = applyIntegerAffinity(sourceValue); break;
-					case SqlDataType.REAL: converted = applyRealAffinity(sourceValue); break;
-					case SqlDataType.NUMERIC: converted = applyNumericAffinity(sourceValue); break;
-					case SqlDataType.TEXT: converted = applyTextAffinity(sourceValue); break;
-					case SqlDataType.BLOB: converted = applyBlobAffinity(sourceValue); break;
-					default: converted = sourceValue;
-				}
-
-				flatRow[colCount + colIdx] = converted;
+				flatRow[colCount + colIdx] = sourceRow[colIdx];
 			}
 
 			yield flatRow;

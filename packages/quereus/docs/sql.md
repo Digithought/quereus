@@ -2620,7 +2620,7 @@ select 'text' + 42 from users;
 
 ## 11. Quereus vs. SQLite
 
-Quereus implements a subset of SQLite functionality with some differences in behavior and focus. Understanding these differences is important when porting applications from SQLite or creating new applications with Quereus.
+While Quereus supports standard SQL syntax, it has evolved into a distinct system with significant architectural and design differences from SQLite. Understanding these differences is important when porting applications from SQLite or creating new applications with Quereus.
 
 ### 11.1 Key Similarities
 
@@ -2632,7 +2632,24 @@ Quereus implements a subset of SQLite functionality with some differences in beh
 
 ### 11.2 Key Differences
 
-#### 11.2.1 Architecture
+#### 11.2.1 Type System
+
+**Quereus:**
+- Modern logical/physical type separation
+- Native temporal types (DATE, TIME, DATETIME) using Temporal API
+- Native JSON type with deep equality comparison
+- Conversion functions (`integer()`, `date()`, `json()`) preferred over CAST
+- Plugin-extensible custom types
+- See [Type System Documentation](types.md)
+
+**SQLite:**
+- Type affinity model (INTEGER, REAL, TEXT, BLOB, NUMERIC)
+- Dates stored as TEXT, REAL, or INTEGER
+- JSON support via JSON1 extension (text-based)
+- CAST operator for type conversion
+- Limited type extensibility
+
+#### 11.2.2 Architecture
 
 **Quereus:**
 - All tables are virtual tables
@@ -2645,10 +2662,11 @@ Quereus implements a subset of SQLite functionality with some differences in beh
 - Built around persistent file storage
 - Synchronous C API
 
-#### 11.2.2 Feature Support
+#### 11.2.3 Feature Support
 
 | Feature | Quereus | SQLite |
 |---------|---------|--------|
+| **Type System** | Logical/physical separation, temporal types, JSON | Type affinity model |
 | **File Storage** | No built-in support; VTab modules could implement | Primary feature |
 | **Virtual Tables** | Central to design; all tables are virtual | Additional feature |
 | **Triggers** | Not supported | Supported |
@@ -2656,17 +2674,29 @@ Quereus implements a subset of SQLite functionality with some differences in beh
 | **Foreign Keys** | Parsed but not enforced | Full support (when enabled) |
 | **Window Functions** | Phase 1 Complete (ranking, aggregates, partitioning) | Full support |
 | **Recursive CTEs** | Basic support | Full support |
-| **JSON Functions** | Extensive support | Available as extension |
+| **JSON Functions** | Extensive support with native JSON type | Available as extension |
 | **Indexes** | Supported by some VTab modules | Full support |
 | **BLOB I/O** | Basic support | Advanced support |
 
-#### 11.2.3 Syntax Extensions
+#### 11.2.4 Syntax Extensions
 
 Quereus provides some syntax extensions:
 
 ```sql
 -- Quereus: CREATE TABLE with USING clause for virtual tables
 create table users (id integer primary key, name text) using memory;
+
+-- Quereus: Temporal and JSON types
+create table events (
+  id integer primary key,
+  event_date date,
+  event_time time,
+  created_at datetime,
+  metadata json
+);
+
+-- Quereus: Conversion functions instead of CAST
+select integer('42'), date('2024-01-15'), json('{"x":1}');
 
 -- Quereus: PRIMARY KEY with ASC/DESC qualifier
 create table logs (timestamp integer primary key desc, event text);
@@ -2678,7 +2708,7 @@ create table products (
 );
 ```
 
-#### 11.2.4 Performance Characteristics
+#### 11.2.5 Performance Characteristics
 
 - **Quereus**: JavaScript-based with optimization for in-memory operations
 - **SQLite**: C-based with focus on disk I/O efficiency
@@ -2687,11 +2717,12 @@ create table products (
 
 When migrating from SQLite to Quereus:
 
-1. **Storage Strategy**: Determine how to handle persistence (custom VTab, export/import, etc.)
-2. **Async Handling**: Convert synchronous SQLite code to async/await with Quereus
-3. **Feature Check**: Review use of triggers, advanced views, enforced foreign keys
-4. **Transaction Model**: Similar, but understand Quereus's virtual table transaction model
-5. **Custom Functions**: Port custom SQL functions to JavaScript
+1. **Type System**: Update date/time columns to use DATE, TIME, DATETIME types. Consider using JSON type for structured data. Replace CAST with conversion functions.
+2. **Storage Strategy**: Determine how to handle persistence (custom VTab, export/import, etc.)
+3. **Async Handling**: Convert synchronous SQLite code to async/await with Quereus
+4. **Feature Check**: Review use of triggers, advanced views, enforced foreign keys
+5. **Transaction Model**: Similar, but understand Quereus's virtual table transaction model
+6. **Custom Functions**: Port custom SQL functions to JavaScript
 
 ### 11.4 Future Roadmap
 

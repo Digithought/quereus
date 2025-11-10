@@ -21,11 +21,20 @@ import { generateSeriesFunc } from './generation.js';
 import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc, rowTraceFunc, explainAssertionFunc } from './explain.js';
 import { schemaFunc, tableInfoFunc, functionInfoFunc } from './schema.js';
 import { jsonEachFunc, jsonTreeFunc } from './json-tvf.js';
+import { INTEGER_FUNC, REAL_FUNC, TEXT_FUNC, BOOLEAN_FUNC, DATE_FUNC, TIME_FUNC, DATETIME_FUNC, JSON_FUNC } from './conversion.js';
 
 // Additional useful functions integrated from examples
 
 // Combine all built-in function definitions into a single array
 export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
+	// Type Conversion Functions
+	INTEGER_FUNC,
+	REAL_FUNC,
+	TEXT_FUNC,
+	BOOLEAN_FUNC,
+	DATE_FUNC,
+	TIME_FUNC,
+	DATETIME_FUNC,
 	// Scalar Functions
 	absFunc,
 	roundFunc,
@@ -118,6 +127,15 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	// JSON table-valued functions
 	jsonEachFunc,
 	jsonTreeFunc,
+	// Conversion functions
+	INTEGER_FUNC,
+	REAL_FUNC,
+	TEXT_FUNC,
+	BOOLEAN_FUNC,
+	DATE_FUNC,
+	TIME_FUNC,
+	DATETIME_FUNC,
+	JSON_FUNC,
 ];
 
 // Export registration utilities for easy access

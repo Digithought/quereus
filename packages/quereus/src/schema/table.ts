@@ -8,6 +8,7 @@ import { RowOp, SqlDataType, StatusCode, type SqlValue } from '../common/types.j
 import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
+import { inferType } from '../types/registry.js';
 
 const log = createLogger('schema:table');
 const warnLog = log.extend('warn');
@@ -92,9 +93,13 @@ export function getPrimaryKeyIndices(pkDef: ReadonlyArray<PrimaryKeyColumnDefini
  * @returns A runtime ColumnSchema object
  */
 export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true): ColumnSchema {
+	// Infer logical type from the declared type name
+	const logicalType = inferType(def.dataType);
+
 	const schema: Partial<ColumnSchema> & { name: string } = {
 		name: def.name,
-		affinity: getAffinity(def.dataType),
+		logicalType: logicalType,
+		affinity: getAffinity(def.dataType), // Keep for backward compatibility during transition
 		notNull: defaultNotNull, // Default based on Third Manifesto principles
 		primaryKey: false,
 		pkOrder: 0,
@@ -122,6 +127,14 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 				break;
 			case 'collate':
 				schema.collation = constraint.collation;
+				// Validate collation compatibility with type
+				if (constraint.collation && logicalType.supportedCollations &&
+					!logicalType.supportedCollations.includes(constraint.collation)) {
+					throw new QuereusError(
+						`Collation '${constraint.collation}' is not supported for type '${logicalType.name}' on column '${def.name}'`,
+						StatusCode.ERROR
+					);
+				}
 				break;
 			case 'generated':
 				schema.generated = true;

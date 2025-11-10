@@ -1,6 +1,6 @@
 # Quereus Usage Guide
 
-Quereus provides a lightweight, TypeScript-native SQL interface inspired by SQLite with a focus on virtual tables that can be backed by any data source. This document explains how to use Quereus effectively in your applications.
+Quereus provides a lightweight, TypeScript-native SQL interface with a focus on virtual tables that can be backed by any data source. This document explains how to use Quereus effectively in your applications.
 
 ## Quick Start
 
@@ -27,11 +27,12 @@ for await (const user of db.eval("select * from users")) {
 
 **Key Points:**
 - SQL values use JavaScript types: `string`, `number`, `bigint`, `boolean`, `Uint8Array`, `null`
-- Dates/times are **strings** in ISO format (e.g., `"2024-01-15"`)
+- Temporal types (DATE, TIME, DATETIME) store values as ISO 8601 strings
+- JSON type stores validated JSON strings with deep equality comparison
 - BLOBs are `Uint8Array` typed arrays
 - Results stream as async iterators - use `for await` to process rows
 
-See [Type System Reference](#type-system-reference) for complete details on type mappings and behavior.
+See [Type System Documentation](types.md) for complete details on types, validation, and conversion functions.
 
 ## Basic Usage
 
@@ -530,38 +531,121 @@ type SqlParameters = Record<string, SqlValue> | SqlValue[];
 | `REAL` / `FLOAT` | `number` | Floating-point numbers |
 | `TEXT` | `string` | Text strings |
 | `BLOB` | `Uint8Array` | Binary data as typed array |
-| `BOOLEAN` | `boolean` | True/false values (stored as INTEGER in SQL) |
-| Date/Time | `string` | ISO 8601 format: `"2024-01-15"`, `"14:30:00"` |
+| `BOOLEAN` | `boolean` | True/false values |
+| `DATE` | `string` | ISO 8601 date: `"2024-01-15"` |
+| `TIME` | `string` | ISO 8601 time: `"14:30:00"` |
+| `DATETIME` | `string` | ISO 8601 datetime: `"2024-01-15T14:30:00"` |
+| `JSON` | `string` | Validated JSON string |
 
-### Date and Time Values
+### Temporal Types (DATE, TIME, DATETIME)
 
-**Important:** Quereus does not have native date/time types. Date and time values are **always returned as strings** in ISO 8601 format:
-
-```typescript
-// Date functions return strings
-const result = await db.prepare("select date('now') as today").get();
-console.log(result.today); // "2024-01-15" (string)
-
-// DateTime functions return strings
-const dt = await db.prepare("select datetime('now') as now").get();
-console.log(dt.now); // "2024-01-15 14:30:00" (string)
-
-// Time functions return strings
-const time = await db.prepare("select time('now') as current_time").get();
-console.log(time.current_time); // "14:30:00" (string)
-```
-
-When passing date/time values as parameters, use ISO 8601 formatted strings:
+Quereus has native temporal types that store values as ISO 8601 strings and provide validation and comparison:
 
 ```typescript
-await db.exec("insert into events (name, event_date) values (?, ?)",
-  ["Meeting", "2024-01-15"]);
+// Create table with temporal columns
+await db.exec(`
+  create table events (
+    id integer primary key,
+    event_date date,
+    event_time time,
+    created_at datetime
+  )
+`);
 
-// Date calculations work with string parameters
-const upcoming = await db.prepare(
-  "select * from events where event_date > date(?)"
-).all(["2024-01-01"]);
+// Insert temporal values - strings are validated and normalized
+await db.exec(`
+  insert into events values (
+    1,
+    '2024-01-15',           -- DATE
+    '14:30:00',             -- TIME
+    '2024-01-15T14:30:00'   -- DATETIME
+  )
+`);
+
+// Use conversion functions to ensure proper type
+await db.exec(`
+  insert into events values (
+    2,
+    date('2024-03-20'),
+    time('09:00:00'),
+    datetime('now')
+  )
+`);
+
+// Query temporal values - returned as ISO 8601 strings
+for await (const event of db.eval("select * from events")) {
+  console.log(event.event_date);   // "2024-01-15"
+  console.log(event.event_time);   // "14:30:00"
+  console.log(event.created_at);   // "2024-01-15T14:30:00"
+}
+
+// Temporal types support proper comparison and ordering
+for await (const event of db.eval(`
+  select * from events
+  where event_date >= date('2024-01-01')
+  order by created_at desc
+`)) {
+  console.log(event);
+}
 ```
+
+**Conversion Functions:**
+- `date(value)` - Convert to DATE type
+- `time(value)` - Convert to TIME type
+- `datetime(value)` - Convert to DATETIME type
+- Special value: `datetime('now')` returns current timestamp
+
+### JSON Type
+
+Quereus has a native JSON type that validates JSON syntax and provides deep equality comparison:
+
+```typescript
+// Create table with JSON column
+await db.exec(`
+  create table users (
+    id integer primary key,
+    profile json
+  )
+`);
+
+// Insert JSON data - validated and normalized
+await db.exec(`
+  insert into users values
+    (1, '{"name":"Alice","age":30}'),
+    (2, json('{"name":"Bob","age":25}'))
+`);
+
+// JSON values are compared by content, not string representation
+// These two are considered equal despite different key order:
+await db.exec(`insert into users values (3, '{"x":1,"y":2}')`);
+await db.exec(`insert into users values (4, '{"y":2,"x":1}')`);
+
+// Query JSON data
+for await (const user of db.eval("select * from users")) {
+  console.log(user.profile); // Normalized JSON string
+}
+
+// Use JSON functions to extract values
+for await (const row of db.eval(`
+  select
+    id,
+    json_extract(profile, '$.name') as name,
+    json_extract(profile, '$.age') as age
+  from users
+`)) {
+  console.log(`${row.name} is ${row.age} years old`);
+}
+
+// json() conversion function validates and normalizes
+const normalized = await db.prepare("select json(?) as data").get(['{"x":1}']);
+console.log(normalized.data); // '{"x":1}' (normalized)
+```
+
+**JSON Features:**
+- Validates JSON syntax on insert/update
+- Normalizes JSON (consistent formatting)
+- Deep equality comparison (content-based, not string-based)
+- Works with all existing JSON functions (json_extract, json_valid, etc.)
 
 ### Working with BLOBs
 

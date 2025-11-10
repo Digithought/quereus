@@ -47,6 +47,40 @@ export {
 	resolveCollation
 } from './util/comparison.js';
 
+// Type system
+export type { LogicalType, CollationFunction as TypeCollationFunction } from './types/logical-type.js';
+export { PhysicalType } from './types/logical-type.js';
+export {
+	NULL_TYPE,
+	INTEGER_TYPE,
+	REAL_TYPE,
+	TEXT_TYPE,
+	BLOB_TYPE,
+	BOOLEAN_TYPE,
+	NUMERIC_TYPE,
+	ANY_TYPE
+} from './types/builtin-types.js';
+export {
+	DATE_TYPE,
+	TIME_TYPE,
+	DATETIME_TYPE
+} from './types/temporal-types.js';
+export { JSON_TYPE } from './types/json-type.js';
+export {
+	typeRegistry,
+	registerType,
+	getType,
+	getTypeOrDefault,
+	inferType
+} from './types/registry.js';
+export {
+	validateValue,
+	parseValue,
+	validateAndParse,
+	isValidForType,
+	tryParse
+} from './types/validation.js';
+
 // SQL Parser and Compiler
 export { Parser } from './parser/parser.js';
 export { Lexer, TokenType, KEYWORDS } from './parser/lexer.js';
@@ -90,6 +124,7 @@ export type {
 	VTablePluginInfo,
 	FunctionPluginInfo,
 	CollationPluginInfo,
+	TypePluginInfo,
 	PluginRegistrations
 } from './vtab/manifest.js';
 

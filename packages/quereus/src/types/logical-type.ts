@@ -1,0 +1,75 @@
+import type { SqlValue } from '../common/types.js';
+
+/**
+ * Function type for SQLite collation functions.
+ * Takes two strings and returns a comparison result (-1, 0, 1)
+ */
+export type CollationFunction = (a: string, b: string) => number;
+
+/**
+ * Physical types represent how values are stored in memory and on disk.
+ * These are the actual runtime representations.
+ */
+export enum PhysicalType {
+	NULL = 0,
+	INTEGER = 1,    // number | bigint
+	REAL = 2,       // number (floating point)
+	TEXT = 3,       // string
+	BLOB = 4,       // Uint8Array
+	BOOLEAN = 5,    // boolean
+}
+
+/**
+ * Logical types define the semantics and behavior of values.
+ * They specify validation, comparison, and conversion rules.
+ */
+export interface LogicalType {
+	// Identity
+	/** Type name (e.g., "DATE", "INTEGER", "TEXT") */
+	name: string;
+	/** Physical storage representation */
+	physicalType: PhysicalType;
+
+	// Validation
+	/** Check if value is valid for this type */
+	validate?(value: SqlValue): boolean;
+	/** Convert/normalize value to canonical form */
+	parse?(value: SqlValue): SqlValue;
+
+	// Comparison
+	/** Type-specific comparison function */
+	compare?(a: SqlValue, b: SqlValue, collation?: CollationFunction): number;
+	/** Which collations apply to this type */
+	supportedCollations?: readonly string[];
+
+	// Serialization
+	/** Convert for storage/export */
+	serialize?(value: SqlValue): SqlValue;
+	/** Convert from storage */
+	deserialize?(value: SqlValue): SqlValue;
+
+	// Metadata
+	/** Is this a numeric type? */
+	isNumeric?: boolean;
+	/** Is this a textual type? */
+	isTextual?: boolean;
+	/** Is this a temporal type? */
+	isTemporal?: boolean;
+}
+
+/**
+ * Get the physical type of a SqlValue at runtime.
+ * This is used for values that don't have an associated logical type.
+ */
+export function getPhysicalType(value: SqlValue): PhysicalType {
+	if (value === null) return PhysicalType.NULL;
+	if (typeof value === 'number') {
+		return Number.isInteger(value) ? PhysicalType.INTEGER : PhysicalType.REAL;
+	}
+	if (typeof value === 'bigint') return PhysicalType.INTEGER;
+	if (typeof value === 'string') return PhysicalType.TEXT;
+	if (typeof value === 'boolean') return PhysicalType.BOOLEAN;
+	if (value instanceof Uint8Array) return PhysicalType.BLOB;
+	return PhysicalType.NULL;
+}
+

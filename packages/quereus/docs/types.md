@@ -15,7 +15,8 @@ Quereus implements a **logical type system** that separates type semantics from 
 ### Design Decisions
 
 - **Collations**: Type-specific. TEXT types support BINARY/NOCASE/RTRIM; numeric and temporal types have natural ordering
-- **Type Enforcement**: Always strict - values must match declared types or be explicitly converted via CAST
+- **Type Enforcement**: Always strict - values must match declared types or be explicitly converted via conversion functions
+- **Type Conversion**: Use functions like `integer()`, `text()`, `date()` instead of CAST syntax (though CAST is supported for compatibility)
 - **Date/Time**: Native DATE, TIME, DATETIME types using Temporal API internally, stored as ISO 8601 strings
 - **JSON**: Native JSON type with object storage (future)
 - **Constraints**: Length, precision, and other restrictions handled via CHECK constraints, not type definitions
@@ -193,18 +194,38 @@ export function validateValue(value: SqlValue, type: LogicalType): SqlValue {
 
 ### Explicit Conversion
 
-Use CAST for explicit type conversion:
+Use type conversion functions for explicit conversion:
 
 ```sql
 -- Convert string to integer
-SELECT CAST('123' AS INTEGER);
+SELECT integer('123');
 
 -- Convert timestamp to date
-SELECT CAST(1234567890 AS DATE);
+SELECT date(1234567890);
+
+-- Convert string to real
+SELECT real('3.14');
 
 -- Invalid conversion throws error
-SELECT CAST('abc' AS INTEGER);  -- Error: Type mismatch
+SELECT integer('abc');  -- Error: Type mismatch
+
+-- Conversion functions are just regular scalar functions
+SELECT text(42);           -- '42'
+SELECT boolean(1);         -- true
+SELECT datetime('2024-01-15T10:30:00');
 ```
+
+**Built-in Conversion Functions**:
+- `integer(value)` - Convert to INTEGER
+- `real(value)` - Convert to REAL
+- `text(value)` - Convert to TEXT
+- `boolean(value)` - Convert to BOOLEAN
+- `blob(value)` - Convert to BLOB
+- `date(value)` - Convert to DATE
+- `time(value)` - Convert to TIME
+- `datetime(value)` - Convert to DATETIME
+
+Note: CAST syntax is also supported for SQL compatibility, but conversion functions are preferred.
 
 ---
 
@@ -423,15 +444,17 @@ INSERT INTO users VALUES ('550e8400-e29b-41d4-a716-446655440000', 'Alice');
 
 **Breaking Change**: Queries that relied on implicit coercion will fail
 
-### Phase 4: Temporal Types
+### Phase 4: Temporal Types & Conversion Functions
 
-**Goal**: Implement native DATE, TIME, DATETIME types
+**Goal**: Implement native DATE, TIME, DATETIME types and type conversion functions
 
 **New Files**:
 - `src/types/temporal-types.ts` - Temporal type definitions
+- `src/func/builtins/conversion.ts` - Type conversion functions
 
 **Modified Files**:
-- `src/func/builtins/datetime.ts` - Update functions to work with typed values
+- `src/func/builtins/datetime.ts` - Update `date()`, `time()`, `datetime()` to be conversion functions
+- `src/func/builtins/index.ts` - Register conversion functions
 - `src/common/type-inference.ts` - Recognize DATE/TIME/DATETIME keywords
 - `src/parser/parser.ts` - Parse temporal type names
 
@@ -467,6 +490,31 @@ export const DATE_TYPE: LogicalType = {
 
   compare: (a, b) => (a as string).localeCompare(b as string),
 };
+```
+
+**Conversion Functions**:
+```typescript
+// src/func/builtins/conversion.ts
+export const INTEGER_FUNC: ScalarFunction = {
+  name: 'integer',
+  deterministic: true,
+  execute: (args) => {
+    const value = args[0];
+    if (value === null) return null;
+
+    if (typeof value === 'number') return Math.trunc(value);
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (typeof value === 'string') {
+      const parsed = parseInt(value, 10);
+      if (isNaN(parsed)) throw new QuereusError('Cannot convert to INTEGER', StatusCode.MISMATCH);
+      return parsed;
+    }
+    throw new QuereusError('Cannot convert to INTEGER', StatusCode.MISMATCH);
+  }
+};
+
+// Similar for real(), text(), boolean(), date(), time(), datetime()
 ```
 
 ### Phase 5: Plugin System

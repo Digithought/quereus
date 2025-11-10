@@ -42,6 +42,7 @@ import { isAsyncIterable } from '../runtime/utils.js';
 import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
 import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
+import { type LogicalType } from '../types/logical-type.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -572,6 +573,29 @@ export class Database {
 		this.checkOpen();
 		registerCollation(name, func);
 		log('Registered collation: %s', name);
+	}
+
+	/**
+	 * Registers a custom logical type.
+	 * @param name The name of the type (case-insensitive).
+	 * @param definition The LogicalType implementation.
+	 * @example
+	 * // Example: Create a custom UUID type
+	 * db.registerType('UUID', {
+	 *   name: 'UUID',
+	 *   physicalType: PhysicalType.TEXT,
+	 *   validate: (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
+	 *   parse: (v) => typeof v === 'string' ? v.toLowerCase() : v,
+	 * });
+	 *
+	 * // Then use it in SQL:
+	 * // CREATE TABLE users (id UUID PRIMARY KEY, name TEXT);
+	 */
+	registerType(name: string, definition: LogicalType): void {
+		this.checkOpen();
+		const { registerType } = require('../types/registry.js');
+		registerType(name, definition);
+		log('Registered type: %s', name);
 	}
 
 	/**

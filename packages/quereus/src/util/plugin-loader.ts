@@ -80,6 +80,10 @@ export async function dynamicLoadModule(
 			log('  Registered %d collation(s): %s', registrations.collations.length,
 				registrations.collations.map(c => c.name).join(', '));
 		}
+		if (registrations.types?.length) {
+			log('  Registered %d type(s): %s', registrations.types.length,
+				registrations.types.map(t => t.name).join(', '));
+		}
 
 		// Try to extract manifest from package.json
 		let manifest: PluginManifest | undefined;
@@ -138,6 +142,17 @@ async function registerPluginItems(db: Database, registrations: PluginRegistrati
 				db.registerCollation(collation.name, collation.func);
 			} catch (error) {
 				quereusError(`Failed to register collation '${collation.name}': ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+
+	// Register types
+	if (registrations.types) {
+		for (const type of registrations.types) {
+			try {
+				db.registerType(type.name, type.definition);
+			} catch (error) {
+				quereusError(`Failed to register type '${type.name}': ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
 	}
@@ -254,6 +269,10 @@ export async function loadPlugin(
         if (registrations.collations?.length) {
             log('  Registered %d collation(s): %s', registrations.collations.length,
                 registrations.collations.map(c => c.name).join(', '));
+        }
+        if (registrations.types?.length) {
+            log('  Registered %d type(s): %s', registrations.types.length,
+                registrations.types.map(t => t.name).join(', '));
         }
 
         // Try to extract manifest from package.json

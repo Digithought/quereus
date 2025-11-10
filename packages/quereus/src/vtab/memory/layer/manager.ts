@@ -19,6 +19,7 @@ import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFu
 import { createMemoryTableLoggers } from '../utils/logging.js';
 import { getSyncLiteral } from '../../../parser/utils.js';
 import { createLogger } from '../../../common/logger.js';
+import { validateAndParse } from '../../../types/validation.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
@@ -420,7 +421,20 @@ export class MemoryTableManager {
 			throw new QuereusError("INSERT requires values.", StatusCode.MISUSE);
 		}
 
-		const newRowData: Row = values;
+		// Validate and parse values according to column types
+		const schema = targetLayer.getSchema();
+		const validatedRow: Row = values.map((value, index) => {
+			if (index >= schema.columns.length) {
+				throw new QuereusError(
+					`Too many values for INSERT into ${this._tableName}: expected ${schema.columns.length}, got ${values.length}`,
+					StatusCode.ERROR
+				);
+			}
+			const column = schema.columns[index];
+			return validateAndParse(value, column.logicalType, column.name);
+		});
+
+		const newRowData: Row = validatedRow;
 		const primaryKey = this.primaryKeyFromRow(newRowData);
 		const skipPkCheck = this.shouldSkipPkCheck(values);
 
@@ -448,8 +462,20 @@ export class MemoryTableManager {
 			throw new QuereusError("UPDATE requires new values and old key values.", StatusCode.MISUSE);
 		}
 
-		const newRowData: Row = values;
+		// Validate and parse values according to column types
 		const schema = targetLayer.getSchema();
+		const validatedRow: Row = values.map((value, index) => {
+			if (index >= schema.columns.length) {
+				throw new QuereusError(
+					`Too many values for UPDATE on ${this._tableName}: expected ${schema.columns.length}, got ${values.length}`,
+					StatusCode.ERROR
+				);
+			}
+			const column = schema.columns[index];
+			return validateAndParse(value, column.logicalType, column.name);
+		});
+
+		const newRowData: Row = validatedRow;
 		const targetPrimaryKey = buildPrimaryKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
 		const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
 

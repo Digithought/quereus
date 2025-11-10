@@ -2,6 +2,10 @@
 import type { SqlValue } from '../common/types.js';
 import type { FunctionSchema } from '../schema/function.js';
 import type { CollationFunction } from '../util/comparison.js';
+import type { TypePluginInfo } from '../types/plugin-interface.js';
+
+// Re-export TypePluginInfo so it can be imported from this module
+export type { TypePluginInfo };
 
 /**
  * Configuration setting definition for a plugin
@@ -46,6 +50,7 @@ export interface PluginRegistrations {
 	vtables?: VTablePluginInfo[];
 	functions?: FunctionPluginInfo[];
 	collations?: CollationPluginInfo[];
+	types?: TypePluginInfo[];
 }
 
 /**
@@ -59,12 +64,13 @@ export interface PluginManifest {
 	pragmaPrefix?: string;          // default = name, used for PRAGMA commands
 	settings?: PluginSetting[];     // configuration options
 	capabilities?: string[];        // e.g. ['scan', 'index', 'write']
-	
+
 	// Plugin type indicators (for UI display)
 	provides?: {
 		vtables?: string[];         // names of vtable modules provided
 		functions?: string[];       // names of functions provided
 		collations?: string[];      // names of collations provided
+		types?: string[];           // names of types provided
 	};
 }
 

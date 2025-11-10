@@ -1,6 +1,6 @@
 import { BTree } from 'inheritree';
 import { StatusCode, type Row, type SqlValue } from '../../common/types.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { createTypedComparator, resolveCollation } from '../../util/comparison.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from './types.js';
 import type { IndexColumnSchema as IndexColumnSpec } from '../../schema/table.js'; // Renamed for clarity
 import type { ColumnSchema } from '../../schema/column.js';
@@ -25,10 +25,12 @@ export class MemoryIndex {
 	public readonly keyFromRow: (row: Row) => BTreeKeyForIndex;
 	public readonly compareKeys: (a: BTreeKeyForIndex, b: BTreeKeyForIndex) => number;
 	public data: BTree<BTreeKeyForIndex, MemoryIndexEntry>;
+	private readonly allTableColumnsSchema: ReadonlyArray<ColumnSchema>;
 
 	constructor(spec: IndexSpec, allTableColumnsSchema: ReadonlyArray<ColumnSchema>, baseInheritreeTable?: BTree<BTreeKeyForIndex, MemoryIndexEntry>) {
 		this.name = spec.name;
 		this.specColumns = Object.freeze(spec.columns.map(c => ({ ...c })));
+		this.allTableColumnsSchema = allTableColumnsSchema;
 
 		this.validateColumnIndexes(allTableColumnsSchema);
 
@@ -60,8 +62,12 @@ export class MemoryIndex {
 	private createSingleColumnKeyFunctions(): IndexKeyFunctions {
 		const specCol = this.specColumns[0];
 		const colSchemaIndex = specCol.index;
-		const collation = specCol.collation || 'BINARY';
+		const columnSchema = this.allTableColumnsSchema[colSchemaIndex];
 		const descMultiplier = specCol.desc ? -1 : 1;
+
+		// Create type-aware comparator
+		const collationFunc = specCol.collation ? resolveCollation(specCol.collation) : undefined;
+		const typedComparator = createTypedComparator(columnSchema.logicalType, collationFunc);
 
 		const keyFromRow = (row: Row): BTreeKeyForIndex => {
 			this.validateRowLength(row, colSchemaIndex);
@@ -69,7 +75,7 @@ export class MemoryIndex {
 		};
 
 		const compareKeys = (a: BTreeKeyForIndex, b: BTreeKeyForIndex): number => {
-			return compareSqlValues(a as SqlValue, b as SqlValue, collation) * descMultiplier;
+			return typedComparator(a as SqlValue, b as SqlValue) * descMultiplier;
 		};
 
 		return { keyFromRow, compareKeys };
@@ -77,6 +83,13 @@ export class MemoryIndex {
 
 	private createCompositeColumnKeyFunctions(): IndexKeyFunctions {
 		const localSpecColumns = this.specColumns;
+
+		// Pre-create type-aware comparators for each column
+		const comparators = localSpecColumns.map(sc => {
+			const columnSchema = this.allTableColumnsSchema[sc.index];
+			const collationFunc = sc.collation ? resolveCollation(sc.collation) : undefined;
+			return createTypedComparator(columnSchema.logicalType, collationFunc);
+		});
 
 		const keyFromRow = (row: Row): BTreeKeyForIndex => {
 			return localSpecColumns.map(sc => {
@@ -95,7 +108,7 @@ export class MemoryIndex {
 				}
 
 				const specCol = localSpecColumns[i];
-				const comparison = compareSqlValues(arrA[i], arrB[i], specCol.collation || 'BINARY');
+				const comparison = comparators[i](arrA[i], arrB[i]);
 
 				if (comparison !== 0) {
 					return specCol.desc ? -comparison : comparison;

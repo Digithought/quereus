@@ -1,5 +1,6 @@
 import { SqlDataType } from '../common/types.js';
 import type { Expression } from '../parser/ast.js';
+import type { LogicalType } from '../types/logical-type.js';
 
 /**
  * Represents the schema definition of a single column in a table.
@@ -7,7 +8,9 @@ import type { Expression } from '../parser/ast.js';
 export interface ColumnSchema {
 	/** Column name */
 	name: string;
-	/** Data type affinity (TEXT, INTEGER, REAL, BLOB, NUMERIC) */
+	/** Logical type definition */
+	logicalType: LogicalType;
+	/** Data type affinity (TEXT, INTEGER, REAL, BLOB, NUMERIC) - kept for backward compatibility during transition */
 	affinity: SqlDataType;
 	/** Whether the column has a NOT NULL constraint */
 	notNull: boolean;
@@ -34,8 +37,12 @@ export interface ColumnSchema {
  * @returns A new column schema with default values
  */
 export function createDefaultColumnSchema(name: string, defaultNotNull: boolean = true): ColumnSchema {
+	// Import TEXT_TYPE lazily to avoid circular dependencies
+	const { TEXT_TYPE } = require('../types/builtin-types.js');
+
 	return {
 		name: name,
+		logicalType: TEXT_TYPE,
 		affinity: SqlDataType.TEXT,
 		notNull: defaultNotNull, // Third Manifesto: default to NOT NULL
 		primaryKey: false,

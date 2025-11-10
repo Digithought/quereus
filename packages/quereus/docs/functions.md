@@ -301,21 +301,77 @@ These functions compute a single result from multiple input rows within a group 
     *   **Returns:** A REAL value. Returns `NULL` if the group contains fewer than two non-NULL numeric values.
     *   **Example:** `SELECT var_samp(weight_kg) FROM participants;`
 
+## Type Conversion Functions
+
+Quereus uses conversion functions instead of the CAST operator for type conversions. These functions validate input and convert values to the target type.
+
+*   `integer(X)`
+    *   **Description:** Converts value X to INTEGER type.
+    *   **Arguments:** `X` (Any type).
+    *   **Returns:** INTEGER value. Strings are parsed as integers, booleans become 0/1, numbers are truncated. Returns `NULL` if X is `NULL` or cannot be converted.
+    *   **Example:** `integer('42')` returns `42`, `integer(3.14)` returns `3`, `integer(true)` returns `1`.
+
+*   `real(X)`
+    *   **Description:** Converts value X to REAL (floating-point) type.
+    *   **Arguments:** `X` (Any type).
+    *   **Returns:** REAL value. Strings are parsed as numbers, booleans become 0.0/1.0. Returns `NULL` if X is `NULL` or cannot be converted.
+    *   **Example:** `real('3.14')` returns `3.14`, `real(42)` returns `42.0`, `real(false)` returns `0.0`.
+
+*   `text(X)`
+    *   **Description:** Converts value X to TEXT type.
+    *   **Arguments:** `X` (Any type).
+    *   **Returns:** TEXT string representation. Numbers become strings, booleans become 'true'/'false', BLOBs are hex-encoded. Returns `NULL` if X is `NULL`.
+    *   **Example:** `text(42)` returns `'42'`, `text(true)` returns `'true'`.
+
+*   `boolean(X)`
+    *   **Description:** Converts value X to BOOLEAN type.
+    *   **Arguments:** `X` (Any type).
+    *   **Returns:** BOOLEAN value. Numbers: 0 is false, non-zero is true. Strings: 'true'/'1' are true, 'false'/'0' are false. Returns `NULL` if X is `NULL` or cannot be converted.
+    *   **Example:** `boolean(1)` returns `true`, `boolean('false')` returns `false`, `boolean(0)` returns `false`.
+
+*   `date(X)`
+    *   **Description:** Converts value X to DATE type (ISO 8601 date string).
+    *   **Arguments:** `X` (TEXT or special value 'now').
+    *   **Returns:** TEXT in `YYYY-MM-DD` format. Validates and normalizes date strings. Special value `'now'` returns current date.
+    *   **Example:** `date('2024-01-15')` returns `'2024-01-15'`, `date('now')` returns current date.
+
+*   `time(X)`
+    *   **Description:** Converts value X to TIME type (ISO 8601 time string).
+    *   **Arguments:** `X` (TEXT or special value 'now').
+    *   **Returns:** TEXT in `HH:MM:SS` format. Validates and normalizes time strings. Special value `'now'` returns current time.
+    *   **Example:** `time('14:30:00')` returns `'14:30:00'`, `time('now')` returns current time.
+
+*   `datetime(X)`
+    *   **Description:** Converts value X to DATETIME type (ISO 8601 datetime string).
+    *   **Arguments:** `X` (TEXT or special value 'now').
+    *   **Returns:** TEXT in `YYYY-MM-DDTHH:MM:SS` format. Validates and normalizes datetime strings. Special value `'now'` returns current timestamp.
+    *   **Example:** `datetime('2024-01-15T14:30:00')` returns `'2024-01-15T14:30:00'`, `datetime('now')` returns current timestamp.
+
+*   `json(X)`
+    *   **Description:** Converts value X to JSON type (validated JSON string).
+    *   **Arguments:** `X` (Any type).
+    *   **Returns:** TEXT containing valid, normalized JSON. Validates JSON syntax and normalizes formatting. Non-JSON values are converted to JSON representation.
+    *   **Example:** `json('{"x":1}')` returns `'{"x":1}'` (normalized), `json(42)` returns `'42'`, `json(true)` returns `'true'`.
+
+**Note:** Quereus prefers conversion functions over the CAST operator. Use these functions for explicit type conversions.
+
 ## Date & Time Functions
 
 These functions manipulate date and time values. They rely heavily on the underlying `Temporal` polyfill for parsing and calculations. See [Date/Time Handling](datetime.md) for details on supported `timestring` formats and `modifier` strings.
 
+**Note:** The conversion functions `date()`, `time()`, and `datetime()` documented above are the recommended way to convert values to temporal types. The functions below provide additional date/time manipulation capabilities.
+
 *   `date(timestring, modifier, ...)`
-    *   **Description:** Returns the date in `YYYY-MM-DD` format.
+    *   **Description:** With modifiers: Returns the date in `YYYY-MM-DD` format after applying date arithmetic. Without modifiers: Acts as type conversion function (see Type Conversion Functions above).
     *   **Arguments:** `timestring` (TEXT or Numeric - see docs), `modifier` (Optional, TEXT, zero or more).
     *   **Returns:** A TEXT string or `NULL` on error.
-    *   **Example:** `date('now')`, `date('2024-01-15', '+7 days')`.
+    *   **Example:** `date('now')`, `date('2024-01-15', '+7 days')` returns `'2024-01-22'`.
 
 *   `datetime(timestring, modifier, ...)`
-    *   **Description:** Returns the date and time in `YYYY-MM-DD HH:MM:SS` format.
+    *   **Description:** With modifiers: Returns the date and time in `YYYY-MM-DDTHH:MM:SS` format after applying date arithmetic. Without modifiers: Acts as type conversion function (see Type Conversion Functions above).
     *   **Arguments:** `timestring`, `modifier` (Optional, zero or more).
     *   **Returns:** A TEXT string or `NULL` on error.
-    *   **Example:** `datetime('now', 'localtime')`, `datetime('2024-01-15 10:30:00', '-1 hour')`.
+    *   **Example:** `datetime('now')`, `datetime('2024-01-15T10:30:00', '-1 hour')` returns `'2024-01-15T09:30:00'`.
 
 *   `julianday(timestring, modifier, ...)`
     *   **Description:** Returns the Julian day number - the number of days since noon in Greenwich on November 24, 4714 B.C.
@@ -330,10 +386,10 @@ These functions manipulate date and time values. They rely heavily on the underl
     *   **Example:** `strftime('%Y-%m-%d %H:%M', 'now')`, `strftime('%W', '2024-01-15')` (Week number).
 
 *   `time(timestring, modifier, ...)`
-    *   **Description:** Returns the time in `HH:MM:SS` format.
+    *   **Description:** With modifiers: Returns the time in `HH:MM:SS` format after applying time arithmetic. Without modifiers: Acts as type conversion function (see Type Conversion Functions above).
     *   **Arguments:** `timestring`, `modifier` (Optional, zero or more).
     *   **Returns:** A TEXT string or `NULL` on error.
-    *   **Example:** `time('now', 'localtime')`, `time('14:30:15', '+15 minutes')`.
+    *   **Example:** `time('now')`, `time('14:30:15', '+15 minutes')` returns `'14:45:15'`.
 
 ## JSON Functions
 

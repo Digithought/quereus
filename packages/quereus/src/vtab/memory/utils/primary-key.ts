@@ -1,7 +1,7 @@
 import type { TableSchema, PrimaryKeyColumnDefinition } from '../../../schema/table.js';
 import type { Row, SqlValue } from '../../../common/types.js';
 import type { BTreeKeyForPrimary } from '../types.js';
-import { compareSqlValuesFast, resolveCollation, type CollationFunction } from '../../../util/comparison.js';
+import { compareSqlValuesFast, resolveCollation, type CollationFunction, createTypedComparator } from '../../../util/comparison.js';
 import { QuereusError } from '../../../common/errors.js';
 import { StatusCode } from '../../../common/types.js';
 
@@ -26,9 +26,9 @@ export function createPrimaryKeyFunctions(schema: TableSchema): PrimaryKeyFuncti
 	if (pkDefinition.length === 0) {
 		return createSingletonPrimaryKeyFunctions();
 	} else if (pkDefinition.length === 1) {
-		return createSingleColumnPrimaryKeyFunctions(pkDefinition[0]);
+		return createSingleColumnPrimaryKeyFunctions(pkDefinition[0], schema);
 	} else {
-		return createCompositeColumnPrimaryKeyFunctions(pkDefinition);
+		return createCompositeColumnPrimaryKeyFunctions(pkDefinition, schema);
 	}
 }
 
@@ -50,14 +50,16 @@ function createSingletonPrimaryKeyFunctions(): PrimaryKeyFunctions {
  * Creates functions for single-column primary keys (optimized path)
  */
 function createSingleColumnPrimaryKeyFunctions(
-	columnDef: PrimaryKeyColumnDefinition
+	columnDef: PrimaryKeyColumnDefinition,
+	schema: TableSchema
 ): PrimaryKeyFunctions {
 	const pkColIndex = columnDef.index;
-	const collation = columnDef.collation || 'BINARY';
 	const descMultiplier = columnDef.desc ? -1 : 1;
 
-	// Pre-resolve collation function for optimal performance
-	const collationFunc = resolveCollation(collation);
+	// Get the column's logical type and create type-aware comparator
+	const columnSchema = schema.columns[pkColIndex];
+	const collationFunc = columnDef.collation ? resolveCollation(columnDef.collation) : undefined;
+	const typedComparator = createTypedComparator(columnSchema.logicalType, collationFunc);
 
 	const extractFromRow = (row: Row): BTreeKeyForPrimary => {
 		if (!row || !Array.isArray(row)) {
@@ -76,7 +78,7 @@ function createSingleColumnPrimaryKeyFunctions(
 	};
 
 	const compare = (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary): number => {
-		return compareSqlValuesFast(a as SqlValue, b as SqlValue, collationFunc) * descMultiplier;
+		return typedComparator(a as SqlValue, b as SqlValue) * descMultiplier;
 	};
 
 	return { extractFromRow, compare };
@@ -86,12 +88,15 @@ function createSingleColumnPrimaryKeyFunctions(
  * Creates functions for composite (multi-column) primary keys
  */
 function createCompositeColumnPrimaryKeyFunctions(
-	pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>
+	pkDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>,
+	schema: TableSchema
 ): PrimaryKeyFunctions {
-	// Pre-resolve all collation functions for optimal performance
-	const collationFuncs: CollationFunction[] = pkDefinition.map(def =>
-		resolveCollation(def.collation || 'BINARY')
-	);
+	// Pre-create type-aware comparators for each primary key column
+	const comparators = pkDefinition.map(def => {
+		const columnSchema = schema.columns[def.index];
+		const collationFunc = def.collation ? resolveCollation(def.collation) : undefined;
+		return createTypedComparator(columnSchema.logicalType, collationFunc);
+	});
 
 	const extractFromRow = (row: Row): BTreeKeyForPrimary => {
 		if (!row || !Array.isArray(row)) {
@@ -121,7 +126,7 @@ function createCompositeColumnPrimaryKeyFunctions(
 			}
 
 			const def = pkDefinition[i];
-			const comparison = compareSqlValuesFast(arrA[i], arrB[i], collationFuncs[i]);
+			const comparison = comparators[i](arrA[i], arrB[i]);
 
 			if (comparison !== 0) {
 				return def.desc ? -comparison : comparison;
