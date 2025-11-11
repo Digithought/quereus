@@ -142,3 +142,91 @@ INTERSECT
 SELECT value FROM (VALUES (1), (2), (3), (4)) AS t2(value)
 ORDER BY value;
 → [{"value":2},{"value":3},{"value":4}]
+
+-- Test type coercion in set operations (regression test for JSON.stringify bug)
+-- These tests ensure proper SQL comparison semantics, not JSON.stringify comparison
+-- Bug: JSON.stringify(1) !== JSON.stringify(true), but SQL treats them as equal (both NUMERIC storage class)
+
+-- Test with boolean values (true equals 1, false equals 0 in SQL)
+-- This would FAIL with JSON.stringify because JSON.stringify(1) !== JSON.stringify(true)
+-- UNION preserves left-side types when values are equal
+SELECT value FROM (VALUES (0), (1), (2)) AS t1(value)
+UNION
+SELECT value FROM (VALUES (false), (true)) AS t2(value)
+ORDER BY value;
+→ [{"value":0},{"value":1},{"value":2}]
+
+-- INTERSECT with boolean/numeric (regression test for JSON.stringify bug)
+-- true should match 1, false should match 0
+-- INTERSECT returns values from the left side that match the right side
+SELECT value FROM (VALUES (0), (1), (2)) AS t1(value)
+INTERSECT
+SELECT value FROM (VALUES (true), (false)) AS t2(value)
+ORDER BY value;
+→ [{"value":0},{"value":1}]
+
+-- INTERSECT reversed - should return boolean types from left side
+SELECT value FROM (VALUES (true), (false)) AS t1(value)
+INTERSECT
+SELECT value FROM (VALUES (0), (1), (2)) AS t2(value)
+ORDER BY value;
+→ [{"value":false},{"value":true}]
+
+-- EXCEPT with boolean/numeric
+SELECT value FROM (VALUES (0), (1), (2)) AS t1(value)
+EXCEPT
+SELECT value FROM (VALUES (true)) AS t2(value)
+ORDER BY value;
+→ [{"value":0},{"value":2}]
+
+-- Test that numeric and string values are kept distinct (different storage classes)
+-- In SQL, 1 (NUMERIC) and '1' (TEXT) are different values
+SELECT value FROM (VALUES (1), (2), (3)) AS t1(value)
+UNION
+SELECT value FROM (VALUES ('2'), ('3'), ('4')) AS t2(value)
+ORDER BY value;
+→ [{"value":1},{"value":2},{"value":3},{"value":"2"},{"value":"3"},{"value":"4"}]
+
+-- Test NULL handling in set operations
+-- NULLs should be treated as equal in DISTINCT operations (for deduplication)
+SELECT value FROM (VALUES (1), (2), (NULL)) AS t1(value)
+UNION
+SELECT value FROM (VALUES (2), (3), (NULL)) AS t2(value)
+ORDER BY value;
+→ [{"value":null},{"value":1},{"value":2},{"value":3}]
+
+-- INTERSECT with NULLs (NULL should match NULL in set operations)
+SELECT value FROM (VALUES (1), (2), (NULL)) AS t1(value)
+INTERSECT
+SELECT value FROM (VALUES (2), (NULL), (3)) AS t2(value)
+ORDER BY value;
+→ [{"value":null},{"value":2}]
+
+-- EXCEPT with NULLs
+SELECT value FROM (VALUES (1), (2), (NULL)) AS t1(value)
+EXCEPT
+SELECT value FROM (VALUES (2), (NULL)) AS t2(value)
+ORDER BY value;
+→ [{"value":1}]
+
+-- Test with real numbers and integers (1 and 1.0 should be equal)
+SELECT value FROM (VALUES (1), (1.0), (1.5)) AS t1(value)
+UNION
+SELECT value FROM (VALUES (1), (2.0)) AS t2(value)
+ORDER BY value;
+→ [{"value":1},{"value":1.5},{"value":2}]
+
+-- Test multi-column set operations with boolean/numeric equivalence
+-- (1, 'x') should equal (true, 'x') because 1 == true in SQL
+SELECT a, b FROM (VALUES (1, 'x'), (0, 'y'), (2, 'z')) AS t1(a, b)
+UNION
+SELECT a, b FROM (VALUES (true, 'x'), (false, 'y')) AS t2(a, b)
+ORDER BY a, b;
+→ [{"a":0,"b":"y"},{"a":1,"b":"x"},{"a":2,"b":"z"}]
+
+-- INTERSECT multi-column with boolean/numeric
+SELECT a, b FROM (VALUES (1, 'x'), (0, 'y'), (2, 'z')) AS t1(a, b)
+INTERSECT
+SELECT a, b FROM (VALUES (true, 'x'), (false, 'y')) AS t2(a, b)
+ORDER BY a, b;
+→ [{"a":0,"b":"y"},{"a":1,"b":"x"}]

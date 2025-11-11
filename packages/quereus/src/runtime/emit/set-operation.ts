@@ -79,11 +79,12 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
       const outputRow = createOutputRow(row);
       const leftPath = leftTree.find(outputRow);
       if (leftPath.on) {
-        // This row exists in left set
-        const yieldedPath = yielded.insert(outputRow);
+        // This row exists in left set - yield the LEFT row to preserve left-side types
+        const leftRow = leftTree.get(outputRow)!;
+        const yieldedPath = yielded.insert(leftRow);
         if (yieldedPath.on) {
           // Haven't yielded this row yet (handles duplicates in right)
-          yield outputRow; // Let SortNode handle row context
+          yield leftRow; // Let SortNode handle row context
         }
       }
     }
