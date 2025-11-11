@@ -2,7 +2,7 @@
 	"name": "quereus-vscode",
 	"displayName": "Quereus SQL",
 	"description": "Language support for Quereus SQL: syntax, diagnostics, completions, hovers, semantic tokens",
-	"version": "0.1.7",
+	"version": "0.2.1",
 	"icon": "images/icon.ico",
 	"publisher": "GotChoicesFoundation",
 	"files": [
@@ -50,7 +50,7 @@
 		"vscode-languageclient": "^9.0.1"
 	},
 	"devDependencies": {
-		"@quereus/quereus": "^0.2.1",
+		"@quereus/quereus": "^0.5.1",
 		"@types/vscode": "^1.84.0",
 		"rimraf": "^6.0.1",
 		"typescript": "^5.8.3",

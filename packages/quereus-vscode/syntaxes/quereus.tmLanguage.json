@@ -6,6 +6,7 @@
 		{ "include": "#comments" },
 		{ "include": "#strings" },
 		{ "include": "#numbers" },
+		{ "include": "#declarative-schema" },
 		{ "include": "#keywords" },
 		{ "include": "#operators" }
 	],
@@ -35,9 +36,70 @@
 		},
 		"numbers": { "patterns": [{ "name": "constant.numeric.sql", "match": "\\b\\d+(?:\\.\\d+)?\\b" }] },
 		"operators": { "patterns": [{ "name": "keyword.operator.sql", "match": "=|==|!=|<>|<=|>=|<|>|\\|\\||\\+|\-|\\*|/|%" }] },
+		"declarative-schema": {
+			"patterns": [
+				{
+					"name": "meta.declarative-schema.quereus",
+					"begin": "(?i:\\b(declare)\\s+(schema)\\b)",
+					"beginCaptures": {
+						"1": { "name": "keyword.declarative.quereus" },
+						"2": { "name": "keyword.declarative.quereus" }
+					},
+					"end": "(?i:\\})",
+					"patterns": [
+						{ "include": "#comments" },
+						{ "include": "#strings" },
+						{ "include": "#numbers" },
+						{
+							"name": "keyword.declarative.quereus",
+							"match": "(?i:\\b(?:version|seed|using|table|view|index|assertion)\\b)"
+						},
+						{
+							"name": "keyword.control.sql",
+							"match": "(?i:\\b(?:primary|key|foreign|references|constraint|check|unique|not|null|default|generated|always|stored|virtual|on|delete|update|cascade|restrict|set|no|action)\\b)"
+						},
+						{ "include": "#operators" }
+					]
+				},
+				{
+					"name": "meta.diff-schema.quereus",
+					"match": "(?i:\\b(diff)\\s+(schema)\\b)",
+					"captures": {
+						"1": { "name": "keyword.declarative.quereus" },
+						"2": { "name": "keyword.declarative.quereus" }
+					}
+				},
+				{
+					"name": "meta.apply-schema.quereus",
+					"match": "(?i:\\b(apply)\\s+(schema)\\b)",
+					"captures": {
+						"1": { "name": "keyword.declarative.quereus" },
+						"2": { "name": "keyword.declarative.quereus" }
+					}
+				},
+				{
+					"name": "meta.explain-schema.quereus",
+					"match": "(?i:\\b(explain)\\s+(schema)\\b)",
+					"captures": {
+						"1": { "name": "keyword.declarative.quereus" },
+						"2": { "name": "keyword.declarative.quereus" }
+					}
+				},
+				{
+					"name": "meta.with-context.quereus",
+					"match": "(?i:\\b(with)\\s+(context)\\b)",
+					"captures": {
+						"1": { "name": "keyword.control.sql" },
+						"2": { "name": "keyword.context.quereus" }
+					}
+				}
+			]
+		},
 		"keywords": {
 			"patterns": [
-				{ "name": "keyword.control.sql", "match": "(?i:\\b(?:WITH|RECURSIVE|SELECT|INSERT|UPDATE|DELETE|VALUES|CREATE|TABLE|VIEW|INDEX|ASSERTION|DROP|ALTER|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|RETURNING|WHERE|FROM|GROUP|BY|HAVING|ORDER|LIMIT|OFFSET|JOIN|INNER|LEFT|RIGHT|FULL|CROSS|OUTER|ON|USING|AS|DISTINCT|ALL|UNION|INTERSECT|EXCEPT|DIFF|NULL|TRUE|FALSE|IS|NOT|AND|OR|XOR|IN|LIKE|BETWEEN|EXISTS|CASE|WHEN|THEN|ELSE|END|OVER|PARTITION|ROWS|RANGE|UNBOUNDED|PRECEDING|FOLLOWING|CURRENT|COLLATE|DEFAULT|PRIMARY|KEY|CHECK|UNIQUE|FOREIGN|REFERENCES|CONSTRAINT|GENERATED|ALWAYS|STORED|VIRTUAL|INTO|USING|IF|TO|ADD|RENAME|SET|NO|ACTION|ABORT|FAIL|IGNORE|REPLACE|DECLARE|SCHEMA|APPLY|EXPLAIN|VERSION|SEED)\\b)" }
+				{ "name": "keyword.declarative.quereus", "match": "(?i:\\b(?:declare|diff|apply|explain|version|seed|schema)\\b)" },
+				{ "name": "keyword.context.quereus", "match": "(?i:\\b(?:context)\\b)" },
+				{ "name": "keyword.control.sql", "match": "(?i:\\b(?:with|recursive|select|insert|update|delete|values|create|table|view|index|assertion|drop|alter|begin|commit|rollback|savepoint|release|pragma|returning|where|from|group|by|having|order|limit|offset|join|inner|left|right|full|cross|outer|on|using|as|distinct|all|union|intersect|except|null|true|false|is|not|and|or|xor|in|like|between|exists|case|when|then|else|end|over|partition|rows|range|unbounded|preceding|following|current|collate|default|primary|key|check|unique|foreign|references|constraint|generated|always|stored|virtual|into|if|to|add|rename|set|no|action|abort|fail|ignore|replace)\\b)" }
 			]
 		}
 	}

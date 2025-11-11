@@ -5,6 +5,28 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
+			"name": "Run Extension",
+			"type": "extensionHost",
+			"request": "launch",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}/packages/quereus-vscode"
+			],
+			"outFiles": [
+				"${workspaceFolder}/packages/quereus-vscode/client/out/**/*.js",
+				"${workspaceFolder}/packages/quereus-vscode/server/dist/**/*.js"
+			]
+		},
+		{
+			"name": "Attach to Language Server",
+			"type": "node",
+			"request": "attach",
+			"port": 6009,
+			"restart": true,
+			"outFiles": [
+				"${workspaceFolder}/packages/quereus-vscode/server/dist/**/*.js"
+			]
+		},
+		{
 			"type": "node",
 			"request": "launch",
 			"name": "Mocha - Current file",
@@ -27,6 +49,13 @@
 			"cwd": "${workspaceFolder}",
 			"console": "integratedTerminal",
 			"internalConsoleOptions": "neverOpen"
+		}
+	],
+	"compounds": [
+		{
+			"name": "Extension + Server",
+			"configurations": ["Run Extension", "Attach to Language Server"],
+			"stopAll": true
 		}
 	]
 }
