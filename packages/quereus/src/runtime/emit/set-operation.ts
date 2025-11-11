@@ -3,6 +3,8 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
+import { BTree } from 'inheritree';
+import { compareRows } from '../../util/comparison.js';
 
 export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): Instruction {
   const leftInst = emitPlanNode(plan.left, ctx);
@@ -30,58 +32,85 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
   }
 
   async function* runUnionDistinct(rctx: RuntimeContext, leftRows: AsyncIterable<Row>, rightRows: AsyncIterable<Row>): AsyncIterable<Row> {
-    const seen = new Set<string>();
-    const hash = (row: Row) => JSON.stringify(row);
+    // Use BTree for proper SQL value comparison instead of JSON.stringify
+    const distinctTree = new BTree<Row, Row>(
+      (row: Row) => row,
+      compareRows
+    );
+
     for await (const row of leftRows) {
       const outputRow = createOutputRow(row);
-      const h = hash(outputRow);
-      if (!seen.has(h)) {
-        seen.add(h);
+      const newPath = distinctTree.insert(outputRow);
+      if (newPath.on) {
+        // This is a new distinct row
         yield outputRow; // Let SortNode handle row context
       }
     }
     for await (const row of rightRows) {
       const outputRow = createOutputRow(row);
-      const h = hash(outputRow);
-      if (!seen.has(h)) {
-        seen.add(h);
+      const newPath = distinctTree.insert(outputRow);
+      if (newPath.on) {
+        // This is a new distinct row
         yield outputRow; // Let SortNode handle row context
       }
     }
   }
 
   async function* runIntersect(rctx: RuntimeContext, leftRows: AsyncIterable<Row>, rightRows: AsyncIterable<Row>): AsyncIterable<Row> {
-    const leftSet = new Set<string>();
-    const hash = (row: Row) => JSON.stringify(row);
-    const leftRowsArray: Row[] = [];
+    // Use BTree for proper SQL value comparison
+    const leftTree = new BTree<Row, Row>(
+      (row: Row) => row,
+      compareRows
+    );
+
+    // Build left set
     for await (const row of leftRows) {
       const outputRow = createOutputRow(row);
-      leftSet.add(hash(outputRow));
-      leftRowsArray.push(outputRow);
+      leftTree.insert(outputRow);
     }
+
+    // Check right rows against left set
+    const yielded = new BTree<Row, Row>(
+      (row: Row) => row,
+      compareRows
+    );
+
     for await (const row of rightRows) {
       const outputRow = createOutputRow(row);
-      const h = hash(outputRow);
-      if (leftSet.has(h)) {
-        yield outputRow; // Let SortNode handle row context
-        leftSet.delete(h);
+      const leftPath = leftTree.find(outputRow);
+      if (leftPath.on) {
+        // This row exists in left set
+        const yieldedPath = yielded.insert(outputRow);
+        if (yieldedPath.on) {
+          // Haven't yielded this row yet (handles duplicates in right)
+          yield outputRow; // Let SortNode handle row context
+        }
       }
     }
   }
 
   async function* runExcept(rctx: RuntimeContext, leftRows: AsyncIterable<Row>, rightRows: AsyncIterable<Row>): AsyncIterable<Row> {
-    const rightSet = new Set<string>();
-    const hash = (row: Row) => JSON.stringify(row);
+    // Use BTree for proper SQL value comparison
+    const rightTree = new BTree<Row, Row>(
+      (row: Row) => row,
+      compareRows
+    );
     const leftRowsArray: Row[] = [];
+
+    // Collect left rows
     for await (const row of leftRows) {
       leftRowsArray.push(createOutputRow(row));
     }
+
+    // Build right set
     for await (const row of rightRows) {
-      rightSet.add(hash(createOutputRow(row)));
+      rightTree.insert(createOutputRow(row));
     }
+
+    // Yield left rows that are not in right set
     for (const outputRow of leftRowsArray) {
-      const h = hash(outputRow);
-      if (!rightSet.has(h)) {
+      const rightPath = rightTree.find(outputRow);
+      if (!rightPath.on) {
         yield outputRow; // Let SortNode handle row context
       }
     }
