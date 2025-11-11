@@ -34,6 +34,17 @@ export type AggregateReducer<T = any> = (accumulator: T, ...args: SqlValue[]) =>
 export type AggregateFinalizer<T = any> = (accumulator: T) => SqlValue;
 
 /**
+ * Custom emitter hook for functions that need special emission logic.
+ * This allows functions to cache compiled state in the EmissionContext,
+ * optimize constant arguments, or perform other emission-time optimizations.
+ */
+export type CustomEmitterHook = (
+	plan: any, // ScalarFunctionCallNode, but we avoid circular dependency
+	ctx: any,  // EmissionContext, but we avoid circular dependency
+	defaultEmit: (plan: any, ctx: any) => any // Instruction
+) => any; // Instruction
+
+/**
  * Base interface for all function schemas with common properties.
  */
 interface BaseFunctionSchema {
@@ -47,6 +58,13 @@ interface BaseFunctionSchema {
 	userData?: unknown;
 	/** Return type information */
 	returnType: BaseType;
+	/**
+	 * Optional custom emitter hook for emission-time optimizations.
+	 * If provided, this function will be called during plan emission instead of
+	 * the default scalar function emitter. The hook receives the plan node,
+	 * emission context, and a reference to the default emitter.
+	 */
+	customEmitter?: CustomEmitterHook;
 }
 
 /**

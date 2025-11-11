@@ -350,9 +350,11 @@ export function compareWithOrderBy(
 ): number {
 	// Convert to optimized flags and use fast path
 	const directionFlag = direction === 'desc' ? SortDirection.DESC : SortDirection.ASC;
-	const nullsFlag = nullsOrdering === 'first' ? NullsOrdering.FIRST :
-	                  nullsOrdering === 'last' ? NullsOrdering.LAST :
-	                  NullsOrdering.DEFAULT;
+	const nullsFlag = nullsOrdering === 'first'
+		? NullsOrdering.FIRST
+		: nullsOrdering === 'last'
+			? NullsOrdering.LAST
+			: NullsOrdering.DEFAULT;
 	const collationFunc = collationName === 'BINARY' ? BINARY_COLLATION : resolveCollation(collationName);
 
 	return compareWithOrderByFast(a, b, directionFlag, nullsFlag, collationFunc);
@@ -391,9 +393,11 @@ export function createOrderByComparatorFast(
 	collationFunc: CollationFunction = BINARY_COLLATION
 ): (a: SqlValue, b: SqlValue) => number {
 	const directionFlag = direction === 'desc' ? SortDirection.DESC : SortDirection.ASC;
-	const nullsFlag = nullsOrdering === 'first' ? NullsOrdering.FIRST :
-	                  nullsOrdering === 'last' ? NullsOrdering.LAST :
-	                  NullsOrdering.DEFAULT;
+	const nullsFlag = nullsOrdering === 'first'
+		? NullsOrdering.FIRST
+		: nullsOrdering === 'last'
+			? NullsOrdering.LAST
+			: NullsOrdering.DEFAULT;
 
 	// Return a closure that captures the pre-resolved values
 	return (a: SqlValue, b: SqlValue): number => {

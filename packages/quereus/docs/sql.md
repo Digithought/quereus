@@ -1747,16 +1747,16 @@ select
   json_object('name', 'Alice', 'age', 25) as person,
   json_array(1, 2, 3, 4, 5) as numbers;
 
--- JSON schema validation
-select json_schema('[1, 2, 3]', '[integer]');  -- Returns 1 (valid)
-select json_schema('{"x": 42}', '{x:integer}');  -- Returns 1 (valid)
-select json_schema('[{"x": 1}, {"x": 2}]', '[{x:integer}]');  -- Returns 1 (valid)
+-- JSON schema validation (using TypeScript-like syntax)
+select json_schema('[1, 2, 3]', 'number[]');  -- Returns 1 (valid)
+select json_schema('{"x": 42}', '{ x: number }');  -- Returns 1 (valid)
+select json_schema('[{"x": 1}, {"x": 2}]', '{ x: number }[]');  -- Returns 1 (valid)
 
 -- Enforcing JSON structure with CHECK constraints
 create table api_events (
   id integer primary key,
   event_type text not null,
-  payload json check (json_schema(payload, '{timestamp:string,data:any}'))
+  payload json check (json_schema(payload, '{ timestamp: string, data: any }'))
 );
 
 -- Aggregating to JSON
@@ -2200,8 +2200,8 @@ create table events (
 create table api_logs (
   id integer primary key,
   endpoint text not null,
-  request json check (json_schema(request, '{method:string,headers:any,body:any}')),
-  response json check (json_schema(response, '{status:integer,body:any}'))
+  request json check (json_schema(request, '{ method: string, headers: any, body: any }')),
+  response json check (json_schema(response, '{ status: number, body: any }'))
 );
 ```
 

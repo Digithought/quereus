@@ -468,27 +468,32 @@ These functions operate on JSON values, typically represented as TEXT strings in
     *   **Example:** `json_valid('{"a": 1}')` returns `1`, `json_valid('{"a": 1')` returns `0`.
 
 *   `json_schema(json, schema_definition)`
-    *   **Description:** Validates a JSON value against a structural schema definition. Useful for enforcing JSON structure in CHECK constraints.
+    *   **Description:** Validates a JSON value against a structural schema definition using TypeScript-like syntax. Useful for enforcing JSON structure in CHECK constraints.
     *   **Arguments:**
         *   `json` (TEXT - valid JSON string)
-        *   `schema_definition` (TEXT - schema definition using TypeScript-style syntax)
-    *   **Schema Syntax:**
-        *   **Base types:** `integer`, `number`, `string`, `boolean`, `null`, `any`
-        *   **Arrays:** `[elementType]` - e.g., `[integer]` for array of integers
-        *   **Objects:** `{prop:type,...}` - e.g., `{x:integer,y:number}` for object with properties
-        *   **Nested:** Combine arrays and objects - e.g., `[{x:integer}]` for array of objects
+        *   `schema_definition` (TEXT - schema definition using TypeScript-like syntax)
+    *   **Schema Syntax:** Uses TypeScript-inspired syntax (powered by [moat-maker](https://github.com/theScottyJam/moat-maker))
+        *   **Base types:** `number`, `string`, `boolean`, `null`, `any`
+        *   **Arrays:** `type[]` - e.g., `number[]` for array of numbers
+        *   **Objects:** `{ prop: type, ... }` - e.g., `{ x: number, y: number }` for object with properties
+        *   **Optional properties:** `{ prop?: type }` - e.g., `{ x: number, y?: string }`
+        *   **Unions:** `type1 | type2` - e.g., `string | number`
+        *   **Nested:** Combine arrays and objects - e.g., `{ x: number }[]` for array of objects
+        *   **Tuples:** `[type1, type2]` - e.g., `[string, number]` for a two-element tuple
     *   **Returns:** INTEGER: `1` if the JSON matches the schema, `0` otherwise (including invalid JSON or invalid schema).
+    *   **Performance:** When the schema is a constant (e.g., in CHECK constraints), the schema is compiled once at query planning time and cached with the query plan. This provides significant performance improvements for repeated validations.
     *   **Examples:**
-        *   `json_schema('[1, 2, 3]', '[integer]')` returns `1` (array of integers)
-        *   `json_schema('{"x": 42}', '{x:integer}')` returns `1` (object with integer property x)
-        *   `json_schema('[{"x": 1}, {"x": 2}]', '[{x:integer}]')` returns `1` (array of objects)
-        *   `json_schema('{"users": [{"name": "Alice", "age": 30}]}', '{users:[{name:string,age:integer}]}')` returns `1`
-        *   `json_schema('[1, "mixed"]', '[integer]')` returns `0` (type mismatch)
+        *   `json_schema('[1, 2, 3]', 'number[]')` returns `1` (array of numbers)
+        *   `json_schema('{"x": 42}', '{ x: number }')` returns `1` (object with number property x)
+        *   `json_schema('[{"x": 1}, {"x": 2}]', '{ x: number }[]')` returns `1` (array of objects)
+        *   `json_schema('{"users": [{"name": "Alice", "age": 30}]}', '{ users: { name: string, age: number }[] }')` returns `1`
+        *   `json_schema('{"value": "text"}', '{ value: string | number }')` returns `1` (union type)
+        *   `json_schema('[1, "mixed"]', 'number[]')` returns `0` (type mismatch)
     *   **Common Use Case - CHECK Constraints:**
         ```sql
         create table events (
           id integer primary key,
-          data json check (json_schema(data, '[{x:integer,y:number}]'))
+          data json check (json_schema(data, '{ x: number, y: number }[]'))
         );
         ```
 

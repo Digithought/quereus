@@ -2,13 +2,20 @@ import fastJsonPatch from 'fast-json-patch';
 import type { Operation } from 'fast-json-patch';
 const { applyPatch } = fastJsonPatch;
 
-import { Type, type TSchema } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+// moat-maker: Runtime validation library with TypeScript-like syntax
+// Used for json_schema() function to validate JSON against structural schemas
+import { validator } from 'moat-maker';
 
 import { createLogger } from '../../common/logger.js';
 import type { SqlValue, JSONValue } from '../../common/types.js';
 import { createScalarFunction, createAggregateFunction } from '../registration.js';
 import { safeJsonParse, resolveJsonPathForModify, prepareJsonValue, deepCopyJson, getJsonType } from './json-helpers.js';
+import type { ScalarFunctionCallNode } from '../../planner/nodes/function.js';
+import type { EmissionContext } from '../../runtime/emission-context.js';
+import type { Instruction, RuntimeContext } from '../../runtime/types.js';
+import { PlanNodeType } from '../../planner/nodes/plan-node-type.js';
+import { LiteralNode } from '../../planner/nodes/literal.js';
+import { emitPlanNode } from '../../runtime/emitters.js';
 
 const log = createLogger('func:builtins:json');
 const errorLog = log.extend('error');
@@ -23,110 +30,90 @@ export const jsonValidFunc = createScalarFunction(
 	}
 );
 
+
+
 /**
- * Parse a simplified schema definition string into a TypeBox schema.
- * Supports a simplified syntax for common patterns:
- * - "integer" -> Type.Integer()
- * - "number" -> Type.Number()
- * - "string" -> Type.String()
- * - "boolean" -> Type.Boolean()
- * - "null" -> Type.Null()
- * - "[type]" -> Type.Array(type)
- * - "{prop:type,...}" -> Type.Object({prop:type,...})
- *
- * Examples:
- * - "[integer]" -> array of integers
- * - "{x:integer,y:number}" -> object with x:integer and y:number
- * - "[{x:integer}]" -> array of objects with x:integer
+ * Custom emitter for json_schema that caches compiled validators in the EmissionContext.
+ * This provides significant performance improvements for CHECK constraints and repeated validations.
  */
-function parseSchemaDefinition(schemaDef: string): TSchema | null {
-	try {
-		// Trim whitespace
-		const trimmed = schemaDef.trim();
+function emitJsonSchema(
+	plan: ScalarFunctionCallNode,
+	ctx: EmissionContext,
+	defaultEmit: (plan: ScalarFunctionCallNode, ctx: EmissionContext) => Instruction
+): Instruction {
+	// Check if the second argument (schema definition) is a constant
+	const schemaDefArg = plan.operands[1];
 
-		// Base types
-		if (trimmed === 'integer') return Type.Integer();
-		if (trimmed === 'number') return Type.Number();
-		if (trimmed === 'string') return Type.String();
-		if (trimmed === 'boolean') return Type.Boolean();
-		if (trimmed === 'null') return Type.Null();
-		if (trimmed === 'any') return Type.Any();
+	if (schemaDefArg?.nodeType === PlanNodeType.Literal) {
+		const literalNode = schemaDefArg as LiteralNode;
+		const schemaDef = literalNode.value;
 
-		// Array type: [elementType]
-		if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-			const elementDef = trimmed.slice(1, -1).trim();
-			const elementSchema = parseSchemaDefinition(elementDef);
-			if (elementSchema === null) return null;
-			return Type.Array(elementSchema);
-		}
+		if (typeof schemaDef === 'string') {
+			try {
+				// Compile the validator once at emission time using moat-maker
+				// moat-maker uses template literals, so we need to create a validator dynamically
+				// Template literals have a special structure: an array with a 'raw' property
+				// We create this structure manually to simulate a template literal
+				const parts: any = [schemaDef];
+				parts.raw = [schemaDef];
+				const compiledValidator = validator(parts, ...[]);
 
-		// Object type: {prop1:type1,prop2:type2,...}
-		if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-			const content = trimmed.slice(1, -1).trim();
-			if (content === '') return Type.Object({});
+				// Emit only the JSON argument (first operand)
+				const jsonArgInstruction = emitPlanNode(plan.operands[0], ctx);
 
-			// Parse properties - simple comma-separated key:type pairs
-			const properties: Record<string, TSchema> = {};
-			let depth = 0;
-			let currentProp = '';
-			let currentKey = '';
-			let inKey = true;
+				// Create optimized runtime function that uses the cached validator
+				// The validator is captured in the closure, so it lives with the plan
+				function run(_rctx: RuntimeContext, ...args: any[]): SqlValue {
+					const json = args[0];
+					if (typeof json !== 'string') return 0;
 
-			for (let i = 0; i < content.length; i++) {
-				const char = content[i];
+					let data: JSONValue | null;
+					try {
+						data = JSON.parse(json) as JSONValue;
+					} catch {
+						return 0; // Invalid JSON
+					}
 
-				if (char === '{' || char === '[') {
-					depth++;
-					currentProp += char;
-					inKey = false;
-				} else if (char === '}' || char === ']') {
-					depth--;
-					currentProp += char;
-				} else if (char === ':' && depth === 0 && inKey) {
-					currentKey = currentProp.trim();
-					currentProp = '';
-					inKey = false;
-				} else if (char === ',' && depth === 0) {
-					// End of property
-					const propSchema = parseSchemaDefinition(currentProp.trim());
-					if (propSchema === null) return null;
-					properties[currentKey] = propSchema;
-					currentProp = '';
-					currentKey = '';
-					inKey = true;
-				} else {
-					currentProp += char;
+					// Use the cached compiled validator
+					try {
+						// moat-maker's .matches() returns true if valid, false otherwise
+						const isValid = compiledValidator.matches(data);
+						return isValid ? 1 : 0;
+					} catch (e) {
+						errorLog('json_schema validation failed: %O', e);
+						return 0;
+					}
 				}
-			}
 
-			// Handle last property
-			if (currentKey && currentProp.trim()) {
-				const propSchema = parseSchemaDefinition(currentProp.trim());
-				if (propSchema === null) return null;
-				properties[currentKey] = propSchema;
+				return {
+					params: [jsonArgInstruction],
+					run,
+					note: `json_schema(cached:${schemaDef.substring(0, 20)}...)`
+				};
+			} catch (e) {
+				errorLog('Failed to compile schema at emission time: %O', e);
+				// Fall through to default emission
 			}
-
-			return Type.Object(properties);
 		}
-
-		// If we can't parse it, return null
-		return null;
-	} catch (e) {
-		errorLog('parseSchemaDefinition failed: %O', e);
-		return null;
 	}
+
+	// If schema is not a constant or compilation failed, use default emission
+	return defaultEmit(plan, ctx);
 }
 
 // json_schema(X, schema_def)
+// Note: This function uses a custom emitter that caches compiled validators
+// during plan emission for better performance.
 export const jsonSchemaFunc = createScalarFunction(
 	{ name: 'json_schema', numArgs: 2, deterministic: true },
 	(json: SqlValue, schemaDef: SqlValue): SqlValue => {
+		// This is the fallback implementation for when no cache is available
+		// (e.g., during direct function calls outside of query execution)
+
 		// Schema definition must be a string
 		if (typeof schemaDef !== 'string') return 0;
 
 		// Parse the JSON value - need to check if it's valid JSON first
-		// safeJsonParse returns null for both invalid JSON and valid JSON null
-		// So we need to validate the JSON string first
 		if (typeof json !== 'string') return 0;
 
 		let data: JSONValue | null;
@@ -136,13 +123,13 @@ export const jsonSchemaFunc = createScalarFunction(
 			return 0; // Invalid JSON
 		}
 
-		// Parse the schema definition
-		const schema = parseSchemaDefinition(schemaDef);
-		if (schema === null) return 0; // Invalid schema definition
-
-		// Validate the data against the schema
+		// Compile and validate using moat-maker (no caching in fallback path)
 		try {
-			const isValid = Value.Check(schema, data);
+			const parts: any = [schemaDef];
+			parts.raw = [schemaDef];
+			const compiledValidator = validator(parts, ...[]);
+			// moat-maker's .matches() returns true if valid, false otherwise
+			const isValid = compiledValidator.matches(data);
 			return isValid ? 1 : 0;
 		} catch (e) {
 			errorLog('json_schema validation failed: %O', e);
@@ -150,6 +137,9 @@ export const jsonSchemaFunc = createScalarFunction(
 		}
 	}
 );
+
+// Attach the custom emitter to the function schema
+jsonSchemaFunc.customEmitter = emitJsonSchema;
 
 // json_type(X, P?)
 export const jsonTypeFunc = createScalarFunction(

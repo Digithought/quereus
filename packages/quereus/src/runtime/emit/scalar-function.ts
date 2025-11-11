@@ -7,7 +7,11 @@ import type { EmissionContext } from '../emission-context.js';
 import type { ScalarFunctionSchema } from '../../schema/function.js';
 import { isScalarFunctionSchema } from '../../schema/function.js';
 
-export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: EmissionContext): Instruction {
+/**
+ * Default emission logic for scalar function calls.
+ * This is exported so custom emitters can call it if needed.
+ */
+export function emitScalarFunctionCallDefault(plan: ScalarFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.expression.name.toLowerCase();
 	const functionSchema = plan.functionSchema;
 
@@ -40,4 +44,26 @@ export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: Emissi
 		ctx,
 		`${plan.expression.name}(${plan.operands.length})`
 	);
+}
+
+/**
+ * Main emitter for scalar function calls.
+ * Checks if the function has a custom emitter and uses it, otherwise uses default logic.
+ */
+export function emitScalarFunctionCall(plan: ScalarFunctionCallNode, ctx: EmissionContext): Instruction {
+	const functionSchema = plan.functionSchema;
+
+	// Validate that it's a scalar function
+	if (!isScalarFunctionSchema(functionSchema)) {
+		const functionName = plan.expression.name.toLowerCase();
+		throw new QuereusError(`Function ${functionName} is not a scalar function`, StatusCode.ERROR);
+	}
+
+	// Check if function has a custom emitter
+	if (functionSchema.customEmitter) {
+		return functionSchema.customEmitter(plan, ctx, emitScalarFunctionCallDefault);
+	}
+
+	// Use default emission logic
+	return emitScalarFunctionCallDefault(plan, ctx);
 }
