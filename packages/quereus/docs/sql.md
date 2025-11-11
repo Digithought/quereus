@@ -1712,6 +1712,7 @@ Quereus provides comprehensive functions for working with JSON data.
 - `json_extract(json, path, ...)`: Extracts values from JSON using JSONPath
 - `json_type(json[, path])`: Returns the type of JSON value ('object', 'array', 'string', 'number', 'boolean', 'null')
 - `json_valid(json)`: Checks if a string is valid JSON (returns 1 or 0)
+- `json_schema(json, schema_def)`: Validates JSON against a structural schema (returns 1 or 0)
 - `json_array_length(json[, path])`: Returns the length of a JSON array
 
 **JSON Construction Functions:**
@@ -1737,17 +1738,29 @@ Quereus provides comprehensive functions for working with JSON data.
 **Examples:**
 ```sql
 -- JSON extraction
-select 
+select
   json_extract('{"name":"John","age":30}', '$.name') as name,
   json_extract('{"name":"John","age":30}', '$.age') as age;
 
 -- JSON creation
-select 
+select
   json_object('name', 'Alice', 'age', 25) as person,
   json_array(1, 2, 3, 4, 5) as numbers;
 
+-- JSON schema validation
+select json_schema('[1, 2, 3]', '[integer]');  -- Returns 1 (valid)
+select json_schema('{"x": 42}', '{x:integer}');  -- Returns 1 (valid)
+select json_schema('[{"x": 1}, {"x": 2}]', '[{x:integer}]');  -- Returns 1 (valid)
+
+-- Enforcing JSON structure with CHECK constraints
+create table api_events (
+  id integer primary key,
+  event_type text not null,
+  payload json check (json_schema(payload, '{timestamp:string,data:any}'))
+);
+
 -- Aggregating to JSON
-select 
+select
   department,
   json_group_array(name) as employees,
   json_group_object(id, salary) as salary_map
@@ -2174,6 +2187,21 @@ create table audit_log (
   action text not null,
   timestamp text not null,
   check on insert (action in ('insert', 'update', 'delete'))
+);
+
+-- JSON structure validation with check constraint
+create table events (
+  id integer primary key,
+  event_type text not null,
+  data json check (json_schema(data, '[{x:integer,y:number}]'))
+);
+
+-- Complex JSON schema validation
+create table api_logs (
+  id integer primary key,
+  endpoint text not null,
+  request json check (json_schema(request, '{method:string,headers:any,body:any}')),
+  response json check (json_schema(response, '{status:integer,body:any}'))
 );
 ```
 

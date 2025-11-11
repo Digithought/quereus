@@ -3,13 +3,13 @@
   "version": "0.4.11",
   "type": "module",
   "description": "Federated SQL query processor",
-	"publisher": "Got Choices Foundation",
+  "publisher": "Got Choices Foundation",
   "repository": {
     "type": "git",
     "url": "https://github.com/gotchoices/quereus.git",
     "directory": "packages/quereus"
   },
-	"license": "MIT",
+  "license": "MIT",
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [
@@ -39,8 +39,8 @@
   "devDependencies": {
     "@types/chai": "^5.2.2",
     "@types/debug": "^4.1.12",
-    "@types/node": "^22.15.29",
     "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
     "@typescript-eslint/eslint-plugin": "^8.33.0",
     "@typescript-eslint/parser": "^8.33.0",
     "chai": "^5.2.0",
@@ -55,6 +55,7 @@
     "typescript-eslint": "^8.33.0"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.41",
     "debug": "^4.4.1",
     "fast-json-patch": "^3.1.1",
     "inheritree": "^0.3.2",

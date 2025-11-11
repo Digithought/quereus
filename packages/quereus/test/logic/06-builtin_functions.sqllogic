@@ -87,6 +87,60 @@ SELECT json_remove('{"a":1, "b":[2,3]}', '$.b[0]');
 SELECT json_array_length('[1, 2, 3]');
 → [3]
 
+-- JSON Schema Validation
+-- Basic type validation
+SELECT json_schema('42', 'integer'), json_schema('42', 'number'), json_schema('42.5', 'integer'), json_schema('42.5', 'number');
+→ [{"json_schema('42', 'integer')":1,"json_schema('42', 'number')":1,"json_schema('42.5', 'integer')":0,"json_schema('42.5', 'number')":1}]
+SELECT json_schema('"hello"', 'string'), json_schema('true', 'boolean'), json_schema('null', 'null');
+→ [{"json_schema('\"hello\"', 'string')":1,"json_schema('true', 'boolean')":1,"json_schema('null', 'null')":1}]
+
+-- Array validation
+SELECT json_schema('[1, 2, 3]', '[integer]'), json_schema('[1, 2.5, 3]', '[integer]');
+→ [{"json_schema('[1, 2, 3]', '[integer]')":1,"json_schema('[1, 2.5, 3]', '[integer]')":0}]
+SELECT json_schema('["a", "b", "c"]', '[string]'), json_schema('[1, "mixed"]', '[integer]');
+→ [{"json_schema('[\"a\", \"b\", \"c\"]', '[string]')":1,"json_schema('[1, \"mixed\"]', '[integer]')":0}]
+
+-- Object validation
+SELECT json_schema('{"x": 42}', '{x:integer}'), json_schema('{"x": 42, "y": 3.14}', '{x:integer,y:number}');
+→ [{"json_schema('{\"x\": 42}', '{x:integer}')":1,"json_schema('{\"x\": 42, \"y\": 3.14}', '{x:integer,y:number}')":1}]
+SELECT json_schema('{"x": "wrong"}', '{x:integer}'), json_schema('{"x": 42}', '{x:integer,y:number}');
+→ [{"json_schema('{\"x\": \"wrong\"}', '{x:integer}')":0,"json_schema('{\"x\": 42}', '{x:integer,y:number}')":0}]
+
+-- Nested structures - array of objects
+SELECT json_schema('[{"x": 1}, {"x": 2}]', '[{x:integer}]'), json_schema('[{"x": 1}, {"x": "wrong"}]', '[{x:integer}]');
+→ [{"json_schema('[{\"x\": 1}, {\"x\": 2}]', '[{x:integer}]')":1,"json_schema('[{\"x\": 1}, {\"x\": \"wrong\"}]', '[{x:integer}]')":0}]
+
+-- Nested structures - object with arrays
+SELECT json_schema('{"items": [1, 2, 3]}', '{items:[integer]}'), json_schema('{"items": [1, "wrong", 3]}', '{items:[integer]}');
+→ [{"json_schema('{\"items\": [1, 2, 3]}', '{items:[integer]}')":1,"json_schema('{\"items\": [1, \"wrong\", 3]}', '{items:[integer]}')":0}]
+
+-- Complex nested structure
+SELECT json_schema('{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}', '{users:[{name:string,age:integer}]}'), json_schema('{"users": [{"name": "Alice", "age": "thirty"}]}', '{users:[{name:string,age:integer}]}');
+→ [{"json_schema('{\"users\": [{\"name\": \"Alice\", \"age\": 30}, {\"name\": \"Bob\", \"age\": 25}]}', '{users:[{name:string,age:integer}]}')":1,"json_schema('{\"users\": [{\"name\": \"Alice\", \"age\": \"thirty\"}]}', '{users:[{name:string,age:integer}]}')":0}]
+
+-- Invalid JSON and schema
+SELECT json_schema('{invalid', 'integer'), json_schema('42', 'unknown_type');
+→ [{"json_schema('{invalid', 'integer')":0,"json_schema('42', 'unknown_type')":0}]
+
+-- Empty structures
+SELECT json_schema('[]', '[integer]'), json_schema('{}', '{x:integer}'), json_schema('{}', '{}');
+→ [{"json_schema('[]', '[integer]')":1,"json_schema('{}', '{x:integer}')":0,"json_schema('{}', '{}')":1}]
+
+-- Use in CHECK constraint
+PRAGMA default_vtab_module='memory';
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY,
+  data JSON CHECK (json_schema(data, '[{x:integer}]'))
+);
+INSERT INTO events VALUES (1, '[{"x": 1}, {"x": 2}]');
+SELECT * FROM events;
+→ [{"id":1,"data":"[{\"x\":1},{\"x\":2}]"}]
+INSERT INTO events VALUES (2, '[{"x": "wrong"}]');
+-- error: CHECK constraint failed
+SELECT * FROM events;
+→ [{"id":1,"data":"[{\"x\":1},{\"x\":2}]"}]
+DROP TABLE events;
+
 -- Aggregate JSON Functions (Need table context)
 PRAGMA default_vtab_module='memory';
 CREATE TABLE json_agg_t (id INT, grp TEXT, val TEXT);

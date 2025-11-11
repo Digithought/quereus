@@ -2,6 +2,9 @@ import fastJsonPatch from 'fast-json-patch';
 import type { Operation } from 'fast-json-patch';
 const { applyPatch } = fastJsonPatch;
 
+import { Type, type TSchema } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
+
 import { createLogger } from '../../common/logger.js';
 import type { SqlValue, JSONValue } from '../../common/types.js';
 import { createScalarFunction, createAggregateFunction } from '../registration.js';
@@ -17,6 +20,134 @@ export const jsonValidFunc = createScalarFunction(
 	{ name: 'json_valid', numArgs: 1, deterministic: true },
 	(json: SqlValue): SqlValue => {
 		return safeJsonParse(json) !== null ? 1 : 0;
+	}
+);
+
+/**
+ * Parse a simplified schema definition string into a TypeBox schema.
+ * Supports a simplified syntax for common patterns:
+ * - "integer" -> Type.Integer()
+ * - "number" -> Type.Number()
+ * - "string" -> Type.String()
+ * - "boolean" -> Type.Boolean()
+ * - "null" -> Type.Null()
+ * - "[type]" -> Type.Array(type)
+ * - "{prop:type,...}" -> Type.Object({prop:type,...})
+ *
+ * Examples:
+ * - "[integer]" -> array of integers
+ * - "{x:integer,y:number}" -> object with x:integer and y:number
+ * - "[{x:integer}]" -> array of objects with x:integer
+ */
+function parseSchemaDefinition(schemaDef: string): TSchema | null {
+	try {
+		// Trim whitespace
+		const trimmed = schemaDef.trim();
+
+		// Base types
+		if (trimmed === 'integer') return Type.Integer();
+		if (trimmed === 'number') return Type.Number();
+		if (trimmed === 'string') return Type.String();
+		if (trimmed === 'boolean') return Type.Boolean();
+		if (trimmed === 'null') return Type.Null();
+		if (trimmed === 'any') return Type.Any();
+
+		// Array type: [elementType]
+		if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+			const elementDef = trimmed.slice(1, -1).trim();
+			const elementSchema = parseSchemaDefinition(elementDef);
+			if (elementSchema === null) return null;
+			return Type.Array(elementSchema);
+		}
+
+		// Object type: {prop1:type1,prop2:type2,...}
+		if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+			const content = trimmed.slice(1, -1).trim();
+			if (content === '') return Type.Object({});
+
+			// Parse properties - simple comma-separated key:type pairs
+			const properties: Record<string, TSchema> = {};
+			let depth = 0;
+			let currentProp = '';
+			let currentKey = '';
+			let inKey = true;
+
+			for (let i = 0; i < content.length; i++) {
+				const char = content[i];
+
+				if (char === '{' || char === '[') {
+					depth++;
+					currentProp += char;
+					inKey = false;
+				} else if (char === '}' || char === ']') {
+					depth--;
+					currentProp += char;
+				} else if (char === ':' && depth === 0 && inKey) {
+					currentKey = currentProp.trim();
+					currentProp = '';
+					inKey = false;
+				} else if (char === ',' && depth === 0) {
+					// End of property
+					const propSchema = parseSchemaDefinition(currentProp.trim());
+					if (propSchema === null) return null;
+					properties[currentKey] = propSchema;
+					currentProp = '';
+					currentKey = '';
+					inKey = true;
+				} else {
+					currentProp += char;
+				}
+			}
+
+			// Handle last property
+			if (currentKey && currentProp.trim()) {
+				const propSchema = parseSchemaDefinition(currentProp.trim());
+				if (propSchema === null) return null;
+				properties[currentKey] = propSchema;
+			}
+
+			return Type.Object(properties);
+		}
+
+		// If we can't parse it, return null
+		return null;
+	} catch (e) {
+		errorLog('parseSchemaDefinition failed: %O', e);
+		return null;
+	}
+}
+
+// json_schema(X, schema_def)
+export const jsonSchemaFunc = createScalarFunction(
+	{ name: 'json_schema', numArgs: 2, deterministic: true },
+	(json: SqlValue, schemaDef: SqlValue): SqlValue => {
+		// Schema definition must be a string
+		if (typeof schemaDef !== 'string') return 0;
+
+		// Parse the JSON value - need to check if it's valid JSON first
+		// safeJsonParse returns null for both invalid JSON and valid JSON null
+		// So we need to validate the JSON string first
+		if (typeof json !== 'string') return 0;
+
+		let data: JSONValue | null;
+		try {
+			data = JSON.parse(json) as JSONValue;
+		} catch {
+			return 0; // Invalid JSON
+		}
+
+		// Parse the schema definition
+		const schema = parseSchemaDefinition(schemaDef);
+		if (schema === null) return 0; // Invalid schema definition
+
+		// Validate the data against the schema
+		try {
+			const isValid = Value.Check(schema, data);
+			return isValid ? 1 : 0;
+		} catch (e) {
+			errorLog('json_schema validation failed: %O', e);
+			return 0;
+		}
 	}
 );
 

@@ -615,6 +615,28 @@ await db.exec(`
     (2, json('{"name":"Bob","age":25}'))
 `);
 
+// Enforce JSON structure with CHECK constraints
+await db.exec(`
+  create table events (
+    id integer primary key,
+    data json check (json_schema(data, '[{x:integer,y:number}]'))
+  )
+`);
+
+// Valid insert - matches schema
+await db.exec(`
+  insert into events values (1, '[{"x": 1, "y": 2.5}, {"x": 2, "y": 3.14}]')
+`);
+
+// Invalid insert - fails CHECK constraint
+try {
+  await db.exec(`
+    insert into events values (2, '[{"x": "wrong", "y": 2.5}]')
+  `);
+} catch (err) {
+  console.log('CHECK constraint failed'); // x must be integer
+}
+
 // JSON values are compared by content, not string representation
 // These two are considered equal despite different key order:
 await db.exec(`insert into users values (3, '{"x":1,"y":2}')`);

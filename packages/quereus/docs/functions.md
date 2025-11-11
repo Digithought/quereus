@@ -467,6 +467,31 @@ These functions operate on JSON values, typically represented as TEXT strings in
     *   **Returns:** INTEGER: `1` if `json` is valid, `0` otherwise.
     *   **Example:** `json_valid('{"a": 1}')` returns `1`, `json_valid('{"a": 1')` returns `0`.
 
+*   `json_schema(json, schema_definition)`
+    *   **Description:** Validates a JSON value against a structural schema definition. Useful for enforcing JSON structure in CHECK constraints.
+    *   **Arguments:**
+        *   `json` (TEXT - valid JSON string)
+        *   `schema_definition` (TEXT - schema definition using TypeScript-style syntax)
+    *   **Schema Syntax:**
+        *   **Base types:** `integer`, `number`, `string`, `boolean`, `null`, `any`
+        *   **Arrays:** `[elementType]` - e.g., `[integer]` for array of integers
+        *   **Objects:** `{prop:type,...}` - e.g., `{x:integer,y:number}` for object with properties
+        *   **Nested:** Combine arrays and objects - e.g., `[{x:integer}]` for array of objects
+    *   **Returns:** INTEGER: `1` if the JSON matches the schema, `0` otherwise (including invalid JSON or invalid schema).
+    *   **Examples:**
+        *   `json_schema('[1, 2, 3]', '[integer]')` returns `1` (array of integers)
+        *   `json_schema('{"x": 42}', '{x:integer}')` returns `1` (object with integer property x)
+        *   `json_schema('[{"x": 1}, {"x": 2}]', '[{x:integer}]')` returns `1` (array of objects)
+        *   `json_schema('{"users": [{"name": "Alice", "age": 30}]}', '{users:[{name:string,age:integer}]}')` returns `1`
+        *   `json_schema('[1, "mixed"]', '[integer]')` returns `0` (type mismatch)
+    *   **Common Use Case - CHECK Constraints:**
+        ```sql
+        create table events (
+          id integer primary key,
+          data json check (json_schema(data, '[{x:integer,y:number}]'))
+        );
+        ```
+
 ## Window Functions
 
 Window functions perform calculations across a set of table rows related to the current row, as defined by an `OVER` clause (partitioning and ordering). Quereus provides comprehensive window function support with a modern, extensible architecture.
