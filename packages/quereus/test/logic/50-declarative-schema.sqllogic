@@ -458,4 +458,26 @@ apply schema main;
 -- Step 48: Diff again - should be empty
 diff schema main;
 
+-- Test NOT EXISTS in CHECK constraint (regression test for operator spacing)
+-- This tests that "NOT EXISTS" is properly stringified with a space between NOT and EXISTS
+-- The bug was that "not exists" was being concatenated as "notexists" without a space
+
+declare schema check_not_exists {
+	table B (x int);
+	table A (
+		x int check (not exists(select 1 from B))
+	)
+}
+
+-- run
+
+-- The key test: DDL should have "not exists" with a space, not "notexists"
+diff schema check_not_exists;
+→ [{"ddl": "create table check_not_exists.B (x int)"}, {"ddl": "create table check_not_exists.A (x int check (not exists (select 1 from B)))"}]
+
+-- This should apply without parse errors (would fail with "notexists" syntax error)
+apply schema check_not_exists;
+
+-- run
+
 
