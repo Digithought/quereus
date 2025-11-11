@@ -12,7 +12,10 @@ export function emitUnaryOp(plan: UnaryOpNode, ctx: EmissionContext): Instructio
 	let run: (ctx: RuntimeContext, operand: SqlValue) => SqlValue;
 	let note: string;
 
-	switch (plan.expression.operator) {
+	// Normalize operator to uppercase for case-insensitive matching
+	const operator = plan.expression.operator.toUpperCase();
+
+	switch (operator) {
 		case 'NOT':
 			run = (ctx: RuntimeContext, operand: SqlValue) => {
 				// SQL NOT: NULL -> NULL, 0 -> 1, anything else -> 0

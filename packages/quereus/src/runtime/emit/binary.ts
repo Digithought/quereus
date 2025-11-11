@@ -10,7 +10,10 @@ import { simpleLike } from "../../util/patterns.js";
 import type { EmissionContext } from "../emission-context.js";
 
 export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
-	switch (plan.expression.operator) {
+	// Normalize operator to uppercase for case-insensitive matching of keywords
+	const operator = plan.expression.operator.toUpperCase();
+
+	switch (operator) {
 		case '+':
 		case '-':
 		case '*':
@@ -227,9 +230,12 @@ export function emitConcatOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 }
 
 export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
+	// Normalize operator to uppercase for case-insensitive matching
+	const operator = plan.expression.operator.toUpperCase();
+
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
 		// SQL three-valued logic
-		switch (plan.expression.operator) {
+		switch (operator) {
 			case 'AND': {
 				// NULL AND x -> NULL if x is true or NULL, otherwise 0
 				// 0 AND x -> 0

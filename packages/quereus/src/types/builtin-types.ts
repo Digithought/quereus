@@ -315,21 +315,35 @@ export const ANY_TYPE: LogicalType = {
 	parse: (v) => v, // No conversion, store as-is
 
 	compare: (a, b) => {
-		// Use default comparison logic
+		// Follow SQLite comparison rules: NULL < NUMERIC < TEXT < BLOB
 		if (a === null && b === null) return 0;
 		if (a === null) return -1;
 		if (b === null) return 1;
 
-		// Compare by type first
-		const typeA = typeof a;
-		const typeB = typeof b;
-		if (typeA !== typeB) {
-			return typeA < typeB ? -1 : 1;
+		// Determine storage classes following SQLite rules
+		const getStorageClass = (v: any): number => {
+			const type = typeof v;
+			if (type === 'number' || type === 'bigint' || type === 'boolean') return 1; // NUMERIC
+			if (type === 'string') return 2; // TEXT
+			if (type === 'object' && v instanceof Uint8Array) return 3; // BLOB
+			return 4; // UNKNOWN
+		};
+
+		const classA = getStorageClass(a);
+		const classB = getStorageClass(b);
+
+		// Different storage classes: compare by class
+		if (classA !== classB) {
+			return classA < classB ? -1 : 1;
 		}
 
-		// Same type, compare values
-		if (a < b) return -1;
-		if (a > b) return 1;
+		// Same storage class: compare values
+		// For booleans, convert to numbers (false=0, true=1)
+		const valA = typeof a === 'boolean' ? (a ? 1 : 0) : a;
+		const valB = typeof b === 'boolean' ? (b ? 1 : 0) : b;
+
+		if (valA < valB) return -1;
+		if (valA > valB) return 1;
 		return 0;
 	},
 };

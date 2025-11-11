@@ -14,7 +14,7 @@ import type { ScalarFunctionCallNode } from '../../planner/nodes/function.js';
 import type { EmissionContext } from '../../runtime/emission-context.js';
 import type { Instruction, RuntimeContext } from '../../runtime/types.js';
 import { PlanNodeType } from '../../planner/nodes/plan-node-type.js';
-import { LiteralNode } from '../../planner/nodes/literal.js';
+import { LiteralNode } from '../../planner/nodes/scalar.js';
 import { emitPlanNode } from '../../runtime/emitters.js';
 
 const log = createLogger('func:builtins:json');
@@ -46,7 +46,7 @@ function emitJsonSchema(
 
 	if (schemaDefArg?.nodeType === PlanNodeType.Literal) {
 		const literalNode = schemaDefArg as LiteralNode;
-		const schemaDef = literalNode.value;
+		const schemaDef = literalNode.getValue();
 
 		if (typeof schemaDef === 'string') {
 			try {

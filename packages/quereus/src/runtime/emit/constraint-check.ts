@@ -9,12 +9,14 @@ import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { RowOpFlag } from '../../schema/table.js';
 import { withAsyncRowContext, createRowSlot } from '../context-helpers.js';
+import { expressionToString } from '../../util/ast-stringify.js';
 
 interface ConstraintMetadataEntry {
 	schema: RowConstraintSchema;
 	flatRowDescriptor: RowDescriptor;
 	evaluator: (ctx: RuntimeContext) => OutputValue;
 	constraintName: string;
+	constraintExpr: string; // Stringified constraint expression
 	shouldDefer: boolean;
 	baseTable: string;
 	contextRow?: Row; // Mutation context row if present
@@ -52,11 +54,13 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 	const constraintMetadata: ConstraintMetadataEntry[] = plan.constraintChecks.map((check, idx) => {
 		const evaluatorInstruction = checkEvaluators[idx];
 		const constraintName = check.constraint.name ?? generateDefaultConstraintName(tableSchema, check.constraint);
+		const constraintExpr = expressionToString(check.constraint.expr);
 		return {
 			schema: check.constraint,
 			flatRowDescriptor: plan.flatRowDescriptor,
 			evaluator: evaluatorInstruction.run,
 			constraintName,
+			constraintExpr,
 			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || check.containsSubquery),
 			baseTable: `${tableSchema.schemaName}.${tableSchema.name}`,
 			contextRow: undefined,
@@ -261,8 +265,12 @@ async function checkCheckConstraints(
 			// CHECK constraint passes if result is truthy or NULL
 			// It fails only if result is false or 0 (SQLite-style numeric boolean)
 			if (result === false || result === 0) {
+				// Include constraint expression in error message for better debugging
+				const exprHint = metadata.constraintExpr.length <= 60
+					? ` (${metadata.constraintExpr})`
+					: '';
 				throw new QuereusError(
-					`CHECK constraint failed: ${metadata.constraintName}`,
+					`CHECK constraint failed: ${metadata.constraintName}${exprHint}`,
 					StatusCode.CONSTRAINT
 				);
 			}
