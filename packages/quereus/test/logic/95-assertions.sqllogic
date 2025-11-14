@@ -59,7 +59,7 @@ CREATE TABLE t2 (id INTEGER PRIMARY KEY, t1_id INTEGER, FOREIGN KEY (t1_id) REFE
 -- Global-style assertion (aggregate): should classify t2 as global
 CREATE ASSERTION a_global CHECK ((SELECT COUNT(*) FROM t2) = (SELECT COUNT(*) FROM t2));
 SELECT EXISTS(SELECT 1 FROM explain_assertion('a_global') WHERE classification = 'global') AS ok;
-→ [{ "ok": 1 }]
+→ [{ "ok": true }]
 DROP ASSERTION a_global;
 
 -- Row-specific-style assertion: equality on PK reduces to row-specific and exposes pk params

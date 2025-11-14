@@ -456,14 +456,14 @@ export const strftimeFunc = createScalarFunction(
 export const isISODateFunc = createScalarFunction(
 	{ name: 'IsISODate', numArgs: 1, deterministic: true },
 	(value: SqlValue): SqlValue => {
-		if (typeof value !== 'string') return 0;
+		if (typeof value !== 'string') return false;
 		const s = value.trim();
-		if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return 0;
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
 		try {
 			const d = Temporal.PlainDate.from(s);
-			return d.toString() === s ? 1 : 0;
+			return d.toString() === s;
 		} catch {
-			return 0;
+			return false;
 		}
 	}
 );
@@ -472,24 +472,24 @@ export const isISODateFunc = createScalarFunction(
 export const isISODateTimeFunc = createScalarFunction(
 	{ name: 'IsISODateTime', numArgs: 1, deterministic: true },
 	(value: SqlValue): SqlValue => {
-		if (typeof value !== 'string') return 0;
+		if (typeof value !== 'string') return false;
 		const s = value.trim();
 		// YYYY-MM-DDTHH:MM[:SS[.fraction]] [timezone]
 		const re =
 			/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?$/;
-		if (!re.test(s)) return 0;
+		if (!re.test(s)) return false;
 		const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/.test(s);
 		try {
 			if (hasZone) {
 				// Zoned ISO string
 				void Temporal.Instant.from(s);
-				return 1;
+				return true;
 			}
 			// Plain ISO local date-time
 			void Temporal.PlainDateTime.from(s);
-			return 1;
+			return true;
 		} catch {
-			return 0;
+			return false;
 		}
 	}
 );

@@ -93,7 +93,7 @@ export const likeFunc = createScalarFunction(
 	{ name: 'like', numArgs: 2, deterministic: true },
 	(pattern: SqlValue, text: SqlValue): SqlValue => {
 		if (text === null || pattern === null) return null;
-		return simpleLike(String(pattern), String(text)) ? 1 : 0;
+		return simpleLike(String(pattern), String(text));
 	}
 );
 
@@ -101,7 +101,7 @@ export const globFunc = createScalarFunction(
 	{ name: 'glob', numArgs: 2, deterministic: true },
 	(pattern: SqlValue, text: SqlValue): SqlValue => {
 		if (text === null || pattern === null) return null;
-		return simpleGlob(String(pattern), String(text)) ? 1 : 0;
+		return simpleGlob(String(pattern), String(text));
 	}
 );
 

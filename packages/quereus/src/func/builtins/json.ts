@@ -26,7 +26,7 @@ const errorLog = log.extend('error');
 export const jsonValidFunc = createScalarFunction(
 	{ name: 'json_valid', numArgs: 1, deterministic: true },
 	(json: SqlValue): SqlValue => {
-		return safeJsonParse(json) !== null ? 1 : 0;
+		return safeJsonParse(json) !== null;
 	}
 );
 
@@ -65,23 +65,23 @@ function emitJsonSchema(
 				// The validator is captured in the closure, so it lives with the plan
 				function run(_rctx: RuntimeContext, ...args: any[]): SqlValue {
 					const json = args[0];
-					if (typeof json !== 'string') return 0;
+					if (typeof json !== 'string') return false;
 
 					let data: JSONValue | null;
 					try {
 						data = JSON.parse(json) as JSONValue;
 					} catch {
-						return 0; // Invalid JSON
+						return false; // Invalid JSON
 					}
 
 					// Use the cached compiled validator
 					try {
 						// moat-maker's .matches() returns true if valid, false otherwise
 						const isValid = compiledValidator.matches(data);
-						return isValid ? 1 : 0;
+						return isValid;
 					} catch (e) {
 						errorLog('json_schema validation failed: %O', e);
-						return 0;
+						return false;
 					}
 				}
 
@@ -111,16 +111,16 @@ export const jsonSchemaFunc = createScalarFunction(
 		// (e.g., during direct function calls outside of query execution)
 
 		// Schema definition must be a string
-		if (typeof schemaDef !== 'string') return 0;
+		if (typeof schemaDef !== 'string') return false;
 
 		// Parse the JSON value - need to check if it's valid JSON first
-		if (typeof json !== 'string') return 0;
+		if (typeof json !== 'string') return false;
 
 		let data: JSONValue | null;
 		try {
 			data = JSON.parse(json) as JSONValue;
 		} catch {
-			return 0; // Invalid JSON
+			return false; // Invalid JSON
 		}
 
 		// Compile and validate using moat-maker (no caching in fallback path)
@@ -130,10 +130,10 @@ export const jsonSchemaFunc = createScalarFunction(
 			const compiledValidator = validator(parts, ...[]);
 			// moat-maker's .matches() returns true if valid, false otherwise
 			const isValid = compiledValidator.matches(data);
-			return isValid ? 1 : 0;
+			return isValid;
 		} catch (e) {
 			errorLog('json_schema validation failed: %O', e);
-			return 0;
+			return false;
 		}
 	}
 );
@@ -191,7 +191,7 @@ export const jsonExtractFunc = createScalarFunction(
 		} else if (extractedValue === null) {
 			return null;
 		} else if (typeof extractedValue === 'boolean') {
-			return extractedValue ? 1 : 0;
+			return extractedValue;
 		} else if (typeof extractedValue === 'number') {
 			return extractedValue; // Return as INTEGER or REAL
 		} else if (typeof extractedValue === 'string') {

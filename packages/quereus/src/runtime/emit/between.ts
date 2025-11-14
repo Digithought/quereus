@@ -27,11 +27,11 @@ export function emitBetween(plan: BetweenNode, ctx: EmissionContext): Instructio
 		const upperResult = compareSqlValuesFast(coercedValue2, coercedUpper, collationFunc);
 
 		// value >= lowerBound AND value <= upperBound
-		const betweenResult = (lowerResult >= 0 && upperResult <= 0) ? 1 : 0;
+		const betweenResult = (lowerResult >= 0 && upperResult <= 0);
 
 		// Handle NOT BETWEEN
 		if (plan.expression.not) {
-			return betweenResult ? 0 : 1;
+			return !betweenResult;
 		}
 
 		return betweenResult;

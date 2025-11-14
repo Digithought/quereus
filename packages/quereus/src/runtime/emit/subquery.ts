@@ -63,13 +63,13 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 					}
 					// Check for match immediately - no need to materialize
 					if (compareSqlValuesFast(condition, rowValue, collation) === 0) {
-						return 1; // Found a match
+						return true; // Found a match
 					}
 				}
 			}
 
 			// No match found - if any value was NULL, result is NULL
-			return hasNull ? null : 0;
+			return hasNull ? null : false;
 		}
 
 		const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -103,11 +103,11 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 				// Check if condition exists in pre-built tree
 				const path = tree.find(condition);
 				if (path.on) {
-					return 1; // Found a match
+					return true; // Found a match
 				}
 
 				// No match found - if any value was NULL, result is NULL
-				return hasNull ? null : 0;
+				return hasNull ? null : false;
 			}
 
 			const values = plan.values.map(val => (val as unknown as ConstantNode).getValue());
@@ -163,12 +163,12 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 						continue;
 					}
 					if (compareSqlValuesFast(condition, value, collation) === 0) {
-						return 1; // Found a match
+						return true; // Found a match
 					}
 				}
 
 				// No match found - if any value was NULL, result is NULL
-				return hasNull ? null : 0;
+				return hasNull ? null : false;
 			}
 
 			const conditionExpr = emitPlanNode(plan.condition, ctx);
@@ -188,9 +188,9 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 export function emitExists(plan: ExistsNode, ctx: EmissionContext): Instruction {
 	async function run(_rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<SqlValue> {
 		for await (const _row of input) {
-			return 1; // First row => TRUE
+			return true; // First row => TRUE
 		}
-		return 0; // Empty => FALSE
+		return false; // Empty => FALSE
 	}
 
 	const innerInstruction = emitPlanNode(plan.subquery, ctx);

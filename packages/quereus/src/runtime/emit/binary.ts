@@ -152,7 +152,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) === 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) === 0;
 			};
 			break;
 		case '!=':
@@ -169,7 +169,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) !== 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) !== 0;
 			};
 			break;
 		case '<':
@@ -185,7 +185,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) < 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) < 0;
 			};
 			break;
 		case '<=':
@@ -201,7 +201,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) <= 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) <= 0;
 			};
 			break;
 		case '>':
@@ -219,9 +219,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				const comparisonResult = compareSqlValuesFast(coercedV1, coercedV2, collationFunc);
-				const finalResult = comparisonResult > 0 ? 1 : 0;
-				return finalResult;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) > 0;
 			};
 			break;
 		case '>=':
@@ -237,7 +235,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) >= 0 ? 1 : 0;
+				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) >= 0;
 			};
 			break;
 		default:
@@ -283,38 +281,38 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 		// SQL three-valued logic
 		switch (operator) {
 			case 'AND': {
-				// NULL AND x -> NULL if x is true or NULL, otherwise 0
-				// 0 AND x -> 0
-				// 1 AND x -> x
+				// NULL AND x -> NULL if x is true or NULL, otherwise false
+				// false AND x -> false
+				// true AND x -> x
 				if (v1 === null) {
-					return (v2 === null || v2) ? null : 0;
+					return (v2 === null || v2) ? null : false;
 				}
-				if (!v1) return 0;
-				return v2 === null ? null : (v2 ? 1 : 0);
+				if (!v1) return false;
+				return v2 === null ? null : (v2 ? true : false);
 			}
 
 			case 'OR': {
-				// NULL OR x -> NULL if x is false or NULL, otherwise 1
-				// 1 OR x -> 1
-				// 0 OR x -> x
+				// NULL OR x -> NULL if x is false or NULL, otherwise true
+				// true OR x -> true
+				// false OR x -> x
 				if (v1 === null) {
-					return (v2 === null || !v2) ? null : 1;
+					return (v2 === null || !v2) ? null : true;
 				}
-				if (v1) return 1;
-				return v2 === null ? null : (v2 ? 1 : 0);
+				if (v1) return true;
+				return v2 === null ? null : (v2 ? true : false);
 			}
 
 			case 'XOR': {
 				// NULL XOR x -> NULL
 				// x XOR NULL -> NULL
-				// 0 XOR 0 -> 0
-				// 0 XOR 1 -> 1
-				// 1 XOR 0 -> 1
-				// 1 XOR 1 -> 0
+				// false XOR false -> false
+				// false XOR true -> true
+				// true XOR false -> true
+				// true XOR true -> false
 				if (v1 === null || v2 === null) return null;
-				const b1 = v1 ? 1 : 0;
-				const b2 = v2 ? 1 : 0;
-				return b1 !== b2 ? 1 : 0;
+				const b1 = !!v1;
+				const b2 = !!v2;
+				return b1 !== b2;
 			}
 
 			default:
@@ -344,7 +342,7 @@ export function emitLikeOp(plan: BinaryOpNode, ctx: EmissionContext): Instructio
 		const textStr = String(text);
 		const patternStr = String(pattern);
 
-		return simpleLike(patternStr, textStr) ? 1 : 0;
+		return simpleLike(patternStr, textStr);
 	}
 
 	const leftExpr = emitPlanNode(plan.left, ctx);

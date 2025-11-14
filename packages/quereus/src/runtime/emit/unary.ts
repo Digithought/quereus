@@ -19,23 +19,23 @@ export function emitUnaryOp(plan: UnaryOpNode, ctx: EmissionContext): Instructio
 	switch (operator) {
 		case 'NOT':
 			run = (ctx: RuntimeContext, operand: SqlValue) => {
-				// SQL NOT: NULL -> NULL, 0 -> 1, anything else -> 0
+				// SQL NOT: NULL -> NULL, false -> true, true -> false
 				if (operand === null) return null;
-				return isTruthy(operand) ? 0 : 1;
+				return !isTruthy(operand);
 			};
 			note = 'NOT';
 			break;
 
 		case 'IS NULL':
 			run = (ctx: RuntimeContext, operand: SqlValue) => {
-				return operand === null ? 1 : 0;
+				return operand === null;
 			};
 			note = 'IS NULL';
 			break;
 
 		case 'IS NOT NULL':
 			run = (ctx: RuntimeContext, operand: SqlValue) => {
-				return operand !== null ? 1 : 0;
+				return operand !== null;
 			};
 			note = 'IS NOT NULL';
 			break;

@@ -49,11 +49,11 @@ INSERT INTO types_test VALUES
 
 -- Test type coercion and comparison
 SELECT int_val = '42' FROM types_test WHERE id = 1;
-→ [{"int_val = '42'":1}]
+→ [{"int_val = '42'":true}]
 
 -- Test NULL handling
 SELECT null_val IS NULL, null_val = NULL FROM types_test WHERE id = 1;
-→ [{"null_val is null":1,"null_val = null":null}]
+→ [{"null_val is null":true,"null_val = null":null}]
 
 -- Test type functions
 SELECT typeof(int_val), typeof(real_val), typeof(text_val), typeof(blob_val), typeof(null_val)
@@ -62,7 +62,7 @@ FROM types_test WHERE id = 1;
 
 -- Test comparison across types
 SELECT int_val < real_val FROM types_test WHERE id = 1;
-→ [{"int_val < real_val":0}]
+→ [{"int_val < real_val":false}]
 
 -- Test text/numeric conversion
 SELECT '123' + 0, 'abc' + 0, '' + 0;

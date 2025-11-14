@@ -10,7 +10,7 @@ SELECT abs(-10), round(12.345, 1), round(12.345);
 SELECT typeof(1), typeof(1.5), typeof('text'), typeof(x'01'), typeof(null), typeof(12345678901234567890);
 → [{"typeof(1)":"integer","typeof(1.5)":"real","typeof('text')":"text","typeof(x'01')":"blob","typeof(null)":"null","typeof(12345678901234567890)":"integer"}]
 SELECT like('abc%', 'abcde'), glob('a*c', 'abbbc');
-→ [{"like('abc%', 'abcde')":1,"glob('a*c', 'abbbc')":1}]
+→ [{"like('abc%', 'abcde')":true,"glob('a*c', 'abbbc')":true}]
 
 -- LIKE Operator Tests
 PRAGMA default_vtab_module='memory';
@@ -45,11 +45,11 @@ DROP TABLE like_test;
 
 -- Date/Time Functions (output format depends on default build)
 SELECT date('now') IS NOT NULL;
-→ [1]
+→ [true]
 SELECT time('now') IS NOT NULL;
-→ [1]
+→ [true]
 SELECT datetime('now') IS NOT NULL;
-→ [1]
+→ [true]
 SELECT julianday('2024-01-01') - julianday('2023-01-01');
 → [365]
 SELECT strftime('%Y-%m-%d', '2024-07-26');
@@ -57,15 +57,15 @@ SELECT strftime('%Y-%m-%d', '2024-07-26');
 
 -- ISO Validation Functions
 SELECT IsISODate('2024-02-29'), IsISODate('2023-02-29'), IsISODate('2024-13-01'), IsISODate('2024-01-32'), IsISODate('2024-01-01'), IsISODate(NULL);
-→ [{"isisodate('2024-02-29')":1,"isisodate('2023-02-29')":0,"isisodate('2024-13-01')":0,"isisodate('2024-01-32')":0,"isisodate('2024-01-01')":1,"isisodate(null)":0}]
+→ [{"isisodate('2024-02-29')":true,"isisodate('2023-02-29')":false,"isisodate('2024-13-01')":false,"isisodate('2024-01-32')":false,"isisodate('2024-01-01')":true,"isisodate(null)":false}]
 SELECT IsISODateTime('2024-01-01T00:00'), IsISODateTime('2024-01-01T00:00:00Z'), IsISODateTime('2024-01-01T23:59:59+05:30'), IsISODateTime('2024-01-01 00:00:00'), IsISODateTime('2024-01-01T24:00');
-→ [{"isisodatetime('2024-01-01T00:00')":1,"isisodatetime('2024-01-01T00:00:00Z')":1,"isisodatetime('2024-01-01T23:59:59+05:30')":1,"isisodatetime('2024-01-01 00:00:00')":0,"isisodatetime('2024-01-01T24:00')":0}]
+→ [{"isisodatetime('2024-01-01T00:00')":true,"isisodatetime('2024-01-01T00:00:00Z')":true,"isisodatetime('2024-01-01T23:59:59+05:30')":true,"isisodatetime('2024-01-01 00:00:00')":false,"isisodatetime('2024-01-01T24:00')":false}]
 SELECT IsISODateTime('2024-01-01T10:00:00.123456789'), IsISODateTime('2024-01-01T10:00:00.1234567890');
-→ [{"isisodatetime('2024-01-01T10:00:00.123456789')":1,"isisodatetime('2024-01-01T10:00:00.1234567890')":0}]
+→ [{"isisodatetime('2024-01-01T10:00:00.123456789')":true,"isisodatetime('2024-01-01T10:00:00.1234567890')":false}]
 
 -- JSON Functions
 SELECT json_valid('{"a": 1}'), json_valid('{');
-→ [{"json_valid('{\"a\": 1}')":1,"json_valid('{')":0}]
+→ [{"json_valid('{\"a\": 1}')":true,"json_valid('{')":false}]
 SELECT json_type('{"a": 1}', '$.a'), json_type('[1, "t", null]', '[1]');
 → [{"json_type('{\"a\": 1}', '$.a')":"integer","json_type('[1, \"t\", null]', '[1]')":"text"}]
 SELECT json_extract('{"a": [10, 20], "b": "foo"}', '$.a[1]');
@@ -90,41 +90,41 @@ SELECT json_array_length('[1, 2, 3]');
 -- JSON Schema Validation (using moat-maker TypeScript-like syntax)
 -- Basic type validation
 SELECT json_schema('42', 'number'), json_schema('42.5', 'number');
-→ [{"json_schema('42', 'number')":1,"json_schema('42.5', 'number')":1}]
+→ [{"json_schema('42', 'number')":true,"json_schema('42.5', 'number')":true}]
 SELECT json_schema('"hello"', 'string'), json_schema('true', 'boolean'), json_schema('null', 'null');
-→ [{"json_schema('\"hello\"', 'string')":1,"json_schema('true', 'boolean')":1,"json_schema('null', 'null')":1}]
+→ [{"json_schema('\"hello\"', 'string')":true,"json_schema('true', 'boolean')":true,"json_schema('null', 'null')":true}]
 
 -- Array validation
 SELECT json_schema('[1, 2, 3]', 'number[]'), json_schema('[1, 2.5, 3]', 'number[]');
-→ [{"json_schema('[1, 2, 3]', 'number[]')":1,"json_schema('[1, 2.5, 3]', 'number[]')":1}]
+→ [{"json_schema('[1, 2, 3]', 'number[]')":true,"json_schema('[1, 2.5, 3]', 'number[]')":true}]
 SELECT json_schema('["a", "b", "c"]', 'string[]'), json_schema('[1, "mixed"]', 'number[]');
-→ [{"json_schema('[\"a\", \"b\", \"c\"]', 'string[]')":1,"json_schema('[1, \"mixed\"]', 'number[]')":0}]
+→ [{"json_schema('[\"a\", \"b\", \"c\"]', 'string[]')":true,"json_schema('[1, \"mixed\"]', 'number[]')":false}]
 
 -- Object validation
 SELECT json_schema('{"x": 42}', '{ x: number }'), json_schema('{"x": 42, "y": 3.14}', '{ x: number, y: number }');
-→ [{"json_schema('{\"x\": 42}', '{ x: number }')":1,"json_schema('{\"x\": 42, \"y\": 3.14}', '{ x: number, y: number }')":1}]
+→ [{"json_schema('{\"x\": 42}', '{ x: number }')":true,"json_schema('{\"x\": 42, \"y\": 3.14}', '{ x: number, y: number }')":true}]
 SELECT json_schema('{"x": "wrong"}', '{ x: number }'), json_schema('{"x": 42}', '{ x: number, y: number }');
-→ [{"json_schema('{\"x\": \"wrong\"}', '{ x: number }')":0,"json_schema('{\"x\": 42}', '{ x: number, y: number }')":0}]
+→ [{"json_schema('{\"x\": \"wrong\"}', '{ x: number }')":false,"json_schema('{\"x\": 42}', '{ x: number, y: number }')":false}]
 
 -- Nested structures - array of objects
 SELECT json_schema('[{"x": 1}, {"x": 2}]', '{ x: number }[]'), json_schema('[{"x": 1}, {"x": "wrong"}]', '{ x: number }[]');
-→ [{"json_schema('[{\"x\": 1}, {\"x\": 2}]', '{ x: number }[]')":1,"json_schema('[{\"x\": 1}, {\"x\": \"wrong\"}]', '{ x: number }[]')":0}]
+→ [{"json_schema('[{\"x\": 1}, {\"x\": 2}]', '{ x: number }[]')":true,"json_schema('[{\"x\": 1}, {\"x\": \"wrong\"}]', '{ x: number }[]')":false}]
 
 -- Nested structures - object with arrays
 SELECT json_schema('{"items": [1, 2, 3]}', '{ items: number[] }'), json_schema('{"items": [1, "wrong", 3]}', '{ items: number[] }');
-→ [{"json_schema('{\"items\": [1, 2, 3]}', '{ items: number[] }')":1,"json_schema('{\"items\": [1, \"wrong\", 3]}', '{ items: number[] }')":0}]
+→ [{"json_schema('{\"items\": [1, 2, 3]}', '{ items: number[] }')":true,"json_schema('{\"items\": [1, \"wrong\", 3]}', '{ items: number[] }')":false}]
 
 -- Complex nested structure
 SELECT json_schema('{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}', '{ users: { name: string, age: number }[] }'), json_schema('{"users": [{"name": "Alice", "age": "thirty"}]}', '{ users: { name: string, age: number }[] }');
-→ [{"json_schema('{\"users\": [{\"name\": \"Alice\", \"age\": 30}, {\"name\": \"Bob\", \"age\": 25}]}', '{ users: { name: string, age: number }[] }')":1,"json_schema('{\"users\": [{\"name\": \"Alice\", \"age\": \"thirty\"}]}', '{ users: { name: string, age: number }[] }')":0}]
+→ [{"json_schema('{\"users\": [{\"name\": \"Alice\", \"age\": 30}, {\"name\": \"Bob\", \"age\": 25}]}', '{ users: { name: string, age: number }[] }')":true,"json_schema('{\"users\": [{\"name\": \"Alice\", \"age\": \"thirty\"}]}', '{ users: { name: string, age: number }[] }')":false}]
 
 -- Invalid JSON and schema
 SELECT json_schema('{invalid', 'number'), json_schema('42', 'unknown_type');
-→ [{"json_schema('{invalid', 'number')":0,"json_schema('42', 'unknown_type')":0}]
+→ [{"json_schema('{invalid', 'number')":false,"json_schema('42', 'unknown_type')":false}]
 
 -- Empty structures
 SELECT json_schema('[]', 'number[]'), json_schema('{}', '{ x: number }'), json_schema('{}', '{}');
-→ [{"json_schema('[]', 'number[]')":1,"json_schema('{}', '{ x: number }')":0,"json_schema('{}', '{}')":1}]
+→ [{"json_schema('[]', 'number[]')":true,"json_schema('{}', '{ x: number }')":false,"json_schema('{}', '{}')":true}]
 
 -- Use in CHECK constraint
 PRAGMA default_vtab_module='memory';

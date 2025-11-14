@@ -43,12 +43,9 @@ This list reflects the current and upcoming work for Quereus. Completed items an
 
 **Window Functions (Remaining)**
 - [ ] **LAG/LEAD**: Offset functions
-- [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions  
+- [ ] **FIRST_VALUE/LAST_VALUE**: Navigation functions
 - [ ] **RANGE BETWEEN**: Range-based window frames
 - [ ] **PERCENT_RANK/CUME_DIST**: Statistical ranking functions
-
-**Type Coercion Enhancements**
-- [ ] **ORDER BY**: Enhanced numeric sorting of string columns using coercion
 
 ## 🔐 Global Transaction‑Deferred Assertions
 
@@ -137,11 +134,68 @@ Database‑wide integrity assertions deferrable at COMMIT (auto-detected), with 
 - **Deterministic**: Schema hash computed from canonical DDL representation
 - **Contextual keywords**: `schema`, `version`, `seed` are contextual to avoid breaking `schema()` function or column names
 
+## 🚀 Type System Performance Optimizations
+
+The logical type system enables significant runtime performance improvements by eliminating type detection and enabling type-specific optimizations.
+
+**Comparison System Optimization (High Priority)**
+- [ ] **Pre-resolved Comparators**: Eliminate runtime type detection in hot paths
+  - [ ] **Memory VTable Primary Keys** (`src/vtab/memory/utils/primary-key.ts`)
+    - Replace `compareSqlValuesFast()` with pre-resolved comparator from `pkColumn.logicalType.compare`
+    - Store comparator at BTree creation time, not per-comparison
+  - [ ] **Memory VTable Secondary Indexes** (`src/vtab/memory/index.ts`)
+    - Pre-create array of comparators (one per index column) at index creation
+    - Replace `compareSqlValues()` loop with direct comparator array invocation
+  - [ ] **Sort Node** (`src/runtime/emit/sort.ts`)
+    - Pre-resolve comparators for all sort keys at Sort node creation
+    - Store comparators in Sort node metadata
+  - [ ] **Join Node** (`src/runtime/emit/join.ts`)
+    - Pre-resolve comparators for join keys
+    - Use type-specific equality checks instead of generic comparison
+  - [ ] **Distinct/Group By** (`src/runtime/emit/distinct.ts`, `src/runtime/emit/aggregate.ts`)
+    - Pre-resolve comparators for grouping keys
+    - Use type-specific hash functions where applicable
+  - **Target**: 2-3x speedup for index operations, joins, and sorts
+  - **Files to modify**: `src/vtab/memory/utils/primary-key.ts`, `src/vtab/memory/index.ts`, `src/runtime/emit/sort.ts`, `src/runtime/emit/join.ts`
+
+**Function/Operator Runtime Optimization (High Priority)**
+- [ ] **Type-Specialized Implementations**: Use type information to skip runtime checks
+  - [ ] **Arithmetic Operators** (`src/runtime/emit/binary.ts`)
+    - Use operand types from plan to select specialized numeric operations
+    - INTEGER + INTEGER: Direct integer addition without type checks
+    - REAL operations: Direct floating-point operations
+    - Eliminate `coerceForComparison()` calls (types guaranteed by planner)
+  - [ ] **Comparison Operators** (`src/runtime/emit/binary.ts`)
+    - Use type-specific comparison from `logicalType.compare`
+    - Pre-resolve comparator at node creation time
+    - Eliminate runtime type detection in `compareSqlValues()`
+  - [ ] **String Functions** (`src/func/builtins/string.ts`)
+    - Skip type validation when input types are known at planning time
+    - Use type information to optimize string operations
+  - [ ] **Aggregate Functions** (`src/runtime/emit/aggregate.ts`)
+    - Pre-resolve accumulator types based on input types
+    - Use type-specific accumulation logic (e.g., INTEGER SUM vs REAL SUM)
+  - **Target**: 1.5-2x speedup for expression evaluation
+  - **Files to modify**: `src/runtime/emit/binary.ts`, `src/runtime/emit/aggregate.ts`
+
+**Validation data Boundary Optimization (Medium Priority)**
+- [ ] **Entrance-Point Validation**: Validate data only at system boundaries
+  - [ ] **Parameters**
+  - [ ] **Optionally from modules**
+
+**Type System Enhancements (Medium Priority)**
+- [ ] **JSON Type**: Native JSON type with object storage
+  - [ ] Define JSON_TYPE with PhysicalType.OBJECT
+  - [ ] Implement validation, parsing, and serialization
+  - [ ] JSON path queries (`json_extract()`, `json_set()`, etc.)
+  - [ ] Indexing JSON properties
+  - [ ] Schema validation (optional)
+
 ## 📋 Future Development Areas
 
 **Optimizer Enhancements (Near-term)**
 - [ ] **Advanced Statistics**: Move beyond naive heuristics to VTab-supplied or ANALYZE-based stats
-- [ ] **Sophisticated Cost Models**: Better formulas for complex operations and join algorithms  
+- [ ] **Sophisticated Cost Models**: Better formulas for complex operations and join algorithms
 - [ ] **Plan Validation**: Runtime tree validation to catch optimizer bugs early
 - [ ] **Execution Metrics**: Row-level telemetry for verifying cardinality estimates
 

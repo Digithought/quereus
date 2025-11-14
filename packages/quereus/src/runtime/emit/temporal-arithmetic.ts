@@ -268,7 +268,7 @@ export function emitTemporalArithmetic(plan: BinaryOpNode, ctx: EmissionContext)
  * @param operator The comparison operator (=, !=, <, <=, >, >=)
  * @param v1 First value
  * @param v2 Second value
- * @returns Comparison result (0 or 1) if temporal comparison, undefined otherwise
+ * @returns Comparison result (boolean) if temporal comparison, undefined otherwise
  */
 export function tryTemporalComparison(operator: string, v1: SqlValue, v2: SqlValue): SqlValue | undefined {
 	// Check if both values are timespans
@@ -284,18 +284,18 @@ export function tryTemporalComparison(operator: string, v1: SqlValue, v2: SqlVal
 	switch (operator) {
 		case '=':
 		case '==':
-			return cmp === 0 ? 1 : 0;
+			return cmp === 0;
 		case '!=':
 		case '<>':
-			return cmp !== 0 ? 1 : 0;
+			return cmp !== 0;
 		case '<':
-			return cmp < 0 ? 1 : 0;
+			return cmp < 0;
 		case '<=':
-			return cmp <= 0 ? 1 : 0;
+			return cmp <= 0;
 		case '>':
-			return cmp > 0 ? 1 : 0;
+			return cmp > 0;
 		case '>=':
-			return cmp >= 0 ? 1 : 0;
+			return cmp >= 0;
 		default:
 			return undefined;
 	}

@@ -70,7 +70,7 @@ WITH a AS (SELECT 1 AS v UNION SELECT 2),
 SELECT NOT EXISTS(
   SELECT * FROM a DIFF SELECT * FROM b
 ) AS eq;
-→ [{"eq":1}]
+→ [{"eq":true}]
 
 -- Complex set operations with WHERE clauses
 SELECT value FROM set_a WHERE id > 1
