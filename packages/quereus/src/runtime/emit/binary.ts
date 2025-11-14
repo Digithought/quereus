@@ -8,6 +8,7 @@ import { compareSqlValuesFast, resolveCollation } from "../../util/comparison.js
 import { coerceForComparison, coerceToNumberForArithmetic } from "../../util/coercion.js";
 import { simpleLike } from "../../util/patterns.js";
 import type { EmissionContext } from "../emission-context.js";
+import { tryTemporalArithmetic, tryTemporalComparison } from "./temporal-arithmetic.js";
 
 export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	// Normalize operator to uppercase for case-insensitive matching of keywords
@@ -73,6 +74,13 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 	}
 
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
+		// Try temporal arithmetic first
+		const temporalResult = tryTemporalArithmetic(plan.expression.operator, v1, v2);
+		if (temporalResult !== undefined) {
+			return temporalResult;
+		}
+
+		// Fall back to numeric arithmetic
 		if (v1 !== null && v2 !== null) {
 			if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
 				try {
@@ -127,12 +135,20 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 	// Pre-resolve collation function for optimal performance
 	const collationFunc = resolveCollation(collationName);
 
-	switch (plan.expression.operator) {
+	const operator = plan.expression.operator;
+
+	switch (operator) {
 		case '=':
 		case '==':
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL = anything -> NULL
 				if (v1 === null || v2 === null) return null;
+
+				// Try temporal comparison first
+				const temporalResult = tryTemporalComparison(operator, v1, v2);
+				if (temporalResult !== undefined) {
+					return temporalResult;
+				}
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
@@ -145,6 +161,12 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 				// SQL comparison: NULL != anything -> NULL
 				if (v1 === null || v2 === null) return null;
 
+				// Try temporal comparison first
+				const temporalResult = tryTemporalComparison(operator, v1, v2);
+				if (temporalResult !== undefined) {
+					return temporalResult;
+				}
+
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
 				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) !== 0 ? 1 : 0;
@@ -154,6 +176,12 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 			run = (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue => {
 				// SQL comparison: NULL < anything -> NULL
 				if (v1 === null || v2 === null) return null;
+
+				// Try temporal comparison first
+				const temporalResult = tryTemporalComparison(operator, v1, v2);
+				if (temporalResult !== undefined) {
+					return temporalResult;
+				}
 
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
@@ -165,6 +193,12 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 				// SQL comparison: NULL <= anything -> NULL
 				if (v1 === null || v2 === null) return null;
 
+				// Try temporal comparison first
+				const temporalResult = tryTemporalComparison(operator, v1, v2);
+				if (temporalResult !== undefined) {
+					return temporalResult;
+				}
+
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
 				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) <= 0 ? 1 : 0;
@@ -175,6 +209,12 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 				// SQL comparison: NULL > anything -> NULL
 				if (v1 === null || v2 === null) {
 					return null;
+				}
+
+				// Try temporal comparison first
+				const temporalResult = tryTemporalComparison(operator, v1, v2);
+				if (temporalResult !== undefined) {
+					return temporalResult;
 				}
 
 				// Apply type coercion before comparison
@@ -189,13 +229,19 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 				// SQL comparison: NULL >= anything -> NULL
 				if (v1 === null || v2 === null) return null;
 
+				// Try temporal comparison first
+				const temporalResult = tryTemporalComparison(operator, v1, v2);
+				if (temporalResult !== undefined) {
+					return temporalResult;
+				}
+
 				// Apply type coercion before comparison
 				const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
 				return compareSqlValuesFast(coercedV1, coercedV2, collationFunc) >= 0 ? 1 : 0;
 			};
 			break;
 		default:
-			throw new QuereusError(`Unsupported comparison operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+			throw new QuereusError(`Unsupported comparison operator: ${operator}`, StatusCode.UNSUPPORTED);
 	}
 
 	const leftExpr = emitPlanNode(plan.left, ctx);

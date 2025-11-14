@@ -1,8 +1,10 @@
 import type { AggregateFinalizer, AggregateReducer, IntegratedTableValuedFunc, ScalarFunc, TableValuedFunc, ScalarFunctionSchema,
 	TableValuedFunctionSchema, AggregateFunctionSchema } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
-import { SqlDataType } from '../common/types.js';
 import type { ScalarType, RelationType } from '../common/datatype.js';
+import { REAL_TYPE } from '../types/builtin-types.js';
+import type { LogicalType } from '../types/logical-type.js';
+import type { DeepReadonly } from '../common/types.js';
 
 /**
  * Configuration options for scalar functions
@@ -18,6 +20,18 @@ interface ScalarFuncOptions {
 	deterministic?: boolean;
 	/** Return type information */
 	returnType?: ScalarType;
+	/**
+	 * Optional type inference function for polymorphic functions.
+	 * If provided, this function will be called at planning time to determine
+	 * the return type based on the actual argument types.
+	 */
+	inferReturnType?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ScalarType;
+	/**
+	 * Optional argument type validation function.
+	 * If provided, this function will be called at planning time to validate
+	 * that the argument types are acceptable for this function.
+	 */
+	validateArgTypes?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => boolean;
 }
 
 /**
@@ -56,6 +70,18 @@ interface AggregateFuncOptions {
 	initialValue?: AggValue;
 	/** Return type information */
 	returnType?: ScalarType;
+	/**
+	 * Optional type inference function for polymorphic aggregate functions.
+	 * If provided, this function will be called at planning time to determine
+	 * the return type based on the actual argument types.
+	 */
+	inferReturnType?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ScalarType;
+	/**
+	 * Optional argument type validation function.
+	 * If provided, this function will be called at planning time to validate
+	 * that the argument types are acceptable for this function.
+	 */
+	validateArgTypes?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => boolean;
 }
 
 /**
@@ -69,7 +95,7 @@ interface AggregateFuncOptions {
 export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarFunc): ScalarFunctionSchema {
 	const returnType: ScalarType = options.returnType ?? {
 		typeClass: 'scalar',
-		affinity: SqlDataType.NUMERIC,
+		logicalType: REAL_TYPE,
 		nullable: true,
 		isReadOnly: true
 	};
@@ -79,7 +105,9 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarF
 		numArgs: options.numArgs,
 		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
 		returnType,
-		implementation: jsFunc
+		implementation: jsFunc,
+		inferReturnType: options.inferReturnType,
+		validateArgTypes: options.validateArgTypes
 	};
 }
 
@@ -154,7 +182,7 @@ export function createAggregateFunction(
 ): AggregateFunctionSchema {
 	const returnType: ScalarType = options.returnType ?? {
 		typeClass: 'scalar',
-		affinity: SqlDataType.NUMERIC,
+		logicalType: REAL_TYPE,
 		nullable: true,
 		isReadOnly: true
 	};
@@ -166,6 +194,8 @@ export function createAggregateFunction(
 		returnType,
 		stepFunction: stepFunc,
 		finalizeFunction: finalizeFunc,
-		initialValue: options.initialValue
+		initialValue: options.initialValue,
+		inferReturnType: options.inferReturnType,
+		validateArgTypes: options.validateArgTypes
 	};
 }

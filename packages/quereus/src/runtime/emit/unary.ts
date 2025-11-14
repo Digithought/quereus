@@ -6,6 +6,7 @@ import type { UnaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
 import type { EmissionContext } from "../emission-context.js";
 import { isTruthy } from "../../util/comparison.js";
+import { Temporal } from 'temporal-polyfill';
 
 export function emitUnaryOp(plan: UnaryOpNode, ctx: EmissionContext): Instruction {
 	// Select the operation function at emit time
@@ -42,6 +43,18 @@ export function emitUnaryOp(plan: UnaryOpNode, ctx: EmissionContext): Instructio
 		case '-':
 			run = (ctx: RuntimeContext, operand: SqlValue) => {
 				if (operand === null) return null;
+
+				// Check if it's a timespan (ISO 8601 duration string)
+				if (typeof operand === 'string' && (operand.startsWith('P') || operand.startsWith('-P'))) {
+					try {
+						const duration = Temporal.Duration.from(operand);
+						return duration.negated().toString();
+					} catch {
+						// Not a valid duration, fall through to numeric handling
+					}
+				}
+
+				// Numeric negation
 				if (typeof operand === 'number') return -operand;
 				if (typeof operand === 'bigint') return -operand;
 				// Try to convert to number

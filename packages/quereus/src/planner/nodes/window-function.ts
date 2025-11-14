@@ -4,8 +4,8 @@ import type { ScalarType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import type { WindowFunctionExpr } from '../../parser/ast.js';
 import { Cached } from '../../util/cached.js';
-import { SqlDataType } from '../../common/types.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
+import { INTEGER_TYPE, REAL_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Represents a window function call in the query plan.
@@ -30,10 +30,10 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 			// Most window functions return numeric types
 			// row_number() specifically returns an integer
 			if (this.functionName === 'row_number') {
-				return { typeClass: 'scalar', affinity: SqlDataType.INTEGER, nullable: false } satisfies ScalarType;
+				return { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: false } satisfies ScalarType;
 			}
 			// Other window functions would have their own type inference
-			return { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: false } satisfies ScalarType;
+			return { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: false } satisfies ScalarType;
 		});
 	}
 

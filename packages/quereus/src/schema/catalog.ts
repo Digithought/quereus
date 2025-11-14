@@ -101,7 +101,7 @@ function tableSchemaToCatalog(tableSchema: TableSchema): CatalogTable {
 
 	const columns = tableSchema.columns.map(col => ({
 		name: col.name,
-		type: col.affinity?.toString() || 'TEXT',
+		type: col.logicalType.name,
 		notNull: col.notNull,
 		primaryKey: col.primaryKey
 	}));
@@ -165,8 +165,8 @@ function generateTableDDL(tableSchema: TableSchema): string {
 	const columnDefs: string[] = [];
 	for (const col of tableSchema.columns) {
 		let colDef = `"${col.name}"`;
-		if (col.affinity) {
-			colDef += ` ${col.affinity}`;
+		if (col.logicalType) {
+			colDef += ` ${col.logicalType.name}`;
 		}
 		if (col.notNull) {
 			colDef += ' NOT NULL';

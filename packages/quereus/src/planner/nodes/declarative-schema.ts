@@ -3,7 +3,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type * as AST from '../../parser/ast.js';
 import { RelationType, type VoidType } from '../../common/datatype.js';
-import { SqlDataType } from '../../common/types.js';
+import { TEXT_TYPE } from '../../types/builtin-types.js';
 
 /**
  * DECLARE SCHEMA statement plan node
@@ -66,7 +66,7 @@ export class DiffSchemaNode extends PlanNode implements RelationalPlanNode {
 					name: 'ddl',
 					type: {
 						typeClass: 'scalar',
-						affinity: SqlDataType.TEXT,
+						logicalType: TEXT_TYPE,
 						nullable: false,
 						isReadOnly: true,
 					},
@@ -172,7 +172,7 @@ export class ExplainSchemaNode extends PlanNode implements RelationalPlanNode {
 					name: 'info',
 					type: {
 						typeClass: 'scalar',
-						affinity: SqlDataType.TEXT,
+						logicalType: TEXT_TYPE,
 						nullable: false,
 						isReadOnly: true,
 					},

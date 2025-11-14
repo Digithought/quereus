@@ -9,18 +9,22 @@ import { FunctionFlags } from '../../common/constants.js';
 
 export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 	override readonly nodeType = PlanNodeType.ScalarFunctionCall;
+	private readonly _inferredType?: ScalarType;
 
 	constructor(
 		scope: Scope,
 		public readonly expression: AST.FunctionExpr,
 		public readonly functionSchema: FunctionSchema,
-		public readonly operands: ScalarPlanNode[]
+		public readonly operands: ScalarPlanNode[],
+		inferredType?: ScalarType
 	) {
 		super(scope);
+		this._inferredType = inferredType;
 	}
 
 	getType(): ScalarType {
-		return this.functionSchema.returnType as ScalarType;
+		// Use inferred type if available, otherwise use schema's return type
+		return this._inferredType ?? (this.functionSchema.returnType as ScalarType);
 	}
 
 	getChildren(): readonly ScalarPlanNode[] {
@@ -54,7 +58,8 @@ export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 			this.scope,
 			this.expression,
 			this.functionSchema,
-			newChildren as ScalarPlanNode[]
+			newChildren as ScalarPlanNode[],
+			this._inferredType
 		);
 	}
 

@@ -8,6 +8,8 @@ import { Cached } from "../../util/cached.js";
 import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { NULL_TYPE, INTEGER_TYPE, REAL_TYPE, TEXT_TYPE, BLOB_TYPE, BOOLEAN_TYPE } from "../../types/builtin-types.js";
+import { typeRegistry } from "../../types/registry.js";
 
 export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	readonly nodeType = PlanNodeType.UnaryOp;
@@ -25,36 +27,31 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 	generateType = (): ScalarType => {
 		const operandType = this.operand.getType();
 
-		let datatype: SqlDataType | undefined;
-		let affinity: SqlDataType = operandType.affinity;
+		let logicalType = operandType.logicalType;
 		let nullable = operandType.nullable;
 
 		switch (this.expression.operator) {
 			case 'NOT':
 			case 'IS NULL':
 			case 'IS NOT NULL':
-				datatype = SqlDataType.INTEGER;
-				affinity = SqlDataType.INTEGER;
+				logicalType = BOOLEAN_TYPE;
 				nullable = false; // Boolean results are never null
 				break;
 			case '-':
 			case '+':
-				// Numeric unary operators preserve type but may change nullability
-				datatype = operandType.datatype;
+				// Numeric unary operators preserve type
 				break;
 			case '~':
 				// Bitwise NOT - results in integer
-				datatype = SqlDataType.INTEGER;
-				affinity = SqlDataType.INTEGER;
+				logicalType = INTEGER_TYPE;
 				break;
 		}
 
 		return {
 			typeClass: 'scalar',
-			affinity,
+			logicalType,
 			nullable,
 			isReadOnly: operandType.isReadOnly,
-			datatype,
 			collationName: operandType.collationName,
 		};
 	}
@@ -130,17 +127,11 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 		const leftType = this.left.getType();
 		const rightType = this.right.getType();
 
-		const affinity = leftType.affinity;
+		let logicalType = leftType.logicalType;
 
-		let datatype: SqlDataType | undefined;
 		switch (this.expression.operator) {
 			case 'OR':
 			case 'AND':
-			case '+':
-			case '-':
-			case '*':
-			case '/':
-			case '%':
 			case '=':
 			case '!=':
 			case '<':
@@ -150,10 +141,33 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 			case 'IS':
 			case 'IS NOT':
 			case 'IN':
-				datatype = SqlDataType.INTEGER;
+				// Comparison and logical operators return boolean
+				logicalType = BOOLEAN_TYPE;
+				break;
+			case '+':
+			case '-':
+			case '*':
+			case '/':
+			case '%':
+				// Arithmetic operators - implement numeric type promotion
+				// Rules: INTEGER + INTEGER -> INTEGER, INTEGER + REAL -> REAL, REAL + REAL -> REAL
+				if (leftType.logicalType.isNumeric && rightType.logicalType.isNumeric) {
+					// Both operands are numeric
+					if (leftType.logicalType.name === 'REAL' || rightType.logicalType.name === 'REAL') {
+						// If either is REAL, result is REAL
+						logicalType = REAL_TYPE;
+					} else {
+						// Both are INTEGER, result is INTEGER
+						logicalType = INTEGER_TYPE;
+					}
+				} else {
+					// Non-numeric operands - use left operand type (fallback)
+					logicalType = leftType.logicalType;
+				}
 				break;
 			case '||':
-				datatype = SqlDataType.TEXT;
+				// String concatenation
+				logicalType = TEXT_TYPE;
 				break;
 		};
 
@@ -162,10 +176,9 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 
 		return {
 			typeClass: 'scalar',
-			affinity,
+			logicalType,
 			nullable: leftType.nullable || rightType.nullable,
 			isReadOnly: leftType.isReadOnly || rightType.isReadOnly,
-			datatype,
 			collationName,
 		};
 	}
@@ -252,55 +265,49 @@ export class LiteralNode extends PlanNode implements ZeroAryScalarNode, Constant
 		if (value === null) {
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.NULL,
+				logicalType: NULL_TYPE,
 				nullable: true,
 				isReadOnly: true,
-				datatype: SqlDataType.NULL,
 			};
 		}
 		if (typeof value === 'number') {
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.REAL,
+				logicalType: REAL_TYPE,
 				nullable: false,
 				isReadOnly: true,
-				datatype: SqlDataType.REAL,
 			};
 		}
 		if (typeof value === 'bigint') {
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.INTEGER,
+				logicalType: INTEGER_TYPE,
 				nullable: false,
 				isReadOnly: true,
-				datatype: SqlDataType.INTEGER,
 			};
 		}
 		if (typeof value === 'string') {
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.TEXT,
+				logicalType: TEXT_TYPE,
 				nullable: false,
 				isReadOnly: true,
-				datatype: SqlDataType.TEXT,
 			};
 		}
 		if (typeof value === 'boolean') {
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.INTEGER,
+				logicalType: BOOLEAN_TYPE,
 				nullable: false,
 				isReadOnly: true,
-				datatype: SqlDataType.INTEGER,
 			};
 		}
 		if (value instanceof Uint8Array) {
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.BLOB,
+				logicalType: BLOB_TYPE,
 				nullable: false,
 				isReadOnly: true,
-				datatype: SqlDataType.BLOB,
 			};
 		}
 		quereusError(`Unknown literal type ${typeof value}`, StatusCode.INTERNAL);
@@ -377,16 +384,15 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 			// No THEN clauses and no ELSE - should not happen in valid SQL
 			return {
 				typeClass: 'scalar',
-				affinity: SqlDataType.NULL,
+				logicalType: NULL_TYPE,
 				nullable: true,
 				isReadOnly: true,
-				datatype: SqlDataType.NULL,
 			};
 		}
 
 		// Use the first result expression as the base type
 		const firstType = resultExpressions[0].getType();
-		let affinity = firstType.affinity;
+		let logicalType = firstType.logicalType;
 		let nullable = firstType.nullable;
 		let isReadOnly = firstType.isReadOnly;
 		let collationName = firstType.collationName;
@@ -411,9 +417,9 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 			}
 
 			// TODO: Implement proper type coercion rules for SQL
-			// For now, if types differ, default to TEXT affinity
-			if (exprType.affinity !== affinity) {
-				affinity = SqlDataType.TEXT;
+			// For now, if types differ, default to TEXT
+			if (exprType.logicalType !== logicalType) {
+				logicalType = TEXT_TYPE;
 			}
 		}
 
@@ -424,11 +430,10 @@ export class CaseExprNode extends PlanNode implements NaryScalarNode {
 
 		return {
 			typeClass: 'scalar',
-			affinity,
+			logicalType,
 			nullable,
 			isReadOnly,
 			collationName,
-			// Don't set datatype since it can vary based on runtime conditions
 		};
 	}
 
@@ -558,69 +563,17 @@ export class CastNode extends PlanNode implements UnaryScalarNode {
 
 	generateType = (): ScalarType => {
 		const operandType = this.operand.getType();
-		const targetType = this.expression.targetType.toUpperCase();
+		const targetType = this.expression.targetType;
 
-		// Determine the SQL data type and affinity based on the target type
-		let datatype: SqlDataType;
-		let affinity: SqlDataType;
-
-		switch (targetType) {
-			case 'INTEGER':
-			case 'INT':
-			case 'TINYINT':
-			case 'SMALLINT':
-			case 'MEDIUMINT':
-			case 'BIGINT':
-			case 'UNSIGNED BIG INT':
-			case 'INT2':
-			case 'INT8':
-				datatype = SqlDataType.INTEGER;
-				affinity = SqlDataType.INTEGER;
-				break;
-			case 'REAL':
-			case 'DOUBLE':
-			case 'DOUBLE PRECISION':
-			case 'FLOAT':
-				datatype = SqlDataType.REAL;
-				affinity = SqlDataType.REAL;
-				break;
-			case 'TEXT':
-			case 'CHARACTER':
-			case 'VARCHAR':
-			case 'VARYING CHARACTER':
-			case 'NCHAR':
-			case 'NATIVE CHARACTER':
-			case 'NVARCHAR':
-			case 'CLOB':
-				datatype = SqlDataType.TEXT;
-				affinity = SqlDataType.TEXT;
-				break;
-			case 'BLOB':
-				datatype = SqlDataType.BLOB;
-				affinity = SqlDataType.BLOB;
-				break;
-			case 'NUMERIC':
-			case 'DECIMAL':
-			case 'BOOLEAN':
-			case 'DATE':
-			case 'DATETIME':
-				datatype = SqlDataType.NUMERIC;
-				affinity = SqlDataType.NUMERIC;
-				break;
-			default:
-				// For unknown types, default to BLOB affinity
-				datatype = SqlDataType.BLOB;
-				affinity = SqlDataType.BLOB;
-				break;
-		}
+		// Look up the logical type from the type registry
+		const logicalType = typeRegistry.getTypeOrDefault(targetType);
 
 		return {
 			typeClass: 'scalar',
-			affinity,
+			logicalType,
 			nullable: operandType.nullable, // CAST preserves nullability
 			isReadOnly: operandType.isReadOnly,
-			datatype,
-			collationName: affinity === SqlDataType.TEXT ? operandType.collationName : undefined,
+			collationName: logicalType.isTextual ? operandType.collationName : undefined,
 		};
 	}
 
@@ -756,13 +709,12 @@ export class BetweenNode extends PlanNode implements TernaryScalarNode {
 	}
 
 	getType(): ScalarType {
-		// BETWEEN always returns INTEGER (0 or 1)
+		// BETWEEN always returns BOOLEAN
 		return {
 			typeClass: 'scalar',
-			affinity: SqlDataType.INTEGER,
+			logicalType: BOOLEAN_TYPE,
 			nullable: false,
 			isReadOnly: true,
-			datatype: SqlDataType.INTEGER,
 		};
 	}
 

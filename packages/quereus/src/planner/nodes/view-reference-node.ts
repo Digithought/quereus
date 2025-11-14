@@ -1,10 +1,10 @@
 import { PlanNode, type ZeroAryRelationalNode, type Attribute } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
-import { SqlDataType } from '../../common/types.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { ViewSchema } from '../../schema/view.js';
 import { Cached } from '../../util/cached.js';
+import { TEXT_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Plan node for referencing a view in a FROM clause.
@@ -36,7 +36,7 @@ export class ViewReferenceNode extends PlanNode implements ZeroAryRelationalNode
 			name: columnName,
 			type: {
 				typeClass: 'scalar' as const,
-				affinity: SqlDataType.TEXT,
+				logicalType: TEXT_TYPE,
 				nullable: true,
 				isReadOnly: false
 			}, // Default type, should be inferred

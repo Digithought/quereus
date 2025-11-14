@@ -83,7 +83,7 @@ export function buildConstraintChecks(
       if (newAttrId !== undefined) {
         const newColumnType = {
           typeClass: 'scalar' as const,
-          affinity: tableColumn.affinity,
+          logicalType: tableColumn.logicalType,
           nullable: !tableColumn.notNull,
           isReadOnly: false
         };
@@ -104,7 +104,7 @@ export function buildConstraintChecks(
       if (oldAttrId !== undefined) {
         const oldColumnType = {
           typeClass: 'scalar' as const,
-          affinity: tableColumn.affinity,
+          logicalType: tableColumn.logicalType,
           nullable: true, // OLD values can be NULL (especially for INSERT)
           isReadOnly: false
         };

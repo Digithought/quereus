@@ -18,6 +18,7 @@ import { InternalRecursiveCTERefNode as _InternalRecursiveCTERefNode } from '../
 import type { CTEScopeNode, CTEPlanNode } from '../nodes/cte-node.js';
 import { JoinNode } from '../nodes/join-node.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
+import { TEXT_TYPE } from '../../types/builtin-types.js';
 import { ValuesNode } from '../nodes/values-node.js';
 import { createLogger } from '../../common/logger.js';
 
@@ -440,7 +441,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		columnNames.forEach((colName, i) => {
 			if (i < subqueryAttributes.length) {
 				const attr = subqueryAttributes[i];
-				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', affinity: 'TEXT', nullable: true, isReadOnly: true };
+				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: true };
 				subqueryScope.registerSymbol(colName.toLowerCase(), (exp, s) =>
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
 			}
@@ -479,7 +480,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		columnNames.forEach((colName, i) => {
 			if (i < mutatingAttributes.length) {
 				const attr = mutatingAttributes[i];
-				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', affinity: 'TEXT', nullable: true, isReadOnly: false };
+				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: false };
 				mutatingScope.registerSymbol(colName.toLowerCase(), (exp, s) =>
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
 			}

@@ -3,7 +3,7 @@ import { createScalarFunction } from '../registration.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { INTEGER_TYPE, REAL_TYPE, TEXT_TYPE, BOOLEAN_TYPE } from '../../types/builtin-types.js';
-import { DATE_TYPE, TIME_TYPE, DATETIME_TYPE } from '../../types/temporal-types.js';
+import { DATE_TYPE, TIME_TYPE, DATETIME_TYPE, TIMESPAN_TYPE } from '../../types/temporal-types.js';
 import { JSON_TYPE } from '../../types/json-type.js';
 
 /**
@@ -193,6 +193,31 @@ export const JSON_FUNC = createScalarFunction(
 		} catch (e) {
 			throw new QuereusError(
 				`Cannot convert to JSON: ${e instanceof Error ? e.message : String(e)}`,
+				StatusCode.MISMATCH
+			);
+		}
+	}
+);
+
+/**
+ * timespan() - Convert value to TIMESPAN
+ * Usage: timespan(value)
+ *
+ * Accepts:
+ * - ISO 8601 duration strings: 'PT1H30M', 'P1D', 'P1Y2M3D'
+ * - Human-readable strings: '1 hour', '30 minutes', '2 days 3 hours'
+ * - Numeric values (interpreted as seconds): 3600, 86400
+ */
+export const TIMESPAN_FUNC = createScalarFunction(
+	{ name: 'timespan', numArgs: 1, deterministic: true },
+	(value: SqlValue): SqlValue => {
+		if (value === null) return null;
+
+		try {
+			return TIMESPAN_TYPE.parse!(value);
+		} catch (e) {
+			throw new QuereusError(
+				`Cannot convert to TIMESPAN: ${e instanceof Error ? e.message : String(e)}`,
 				StatusCode.MISMATCH
 			);
 		}

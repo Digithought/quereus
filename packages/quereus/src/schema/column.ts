@@ -10,8 +10,6 @@ export interface ColumnSchema {
 	name: string;
 	/** Logical type definition */
 	logicalType: LogicalType;
-	/** Data type affinity (TEXT, INTEGER, REAL, BLOB, NUMERIC) - kept for backward compatibility during transition */
-	affinity: SqlDataType;
 	/** Whether the column has a NOT NULL constraint */
 	notNull: boolean;
 	/** Whether the column is part of the primary key */
@@ -43,7 +41,6 @@ export function createDefaultColumnSchema(name: string, defaultNotNull: boolean 
 	return {
 		name: name,
 		logicalType: TEXT_TYPE,
-		affinity: SqlDataType.TEXT,
 		notNull: defaultNotNull, // Third Manifesto: default to NOT NULL
 		primaryKey: false,
 		pkOrder: 0,

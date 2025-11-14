@@ -1,4 +1,6 @@
 import { SqlDataType, type SqlValue } from "./types.js";
+import type { LogicalType } from "../types/logical-type.js";
+import { NULL_TYPE, INTEGER_TYPE, REAL_TYPE, TEXT_TYPE, BLOB_TYPE, BOOLEAN_TYPE } from "../types/builtin-types.js";
 
 export function getLiteralSqlType(v: SqlValue): SqlDataType {
 	if (v === null) return SqlDataType.NULL;
@@ -13,28 +15,17 @@ export function getLiteralSqlType(v: SqlValue): SqlDataType {
 }
 
 /**
- * Determines the column affinity in a similar way to SQLite rules.
- * @see https://www.sqlite.org/datatype3.html#determination_of_column_affinity
- *
- * @param typeName The declared type name (case-insensitive)
- * @returns The determined SqlDataType affinity
+ * Infer LogicalType from a SqlValue
  */
-export function getAffinity(typeName: string | undefined): SqlDataType {
-	if (!typeName) {
-		return SqlDataType.BLOB;
+export function inferLogicalTypeFromValue(v: SqlValue): LogicalType {
+	if (v === null) return NULL_TYPE;
+	if (typeof v === 'number') {
+		// For now, all numbers are REAL. Could check Number.isInteger() for INTEGER_TYPE
+		return REAL_TYPE;
 	}
-	const typeUpper = typeName.toUpperCase();
-	if (typeUpper.includes('INT')) {
-		return SqlDataType.INTEGER;
-	}
-	if (typeUpper.includes('CHAR') || typeUpper.includes('CLOB') || typeUpper.includes('TEXT')) {
-		return SqlDataType.TEXT;
-	}
-	if (typeUpper.includes('BLOB')) {
-		return SqlDataType.BLOB;
-	}
-	if (typeUpper.includes('REAL') || typeUpper.includes('FLOA') || typeUpper.includes('DOUB')) {
-		return SqlDataType.REAL;
-	}
-	return SqlDataType.NUMERIC; // Default catch-all
+	if (typeof v === 'bigint') return INTEGER_TYPE;
+	if (typeof v === 'boolean') return BOOLEAN_TYPE;
+	if (typeof v === 'string') return TEXT_TYPE;
+	if (v instanceof Uint8Array) return BLOB_TYPE;
+	return BLOB_TYPE;
 }

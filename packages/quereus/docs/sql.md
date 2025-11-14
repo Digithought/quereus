@@ -1772,9 +1772,11 @@ group by department;
 
 Quereus includes functions for manipulating dates and times.
 
+**Temporal Type Functions:**
 - `date(timestring[, modifier...])`: Returns the date as 'YYYY-MM-DD'
 - `time(timestring[, modifier...])`: Returns the time as 'HH:MM:SS'
 - `datetime(timestring[, modifier...])`: Returns the date and time as 'YYYY-MM-DD HH:MM:SS'
+- `timespan(duration_string)`: Returns a TIMESPAN from ISO 8601 duration or human-readable string
 - `julianday(timestring[, modifier...])`: Returns the Julian day number
 - `strftime(format, timestring[, modifier...])`: Returns a formatted date string
 - `is_iso_date(X)`: Returns 1 if X is a valid ISO 8601 date, 0 otherwise
@@ -1789,19 +1791,32 @@ Quereus includes functions for manipulating dates and times.
 **Examples:**
 ```sql
 -- Date functions
-select 
+select
   date('now') as today,
   time('now', 'localtime') as current_time,
   datetime('now', '+1 day') as tomorrow,
   julianday('2023-01-01') - julianday('2022-01-01') as days_difference,
   strftime('%Y-%m-%d %H:%M', 'now') as formatted_now,
   strftime('%W', 'now') as week_of_year;
-  
+
 -- Date calculations
-select 
+select
   date('now', '+7 days') as one_week_later,
   date('now', 'start of month', '+1 month', '-1 day') as last_day_of_month,
   datetime('now', 'weekday 1') as next_or_current_monday;
+
+-- Timespan creation and arithmetic
+select
+  timespan('1 hour 30 minutes') as duration1,
+  timespan('PT2H30M') as duration2,
+  datetime('2024-01-15T09:00:00') + timespan('2 hours') as meeting_end,
+  date('2024-01-15') + timespan('7 days') as next_week,
+  timespan('3 hours') - timespan('45 minutes') as remaining;
+
+-- Timespan comparisons
+select * from events
+where duration > timespan('1 hour')
+order by duration desc;
 ```
 
 ### 5.5 Window Functions

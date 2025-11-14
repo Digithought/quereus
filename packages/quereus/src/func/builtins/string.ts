@@ -1,14 +1,27 @@
 import { createAggregateFunction, createScalarFunction, createTableValuedFunction } from '../registration.js';
-import type { Row, SqlValue } from '../../common/types.js';
+import type { Row, SqlValue, DeepReadonly } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import { simpleLike, simpleGlob } from '../../util/patterns.js';
+import { INTEGER_TYPE, TEXT_TYPE } from '../../types/builtin-types.js';
+import type { LogicalType } from '../../types/logical-type.js';
 
 const log = createLogger('func:builtins:scalar');
 const warnLog = log.extend('warn');
 
 // --- length(X) ---
 export const lengthFunc = createScalarFunction(
-	{ name: 'length', numArgs: 1, deterministic: true },
+	{
+		name: 'length',
+		numArgs: 1,
+		deterministic: true,
+		// Type inference: length always returns INTEGER
+		inferReturnType: () => ({
+			typeClass: 'scalar',
+			logicalType: INTEGER_TYPE,
+			nullable: false,
+			isReadOnly: true
+		})
+	},
 	(arg: SqlValue): SqlValue => {
 		if (arg === null) return null;
 		if (typeof arg === 'string') return arg.length;
@@ -18,83 +31,62 @@ export const lengthFunc = createScalarFunction(
 );
 
 // --- substr(X, Y, Z?) --- Also SUBSTRING
-export const substrFunc = createScalarFunction(
-	{ name: 'substr', numArgs: -1, deterministic: true },
-	(str: SqlValue, start: SqlValue, len?: SqlValue): SqlValue => {
-		if (str === null || start === null) return null;
 
-		const s = String(str); // Coerce main arg to string
-		let y = Number(start);
-		let z = len === undefined ? undefined : Number(len);
+const substrImpl = (str: SqlValue, start: SqlValue, len?: SqlValue): SqlValue => {
+	if (str === null || start === null) return null;
 
-		if (isNaN(y) || (z !== undefined && isNaN(z))) return null;
+	const s = String(str); // Coerce main arg to string
+	let y = Number(start);
+	let z = len === undefined ? undefined : Number(len);
 
-		// SQLite uses 1-based indexing, negative start counts from end
-		y = Math.trunc(y);
-		z = z === undefined ? undefined : Math.trunc(z);
+	if (isNaN(y) || (z !== undefined && isNaN(z))) return null;
 
-		const strLen = s.length;
-		let begin: number;
+	// SQLite uses 1-based indexing, negative start counts from end
+	y = Math.trunc(y);
+	z = z === undefined ? undefined : Math.trunc(z);
 
-		if (y > 0) {
-			begin = y - 1;
-		} else if (y < 0) {
-			begin = strLen + y;
-		} else { // y == 0
-			begin = 0;
-		}
-		begin = Math.max(0, begin); // Clamp start index
+	const strLen = s.length;
+	let begin: number;
 
-		let end: number;
-		if (z === undefined) {
-			end = strLen; // No length means to end of string
-		} else if (z >= 0) {
-			end = begin + z;
-		} else { // Negative length is not standard SQL, SQLite returns empty string
-			end = begin;
-		}
-
-		return s.substring(begin, end);
+	if (y > 0) {
+		begin = y - 1;
+	} else if (y < 0) {
+		begin = strLen + y;
+	} else { // y == 0
+		begin = 0;
 	}
+	begin = Math.max(0, begin); // Clamp start index
+
+	let end: number;
+	if (z === undefined) {
+		end = strLen; // No length means to end of string
+	} else if (z >= 0) {
+		end = begin + z;
+	} else { // Negative length is not standard SQL, SQLite returns empty string
+		end = begin;
+	}
+
+	return s.substring(begin, end);
+};
+
+const substrTypeInference = {
+	// Type inference: substr always returns TEXT
+	inferReturnType: (_argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ({
+		typeClass: 'scalar' as const,
+		logicalType: TEXT_TYPE,
+		nullable: false,
+		isReadOnly: true
+	})
+};
+
+export const substrFunc = createScalarFunction(
+	{ name: 'substr', numArgs: -1, deterministic: true, ...substrTypeInference },
+	substrImpl
 );
 
 export const substringFunc = createScalarFunction(
-	{ name: 'substring', numArgs: -1, deterministic: true },
-	(str: SqlValue, start: SqlValue, len?: SqlValue): SqlValue => {
-		if (str === null || start === null) return null;
-
-		const s = String(str);
-		let y = Number(start);
-		let z = len === undefined ? undefined : Number(len);
-
-		if (isNaN(y) || (z !== undefined && isNaN(z))) return null;
-
-		y = Math.trunc(y);
-		z = z === undefined ? undefined : Math.trunc(z);
-
-		const strLen = s.length;
-		let begin: number;
-
-		if (y > 0) {
-			begin = y - 1;
-		} else if (y < 0) {
-			begin = strLen + y;
-		} else {
-			begin = 0;
-		}
-		begin = Math.max(0, begin);
-
-		let end: number;
-		if (z === undefined) {
-			end = strLen;
-		} else if (z >= 0) {
-			end = begin + z;
-		} else {
-			end = begin;
-		}
-
-		return s.substring(begin, end);
-	}
+	{ name: 'substring', numArgs: -1, deterministic: true, ...substrTypeInference },
+	substrImpl
 );
 
 export const likeFunc = createScalarFunction(
@@ -113,9 +105,19 @@ export const globFunc = createScalarFunction(
 	}
 );
 
+// Common type inference for string functions that return TEXT
+const textReturnTypeInference = {
+	inferReturnType: (_argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ({
+		typeClass: 'scalar' as const,
+		logicalType: TEXT_TYPE,
+		nullable: false,
+		isReadOnly: true
+	})
+};
+
 // --- trim(X, Y?) ---
 export const trimFunc = createScalarFunction(
-	{ name: 'trim', numArgs: -1, deterministic: true },
+	{ name: 'trim', numArgs: -1, deterministic: true, ...textReturnTypeInference },
 	(strVal: SqlValue, charsVal?: SqlValue): SqlValue => {
 		if (strVal === null) return null;
 		const str = String(strVal);
@@ -138,7 +140,7 @@ export const trimFunc = createScalarFunction(
 
 // --- ltrim(X, Y?) ---
 export const ltrimFunc = createScalarFunction(
-	{ name: 'ltrim', numArgs: -1, deterministic: true },
+	{ name: 'ltrim', numArgs: -1, deterministic: true, ...textReturnTypeInference },
 	(strVal: SqlValue, charsVal?: SqlValue): SqlValue => {
 		if (strVal === null) return null;
 		const str = String(strVal);
@@ -161,7 +163,7 @@ export const ltrimFunc = createScalarFunction(
 
 // --- rtrim(X, Y?) ---
 export const rtrimFunc = createScalarFunction(
-	{ name: 'rtrim', numArgs: -1, deterministic: true },
+	{ name: 'rtrim', numArgs: -1, deterministic: true, ...textReturnTypeInference },
 	(strVal: SqlValue, charsVal?: SqlValue): SqlValue => {
 		if (strVal === null) return null;
 		const str = String(strVal);
@@ -184,7 +186,7 @@ export const rtrimFunc = createScalarFunction(
 
 // --- replace(X, Y, Z) ---
 export const replaceFunc = createScalarFunction(
-	{ name: 'replace', numArgs: 3, deterministic: true },
+	{ name: 'replace', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(strVal: SqlValue, patternVal: SqlValue, replacementVal: SqlValue): SqlValue => {
 		if (strVal === null || patternVal === null || replacementVal === null) return null;
 
@@ -199,7 +201,18 @@ export const replaceFunc = createScalarFunction(
 
 // --- instr(X, Y) ---
 export const instrFunc = createScalarFunction(
-	{ name: 'instr', numArgs: 2, deterministic: true },
+	{
+		name: 'instr',
+		numArgs: 2,
+		deterministic: true,
+		// Type inference: instr returns INTEGER
+		inferReturnType: () => ({
+			typeClass: 'scalar',
+			logicalType: INTEGER_TYPE,
+			nullable: false,
+			isReadOnly: true
+		})
+	},
 	(strVal: SqlValue, subVal: SqlValue): SqlValue => {
 		if (strVal === null || subVal === null) return 0;
 
@@ -216,7 +229,7 @@ export const instrFunc = createScalarFunction(
 
 // String reverse function
 export const reverseFunc = createScalarFunction(
-	{ name: 'reverse', numArgs: 1, deterministic: true },
+	{ name: 'reverse', numArgs: 1, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue): SqlValue => {
 		if (typeof str !== 'string') return null;
 		return str.split('').reverse().join('');
@@ -225,7 +238,7 @@ export const reverseFunc = createScalarFunction(
 
 // Left padding function
 export const lpadFunc = createScalarFunction(
-	{ name: 'lpad', numArgs: 3, deterministic: true },
+	{ name: 'lpad', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue, len: SqlValue, pad: SqlValue): SqlValue => {
 		if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
 
@@ -239,7 +252,7 @@ export const lpadFunc = createScalarFunction(
 
 // Right padding function
 export const rpadFunc = createScalarFunction(
-	{ name: 'rpad', numArgs: 3, deterministic: true },
+	{ name: 'rpad', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue, len: SqlValue, pad: SqlValue): SqlValue => {
 		if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
 
@@ -278,7 +291,7 @@ export const stringConcatFunc = createAggregateFunction(
 
 // --- lower(X) ---
 export const lowerFunc = createScalarFunction(
-	{ name: 'lower', numArgs: 1, deterministic: true },
+	{ name: 'lower', numArgs: 1, deterministic: true, ...textReturnTypeInference },
 	(arg: SqlValue): SqlValue => {
 		return typeof arg === 'string' ? arg.toLowerCase() : null;
 	}
@@ -286,7 +299,7 @@ export const lowerFunc = createScalarFunction(
 
 // --- upper(X) ---
 export const upperFunc = createScalarFunction(
-	{ name: 'upper', numArgs: 1, deterministic: true },
+	{ name: 'upper', numArgs: 1, deterministic: true, ...textReturnTypeInference },
 	(arg: SqlValue): SqlValue => {
 		return typeof arg === 'string' ? arg.toUpperCase() : null;
 	}

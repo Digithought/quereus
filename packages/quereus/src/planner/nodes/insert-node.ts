@@ -50,7 +50,7 @@ export class InsertNode extends PlanNode implements RelationalPlanNode {
           name: col.name,
           type: {
             typeClass: 'scalar',
-            affinity: col.affinity,
+            logicalType: col.logicalType,
             nullable: isOld ? true : !col.notNull, // OLD values can be null, NEW follows column constraints
             isReadOnly: false
           },

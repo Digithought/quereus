@@ -5,7 +5,7 @@ export { PhysicalType, type LogicalType, getPhysicalType } from './logical-type.
 export { NULL_TYPE, INTEGER_TYPE, REAL_TYPE, TEXT_TYPE, BLOB_TYPE, BOOLEAN_TYPE, NUMERIC_TYPE, ANY_TYPE } from './builtin-types.js';
 
 // Temporal types
-export { DATE_TYPE, TIME_TYPE, DATETIME_TYPE } from './temporal-types.js';
+export { DATE_TYPE, TIME_TYPE, DATETIME_TYPE, TIMESPAN_TYPE } from './temporal-types.js';
 
 // JSON type
 export { JSON_TYPE } from './json-type.js';

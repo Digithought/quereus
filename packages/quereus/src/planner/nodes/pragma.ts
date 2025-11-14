@@ -1,4 +1,4 @@
-import { SqlDataType, type SqlValue } from '../../common/types.js';
+import type { SqlValue } from '../../common/types.js';
 import * as AST from '../../parser/ast.js';
 import { Attribute, type RelationalPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
@@ -6,6 +6,7 @@ import { expressionToString } from '../../util/ast-stringify.js';
 import { PlanNode } from './plan-node.js';
 import { RelationType } from '../../common/datatype.js';
 import { Scope } from '../scopes/scope.js';
+import { TEXT_TYPE } from '../../types/builtin-types.js';
 
 export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.Pragma;
@@ -29,7 +30,7 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 					name: "name",
 					type: {
 						typeClass: 'scalar',
-						affinity: SqlDataType.TEXT,
+						logicalType: TEXT_TYPE,
 						nullable: false,
 						isReadOnly: true,
 					},
@@ -39,7 +40,7 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 					name: "value",
 					type: {
 						typeClass: 'scalar',
-						affinity: SqlDataType.TEXT,
+						logicalType: TEXT_TYPE,
 						nullable: false,
 					},
 					generated: true,

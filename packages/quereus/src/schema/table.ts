@@ -3,7 +3,6 @@ import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type TableConstraint } from '../parser/ast.js';
-import { getAffinity } from '../common/type-inference.js';
 import { RowOp, SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
@@ -99,7 +98,6 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 	const schema: Partial<ColumnSchema> & { name: string } = {
 		name: def.name,
 		logicalType: logicalType,
-		affinity: getAffinity(def.dataType), // Keep for backward compatibility during transition
 		notNull: defaultNotNull, // Default based on Third Manifesto principles
 		primaryKey: false,
 		pkOrder: 0,
@@ -166,8 +164,8 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 export interface MutationContextDefinition {
 	/** Variable name */
 	name: string;
-	/** Type affinity of the variable */
-	affinity: SqlDataType;
+	/** Logical type of the variable */
+	logicalType: import('../types/logical-type.js').LogicalType;
 	/** Whether the variable is NOT NULL */
 	notNull: boolean;
 }
@@ -182,7 +180,7 @@ export interface MutationContextDefinition {
 export function mutationContextVarToSchema(varDef: AST.MutationContextVar, defaultNotNull: boolean = true): MutationContextDefinition {
 	return {
 		name: varDef.name,
-		affinity: getAffinity(varDef.dataType),
+		logicalType: inferType(varDef.dataType),
 		notNull: varDef.notNull !== undefined ? varDef.notNull : defaultNotNull,
 	};
 }
@@ -403,8 +401,8 @@ function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyA
 
 	return Object.freeze(pkCols.map(col => ({
 		index: col.originalIndex,
-		desc: col.affinity === SqlDataType.INTEGER && col.pkDirection === 'desc',
-		autoIncrement: col.affinity === SqlDataType.INTEGER,
+		desc: col.logicalType.name === 'INTEGER' && col.pkDirection === 'desc',
+		autoIncrement: col.logicalType.name === 'INTEGER',
 		collation: col.collation || 'BINARY'
 	})));
 }

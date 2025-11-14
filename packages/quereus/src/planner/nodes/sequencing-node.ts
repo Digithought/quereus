@@ -3,7 +3,7 @@ import { isRelationalNode, PlanNode, type Attribute, type RelationalPlanNode, ty
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { SqlDataType } from '../../common/types.js';
+import { INTEGER_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Represents a sequencing operation that adds a row number column to convert bags to sets.
@@ -31,7 +31,7 @@ export class SequencingNode extends PlanNode implements UnaryRelationalNode {
 				name: this.sequenceColumnName,
 				type: {
 					typeClass: 'scalar' as const,
-					affinity: SqlDataType.INTEGER,
+					logicalType: INTEGER_TYPE,
 					nullable: false,
 					isReadOnly: true
 				},

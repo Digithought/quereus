@@ -103,7 +103,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		return tableInfo.columns.map((col, index) => ({
 			index,
 			name: col.name,
-			type: col.affinity,
+			type: col.logicalType,
 			isPrimaryKey: tableInfo.primaryKeyDefinition.some(pk => pk.index === index),
 			isUnique: col.primaryKey // Primary key columns are unique, others would be determined by constraints/indexes
 		}));

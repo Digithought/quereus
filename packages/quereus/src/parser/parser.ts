@@ -1512,8 +1512,8 @@ export class Parser {
 		}
 
 		// Function call (with optional window function support)
-		if (this.checkIdentifierLike(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like']) && this.checkNext(1, TokenType.LPAREN)) {
-			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected function name.");
+		if (this.checkIdentifierLike(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like', 'replace']) && this.checkNext(1, TokenType.LPAREN)) {
+			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like', 'replace'], "Expected function name.");
 
 			this.consume(TokenType.LPAREN, "Expected '(' after function name.");
 

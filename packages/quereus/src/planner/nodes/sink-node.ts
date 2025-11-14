@@ -2,7 +2,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode } from './plan-node.js';
 import type { ScalarType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
-import { SqlDataType } from '../../common/types.js';
+import { INTEGER_TYPE } from '../../types/builtin-types.js';
 
 /**
  * A sink node that consumes an async iterable for side effects.
@@ -25,7 +25,7 @@ export class SinkNode extends PlanNode {
 		return {
 			typeClass: 'scalar',
 			isReadOnly: true,
-			affinity: SqlDataType.INTEGER,
+			logicalType: INTEGER_TYPE,
 			nullable: false
 		};
 	}

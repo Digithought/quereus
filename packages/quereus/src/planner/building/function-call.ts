@@ -5,11 +5,12 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import * as AST from "../../parser/ast.js";
 import { ScalarPlanNode } from "../nodes/plan-node.js";
-import { isAggregateFunctionSchema } from '../../schema/function.js';
+import { isAggregateFunctionSchema, isScalarFunctionSchema } from '../../schema/function.js';
 import { buildExpression } from "./expression.js";
 import { ScalarFunctionCallNode } from "../nodes/function.js";
 import { resolveFunctionSchema } from "./schema-resolution.js";
 import { CapabilityDetectors } from '../framework/characteristics.js';
+import type { ScalarType } from "../../common/datatype.js";
 
 export function buildFunctionCall(ctx: PlanningContext, expr: AST.FunctionExpr, allowAggregates: boolean): ScalarPlanNode {
 	// In HAVING context, check if this function matches an existing aggregate
@@ -70,6 +71,25 @@ export function buildFunctionCall(ctx: PlanningContext, expr: AST.FunctionExpr, 
 		// Build arguments for aggregate function
 		const args = expr.args.map(arg => buildExpression(ctx, arg, false)); // Aggregates can't contain other aggregates
 
+		// Perform type inference if available
+		let inferredType: ScalarType | undefined;
+		if (functionSchema.inferReturnType) {
+			const argTypes = args.map(arg => arg.getType().logicalType);
+
+			// Validate argument types if validator is provided
+			if (functionSchema.validateArgTypes && !functionSchema.validateArgTypes(argTypes)) {
+				throw new QuereusError(
+					`Invalid argument types for aggregate function ${expr.name}`,
+					StatusCode.MISMATCH,
+					undefined,
+					expr.loc?.start.line,
+					expr.loc?.start.column
+				);
+			}
+
+			inferredType = functionSchema.inferReturnType(argTypes);
+		}
+
 		return new AggregateFunctionCallNode(
 			ctx.scope,
 			expr,
@@ -78,11 +98,32 @@ export function buildFunctionCall(ctx: PlanningContext, expr: AST.FunctionExpr, 
 			args,
 			expr.distinct ?? false, // Use the distinct field from the AST
 			undefined, // orderBy - TODO: parse from expr
-			undefined  // filter - TODO: parse from expr
+			undefined,  // filter - TODO: parse from expr
+			inferredType
 		);
 	} else {
 		// Regular scalar function
 		const args = expr.args.map(arg => buildExpression(ctx, arg, allowAggregates));
-		return new ScalarFunctionCallNode(ctx.scope, expr, functionSchema, args);
+
+		// Perform type inference if available
+		let inferredType: ScalarType | undefined;
+		if (isScalarFunctionSchema(functionSchema) && functionSchema.inferReturnType) {
+			const argTypes = args.map(arg => arg.getType().logicalType);
+
+			// Validate argument types if validator is provided
+			if (functionSchema.validateArgTypes && !functionSchema.validateArgTypes(argTypes)) {
+				throw new QuereusError(
+					`Invalid argument types for function ${expr.name}`,
+					StatusCode.MISMATCH,
+					undefined,
+					expr.loc?.start.line,
+					expr.loc?.start.column
+				);
+			}
+
+			inferredType = functionSchema.inferReturnType(argTypes);
+		}
+
+		return new ScalarFunctionCallNode(ctx.scope, expr, functionSchema, args, inferredType);
 	}
 }

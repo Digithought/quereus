@@ -1,7 +1,7 @@
 import type { Row } from "../../common/types.js";
 import type { SqlValue } from "../../common/types.js";
-import { SqlDataType } from "../../common/types.js";
 import { createTableValuedFunction } from "../registration.js";
+import { INTEGER_TYPE } from "../../types/builtin-types.js";
 
 // Generate a sequence of numbers (table-valued function)
 export const generateSeriesFunc = createTableValuedFunction(
@@ -18,7 +18,7 @@ export const generateSeriesFunc = createTableValuedFunction(
 					name: 'value',
 					type: {
 						typeClass: 'scalar',
-						affinity: SqlDataType.INTEGER,
+						logicalType: INTEGER_TYPE,
 						nullable: false,
 						isReadOnly: true
 					},

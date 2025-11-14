@@ -197,7 +197,7 @@ export function buildInsertStmt(
 				name: contextVar.name,
 				type: {
 					typeClass: 'scalar' as const,
-					affinity: contextVar.affinity,
+					logicalType: contextVar.logicalType,
 					nullable: !contextVar.notNull,
 					isReadOnly: true
 				},
@@ -287,7 +287,7 @@ export function buildInsertStmt(
 		name: col.name,
 		type: {
 			typeClass: 'scalar' as const,
-			affinity: col.affinity,
+			logicalType: col.logicalType,
 			nullable: true, // OLD values are always NULL for INSERT
 			isReadOnly: false
 		},
@@ -299,7 +299,7 @@ export function buildInsertStmt(
 		name: col.name,
 		type: {
 			typeClass: 'scalar' as const,
-			affinity: col.affinity,
+			logicalType: col.logicalType,
 			nullable: !col.notNull,
 			isReadOnly: false
 		},

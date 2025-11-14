@@ -535,6 +535,7 @@ type SqlParameters = Record<string, SqlValue> | SqlValue[];
 | `DATE` | `string` | ISO 8601 date: `"2024-01-15"` |
 | `TIME` | `string` | ISO 8601 time: `"14:30:00"` |
 | `DATETIME` | `string` | ISO 8601 datetime: `"2024-01-15T14:30:00"` |
+| `TIMESPAN` | `string` | ISO 8601 duration: `"PT1H30M"` (1 hour 30 minutes) |
 | `JSON` | `string` | Validated JSON string |
 
 ### Temporal Types (DATE, TIME, DATETIME)
@@ -593,7 +594,72 @@ for await (const event of db.eval(`
 - `date(value)` - Convert to DATE type
 - `time(value)` - Convert to TIME type
 - `datetime(value)` - Convert to DATETIME type
+- `timespan(value)` - Convert to TIMESPAN type
 - Special value: `datetime('now')` returns current timestamp
+
+### TIMESPAN Type
+
+Quereus has a native TIMESPAN type for representing durations and intervals:
+
+```typescript
+// Create table with timespan column
+await db.exec(`
+  create table events (
+    id integer primary key,
+    name text,
+    duration timespan
+  )
+`);
+
+// Insert timespan values - ISO 8601 duration strings
+await db.exec(`
+  insert into events values
+    (1, 'Meeting', 'PT1H30M'),        -- 1 hour 30 minutes
+    (2, 'Workshop', 'PT3H'),          -- 3 hours
+    (3, 'Sprint', 'P14D')             -- 14 days
+`);
+
+// Use timespan() function with human-readable strings
+await db.exec(`
+  insert into events values
+    (4, 'Break', timespan('15 minutes')),
+    (5, 'Project', timespan('2 weeks 3 days'))
+`);
+
+// Temporal arithmetic: add timespan to datetime
+for await (const event of db.eval(`
+  select
+    name,
+    duration,
+    datetime('2024-01-15T09:00:00') + duration as end_time
+  from events
+`)) {
+  console.log(event);
+}
+
+// Subtract timespans
+const diff = await db.prepare(`
+  select timespan('2 hours') - timespan('30 minutes') as remaining
+`).get();
+console.log(diff.remaining); // "PT1H30M"
+
+// Compare timespans
+for await (const event of db.eval(`
+  select * from events
+  where duration > timespan('1 hour')
+  order by duration
+`)) {
+  console.log(event);
+}
+```
+
+**TIMESPAN Features:**
+- ISO 8601 duration string format (`"PT1H30M"`, `"P1DT2H"`)
+- Human-readable parsing via `timespan()` function
+- Arithmetic operations with DATE, TIME, DATETIME types
+- Addition and subtraction of timespans
+- Proper comparison and ordering
+- Stored as TEXT with validation
 
 ### JSON Type
 

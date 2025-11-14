@@ -1,5 +1,6 @@
 import type { Expression } from "../parser/ast.js";
-import type { DeepReadonly, SqlDataType } from "./types.js";
+import type { DeepReadonly } from "./types.js";
+import type { LogicalType } from "../types/logical-type.js";
 
 export type TypeClass = 'scalar' | 'relation' | 'list' | 'void';
 
@@ -13,16 +14,14 @@ export type BaseType = DeepReadonly<{
  */
 export type ScalarType = DeepReadonly<BaseType & {
 	typeClass: 'scalar';
-	/** The type affinity of the scalar value. */
-	affinity: SqlDataType;
+	/** The logical type defining semantics and behavior */
+	logicalType: LogicalType;
 	/** The optional collation name of the scalar value. */
 	collationName?: string;
 	/** If nullable, null values are allowed and may be encountered in inference contexts too. */
 	nullable: boolean;
 	/** Indicates that it is inferred const, computed, or otherwise immutable.  Missing assumes false. */
 	isReadOnly?: boolean;
-	/** For literals or inferred constants, we can know the specific type */
-	datatype?: SqlDataType;
 	/** TODO: Based on integrity constraints, in some cases we can know of further restrictions on the set of values, which may enabled certain optimizations. */
 	//constraints?: ReadonlyArray<ColumnConstraint>;
 }>

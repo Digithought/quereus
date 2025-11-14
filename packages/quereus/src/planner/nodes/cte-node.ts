@@ -1,10 +1,10 @@
 import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor, isRelationalNode } from './plan-node.js';
 import type { RelationType, ScalarType } from '../../common/datatype.js';
-import { SqlDataType } from '../../common/types.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import type { CTECapable } from '../framework/characteristics.js';
+import { TEXT_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Narrow contract that any node must satisfy to be placed in the CTE lookup map
@@ -74,7 +74,7 @@ export class CTENode extends PlanNode implements CTEPlanNode, CTEScopeNode, CTEC
 			}
 			// Fallback: generic TEXT scalar if nothing else is available (should not normally happen)
 			if (!resolvedType) {
-				resolvedType = { typeClass: 'scalar', affinity: SqlDataType.TEXT, nullable: true, isReadOnly: false } satisfies ScalarType;
+				resolvedType = { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: false } satisfies ScalarType;
 			}
 			return {
 				id: srcAttr?.id ?? PlanNode.nextAttrId(),

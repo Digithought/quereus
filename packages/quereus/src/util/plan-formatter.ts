@@ -21,10 +21,7 @@ export function formatExpressionList(nodes: readonly ScalarPlanNode[]): string {
  * Format a scalar type to a simple string representation.
  */
 export function formatScalarType(type: ScalarType): string {
-	if (type.datatype !== undefined) {
-		return SqlDataType[type.datatype];
-	}
-	return SqlDataType[type.affinity];
+	return type.logicalType.name;
 }
 
 /**

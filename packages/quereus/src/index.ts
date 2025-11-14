@@ -63,7 +63,8 @@ export {
 export {
 	DATE_TYPE,
 	TIME_TYPE,
-	DATETIME_TYPE
+	DATETIME_TYPE,
+	TIMESPAN_TYPE
 } from './types/temporal-types.js';
 export { JSON_TYPE } from './types/json-type.js';
 export {

@@ -6,6 +6,7 @@ import type { FunctionSchema } from '../../schema/function.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import type * as AST from '../../parser/ast.js';
 import { formatExpressionList, formatScalarType } from '../../util/plan-formatter.js';
+import { NULL_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Represents an aggregate function call within a SQL query.
@@ -13,6 +14,7 @@ import { formatExpressionList, formatScalarType } from '../../util/plan-formatte
  */
 export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNode {
 	readonly nodeType = PlanNodeType.ScalarFunctionCall; // Using same type as scalar functions
+	private readonly _inferredType?: ScalarType;
 
 	constructor(
 		scope: Scope,
@@ -22,12 +24,19 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 		public readonly args: ReadonlyArray<ScalarPlanNode>,
 		public readonly isDistinct: boolean = false,
 		public readonly orderBy?: ReadonlyArray<{ expression: ScalarPlanNode; direction: 'asc' | 'desc' }>,
-		public readonly filter?: ScalarPlanNode
+		public readonly filter?: ScalarPlanNode,
+		inferredType?: ScalarType
 	) {
 		super(scope);
+		this._inferredType = inferredType;
 	}
 
 	getType(): ScalarType {
+		// Use inferred type if available
+		if (this._inferredType) {
+			return this._inferredType;
+		}
+
 		// Get the return type from the function schema
 		if (isAggregateFunctionSchema(this.functionSchema)) {
 			return this.functionSchema.returnType;
@@ -36,7 +45,7 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 		// Fallback for non-aggregate functions (shouldn't happen)
 		return {
 			typeClass: 'scalar',
-			affinity: 0,
+			logicalType: NULL_TYPE,
 			nullable: true, // Aggregates can return NULL
 			isReadOnly: true
 		};
@@ -109,7 +118,8 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 			newArgs,
 			this.isDistinct,
 			newOrderBy,
-			newFilter
+			newFilter,
+			this._inferredType
 		);
 	}
 

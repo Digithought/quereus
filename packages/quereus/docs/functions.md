@@ -347,6 +347,15 @@ Quereus uses conversion functions instead of the CAST operator for type conversi
     *   **Returns:** TEXT in `YYYY-MM-DDTHH:MM:SS` format. Validates and normalizes datetime strings. Special value `'now'` returns current timestamp.
     *   **Example:** `datetime('2024-01-15T14:30:00')` returns `'2024-01-15T14:30:00'`, `datetime('now')` returns current timestamp.
 
+*   `timespan(X)`
+    *   **Description:** Converts value X to TIMESPAN type (ISO 8601 duration string). Accepts ISO 8601 duration strings or human-readable duration strings.
+    *   **Arguments:** `X` (TEXT - ISO 8601 duration or human-readable string like '1 hour 30 minutes').
+    *   **Returns:** TEXT in ISO 8601 duration format (e.g., `'PT1H30M'`, `'P14D'`). Validates and normalizes duration strings.
+    *   **Human-readable format:** Supports natural language like `'1 hour 30 minutes'`, `'2 weeks 3 days'`, `'45 minutes'`, etc.
+    *   **ISO 8601 format:** Standard duration strings like `'PT1H30M'` (1 hour 30 minutes), `'P14D'` (14 days), `'PT2H'` (2 hours).
+    *   **Arithmetic:** TIMESPAN values can be added to/subtracted from DATE, TIME, and DATETIME values, and can be added/subtracted with other TIMESPAN values.
+    *   **Example:** `timespan('1 hour 30 minutes')` returns `'PT1H30M'`, `timespan('PT2H')` returns `'PT2H'`, `timespan('2 weeks')` returns `'P14D'`.
+
 *   `json(X)`
     *   **Description:** Converts value X to JSON type (validated JSON string).
     *   **Arguments:** `X` (Any type).
@@ -384,6 +393,84 @@ These functions manipulate date and time values. They rely heavily on the underl
     *   **Arguments:** `format` (TEXT - see docs for specifiers like %Y, %m, %d), `timestring`, `modifier` (Optional, zero or more).
     *   **Returns:** A TEXT string or `NULL` on error.
     *   **Example:** `strftime('%Y-%m-%d %H:%M', 'now')`, `strftime('%W', '2024-01-15')` (Week number).
+
+## Timespan Functions
+
+These functions extract components or convert TIMESPAN values to different units.
+
+### Extraction Functions
+
+Extract individual components from a timespan:
+
+*   `timespan_years(ts)`
+    *   **Description:** Extracts the years component from a TIMESPAN.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** INTEGER representing the years component.
+    *   **Example:** `timespan_years(timespan('1 year 2 months'))` returns `1`.
+
+*   `timespan_months(ts)`
+    *   **Description:** Extracts the months component from a TIMESPAN.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** INTEGER representing the months component.
+    *   **Example:** `timespan_months(timespan('1 year 2 months'))` returns `2`.
+
+*   `timespan_weeks(ts)`
+    *   **Description:** Extracts the weeks component from a TIMESPAN.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** INTEGER representing the weeks component.
+    *   **Example:** `timespan_weeks(timespan('2 weeks 3 days'))` returns `2`.
+
+*   `timespan_days(ts)`
+    *   **Description:** Extracts the days component from a TIMESPAN.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** INTEGER representing the days component.
+    *   **Example:** `timespan_days(timespan('2 weeks 3 days'))` returns `3`.
+
+*   `timespan_hours(ts)`
+    *   **Description:** Extracts the hours component from a TIMESPAN.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** INTEGER representing the hours component.
+    *   **Example:** `timespan_hours(timespan('2 days 3 hours'))` returns `3`.
+
+*   `timespan_minutes(ts)`
+    *   **Description:** Extracts the minutes component from a TIMESPAN.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** INTEGER representing the minutes component.
+    *   **Example:** `timespan_minutes(timespan('1 hour 30 minutes'))` returns `30`.
+
+*   `timespan_seconds(ts)`
+    *   **Description:** Extracts the seconds component from a TIMESPAN (including fractional seconds).
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** REAL representing the seconds component.
+    *   **Example:** `timespan_seconds(timespan('1 minute 30.5 seconds'))` returns `30.5`.
+
+### Total Functions
+
+Convert entire timespan to a single unit:
+
+*   `timespan_total_seconds(ts)`
+    *   **Description:** Converts the entire TIMESPAN to seconds.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** REAL representing the total duration in seconds.
+    *   **Example:** `timespan_total_seconds(timespan('1 hour'))` returns `3600`.
+
+*   `timespan_total_minutes(ts)`
+    *   **Description:** Converts the entire TIMESPAN to minutes.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** REAL representing the total duration in minutes.
+    *   **Example:** `timespan_total_minutes(timespan('1 hour 30 minutes'))` returns `90`.
+
+*   `timespan_total_hours(ts)`
+    *   **Description:** Converts the entire TIMESPAN to hours.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** REAL representing the total duration in hours.
+    *   **Example:** `timespan_total_hours(timespan('2 days'))` returns `48`.
+
+*   `timespan_total_days(ts)`
+    *   **Description:** Converts the entire TIMESPAN to days.
+    *   **Arguments:** `ts` (TIMESPAN).
+    *   **Returns:** REAL representing the total duration in days.
+    *   **Example:** `timespan_total_days(timespan('1 week'))` returns `7`.
 
 *   `time(timestring, modifier, ...)`
     *   **Description:** With modifiers: Returns the time in `HH:MM:SS` format after applying time arithmetic. Without modifiers: Acts as type conversion function (see Type Conversion Functions above).

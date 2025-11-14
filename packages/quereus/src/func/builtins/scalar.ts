@@ -1,10 +1,64 @@
-import type { SqlValue } from '../../common/types.js';
+import type { SqlValue, DeepReadonly } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
 import { compareSqlValues, getSqlDataTypeName } from '../../util/comparison.js';
+import type { LogicalType } from '../../types/logical-type.js';
+import { ANY_TYPE, INTEGER_TYPE, REAL_TYPE } from '../../types/builtin-types.js';
+
+/**
+ * Find the common type among multiple logical types.
+ * This implements type promotion rules for polymorphic functions.
+ *
+ * Rules:
+ * 1. If all types are the same, return that type
+ * 2. If mixing INTEGER and REAL, return REAL (numeric promotion)
+ * 3. Otherwise, return the first type (conservative approach)
+ *
+ * @param types Array of logical types to find common type for
+ * @returns The common logical type
+ */
+function findCommonType(types: ReadonlyArray<DeepReadonly<LogicalType>>): DeepReadonly<LogicalType> {
+	if (types.length === 0) return ANY_TYPE;
+	if (types.length === 1) return types[0];
+
+	// Check if all types are the same
+	const firstType = types[0];
+	const allSame = types.every(t => t.name === firstType.name);
+	if (allSame) return firstType;
+
+	// Check for numeric type promotion (INTEGER + REAL -> REAL)
+	const allNumeric = types.every(t => t.isNumeric === true);
+	if (allNumeric) {
+		// If any type is REAL, return REAL
+		const hasReal = types.some(t => t.name === 'REAL');
+		if (hasReal) return REAL_TYPE;
+		// All INTEGER
+		return INTEGER_TYPE;
+	}
+
+	// For non-numeric types, return the first type (conservative)
+	// In a more sophisticated implementation, we could:
+	// - Find a common supertype
+	// - Return ANY_TYPE if types are incompatible
+	// - Throw an error for incompatible types
+	return firstType;
+}
 
 // --- abs(X) ---
 export const absFunc = createScalarFunction(
-	{ name: 'abs', numArgs: 1, deterministic: true },
+	{
+		name: 'abs',
+		numArgs: 1,
+		deterministic: true,
+		// Type inference: return the same type as the input for numeric types
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: false,
+			isReadOnly: true
+		}),
+		// Validate that the argument is numeric
+		validateArgTypes: (argTypes) => argTypes[0].isNumeric === true
+	},
 	(arg: SqlValue): SqlValue => {
 		if (arg === null) return null;
 		if (typeof arg === 'bigint') return arg < 0n ? -arg : arg;
@@ -16,7 +70,19 @@ export const absFunc = createScalarFunction(
 
 // --- round(X, Y?) ---
 export const roundFunc = createScalarFunction(
-	{ name: 'round', numArgs: -1, deterministic: true },
+	{
+		name: 'round',
+		numArgs: -1,
+		deterministic: true,
+		// Type inference: return the same type as the input for numeric types
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: false,
+			isReadOnly: true
+		}),
+		validateArgTypes: (argTypes) => argTypes[0].isNumeric === true
+	},
 	(numVal: SqlValue, placesVal?: SqlValue): SqlValue => {
 		if (numVal === null) return null;
 		const x = Number(numVal);
@@ -40,7 +106,18 @@ export const roundFunc = createScalarFunction(
 
 // --- coalesce(...) ---
 export const coalesceFunc = createScalarFunction(
-	{ name: 'coalesce', numArgs: -1, deterministic: true },
+	{
+		name: 'coalesce',
+		numArgs: -1,
+		deterministic: true,
+		// Type inference: find the common type among all arguments
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: findCommonType(argTypes),
+			nullable: true, // coalesce can return null if all args are null
+			isReadOnly: true
+		})
+	},
 	(...args: SqlValue[]): SqlValue => {
 		for (const arg of args) {
 			if (arg !== null) {
@@ -53,7 +130,18 @@ export const coalesceFunc = createScalarFunction(
 
 // --- nullif(X, Y) ---
 export const nullifFunc = createScalarFunction(
-	{ name: 'nullif', numArgs: 2, deterministic: true },
+	{
+		name: 'nullif',
+		numArgs: 2,
+		deterministic: true,
+		// Type inference: return the type of the first argument (nullable)
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: true, // nullif can always return null
+			isReadOnly: true
+		})
+	},
 	(argX: SqlValue, argY: SqlValue): SqlValue => {
 		const comparison = compareSqlValues(argX, argY);
 		return comparison === 0 ? null : argX;
@@ -96,7 +184,18 @@ export const randomblobFunc = createScalarFunction(
 
 // --- iif(X, Y, Z) ---
 export const iifFunc = createScalarFunction(
-	{ name: 'iif', numArgs: 3, deterministic: true },
+	{
+		name: 'iif',
+		numArgs: 3,
+		deterministic: true,
+		// Type inference: find the common type between the true and false values
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: findCommonType([argTypes[1], argTypes[2]]), // Common type of Y and Z
+			nullable: true, // Could return either Y or Z, so nullable if either is
+			isReadOnly: true
+		})
+	},
 	(condition: SqlValue, trueVal: SqlValue, falseVal: SqlValue): SqlValue => {
 		let isTrue: boolean;
 		if (condition === null) {
@@ -118,7 +217,19 @@ export const iifFunc = createScalarFunction(
 
 // --- sqrt(X) ---
 export const sqrtFunc = createScalarFunction(
-	{ name: 'sqrt', numArgs: 1, deterministic: true },
+	{
+		name: 'sqrt',
+		numArgs: 1,
+		deterministic: true,
+		// Type inference: sqrt always returns REAL (even for INTEGER input)
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0].name === 'INTEGER' ? argTypes[0] : argTypes[0], // Keep input type
+			nullable: false,
+			isReadOnly: true
+		}),
+		validateArgTypes: (argTypes) => argTypes[0].isNumeric === true
+	},
 	(arg: SqlValue): SqlValue => {
 		if (arg === null) return null;
 		const num = Number(arg);
@@ -149,7 +260,19 @@ export const powerFunc = createScalarFunction(
 
 // --- floor(X) ---
 export const floorFunc = createScalarFunction(
-	{ name: 'floor', numArgs: 1, deterministic: true },
+	{
+		name: 'floor',
+		numArgs: 1,
+		deterministic: true,
+		// Type inference: preserve input type
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: false,
+			isReadOnly: true
+		}),
+		validateArgTypes: (argTypes) => argTypes[0].isNumeric === true
+	},
 	(arg: SqlValue): SqlValue => {
 		if (arg === null) return null;
 		const num = Number(arg);
@@ -167,19 +290,41 @@ const ceil = (arg: SqlValue): SqlValue => {
 	return Math.ceil(num);
 };
 
+const ceilTypeInference = {
+	inferReturnType: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ({
+		typeClass: 'scalar' as const,
+		logicalType: argTypes[0],
+		nullable: false,
+		isReadOnly: true
+	}),
+	validateArgTypes: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => argTypes[0].isNumeric === true
+};
+
 export const ceilFunc = createScalarFunction(
-	{ name: 'ceil', numArgs: 1, deterministic: true },
+	{ name: 'ceil', numArgs: 1, deterministic: true, ...ceilTypeInference },
 	ceil
 );
 
 export const ceilingFunc = createScalarFunction(
-	{ name: 'ceiling', numArgs: 1, deterministic: true },
+	{ name: 'ceiling', numArgs: 1, deterministic: true, ...ceilTypeInference },
 	ceil
 );
 
 // Math clamp function
 export const clampFunc = createScalarFunction(
-	{ name: 'clamp', numArgs: 3, deterministic: true },
+	{
+		name: 'clamp',
+		numArgs: 3,
+		deterministic: true,
+		// Type inference: return the type of the first argument (value)
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: true,
+			isReadOnly: true
+		}),
+		validateArgTypes: (argTypes) => argTypes[0].isNumeric === true && argTypes[1].isNumeric === true && argTypes[2].isNumeric === true
+	},
 	(value: SqlValue, min: SqlValue, max: SqlValue): SqlValue => {
 		const v = Number(value);
 		const minVal = Number(min);
@@ -192,7 +337,18 @@ export const clampFunc = createScalarFunction(
 
 // Greatest-of function
 export const greatestFunc = createScalarFunction(
-	{ name: 'greatest', numArgs: -1, deterministic: true },
+	{
+		name: 'greatest',
+		numArgs: -1,
+		deterministic: true,
+		// Type inference: find the common type among all arguments
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: findCommonType(argTypes),
+			nullable: true,
+			isReadOnly: true
+		})
+	},
 	(...args: SqlValue[]): SqlValue => {
 		if (args.length === 0) return null;
 		return args.reduce((max, current) => {
@@ -206,7 +362,18 @@ export const greatestFunc = createScalarFunction(
 
 // Least-of function
 export const leastFunc = createScalarFunction(
-	{ name: 'least', numArgs: -1, deterministic: true },
+	{
+		name: 'least',
+		numArgs: -1,
+		deterministic: true,
+		// Type inference: find the common type among all arguments
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: findCommonType(argTypes),
+			nullable: true,
+			isReadOnly: true
+		})
+	},
 	(...args: SqlValue[]): SqlValue => {
 		if (args.length === 0) return null;
 		return args.reduce((min, current) => {
@@ -220,7 +387,31 @@ export const leastFunc = createScalarFunction(
 
 // Choose function
 export const chooseFunc = createScalarFunction(
-	{ name: 'choose', numArgs: -1, deterministic: true },
+	{
+		name: 'choose',
+		numArgs: -1,
+		deterministic: true,
+		// Type inference: find the common type among all value arguments (skip index at position 0)
+		inferReturnType: (argTypes) => {
+			if (argTypes.length < 2) {
+				// Need at least index and one value
+				return {
+					typeClass: 'scalar',
+					logicalType: argTypes[0] || ANY_TYPE,
+					nullable: true,
+					isReadOnly: true
+				};
+			}
+			// Find common type among all value arguments (skip the index at position 0)
+			const valueTypes = argTypes.slice(1);
+			return {
+				typeClass: 'scalar',
+				logicalType: findCommonType(valueTypes),
+				nullable: true,
+				isReadOnly: true
+			};
+		}
+	},
 	(...args: SqlValue[]): SqlValue => {
 		if (args.length === 0) return null;
 		const index = Number(args[0]);

@@ -1,5 +1,6 @@
 import type { ScalarType } from '../common/datatype.js';
-import { type SqlParameters, type SqlValue, SqlDataType } from '../common/types.js';
+import { type SqlParameters, type SqlValue } from '../common/types.js';
+import { inferLogicalTypeFromValue } from '../common/type-inference.js';
 
 export function getParameterTypeHints(params: SqlParameters | undefined): Map<string | number, ScalarType> | undefined {
 	let results: Map<string | number, ScalarType> | undefined;
@@ -22,20 +23,12 @@ export function getParameterTypeHints(params: SqlParameters | undefined): Map<st
 }
 
 function getParameterScalarType(value: SqlValue): ScalarType {
-	let affinity: SqlDataType;
-	if (value === null) affinity = SqlDataType.NULL;
-	else if (typeof value === 'number') affinity = SqlDataType.REAL;
-	else if (typeof value === 'bigint') affinity = SqlDataType.INTEGER;
-	else if (typeof value === 'string') affinity = SqlDataType.TEXT;
-	else if (value instanceof Uint8Array) affinity = SqlDataType.BLOB;
-	else if (typeof value === 'boolean') affinity = SqlDataType.INTEGER;
-	else affinity = SqlDataType.BLOB;
+	const logicalType = inferLogicalTypeFromValue(value);
 
 	return {
 		typeClass: 'scalar',
-		affinity: affinity,
+		logicalType,
 		nullable: value === null,
 		isReadOnly: true,
-		datatype: affinity,
 	};
 }

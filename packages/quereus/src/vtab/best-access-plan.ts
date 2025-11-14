@@ -5,7 +5,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { quereusError } from '../common/errors.js';
-import { StatusCode, type SqlDataType, type SqlValue } from '../common/types.js';
+import { StatusCode, type SqlValue } from '../common/types.js';
+import type { LogicalType } from '../types/logical-type.js';
 
 /**
  * Constraint operators that can be pushed down to virtual tables
@@ -20,8 +21,8 @@ export interface ColumnMeta {
 	index: number;
 	/** Column name */
 	name: string;
-	/** SQL type information */
-	type: SqlDataType;
+	/** Logical type information */
+	type: LogicalType;
 	/** Whether this column is part of the primary key */
 	isPrimaryKey: boolean;
 	/** Whether this column has a unique constraint */

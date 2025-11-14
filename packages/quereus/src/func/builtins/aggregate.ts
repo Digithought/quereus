@@ -87,7 +87,18 @@ export const avgFunc = createAggregateFunction(
 
 // --- MIN(X) ---
 export const minFunc = createAggregateFunction(
-	{ name: 'min', numArgs: 1, initialValue: null },
+	{
+		name: 'min',
+		numArgs: 1,
+		initialValue: null,
+		// Type inference: return the same type as the input argument
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: true, // MIN can return NULL if all values are NULL or no rows
+			isReadOnly: true
+		})
+	},
 	(acc: { min: SqlValue } | null, value: SqlValue): { min: SqlValue } | null => {
 		if (value === null) return acc; // Ignore NULLs
 		if (acc === null) return { min: value }; // First non-null value
@@ -100,7 +111,18 @@ export const minFunc = createAggregateFunction(
 
 // --- MAX(X) ---
 export const maxFunc = createAggregateFunction(
-	{ name: 'max', numArgs: 1, initialValue: null },
+	{
+		name: 'max',
+		numArgs: 1,
+		initialValue: null,
+		// Type inference: return the same type as the input argument
+		inferReturnType: (argTypes) => ({
+			typeClass: 'scalar',
+			logicalType: argTypes[0],
+			nullable: true, // MAX can return NULL if all values are NULL or no rows
+			isReadOnly: true
+		})
+	},
 	(acc: { max: SqlValue } | null, value: SqlValue): { max: SqlValue } | null => {
 		if (value === null) return acc; // Ignore NULLs
 		if (acc === null) return { max: value }; // First non-null value

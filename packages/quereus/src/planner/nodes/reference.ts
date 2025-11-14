@@ -38,7 +38,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 				name: column.name,
 				type: {
 					typeClass: 'scalar' as const,
-					affinity: column.affinity,
+					logicalType: column.logicalType,
 					nullable: !column.notNull,
 					isReadOnly: false,
 					collationName: column.collation

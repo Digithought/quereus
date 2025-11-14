@@ -29,9 +29,9 @@ describe("Memory VTable Module", () => {
 	function createTableSchema(
 		name: string = 'test_table',
 		columns: ColumnSchema[] = [
-			{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-			{ name: 'name', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-			{ name: 'value', logicalType: REAL_TYPE, affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+			{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+			{ name: 'name', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+			{ name: 'value', logicalType: REAL_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 		],
 		primaryKey: string[] = ['id']
 	): TableSchema {
@@ -116,10 +116,10 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			schema = createTableSchema('products', [
-				{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'name', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'price', logicalType: REAL_TYPE, affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'category', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'name', logicalType: TEXT_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'price', logicalType: REAL_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'category', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
 		});
@@ -215,8 +215,8 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			const schema = createTableSchema('users', [
-				{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'email', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'email', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
 		});
@@ -256,9 +256,9 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			const schema = createTableSchema('user_sessions', [
-				{ name: 'user_id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'session_id', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'created_at', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'user_id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'session_id', logicalType: TEXT_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'created_at', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['user_id', 'session_id']);
 			table = module.create(db, schema);
 		});
@@ -322,10 +322,10 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			schema = createTableSchema('employees', [
-				{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'name', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'department', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'salary', logicalType: REAL_TYPE, affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'name', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'department', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'salary', logicalType: REAL_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
 		});
@@ -379,8 +379,8 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			const schema = createTableSchema('accounts', [
-				{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'balance', logicalType: REAL_TYPE, affinity: SqlDataType.REAL, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'balance', logicalType: REAL_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
 
@@ -455,8 +455,8 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			const schema = createTableSchema('test_table', [
-				{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'name', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'name', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
 			await table.update('insert', [1, 'test']);
@@ -530,11 +530,11 @@ describe("Memory VTable Module", () => {
 
 		beforeEach(async () => {
 			const schema = createTableSchema('mixed_types', [
-				{ name: 'id', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'text_col', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'real_col', logicalType: REAL_TYPE, affinity: SqlDataType.REAL, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'blob_col', logicalType: BLOB_TYPE, affinity: SqlDataType.BLOB, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'null_col', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'text_col', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'real_col', logicalType: REAL_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'blob_col', logicalType: BLOB_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'null_col', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
 		});
@@ -559,9 +559,9 @@ describe("Memory VTable Module", () => {
 
 		it("should handle NULL in composite primary keys", async () => {
 			const schema = createTableSchema('composite_null', [
-				{ name: 'part1', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'part2', logicalType: INTEGER_TYPE, affinity: SqlDataType.INTEGER, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
-				{ name: 'value', logicalType: TEXT_TYPE, affinity: SqlDataType.TEXT, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+				{ name: 'part1', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'part2', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'value', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['part1', 'part2']);
 			const table2 = module.create(db, schema);
 

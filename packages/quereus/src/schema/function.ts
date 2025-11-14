@@ -1,9 +1,10 @@
-import type { MaybePromise, Row, SqlValue } from '../common/types.js';
+import type { MaybePromise, Row, SqlValue, DeepReadonly } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
 import { SqlDataType } from '../common/types.js';
 import type { Database } from '../core/database.js';
 import type { BaseType, ScalarType, RelationType } from '../common/datatype.js';
 import type { AggValue } from '../func/registration.js';
+import type { LogicalType } from '../types/logical-type.js';
 
 /**
  * Type for a scalar function implementation.
@@ -74,6 +75,21 @@ export interface ScalarFunctionSchema extends BaseFunctionSchema {
 	returnType: ScalarType;
 	/** Direct scalar function implementation */
 	implementation: ScalarFunc;
+	/**
+	 * Optional type inference function for polymorphic functions.
+	 * If provided, this function will be called at planning time to determine
+	 * the return type based on the actual argument types.
+	 * This allows functions like abs() to return INTEGER when given INTEGER,
+	 * and REAL when given REAL.
+	 */
+	inferReturnType?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ScalarType;
+	/**
+	 * Optional argument type validation function.
+	 * If provided, this function will be called at planning time to validate
+	 * that the argument types are acceptable for this function.
+	 * Should return true if types are valid, false otherwise.
+	 */
+	validateArgTypes?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => boolean;
 }
 
 /**
@@ -98,6 +114,18 @@ export interface AggregateFunctionSchema extends BaseFunctionSchema {
 	finalizeFunction: AggregateFinalizer;
 	/** Initial accumulator value for aggregates */
 	initialValue?: AggValue;
+	/**
+	 * Optional type inference function for polymorphic aggregate functions.
+	 * If provided, this function will be called at planning time to determine
+	 * the return type based on the actual argument types.
+	 */
+	inferReturnType?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => ScalarType;
+	/**
+	 * Optional argument type validation function.
+	 * If provided, this function will be called at planning time to validate
+	 * that the argument types are acceptable for this function.
+	 */
+	validateArgTypes?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => boolean;
 }
 
 /**

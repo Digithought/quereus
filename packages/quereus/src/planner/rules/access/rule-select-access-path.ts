@@ -120,7 +120,7 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
 			columns: tableSchema.columns.map((col, index) => ({
 				index,
 				name: col.name,
-				type: col.affinity,
+				type: col.logicalType,
 				isPrimaryKey: col.primaryKey || false,
 				isUnique: col.primaryKey || false // For now, assume only PK columns are unique
 			} as ColumnMeta)),

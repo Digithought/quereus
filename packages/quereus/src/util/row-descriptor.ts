@@ -1,6 +1,6 @@
 import type { RowDescriptor, Attribute } from '../planner/nodes/plan-node.js';
 import type { Row } from '../common/types.js';
-import { SqlDataType } from '../common/types.js';
+import { TEXT_TYPE } from '../types/builtin-types.js';
 
 /**
  * Utility to build a RowDescriptor (attributeId → columnIndex mapping)
@@ -94,7 +94,7 @@ export function buildAttributesFromFlatDescriptor(flatRowDescriptor: RowDescript
 			name: `attr_${attrId}`,
 			type: {
 				typeClass: 'scalar' as const,
-				affinity: SqlDataType.TEXT,
+				logicalType: TEXT_TYPE,
 				nullable: true,
 				isReadOnly: false
 			},

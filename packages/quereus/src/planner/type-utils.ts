@@ -4,8 +4,7 @@ import type { RelationType, ColumnDef, ScalarType, ColRef } from '../common/data
 import { SqlDataType, StatusCode, type DeepReadonly, type SqlValue } from '../common/types.js'; // Import SqlValue and ensure SqlDataType is not type-only
 import type { AstNode } from '../parser/ast.js';
 import { QuereusError } from '../common/errors.js';
-// Note: getAffinity from '../schema/column.js' is used by the ColumnSchema type from table.js itself if that's what we use.
-// If tableSchema.columns are of type from '../schema/column.js', then their affinity is already SqlDataType.
+import { inferLogicalTypeFromValue } from '../common/type-inference.js';
 
 /**
  * Converts a TableSchema (from src/schema/table.ts) to a RelationType (from src/common/datatype.ts).
@@ -17,7 +16,7 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
       name: col.name,
       type: {
 				typeClass: 'scalar',
-				affinity: col.affinity,
+				logicalType: col.logicalType,
 				collationName: col.collation,
 				nullable: !col.notNull,
 				isReadOnly: false,
@@ -53,18 +52,11 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
  * @returns A ScalarType representing the inferred type of the value.
  */
 export function getParameterScalarType(value: SqlValue): ScalarType {
-  let affinity: SqlDataType;
-  if (value === null) affinity = SqlDataType.NULL;
-  else if (typeof value === 'number') affinity = SqlDataType.REAL;
-  else if (typeof value === 'bigint') affinity = SqlDataType.INTEGER;
-  else if (typeof value === 'string') affinity = SqlDataType.TEXT;
-  else if (value instanceof Uint8Array) affinity = SqlDataType.BLOB;
-  else if (typeof value === 'boolean') affinity = SqlDataType.INTEGER; // Store booleans as INTEGER
-  else affinity = SqlDataType.BLOB; // Default for unknown types that might pass as SqlValue
+  const logicalType = inferLogicalTypeFromValue(value);
 
   return {
     typeClass: 'scalar',
-    affinity: affinity,
+    logicalType,
     nullable: true,	// No guarantees about the value, so it's nullable
     isReadOnly: true, // Parameters are read-only within the query execution context
   };
@@ -80,12 +72,12 @@ export function checkRelationsAssignable(source: RelationType, target: RelationT
 	return checkColumnsAssignable(source.columns, target.columns, astNode);
 }
 
-export function columnSchemaToDef(colName: string, colDef: ColumnSchema): { name: string; type: { typeClass: "scalar"; affinity: SqlDataType; collationName: string; nullable: boolean; isReadOnly: false; }; generated: boolean; } {
+export function columnSchemaToDef(colName: string, colDef: ColumnSchema): ColumnDef {
 	return {
 		name: colName,
 		type: {
 			typeClass: 'scalar',
-			affinity: colDef.affinity,
+			logicalType: colDef.logicalType,
 			collationName: colDef.collation,
 			nullable: !colDef.notNull,
 			isReadOnly: false,

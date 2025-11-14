@@ -148,10 +148,14 @@ Quereus uses native JavaScript types for SQL values. Understanding these mapping
 | `REAL` | `number` | `3.14` |
 | `TEXT` | `string` | `"hello"` |
 | `BLOB` | `Uint8Array` | `new Uint8Array([1, 2, 3])` |
-| Date/Time | `string` | `"2024-01-15"`, `"14:30:00"` |
+| `DATE` | `string` | `"2024-01-15"` |
+| `TIME` | `string` | `"14:30:00"` |
+| `DATETIME` | `string` | `"2024-01-15T14:30:00"` |
+| `TIMESPAN` | `string` | `"PT1H30M"` (ISO 8601 duration) |
 
 **Important Notes:**
 - **Dates and times are always strings** in ISO 8601 format (e.g., `date('now')` returns `"2024-01-15"`)
+- **Timespans are ISO 8601 duration strings** (e.g., `"PT1H30M"` for 1 hour 30 minutes)
 - **BLOBs are `Uint8Array`** typed arrays for binary data
 - **Large integers use `bigint`** when they exceed JavaScript's safe integer range (±2^53 - 1)
 - **Query results are objects** with column names as keys: `{ id: 1, name: "Alice" }`

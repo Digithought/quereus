@@ -36,7 +36,7 @@ export function buildDeleteStmt(
         name: contextVar.name,
         type: {
           typeClass: 'scalar' as const,
-          affinity: contextVar.affinity,
+          logicalType: contextVar.logicalType,
           nullable: !contextVar.notNull,
           isReadOnly: true
         },
@@ -77,7 +77,7 @@ export function buildDeleteStmt(
     name: col.name,
     type: {
       typeClass: 'scalar' as const,
-      affinity: col.affinity,
+      logicalType: col.logicalType,
       nullable: !col.notNull,
       isReadOnly: false
     },
@@ -89,7 +89,7 @@ export function buildDeleteStmt(
     name: col.name,
     type: {
       typeClass: 'scalar' as const,
-      affinity: col.affinity,
+      logicalType: col.logicalType,
       nullable: true, // NEW values are always NULL for DELETE
       isReadOnly: false
     },

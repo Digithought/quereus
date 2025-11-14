@@ -1,6 +1,6 @@
 import { registerWindowFunction } from '../../schema/window-function.js';
-import { SqlDataType } from '../../common/types.js';
 import { AggValue } from '../registration.js';
+import { INTEGER_TYPE, REAL_TYPE } from '../../types/builtin-types.js';
 
 // Built-in window function schemas
 export function registerBuiltinWindowFunctions(): void {
@@ -10,7 +10,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 0,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.INTEGER,
+			logicalType: INTEGER_TYPE,
 			nullable: false,
 			isReadOnly: true
 		},
@@ -23,7 +23,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 0,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.INTEGER,
+			logicalType: INTEGER_TYPE,
 			nullable: false,
 			isReadOnly: true
 		},
@@ -36,7 +36,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 0,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.INTEGER,
+			logicalType: INTEGER_TYPE,
 			nullable: false,
 			isReadOnly: true
 		},
@@ -49,7 +49,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 1,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.INTEGER,
+			logicalType: INTEGER_TYPE,
 			nullable: false,
 			isReadOnly: true
 		},
@@ -63,7 +63,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 1,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.INTEGER,
+			logicalType: INTEGER_TYPE,
 			nullable: false,
 			isReadOnly: true
 		},
@@ -83,7 +83,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 1,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.NUMERIC,
+			logicalType: REAL_TYPE,
 			nullable: true,
 			isReadOnly: true
 		},
@@ -104,7 +104,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 1,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.NUMERIC,
+			logicalType: REAL_TYPE,
 			nullable: true,
 			isReadOnly: true
 		},
@@ -127,7 +127,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 1,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.NUMERIC,
+			logicalType: REAL_TYPE,
 			nullable: true,
 			isReadOnly: true
 		},
@@ -148,7 +148,7 @@ export function registerBuiltinWindowFunctions(): void {
 		argCount: 1,
 		returnType: {
 			typeClass: 'scalar',
-			affinity: SqlDataType.NUMERIC,
+			logicalType: REAL_TYPE,
 			nullable: true,
 			isReadOnly: true
 		},

@@ -3,13 +3,13 @@ import { ParameterReferenceNode } from '../nodes/reference.js'; // Corrected imp
 import { BaseScope } from './base.js';
 import { Ambiguous, type Scope } from './scope.js';
 import type { ScalarType } from '../../common/datatype.js';
-import { SqlDataType } from '../../common/types.js';
 import type { PlanNode } from '../nodes/plan-node.js';
+import { TEXT_TYPE } from '../../types/builtin-types.js';
 
 // Default type for parameters when not otherwise specified.
 const DEFAULT_PARAMETER_TYPE: ScalarType = {
 	typeClass: 'scalar',
-	affinity: SqlDataType.TEXT,
+	logicalType: TEXT_TYPE,
 	nullable: true,
 };
 

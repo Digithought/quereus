@@ -7,6 +7,7 @@ import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
 import type * as AST from '../../src/parser/ast.js';
 import { normalizePredicate } from '../../src/planner/analysis/predicate-normalizer.js';
 import { extractConstraints, type TableInfo } from '../../src/planner/analysis/constraint-extractor.js';
+import { TEXT_TYPE } from '../../src/types/builtin-types.js';
 
 describe('Predicate analysis', () => {
 	const scope = EmptyScope.instance as unknown as any;
@@ -15,7 +16,7 @@ describe('Predicate analysis', () => {
 		const expr: AST.ColumnExpr = { type: 'column', schema: undefined as any, table: undefined as any, name } as unknown as AST.ColumnExpr;
 		const columnType = {
 			typeClass: 'scalar' as const,
-			affinity: 3, // TEXT by default
+			logicalType: TEXT_TYPE,
 			nullable: false,
 			isReadOnly: false,
 		};

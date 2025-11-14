@@ -9,7 +9,7 @@ import {
 	NUMERIC_TYPE,
 	ANY_TYPE,
 } from './builtin-types.js';
-import { DATE_TYPE, TIME_TYPE, DATETIME_TYPE } from './temporal-types.js';
+import { DATE_TYPE, TIME_TYPE, DATETIME_TYPE, TIMESPAN_TYPE } from './temporal-types.js';
 import { JSON_TYPE } from './json-type.js';
 import { createLogger } from '../common/logger.js';
 
@@ -36,9 +36,13 @@ class TypeRegistry {
 		this.registerType(DATE_TYPE);
 		this.registerType(TIME_TYPE);
 		this.registerType(DATETIME_TYPE);
+		this.registerType(TIMESPAN_TYPE);
 		this.registerType(JSON_TYPE);
 
 		// Register common aliases
+		// Temporal type aliases
+		this.types.set('INTERVAL', TIMESPAN_TYPE); // SQL standard alias
+		this.types.set('DURATION', TIMESPAN_TYPE); // Alternative name
 		this.types.set('INT', INTEGER_TYPE);
 		this.types.set('BIGINT', INTEGER_TYPE);
 		this.types.set('SMALLINT', INTEGER_TYPE);

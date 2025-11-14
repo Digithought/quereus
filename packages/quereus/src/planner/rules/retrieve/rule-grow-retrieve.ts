@@ -231,7 +231,7 @@ function fallbackIndexSupports(
 		columns: tableSchema.columns.map((col, index) => ({
 			index,
 			name: col.name,
-			type: col.affinity,
+			type: col.logicalType,
 			isPrimaryKey: col.primaryKey || false,
 			isUnique: col.primaryKey || false
 		})),

@@ -36,7 +36,7 @@ export function buildUpdateStmt(
         name: contextVar.name,
         type: {
           typeClass: 'scalar' as const,
-          affinity: contextVar.affinity,
+          logicalType: contextVar.logicalType,
           nullable: !contextVar.notNull,
           isReadOnly: true
         },
@@ -86,7 +86,7 @@ export function buildUpdateStmt(
     name: col.name,
     type: {
       typeClass: 'scalar' as const,
-      affinity: col.affinity,
+      logicalType: col.logicalType,
       nullable: !col.notNull,
       isReadOnly: false
     },
@@ -98,7 +98,7 @@ export function buildUpdateStmt(
     name: col.name,
     type: {
       typeClass: 'scalar' as const,
-      affinity: col.affinity,
+      logicalType: col.logicalType,
       nullable: !col.notNull,
       isReadOnly: false
     },
@@ -151,7 +151,7 @@ export function buildUpdateStmt(
           exp as AST.ColumnExpr,
           {
             typeClass: 'scalar',
-            affinity: tableColumn.affinity,
+            logicalType: tableColumn.logicalType,
             nullable: !tableColumn.notNull,
             isReadOnly: false
           },
@@ -168,7 +168,7 @@ export function buildUpdateStmt(
           exp as AST.ColumnExpr,
           {
             typeClass: 'scalar',
-            affinity: tableColumn.affinity,
+            logicalType: tableColumn.logicalType,
             nullable: !tableColumn.notNull,
             isReadOnly: false
           },
@@ -184,7 +184,7 @@ export function buildUpdateStmt(
           exp as AST.ColumnExpr,
           {
             typeClass: 'scalar',
-            affinity: tableColumn.affinity,
+            logicalType: tableColumn.logicalType,
             nullable: !tableColumn.notNull,
             isReadOnly: false
           },
@@ -200,7 +200,7 @@ export function buildUpdateStmt(
           exp as AST.ColumnExpr,
           {
             typeClass: 'scalar',
-            affinity: tableColumn.affinity,
+            logicalType: tableColumn.logicalType,
             nullable: !tableColumn.notNull,
             isReadOnly: false
           },

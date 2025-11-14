@@ -5,8 +5,8 @@ import * as AST from "../../parser/ast.js";
 import { FunctionReferenceNode, TableReferenceNode } from "../nodes/reference.js";
 import { Ambiguous } from "./scope.js";
 import type { ScalarType } from "../../common/datatype.js";
-import { SqlDataType } from "../../common/types.js";
 import { isScalarFunctionSchema } from "../../schema/function.js";
+import { REAL_TYPE } from "../../types/builtin-types.js";
 
 export class GlobalScope extends BaseScope {
 	constructor(public readonly manager: SchemaManager) {
@@ -25,7 +25,7 @@ export class GlobalScope extends BaseScope {
 			// Get the proper scalar type from the function schema
 			const scalarType: ScalarType = isScalarFunctionSchema(func)
 				? func.returnType
-				: { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: true, isReadOnly: true };
+				: { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: true, isReadOnly: true };
 
 			return new FunctionReferenceNode(this, func, scalarType);
 		}
@@ -54,7 +54,7 @@ export class GlobalScope extends BaseScope {
 			// Get the proper scalar type from the function schema
 			const scalarType: ScalarType = isScalarFunctionSchema(func)
 				? func.returnType
-				: { typeClass: 'scalar', affinity: SqlDataType.NUMERIC, nullable: true, isReadOnly: true };
+				: { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: true, isReadOnly: true };
 
 			return new FunctionReferenceNode(this, func, scalarType);
 		}
