@@ -73,3 +73,19 @@ export function getPhysicalType(value: SqlValue): PhysicalType {
 	return PhysicalType.NULL;
 }
 
+/**
+ * Get a human-readable name for a physical type code.
+ * Useful for error messages and debugging.
+ */
+export function physicalTypeName(physicalType: PhysicalType): string {
+	switch (physicalType) {
+		case PhysicalType.NULL: return 'NULL';
+		case PhysicalType.INTEGER: return 'INTEGER';
+		case PhysicalType.REAL: return 'REAL';
+		case PhysicalType.TEXT: return 'TEXT';
+		case PhysicalType.BLOB: return 'BLOB';
+		case PhysicalType.BOOLEAN: return 'BOOLEAN';
+		default: return 'UNKNOWN';
+	}
+}
+

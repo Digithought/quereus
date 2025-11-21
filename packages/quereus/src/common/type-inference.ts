@@ -15,13 +15,21 @@ export function getLiteralSqlType(v: SqlValue): SqlDataType {
 }
 
 /**
- * Infer LogicalType from a SqlValue
+ * Infer LogicalType from a SqlValue for parameters.
+ * Uses JavaScript type to determine the logical type:
+ * - null → NULL
+ * - number (integer) → INTEGER
+ * - number (float) → REAL
+ * - bigint → INTEGER
+ * - boolean → BOOLEAN
+ * - string → TEXT
+ * - Uint8Array → BLOB
  */
 export function inferLogicalTypeFromValue(v: SqlValue): LogicalType {
 	if (v === null) return NULL_TYPE;
 	if (typeof v === 'number') {
-		// For now, all numbers are REAL. Could check Number.isInteger() for INTEGER_TYPE
-		return REAL_TYPE;
+		// Distinguish INTEGER from REAL based on Number.isInteger()
+		return Number.isInteger(v) ? INTEGER_TYPE : REAL_TYPE;
 	}
 	if (typeof v === 'bigint') return INTEGER_TYPE;
 	if (typeof v === 'boolean') return BOOLEAN_TYPE;

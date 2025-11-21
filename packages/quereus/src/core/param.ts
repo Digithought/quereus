@@ -2,7 +2,23 @@ import type { ScalarType } from '../common/datatype.js';
 import { type SqlParameters, type SqlValue } from '../common/types.js';
 import { inferLogicalTypeFromValue } from '../common/type-inference.js';
 
-export function getParameterTypeHints(params: SqlParameters | undefined): Map<string | number, ScalarType> | undefined {
+/**
+ * Generate type hints for parameters based on their JavaScript values.
+ * This is used during planning to assign strong types to parameters.
+ *
+ * Type inference rules:
+ * - null → NULL
+ * - number (integer) → INTEGER
+ * - number (float) → REAL
+ * - bigint → INTEGER
+ * - boolean → BOOLEAN
+ * - string → TEXT
+ * - Uint8Array → BLOB
+ *
+ * @param params The parameter values (positional array or named object)
+ * @returns Map of parameter keys to their inferred ScalarTypes
+ */
+export function getParameterTypes(params: SqlParameters | undefined): Map<string | number, ScalarType> | undefined {
 	let results: Map<string | number, ScalarType> | undefined;
 	if (params) {
 		results = new Map<string | number, ScalarType>();
@@ -22,6 +38,12 @@ export function getParameterTypeHints(params: SqlParameters | undefined): Map<st
 	return results;
 }
 
+/**
+ * Infer the ScalarType for a parameter value based on its JavaScript type.
+ *
+ * @param value The parameter value
+ * @returns The inferred ScalarType
+ */
 function getParameterScalarType(value: SqlValue): ScalarType {
 	const logicalType = inferLogicalTypeFromValue(value);
 

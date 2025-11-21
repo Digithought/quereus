@@ -14,6 +14,8 @@ import { isAsyncIterable } from '../runtime/utils.js';
 import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import type { SchemaDependency } from '../planner/planning-context.js';
+import { getParameterTypes } from './param.js';
+import { getPhysicalType, physicalTypeName } from '../types/logical-type.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
@@ -35,13 +37,21 @@ export class Statement {
 	private needsCompile = true;
 	private columnDefCache = new Cached<DeepReadonly<ColumnDef>[]>(() => this.getColumnDefs());
 	private schemaChangeUnsubscriber: (() => void) | null = null;
+	/** Parameter types established at prepare time (either explicit or inferred from initial values) */
+	private parameterTypes: Map<string | number, ScalarType> | undefined = undefined;
 
 	/**
 	 * @internal - Use db.prepare().
 	 * The `sqlOrAstBatch` can be a single SQL string (parsed internally) or a pre-parsed batch.
 	 * `initialAstIndex` is for internal use when db.prepare might create one Statement per AST in a batch.
+	 * `paramsOrTypes` can be initial parameter values (to infer types) or explicit types.
 	 */
-	constructor(db: Database, sqlOrAstBatch: string | ASTStatement[], initialAstIndex: number = 0) {
+	constructor(
+		db: Database,
+		sqlOrAstBatch: string | ASTStatement[],
+		initialAstIndex: number = 0,
+		paramsOrTypes?: SqlParameters | SqlValue[] | Map<string | number, ScalarType>
+	) {
 		this.db = db;
 		if (typeof sqlOrAstBatch === 'string') {
 			this.originalSql = sqlOrAstBatch;
@@ -56,6 +66,23 @@ export class Statement {
 			this.astBatch = sqlOrAstBatch;
 			// Try to reconstruct originalSql if possible, or set a generic name
 			this.originalSql = this.astBatch.map(s => s.toString()).join('; '); // TODO: replace with better AST stringification
+		}
+
+		// Handle explicit parameter types or initial values
+		if (paramsOrTypes instanceof Map) {
+			// Explicit parameter types provided
+			this.parameterTypes = paramsOrTypes;
+		} else if (paramsOrTypes !== undefined) {
+			// Initial parameter values - infer types and bind them
+			this.parameterTypes = getParameterTypes(paramsOrTypes);
+			// Also bind the initial values
+			if (Array.isArray(paramsOrTypes)) {
+				paramsOrTypes.forEach((value, index) => {
+					this.boundArgs[index + 1] = value;
+				});
+			} else {
+				Object.assign(this.boundArgs, paramsOrTypes);
+			}
 		}
 
 		if (this.astBatch.length === 0 && initialAstIndex === 0) {
@@ -80,6 +107,7 @@ export class Statement {
 			this.emissionContext = null;
 			this.needsCompile = true;
 			this.columnDefCache.clear();
+			this.parameterTypes = undefined;
 			return true;
 		} else {
 			return false;
@@ -105,7 +133,16 @@ export class Statement {
 		let plan: BlockNode | undefined;
 		try {
 			const currentAst = this.getAstStatement();
-			const planResult = this.db._buildPlan([currentAst], this.boundArgs);
+
+			// On first compilation, establish the parameter types
+			// Use explicit types if provided, otherwise infer from bound args
+			if (this.parameterTypes === undefined) {
+				// Infer types from current bound args
+				this.parameterTypes = getParameterTypes(this.boundArgs);
+			}
+
+			// Pass parameter types directly to planning
+			const planResult = this.db._buildPlan([currentAst], this.parameterTypes);
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			const dependencies = (planResult as any).schemaDependencies; // Extract dependencies from planning context
 			plan = this.db.optimizer.optimize(planResult, this.db) as BlockNode;
@@ -227,6 +264,9 @@ export class Statement {
 
 		if (params) this.bindAll(params);
 
+		// Validate parameter types before execution
+		this.validateParameterTypes();
+
 		this.busy = true;
 		try {
 			const blockPlanNode = this.compile();
@@ -283,14 +323,14 @@ export class Statement {
 	}
 
 	/**
-	 * Clears all bound parameter values, setting them to NULL.
+	 * Clears all bound parameter values.
+	 * Note: This does NOT trigger recompilation - parameter types are preserved.
 	 */
 	clearBindings(): this {
 		this.validateStatement("clear bindings for");
 		if (this.busy) throw new MisuseError("Statement busy, reset first");
 		this.boundArgs = {};
-		this.emissionContext = null;
-		this.needsCompile = true;
+		// Don't set needsCompile - parameter types are preserved
 		return this;
 	}
 
@@ -415,6 +455,50 @@ export class Statement {
 	private getAstStatement(): ASTStatement {
 		this.validateStatement("get AST for");
 		return this.astBatch[this.astBatchIndex];
+	}
+
+	/**
+	 * Validates that bound parameters match the expected types from compilation.
+	 * Validates that the JavaScript value is compatible with the physical type of the declared logical type.
+	 * @throws QuereusError if parameter types don't match
+	 */
+	private validateParameterTypes(): void {
+		if (!this.parameterTypes) return; // No parameter types established yet
+
+		for (const [key, expectedType] of this.parameterTypes.entries()) {
+			const value = this.boundArgs[key];
+
+			// Allow undefined/missing parameters (they'll be caught at runtime if required)
+			if (value === undefined) continue;
+
+			// NULL is compatible with any nullable type
+			if (value === null) {
+				if (!expectedType.nullable) {
+					throw new QuereusError(
+						`Parameter type mismatch for ${typeof key === 'number' ? `?${key}` : `:${key}`}: ` +
+						`expected non-nullable ${expectedType.logicalType.name}, got NULL`,
+						StatusCode.MISMATCH
+					);
+				}
+				continue;
+			}
+
+			// Get the physical type of the declared logical type
+			const expectedPhysicalType = expectedType.logicalType.physicalType;
+
+			// Get the physical type directly from the JavaScript value
+			const actualPhysicalType = getPhysicalType(value);
+
+			// Check if physical types are compatible
+			if (actualPhysicalType !== expectedPhysicalType) {
+				throw new QuereusError(
+					`Parameter type mismatch for ${typeof key === 'number' ? `?${key}` : `:${key}`}: ` +
+					`expected ${expectedType.logicalType.name} (physical: ${physicalTypeName(expectedPhysicalType)}), ` +
+					`got value with physical type ${physicalTypeName(actualPhysicalType)}`,
+					StatusCode.MISMATCH
+				);
+			}
+		}
 	}
 
 	/**

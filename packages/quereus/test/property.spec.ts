@@ -118,12 +118,18 @@ describe('Property-Based Tests', () => {
 			await fc.assert(fc.asyncProperty(sqlValueArbitrary, sqlValueArbitrary, async (valA, valB) => {
 				// Insert values and let SQL apply type affinity conversion
 				await db.exec('DELETE FROM num_t');
-				const stmt = db.prepare('INSERT INTO num_t (id, v) VALUES (?, ?)');
+				// Don't reuse prepared statements - parameter types may differ between runs
+				const stmt1 = db.prepare('INSERT INTO num_t (id, v) VALUES (?, ?)');
 				try {
-					await stmt.run([1, valA]);
-					await stmt.run([2, valB]);
+					await stmt1.run([1, valA]);
 				} finally {
-					await stmt.finalize();
+					await stmt1.finalize();
+				}
+				const stmt2 = db.prepare('INSERT INTO num_t (id, v) VALUES (?, ?)');
+				try {
+					await stmt2.run([2, valB]);
+				} finally {
+					await stmt2.finalize();
 				}
 
 				// Retrieve the actual values after type affinity conversion

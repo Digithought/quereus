@@ -20,14 +20,14 @@ const DEFAULT_PARAMETER_TYPE: ScalarType = {
 export class ParameterScope extends BaseScope {
 	private _nextAnonymousIndex: number = 1;
 	private readonly _parameters: Map<string | number, ParameterReferenceNode> = new Map();
-	private readonly _parameterTypeHints: ReadonlyMap<string | number, ScalarType>;
+	private readonly _parameterTypes: ReadonlyMap<string | number, ScalarType>;
 
 	constructor(
 		public readonly parentScope: Scope,
-		parameterTypeHints?: ReadonlyMap<string | number, ScalarType>
+		parameterTypes?: ReadonlyMap<string | number, ScalarType>
 	) {
 		super();
-		this._parameterTypeHints = parameterTypeHints || new Map();
+		this._parameterTypes = parameterTypes || new Map();
 	}
 
 	resolveSymbol(symbolKey: string, expression: AST.Expression): PlanNode | typeof Ambiguous | undefined {
@@ -42,9 +42,9 @@ export class ParameterScope extends BaseScope {
 			// Use the current _nextAnonymousIndex as the potential identifier for this '?'
 			const currentAnonymousId = this._nextAnonymousIndex;
 
-			// Check if this specific anonymous parameter (by its future index) has a type hint
-			if (this._parameterTypeHints.has(currentAnonymousId)) {
-				resolvedType = this._parameterTypeHints.get(currentAnonymousId)!;
+			// Check if this specific anonymous parameter (by its future index) has a declared type
+			if (this._parameterTypes.has(currentAnonymousId)) {
+				resolvedType = this._parameterTypes.get(currentAnonymousId)!;
 			}
 			// Note: We don't check _parameters here for '?' because each '?' AST node should resolve,
 			// potentially creating a new ParameterReferenceNode if it's a new '?' instance in the query,
@@ -63,10 +63,10 @@ export class ParameterScope extends BaseScope {
 
 			if (this._parameters.has(identifier)) {
 				parameterNode = this._parameters.get(identifier)!;
-				// If already exists, its type was set at creation. Type hints are for new nodes.
+				// If already exists, its type was set at creation
 			} else {
-				if (this._parameterTypeHints.has(identifier)) {
-					resolvedType = this._parameterTypeHints.get(identifier)!;
+				if (this._parameterTypes.has(identifier)) {
+					resolvedType = this._parameterTypes.get(identifier)!;
 				}
 				parameterNode = new ParameterReferenceNode(this, parameterExpression, identifier, resolvedType);
 				this._parameters.set(identifier, parameterNode);

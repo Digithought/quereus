@@ -43,6 +43,7 @@ import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
 import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 import { type LogicalType } from '../types/logical-type.js';
+import { getParameterTypes } from './param.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
@@ -196,19 +197,48 @@ export class Database {
 
 	/**
 	 * Prepares an SQL statement for execution.
+	 *
 	 * @param sql The SQL string to prepare.
+	 * @param paramsOrTypes Optional parameter values (to infer types) or explicit type map.
+	 *   - If SqlParameters: Parameter types are inferred from the values
+	 *   - If Map<string|number, ScalarType>: Explicit type hints for parameters
+	 *   - If undefined: Parameters default to TEXT type
 	 * @returns A Statement object.
 	 * @throws QuereusError on failure (e.g., syntax error).
+	 *
+	 * @example
+	 * // Infer types from initial values
+	 * const stmt = db.prepare('INSERT INTO users (id, name) VALUES (?, ?)', [1, 'Alice']);
+	 *
+	 * @example
+	 * // Explicit param types
+	 * const types = new Map([
+	 *   [1, { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: false }],
+	 *   [2, { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false }]
+	 * ]);
+	 * const stmt = db.prepare('INSERT INTO users (id, name) VALUES (?, ?)', types);
 	 */
-	prepare(sql: string): Statement {
+	prepare(sql: string, paramsOrTypes?: SqlParameters | SqlValue[] | Map<string | number, ScalarType>): Statement {
 		this.checkOpen();
 		log('Preparing SQL (new runtime): %s', sql);
 
 		// Statement constructor defers planning/compilation until first step or explicit compile()
-		const stmt = new Statement(this, sql);
+		const stmt = new Statement(this, sql, 0, paramsOrTypes);
 
 		this.statements.add(stmt);
 		return stmt;
+	}
+
+	/**
+	 * Executes a query and returns the first result row as an object.
+	 * @param sql The SQL query string to execute.
+	 * @param params Optional parameters to bind.
+	 * @returns A Promise resolving to the first result row as an object, or undefined if no rows.
+	 * @throws QuereusError on failure.
+	 */
+	get(sql: string, params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
+		const stmt = this.prepare(sql, params);
+		return stmt.get(params);
 	}
 
 	/**
@@ -902,17 +932,22 @@ export class Database {
 	}
 
 	/** @internal */
-	_buildPlan(statements: AST.Statement[], params?: SqlParameters | SqlValue[]) {
+	_buildPlan(statements: AST.Statement[], paramsOrTypes?: SqlParameters | SqlValue[] | Map<string | number, ScalarType>) {
 		const globalScope = new GlobalScope(this.schemaManager);
 
-		// TODO: way to generate type hints from parameters?  Maybe we should extract that from the expression context?
+		// If we received parameter values, infer their types
+		// If we received explicit parameter types, use them as-is
+		const parameterTypes = paramsOrTypes instanceof Map
+			? paramsOrTypes
+			: getParameterTypes(paramsOrTypes);
+
 		// This ParameterScope is for the entire batch. It has globalScope as its parent.
-		const parameterScope = new ParameterScope(globalScope);
+		const parameterScope = new ParameterScope(globalScope, parameterTypes);
 
 		const ctx: PlanningContext = {
 			db: this,
 			schemaManager: this.schemaManager,
-			parameters: params ?? {},
+			parameters: paramsOrTypes instanceof Map ? {} : (paramsOrTypes ?? {}),
 			scope: parameterScope,
 			cteNodes: new Map(),
 			schemaDependencies: new BuildTimeDependencyTracker(),
