@@ -358,7 +358,10 @@ export function buildInsertStmt(
 		constraintCheckNode,
 		tableReference,
 		'insert',
-		stmt.onConflict
+		stmt.onConflict,
+		mutationContextValues.size > 0 ? mutationContextValues : undefined,
+		contextAttributes.length > 0 ? contextAttributes : undefined,
+		contextDescriptor
 	);
 
 	const resultNode: RelationalPlanNode = dmlExecutorNode;
