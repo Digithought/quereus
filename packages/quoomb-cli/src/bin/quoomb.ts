@@ -2,7 +2,8 @@
 
 import { Command } from 'commander';
 import { REPL } from '../repl.js';
-import { Database, loadPluginsFromConfig, interpolateConfigEnvVars, validateConfig } from '@quereus/quereus';
+import { Database } from '@quereus/quereus';
+import { loadPluginsFromConfig, interpolateConfigEnvVars, validateConfig } from '@quereus/plugin-loader';
 import chalk from 'chalk';
 import * as fs from 'fs/promises';
 import * as path from 'path';

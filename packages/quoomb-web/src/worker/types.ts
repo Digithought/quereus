@@ -1,7 +1,8 @@
-import type { SqlValue, PluginManifest as BasePluginManifest } from '@quereus/quereus';
+import type { SqlValue } from '@quereus/quereus';
+import type { PluginManifest as BasePluginManifest } from '@quereus/plugin-loader';
 
 // Re-export plugin types for convenience, but extend PluginManifest with UI-specific properties
-export type { PluginRecord, PluginSetting } from '@quereus/quereus';
+export type { PluginRecord, PluginSetting } from '@quereus/plugin-loader';
 
 // Extended PluginManifest for UI display with provides information
 export interface PluginManifest extends BasePluginManifest {

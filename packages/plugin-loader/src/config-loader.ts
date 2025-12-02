@@ -3,9 +3,8 @@
  * Handles loading, parsing, and interpolating quoomb.config.json files
  */
 
-import type { Database } from '../core/database.js';
-import type { SqlValue } from '../common/types.js';
-import { loadPlugin } from '../util/plugin-loader.js';
+import type { Database, SqlValue } from '@quereus/quereus';
+import { loadPlugin } from './plugin-loader.js';
 
 /**
  * Plugin configuration from config file

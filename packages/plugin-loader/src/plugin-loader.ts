@@ -1,17 +1,13 @@
-import type { Database } from '../core/database.js';
-import type { PluginManifest, PluginRegistrations } from '../vtab/manifest.js';
-import { StatusCode, type SqlValue } from '../common/types.js';
-import { quereusError } from '../common/errors.js';
-import { createLogger } from '../common/logger.js';
-
-const log = createLogger('util:plugin-loader');
+import type { Database, SqlValue } from '@quereus/quereus';
+import { registerPlugin } from '@quereus/quereus';
+import type { PluginManifest, PluginRegistrations } from './manifest.js';
 
 /**
  * Plugin module interface - what we expect from a plugin module
  */
 export interface PluginModule {
 	/** Default export - the plugin registration function */
-	default: (db: Database, config: Record<string, SqlValue>) => Promise<PluginRegistrations> | PluginRegistrations;
+	default: (db: Database, config?: Record<string, SqlValue>) => Promise<PluginRegistrations> | PluginRegistrations;
 }
 
 /**
@@ -58,32 +54,14 @@ export async function dynamicLoadModule(
 
 		// Validate module structure
 		if (typeof mod.default !== 'function') {
-			quereusError(`Module at ${url} has no default export function`, StatusCode.FORMAT);
+			throw new Error(`Module at ${url} has no default export function`);
 		}
 
-		// Call the module's register function with the database and config
-		const registrations = await mod.default(db, config);
+		// Use the core registerPlugin function from @quereus/quereus
+		// This reuses the same registration logic as static plugin loading
+		await registerPlugin(db, mod.default, config);
 
-		// Register all the items the plugin provides
-		await registerPluginItems(db, registrations);
-
-		log('Successfully loaded plugin from %s', url);
-		if (registrations.vtables?.length) {
-			log('  Registered %d vtable module(s): %s', registrations.vtables.length,
-				registrations.vtables.map(v => v.name).join(', '));
-		}
-		if (registrations.functions?.length) {
-			log('  Registered %d function(s): %s', registrations.functions.length,
-				registrations.functions.map(f => `${f.schema.name}/${f.schema.numArgs}`).join(', '));
-		}
-		if (registrations.collations?.length) {
-			log('  Registered %d collation(s): %s', registrations.collations.length,
-				registrations.collations.map(c => c.name).join(', '));
-		}
-		if (registrations.types?.length) {
-			log('  Registered %d type(s): %s', registrations.types.length,
-				registrations.types.map(t => t.name).join(', '));
-		}
+		console.log(`Successfully loaded plugin from ${url}`);
 
 		// Try to extract manifest from package.json
 		let manifest: PluginManifest | undefined;
@@ -96,65 +74,13 @@ export async function dynamicLoadModule(
 			}
 		} catch {
 			// package.json not found or not accessible - that's okay
-			log('Could not load package.json for plugin at %s', url);
+			console.log(`Could not load package.json for plugin at ${url}`);
 		}
 
 		return manifest;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		quereusError(`Failed to load plugin from ${url}: ${message}`);
-	}
-}
-
-/**
- * Registers all items provided by a plugin
- *
- * @param db Database instance to register with
- * @param registrations The items to register
- */
-async function registerPluginItems(db: Database, registrations: PluginRegistrations): Promise<void> {
-	// Register virtual table modules
-	if (registrations.vtables) {
-		for (const vtable of registrations.vtables) {
-			try {
-				db.registerVtabModule(vtable.name, vtable.module, vtable.auxData);
-			} catch (error) {
-				quereusError(`Failed to register vtable module '${vtable.name}': ${error instanceof Error ? error.message : String(error)}`);
-			}
-		}
-	}
-
-	// Register functions
-	if (registrations.functions) {
-		for (const func of registrations.functions) {
-			try {
-				db.registerFunction(func.schema);
-			} catch (error) {
-				quereusError(`Failed to register function '${func.schema.name}/${func.schema.numArgs}': ${error instanceof Error ? error.message : String(error)}`);
-			}
-		}
-	}
-
-	// Register collations
-	if (registrations.collations) {
-		for (const collation of registrations.collations) {
-			try {
-				db.registerCollation(collation.name, collation.func);
-			} catch (error) {
-				quereusError(`Failed to register collation '${collation.name}': ${error instanceof Error ? error.message : String(error)}`);
-			}
-		}
-	}
-
-	// Register types
-	if (registrations.types) {
-		for (const type of registrations.types) {
-			try {
-				db.registerType(type.name, type.definition);
-			} catch (error) {
-				quereusError(`Failed to register type '${type.name}': ${error instanceof Error ? error.message : String(error)}`);
-			}
-		}
+		throw new Error(`Failed to load plugin from ${url}: ${message}`);
 	}
 }
 
@@ -226,7 +152,7 @@ export async function loadPlugin(
     // Interpret as npm spec or bare package name
     const npm = parseNpmSpec(spec);
     if (!npm) {
-        quereusError(`Invalid plugin spec: ${spec}. Use a URL, file://, or npm package (e.g., npm:@scope/name@version).`, StatusCode.FORMAT);
+        throw new Error(`Invalid plugin spec: ${spec}. Use a URL, file://, or npm package (e.g., npm:@scope/name@version).`);
     }
 
     if (env === 'node') {
@@ -246,34 +172,18 @@ export async function loadPlugin(
         }
 
         if (!mod) {
-            quereusError(
+            throw new Error(
                 `Failed to resolve plugin package '${npm.name}'. Ensure it exports './plugin' or a default module. Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
             );
         }
 
         if (typeof mod.default !== 'function') {
-            quereusError(`Resolved module for '${npm.name}' has no default export function`, StatusCode.FORMAT);
+            throw new Error(`Resolved module for '${npm.name}' has no default export function`);
         }
 
-        const registrations = await mod.default(db, config);
-        await registerPluginItems(db, registrations);
-        log('Successfully loaded plugin from package %s', npm.name);
-        if (registrations.vtables?.length) {
-            log('  Registered %d vtable module(s): %s', registrations.vtables.length,
-                registrations.vtables.map(v => v.name).join(', '));
-        }
-        if (registrations.functions?.length) {
-            log('  Registered %d function(s): %s', registrations.functions.length,
-                registrations.functions.map(f => `${f.schema.name}/${f.schema.numArgs}`).join(', '));
-        }
-        if (registrations.collations?.length) {
-            log('  Registered %d collation(s): %s', registrations.collations.length,
-                registrations.collations.map(c => c.name).join(', '));
-        }
-        if (registrations.types?.length) {
-            log('  Registered %d type(s): %s', registrations.types.length,
-                registrations.types.map(t => t.name).join(', '));
-        }
+        // Use the core registerPlugin function from @quereus/quereus
+        await registerPlugin(db, mod.default, config);
+        console.log(`Successfully loaded plugin from package ${npm.name}`);
 
         // Try to extract manifest from package.json
         let manifest: PluginManifest | undefined;
@@ -283,7 +193,7 @@ export async function loadPlugin(
             manifest = extractManifestFromPackageJson(pkg.default);
         } catch {
             // package.json not found - that's okay
-            log('Could not load package.json for plugin %s', npm.name);
+            console.log(`Could not load package.json for plugin ${npm.name}`);
         }
 
         return manifest;
@@ -291,10 +201,9 @@ export async function loadPlugin(
 
     // Browser path: npm spec requires CDN; only if explicitly allowed
     if (!options.allowCdn) {
-        quereusError(
+        throw new Error(
             `Loading npm packages in the browser requires allowCdn=true. Received spec '${spec}'. ` +
-            `Either provide a direct https:// URL to the ESM plugin or enable CDN resolution.`,
-            StatusCode.MISUSE
+            `Either provide a direct https:// URL to the ESM plugin or enable CDN resolution.`
         );
     }
 

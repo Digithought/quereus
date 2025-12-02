@@ -11,7 +11,7 @@ Quereus is a feature-complete SQL query processor specifically designed for effi
 *   **Modern Type System**: Extensible logical/physical type separation with built-in temporal types (DATE, TIME, DATETIME), native JSON type with deep equality comparison, and plugin support for custom types. See [Type System Documentation](docs/types.md).
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
 *   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
-*   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native.
+*   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native. Plugin loading (via `@quereus/plugin-loader`) uses dynamic `import()` and is not compatible with React Native; use static imports for RN.
 *   **Minimal Dependencies**: Avoid heavy external dependencies where possible.
 *   **SQL Compatibility**: Comprehensive support for modern SQL features including joins, window functions, subqueries, CTEs, constraints, views, and advanced DML/DDL operations.
 *   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used.

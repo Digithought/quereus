@@ -846,9 +846,11 @@ function safeFunction(input) {
 
 ### Programmatic loading
 
+**Note:** Plugin loading uses dynamic `import()` and is provided by the separate `@quereus/plugin-loader` package. That package is **not compatible with React Native**. For React Native apps, use static imports and manual plugin registration (see below).
+
 ```typescript
 import { Database } from '@quereus/quereus';
-import { loadPlugin, dynamicLoadModule } from '@quereus/quereus/util/plugin-loader.js';
+import { loadPlugin, dynamicLoadModule } from '@quereus/plugin-loader';
 
 const db = new Database();
 
@@ -865,6 +867,180 @@ await loadPlugin('npm:@acme/quereus-plugin-foo@^1', db, { timeout: 8000 }, { all
 Behavior:
 - npm package resolution prefers the `exports['./plugin']` subpath. In Node, the package is loaded directly. In browsers, npm resolution is disabled by default; enabling it requires `{ allowCdn: true }` and maps to a CDN URL.
 - Version compatibility: if the package declares `engines.quereus` or a `peerDependency` on `@quereus/quereus`, hosts should throw when incompatible (error, not warning).
+
+### Static Plugin Loading
+
+For environments where dynamic `import()` is not supported or desired (React Native, bundled applications, or security-restricted environments), use static imports with manual plugin registration.
+
+#### Why Static Loading?
+
+- **React Native**: Does not support dynamic `import()` even when the code is present
+- **Bundled Applications**: Some bundlers work better with static imports
+- **Security**: Avoid runtime code loading in restricted environments
+- **Performance**: Eliminate runtime module resolution overhead
+- **Type Safety**: Get full TypeScript type checking for plugin imports
+
+#### Basic Usage with `registerPlugin`
+
+Quereus provides a built-in `registerPlugin` helper function that simplifies static plugin loading:
+
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import stringFunctions from './plugins/string-functions';
+import customCollations from './plugins/custom-collations';
+import jsonTable from './plugins/json-table';
+
+const db = new Database();
+
+// Register a single plugin
+await registerPlugin(db, stringFunctions);
+
+// Register with configuration
+await registerPlugin(db, jsonTable, {
+  cacheSize: 100,
+  timeout: 5000
+});
+
+// Register multiple plugins
+await registerPlugin(db, customCollations);
+```
+
+The `registerPlugin` function:
+- Calls the plugin function with the database and config
+- Automatically registers all returned components (vtables, functions, collations, types)
+- Provides helpful error messages if registration fails
+- Works in any JavaScript environment (Node.js, browser, React Native)
+
+#### Conditional Plugin Loading
+
+You can conditionally load plugins based on environment or feature flags:
+
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import coreFunctions from './plugins/core-functions';
+import analytics from './plugins/analytics';
+import geoFunctions from './plugins/geo-functions';
+import iosStorage from './plugins/ios-storage';
+import androidStorage from './plugins/android-storage';
+
+const db = new Database();
+
+// Always load core plugins
+await registerPlugin(db, coreFunctions);
+
+// Load optional plugins based on configuration
+if (config.features.analytics) {
+  await registerPlugin(db, analytics);
+}
+
+if (config.features.geospatial) {
+  await registerPlugin(db, geoFunctions);
+}
+
+// Platform-specific plugins (React Native example)
+if (Platform.OS === 'ios') {
+  await registerPlugin(db, iosStorage);
+} else if (Platform.OS === 'android') {
+  await registerPlugin(db, androidStorage);
+}
+```
+
+#### React Native Example
+
+Complete example for React Native with error handling:
+
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import stringFunctions from '@quereus/plugin-string-functions';
+import customCollations from './plugins/custom-collations';
+
+async function initializeDatabase() {
+  const db = new Database();
+
+  try {
+    // Register plugins
+    await registerPlugin(db, stringFunctions);
+    await registerPlugin(db, customCollations);
+
+    console.log('Database initialized with plugins');
+    return db;
+  } catch (error) {
+    console.error('Failed to initialize database:', error);
+    throw error;
+  }
+}
+
+// Usage
+const db = await initializeDatabase();
+
+// Now you can use plugin functions
+const result = await db.prepare(
+  "SELECT reverse('hello') as reversed"
+).get();
+console.log(result.reversed); // 'olleh'
+```
+
+#### Type Safety with Static Imports
+
+Static imports provide full TypeScript type checking:
+
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import myPlugin from './plugins/my-plugin';
+
+const db = new Database();
+
+// Type-checked configuration
+await registerPlugin(db, myPlugin, {
+  apiKey: 'key',      // ✓ Type-checked
+  timeout: 5000,      // ✓ Type-checked
+  // invalid: true    // ✗ TypeScript error if not in plugin's config type
+});
+```
+
+#### Manual Registration (Advanced)
+
+If you need more control, you can manually call the plugin and register components individually:
+
+```typescript
+import { Database } from '@quereus/quereus';
+import myPlugin from './plugins/my-plugin';
+
+const db = new Database();
+
+// Call the plugin function to get registrations
+const registrations = await myPlugin(db, {
+  apiKey: 'your-api-key',
+  timeout: 5000
+});
+
+// Manually register each component type
+if (registrations.vtables) {
+  for (const vtable of registrations.vtables) {
+    db.registerVtabModule(vtable.name, vtable.module, vtable.auxData);
+  }
+}
+
+if (registrations.functions) {
+  for (const func of registrations.functions) {
+    db.registerFunction(func.schema);
+  }
+}
+
+if (registrations.collations) {
+  for (const collation of registrations.collations) {
+    db.registerCollation(collation.name, collation.func);
+  }
+}
+
+if (registrations.types) {
+  for (const type of registrations.types) {
+    db.registerType(type.name, type.definition);
+  }
+}
+```
+
+This approach gives you full control over which components to register and allows for custom error handling or logging.
 
 ### Web UI
 

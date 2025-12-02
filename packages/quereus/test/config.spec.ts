@@ -5,7 +5,7 @@ import {
   interpolateConfigEnvVars,
   validateConfig,
   type QuoombConfig
-} from '../src/config/loader.js';
+} from '@quereus/plugin-loader';
 
 describe('Config Loader', () => {
   let db: Database;

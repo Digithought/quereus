@@ -91,7 +91,6 @@ export { ParseError } from './parser/parser.js';
 export { SchemaManager } from './schema/manager.js';
 export type { TableSchema, IndexSchema as TableIndexSchema } from './schema/table.js';
 export type { ColumnSchema } from './schema/column.js';
-export type { FunctionSchema } from './schema/function.js';
 
 // Runtime utilities
 export { isAsyncIterable, asyncIterableToArray } from './runtime/utils.js';
@@ -107,17 +106,24 @@ export type {
 	ScalarFunc,
 	TableValuedFunc,
 	AggregateReducer,
-	AggregateFinalizer
+	AggregateFinalizer,
+	FunctionSchema
 } from './schema/function.js';
 
 // Utility functions
 export { Latches } from './util/latches.js';
 
+// Plugin helper for static loading (React Native, etc.)
+export { registerPlugin } from './util/plugin-helper.js';
+export type { PluginFunction } from './util/plugin-helper.js';
+
 // Initialize runtime emitters (this ensures they are registered)
 import './runtime/register.js';
 
-// Re-export plugin system
-export { dynamicLoadModule, validatePluginUrl, loadPlugin } from './util/plugin-loader.js';
+// Re-export virtual table framework
+export type { VirtualTableModule } from './vtab/module.js';
+
+// Re-export plugin manifest types (for plugin authors, but not the loader)
 export type {
 	PluginManifest,
 	PluginRecord,
@@ -128,18 +134,6 @@ export type {
 	TypePluginInfo,
 	PluginRegistrations
 } from './vtab/manifest.js';
-
-// Re-export config system
-export {
-	interpolateEnvVars,
-	interpolateConfigEnvVars,
-	loadPluginsFromConfig,
-	validateConfig
-} from './config/loader.js';
-export type { QuoombConfig, PluginConfig } from './config/loader.js';
-
-// Re-export virtual table framework
-export type { VirtualTableModule } from './vtab/module.js';
 
 // Debug and development utilities
 export { serializePlanTree, formatPlanTree, formatPlanSummary, serializePlanTreeWithOptions } from './planner/debug.js';

@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { expect } from 'chai';
 import { Database } from '../src/index.js';
-import { dynamicLoadModule } from '../src/util/plugin-loader.js';
+import { dynamicLoadModule } from '@quereus/plugin-loader';
 
 function fileUrlFromHere(relative: string): string {
   return new URL(relative, import.meta.url).toString();
