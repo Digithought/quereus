@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@quereus/quereus": "*",
+    "@quereus/plugin-loader": "*",
     "readline": "^1.3.0",
     "commander": "^14.0.0",
     "chalk": "^5.4.1",

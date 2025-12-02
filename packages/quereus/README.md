@@ -11,7 +11,7 @@ Quereus is a feature-complete SQL query processor specifically designed for effi
 *   **Modern Type System**: Extensible logical/physical type separation with built-in temporal types (DATE, TIME, DATETIME), native JSON type with deep equality comparison, and plugin support for custom types. See [Type System Documentation](docs/types.md).
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
 *   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
-*   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native.
+*   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native. Plugin loading (via `@quereus/plugin-loader`) uses dynamic `import()` and is not compatible with React Native; use static imports for RN.
 *   **Minimal Dependencies**: Avoid heavy external dependencies where possible.
 *   **SQL Compatibility**: Comprehensive support for modern SQL features including joins, window functions, subqueries, CTEs, constraints, views, and advanced DML/DDL operations.
 *   **Key-Based Addressing**: All tables are addressed by their defined Primary Key. The concept of a separate, implicit `rowid` for addressing rows is not used.
@@ -124,7 +124,7 @@ db.setInstructionTracer(tracer);
 
 // Execute statements - they will automatically be traced
 await db.exec("CREATE TABLE users (id INTEGER, name TEXT)");
-await db.exec("INSERT INTO users VALUES (1, 'Alice')");
+await db.exec("INSERT INTO users VALUES (:id, :name)", { id: 1, name: "Alice" });
 const users = await db.prepare("SELECT * FROM users").all();
 
 // Analyze the trace
@@ -164,6 +164,23 @@ Quereus uses native JavaScript types for SQL values. Understanding these mapping
 - **Multi-statement `eval`** returns only the last statement's results
 
 See the [Usage Guide](docs/usage.md#type-representations) for detailed information on type handling, row representation, async iteration, and best practices.
+
+## React Native
+
+Quereus works in React Native with two considerations:
+
+1. **`structuredClone` Polyfill**: React Native doesn't provide `structuredClone`. Install a polyfill like `@ungap/structured-clone` and apply it before importing Quereus:
+
+   ```typescript
+   import structuredClone from '@ungap/structured-clone';
+   if (typeof globalThis.structuredClone === 'undefined') {
+     globalThis.structuredClone = structuredClone;
+   }
+
+   import { Database } from 'quereus';
+   ```
+
+2. **Static Plugin Loading**: Dynamic `import()` isn't supported in React Native. Register plugins statically instead. See [Plugin System - Static Registration](docs/plugins.md#static-plugin-registration) for details.
 
 ## Documentation
 

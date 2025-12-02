@@ -4,8 +4,9 @@ import Table from 'cli-table3';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import Papa from 'papaparse';
-import { dynamicLoadModule, validatePluginUrl } from '@quereus/quereus';
-import type { PluginRecord, PluginManifest, SqlValue } from '@quereus/quereus';
+import { dynamicLoadModule, validatePluginUrl } from '@quereus/plugin-loader';
+import type { PluginRecord, PluginManifest } from '@quereus/plugin-loader';
+import type { SqlValue } from '@quereus/quereus';
 import os from 'os';
 import crypto from 'crypto';
 

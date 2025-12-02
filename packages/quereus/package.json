@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.6.2",
+  "version": "0.6.4",
   "type": "module",
   "description": "Federated SQL query processor",
   "publisher": "Got Choices Foundation",
@@ -25,7 +25,7 @@
     }
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "doc": "npx typedoc -out doc src",
     "build": "tsc",
     "lint": "eslint src/**/*.ts test/**/*.ts",
@@ -37,6 +37,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@quereus/plugin-loader": "*",
     "@types/chai": "^5.2.2",
     "@types/debug": "^4.1.12",
     "@types/mocha": "^10.0.10",
@@ -48,6 +49,7 @@
     "eslint-plugin-import": "^2.31.0",
     "fast-check": "^4.1.1",
     "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
     "tsc-alias": "^1.8.16",
     "typedoc": "^0.28.5",

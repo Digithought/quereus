@@ -1,5 +1,6 @@
 import * as Comlink from 'comlink';
-import { Database, type SqlValue, dynamicLoadModule } from '@quereus/quereus';
+import { Database, type SqlValue } from '@quereus/quereus';
+import { dynamicLoadModule } from '@quereus/plugin-loader';
 import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode, PluginManifest } from './types.js';
 import Papa from 'papaparse';
 

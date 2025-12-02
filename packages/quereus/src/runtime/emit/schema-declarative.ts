@@ -195,7 +195,7 @@ export function emitExplainSchema(plan: PlanNode, _ctx: EmissionContext): Instru
 		}
 
 		// Compute hash
-		const hash = await computeShortSchemaHash(declaredSchema);
+		const hash = computeShortSchemaHash(declaredSchema);
 
 		// Return hash with version if specified
 		const result = explainStmt.version
