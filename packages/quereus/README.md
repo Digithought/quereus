@@ -124,7 +124,7 @@ db.setInstructionTracer(tracer);
 
 // Execute statements - they will automatically be traced
 await db.exec("CREATE TABLE users (id INTEGER, name TEXT)");
-await db.exec("INSERT INTO users VALUES (1, 'Alice')");
+await db.exec("INSERT INTO users VALUES (:id, :name)", { id: 1, name: "Alice" });
 const users = await db.prepare("SELECT * FROM users").all();
 
 // Analyze the trace
