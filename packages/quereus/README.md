@@ -165,6 +165,23 @@ Quereus uses native JavaScript types for SQL values. Understanding these mapping
 
 See the [Usage Guide](docs/usage.md#type-representations) for detailed information on type handling, row representation, async iteration, and best practices.
 
+## React Native
+
+Quereus works in React Native with two considerations:
+
+1. **`structuredClone` Polyfill**: React Native doesn't provide `structuredClone`. Install a polyfill like `@ungap/structured-clone` and apply it before importing Quereus:
+
+   ```typescript
+   import structuredClone from '@ungap/structured-clone';
+   if (typeof globalThis.structuredClone === 'undefined') {
+     globalThis.structuredClone = structuredClone;
+   }
+
+   import { Database } from 'quereus';
+   ```
+
+2. **Static Plugin Loading**: Dynamic `import()` isn't supported in React Native. Register plugins statically instead. See [Plugin System - Static Registration](docs/plugins.md#static-plugin-registration) for details.
+
 ## Documentation
 
 * [Usage Guide](docs/usage.md): Detailed usage examples, type representations, and API reference
