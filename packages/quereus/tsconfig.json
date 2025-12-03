@@ -28,10 +28,11 @@
 		"resolveJsonModule": true,
 		"strictFunctionTypes": true
 	},
-	"include": ["src", "test"],
+	"include": ["src"],
 	"exclude": [
 		"node_modules",
-		"dist"
+		"dist",
+		"test"
 	],
 	"ts-node": {
 		"esm": true,

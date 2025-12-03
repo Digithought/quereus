@@ -21,7 +21,7 @@
     }
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "build": "tsc",
     "dev": "tsc && node dist/bin/quoomb.js",
     "lint": "eslint src/**/*.ts",
@@ -35,7 +35,8 @@
     "vitest": "^3.1.4",
     "eslint": "^9.28.0",
     "@typescript-eslint/eslint-plugin": "^8.33.0",
-    "@typescript-eslint/parser": "^8.33.0"
+    "@typescript-eslint/parser": "^8.33.0",
+    "rimraf": "^6.1.2"
   },
   "dependencies": {
     "@quereus/quereus": "*",

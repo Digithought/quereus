@@ -25,7 +25,7 @@
     "./styles": "./dist/styles.css"
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "build": "tsc && vite build --mode lib",
     "dev": "vite build --mode lib --watch",
     "lint": "eslint src/**/*.{ts,tsx}",
@@ -45,7 +45,8 @@
     "@typescript-eslint/eslint-plugin": "^8.33.0",
     "@typescript-eslint/parser": "^8.33.0",
     "@storybook/react": "^9.0.2",
-    "@storybook/react-vite": "^9.0.2"
+    "@storybook/react-vite": "^9.0.2",
+    "rimraf": "^6.1.2"
   },
   "dependencies": {
     "react": "^19.1.0",

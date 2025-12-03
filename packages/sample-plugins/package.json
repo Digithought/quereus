@@ -5,6 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "clean": "rimraf dist",
     "build": "tsc",
     "dev": "tsc --watch",
     "serve": "npx http-server -p 8080 --cors",
@@ -30,5 +31,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "rimraf": "^6.1.2"
   }
 }
