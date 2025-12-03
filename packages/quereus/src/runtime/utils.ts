@@ -14,8 +14,48 @@ const log = createLogger('runtime:utils');
 const errorLog = log.extend('error');
 export const ctxLog = createLogger('runtime:context');
 
+/**
+ * Check if a value is an AsyncIterable.
+ * 
+ * NOTE: Hermes (React Native's JS engine) has a bug where AsyncGenerator objects
+ * don't have Symbol.asyncIterator as an own or inherited property, even though
+ * they are valid async iterables. We work around this by also checking for
+ * the presence of a .next() method (duck typing for async iterators).
+ */
 export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
-	return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
+	if (typeof value !== 'object' || value === null) {
+		return false;
+	}
+	// Standard check: Symbol.asyncIterator
+	if (Symbol.asyncIterator in value) {
+		return true;
+	}
+	// Hermes workaround: AsyncGenerator has .next() but not Symbol.asyncIterator
+	const maybeAsyncGen = value as { next?: unknown; constructor?: { name?: string } };
+	if (typeof maybeAsyncGen.next === 'function' && 
+	    maybeAsyncGen.constructor?.name === 'AsyncGenerator') {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Get an AsyncIterator from an AsyncIterable, handling Hermes's missing Symbol.asyncIterator.
+ * 
+ * @throws TypeError if value is not a valid async iterable
+ */
+export function getAsyncIterator<T>(value: AsyncIterable<T>): AsyncIterator<T> {
+	// Standard path: use Symbol.asyncIterator
+	if (Symbol.asyncIterator in value) {
+		return value[Symbol.asyncIterator]();
+	}
+	// Hermes workaround: AsyncGenerator is its own iterator
+	const maybeAsyncGen = value as unknown as { next?: () => Promise<IteratorResult<T>>; constructor?: { name?: string } };
+	if (typeof maybeAsyncGen.next === 'function' && 
+	    maybeAsyncGen.constructor?.name === 'AsyncGenerator') {
+		return maybeAsyncGen as AsyncIterator<T>;
+	}
+	throw new TypeError('Value is not async iterable');
 }
 
 export async function asyncIterableToArray<T>(iterable: AsyncIterable<T>): Promise<T[]> {
