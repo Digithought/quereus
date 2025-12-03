@@ -1,5 +1,6 @@
 import * as readline from 'readline';
-import { Database, formatErrorChain, unwrapError, loadPluginsFromConfig, interpolateConfigEnvVars, validateConfig, type QuoombConfig } from '@quereus/quereus';
+import { Database, formatErrorChain, unwrapError } from '@quereus/quereus';
+import { loadPluginsFromConfig, interpolateConfigEnvVars, validateConfig, type QuoombConfig } from '@quereus/plugin-loader';
 import chalk from 'chalk';
 import Table from 'cli-table3';
 import { DotCommands } from './commands/dot-commands.js';
