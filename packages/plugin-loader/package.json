@@ -24,15 +24,17 @@
     }
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@quereus/quereus": "*"
   },
   "devDependencies": {
+    "@quereus/quereus": "*",
     "@types/node": "^22.15.29",
+    "rimraf": "^6.1.2",
     "typescript": "^5.8.3"
   }
 }
