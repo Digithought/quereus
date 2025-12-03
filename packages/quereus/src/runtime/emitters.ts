@@ -7,6 +7,7 @@ import { StatusCode, type OutputValue } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
 import { Scheduler } from "./scheduler.js";
 import type { EmissionContext } from "./emission-context.js";
+import { isAsyncIterable } from "./utils.js";
 
 const log = createLogger('emitters');
 
@@ -81,7 +82,7 @@ function instrumentRunForTracing(plan: PlanNode, originalRun: InstructionRun): I
 		}
 
 		// If the result is an async iterable, defer the pop until iteration completes
-		if (result && typeof result === 'object' && Symbol.asyncIterator in result) {
+		if (isAsyncIterable(result)) {
 			const iterable = result as AsyncIterable<unknown>;
 			// Wrap iterable to pop stack in a finally block once iteration ends
 			return (async function* () {
