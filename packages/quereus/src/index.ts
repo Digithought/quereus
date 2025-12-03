@@ -138,3 +138,6 @@ export type {
 // Debug and development utilities
 export { serializePlanTree, formatPlanTree, formatPlanSummary, serializePlanTreeWithOptions } from './planner/debug.js';
 export type { PlanDisplayOptions } from './planner/debug.js';
+
+// Logging control (for environments like React Native where env vars aren't available)
+export { enableLogging, disableLogging, isLoggingEnabled } from './common/logger.js';
