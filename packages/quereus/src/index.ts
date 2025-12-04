@@ -93,7 +93,7 @@ export type { TableSchema, IndexSchema as TableIndexSchema } from './schema/tabl
 export type { ColumnSchema } from './schema/column.js';
 
 // Runtime utilities
-export { isAsyncIterable, asyncIterableToArray } from './runtime/utils.js';
+export { isAsyncIterable, getAsyncIterator, asyncIterableToArray } from './runtime/utils.js';
 
 // Function registration utilities
 export {

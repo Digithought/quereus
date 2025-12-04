@@ -5,6 +5,7 @@
 
 import type { MaybePromise, Row } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
+import { getAsyncIterator } from './utils.js';
 
 const log = createLogger('runtime:async-util');
 
@@ -52,7 +53,7 @@ export function tee<T>(src: AsyncIterable<T>): [AsyncIterable<T>, AsyncIterable<
 		}
 
 		if (!srcIterator) {
-			srcIterator = src[Symbol.asyncIterator]();
+			srcIterator = getAsyncIterator(src);
 		}
 
 		while (buffer.length <= targetIndex && !srcDone) {
@@ -124,7 +125,7 @@ export async function* buffered<T>(
 	maxBuffer: number
 ): AsyncIterable<T> {
 	const buffer: T[] = [];
-	const srcIterator = src[Symbol.asyncIterator]();
+	const srcIterator = getAsyncIterator(src);
 	let srcDone = false;
 	let fillPromise: Promise<void> | null = null;
 
@@ -217,7 +218,7 @@ export async function collect<T>(src: AsyncIterable<T>): Promise<T[]> {
  * Items are yielded as soon as they become available from any source
  */
 export async function* merge<T>(...sources: AsyncIterable<T>[]): AsyncIterable<T> {
-	const iterators = sources.map(src => src[Symbol.asyncIterator]());
+	const iterators = sources.map(src => getAsyncIterator(src));
 	const pending = new Map<number, Promise<IteratorResult<T>>>();
 
 	// Start initial reads
