@@ -31,6 +31,9 @@ export function emitAddConstraint(plan: AddConstraintNode, _ctx: EmissionContext
 		}
 
 		// Create the constraint schema object
+		// Note: We don't validate determinism here because constraints may reference NEW/OLD
+		// which require special scoping. Determinism is validated at INSERT/UPDATE plan time
+		// in constraint-builder.ts when the constraint is actually checked.
 		const constraintSchema: RowConstraintSchema = {
 			name: constraint.name || `check_${tableSchema.checkConstraints.length}`,
 			expr: constraint.expr,

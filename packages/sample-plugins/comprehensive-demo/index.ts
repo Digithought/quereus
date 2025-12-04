@@ -76,10 +76,16 @@ const keyValueModule = {
       tableName: tableSchema.name,
       tableSchema,
       disconnect: async () => {},
-      async update(op: string, values: any) {
-        if (op === 'insert' && values) {
-          table.insert({ key: values[0], value: values[1] });
-          return values;
+      async update(updateArgs: { operation: string; values?: any; oldKeyValues?: any }) {
+        if (updateArgs.operation === 'insert' && updateArgs.values) {
+          table.insert({ key: updateArgs.values[0], value: updateArgs.values[1] });
+          return updateArgs.values;
+        } else if (updateArgs.operation === 'update' && updateArgs.values && updateArgs.oldKeyValues) {
+          table.update({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] }, { key: updateArgs.values[0], value: updateArgs.values[1] });
+          return updateArgs.values;
+        } else if (updateArgs.operation === 'delete' && updateArgs.oldKeyValues) {
+          table.delete({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] });
+          return undefined;
         }
         return undefined;
       },

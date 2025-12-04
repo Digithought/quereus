@@ -44,7 +44,7 @@ export function buildUpdateStatement(
 			column: col.name,
 			value: sqlValueToLiteralExpr(newRow[idx])
 		})),
-		where: buildWhereClause(pkDef, oldKeyValues)
+		where: buildWhereClause(pkDef, oldKeyValues, tableSchema)
 	};
 
 	return updateToString(stmt);
@@ -65,7 +65,7 @@ export function buildDeleteStatement(
 		type: 'delete',
 		table: { type: 'identifier', name: tableSchema.name },
 		contextValues: buildContextAssignments(tableSchema, contextRow),
-		where: buildWhereClause(pkDef, oldKeyValues)
+		where: buildWhereClause(pkDef, oldKeyValues, tableSchema)
 	};
 
 	return deleteToString(stmt);
@@ -104,12 +104,13 @@ function buildContextAssignments(
  */
 function buildWhereClause(
 	pkDef: TableSchema['primaryKeyDefinition'],
-	keyValues: Row
+	keyValues: Row,
+	tableSchema: TableSchema
 ): AST.Expression {
 	const conditions: AST.Expression[] = pkDef.map((pkCol, idx) => ({
 		type: 'binary' as const,
 		operator: '=' as const,
-		left: { type: 'column' as const, name: pkCol.name },
+		left: { type: 'column' as const, name: tableSchema.columns[pkCol.index].name },
 		right: sqlValueToLiteralExpr(keyValues[idx])
 	}));
 

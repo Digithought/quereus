@@ -309,8 +309,9 @@ function processDateTimeArgs(args: ReadonlyArray<SqlValue>): Temporal.ZonedDateT
 // --- Function Implementations --- //
 
 // date(timestring, modifier, ...)
+// NOTE: Marked as non-deterministic because it accepts 'now' as a timestring
 export const dateFunc = createScalarFunction(
-	{ name: 'date', numArgs: -1, deterministic: true },
+	{ name: 'date', numArgs: -1, deterministic: false },
 	(...args: SqlValue[]): SqlValue => {
 		const finalDt = processDateTimeArgs(args);
 		if (!finalDt) return null;
@@ -319,8 +320,9 @@ export const dateFunc = createScalarFunction(
 );
 
 // time(timestring, modifier, ...)
+// NOTE: Marked as non-deterministic because it accepts 'now' as a timestring
 export const timeFunc = createScalarFunction(
-	{ name: 'time', numArgs: -1, deterministic: true },
+	{ name: 'time', numArgs: -1, deterministic: false },
 	(...args: SqlValue[]): SqlValue => {
 		const finalDt = processDateTimeArgs(args);
 		if (!finalDt) return null;
@@ -329,8 +331,9 @@ export const timeFunc = createScalarFunction(
 );
 
 // datetime(timestring, modifier, ...)
+// NOTE: Marked as non-deterministic because it accepts 'now' as a timestring
 export const datetimeFunc = createScalarFunction(
-	{ name: 'datetime', numArgs: -1, deterministic: true },
+	{ name: 'datetime', numArgs: -1, deterministic: false },
 	(...args: SqlValue[]): SqlValue => {
 		const finalDt = processDateTimeArgs(args);
 		if (!finalDt) return null;
@@ -341,8 +344,9 @@ export const datetimeFunc = createScalarFunction(
 );
 
 // julianday(timestring, modifier, ...)
+// NOTE: Marked as non-deterministic because it accepts 'now' as a timestring
 export const juliandayFunc = createScalarFunction(
-	{ name: 'julianday', numArgs: -1, deterministic: true },
+	{ name: 'julianday', numArgs: -1, deterministic: false },
 	(...args: SqlValue[]): SqlValue => {
 		const finalDt = processDateTimeArgs(args);
 		if (!finalDt) return null;
@@ -352,8 +356,9 @@ export const juliandayFunc = createScalarFunction(
 );
 
 // strftime(format, timestring, modifier, ...)
+// NOTE: Marked as non-deterministic because it accepts 'now' as a timestring
 export const strftimeFunc = createScalarFunction(
-	{ name: 'strftime', numArgs: -1, deterministic: true },
+	{ name: 'strftime', numArgs: -1, deterministic: false },
 	(format: SqlValue, ...timeArgs: SqlValue[]): SqlValue => {
 		if (typeof format !== 'string') return null;
 		const finalDt = processDateTimeArgs(timeArgs);
