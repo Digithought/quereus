@@ -33,6 +33,12 @@ export function buildFinalProjections(
 		return { output: input, finalContext: selectContext, preAggregateSort: false };
 	}
 
+	// Skip ProjectNode entirely for identity projections (SELECT * equivalent)
+	// This avoids unnecessary per-row overhead when all columns pass through unchanged
+	if (isIdentityProjection(projections, input)) {
+		return { output: input, finalContext: selectContext, preAggregateSort: false };
+	}
+
 	// Check if ORDER BY should be applied before projection (using input scope only)
 	const needsPreProjectionSort = shouldApplyOrderByBeforeProjection(stmt, projections);
 	let preAggregateSort = false;
@@ -182,4 +188,43 @@ function createProjectionOutputScope(projectionNode: RelationalPlanNode): Regist
 	});
 
 	return projectionOutputScope;
+}
+
+/**
+ * Detects if projections form an identity transformation over the source.
+ * An identity projection is one where all projections are simple column references
+ * that reference source attributes in order with no name changes.
+ * This allows skipping the ProjectNode entirely for SELECT * queries.
+ */
+function isIdentityProjection(projections: Projection[], source: RelationalPlanNode): boolean {
+	const sourceAttrs = source.getAttributes();
+
+	// Must have same number of projections as source attributes
+	if (projections.length !== sourceAttrs.length) {
+		return false;
+	}
+
+	for (let i = 0; i < projections.length; i++) {
+		const proj = projections[i];
+		const sourceAttr = sourceAttrs[i];
+
+		// Must be a column reference
+		if (!CapabilityDetectors.isColumnReference(proj.node)) {
+			return false;
+		}
+
+		const colRef = proj.node;
+
+		// Must reference the corresponding source attribute (preserves order)
+		if (colRef.attributeId !== sourceAttr.id) {
+			return false;
+		}
+
+		// Alias must not change the name (undefined alias is fine)
+		if (proj.alias && proj.alias.toLowerCase() !== sourceAttr.name.toLowerCase()) {
+			return false;
+		}
+	}
+
+	return true;
 }

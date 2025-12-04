@@ -53,3 +53,27 @@ SELECT COUNT(*) AS accesses FROM query_plan('SELECT name FROM test_table WHERE a
 -- Query-based push-down smoke (TestQueryModule) when available (non-assertive)
 -- SELECT json_group_array(op) as ops FROM query_plan('SELECT id FROM test_table WHERE id = 2');
 -- → [{"ops":"[\"FILTER\",\"SEQSCAN\"]"}]
+
+-- Identity projection optimization: SELECT * should not create a PROJECT node
+SELECT COUNT(*) AS projects FROM query_plan('SELECT * FROM test_table') WHERE op = 'PROJECT';
+→ [{"projects": 0}]
+
+-- Identity projection: selecting all columns in order should also skip PROJECT
+SELECT COUNT(*) AS projects FROM query_plan('SELECT id, name, age FROM test_table') WHERE op = 'PROJECT';
+→ [{"projects": 0}]
+
+-- Non-identity: reordered columns SHOULD have PROJECT
+SELECT COUNT(*) AS projects FROM query_plan('SELECT age, name, id FROM test_table') WHERE op = 'PROJECT';
+→ [{"projects": 1}]
+
+-- Non-identity: partial columns SHOULD have PROJECT
+SELECT COUNT(*) AS projects FROM query_plan('SELECT id, name FROM test_table') WHERE op = 'PROJECT';
+→ [{"projects": 1}]
+
+-- Non-identity: alias SHOULD have PROJECT
+SELECT COUNT(*) AS projects FROM query_plan('SELECT id AS identifier, name, age FROM test_table') WHERE op = 'PROJECT';
+→ [{"projects": 1}]
+
+-- Non-identity: computed expression SHOULD have PROJECT
+SELECT COUNT(*) AS projects FROM query_plan('SELECT id, name, age + 1 FROM test_table') WHERE op = 'PROJECT';
+→ [{"projects": 1}]
