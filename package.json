@@ -25,7 +25,8 @@
     "build:plugins": "yarn workspace @quereus/sample-plugins build",
     "build:vscode": "yarn workspace quereus-vscode build",
     "build:ui": "yarn workspace @quereus/shared-ui build",
-    "preview:web": "yarn workspace @quereus/quoomb-web preview"
+    "preview:web": "yarn workspace @quereus/quoomb-web preview",
+    "pub": "cd packages/quereus && npm version && npm publish --access public && cd ../plugin-loader && npm version && npm publish --access public"
   },
   "devDependencies": {
     "esbuild": "^0.23.0",
