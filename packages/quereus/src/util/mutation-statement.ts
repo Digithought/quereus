@@ -114,6 +114,12 @@ function buildWhereClause(
 		right: sqlValueToLiteralExpr(keyValues[idx])
 	}));
 
+	if (conditions.length === 0) {
+		// Table has no primary key - return a tautology (WHERE 1)
+		// Note: UPDATE/DELETE without row identification will affect all rows
+		return { type: 'literal', value: 1 };
+	}
+
 	if (conditions.length === 1) {
 		return conditions[0];
 	}
