@@ -13,7 +13,7 @@ import type { ViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
 import { SchemaChangeNotifier } from './change-events.js';
-import { validateDeterministicDefault, validateDeterministicConstraint } from '../planner/validation/determinism-validator.js';
+import { checkDeterministic } from '../planner/validation/determinism-validator.js';
 import { buildExpression } from '../planner/building/expression.js';
 import type { PlanningContext } from '../planner/planning-context.js';
 import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
@@ -683,15 +683,28 @@ export class SchemaManager {
 		// validated at INSERT time in insert.ts
 		for (const col of finalColumnSchemas) {
 			if (col.defaultValue && typeof col.defaultValue === 'object' && col.defaultValue !== null && 'type' in col.defaultValue) {
+				let defaultExpr: ScalarPlanNode | undefined;
 				try {
-					// It's an AST expression - try to build and validate it
-					const defaultExpr = buildExpression(planningCtx, col.defaultValue as AST.Expression) as ScalarPlanNode;
-					validateDeterministicDefault(defaultExpr, col.name, tableName);
+					// Try to build the expression - may fail if it references columns that don't exist yet
+					defaultExpr = buildExpression(planningCtx, col.defaultValue as AST.Expression) as ScalarPlanNode;
 				} catch (e) {
 					// If we can't build the expression (e.g., it references columns that don't exist yet),
 					// skip validation here. It will be validated at INSERT time.
 					log('Skipping determinism validation for default on column %s.%s at CREATE TABLE time (will validate at INSERT time): %s',
 						tableName, col.name, (e as Error).message);
+				}
+
+				// If expression built successfully, check determinism (non-throwing)
+				if (defaultExpr) {
+					const result = checkDeterministic(defaultExpr);
+					if (!result.valid) {
+						throw new QuereusError(
+							`Non-deterministic expression not allowed in DEFAULT for column '${col.name}' in table '${tableName}'. ` +
+							`Expression: ${result.expression}. ` +
+							`Use mutation context to pass non-deterministic values (e.g., WITH CONTEXT (timestamp = datetime('now'))).`,
+							StatusCode.ERROR
+						);
+					}
 				}
 			}
 		}
