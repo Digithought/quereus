@@ -123,16 +123,11 @@ export class MemoryTable extends VirtualTable {
 	// Note: getBestAccessPlan is handled by the MemoryTableModule, not the table instance.
 
 	/** Performs mutation through the connection's transaction layer */
-	async update(
-		operation: 'insert' | 'update' | 'delete',
-		values: Row | undefined,
-		oldKeyValues?: Row,
-		onConflict?: ConflictResolution
-	): Promise<Row | undefined> {
+	async update(args: import('../table.js').UpdateArgs): Promise<Row | undefined> {
 		const conn = await this.ensureConnection();
 		// Delegate mutation to the manager.
-		// This assumes manager.performMutation will be updated to this signature and logic.
-		return this.manager.performMutation(conn, operation, values, oldKeyValues, onConflict);
+		// Note: mutationStatement is ignored by memory table (could be logged if needed)
+		return this.manager.performMutation(conn, args.operation, args.values, args.oldKeyValues, args.onConflict);
 	}
 
 	/** Begins a transaction for this connection */

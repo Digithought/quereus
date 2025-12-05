@@ -9,6 +9,7 @@ import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
 import * as AST from '../../parser/ast.js';
+import { validateDeterministicConstraint } from '../validation/determinism-validator.js';
 
 /**
  * Determines if a constraint should be checked for the given operation
@@ -136,6 +137,10 @@ export function buildConstraintChecks(
         { ...ctx, scope: constraintScope },
         constraint.expr
       ) as ScalarPlanNode;
+
+      // Validate that the constraint expression is deterministic
+      const constraintName = constraint.name ?? `_check_${tableSchema.name}`;
+      validateDeterministicConstraint(expression, constraintName, tableSchema.name);
 
       // Heuristic: auto-defer if the expression contains a subquery
       // or references a different relation via attribute bindings (NEW/OLD already localized).

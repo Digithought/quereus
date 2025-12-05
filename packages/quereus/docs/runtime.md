@@ -970,6 +970,104 @@ const value = await entry.evaluator(runtimeCtx);
 - Deferred constraints capture and preserve context
 - Use existing context helpers - no special APIs needed
 
+## Determinism Validation
+
+Quereus enforces that all expressions in CHECK constraints and DEFAULT values must be deterministic. This ensures that captured statements at the VTable update boundary are fully deterministic and replayable.
+
+### Why Determinism Matters
+
+Non-deterministic expressions (like `random()`, `datetime('now')`) produce different values on each execution. If these were allowed in constraints or defaults:
+- Replaying captured statements would produce different results
+- Constraint validation could be inconsistent
+- Audit logs would not be reproducible
+
+### Validation Rules
+
+**Rejected in Constraints and Defaults:**
+- `random()`, `randomblob()` - Random value generation
+- `date('now')`, `time('now')`, `datetime('now')`, `julianday('now')` - Current time functions
+- User-defined functions marked as non-deterministic
+- Any expression containing non-deterministic sub-expressions
+
+**Allowed in Constraints and Defaults:**
+- Constant literals: `42`, `'hello'`, `true`
+- Deterministic built-in functions: `upper()`, `lower()`, `abs()`, `round()`
+- Column references: `NEW.price`, `OLD.quantity`
+- Mutation context variables: `context.timestamp`, `context.user_id`
+- User-defined functions marked as deterministic (default)
+
+### Using Mutation Context for Non-Deterministic Values
+
+Instead of using non-deterministic functions directly, pass values via mutation context:
+
+```sql
+-- ❌ REJECTED: Non-deterministic default
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT DEFAULT datetime('now')  -- ERROR
+);
+
+-- ✅ ACCEPTED: Use mutation context
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT DEFAULT timestamp
+) WITH CONTEXT (
+    timestamp TEXT
+);
+
+-- Pass the timestamp when inserting
+INSERT INTO orders (id)
+WITH CONTEXT timestamp = datetime('now')
+VALUES (1);
+```
+
+### Physical Properties System
+
+Determinism is tracked through the `PhysicalProperties` system:
+
+```typescript
+interface PhysicalProperties {
+    deterministic: boolean;  // Same inputs → same outputs
+    readonly: boolean;       // No side effects
+    idempotent: boolean;     // Safe to call multiple times
+    constant: boolean;       // Directly produces constant result
+}
+```
+
+**Propagation Rules:**
+- Function nodes check the `FunctionFlags.DETERMINISTIC` flag
+- Non-deterministic functions mark `deterministic: false`
+- Properties propagate bottom-up through the expression tree
+- Parent nodes inherit the most restrictive properties from children
+
+**User-Defined Functions:**
+```typescript
+// Non-deterministic UDF
+db.createScalarFunction("my_random",
+    { numArgs: 0, deterministic: false },
+    () => Math.random()
+);
+
+// Deterministic UDF (default)
+db.createScalarFunction("my_upper",
+    { numArgs: 1, deterministic: true },  // or omit (defaults to true)
+    (text) => String(text).toUpperCase()
+);
+```
+
+### Validation Timing
+
+**CREATE TABLE:**
+- DEFAULT expressions validated if they don't reference table columns
+- CHECK constraints NOT validated (columns don't exist yet in scope)
+
+**INSERT/UPDATE:**
+- DEFAULT expressions validated when building row expansion
+- CHECK constraints validated when building constraint checks
+
+**ALTER TABLE ADD CONSTRAINT:**
+- Validation deferred to first INSERT/UPDATE (constraints may reference NEW/OLD)
+
 ## Common Patterns
 
 ### Row Processing with Context

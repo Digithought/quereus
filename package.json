@@ -25,9 +25,12 @@
     "build:plugins": "yarn workspace @quereus/sample-plugins build",
     "build:vscode": "yarn workspace quereus-vscode build",
     "build:ui": "yarn workspace @quereus/shared-ui build",
-    "preview:web": "yarn workspace @quereus/quoomb-web preview"
+    "preview:web": "yarn workspace @quereus/quoomb-web preview",
+    "pub:quereus": "cd packages/quereus && npx bumpp --no-push && npm publish --access public --registry https://registry.npmjs.org/",
+    "pub:loader": "cd packages/plugin-loader && npx bumpp --no-push && npm publish --access public --registry https://registry.npmjs.org/"
   },
   "devDependencies": {
+    "bumpp": "^10.0.3",
     "esbuild": "^0.23.0",
     "typescript": "^5.8.3"
   }

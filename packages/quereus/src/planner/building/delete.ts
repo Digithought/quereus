@@ -148,7 +148,11 @@ export function buildDeleteStmt(
     deleteCtx.scope,
     deleteNode,
     tableReference,
-    'delete'
+    'delete',
+    undefined, // onConflict not used for DELETE
+    mutationContextValues.size > 0 ? mutationContextValues : undefined,
+    contextAttributes.length > 0 ? contextAttributes : undefined,
+    contextDescriptor
   );
 
   const resultNode: RelationalPlanNode = dmlExecutorNode;

@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js'; // Adjust path as needed
 import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
+import { coerceForComparison } from '../src/util/coercion.js'; // Import coercion helper
 import { safeJsonStringify } from '../src/util/serialization.js';
 import type { SqlValue } from '../src/common/types.js'; // Import SqlParameters
 
@@ -140,7 +141,9 @@ describe('Property-Based Tests', () => {
 				const [actualA, actualB] = actualValues;
 
 				// Now compare using the converted values (what SQL actually stored)
-				const expectedComparison = compareSqlValues(actualA, actualB, 'BINARY');
+				// Apply the same coercion that SQL comparisons use
+				const [coercedA, coercedB] = coerceForComparison(actualA, actualB);
+				const expectedComparison = compareSqlValues(coercedA, coercedB, 'BINARY');
 
 				// Test ordering behavior using ORDER BY
 				const orderedValues: SqlValue[] = [];

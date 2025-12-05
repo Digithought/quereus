@@ -374,6 +374,147 @@ class IndexedTable extends VirtualTable {
 }
 ```
 
+## Mutation Statements
+
+Virtual table modules can opt-in to receive deterministic mutation statements for each row-level operation. This enables replication, audit logging, and change data capture with guaranteed reproducibility.
+
+### Overview
+
+When a module sets `wantStatements: true`, Quereus provides a `mutationStatement` string with each `update()` call. This statement:
+
+- Represents the **bottom-level mutation** at the VirtualTable.update() level (not the top-level DML statement)
+- Contains all values as **literals** (no parameters or non-deterministic expressions)
+- Includes **resolved mutation context** values as literals in the WITH CONTEXT clause
+- Can be replayed on another Quereus instance to produce identical results
+- Preserves determinism by eliminating all non-deterministic expressions
+
+### Module Opt-In
+
+Modules enable mutation statements by setting a property:
+
+```typescript
+class MyReplicatedTable extends VirtualTable {
+  // Opt-in to mutation statements
+  wantStatements = true;
+
+  async update(args: UpdateArgs): Promise<Row | undefined> {
+    // args.mutationStatement contains the deterministic SQL statement
+    if (args.mutationStatement) {
+      await this.replicationLog.append(args.mutationStatement);
+    }
+
+    // Perform the actual mutation
+    return this.performUpdate(args);
+  }
+}
+```
+
+### Statement Format
+
+Mutation statements use Quereus SQL syntax with all values as literals:
+
+**INSERT Example:**
+```sql
+-- Original statement with parameters
+INSERT INTO orders (id, amount) VALUES (:id, :amount)
+
+-- Logged mutation statement (per row)
+insert into orders (id, amount) values (1, 100)
+```
+
+**INSERT with Mutation Context:**
+```sql
+-- Original statement
+INSERT INTO orders (id, amount, created_at)
+WITH CONTEXT now = DateTime('now')
+VALUES (1, 100, now)
+
+-- Logged mutation statement (context resolved to literal)
+insert into orders (id, amount, created_at) with context now = '2024-01-15T10:30:00Z' values (1, 100, '2024-01-15T10:30:00Z')
+```
+
+**UPDATE Example:**
+```sql
+-- Original statement
+UPDATE users SET name = :newName WHERE id = :userId
+
+-- Logged mutation statement (per row)
+update users set name = 'Alice' where id = 1
+```
+
+**DELETE Example:**
+```sql
+-- Original statement
+DELETE FROM sessions WHERE user_id = :userId
+
+-- Logged mutation statement (per row)
+delete from sessions where user_id = 42 and session_id = 'abc123'
+```
+
+### Determinism Guarantees
+
+The mutation statement system ensures determinism by:
+
+1. **Resolving Execution Parameters**: All `:name` and `?` parameters are replaced with their literal values
+2. **Resolving Mutation Context**: All context variables are evaluated once per statement and emitted as literals
+3. **Resolving Defaults**: Default expressions are evaluated and emitted as literal values
+4. **Preserving Order**: Mutations are logged in the order they're applied to the virtual table
+
+This means that a sequence of logged mutation statements can be replayed to fully replicate a database, with no chance of non-determinism (assuming the same code and schema version).
+
+### Use Cases
+
+**Replication:**
+```typescript
+class ReplicatedTable extends VirtualTable {
+  wantStatements = true;
+
+  async update(args: UpdateArgs): Promise<Row | undefined> {
+    // Send mutation to replicas
+    await this.replicator.broadcast(args.mutationStatement!);
+
+    // Apply locally
+    return this.storage.update(args);
+  }
+}
+```
+
+**Audit Logging:**
+```typescript
+class AuditedTable extends VirtualTable {
+  wantStatements = true;
+
+  async update(args: UpdateArgs): Promise<Row | undefined> {
+    // Log mutation with timestamp and user
+    await this.auditLog.record({
+      timestamp: Date.now(),
+      user: this.currentUser,
+      statement: args.mutationStatement!
+    });
+
+    return this.storage.update(args);
+  }
+}
+```
+
+**Change Data Capture:**
+```typescript
+class CDCTable extends VirtualTable {
+  wantStatements = true;
+
+  async update(args: UpdateArgs): Promise<Row | undefined> {
+    // Publish change event
+    await this.eventBus.publish({
+      table: this.tableName,
+      operation: args.operation,
+      statement: args.mutationStatement!
+    });
+
+    return this.storage.update(args);
+  }
+}
+```
+
 ## See Also
 
 - [Optimizer Documentation](optimizer.md) - Detailed optimization architecture

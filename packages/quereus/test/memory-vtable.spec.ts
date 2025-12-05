@@ -126,15 +126,15 @@ describe("Memory VTable Module", () => {
 
 		it("should insert data via update", async () => {
 			const newRow = [1, 'Laptop', 999.99, 'Electronics'];
-			const result = await table.update('insert', newRow);
+			const result = await table.update({ operation: 'insert', values: newRow });
 
 			expect(result).to.deep.equal(newRow);
 		});
 
 		it("should query data via query", async () => {
 			// Insert test data
-			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
-			await table.update('insert', [2, 'Mouse', 29.99, 'Electronics']);
+			await table.update({ operation: 'insert', values: [1, 'Laptop', 999.99, 'Electronics'] });
+			await table.update({ operation: 'insert', values: [2, 'Mouse', 29.99, 'Electronics'] });
 
 			// Query all data
 			const rows = [];
@@ -149,12 +149,12 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should update existing data via update", async () => {
-			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
+			await table.update({ operation: 'insert', values: [1, 'Laptop', 999.99, 'Electronics'] });
 
 			// Update the row
 			const updatedRow = [1, 'Gaming Laptop', 1199.99, 'Electronics'];
 			const oldKeyValues = [1]; // Primary key values
-			const result = await table.update('update', updatedRow, oldKeyValues);
+			const result = await table.update({ operation: 'update', values: updatedRow, oldKeyValues });
 
 			expect(result).to.deep.equal(updatedRow);
 
@@ -170,12 +170,12 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should delete data via update", async () => {
-			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
-			await table.update('insert', [2, 'Mouse', 29.99, 'Electronics']);
+			await table.update({ operation: 'insert', values: [1, 'Laptop', 999.99, 'Electronics'] });
+			await table.update({ operation: 'insert', values: [2, 'Mouse', 29.99, 'Electronics'] });
 
 			// Delete first row
 			const oldKeyValues = [1];
-			const result = await table.update('delete', undefined, oldKeyValues);
+			const result = await table.update({ operation: 'delete', values: undefined, oldKeyValues });
 
 			expect(result).to.deep.equal([1, 'Laptop', 999.99, 'Electronics']);
 
@@ -190,12 +190,12 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should handle update with primary key change", async () => {
-			await table.update('insert', [1, 'Laptop', 999.99, 'Electronics']);
+			await table.update({ operation: 'insert', values: [1, 'Laptop', 999.99, 'Electronics'] });
 
 			// Update with new primary key
 			const updatedRow = [10, 'Laptop', 999.99, 'Electronics'];
 			const oldKeyValues = [1];
-			const result = await table.update('update', updatedRow, oldKeyValues);
+			const result = await table.update({ operation: 'update', values: updatedRow, oldKeyValues });
 
 			expect(result).to.deep.equal(updatedRow);
 
@@ -222,10 +222,10 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should enforce primary key uniqueness", async () => {
-			await table.update('insert', [1, 'user@example.com']);
+			await table.update({ operation: 'insert', values: [1, 'user@example.com'] });
 
 			try {
-				await table.update('insert', [1, 'other@example.com']);
+				await table.update({ operation: 'insert', values: [1, 'other@example.com'] });
 				expect.fail("Should have thrown constraint error");
 			} catch (error: any) {
 				expect(error.message).to.include('UNIQUE constraint failed');
@@ -233,11 +233,11 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should handle conflict resolution with INSERT OR IGNORE", async () => {
-			await table.update('insert', [1, 'user@example.com']);
+			await table.update({ operation: 'insert', values: [1, 'user@example.com'] });
 
 			// Simulate INSERT OR IGNORE by passing conflict resolution
 			const rowWithConflictRes = [1, 'other@example.com'];
-			const result = await table.update('insert', rowWithConflictRes, undefined, ConflictResolution.IGNORE);
+			const result = await table.update({ operation: 'insert', values: rowWithConflictRes, onConflict: ConflictResolution.IGNORE });
 			void expect(result).to.be.undefined; // IGNORE should return undefined
 
 			// Verify original data unchanged
@@ -264,9 +264,9 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should handle composite primary key operations", async () => {
-			await table.update('insert', [1, 'sess_123', '2024-01-01']);
-			await table.update('insert', [1, 'sess_456', '2024-01-02']);
-			await table.update('insert', [2, 'sess_123', '2024-01-01']);
+			await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-01'] });
+			await table.update({ operation: 'insert', values: [1, 'sess_456', '2024-01-02'] });
+			await table.update({ operation: 'insert', values: [2, 'sess_123', '2024-01-01'] });
 
 			const rows = [];
 			for await (const row of table.query(createFilterInfo())) {
@@ -277,10 +277,10 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should enforce composite primary key uniqueness", async () => {
-			await table.update('insert', [1, 'sess_123', '2024-01-01']);
+			await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-01'] });
 
 			try {
-				await table.update('insert', [1, 'sess_123', '2024-01-02']);
+				await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-02'] });
 				expect.fail("Should have thrown constraint error");
 			} catch (error: any) {
 				expect(error.message).to.include('UNIQUE constraint failed');
@@ -288,21 +288,21 @@ describe("Memory VTable Module", () => {
 		});
 
 		it("should update with composite primary key", async () => {
-			await table.update('insert', [1, 'sess_123', '2024-01-01']);
+			await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-01'] });
 
 			const updatedRow = [1, 'sess_123', '2024-01-01-updated'];
 			const oldKeyValues = [1, 'sess_123'];
-			const result = await table.update('update', updatedRow, oldKeyValues);
+			const result = await table.update({ operation: 'update', values: updatedRow, oldKeyValues });
 
 			expect(result).to.deep.equal(updatedRow);
 		});
 
 		it("should delete with composite primary key", async () => {
-			await table.update('insert', [1, 'sess_123', '2024-01-01']);
-			await table.update('insert', [1, 'sess_456', '2024-01-02']);
+			await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-01'] });
+			await table.update({ operation: 'insert', values: [1, 'sess_456', '2024-01-02'] });
 
 			const oldKeyValues = [1, 'sess_123'];
-			const result = await table.update('delete', undefined, oldKeyValues);
+			const result = await table.update({ operation: 'delete', values: undefined, oldKeyValues });
 
 			expect(result).to.deep.equal([1, 'sess_123', '2024-01-01']);
 
@@ -385,14 +385,14 @@ describe("Memory VTable Module", () => {
 			table = module.create(db, schema);
 
 			// Insert initial data
-			await table.update('insert', [1, 1000.0]);
-			await table.update('insert', [2, 500.0]);
+			await table.update({ operation: 'insert', values: [1, 1000.0] });
+			await table.update({ operation: 'insert', values: [2, 500.0] });
 		});
 
 		it("should handle basic transactions", async () => {
 			await table.begin();
-			await table.update('update', [1, 900.0], [1]);
-			await table.update('update', [2, 600.0], [2]);
+			await table.update({ operation: 'update', values: [1, 900.0], oldKeyValues: [1] });
+			await table.update({ operation: 'update', values: [2, 600.0], oldKeyValues: [2] });
 			await table.commit();
 
 			const rows = [];
@@ -406,7 +406,7 @@ describe("Memory VTable Module", () => {
 
 		it("should rollback transactions", async () => {
 			await table.begin();
-			await table.update('update', [1, 0.0], [1]);
+			await table.update({ operation: 'update', values: [1, 0.0], oldKeyValues: [1] });
 			await table.rollback();
 
 			const rows = [];
@@ -419,9 +419,9 @@ describe("Memory VTable Module", () => {
 
 		it("should handle savepoints", async () => {
 			await table.begin();
-			await table.update('update', [1, 950.0], [1]);
+			await table.update({ operation: 'update', values: [1, 950.0], oldKeyValues: [1] });
 			await table.savepoint(1);
-			await table.update('update', [1, 850.0], [1]);
+			await table.update({ operation: 'update', values: [1, 850.0], oldKeyValues: [1] });
 			await table.rollbackTo(1);
 			await table.commit();
 
@@ -435,9 +435,9 @@ describe("Memory VTable Module", () => {
 
 		it("should release savepoints", async () => {
 			await table.begin();
-			await table.update('update', [1, 950.0], [1]);
+			await table.update({ operation: 'update', values: [1, 950.0], oldKeyValues: [1] });
 			await table.savepoint(1);
-			await table.update('update', [1, 850.0], [1]);
+			await table.update({ operation: 'update', values: [1, 850.0], oldKeyValues: [1] });
 			await table.release(1);
 			await table.commit();
 
@@ -459,7 +459,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'name', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
 			table = module.create(db, schema);
-			await table.update('insert', [1, 'test']);
+			await table.update({ operation: 'insert', values: [1, 'test'] });
 		});
 
 		it("should add columns", async () => {
@@ -541,8 +541,8 @@ describe("Memory VTable Module", () => {
 
 		it("should handle various data types", async () => {
 			const blobData = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-			await table.update('insert', [1, 'hello', 3.14, blobData, null]);
-			await table.update('insert', [2, '', 0.0, new Uint8Array(0), 'not null']);
+			await table.update({ operation: 'insert', values: [1, 'hello', 3.14, blobData, null] });
+			await table.update({ operation: 'insert', values: [2, '', 0.0, new Uint8Array(0), 'not null'] });
 
 			const rows = [];
 			for await (const row of table.query(createFilterInfo())) {
@@ -565,8 +565,8 @@ describe("Memory VTable Module", () => {
 			], ['part1', 'part2']);
 			const table2 = module.create(db, schema);
 
-			await table2.update('insert', ['a', 1, 'value1']);
-			await table2.update('insert', [null, 2, 'value2']);
+			await table2.update({ operation: 'insert', values: ['a', 1, 'value1'] });
+			await table2.update({ operation: 'insert', values: [null, 2, 'value2'] });
 
 			const rows = [];
 			for await (const row of table2.query(createFilterInfo())) {
@@ -580,8 +580,8 @@ describe("Memory VTable Module", () => {
 
 		it("should handle empty table operations", async () => {
 			// Operations on empty table should not error
-			await table.update('update', [999, 'new'], [999]);
-			await table.update('delete', undefined, [999]);
+			await table.update({ operation: 'update', values: [999, 'new'], oldKeyValues: [999] });
+			await table.update({ operation: 'delete', values: undefined, oldKeyValues: [999] });
 
 			const rows = [];
 			for await (const row of table.query(createFilterInfo())) {
@@ -617,7 +617,7 @@ describe("Memory VTable Module", () => {
 			const table = module.create(db, schema);
 
 			try {
-				await table.update('insert', [1, 'test']);
+				await table.update({ operation: 'insert', values: [1, 'test'] });
 				expect.fail("Should not allow INSERT on read-only table");
 			} catch (error: any) {
 				expect(error.message).to.include('read-only');

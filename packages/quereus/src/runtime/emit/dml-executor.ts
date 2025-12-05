@@ -1,12 +1,14 @@
 import type { DmlExecutorNode } from '../../planner/nodes/dml-executor-node.js';
-import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
-import { emitPlanNode } from '../emitters.js';
+import type { Instruction, RuntimeContext, InstructionRun, OutputValue } from '../types.js';
+import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type Row, type SqlValue } from '../../common/types.js';
 import { getVTable, disconnectVTable } from '../utils.js';
 import { ConflictResolution } from '../../common/constants.js';
 import type { EmissionContext } from '../emission-context.js';
 import { extractOldRowFromFlat, extractNewRowFromFlat } from '../../util/row-descriptor.js';
+import { buildInsertStatement, buildUpdateStatement, buildDeleteStatement } from '../../util/mutation-statement.js';
+import type { UpdateArgs } from '../../vtab/table.js';
 
 export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
@@ -14,15 +16,55 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 	// Pre-calculate primary key column indices from schema (needed for update/delete)
 	const pkColumnIndicesInSchema = tableSchema.primaryKeyDefinition.map(pkColDef => pkColDef.index);
 
+	// Emit mutation context evaluators if present
+	const contextEvaluatorInstructions: Instruction[] = [];
+	if (plan.mutationContextValues && plan.contextAttributes) {
+		for (const attr of plan.contextAttributes) {
+			const valueNode = plan.mutationContextValues.get(attr.name);
+			if (!valueNode) {
+				throw new QuereusError(`Missing mutation context value for '${attr.name}'`, StatusCode.INTERNAL);
+			}
+			const instruction = emitCallFromPlan(valueNode, ctx);
+			contextEvaluatorInstructions.push(instruction);
+		}
+	}
+
 	// --- Operation-specific run generators ------------------------------------
 
 	// INSERT ----------------------------------------------------
-	async function* runInsert(ctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
+	async function* runInsert(ctx: RuntimeContext, rows: AsyncIterable<Row>, ...contextEvaluators: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		const vtab = await getVTable(ctx, tableSchema);
+
+		// Evaluate mutation context once per statement
+		let contextRow: Row | undefined;
+		if (contextEvaluators.length > 0) {
+			contextRow = [];
+			for (const evaluator of contextEvaluators) {
+				const value = await evaluator(ctx) as SqlValue;
+				contextRow.push(value);
+			}
+		}
+
 		try {
 			for await (const flatRow of rows) {
 				const newRow = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
-				await vtab.update!('insert', newRow, undefined, plan.onConflict ?? ConflictResolution.ABORT);
+
+				// Build mutation statement if logging is enabled
+				let mutationStatement: string | undefined;
+				if (vtab.wantStatements) {
+					mutationStatement = buildInsertStatement(tableSchema, newRow, contextRow);
+				}
+
+				const args: UpdateArgs = {
+					operation: 'insert',
+					values: newRow,
+					oldKeyValues: undefined,
+					onConflict: plan.onConflict ?? ConflictResolution.ABORT,
+					mutationStatement
+				};
+
+				await vtab.update!(args);
+
 				// Track change (INSERT): record NEW primary key
 				const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
 				ctx.db._recordInsert(`${tableSchema.schemaName}.${tableSchema.name}`, pkValues);
@@ -34,8 +76,19 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 	}
 
 	// UPDATE ----------------------------------------------------
-	async function* runUpdate(ctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
+	async function* runUpdate(ctx: RuntimeContext, rows: AsyncIterable<Row>, ...contextEvaluators: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		const vtab = await getVTable(ctx, tableSchema);
+
+		// Evaluate mutation context once per statement
+		let contextRow: Row | undefined;
+		if (contextEvaluators.length > 0) {
+			contextRow = [];
+			for (const evaluator of contextEvaluators) {
+				const value = await evaluator(ctx) as SqlValue;
+				contextRow.push(value);
+			}
+		}
+
 		try {
 			for await (const flatRow of rows) {
 				const oldRow = extractOldRowFromFlat(flatRow, tableSchema.columns.length);
@@ -48,7 +101,23 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 					return oldRow[pkColIdx];
 				});
-				await vtab.update!('update', newRow, keyValues, ConflictResolution.ABORT);
+
+				// Build mutation statement if logging is enabled
+				let mutationStatement: string | undefined;
+				if (vtab.wantStatements) {
+					mutationStatement = buildUpdateStatement(tableSchema, newRow, keyValues, contextRow);
+				}
+
+				const args: UpdateArgs = {
+					operation: 'update',
+					values: newRow,
+					oldKeyValues: keyValues,
+					onConflict: ConflictResolution.ABORT,
+					mutationStatement
+				};
+
+				await vtab.update!(args);
+
 				// Track change (UPDATE): record OLD and NEW primary keys
 				const newKeyValues: SqlValue[] = tableSchema.primaryKeyDefinition.map(pkColDef => newRow[pkColDef.index]);
 				ctx.db._recordUpdate(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues, newKeyValues);
@@ -60,8 +129,19 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 	}
 
 	// DELETE ----------------------------------------------------
-	async function* runDelete(ctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
+	async function* runDelete(ctx: RuntimeContext, rows: AsyncIterable<Row>, ...contextEvaluators: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
 		const vtab = await getVTable(ctx, tableSchema);
+
+		// Evaluate mutation context once per statement
+		let contextRow: Row | undefined;
+		if (contextEvaluators.length > 0) {
+			contextRow = [];
+			for (const evaluator of contextEvaluators) {
+				const value = await evaluator(ctx) as SqlValue;
+				contextRow.push(value);
+			}
+		}
+
 		try {
 			for await (const flatRow of rows) {
 				const oldRow = extractOldRowFromFlat(flatRow, tableSchema.columns.length);
@@ -72,7 +152,23 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 					return oldRow[pkColIdx];
 				});
-				await vtab.update!('delete', undefined, keyValues, ConflictResolution.ABORT);
+
+				// Build mutation statement if logging is enabled
+				let mutationStatement: string | undefined;
+				if (vtab.wantStatements) {
+					mutationStatement = buildDeleteStatement(tableSchema, keyValues, contextRow);
+				}
+
+				const args: UpdateArgs = {
+					operation: 'delete',
+					values: undefined,
+					oldKeyValues: keyValues,
+					onConflict: ConflictResolution.ABORT,
+					mutationStatement
+				};
+
+				await vtab.update!(args);
+
 				// Track change (DELETE): record OLD primary key
 				ctx.db._recordDelete(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues);
 				yield flatRow;
@@ -95,7 +191,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
 
 	return {
-		params: [sourceInstruction],
+		params: [sourceInstruction, ...contextEvaluatorInstructions],
 		run,
 		note: `execute${plan.operation}(${plan.table.tableSchema.name})`
 	};

@@ -7,6 +7,9 @@ import type { EmissionContext } from "./emission-context.js";
 import type { VirtualTableConnection } from "../vtab/connection.js";
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 
+// Re-export types from common/types.js for convenience
+export type { OutputValue };
+
 export type RuntimeContext = {
 	db: Database;
 	stmt: Statement | undefined; // Undefined for transient exec statements

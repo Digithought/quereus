@@ -497,6 +497,13 @@ export function insertToString(stmt: AST.InsertStmt): string {
 		parts.push(`(${stmt.columns.map(quoteIdentifierIfNeeded).join(', ')})`);
 	}
 
+	if (stmt.contextValues && stmt.contextValues.length > 0) {
+		const contextAssignments = stmt.contextValues.map(assign =>
+			`${quoteIdentifierIfNeeded(assign.name)} = ${expressionToString(assign.value)}`
+		);
+		parts.push('with context', contextAssignments.join(', '));
+	}
+
 	if (stmt.values) {
 		const valueRows = stmt.values.map(row =>
 			`(${row.map(expressionToString).join(', ')})`
@@ -533,7 +540,16 @@ export function updateToString(stmt: AST.UpdateStmt): string {
 		parts.push(withClauseToString(stmt.withClause));
 	}
 
-	parts.push('update', expressionToString(stmt.table), 'set');
+	parts.push('update', expressionToString(stmt.table));
+
+	if (stmt.contextValues && stmt.contextValues.length > 0) {
+		const contextAssignments = stmt.contextValues.map(assign =>
+			`${quoteIdentifierIfNeeded(assign.name)} = ${expressionToString(assign.value)}`
+		);
+		parts.push('with context', contextAssignments.join(', '));
+	}
+
+	parts.push('set');
 
 	const assignments = stmt.assignments.map(assign =>
 		`${quoteIdentifierIfNeeded(assign.column)} = ${expressionToString(assign.value)}`
@@ -572,6 +588,13 @@ export function deleteToString(stmt: AST.DeleteStmt): string {
 	}
 
 	parts.push('delete from', expressionToString(stmt.table));
+
+	if (stmt.contextValues && stmt.contextValues.length > 0) {
+		const contextAssignments = stmt.contextValues.map(assign =>
+			`${quoteIdentifierIfNeeded(assign.name)} = ${expressionToString(assign.value)}`
+		);
+		parts.push('with context', contextAssignments.join(', '));
+	}
 
 	if (stmt.where) {
 		parts.push('where', expressionToString(stmt.where));

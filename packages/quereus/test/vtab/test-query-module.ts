@@ -1,5 +1,5 @@
 import type { Database } from '../../src/core/database.js';
-import { VirtualTable } from '../../src/vtab/table.js';
+import { VirtualTable, type UpdateArgs } from '../../src/vtab/table.js';
 import type { VirtualTableModule, BaseModuleConfig, SupportAssessment } from '../../src/vtab/module.js';
 import type { TableSchema } from '../../src/schema/table.js';
 import type { PlanNode } from '../../src/planner/nodes/plan-node.js';
@@ -120,26 +120,21 @@ export class TestQueryTable extends VirtualTable {
 	}
 
 	// Required update method
-	async update(
-		operation: RowOp,
-		values: Row | undefined,
-		oldKeyValues?: Row,
-		_onConflict?: ConflictResolution
-	): Promise<Row | undefined> {
+	async update(args: UpdateArgs): Promise<Row | undefined> {
 		// Simple implementation for testing
-		switch (operation) {
+		switch (args.operation) {
 			case 'insert':
-				if (values) {
-					this.data.push(values);
-					return values;
+				if (args.values) {
+					this.data.push(args.values);
+					return args.values;
 				}
 				break;
 			case 'delete':
 				// Remove based on old key values
 				// For simplicity, just remove first matching row
-				if (oldKeyValues) {
+				if (args.oldKeyValues) {
 					const index = this.data.findIndex(row =>
-						row.every((val, i) => val === oldKeyValues[i])
+						row.every((val, i) => val === args.oldKeyValues![i])
 					);
 					if (index >= 0) {
 						this.data.splice(index, 1);
@@ -148,13 +143,13 @@ export class TestQueryTable extends VirtualTable {
 				break;
 			case 'update':
 				// Update based on old key values
-				if (oldKeyValues && values) {
+				if (args.oldKeyValues && args.values) {
 					const index = this.data.findIndex(row =>
-						row.every((val, i) => val === oldKeyValues[i])
+						row.every((val, i) => val === args.oldKeyValues[i])
 					);
 					if (index >= 0) {
-						this.data[index] = values;
-						return values;
+						this.data[index] = args.values;
+						return args.values;
 					}
 				}
 				break;
