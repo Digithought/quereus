@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { X, Download, Upload, AlertCircle, CheckCircle } from 'lucide-react';
 import { useConfigStore } from '../stores/configStore.js';
-import type { QuoombConfig } from '@quereus/quereus';
 
 interface ConfigModalProps {
   isOpen: boolean;
