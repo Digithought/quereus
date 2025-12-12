@@ -13,6 +13,13 @@ import type { ViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
 import { SchemaChangeNotifier } from './change-events.js';
+import { checkDeterministic } from '../planner/validation/determinism-validator.js';
+import { buildExpression } from '../planner/building/expression.js';
+import type { PlanningContext } from '../planner/planning-context.js';
+import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
+import { GlobalScope } from '../planner/scopes/global.js';
+import { ParameterScope } from '../planner/scopes/param.js';
+import type { ScalarPlanNode } from '../planner/nodes/plan-node.js';
 
 const log = createLogger('schema:manager');
 const warnLog = log.extend('warn');
@@ -650,6 +657,57 @@ export class SchemaManager {
 		const mutationContextSchemas = stmt.contextDefinitions
 			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
 			: undefined;
+
+		// Validate that default expressions are deterministic
+		// We need to build them temporarily to check their physical properties
+		// Note: We only validate defaults here, not CHECK constraints, because CHECK constraints
+		// may reference table columns which don't exist yet at CREATE TABLE time.
+		// CHECK constraints are validated at INSERT/UPDATE time in constraint-builder.ts
+		const globalScope = new GlobalScope(this.db.schemaManager);
+		const parameterScope = new ParameterScope(globalScope);
+		const planningCtx: PlanningContext = {
+			db: this.db,
+			schemaManager: this.db.schemaManager,
+			parameters: {},
+			scope: parameterScope,
+			cteNodes: new Map(),
+			schemaDependencies: new BuildTimeDependencyTracker(),
+			schemaCache: new Map(),
+			cteReferenceCache: new Map(),
+			outputScopes: new Map()
+		};
+
+		// Validate default expressions
+		// Note: We can only validate defaults that don't reference table columns,
+		// since the table doesn't exist yet. Defaults that reference columns will be
+		// validated at INSERT time in insert.ts
+		for (const col of finalColumnSchemas) {
+			if (col.defaultValue && typeof col.defaultValue === 'object' && col.defaultValue !== null && 'type' in col.defaultValue) {
+				let defaultExpr: ScalarPlanNode | undefined;
+				try {
+					// Try to build the expression - may fail if it references columns that don't exist yet
+					defaultExpr = buildExpression(planningCtx, col.defaultValue as AST.Expression) as ScalarPlanNode;
+				} catch (e) {
+					// If we can't build the expression (e.g., it references columns that don't exist yet),
+					// skip validation here. It will be validated at INSERT time.
+					log('Skipping determinism validation for default on column %s.%s at CREATE TABLE time (will validate at INSERT time): %s',
+						tableName, col.name, (e as Error).message);
+				}
+
+				// If expression built successfully, check determinism (non-throwing)
+				if (defaultExpr) {
+					const result = checkDeterministic(defaultExpr);
+					if (!result.valid) {
+						throw new QuereusError(
+							`Non-deterministic expression not allowed in DEFAULT for column '${col.name}' in table '${tableName}'. ` +
+							`Expression: ${result.expression}. ` +
+							`Use mutation context to pass non-deterministic values (e.g., WITH CONTEXT (timestamp = datetime('now'))).`,
+							StatusCode.ERROR
+						);
+					}
+				}
+			}
+		}
 
 		const baseTableSchema: TableSchema = {
 			name: tableName,

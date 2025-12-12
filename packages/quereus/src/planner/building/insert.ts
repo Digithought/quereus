@@ -22,6 +22,7 @@ import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
+import { validateDeterministicDefault } from '../validation/determinism-validator.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
@@ -103,6 +104,9 @@ function createRowExpansionProjection(
 				if (typeof tableColumn.defaultValue === 'object' && tableColumn.defaultValue !== null && 'type' in tableColumn.defaultValue) {
 					// It's an AST.Expression - build it into a plan node with context scope
 					defaultNode = buildExpression(defaultCtx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
+
+					// Validate that the default expression is deterministic
+					validateDeterministicDefault(defaultNode, tableColumn.name, tableSchema.name);
 				} else {
 					// Literal default value
 					defaultNode = buildExpression(defaultCtx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
@@ -358,7 +362,10 @@ export function buildInsertStmt(
 		constraintCheckNode,
 		tableReference,
 		'insert',
-		stmt.onConflict
+		stmt.onConflict,
+		mutationContextValues.size > 0 ? mutationContextValues : undefined,
+		contextAttributes.length > 0 ? contextAttributes : undefined,
+		contextDescriptor
 	);
 
 	const resultNode: RelationalPlanNode = dmlExecutorNode;

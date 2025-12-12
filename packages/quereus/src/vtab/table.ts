@@ -10,6 +10,22 @@ import type { VirtualTableConnection } from './connection.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 
 /**
+ * Arguments passed to VirtualTable.update() method.
+ */
+export interface UpdateArgs {
+	/** The operation to perform (insert, update, delete) */
+	operation: RowOp;
+	/** For INSERT/UPDATE, the values to insert/update. For DELETE, undefined */
+	values: Row | undefined;
+	/** For UPDATE/DELETE, the old key values of the row to modify. Undefined for INSERT */
+	oldKeyValues?: Row;
+	/** Conflict resolution mode (defaults to ABORT if unspecified) */
+	onConflict?: ConflictResolution;
+	/** Optional: Deterministic SQL statement that reproduces this mutation (if logMutations is enabled) */
+	mutationStatement?: string;
+}
+
+/**
  * Base class representing a virtual table instance.
  * Module implementations should subclass this to provide specific table behavior.
  */
@@ -20,6 +36,13 @@ export abstract class VirtualTable {
 	public readonly schemaName: string;
 	public errorMessage?: string;
 	public tableSchema?: TableSchema;
+
+	/**
+	 * When true, the update() method will receive a mutationStatement parameter
+	 * containing a deterministic SQL statement that reproduces the mutation.
+	 * This enables replication, audit logging, and change data capture.
+	 */
+	public wantStatements?: boolean;
 
 	constructor(db: Database, module: AnyVirtualTableModule, schemaName: string, tableName: string) {
 		this.db = db;
@@ -69,19 +92,11 @@ export abstract class VirtualTable {
 
 	/**
 	 * Performs an INSERT, UPDATE, or DELETE operation
-	 * @param operation The operation to perform (insert, update, delete)
-	 * @param values For INSERT/UPDATE, the values to insert/update. For DELETE, undefined
-	 * @param oldKeyValues For UPDATE/DELETE, the old key values of the row to modify. Undefined for INSERT
-	 * @param onConflict Conflict resolution mode (defaults to ABORT if unspecified)
+	 * @param args Arguments object containing operation details and optional mutation statement
 	 * @returns new row for INSERT/UPDATE, undefined for DELETE
 	 * @throws QuereusError or ConstraintError on failure
 	 */
-	abstract update(
-		operation: RowOp,
-		values: Row | undefined,
-		oldKeyValues?: Row,
-		onConflict?: ConflictResolution
-	): Promise<Row | undefined>;
+	abstract update(args: UpdateArgs): Promise<Row | undefined>;
 
 	/**
 	 * (Optional) Creates a new connection for transaction support.

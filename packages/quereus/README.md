@@ -223,6 +223,7 @@ While Quereus supports standard SQL syntax, it has several distinctive design ch
 
 - Row-level CHECKs that reference only the current row are enforced immediately.
 - Row-level CHECKs that reference other tables (e.g., via subqueries) are automatically deferred and enforced at COMMIT using the same optimized engine as global assertions. No `DEFERRABLE` or `SET CONSTRAINTS` management is required by the user.
+- **Determinism Enforcement**: CHECK constraints and DEFAULT values must use only deterministic expressions. Non-deterministic values (like `datetime('now')` or `random()`) must be passed via mutation context to ensure captured statements are replayable. See [Runtime Documentation](docs/runtime.md#determinism-validation).
 
 ## Current Status
 

@@ -1,5 +1,5 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type RelationalPlanNode, type Attribute, type PhysicalProperties, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type Attribute, type PhysicalProperties, type ScalarPlanNode, type RowDescriptor, isRelationalNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
@@ -20,6 +20,9 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
     public readonly table: TableReferenceNode,
     public readonly operation: RowOp,
     public readonly onConflict?: ConflictResolution, // Used for INSERT operations
+    public readonly mutationContextValues?: Map<string, ScalarPlanNode>, // Mutation context value expressions
+    public readonly contextAttributes?: Attribute[], // Mutation context attributes
+    public readonly contextDescriptor?: RowDescriptor, // Mutation context row descriptor
   ) {
     super(scope);
   }
@@ -63,7 +66,10 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
       newSource as RelationalPlanNode,
       this.table,
       this.operation,
-      this.onConflict
+      this.onConflict,
+      this.mutationContextValues,
+      this.contextAttributes,
+      this.contextDescriptor
     );
   }
 

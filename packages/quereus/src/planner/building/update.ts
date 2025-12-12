@@ -270,7 +270,11 @@ export function buildUpdateStmt(
       updateCtx.scope,
       constraintCheckNode,
       tableReference,
-      'update'
+      'update',
+      undefined, // onConflict not used for UPDATE
+      mutationContextValues.size > 0 ? mutationContextValues : undefined,
+      contextAttributes.length > 0 ? contextAttributes : undefined,
+      contextDescriptor
     );
 
     // Return the RETURNING results from the executed update
@@ -312,7 +316,11 @@ export function buildUpdateStmt(
     updateCtx.scope,
     constraintCheckNode,
     tableReference,
-    'update'
+    'update',
+    undefined, // onConflict not used for UPDATE
+    mutationContextValues.size > 0 ? mutationContextValues : undefined,
+    contextAttributes.length > 0 ? contextAttributes : undefined,
+    contextDescriptor
   );
 
   return new SinkNode(updateCtx.scope, updateExecutorNode, 'update');
