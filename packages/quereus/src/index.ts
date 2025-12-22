@@ -18,6 +18,7 @@ export type { ErrorInfo } from './common/errors.js';
 
 // Virtual Table API
 export { VirtualTable } from './vtab/table.js';
+export type { UpdateArgs } from './vtab/table.js';
 export type { VirtualTableConnection } from './vtab/connection.js';
 export { MemoryTableModule } from './vtab/memory/module.js';
 export type { IndexInfo, IndexConstraint, IndexConstraintUsage, IndexOrderBy } from './vtab/index-info.js';
@@ -36,15 +37,34 @@ export type {
 } from './vtab/best-access-plan.js';
 export { AccessPlanBuilder, validateAccessPlan } from './vtab/best-access-plan.js';
 
-// Collation functions
+// Collation and comparison functions
 export type { CollationFunction } from './util/comparison.js';
 export {
+	// Collation registration and lookup
 	BINARY_COLLATION,
 	NOCASE_COLLATION,
 	RTRIM_COLLATION,
 	registerCollation,
 	getCollation,
-	resolveCollation
+	resolveCollation,
+	// Core comparison functions (critical for module implementations)
+	compareSqlValues,
+	compareSqlValuesFast,
+	compareRows,
+	compareTypedValues,
+	createTypedComparator,
+	// ORDER BY comparison utilities
+	compareWithOrderBy,
+	compareWithOrderByFast,
+	createOrderByComparator,
+	createOrderByComparatorFast,
+	SortDirection,
+	NullsOrdering,
+	// Truthiness evaluation
+	evaluateIsTrue,
+	isTruthy,
+	// Type introspection
+	getSqlDataTypeName
 } from './util/comparison.js';
 
 // Type system
@@ -109,6 +129,15 @@ export type {
 	AggregateFinalizer,
 	FunctionSchema
 } from './schema/function.js';
+
+// Coercion utilities (for module implementations)
+export {
+	tryCoerceToNumber,
+	coerceToNumberForArithmetic,
+	coerceForComparison,
+	coerceForAggregate,
+	isNumericValue
+} from './util/coercion.js';
 
 // Utility functions
 export { Latches } from './util/latches.js';

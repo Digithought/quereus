@@ -195,6 +195,17 @@ Quereus works in React Native with two considerations:
 * [Plugin System](docs/plugins.md): Complete guide to creating and using plugins for virtual tables, functions, and collations.
 * [TODO List](docs/todo.md): Planned features and improvements
 
+### Plugin Development
+
+Quereus exports all critical utilities needed for plugin and module development:
+
+* **Comparison Functions**: `compareSqlValues`, `compareRows`, `compareTypedValues`, `createTypedComparator` — Match Quereus SQL semantics in custom implementations
+* **Coercion Utilities**: `tryCoerceToNumber`, `coerceForComparison`, `coerceForAggregate` — Handle type coercion correctly
+* **Collation Support**: `registerCollation`, `getCollation`, built-in collations (`BINARY_COLLATION`, `NOCASE_COLLATION`, `RTRIM_COLLATION`)
+* **Type System**: Full access to logical types, validation, and parsing utilities
+
+See the [Plugin System documentation](docs/plugins.md#comparison-and-coercion-utilities) for complete API reference and examples.
+
 ## Key Design Decisions
 
 *   **Federated / VTab-Centric**: All tables are virtual tables.

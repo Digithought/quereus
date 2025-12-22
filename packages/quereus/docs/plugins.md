@@ -1089,7 +1089,68 @@ See the `packages/sample-plugins/` directory for complete examples:
 
 ## API Reference
 
-All types are exported from the main `quereus` package for external plugin development.
+All types and utilities are exported from the main `@quereus/quereus` package for external plugin development.
+
+### Comparison and Coercion Utilities
+
+Critical utilities for implementing virtual table modules and custom functions that match Quereus semantics:
+
+```typescript
+// Core comparison functions (match Quereus SQL semantics)
+import {
+  compareSqlValues,           // Compare two SQL values with collation support
+  compareSqlValuesFast,       // Optimized version with pre-resolved collation
+  compareRows,                // Compare entire rows for DISTINCT semantics
+  compareTypedValues,         // Type-aware comparison using LogicalType
+  createTypedComparator,      // Factory for type-specific comparators
+
+  // ORDER BY comparison utilities
+  compareWithOrderBy,         // Compare with direction and NULL ordering
+  compareWithOrderByFast,     // Optimized version with numeric flags
+  createOrderByComparator,    // Factory for ORDER BY comparators
+  SortDirection,              // Enum: ASC = 0, DESC = 1
+  NullsOrdering,              // Enum: DEFAULT = 0, FIRST = 1, LAST = 2
+
+  // Truthiness evaluation
+  evaluateIsTrue,             // JS-idiomatic truthiness rules
+  isTruthy,                   // SQL truthiness for filters
+
+  // Type introspection
+  getSqlDataTypeName,         // Get SQL type name: 'null' | 'integer' | 'real' | 'text' | 'blob'
+
+  // Collation functions
+  BINARY_COLLATION,           // Standard lexicographical comparison
+  NOCASE_COLLATION,           // Case-insensitive comparison
+  RTRIM_COLLATION,            // Right-trim comparison
+  registerCollation,          // Register custom collation
+  getCollation,               // Get registered collation
+  resolveCollation,           // Resolve collation by name
+
+  // Coercion utilities
+  tryCoerceToNumber,          // Try to convert string to number
+  coerceToNumberForArithmetic,// Coerce for arithmetic (non-numeric → 0)
+  coerceForComparison,        // Coerce for comparison operations
+  coerceForAggregate,         // Coerce for aggregate functions
+  isNumericValue,             // Check if value is numeric
+} from '@quereus/quereus';
+```
+
+**Example: Using compareSqlValues in a virtual table**
+
+```typescript
+import { compareSqlValues, VirtualTable } from '@quereus/quereus';
+
+class MyTable extends VirtualTable {
+  async *query(filterInfo: FilterInfo): AsyncIterable<Row> {
+    for (const row of this.data) {
+      // Use compareSqlValues to match Quereus semantics
+      if (compareSqlValues(row[0], filterInfo.value) === 0) {
+        yield row;
+      }
+    }
+  }
+}
+```
 
 ### Core Virtual Table Types
 
