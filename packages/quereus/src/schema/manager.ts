@@ -797,4 +797,239 @@ export class SchemaManager {
 
 		return completeTableSchema;
 	}
+
+	/**
+	 * Import catalog objects from DDL statements without triggering storage creation.
+	 * Used when connecting to existing storage that already contains data.
+	 *
+	 * This method:
+	 * 1. Parses each DDL statement
+	 * 2. Registers the schema objects (tables, indexes)
+	 * 3. Calls module.connect() instead of module.create()
+	 * 4. Skips schema change hooks (since these are existing objects)
+	 *
+	 * @param ddlStatements Array of DDL strings (CREATE TABLE, CREATE INDEX, etc.)
+	 * @returns Array of imported object names
+	 */
+	async importCatalog(ddlStatements: string[]): Promise<{ tables: string[]; indexes: string[] }> {
+		const imported = { tables: [] as string[], indexes: [] as string[] };
+
+		for (const ddl of ddlStatements) {
+			try {
+				const result = await this.importSingleDDL(ddl);
+				if (result.type === 'table') {
+					imported.tables.push(result.name);
+				} else if (result.type === 'index') {
+					imported.indexes.push(result.name);
+				}
+			} catch (e) {
+				const message = e instanceof Error ? e.message : String(e);
+				errorLog('Failed to import DDL: %s - Error: %s', ddl.substring(0, 100), message);
+				throw e;
+			}
+		}
+
+		log('Imported catalog: %d tables, %d indexes', imported.tables.length, imported.indexes.length);
+		return imported;
+	}
+
+	/**
+	 * Import a single DDL statement without creating storage.
+	 */
+	private async importSingleDDL(ddl: string): Promise<{ type: 'table' | 'index'; name: string }> {
+		// Parse the DDL using the database's parser
+		const statements = this.db._parse(ddl);
+		if (statements.length !== 1) {
+			throw new QuereusError(`importCatalog expects exactly one statement per DDL, got ${statements.length}`, StatusCode.ERROR);
+		}
+
+		const stmt = statements[0];
+
+		if (stmt.type === 'createTable') {
+			return this.importTable(stmt as AST.CreateTableStmt);
+		} else if (stmt.type === 'createIndex') {
+			return this.importIndex(stmt as AST.CreateIndexStmt);
+		} else {
+			throw new QuereusError(`importCatalog does not support statement type: ${stmt.type}`, StatusCode.ERROR);
+		}
+	}
+
+	/**
+	 * Import a table schema without calling module.create().
+	 * Uses module.connect() to bind to existing storage.
+	 */
+	private async importTable(stmt: AST.CreateTableStmt): Promise<{ type: 'table'; name: string }> {
+		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
+		const tableName = stmt.table.name;
+
+		let moduleName: string;
+		let effectiveModuleArgs: Record<string, SqlValue>;
+
+		if (stmt.moduleName) {
+			moduleName = stmt.moduleName;
+			effectiveModuleArgs = Object.freeze(stmt.moduleArgs || {});
+		} else {
+			const defaultVtab = this.getDefaultVTabModule();
+			moduleName = defaultVtab.name;
+			effectiveModuleArgs = Object.freeze(defaultVtab.args || {});
+		}
+
+		const moduleInfo = this.getModule(moduleName);
+		if (!moduleInfo || !moduleInfo.module) {
+			throw new QuereusError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR);
+		}
+
+		// Get default nullability setting from database options
+		const defaultNullability = this.db.options.getStringOption('default_column_nullability');
+		const defaultNotNull = defaultNullability === 'not_null';
+
+		const astColumnsToProcess = stmt.columns || [];
+		const astConstraintsToProcess = stmt.constraints;
+
+		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef, defaultNotNull));
+		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess);
+
+		const finalColumnSchemas = preliminaryColumnSchemas.map((col, idx) => {
+			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
+			let pkOrder = 0;
+			if (isPkColumn) {
+				pkOrder = pkDefinition.findIndex(pkC => pkC.index === idx) + 1;
+			}
+			return {
+				...col,
+				primaryKey: isPkColumn,
+				pkOrder: pkOrder,
+				notNull: isPkColumn ? true : col.notNull,
+			};
+		});
+
+		const checkConstraintsSchema: RowConstraintSchema[] = [];
+		astColumnsToProcess.forEach(colDef => {
+			colDef.constraints?.forEach(con => {
+				if (con.type === 'check' && con.expr) {
+					checkConstraintsSchema.push({
+						name: con.name ?? `_check_${colDef.name}`,
+						expr: con.expr,
+						operations: opsToMask(con.operations),
+						deferrable: con.deferrable,
+						initiallyDeferred: con.initiallyDeferred
+					});
+				}
+			});
+		});
+		(astConstraintsToProcess || []).forEach(con => {
+			if (con.type === 'check' && con.expr) {
+				checkConstraintsSchema.push({
+					name: con.name,
+					expr: con.expr,
+					operations: opsToMask(con.operations),
+					deferrable: con.deferrable,
+					initiallyDeferred: con.initiallyDeferred
+				});
+			}
+		});
+
+		// Process mutation context definitions if present
+		const mutationContextSchemas = stmt.contextDefinitions
+			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
+			: undefined;
+
+		const tableSchema: TableSchema = {
+			name: tableName,
+			schemaName: targetSchemaName,
+			columns: Object.freeze(finalColumnSchemas),
+			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
+			primaryKeyDefinition: pkDefinition,
+			checkConstraints: Object.freeze(checkConstraintsSchema),
+			isTemporary: !!stmt.isTemporary,
+			isView: false,
+			vtabModuleName: moduleName,
+			vtabArgs: effectiveModuleArgs,
+			vtabModule: moduleInfo.module,
+			vtabAuxData: moduleInfo.auxData,
+			estimatedRows: 0,
+			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
+		};
+
+		// Use connect() instead of create() - the storage already exists
+		try {
+			const vtabInstance = moduleInfo.module.connect(
+				this.db,
+				moduleInfo.auxData,
+				moduleName,
+				targetSchemaName,
+				tableName,
+				effectiveModuleArgs as BaseModuleConfig
+			);
+			// If module provides updated schema from connect(), use it
+			if (vtabInstance.tableSchema) {
+				Object.assign(tableSchema, vtabInstance.tableSchema);
+			}
+		} catch (e: unknown) {
+			const message = e instanceof Error ? e.message : String(e);
+			throw new QuereusError(`Module '${moduleName}' connect failed during import for table '${tableName}': ${message}`, StatusCode.ERROR);
+		}
+
+		// Ensure schema exists
+		let schema = this.getSchema(targetSchemaName);
+		if (!schema) {
+			schema = new Schema(targetSchemaName);
+			this.schemas.set(targetSchemaName.toLowerCase(), schema);
+		}
+
+		// Register without notifying change listeners (this is an import, not a create)
+		schema.addTable(tableSchema);
+		log(`Imported table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
+
+		return { type: 'table', name: `${targetSchemaName}.${tableName}` };
+	}
+
+	/**
+	 * Import an index schema without calling module.createIndex().
+	 */
+	private async importIndex(stmt: AST.CreateIndexStmt): Promise<{ type: 'index'; name: string }> {
+		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
+		const tableName = stmt.table.name;
+		const indexName = stmt.indexName;
+
+		// Find the table
+		const tableSchema = this.findTable(tableName, targetSchemaName);
+		if (!tableSchema) {
+			throw new QuereusError(`Cannot import index '${indexName}': table '${tableName}' not found`, StatusCode.ERROR);
+		}
+
+		// Build index columns schema
+		const indexColumns = stmt.columns.map(col => {
+			const colIdx = tableSchema.columnIndexMap.get(col.column.toLowerCase());
+			if (colIdx === undefined) {
+				throw new QuereusError(`Column '${col.column}' not found in table '${tableName}'`, StatusCode.ERROR);
+			}
+			return {
+				columnIndex: colIdx,
+				columnName: tableSchema.columns[colIdx].name,
+				desc: col.sortOrder === 'desc',
+			};
+		});
+
+		const indexSchema: IndexSchema = {
+			name: indexName,
+			tableName: tableName,
+			schemaName: targetSchemaName,
+			columns: Object.freeze(indexColumns),
+			isUnique: !!stmt.isUnique,
+		};
+
+		// Add index to table without calling module.createIndex()
+		const updatedIndexes = [...(tableSchema.indexes || []), indexSchema];
+		const updatedTableSchema: TableSchema = {
+			...tableSchema,
+			indexes: Object.freeze(updatedIndexes),
+		};
+
+		const schema = this.getSchemaOrFail(targetSchemaName);
+		schema.addTable(updatedTableSchema);
+		log(`Imported index %s on table %s.%s`, indexName, targetSchemaName, tableName);
+
+		return { type: 'index', name: `${targetSchemaName}.${tableName}.${indexName}` };
+	}
 }

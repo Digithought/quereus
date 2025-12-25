@@ -1,0 +1,143 @@
+/**
+ * Row serialization for persistent storage.
+ * 
+ * Uses extended JSON format that preserves SQL value types:
+ * - bigint: { "$bigint": "12345678901234567890" }
+ * - Uint8Array: { "$blob": "base64..." }
+ * - Other types: Native JSON representation
+ */
+
+import type { Row, SqlValue } from '@quereus/quereus';
+
+const BIGINT_MARKER = '$bigint';
+const BLOB_MARKER = '$blob';
+
+/**
+ * Serialize a row to a byte array for storage.
+ */
+export function serializeRow(row: Row): Uint8Array {
+  const json = JSON.stringify(row, replacer);
+  return new TextEncoder().encode(json);
+}
+
+/**
+ * Deserialize a byte array back to a row.
+ */
+export function deserializeRow(buffer: Uint8Array): Row {
+  const json = new TextDecoder().decode(buffer);
+  return JSON.parse(json, reviver) as Row;
+}
+
+/**
+ * Serialize a single SQL value to a byte array.
+ */
+export function serializeValue(value: SqlValue): Uint8Array {
+  const json = JSON.stringify(value, replacer);
+  return new TextEncoder().encode(json);
+}
+
+/**
+ * Deserialize a byte array back to a SQL value.
+ */
+export function deserializeValue(buffer: Uint8Array): SqlValue {
+  const json = new TextDecoder().decode(buffer);
+  return JSON.parse(json, reviver) as SqlValue;
+}
+
+/**
+ * JSON replacer function for SQL values.
+ */
+function replacer(_key: string, value: unknown): unknown {
+  if (typeof value === 'bigint') {
+    return { [BIGINT_MARKER]: value.toString() };
+  }
+  
+  if (value instanceof Uint8Array) {
+    return { [BLOB_MARKER]: uint8ArrayToBase64(value) };
+  }
+  
+  return value;
+}
+
+/**
+ * JSON reviver function for SQL values.
+ */
+function reviver(_key: string, value: unknown): unknown {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    
+    if (BIGINT_MARKER in obj && typeof obj[BIGINT_MARKER] === 'string') {
+      return BigInt(obj[BIGINT_MARKER]);
+    }
+    
+    if (BLOB_MARKER in obj && typeof obj[BLOB_MARKER] === 'string') {
+      return base64ToUint8Array(obj[BLOB_MARKER]);
+    }
+  }
+  
+  return value;
+}
+
+/**
+ * Convert Uint8Array to base64 string.
+ * Works in both Node.js and browser environments.
+ */
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  // Use Buffer in Node.js for efficiency
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  
+  // Browser fallback
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Convert base64 string to Uint8Array.
+ * Works in both Node.js and browser environments.
+ */
+function base64ToUint8Array(base64: string): Uint8Array {
+  // Use Buffer in Node.js for efficiency
+  if (typeof Buffer !== 'undefined') {
+    return new Uint8Array(Buffer.from(base64, 'base64'));
+  }
+  
+  // Browser fallback
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// ============================================================================
+// Metadata serialization
+// ============================================================================
+
+/**
+ * Table statistics stored in metadata.
+ */
+export interface TableStats {
+  rowCount: number;
+  updatedAt: number;  // Unix timestamp
+}
+
+/**
+ * Serialize table statistics.
+ */
+export function serializeStats(stats: TableStats): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(stats));
+}
+
+/**
+ * Deserialize table statistics.
+ */
+export function deserializeStats(buffer: Uint8Array): TableStats {
+  return JSON.parse(new TextDecoder().decode(buffer)) as TableStats;
+}
+
