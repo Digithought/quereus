@@ -58,16 +58,27 @@ export {
   type ChangeSet,
   // API types
   type ApplyResult,
+  type ColumnVersionEntry,
   type TableSnapshot,
   type Snapshot,
   type PeerSyncState,
+  // Streaming snapshot types
+  type SnapshotChunkType,
+  type SnapshotHeaderChunk,
+  type SnapshotTableStartChunk,
+  type SnapshotColumnVersionsChunk,
+  type SnapshotTableEndChunk,
+  type SnapshotSchemaMigrationChunk,
+  type SnapshotFooterChunk,
+  type SnapshotChunk,
+  type SnapshotProgress,
   // Configuration
   type SyncConfig,
   DEFAULT_SYNC_CONFIG,
 } from './sync/protocol.js';
 
 // Sync manager
-export { type SyncManager } from './sync/manager.js';
+export { type SyncManager, type SnapshotCheckpoint } from './sync/manager.js';
 export { SyncManagerImpl } from './sync/sync-manager-impl.js';
 
 // Factory function

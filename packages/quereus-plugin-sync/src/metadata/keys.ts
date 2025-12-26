@@ -9,10 +9,12 @@
  *   sm: - Schema migrations
  *   si: - Site identity
  *   hc: - HLC clock state
+ *   cl: - Change log (HLC-indexed for efficient delta queries)
  */
 
 import type { SqlValue } from '@quereus/quereus';
 import type { SiteId } from '../clock/site.js';
+import type { HLC } from '../clock/hlc.js';
 
 const encoder = new TextEncoder();
 
@@ -25,6 +27,7 @@ export const SYNC_KEY_PREFIX = {
   SCHEMA_MIGRATION: encoder.encode('sm:'),
   SITE_IDENTITY: encoder.encode('si:'),
   HLC_STATE: encoder.encode('hc:'),
+  CHANGE_LOG: encoder.encode('cl:'),
 } as const;
 
 /** Separator between key components. */
@@ -161,3 +164,301 @@ function incrementLastByte(key: Uint8Array): Uint8Array {
   return result;
 }
 
+/**
+ * Build scan bounds for ALL column versions across all tables.
+ */
+export function buildAllColumnVersionsScanBounds(): { gte: Uint8Array; lt: Uint8Array } {
+  return {
+    gte: SYNC_KEY_PREFIX.COLUMN_VERSION,
+    lt: incrementLastByte(SYNC_KEY_PREFIX.COLUMN_VERSION),
+  };
+}
+
+/**
+ * Build scan bounds for ALL tombstones across all tables.
+ */
+export function buildAllTombstonesScanBounds(): { gte: Uint8Array; lt: Uint8Array } {
+  return {
+    gte: SYNC_KEY_PREFIX.TOMBSTONE,
+    lt: incrementLastByte(SYNC_KEY_PREFIX.TOMBSTONE),
+  };
+}
+
+/**
+ * Build scan bounds for ALL schema migrations across all tables.
+ */
+export function buildAllSchemaMigrationsScanBounds(): { gte: Uint8Array; lt: Uint8Array } {
+  return {
+    gte: SYNC_KEY_PREFIX.SCHEMA_MIGRATION,
+    lt: incrementLastByte(SYNC_KEY_PREFIX.SCHEMA_MIGRATION),
+  };
+}
+
+/**
+ * Parse a column version key to extract components.
+ * Key format: cv:{schema}.{table}:{pk_json}:{column}
+ */
+export function parseColumnVersionKey(key: Uint8Array): {
+  schema: string;
+  table: string;
+  pk: SqlValue[];
+  column: string;
+} | null {
+  const keyStr = new TextDecoder().decode(key);
+  if (!keyStr.startsWith('cv:')) return null;
+
+  // cv:{schema}.{table}:{pk_json}:{column}
+  const rest = keyStr.slice(3); // Remove 'cv:'
+  const firstDot = rest.indexOf('.');
+  if (firstDot === -1) return null;
+  const schema = rest.slice(0, firstDot);
+
+  const afterDot = rest.slice(firstDot + 1);
+  const firstColon = afterDot.indexOf(':');
+  if (firstColon === -1) return null;
+  const table = afterDot.slice(0, firstColon);
+
+  const afterTable = afterDot.slice(firstColon + 1);
+  const lastColon = afterTable.lastIndexOf(':');
+  if (lastColon === -1) return null;
+
+  const pkJson = afterTable.slice(0, lastColon);
+  const column = afterTable.slice(lastColon + 1);
+
+  try {
+    const pk = decodePK(pkJson);
+    return { schema, table, pk, column };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a tombstone key to extract components.
+ * Key format: tb:{schema}.{table}:{pk_json}
+ */
+export function parseTombstoneKey(key: Uint8Array): {
+  schema: string;
+  table: string;
+  pk: SqlValue[];
+} | null {
+  const keyStr = new TextDecoder().decode(key);
+  if (!keyStr.startsWith('tb:')) return null;
+
+  // tb:{schema}.{table}:{pk_json}
+  const rest = keyStr.slice(3); // Remove 'tb:'
+  const firstDot = rest.indexOf('.');
+  if (firstDot === -1) return null;
+  const schema = rest.slice(0, firstDot);
+
+  const afterDot = rest.slice(firstDot + 1);
+  const firstColon = afterDot.indexOf(':');
+  if (firstColon === -1) return null;
+  const table = afterDot.slice(0, firstColon);
+
+  const pkJson = afterDot.slice(firstColon + 1);
+
+  try {
+    const pk = decodePK(pkJson);
+    return { schema, table, pk };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a schema migration key to extract components.
+ * Key format: sm:{schema}.{table}:{version}
+ */
+export function parseSchemaMigrationKey(key: Uint8Array): {
+  schema: string;
+  table: string;
+  version: number;
+} | null {
+  const keyStr = new TextDecoder().decode(key);
+  if (!keyStr.startsWith('sm:')) return null;
+
+  // sm:{schema}.{table}:{version}
+  const rest = keyStr.slice(3); // Remove 'sm:'
+  const firstDot = rest.indexOf('.');
+  if (firstDot === -1) return null;
+  const schema = rest.slice(0, firstDot);
+
+  const afterDot = rest.slice(firstDot + 1);
+  const firstColon = afterDot.indexOf(':');
+  if (firstColon === -1) return null;
+  const table = afterDot.slice(0, firstColon);
+
+  const versionStr = afterDot.slice(firstColon + 1);
+  const version = parseInt(versionStr, 10);
+
+  if (isNaN(version)) return null;
+
+  return { schema, table, version };
+}
+
+/**
+ * Change log entry type.
+ */
+export type ChangeLogEntryType = 'column' | 'delete';
+
+/**
+ * Serialize an HLC to a sortable key component (26 bytes, big-endian).
+ * This format ensures lexicographic ordering matches HLC ordering.
+ */
+export function serializeHLCForKey(hlc: HLC): Uint8Array {
+  const buffer = new Uint8Array(26);
+  const view = new DataView(buffer.buffer);
+  // Wall time as big-endian 64-bit
+  view.setBigUint64(0, hlc.wallTime, false);
+  // Counter as big-endian 16-bit
+  view.setUint16(8, hlc.counter, false);
+  // Site ID (16 bytes)
+  buffer.set(hlc.siteId, 10);
+  return buffer;
+}
+
+/**
+ * Deserialize an HLC from a key component.
+ */
+export function deserializeHLCFromKey(buffer: Uint8Array): HLC {
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const wallTime = view.getBigUint64(0, false);
+  const counter = view.getUint16(8, false);
+  const siteId = new Uint8Array(buffer.slice(10, 26));
+  return { wallTime, counter, siteId };
+}
+
+/**
+ * Build a change log key.
+ * Format: cl:{hlc_bytes}{type_byte}{schema}.{table}:{pk_json}:{column?}
+ *
+ * The HLC comes first to enable efficient range scans by time.
+ * type_byte: 0x01 for column change, 0x02 for delete
+ */
+export function buildChangeLogKey(
+  hlc: HLC,
+  entryType: ChangeLogEntryType,
+  schemaName: string,
+  tableName: string,
+  pk: SqlValue[],
+  column?: string
+): Uint8Array {
+  const hlcBytes = serializeHLCForKey(hlc);
+  const typeByte = entryType === 'column' ? 0x01 : 0x02;
+  const suffix = column
+    ? `${schemaName}.${tableName}${SEPARATOR}${encodePK(pk)}${SEPARATOR}${column}`
+    : `${schemaName}.${tableName}${SEPARATOR}${encodePK(pk)}`;
+  const suffixBytes = encoder.encode(suffix);
+
+  // cl: (3) + hlc (26) + type (1) + suffix
+  const key = new Uint8Array(3 + 26 + 1 + suffixBytes.length);
+  key.set(SYNC_KEY_PREFIX.CHANGE_LOG, 0);
+  key.set(hlcBytes, 3);
+  key[29] = typeByte;
+  key.set(suffixBytes, 30);
+
+  return key;
+}
+
+/**
+ * Build scan bounds for change log entries after a given HLC.
+ * Returns keys to scan cl:{sinceHLC}* to end of change log.
+ */
+export function buildChangeLogScanBoundsAfter(sinceHLC: HLC): { gte: Uint8Array; lt: Uint8Array } {
+  const hlcBytes = serializeHLCForKey(sinceHLC);
+  // Start just after sinceHLC
+  const gte = new Uint8Array(3 + 26);
+  gte.set(SYNC_KEY_PREFIX.CHANGE_LOG, 0);
+  gte.set(incrementHLCBytes(hlcBytes), 3);
+
+  return {
+    gte,
+    lt: incrementLastByte(SYNC_KEY_PREFIX.CHANGE_LOG),
+  };
+}
+
+/**
+ * Build scan bounds for all change log entries.
+ */
+export function buildAllChangeLogScanBounds(): { gte: Uint8Array; lt: Uint8Array } {
+  return {
+    gte: SYNC_KEY_PREFIX.CHANGE_LOG,
+    lt: incrementLastByte(SYNC_KEY_PREFIX.CHANGE_LOG),
+  };
+}
+
+/**
+ * Increment HLC bytes to get the next possible HLC key prefix.
+ */
+function incrementHLCBytes(hlcBytes: Uint8Array): Uint8Array {
+  const result = new Uint8Array(hlcBytes.length);
+  result.set(hlcBytes);
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (result[i] < 255) {
+      result[i]++;
+      break;
+    }
+    result[i] = 0;
+  }
+  return result;
+}
+
+/**
+ * Parse a change log key to extract components.
+ */
+export function parseChangeLogKey(key: Uint8Array): {
+  hlc: HLC;
+  entryType: ChangeLogEntryType;
+  schema: string;
+  table: string;
+  pk: SqlValue[];
+  column?: string;
+} | null {
+  // Minimum: cl: (3) + hlc (26) + type (1) + some suffix
+  if (key.length < 31) return null;
+
+  const prefixStr = new TextDecoder().decode(key.slice(0, 3));
+  if (prefixStr !== 'cl:') return null;
+
+  const hlcBytes = key.slice(3, 29);
+  const hlc = deserializeHLCFromKey(hlcBytes);
+
+  const typeByte = key[29];
+  const entryType: ChangeLogEntryType = typeByte === 0x01 ? 'column' : 'delete';
+
+  const suffixStr = new TextDecoder().decode(key.slice(30));
+
+  // Parse suffix: {schema}.{table}:{pk_json}:{column?}
+  const firstDot = suffixStr.indexOf('.');
+  if (firstDot === -1) return null;
+  const schema = suffixStr.slice(0, firstDot);
+
+  const afterDot = suffixStr.slice(firstDot + 1);
+  const firstColon = afterDot.indexOf(':');
+  if (firstColon === -1) return null;
+  const table = afterDot.slice(0, firstColon);
+
+  const afterTable = afterDot.slice(firstColon + 1);
+
+  if (entryType === 'column') {
+    const lastColon = afterTable.lastIndexOf(':');
+    if (lastColon === -1) return null;
+    const pkJson = afterTable.slice(0, lastColon);
+    const column = afterTable.slice(lastColon + 1);
+    try {
+      const pk = decodePK(pkJson);
+      return { hlc, entryType, schema, table, pk, column };
+    } catch {
+      return null;
+    }
+  } else {
+    // Delete entry - no column
+    try {
+      const pk = decodePK(afterTable);
+      return { hlc, entryType, schema, table, pk };
+    } catch {
+      return null;
+    }
+  }
+}

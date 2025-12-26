@@ -8,7 +8,7 @@
 import type { KVStore, WriteBatch } from 'quereus-plugin-store';
 import { type HLC, serializeHLC, deserializeHLC, compareHLC } from '../clock/hlc.js';
 import { buildSchemaMigrationKey, buildSchemaMigrationScanBounds } from './keys.js';
-import type { SchemaMigration, SchemaMigrationType } from '../sync/protocol.js';
+import type { SchemaMigrationType } from '../sync/protocol.js';
 
 /**
  * Stored schema migration record.

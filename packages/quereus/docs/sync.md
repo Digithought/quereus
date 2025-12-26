@@ -231,6 +231,70 @@ interface TableSnapshot {
   rows: Row[];
   columnVersions: Map<string, HLC>;  // Per-column HLC for each row
 }
+
+// ============================================================================
+// Streaming Snapshot API (for large datasets)
+// ============================================================================
+
+interface SyncManager {
+  // ... existing methods ...
+
+  /**
+   * Stream a snapshot as chunks for memory-efficient transfer.
+   * Use this instead of getSnapshot() for large databases.
+   */
+  getSnapshotStream(chunkSize?: number): AsyncIterable<SnapshotChunk>;
+
+  /**
+   * Apply a streamed snapshot with progress tracking.
+   * Supports resumption via checkpoint tracking.
+   */
+  applySnapshotStream(
+    chunks: AsyncIterable<SnapshotChunk>,
+    onProgress?: (progress: SnapshotProgress) => void
+  ): Promise<void>;
+
+  /**
+   * Get a resumable checkpoint for an in-progress snapshot.
+   */
+  getSnapshotCheckpoint(snapshotId: string): Promise<SnapshotCheckpoint | undefined>;
+
+  /**
+   * Resume a snapshot transfer from a checkpoint.
+   */
+  resumeSnapshotStream(checkpoint: SnapshotCheckpoint): AsyncIterable<SnapshotChunk>;
+}
+
+/** Snapshot chunk types for streaming */
+type SnapshotChunk =
+  | SnapshotHeaderChunk      // Sent first with metadata
+  | SnapshotTableStartChunk  // Marks beginning of a table
+  | SnapshotColumnVersionsChunk  // Batch of column versions
+  | SnapshotTableEndChunk    // Marks end of a table
+  | SnapshotSchemaMigrationChunk  // Schema migration
+  | SnapshotFooterChunk;     // Sent last with stats
+
+/** Progress info during snapshot streaming */
+interface SnapshotProgress {
+  snapshotId: string;
+  tablesProcessed: number;
+  totalTables: number;
+  entriesProcessed: number;
+  totalEntries: number;
+  currentTable?: string;
+}
+
+/** Checkpoint for resumable snapshot transfers */
+interface SnapshotCheckpoint {
+  snapshotId: string;
+  siteId: SiteId;
+  hlc: HLC;
+  lastTableIndex: number;
+  lastEntryIndex: number;
+  completedTables: string[];
+  entriesProcessed: number;
+  createdAt: number;
+}
 ```
 
 ### Sync Flow (Master to Many-Masters)
@@ -485,6 +549,43 @@ async function syncWithServer(ws: WebSocket) {
 }
 ```
 
+### Streaming Snapshot Example
+
+For large databases, use streaming snapshots to avoid loading everything into memory:
+
+```typescript
+// Server: Stream snapshot to client
+async function sendSnapshot(ws: WebSocket) {
+  for await (const chunk of syncManager.getSnapshotStream(1000)) {
+    ws.send(JSON.stringify(chunk));
+  }
+}
+
+// Client: Apply streamed snapshot with progress
+async function receiveSnapshot(ws: WebSocket) {
+  const chunks = receiveChunks(ws); // Your async iterator over WebSocket messages
+
+  await syncManager.applySnapshotStream(chunks, (progress) => {
+    console.log(`Progress: ${progress.tablesProcessed}/${progress.totalTables} tables`);
+    console.log(`Entries: ${progress.entriesProcessed}/${progress.totalEntries}`);
+  });
+}
+
+// Resume interrupted snapshot
+async function resumeSnapshot(ws: WebSocket) {
+  const checkpoint = await syncManager.getSnapshotCheckpoint(snapshotId);
+  if (checkpoint) {
+    // Request resume from server
+    ws.send(JSON.stringify({ type: 'resume', checkpoint }));
+
+    // Server resumes from checkpoint
+    for await (const chunk of syncManager.resumeSnapshotStream(checkpoint)) {
+      ws.send(JSON.stringify(chunk));
+    }
+  }
+}
+```
+
 ## Implementation Status
 
 ### Completed
@@ -525,21 +626,28 @@ async function syncWithServer(ws: WebSocket) {
   - [x] `onSyncStateChange` - Connection state
   - [x] `onConflictResolved` - Conflict outcomes
 
-#### Phase 6: Testing (Partial)
+#### Phase 6: Testing ✅
 - [x] Unit tests for HLC
 - [x] Unit tests for Site ID
 - [x] Unit tests for ColumnVersionStore
 - [x] Unit tests for TombstoneStore
+- [x] Integration tests for SyncManager
+
+#### Phase 7: Change Extraction ✅
+- [x] `getChangesSince()` - Extract delta changes from metadata storage
+- [x] `getSnapshot()` - Full snapshot for initial/recovery sync
+- [x] `applySnapshot()` - Full state replacement
+- [x] `pruneTombstones()` - Clean up expired tombstones
+
+#### Phase 8: Streaming Snapshots ✅
+- [x] `getSnapshotStream()` - Memory-efficient chunked snapshot streaming
+- [x] `applySnapshotStream()` - Apply streamed snapshots with progress tracking
+- [x] `getSnapshotCheckpoint()` / `resumeSnapshotStream()` - Resumable transfers
+- [x] HLC-indexed change log for efficient delta queries
 
 ### Remaining Work
 
-#### Change Extraction
-- [ ] `getChangesSince()` - Extract delta changes from metadata storage
-- [ ] `getSnapshot()` - Full snapshot for initial/recovery sync
-- [ ] `applySnapshot()` - Full state replacement
-
 #### Integration Tests
-- [ ] Integration tests with LevelDB
 - [ ] Integration tests with IndexedDB
 - [ ] Multi-replica conflict scenarios
 - [ ] Tombstone TTL expiration tests
@@ -548,4 +656,3 @@ async function syncWithServer(ws: WebSocket) {
 #### Documentation & Examples
 - [ ] Example: WebSocket sync transport
 - [ ] Example: HTTP polling sync transport
-

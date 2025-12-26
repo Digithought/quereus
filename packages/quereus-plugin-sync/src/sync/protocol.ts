@@ -111,6 +111,14 @@ export interface ApplyResult {
 }
 
 /**
+ * Column version entry for snapshot.
+ */
+export interface ColumnVersionEntry {
+  readonly hlc: HLC;
+  readonly value: SqlValue;
+}
+
+/**
  * Full snapshot of a table for initial sync or recovery.
  */
 export interface TableSnapshot {
@@ -118,7 +126,7 @@ export interface TableSnapshot {
   readonly table: string;
   readonly rows: Row[];
   /** Column versions for each row, keyed by serialized PK + column name */
-  readonly columnVersions: Map<string, HLC>;
+  readonly columnVersions: Map<string, ColumnVersionEntry>;
 }
 
 /**
@@ -129,6 +137,108 @@ export interface Snapshot {
   readonly hlc: HLC;
   readonly tables: TableSnapshot[];
   readonly schemaMigrations: SchemaMigration[];
+}
+
+// ============================================================================
+// Streaming Snapshot
+// ============================================================================
+
+/**
+ * Snapshot chunk types for streaming.
+ */
+export type SnapshotChunkType =
+  | 'header'
+  | 'table-start'
+  | 'column-versions'
+  | 'table-end'
+  | 'schema-migration'
+  | 'footer';
+
+/**
+ * Header chunk - sent first with metadata.
+ */
+export interface SnapshotHeaderChunk {
+  readonly type: 'header';
+  readonly siteId: SiteId;
+  readonly hlc: HLC;
+  readonly tableCount: number;
+  readonly migrationCount: number;
+  /** Unique identifier for this snapshot transfer. */
+  readonly snapshotId: string;
+}
+
+/**
+ * Table start chunk - marks beginning of a table's data.
+ */
+export interface SnapshotTableStartChunk {
+  readonly type: 'table-start';
+  readonly schema: string;
+  readonly table: string;
+  /** Estimated number of column version entries for this table. */
+  readonly estimatedEntries: number;
+}
+
+/**
+ * Column versions chunk - batch of column version entries.
+ */
+export interface SnapshotColumnVersionsChunk {
+  readonly type: 'column-versions';
+  readonly schema: string;
+  readonly table: string;
+  /** Column versions as [versionKey, hlc, value] tuples. */
+  readonly entries: Array<[string, HLC, SqlValue]>;
+}
+
+/**
+ * Table end chunk - marks end of a table's data.
+ */
+export interface SnapshotTableEndChunk {
+  readonly type: 'table-end';
+  readonly schema: string;
+  readonly table: string;
+  readonly entriesWritten: number;
+}
+
+/**
+ * Schema migration chunk.
+ */
+export interface SnapshotSchemaMigrationChunk {
+  readonly type: 'schema-migration';
+  readonly migration: SchemaMigration;
+}
+
+/**
+ * Footer chunk - sent last with checksum/stats.
+ */
+export interface SnapshotFooterChunk {
+  readonly type: 'footer';
+  readonly snapshotId: string;
+  readonly totalTables: number;
+  readonly totalEntries: number;
+  readonly totalMigrations: number;
+}
+
+/**
+ * Union of all snapshot chunk types.
+ */
+export type SnapshotChunk =
+  | SnapshotHeaderChunk
+  | SnapshotTableStartChunk
+  | SnapshotColumnVersionsChunk
+  | SnapshotTableEndChunk
+  | SnapshotSchemaMigrationChunk
+  | SnapshotFooterChunk;
+
+/**
+ * Progress info during snapshot streaming.
+ */
+export interface SnapshotProgress {
+  readonly snapshotId: string;
+  readonly tablesProcessed: number;
+  readonly totalTables: number;
+  readonly entriesProcessed: number;
+  readonly totalEntries: number;
+  readonly currentTable?: string;
 }
 
 // ============================================================================

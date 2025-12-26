@@ -4,7 +4,7 @@
 
 import { expect } from 'chai';
 import { ColumnVersionStore, serializeColumnVersion, deserializeColumnVersion, type ColumnVersion } from '../../src/metadata/column-version.js';
-import { type HLC, compareHLC } from '../../src/clock/hlc.js';
+import type { HLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
 
 // Mock KVStore for testing

@@ -1,0 +1,168 @@
+/**
+ * HLC-indexed change log for efficient delta sync.
+ *
+ * The change log stores references to changes indexed by HLC timestamp,
+ * enabling efficient getChangesSince() queries without scanning all data.
+ */
+
+import type { KVStore, WriteBatch } from 'quereus-plugin-store';
+import type { SqlValue } from '@quereus/quereus';
+import type { HLC } from '../clock/hlc.js';
+import {
+  buildChangeLogKey,
+  buildChangeLogScanBoundsAfter,
+  buildAllChangeLogScanBounds,
+  parseChangeLogKey,
+  type ChangeLogEntryType,
+} from './keys.js';
+
+/**
+ * Change log entry stored in KV.
+ */
+export interface ChangeLogEntry {
+  readonly hlc: HLC;
+  readonly entryType: ChangeLogEntryType;
+  readonly schema: string;
+  readonly table: string;
+  readonly pk: SqlValue[];
+  readonly column?: string;
+}
+
+/**
+ * Change log store for HLC-indexed change tracking.
+ *
+ * Each mutation (column update or row deletion) creates an entry in the
+ * change log, keyed by HLC. This allows efficient range scans to find
+ * all changes since a given timestamp.
+ */
+export class ChangeLogStore {
+  constructor(private readonly kv: KVStore) {}
+
+  /**
+   * Record a column change in the change log.
+   */
+  async recordColumnChange(
+    hlc: HLC,
+    schema: string,
+    table: string,
+    pk: SqlValue[],
+    column: string
+  ): Promise<void> {
+    const key = buildChangeLogKey(hlc, 'column', schema, table, pk, column);
+    // Value is empty - all info is in the key
+    await this.kv.put(key, new Uint8Array(0));
+  }
+
+  /**
+   * Record a column change in a batch.
+   */
+  recordColumnChangeBatch(
+    batch: WriteBatch,
+    hlc: HLC,
+    schema: string,
+    table: string,
+    pk: SqlValue[],
+    column: string
+  ): void {
+    const key = buildChangeLogKey(hlc, 'column', schema, table, pk, column);
+    batch.put(key, new Uint8Array(0));
+  }
+
+  /**
+   * Record a row deletion in the change log.
+   */
+  async recordDeletion(
+    hlc: HLC,
+    schema: string,
+    table: string,
+    pk: SqlValue[]
+  ): Promise<void> {
+    const key = buildChangeLogKey(hlc, 'delete', schema, table, pk);
+    await this.kv.put(key, new Uint8Array(0));
+  }
+
+  /**
+   * Record a row deletion in a batch.
+   */
+  recordDeletionBatch(
+    batch: WriteBatch,
+    hlc: HLC,
+    schema: string,
+    table: string,
+    pk: SqlValue[]
+  ): void {
+    const key = buildChangeLogKey(hlc, 'delete', schema, table, pk);
+    batch.put(key, new Uint8Array(0));
+  }
+
+  /**
+   * Get all change log entries after a given HLC.
+   * Returns entries in HLC order (oldest first).
+   */
+  async *getChangesSince(sinceHLC: HLC): AsyncIterable<ChangeLogEntry> {
+    const bounds = buildChangeLogScanBoundsAfter(sinceHLC);
+    for await (const entry of this.kv.iterate(bounds)) {
+      const parsed = parseChangeLogKey(entry.key);
+      if (parsed) {
+        yield parsed;
+      }
+    }
+  }
+
+  /**
+   * Get all change log entries.
+   */
+  async *getAllChanges(): AsyncIterable<ChangeLogEntry> {
+    const bounds = buildAllChangeLogScanBounds();
+    for await (const entry of this.kv.iterate(bounds)) {
+      const parsed = parseChangeLogKey(entry.key);
+      if (parsed) {
+        yield parsed;
+      }
+    }
+  }
+
+  /**
+   * Delete change log entries up to a given HLC.
+   * Used for pruning old entries after they've been synced to all peers.
+   */
+  async pruneEntriesBefore(beforeHLC: HLC): Promise<number> {
+    const bounds = buildAllChangeLogScanBounds();
+    const batch = this.kv.batch();
+    let count = 0;
+
+    for await (const entry of this.kv.iterate(bounds)) {
+      const parsed = parseChangeLogKey(entry.key);
+      if (!parsed) continue;
+
+      // Compare HLCs - stop when we reach entries >= beforeHLC
+      if (parsed.hlc.wallTime > beforeHLC.wallTime) break;
+      if (parsed.hlc.wallTime === beforeHLC.wallTime) {
+        if (parsed.hlc.counter >= beforeHLC.counter) break;
+      }
+
+      batch.delete(entry.key);
+      count++;
+    }
+
+    await batch.write();
+    return count;
+  }
+
+  /**
+   * Delete a specific change log entry (used during snapshot application).
+   */
+  deleteEntryBatch(
+    batch: WriteBatch,
+    hlc: HLC,
+    entryType: ChangeLogEntryType,
+    schema: string,
+    table: string,
+    pk: SqlValue[],
+    column?: string
+  ): void {
+    const key = buildChangeLogKey(hlc, entryType, schema, table, pk, column);
+    batch.delete(key);
+  }
+}
+

@@ -7,7 +7,7 @@
 
 import type { HLC } from '../clock/hlc.js';
 import type { SiteId } from '../clock/site.js';
-import type { ApplyResult, ChangeSet, Snapshot } from './protocol.js';
+import type { ApplyResult, ChangeSet, Snapshot, SnapshotChunk, SnapshotProgress } from './protocol.js';
 
 /**
  * Main sync manager interface.
@@ -102,5 +102,67 @@ export interface SyncManager {
    * Returns the number of tombstones pruned.
    */
   pruneTombstones(): Promise<number>;
+
+  // ============================================================================
+  // Streaming Snapshot API
+  // ============================================================================
+
+  /**
+   * Stream a snapshot as chunks for memory-efficient transfer.
+   *
+   * Use this instead of getSnapshot() for large databases.
+   * Chunks are yielded in order and can be sent over any streaming transport.
+   *
+   * @param chunkSize - Max column version entries per chunk (default: 1000)
+   */
+  getSnapshotStream(chunkSize?: number): AsyncIterable<SnapshotChunk>;
+
+  /**
+   * Apply a streamed snapshot.
+   *
+   * Processes chunks as they arrive, minimizing memory usage.
+   * Supports resumption via checkpoint tracking.
+   *
+   * @param chunks - Async iterable of snapshot chunks
+   * @param onProgress - Optional progress callback
+   */
+  applySnapshotStream(
+    chunks: AsyncIterable<SnapshotChunk>,
+    onProgress?: (progress: SnapshotProgress) => void
+  ): Promise<void>;
+
+  /**
+   * Get a resumable checkpoint for an in-progress snapshot.
+   *
+   * Used to resume an interrupted snapshot transfer.
+   *
+   * @param snapshotId - The snapshot ID to get checkpoint for
+   */
+  getSnapshotCheckpoint(snapshotId: string): Promise<SnapshotCheckpoint | undefined>;
+
+  /**
+   * Resume a snapshot transfer from a checkpoint.
+   *
+   * @param checkpoint - Previously saved checkpoint
+   */
+  resumeSnapshotStream(checkpoint: SnapshotCheckpoint): AsyncIterable<SnapshotChunk>;
 }
 
+/**
+ * Checkpoint for resumable snapshot transfers.
+ */
+export interface SnapshotCheckpoint {
+  readonly snapshotId: string;
+  readonly siteId: SiteId;
+  readonly hlc: HLC;
+  /** Last completed table index. */
+  readonly lastTableIndex: number;
+  /** Last completed entry within current table. */
+  readonly lastEntryIndex: number;
+  /** Tables completed so far. */
+  readonly completedTables: string[];
+  /** Total entries processed. */
+  readonly entriesProcessed: number;
+  /** Timestamp when checkpoint was created. */
+  readonly createdAt: number;
+}

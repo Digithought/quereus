@@ -58,7 +58,7 @@ describe('Tombstone', () => {
       const siteId = generateSiteId();
       const tombstone: Tombstone = {
         hlc: { wallTime: BigInt(Date.now()), counter: 42, siteId },
-        deletedAt: Date.now(),
+        createdAt: Date.now(),
       };
 
       const serialized = serializeTombstone(tombstone);
@@ -66,7 +66,7 @@ describe('Tombstone', () => {
 
       expect(deserialized.hlc.wallTime).to.equal(tombstone.hlc.wallTime);
       expect(deserialized.hlc.counter).to.equal(tombstone.hlc.counter);
-      expect(deserialized.deletedAt).to.equal(tombstone.deletedAt);
+      expect(deserialized.createdAt).to.equal(tombstone.createdAt);
     });
   });
 
