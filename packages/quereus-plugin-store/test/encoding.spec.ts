@@ -8,6 +8,9 @@ import {
   encodeCompositeKey,
   decodeValue,
   decodeCompositeKey,
+  registerCollationEncoder,
+  getCollationEncoder,
+  type CollationEncoder,
 } from '../src/common/encoding.js';
 
 describe('Key Encoding', () => {
@@ -156,6 +159,70 @@ describe('Key Encoding', () => {
         const cmp = compareBytes(encoded[i], encoded[i + 1]);
         expect(cmp).to.be.lessThan(0, `Key ${i} should sort before key ${i + 1}`);
       }
+    });
+  });
+
+  describe('CollationEncoder infrastructure', () => {
+    it('should have built-in NOCASE encoder', () => {
+      const encoder = getCollationEncoder('NOCASE');
+      expect(encoder).to.exist;
+      expect(encoder!.encode('HELLO')).to.equal('hello');
+    });
+
+    it('should have built-in BINARY encoder', () => {
+      const encoder = getCollationEncoder('BINARY');
+      expect(encoder).to.exist;
+      expect(encoder!.encode('HELLO')).to.equal('HELLO');
+    });
+
+    it('should have built-in RTRIM encoder', () => {
+      const encoder = getCollationEncoder('RTRIM');
+      expect(encoder).to.exist;
+      expect(encoder!.encode('hello   ')).to.equal('hello');
+    });
+
+    it('should preserve RTRIM sort order', () => {
+      const values = ['a', 'a  ', 'a   ', 'b', 'b '];
+      const sorted = [...values].sort((a, b) => {
+        const ea = encodeValue(a, { collation: 'RTRIM' });
+        const eb = encodeValue(b, { collation: 'RTRIM' });
+        return compareBytes(ea, eb);
+      });
+      // With RTRIM, 'a', 'a  ', 'a   ' all sort the same, then 'b', 'b '
+      expect(sorted[0]).to.match(/^a/);
+      expect(sorted[1]).to.match(/^a/);
+      expect(sorted[2]).to.match(/^a/);
+      expect(sorted[3]).to.match(/^b/);
+      expect(sorted[4]).to.match(/^b/);
+    });
+
+    it('should allow registering custom collation encoder', () => {
+      const reverseEncoder: CollationEncoder = {
+        encode: (value: string) => value.split('').reverse().join(''),
+      };
+      registerCollationEncoder('REVERSE', reverseEncoder);
+
+      const encoder = getCollationEncoder('REVERSE');
+      expect(encoder).to.exist;
+      expect(encoder!.encode('abc')).to.equal('cba');
+    });
+
+    it('should be case-insensitive for encoder lookup', () => {
+      expect(getCollationEncoder('nocase')).to.exist;
+      expect(getCollationEncoder('NOCASE')).to.exist;
+      expect(getCollationEncoder('NoCase')).to.exist;
+    });
+
+    it('should use custom encoder for key encoding', () => {
+      // Register a custom encoder that uppercases
+      const upperEncoder: CollationEncoder = {
+        encode: (value: string) => value.toUpperCase(),
+      };
+      registerCollationEncoder('UPPER', upperEncoder);
+
+      const encoded = encodeValue('hello', { collation: 'UPPER' });
+      const { value } = decodeValue(encoded);
+      expect(value).to.equal('HELLO');
     });
   });
 });

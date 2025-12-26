@@ -47,6 +47,33 @@ store.onDataChange((event: DataChangeEvent) => {
 - **Audit Logging**: Record all mutations with full context
 - **Cross-Tab Sync**: Notify other browser tabs of changes (IndexedDB)
 
+### StoreEventEmitter API
+
+The `StoreEventEmitter` class provides the reactive hooks infrastructure:
+
+```typescript
+import { StoreEventEmitter } from 'quereus-plugin-store';
+
+// Create emitter and pass to module constructor
+const eventEmitter = new StoreEventEmitter();
+const module = new LevelDBModule({ path: './data' }, eventEmitter);
+
+// Subscribe to schema changes
+const unsubscribeSchema = eventEmitter.onSchemaChange((event) => {
+  console.log(`${event.type} ${event.objectType}: ${event.objectName}`);
+  if (event.ddl) console.log('DDL:', event.ddl);
+});
+
+// Subscribe to data changes
+const unsubscribeData = eventEmitter.onDataChange((event) => {
+  console.log(`${event.type} on ${event.tableName}, key:`, event.key);
+});
+
+// Unsubscribe when done
+unsubscribeSchema();
+unsubscribeData();
+```
+
 ### Cross-Tab Notifications (IndexedDB)
 
 In browser environments, multiple tabs may share the same IndexedDB database. The `IndexedDBModule` uses `BroadcastChannel` to propagate `DataChangeEvent` across tabs:
@@ -58,7 +85,7 @@ await db.exec("INSERT INTO users VALUES (1, 'Alice')");
 // Event also broadcasts to other tabs
 
 // Tab B receives the event
-store.onDataChange((event) => {
+eventEmitter.onDataChange((event) => {
   // Fires for both local AND remote changes
   console.log(`${event.type} in ${event.tableName}`);
 });
@@ -185,25 +212,104 @@ This method:
 
 ## Transaction Support
 
-### LevelDB (Node.js)
-- Single-table atomic batches via `WriteBatch`
-- `begin()` creates pending batch
-- `update()` queues operations
-- `commit()` writes batch atomically
-- `rollback()` discards pending batch
+The store module integrates with Quereus's transaction coordinator to provide multi-table atomic transactions.
 
-### IndexedDB (Browser)
-- Native transaction support per object store
-- Similar API surface to LevelDB batches
+### Architecture
 
-Multi-table transactions are not supported in v1.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Quereus Database                          │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │          Transaction Coordinator                     │    │
+│  │  - Calls begin/commit/rollback on all connections   │    │
+│  │  - Runs global assertions before commit             │    │
+│  └─────────────────────────────────────────────────────┘    │
+│           │              │              │                    │
+│           ▼              ▼              ▼                    │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐            │
+│  │ Connection  │ │ Connection  │ │ Connection  │            │
+│  │  (users)    │ │  (orders)   │ │  (items)    │            │
+│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘            │
+└─────────┼───────────────┼───────────────┼────────────────────┘
+          │               │               │
+          ▼               ▼               ▼
+┌─────────────────────────────────────────────────────────────┐
+│               LevelDBModule TransactionCoordinator           │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              Shared WriteBatch                       │    │
+│  │  - Collects writes from all tables                  │    │
+│  │  - Single atomic write on commit                    │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                           │                                  │
+│                           ▼                                  │
+│                    ┌─────────────┐                          │
+│                    │  LevelDB    │                          │
+│                    │  (classic)  │                          │
+│                    └─────────────┘                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### How It Works
+
+1. **Connection Registration**: When a table is first accessed, a `LevelDBConnection` is created and registered with the Database
+2. **Transaction Begin**: Quereus calls `begin()` on all registered connections; the coordinator starts buffering writes
+3. **Mutations**: All `update()` operations queue changes to the shared `WriteBatch` instead of writing directly
+4. **Transaction Commit**: Quereus calls `commit()` on connections; the coordinator writes the batch atomically
+5. **Transaction Rollback**: The coordinator discards the pending batch; no changes are persisted
+
+### Multi-Table Atomicity
+
+Since all tables in a LevelDB module share the same underlying database (tables are distinguished by key prefixes), a single `WriteBatch` can atomically commit changes across all tables:
+
+```typescript
+BEGIN TRANSACTION;
+INSERT INTO users VALUES (1, 'Alice');
+INSERT INTO orders VALUES (100, 1, 50.00);
+INSERT INTO items VALUES (1000, 100, 'Widget');
+COMMIT;  -- All three inserts succeed or fail together
+```
+
+### Savepoint Support
+
+Savepoints create nested snapshots within a transaction:
+
+```sql
+BEGIN;
+INSERT INTO users VALUES (1, 'Alice');
+SAVEPOINT sp1;
+INSERT INTO users VALUES (2, 'Bob');
+ROLLBACK TO sp1;  -- Discards Bob, keeps Alice
+COMMIT;           -- Only Alice is persisted
+```
+
+The coordinator maintains a stack of pending operations, rolling back to the appropriate snapshot on `ROLLBACK TO`.
+
+### LevelDB Backend
+- All tables share one `ClassicLevel` instance
+- `WriteBatch` provides atomic multi-key writes
+- Savepoints tracked via operation snapshots
+
+### IndexedDB Backend
+- Transaction spans multiple object stores
+- Native IDB transaction provides atomicity
+- `transaction.abort()` for rollback
 
 ## Statistics
 
-Row counts are maintained lazily:
-- Stored in `m:stats:{schema}.{table}`
-- Updated approximately every ~100 mutations in a background microtask
-- Used by `getBestAccessPlan()` for cost estimation
+Row counts are maintained lazily for efficient query planning:
+
+- **Storage**: `m:stats:{schema}.{table}` contains `{rowCount, updatedAt}`
+- **Tracking**: Each insert increments count (+1), each delete decrements (-1)
+- **Persistence**: After ~100 mutations, stats are flushed to storage in a microtask
+- **Flush on close**: Stats are persisted when a table is disconnected
+
+```typescript
+// Access statistics programmatically
+const table = module.getTable('main', 'users');
+const rowCount = await table.getEstimatedRowCount();
+```
+
+The `getBestAccessPlan()` method uses these statistics for cost estimation when choosing between full scans and index lookups.
 
 ## Configuration
 
@@ -227,9 +333,43 @@ Uses lazy migration: rows missing new columns return NULL or the declared defaul
 
 ## Collation Support
 
-- **BINARY**: Native byte ordering, fully supported
-- **NOCASE/RTRIM**: Equality works; range scans work but require Quereus re-sort
-- **Custom**: Not encoded in storage; handled by Quereus at query time
+The store module uses collation-aware binary encoding to preserve sort order in the underlying key-value store.
+
+### Collation Encoders
+
+Collations can register a `CollationEncoder` that transforms strings before binary encoding:
+
+```typescript
+interface CollationEncoder {
+  /** Transform string for sort-preserving binary encoding */
+  encode(value: string): string;
+}
+```
+
+### Built-in Collations
+
+| Collation | Encoder | Ordering Support |
+|-----------|---------|------------------|
+| **NOCASE** | Lowercases before encoding | Full (default) |
+| **BINARY** | No transformation | Full |
+| **RTRIM** | Trims trailing spaces | Full |
+| **Custom** | Falls back to BINARY encoding | Requires Quereus re-sort |
+
+The default collation is **NOCASE**, matching Quereus's case-insensitive comparison semantics.
+
+### Future Work
+
+**TODO**: Add per-column collation specification for primary keys and index columns:
+
+```sql
+-- Future syntax (not yet implemented)
+CREATE TABLE t (
+  name TEXT COLLATE BINARY PRIMARY KEY,
+  email TEXT COLLATE NOCASE
+) USING leveldb;
+
+CREATE INDEX idx_name ON t(name COLLATE BINARY);
+```
 
 ## Package Structure
 
@@ -289,10 +429,11 @@ packages/quereus-plugin-store/
 - [x] Metadata storage (DDL strings in m:ddl:* keys)
 - [x] Schema discovery via `loadAllDDL()` + `importCatalog()`
 - [x] DDL generation from TableSchema/IndexSchema
-- [ ] Reactive hooks for schema changes
-- [ ] Lazy statistics refresh and persistence
-- [ ] Comprehensive test suite
+- [x] Reactive hooks for schema changes (StoreEventEmitter)
+- [x] Lazy statistics refresh and persistence (~100 mutation batching)
+- [x] Comprehensive test suite
 
-### Phase 6: Additional Features
-- [ ] Multi-table transactions
-- [ ] Order supporting binary collation
+### Phase 6: Additional Features ✓
+- [x] Multi-table transactions via TransactionCoordinator
+- [x] Collation-aware binary encoding infrastructure
+- [ ] Per-column collation specification for keys/indexes (TODO)

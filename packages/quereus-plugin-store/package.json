@@ -3,6 +3,17 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Persistent key-value storage module for Quereus - LevelDB (Node.js) and IndexedDB (browser)",
+  "keywords": [
+    "quereus",
+    "sql",
+    "database",
+    "storage",
+    "leveldb",
+    "indexeddb",
+    "persistent",
+    "virtual-table",
+    "plugin"
+  ],
   "publisher": "Got Choices Foundation",
   "repository": {
     "type": "git",

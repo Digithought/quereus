@@ -97,6 +97,8 @@ Quereus is built around a three-layer architecture:
 This repository contains multiple packages:
 
 - **[`packages/quereus/`](packages/quereus/)** — Core SQL engine and runtime
+- **[`packages/quereus-plugin-store/`](packages/quereus-plugin-store/)** — Persistent storage plugin (LevelDB for Node.js, IndexedDB for browsers)
+- **[`packages/plugin-loader/`](packages/plugin-loader/)** — Dynamic plugin loading system
 - **[`packages/quoomb-web/`](packages/quoomb-web/)** — Web-based query interface and visualizer
 - **[`packages/quoomb-cli/`](packages/quoomb-cli/)** — Command-line interface
 - **[`packages/sample-plugins/`](packages/sample-plugins/)** — Sample plugins for testing and development

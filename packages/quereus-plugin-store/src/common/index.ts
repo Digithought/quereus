@@ -19,7 +19,9 @@ export {
   encodeCompositeKey,
   decodeValue,
   decodeCompositeKey,
-  type KeyCollation,
+  registerCollationEncoder,
+  getCollationEncoder,
+  type CollationEncoder,
   type EncodeOptions,
 } from './encoding.js';
 
@@ -60,4 +62,10 @@ export {
   generateTableDDL,
   generateIndexDDL,
 } from './ddl-generator.js';
+
+// Transaction support
+export {
+  TransactionCoordinator,
+  type TransactionCallbacks,
+} from './transaction.js';
 

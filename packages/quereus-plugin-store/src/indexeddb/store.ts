@@ -3,6 +3,7 @@
  * Uses the native IndexedDB API for persistent storage.
  */
 
+import { QuereusError, StatusCode } from '@quereus/quereus';
 import type { KVStore, KVEntry, WriteBatch, IterateOptions, KVStoreOptions } from '../common/kv-store.js';
 
 const STORE_NAME = 'kv';
@@ -28,7 +29,7 @@ export class IndexedDBStore implements KVStore {
   static async open(options: KVStoreOptions): Promise<IndexedDBStore> {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(options.path, 1);
-      request.onerror = () => reject(new Error('Failed to open IndexedDB'));
+      request.onerror = () => reject(new QuereusError('Failed to open IndexedDB', StatusCode.CANTOPEN));
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -167,7 +168,7 @@ export class IndexedDBStore implements KVStore {
 
   private checkOpen(): void {
     if (this.closed) {
-      throw new Error('Store is closed');
+      throw new QuereusError('Store is closed', StatusCode.MISUSE);
     }
   }
 }

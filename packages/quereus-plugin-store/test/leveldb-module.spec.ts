@@ -173,5 +173,85 @@ describe('LevelDBModule Integration', function() {
       expect(rowCount).to.equal(5);
     });
   });
+
+  describe('Transaction support', () => {
+    beforeEach(async () => {
+      await db.exec(`
+        create table txn_test (
+          id integer primary key,
+          value text
+        ) using leveldb (path = '${testDir.replace(/\\/g, '/')}')
+      `);
+      schemaEvents.length = 0;
+      dataEvents.length = 0;
+    });
+
+    it('should commit transaction and emit events', async () => {
+      await db.exec('begin');
+      await db.exec(`insert into txn_test (id, value) values (1, 'one')`);
+      await db.exec(`insert into txn_test (id, value) values (2, 'two')`);
+
+      // Events should not be emitted yet during transaction
+      expect(dataEvents.length).to.equal(0);
+
+      await db.exec('commit');
+
+      // Events should be emitted after commit
+      expect(dataEvents.length).to.equal(2);
+      expect(dataEvents[0].type).to.equal('insert');
+      expect(dataEvents[0].newRow).to.deep.equal([1, 'one']);
+      expect(dataEvents[1].newRow).to.deep.equal([2, 'two']);
+
+      // Data should be persisted
+      const result: any[] = [];
+      for await (const row of db.eval('select * from txn_test order by id')) {
+        result.push(row);
+      }
+      expect(result.length).to.equal(2);
+    });
+
+    it('should rollback transaction and discard changes', async () => {
+      // Insert initial data
+      await db.exec(`insert into txn_test (id, value) values (1, 'one')`);
+      dataEvents.length = 0;
+
+      await db.exec('begin');
+      await db.exec(`insert into txn_test (id, value) values (2, 'two')`);
+      await db.exec(`update txn_test set value = 'modified' where id = 1`);
+      await db.exec('rollback');
+
+      // No events should be emitted for rolled-back operations
+      expect(dataEvents.length).to.equal(0);
+
+      // Original data should be unchanged
+      const result: any[] = [];
+      for await (const row of db.eval('select * from txn_test order by id')) {
+        result.push(row);
+      }
+      expect(result.length).to.equal(1);
+      expect(result[0].value).to.equal('one');
+    });
+
+    it('should support savepoints', async () => {
+      await db.exec('begin');
+      await db.exec(`insert into txn_test (id, value) values (1, 'one')`);
+      await db.exec('savepoint sp1');
+      await db.exec(`insert into txn_test (id, value) values (2, 'two')`);
+      await db.exec('rollback to savepoint sp1');
+      await db.exec(`insert into txn_test (id, value) values (3, 'three')`);
+      await db.exec('commit');
+
+      // Should have 2 events: insert 1 and insert 3 (insert 2 was rolled back)
+      expect(dataEvents.length).to.equal(2);
+
+      const result: any[] = [];
+      for await (const row of db.eval('select * from txn_test order by id')) {
+        result.push(row);
+      }
+      expect(result.length).to.equal(2);
+      expect(result[0].id).to.equal(1);
+      expect(result[1].id).to.equal(3);
+    });
+  });
 });
 

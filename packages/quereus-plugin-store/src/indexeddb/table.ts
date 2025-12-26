@@ -2,11 +2,13 @@
  * IndexedDB Virtual Table implementation.
  */
 
-import { VirtualTable, IndexConstraintOp, ConflictResolution, type Database, type TableSchema, type Row, type FilterInfo, type SqlValue } from '@quereus/quereus';
+import { VirtualTable, IndexConstraintOp, ConflictResolution, QuereusError, ConstraintError, StatusCode, type Database, type TableSchema, type Row, type FilterInfo, type SqlValue, type VirtualTableConnection } from '@quereus/quereus';
 import type { UpdateArgs } from '@quereus/quereus';
 import type { IndexedDBModule, IndexedDBModuleConfig } from './module.js';
 import type { IndexedDBStore } from './store.js';
 import type { StoreEventEmitter } from '../common/events.js';
+import { TransactionCoordinator } from '../common/transaction.js';
+import { IndexedDBConnection } from './connection.js';
 import {
   buildDataKey,
   buildTableScanBounds,
@@ -30,7 +32,8 @@ export class IndexedDBTable extends VirtualTable {
   private indexeddbModule: IndexedDBModule;
   private config: IndexedDBModuleConfig;
   private store: IndexedDBStore | null = null;
-  private eventEmitter?: StoreEventEmitter;
+  private coordinator: TransactionCoordinator | null = null;
+  private connection: IndexedDBConnection | null = null;
   private encodeOptions: EncodeOptions;
   private ddlSaved = false;
 
@@ -38,20 +41,20 @@ export class IndexedDBTable extends VirtualTable {
   private cachedStats: TableStats | null = null;
   private mutationCount = 0;
   private statsFlushPending = false;
+  private pendingStatsDelta = 0;
 
   constructor(
     db: Database,
     indexeddbModule: IndexedDBModule,
     tableSchema: TableSchema,
     config: IndexedDBModuleConfig,
-    eventEmitter?: StoreEventEmitter,
+    _eventEmitter?: StoreEventEmitter, // Now routed through coordinator
     isConnected = false
   ) {
     super(db, indexeddbModule, tableSchema.schemaName, tableSchema.name);
     this.indexeddbModule = indexeddbModule;
     this.tableSchema = tableSchema;
     this.config = config;
-    this.eventEmitter = eventEmitter;
     this.encodeOptions = { collation: config.collation || 'NOCASE' };
     this.ddlSaved = isConnected; // DDL already exists if connecting to existing table
   }
@@ -71,6 +74,74 @@ export class IndexedDBTable extends VirtualTable {
       }
     }
     return this.store;
+  }
+
+  /**
+   * Ensure the coordinator is available and connection is registered.
+   */
+  private async ensureCoordinator(): Promise<TransactionCoordinator> {
+    if (!this.coordinator) {
+      const tableKey = `${this.schemaName}.${this.tableName}`.toLowerCase();
+      this.coordinator = await this.indexeddbModule.getCoordinator(tableKey, this.config);
+
+      // Register callbacks for transaction lifecycle
+      this.coordinator.registerCallbacks({
+        onCommit: () => this.applyPendingStats(),
+        onRollback: () => this.discardPendingStats(),
+      });
+    }
+
+    // Ensure connection is registered with database
+    if (!this.connection) {
+      this.connection = new IndexedDBConnection(this.tableName, this.coordinator);
+
+      // Register with the database for transaction management
+      const dbInternal = this.db as unknown as {
+        registerConnection(conn: VirtualTableConnection): Promise<void>;
+      };
+      await dbInternal.registerConnection(this.connection);
+    }
+
+    return this.coordinator;
+  }
+
+  /** Apply pending stats on commit. */
+  private applyPendingStats(): void {
+    if (this.pendingStatsDelta === 0) return;
+
+    if (!this.cachedStats) {
+      this.cachedStats = { rowCount: 0, updatedAt: Date.now() };
+    }
+    this.cachedStats.rowCount = Math.max(0, this.cachedStats.rowCount + this.pendingStatsDelta);
+    this.cachedStats.updatedAt = Date.now();
+    this.mutationCount += Math.abs(this.pendingStatsDelta);
+    this.pendingStatsDelta = 0;
+
+    // Schedule lazy flush if needed
+    if (this.mutationCount >= STATS_FLUSH_INTERVAL && !this.statsFlushPending) {
+      this.statsFlushPending = true;
+      queueMicrotask(() => this.flushStats());
+    }
+  }
+
+  /** Discard pending stats on rollback. */
+  private discardPendingStats(): void {
+    this.pendingStatsDelta = 0;
+  }
+
+  /**
+   * Create a new connection for transaction support.
+   */
+  async createConnection(): Promise<VirtualTableConnection> {
+    await this.ensureCoordinator();
+    return this.connection!;
+  }
+
+  /**
+   * Get the current connection.
+   */
+  getConnection(): VirtualTableConnection | undefined {
+    return this.connection ?? undefined;
   }
 
   /**
@@ -252,33 +323,40 @@ export class IndexedDBTable extends VirtualTable {
    */
   async update(args: UpdateArgs): Promise<Row | undefined> {
     const store = await this.ensureStore();
+    const coordinator = await this.ensureCoordinator();
+    const inTransaction = coordinator.isInTransaction();
     const schema = this.tableSchema!;
     const { operation, values, oldKeyValues } = args;
 
     switch (operation) {
       case 'insert': {
-        if (!values) throw new Error('INSERT requires values');
+        if (!values) throw new QuereusError('INSERT requires values', StatusCode.MISUSE);
         const pk = this.extractPK(values);
         const key = buildDataKey(schema.schemaName, schema.name, pk, this.encodeOptions);
 
         // Check for existing row (for conflict handling)
         const existing = await store.get(key);
         if (existing && args.onConflict !== ConflictResolution.REPLACE) {
-          throw new Error(`UNIQUE constraint failed: primary key`);
+          throw new ConstraintError('UNIQUE constraint failed: primary key');
         }
 
-        await store.put(key, serializeRow(values));
+        // Route through coordinator or direct write
+        if (inTransaction) {
+          coordinator.put(key, serializeRow(values));
+        } else {
+          await store.put(key, serializeRow(values));
+        }
 
         // Update secondary indexes
-        await this.updateSecondaryIndexes(store, null, values, pk);
+        await this.updateSecondaryIndexes(store, null, values, pk, inTransaction);
 
         // Track statistics (only count as new if not replacing)
         if (!existing) {
-          this.trackMutation(+1);
+          this.trackMutation(+1, inTransaction);
         }
 
-        // Emit event
-        this.eventEmitter?.emitDataChange({
+        // Emit event (queued if in transaction)
+        coordinator.queueEvent({
           type: 'insert',
           schemaName: schema.schemaName,
           tableName: schema.name,
@@ -290,7 +368,7 @@ export class IndexedDBTable extends VirtualTable {
       }
 
       case 'update': {
-        if (!values || !oldKeyValues) throw new Error('UPDATE requires values and oldKeyValues');
+        if (!values || !oldKeyValues) throw new QuereusError('UPDATE requires values and oldKeyValues', StatusCode.MISUSE);
         const oldPk = this.extractPK(oldKeyValues);
         const newPk = this.extractPK(values);
         const oldKey = buildDataKey(schema.schemaName, schema.name, oldPk, this.encodeOptions);
@@ -302,16 +380,25 @@ export class IndexedDBTable extends VirtualTable {
 
         // Delete old key if PK changed
         if (!this.keysEqual(oldPk, newPk)) {
-          await store.delete(oldKey);
+          if (inTransaction) {
+            coordinator.delete(oldKey);
+          } else {
+            await store.delete(oldKey);
+          }
         }
 
-        await store.put(newKey, serializeRow(values));
+        // Write new row
+        if (inTransaction) {
+          coordinator.put(newKey, serializeRow(values));
+        } else {
+          await store.put(newKey, serializeRow(values));
+        }
 
         // Update secondary indexes
-        await this.updateSecondaryIndexes(store, oldRow, values, newPk);
+        await this.updateSecondaryIndexes(store, oldRow, values, newPk, inTransaction);
 
-        // Emit event
-        this.eventEmitter?.emitDataChange({
+        // Emit event (queued if in transaction)
+        coordinator.queueEvent({
           type: 'update',
           schemaName: schema.schemaName,
           tableName: schema.name,
@@ -324,7 +411,7 @@ export class IndexedDBTable extends VirtualTable {
       }
 
       case 'delete': {
-        if (!oldKeyValues) throw new Error('DELETE requires oldKeyValues');
+        if (!oldKeyValues) throw new QuereusError('DELETE requires oldKeyValues', StatusCode.MISUSE);
         const pk = this.extractPK(oldKeyValues);
         const key = buildDataKey(schema.schemaName, schema.name, pk, this.encodeOptions);
 
@@ -332,17 +419,22 @@ export class IndexedDBTable extends VirtualTable {
         const oldRowData = await store.get(key);
         const oldRow = oldRowData ? deserializeRow(oldRowData) : null;
 
-        await store.delete(key);
+        // Delete
+        if (inTransaction) {
+          coordinator.delete(key);
+        } else {
+          await store.delete(key);
+        }
 
         // Remove from secondary indexes
         if (oldRow) {
-          await this.updateSecondaryIndexes(store, oldRow, null, pk);
+          await this.updateSecondaryIndexes(store, oldRow, null, pk, inTransaction);
           // Track statistics
-          this.trackMutation(-1);
+          this.trackMutation(-1, inTransaction);
         }
 
-        // Emit event
-        this.eventEmitter?.emitDataChange({
+        // Emit event (queued if in transaction)
+        coordinator.queueEvent({
           type: 'delete',
           schemaName: schema.schemaName,
           tableName: schema.name,
@@ -354,7 +446,7 @@ export class IndexedDBTable extends VirtualTable {
       }
 
       default:
-        throw new Error(`Unknown operation: ${operation}`);
+        throw new QuereusError(`Unknown operation: ${operation}`, StatusCode.MISUSE);
     }
   }
 
@@ -365,10 +457,12 @@ export class IndexedDBTable extends VirtualTable {
     store: IndexedDBStore,
     oldRow: Row | null,
     newRow: Row | null,
-    pk: SqlValue[]
+    pk: SqlValue[],
+    inTransaction = false
   ): Promise<void> {
     const schema = this.tableSchema!;
     const indexes = schema.indexes || [];
+    const coordinator = this.coordinator;
 
     for (const index of indexes) {
       const indexCols = index.columns.map(c => c.index);
@@ -384,7 +478,11 @@ export class IndexedDBTable extends VirtualTable {
           pk,
           this.encodeOptions
         );
-        await store.delete(oldIndexKey);
+        if (inTransaction && coordinator) {
+          coordinator.delete(oldIndexKey);
+        } else {
+          await store.delete(oldIndexKey);
+        }
       }
 
       // Add new index entry
@@ -399,7 +497,11 @@ export class IndexedDBTable extends VirtualTable {
           this.encodeOptions
         );
         // Index value is empty - we just need the key for lookups
-        await store.put(newIndexKey, new Uint8Array(0));
+        if (inTransaction && coordinator) {
+          coordinator.put(newIndexKey, new Uint8Array(0));
+        } else {
+          await store.put(newIndexKey, new Uint8Array(0));
+        }
       }
     }
   }
@@ -467,7 +569,13 @@ export class IndexedDBTable extends VirtualTable {
   /**
    * Track a mutation and schedule lazy stats persistence.
    */
-  private trackMutation(delta: number): void {
+  private trackMutation(delta: number, inTransaction = false): void {
+    if (inTransaction) {
+      // Buffer during transaction - stats will be applied at commit
+      this.pendingStatsDelta += delta;
+      return;
+    }
+
     if (!this.cachedStats) {
       this.cachedStats = { rowCount: 0, updatedAt: Date.now() };
     }

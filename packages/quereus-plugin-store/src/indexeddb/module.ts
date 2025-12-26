@@ -5,10 +5,11 @@
  */
 
 import type { Database, TableSchema, TableIndexSchema, VirtualTableModule, BaseModuleConfig, BestAccessPlanRequest, BestAccessPlanResult, SqlValue } from '@quereus/quereus';
-import { AccessPlanBuilder } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode } from '@quereus/quereus';
 import { IndexedDBStore } from './store.js';
 import { IndexedDBTable } from './table.js';
 import type { StoreEventEmitter } from '../common/events.js';
+import { TransactionCoordinator } from '../common/transaction.js';
 import { CrossTabSync } from './broadcast.js';
 import { buildMetaKey, buildMetaScanBounds, buildTableScanBounds, buildIndexKey } from '../common/key-builder.js';
 import { serializeRow, deserializeRow } from '../common/serialization.js';
@@ -35,11 +36,25 @@ export interface IndexedDBModuleConfig extends BaseModuleConfig {
 export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, IndexedDBModuleConfig> {
   private stores: Map<string, IndexedDBStore> = new Map();
   private tables: Map<string, IndexedDBTable> = new Map();
+  private coordinators: Map<string, TransactionCoordinator> = new Map();
   private crossTabSyncs: Map<string, CrossTabSync> = new Map();
   private eventEmitter?: StoreEventEmitter;
 
   constructor(eventEmitter?: StoreEventEmitter) {
     this.eventEmitter = eventEmitter;
+  }
+
+  /**
+   * Get or create a transaction coordinator for a table's store.
+   */
+  async getCoordinator(tableKey: string, config: IndexedDBModuleConfig): Promise<TransactionCoordinator> {
+    let coordinator = this.coordinators.get(tableKey);
+    if (!coordinator) {
+      const store = await this.getStore(tableKey, config);
+      coordinator = new TransactionCoordinator(store, this.eventEmitter);
+      this.coordinators.set(tableKey, coordinator);
+    }
+    return coordinator;
   }
 
   /**
@@ -50,7 +65,7 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
     const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 
     if (this.tables.has(tableKey)) {
-      throw new Error(`IndexedDB table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'.`);
+      throw new QuereusError(`IndexedDB table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'`, StatusCode.ERROR);
     }
 
     const config = this.parseConfig(tableSchema.vtabArgs as Record<string, SqlValue> | undefined, tableSchema);
@@ -181,7 +196,7 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
     const table = this.tables.get(tableKey);
 
     if (!table) {
-      throw new Error(`IndexedDB table '${tableName}' not found in schema '${schemaName}'.`);
+      throw new QuereusError(`IndexedDB table '${tableName}' not found in schema '${schemaName}'`, StatusCode.NOTFOUND);
     }
 
     // Get the store and build the index
@@ -367,7 +382,7 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
   }
 
   /**
-   * Close all stores and stop cross-tab sync.
+   * Close all stores, coordinators, and stop cross-tab sync.
    */
   async closeAll(): Promise<void> {
     // Stop all cross-tab syncs
@@ -375,6 +390,9 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
       sync.stop();
     }
     this.crossTabSyncs.clear();
+
+    // Clear coordinators (they don't own resources)
+    this.coordinators.clear();
 
     for (const table of this.tables.values()) {
       await table.disconnect();

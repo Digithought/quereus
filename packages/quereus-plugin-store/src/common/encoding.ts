@@ -12,19 +12,77 @@
  *   0x04 - BLOB (length-prefixed)
  *
  * Collation support:
- *   - BINARY: Store as-is
- *   - NOCASE: Store lowercase for sorting (default for TEXT)
+ *   Collations can register a CollationEncoder to transform strings before
+ *   binary encoding, preserving their sort semantics in the key-value store.
  */
 
 import type { SqlValue } from '@quereus/quereus';
 
-/** Supported collations for key encoding. */
-export type KeyCollation = 'BINARY' | 'NOCASE';
+// ============================================================================
+// Collation Encoder Infrastructure
+// ============================================================================
+
+/**
+ * Interface for collation-aware string encoding.
+ * Implementations transform strings to preserve collation sort order
+ * when encoded as binary keys.
+ */
+export interface CollationEncoder {
+  /** Transform a string for sort-preserving binary encoding. */
+  encode(value: string): string;
+}
+
+/** Registry of collation encoders. */
+const collationEncoders = new Map<string, CollationEncoder>();
+
+/**
+ * Register a collation encoder.
+ * @param name Collation name (case-insensitive)
+ * @param encoder The encoder implementation
+ */
+export function registerCollationEncoder(name: string, encoder: CollationEncoder): void {
+  collationEncoders.set(name.toUpperCase(), encoder);
+}
+
+/**
+ * Get a registered collation encoder.
+ * @param name Collation name (case-insensitive)
+ * @returns The encoder, or undefined if not registered
+ */
+export function getCollationEncoder(name: string): CollationEncoder | undefined {
+  return collationEncoders.get(name.toUpperCase());
+}
+
+// Built-in collation encoders
+
+/** NOCASE: Lowercase for case-insensitive ordering (default). */
+const NOCASE_ENCODER: CollationEncoder = {
+  encode: (value: string) => value.toLowerCase(),
+};
+
+/** BINARY: No transformation, native byte ordering. */
+const BINARY_ENCODER: CollationEncoder = {
+  encode: (value: string) => value,
+};
+
+/** RTRIM: Trim trailing spaces before encoding. */
+const RTRIM_ENCODER: CollationEncoder = {
+  encode: (value: string) => value.replace(/\s+$/, ''),
+};
+
+// Register built-in encoders
+registerCollationEncoder('NOCASE', NOCASE_ENCODER);
+registerCollationEncoder('BINARY', BINARY_ENCODER);
+registerCollationEncoder('RTRIM', RTRIM_ENCODER);
+
+// ============================================================================
+// Encoding Options
+// ============================================================================
 
 /** Options for encoding keys. */
 export interface EncodeOptions {
-  /** Collation for TEXT values. Default: 'NOCASE'. */
-  collation?: KeyCollation;
+  /** Collation name for TEXT values. Default: 'NOCASE'. */
+  collation?: string;
 }
 
 /** Type prefix bytes. */
@@ -134,9 +192,10 @@ function encodeReal(value: number): Uint8Array {
  * Encode text with collation support.
  * Uses null-termination with escape sequences for embedded nulls.
  */
-function encodeText(value: string, collation: KeyCollation): Uint8Array {
-  // Apply collation transformation
-  const sortValue = collation === 'NOCASE' ? value.toLowerCase() : value;
+function encodeText(value: string, collation: string): Uint8Array {
+  // Apply collation transformation via encoder registry
+  const collationEncoder = getCollationEncoder(collation) ?? NOCASE_ENCODER;
+  const sortValue = collationEncoder.encode(value);
 
   // Encode as UTF-8
   const encoder = new TextEncoder();
@@ -310,7 +369,7 @@ function decodeReal(buffer: Uint8Array, offset: number): { value: number; bytesR
 function decodeText(
   buffer: Uint8Array,
   offset: number,
-  _collation: KeyCollation
+  _collation: string
 ): { value: string; bytesRead: number } {
   // Find null terminator, handling escapes
   const bytes: number[] = [];

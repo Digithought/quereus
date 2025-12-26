@@ -5,9 +5,10 @@
  */
 
 import type { Database, TableSchema, TableIndexSchema, VirtualTableModule, BaseModuleConfig, BestAccessPlanRequest, BestAccessPlanResult, SqlValue } from '@quereus/quereus';
-import { AccessPlanBuilder } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode } from '@quereus/quereus';
 import { LevelDBStore } from './store.js';
 import { LevelDBTable } from './table.js';
+import { TransactionCoordinator } from './transaction.js';
 import type { StoreEventEmitter } from '../common/events.js';
 import { buildMetaKey, buildMetaScanBounds } from '../common/key-builder.js';
 import { serializeRow, deserializeRow } from '../common/serialization.js';
@@ -33,11 +34,19 @@ export interface LevelDBModuleConfig extends BaseModuleConfig {
  */
 export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBModuleConfig> {
   private stores: Map<string, LevelDBStore> = new Map();
+  private coordinators: Map<string, TransactionCoordinator> = new Map();
   private tables: Map<string, LevelDBTable> = new Map();
   private eventEmitter?: StoreEventEmitter;
 
   constructor(eventEmitter?: StoreEventEmitter) {
     this.eventEmitter = eventEmitter;
+  }
+
+  /**
+   * Get the event emitter for this module.
+   */
+  getEventEmitter(): StoreEventEmitter | undefined {
+    return this.eventEmitter;
   }
 
   /**
@@ -48,7 +57,7 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 
     if (this.tables.has(tableKey)) {
-      throw new Error(`LevelDB table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'.`);
+      throw new QuereusError(`LevelDB table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'`, StatusCode.ERROR);
     }
 
     const config = this.parseConfig(tableSchema.vtabArgs as Record<string, SqlValue> | undefined, tableSchema);
@@ -95,6 +104,8 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     if (existing) {
       return existing;
     }
+
+
 
     // Convert options to Record<string, SqlValue> for vtabArgs
     const vtabArgs: Record<string, SqlValue> = {};
@@ -180,7 +191,7 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     const table = this.tables.get(tableKey);
 
     if (!table) {
-      throw new Error(`LevelDB table '${tableName}' not found in schema '${schemaName}'.`);
+      throw new QuereusError(`LevelDB table '${tableName}' not found in schema '${schemaName}'`, StatusCode.NOTFOUND);
     }
 
     // Get the store and build the index
@@ -362,6 +373,19 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
   }
 
   /**
+   * Get or create a transaction coordinator for a store.
+   */
+  async getCoordinator(tableKey: string, config: LevelDBModuleConfig): Promise<TransactionCoordinator> {
+    let coordinator = this.coordinators.get(tableKey);
+    if (!coordinator) {
+      const store = await this.getStore(tableKey, config);
+      coordinator = new TransactionCoordinator(store, this.eventEmitter);
+      this.coordinators.set(tableKey, coordinator);
+    }
+    return coordinator;
+  }
+
+  /**
    * Close all stores.
    */
   async closeAll(): Promise<void> {
@@ -369,6 +393,9 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
       await table.disconnect();
     }
     this.tables.clear();
+
+    // Clear coordinators before closing stores
+    this.coordinators.clear();
 
     for (const store of this.stores.values()) {
       await store.close();
