@@ -11,10 +11,17 @@ import {
   buildDataKey,
   buildTableScanBounds,
   buildIndexKey,
+  buildMetaKey,
   serializeRow,
   deserializeRow,
+  serializeStats,
+  deserializeStats,
   type EncodeOptions,
+  type TableStats,
 } from '../common/index.js';
+
+/** Number of mutations before persisting statistics. */
+const STATS_FLUSH_INTERVAL = 100;
 
 /**
  * IndexedDB-backed virtual table.
@@ -26,7 +33,11 @@ export class IndexedDBTable extends VirtualTable {
   private eventEmitter?: StoreEventEmitter;
   private encodeOptions: EncodeOptions;
   private ddlSaved = false;
-  private isConnected = false; // True if created via connect() (DDL already exists)
+
+  // Statistics tracking
+  private cachedStats: TableStats | null = null;
+  private mutationCount = 0;
+  private statsFlushPending = false;
 
   constructor(
     db: Database,
@@ -42,7 +53,6 @@ export class IndexedDBTable extends VirtualTable {
     this.config = config;
     this.eventEmitter = eventEmitter;
     this.encodeOptions = { collation: config.collation || 'NOCASE' };
-    this.isConnected = isConnected;
     this.ddlSaved = isConnected; // DDL already exists if connecting to existing table
   }
 
@@ -262,6 +272,11 @@ export class IndexedDBTable extends VirtualTable {
         // Update secondary indexes
         await this.updateSecondaryIndexes(store, null, values, pk);
 
+        // Track statistics (only count as new if not replacing)
+        if (!existing) {
+          this.trackMutation(+1);
+        }
+
         // Emit event
         this.eventEmitter?.emitDataChange({
           type: 'insert',
@@ -322,6 +337,8 @@ export class IndexedDBTable extends VirtualTable {
         // Remove from secondary indexes
         if (oldRow) {
           await this.updateSecondaryIndexes(store, oldRow, null, pk);
+          // Track statistics
+          this.trackMutation(-1);
         }
 
         // Emit event
@@ -402,6 +419,10 @@ export class IndexedDBTable extends VirtualTable {
    * Disconnect from the store.
    */
   async disconnect(): Promise<void> {
+    // Flush any pending stats before disconnecting
+    if (this.mutationCount > 0 && this.store) {
+      await this.flushStats();
+    }
     // Store is managed by the module, not the table
     this.store = null;
   }
@@ -418,6 +439,64 @@ export class IndexedDBTable extends VirtualTable {
    */
   getSchema(): TableSchema {
     return this.tableSchema!;
+  }
+
+  /**
+   * Get the current estimated row count.
+   * Returns cached value, loading from storage if needed.
+   */
+  async getEstimatedRowCount(): Promise<number> {
+    if (this.cachedStats) {
+      return this.cachedStats.rowCount;
+    }
+
+    const store = await this.ensureStore();
+    const schema = this.tableSchema!;
+    const statsKey = buildMetaKey('stats', schema.schemaName, schema.name);
+    const statsData = await store.get(statsKey);
+
+    if (statsData) {
+      this.cachedStats = deserializeStats(statsData);
+      return this.cachedStats.rowCount;
+    }
+
+    // No stats yet, return 0
+    return 0;
+  }
+
+  /**
+   * Track a mutation and schedule lazy stats persistence.
+   */
+  private trackMutation(delta: number): void {
+    if (!this.cachedStats) {
+      this.cachedStats = { rowCount: 0, updatedAt: Date.now() };
+    }
+
+    this.cachedStats.rowCount = Math.max(0, this.cachedStats.rowCount + delta);
+    this.cachedStats.updatedAt = Date.now();
+    this.mutationCount++;
+
+    // Schedule lazy flush after threshold
+    if (this.mutationCount >= STATS_FLUSH_INTERVAL && !this.statsFlushPending) {
+      this.statsFlushPending = true;
+      queueMicrotask(() => this.flushStats());
+    }
+  }
+
+  /**
+   * Flush statistics to persistent storage.
+   */
+  private async flushStats(): Promise<void> {
+    this.statsFlushPending = false;
+    this.mutationCount = 0;
+
+    if (!this.cachedStats || !this.store) {
+      return;
+    }
+
+    const schema = this.tableSchema!;
+    const statsKey = buildMetaKey('stats', schema.schemaName, schema.name);
+    await this.store.put(statsKey, serializeStats(this.cachedStats));
   }
 }
 

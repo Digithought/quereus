@@ -4,14 +4,14 @@
  * Provides persistent storage using LevelDB for Node.js environments.
  */
 
-import type { Database, TableSchema, IndexSchema, VirtualTableModule, BaseModuleConfig, BestAccessPlanRequest, BestAccessPlanResult, SqlValue } from '@quereus/quereus';
+import type { Database, TableSchema, TableIndexSchema, VirtualTableModule, BaseModuleConfig, BestAccessPlanRequest, BestAccessPlanResult, SqlValue } from '@quereus/quereus';
 import { AccessPlanBuilder } from '@quereus/quereus';
 import { LevelDBStore } from './store.js';
 import { LevelDBTable } from './table.js';
 import type { StoreEventEmitter } from '../common/events.js';
-import { buildMetaKey, buildMetaScanBounds, buildTableScanBounds, buildIndexKey } from '../common/key-builder.js';
+import { buildMetaKey, buildMetaScanBounds } from '../common/key-builder.js';
 import { serializeRow, deserializeRow } from '../common/serialization.js';
-import { generateTableDDL, generateIndexDDL } from '../common/ddl-generator.js';
+import { generateTableDDL } from '../common/ddl-generator.js';
 
 /**
  * Configuration options for LevelDB tables.
@@ -63,6 +63,16 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     );
 
     this.tables.set(tableKey, table);
+
+    // Emit schema change event for table creation
+    this.eventEmitter?.emitSchemaChange({
+      type: 'create',
+      objectType: 'table',
+      schemaName: tableSchema.schemaName,
+      objectName: tableSchema.name,
+      ddl: generateTableDDL(tableSchema),
+    });
+
     return table;
   }
 
@@ -146,6 +156,14 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
       await store.close();
       this.stores.delete(tableKey);
     }
+
+    // Emit schema change event for table drop
+    this.eventEmitter?.emitSchemaChange({
+      type: 'drop',
+      objectType: 'table',
+      schemaName,
+      objectName: tableName,
+    });
   }
 
   /**
@@ -153,10 +171,10 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
    * Called by CREATE INDEX.
    */
   async createIndex(
-    db: Database,
+    _db: Database,
     schemaName: string,
     tableName: string,
-    indexSchema: IndexSchema
+    indexSchema: TableIndexSchema
   ): Promise<void> {
     const tableKey = `${schemaName}.${tableName}`.toLowerCase();
     const table = this.tables.get(tableKey);
@@ -195,9 +213,9 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
   private async buildIndexEntries(
     store: LevelDBStore,
     tableSchema: TableSchema,
-    indexSchema: IndexSchema
+    indexSchema: TableIndexSchema
   ): Promise<void> {
-    const { buildDataKey, buildIndexKey, buildTableScanBounds } = await import('../common/key-builder.js');
+    const { buildIndexKey, buildTableScanBounds } = await import('../common/key-builder.js');
     const encodeOptions = { collation: 'NOCASE' as const };
 
     // Scan all data rows
@@ -409,6 +427,15 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     } finally {
       await store.close();
     }
+  }
+
+  /**
+   * Get a table by schema and name.
+   * Useful for testing and direct access to table methods.
+   */
+  getTable(schemaName: string, tableName: string): LevelDBTable | undefined {
+    const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+    return this.tables.get(tableKey);
   }
 }
 

@@ -4,7 +4,7 @@
  * Generates CREATE TABLE and CREATE INDEX statements from schema objects.
  */
 
-import type { TableSchema, IndexSchema } from '@quereus/quereus';
+import type { TableSchema, TableIndexSchema } from '@quereus/quereus';
 
 /**
  * Generate a CREATE TABLE statement from a TableSchema.
@@ -36,8 +36,8 @@ export function generateTableDDL(tableSchema: TableSchema): string {
     if (col.primaryKey && tableSchema.primaryKeyDefinition.length === 1) {
       colDef += ' PRIMARY KEY';
     }
-    if (col.defaultExpr !== undefined) {
-      colDef += ` DEFAULT ${formatDefaultValue(col.defaultExpr)}`;
+    if (col.defaultValue !== undefined && col.defaultValue !== null) {
+      colDef += ` DEFAULT ${formatDefaultValue(col.defaultValue)}`;
     }
     columnDefs.push(colDef);
   }
@@ -70,7 +70,7 @@ export function generateTableDDL(tableSchema: TableSchema): string {
  * Generate a CREATE INDEX statement from an IndexSchema and TableSchema.
  */
 export function generateIndexDDL(
-  indexSchema: IndexSchema,
+  indexSchema: TableIndexSchema,
   tableSchema: TableSchema
 ): string {
   const parts: string[] = ['CREATE INDEX'];
@@ -104,9 +104,24 @@ export function generateIndexDDL(
 
 /**
  * Format a default value expression for DDL.
+ * Handles Expression AST nodes from the parser.
  */
 function formatDefaultValue(expr: unknown): string {
   if (expr === null) return 'NULL';
+
+  // Handle Expression AST nodes
+  if (typeof expr === 'object' && expr !== null && 'type' in expr) {
+    const astNode = expr as { type: string; value?: unknown; lexeme?: string };
+    if (astNode.type === 'literal') {
+      // Use lexeme if available for exact representation
+      if (astNode.lexeme) return astNode.lexeme;
+      return formatDefaultValue(astNode.value);
+    }
+    // For other expression types, we can't easily serialize them
+    // Return a placeholder or the original lexeme if available
+    return '(expression)';
+  }
+
   if (typeof expr === 'string') return `'${expr.replace(/'/g, "''")}'`;
   if (typeof expr === 'number' || typeof expr === 'bigint') return String(expr);
   if (typeof expr === 'boolean') return expr ? '1' : '0';
