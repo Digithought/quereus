@@ -1,0 +1,66 @@
+{
+  "name": "quereus-plugin-sync",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Multi-master CRDT replication for Quereus - automatic sync with conflict resolution",
+  "keywords": [
+    "quereus",
+    "sql",
+    "database",
+    "sync",
+    "crdt",
+    "replication",
+    "offline-first",
+    "multi-master",
+    "conflict-resolution",
+    "plugin"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/quereus-plugin-sync"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/quereus-plugin-sync/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-sync/test/**/*.spec.ts\" --colors",
+    "test:single": "cd ../.. && node --import ./packages/quereus-plugin-sync/register.mjs node_modules/mocha/bin/mocha.js --bail"
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "*",
+    "quereus-plugin-store": "*"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "quereus-plugin-store": "*",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
+    "chai": "^5.2.0",
+    "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "quereus": {
+    "provides": {
+      "sync": true
+    }
+  }
+}
+

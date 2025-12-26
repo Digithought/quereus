@@ -3419,11 +3419,15 @@ pure-rand@^7.0.0:
   resolved "https://registry.npmjs.org/pure-rand/-/pure-rand-7.0.1.tgz"
   integrity sha512-oTUZM/NAZS8p7ANR3SHh30kXB+zK2r2BPcEn/awJIbOvq82WoMN4p62AWWp3Hhw50G0xMsw1mhIBLqHw64EcNQ==
 
-"quereus-plugin-store@file:C:\\projects\\quereus\\packages\\quereus-plugin-store":
+quereus-plugin-store@*, "quereus-plugin-store@file:C:\\projects\\quereus\\packages\\quereus-plugin-store":
   version "0.1.0"
   resolved "file:packages/quereus-plugin-store"
   dependencies:
     classic-level "^2.0.0"
+
+"quereus-plugin-sync@file:C:\\projects\\quereus\\packages\\quereus-plugin-sync":
+  version "0.1.0"
+  resolved "file:packages/quereus-plugin-sync"
 
 "quereus-vscode@file:C:\\projects\\quereus\\packages\\quereus-vscode":
   version "0.2.1"

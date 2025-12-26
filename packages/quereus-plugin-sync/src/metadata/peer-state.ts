@@ -1,0 +1,105 @@
+/**
+ * Peer sync state tracking.
+ *
+ * Tracks the last HLC we've synced to with each peer.
+ * Used to determine what changes to send during delta sync.
+ */
+
+import type { KVStore } from 'quereus-plugin-store';
+import { type HLC, serializeHLC, deserializeHLC } from '../clock/hlc.js';
+import type { SiteId } from '../clock/site.js';
+import { buildPeerStateKey } from './keys.js';
+import { SYNC_KEY_PREFIX } from './keys.js';
+
+/**
+ * Peer sync state record.
+ */
+export interface PeerState {
+  lastSyncHLC: HLC;
+  lastSyncTime: number;  // Wall clock time of last sync
+}
+
+/**
+ * Serialize peer state for storage.
+ * Format: 26 bytes HLC + 8 bytes lastSyncTime
+ */
+export function serializePeerState(state: PeerState): Uint8Array {
+  const result = new Uint8Array(34);
+  const hlcBytes = serializeHLC(state.lastSyncHLC);
+  result.set(hlcBytes, 0);
+
+  const view = new DataView(result.buffer);
+  view.setBigUint64(26, BigInt(state.lastSyncTime), false);
+
+  return result;
+}
+
+/**
+ * Deserialize peer state from storage.
+ */
+export function deserializePeerState(buffer: Uint8Array): PeerState {
+  const lastSyncHLC = deserializeHLC(buffer.slice(0, 26));
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const lastSyncTime = Number(view.getBigUint64(26, false));
+  return { lastSyncHLC, lastSyncTime };
+}
+
+/**
+ * Peer state store operations.
+ */
+export class PeerStateStore {
+  constructor(private readonly kv: KVStore) {}
+
+  /**
+   * Get the sync state for a peer.
+   */
+  async getPeerState(peerSiteId: SiteId): Promise<PeerState | undefined> {
+    const key = buildPeerStateKey(peerSiteId);
+    const data = await this.kv.get(key);
+    if (!data) return undefined;
+    return deserializePeerState(data);
+  }
+
+  /**
+   * Update the sync state for a peer.
+   */
+  async setPeerState(peerSiteId: SiteId, hlc: HLC): Promise<void> {
+    const key = buildPeerStateKey(peerSiteId);
+    const state: PeerState = {
+      lastSyncHLC: hlc,
+      lastSyncTime: Date.now(),
+    };
+    await this.kv.put(key, serializePeerState(state));
+  }
+
+  /**
+   * Get all known peers.
+   */
+  async *getAllPeers(): AsyncIterable<{ siteId: SiteId; state: PeerState }> {
+    const prefix = SYNC_KEY_PREFIX.PEER_STATE;
+    const lt = new Uint8Array(prefix.length);
+    lt.set(prefix);
+    lt[lt.length - 1]++;
+
+    for await (const entry of this.kv.iterate({ gte: prefix, lt })) {
+      // Extract site ID from key: ps:{siteId_hex}
+      const keyStr = new TextDecoder().decode(entry.key);
+      const hex = keyStr.slice(3);  // Skip "ps:"
+      const siteId = new Uint8Array(16);
+      for (let i = 0; i < 16; i++) {
+        siteId[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+
+      yield { siteId, state: deserializePeerState(entry.value) };
+    }
+  }
+
+  /**
+   * Delete peer state (e.g., when peer is no longer known).
+   */
+  async deletePeerState(peerSiteId: SiteId): Promise<void> {
+    const key = buildPeerStateKey(peerSiteId);
+    await this.kv.delete(key);
+  }
+}
+
