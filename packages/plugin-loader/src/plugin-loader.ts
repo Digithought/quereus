@@ -189,7 +189,8 @@ export async function loadPlugin(
         let manifest: PluginManifest | undefined;
         try {
             // Try to import package.json directly
-            const pkg = await import(`${npm.name}/package.json`, { assert: { type: 'json' } });
+            // @vite-ignore - intentional dynamic import for runtime plugin loading
+            const pkg = await import(/* @vite-ignore */ `${npm.name}/package.json`, { assert: { type: 'json' } });
             manifest = extractManifestFromPackageJson(pkg.default);
         } catch {
             // package.json not found - that's okay

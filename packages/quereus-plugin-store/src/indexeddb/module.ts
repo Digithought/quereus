@@ -39,9 +39,24 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
   private coordinators: Map<string, TransactionCoordinator> = new Map();
   private crossTabSyncs: Map<string, CrossTabSync> = new Map();
   private eventEmitter?: StoreEventEmitter;
+  private catalogStore: IndexedDBStore | null = null;
+  private catalogDbName: string;
 
-  constructor(eventEmitter?: StoreEventEmitter) {
+  constructor(eventEmitter?: StoreEventEmitter, catalogDbName = 'quoomb_catalog') {
     this.eventEmitter = eventEmitter;
+    this.catalogDbName = catalogDbName;
+  }
+
+  /**
+   * Get or create the central catalog store for DDL persistence.
+   */
+  private async getCatalogStore(): Promise<IndexedDBStore> {
+    if (!this.catalogStore) {
+      this.catalogStore = await IndexedDBStore.open({
+        path: this.catalogDbName,
+      });
+    }
+    return this.catalogStore;
   }
 
   /**
@@ -103,7 +118,8 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
     _moduleName: string,
     schemaName: string,
     tableName: string,
-    options: IndexedDBModuleConfig
+    options: IndexedDBModuleConfig,
+    importedTableSchema?: TableSchema
   ): IndexedDBTable {
     const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
@@ -118,8 +134,8 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
     if (options?.database !== undefined) vtabArgs.database = options.database;
     if (options?.collation !== undefined) vtabArgs.collation = options.collation;
 
-    // Create a minimal table schema for connect
-    const tableSchema: TableSchema = {
+    // Use the imported schema if provided, otherwise create a minimal one
+    const tableSchema: TableSchema = importedTableSchema ?? {
       name: tableName,
       schemaName: schemaName,
       columns: Object.freeze([]),
@@ -172,6 +188,9 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
       await store.close();
       this.stores.delete(tableKey);
     }
+
+    // Remove DDL from the catalog store
+    await this.removeTableDDL(schemaName, tableName);
 
     // Emit schema change event for table drop
     this.eventEmitter?.emitSchemaChange({
@@ -406,44 +425,43 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
   }
 
   /**
-   * Save table DDL to persistent storage.
+   * Save table DDL to the central catalog store.
    * Called after a table is first accessed to persist its schema.
    */
   async saveTableDDL(tableSchema: TableSchema): Promise<void> {
-    const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
-    const table = this.tables.get(tableKey);
-    if (!table) return;
-
-    const store = await this.getStore(tableKey, table.getConfig());
+    const catalogStore = await this.getCatalogStore();
     const ddl = generateTableDDL(tableSchema);
     const metaKey = buildMetaKey('ddl', tableSchema.schemaName, tableSchema.name);
     const encoder = new TextEncoder();
-    await store.put(metaKey, encoder.encode(ddl));
+    await catalogStore.put(metaKey, encoder.encode(ddl));
   }
 
   /**
-   * Load all DDL statements from persistent storage for schema discovery.
+   * Remove table DDL from the central catalog store.
+   * Called when a table is dropped.
+   */
+  async removeTableDDL(schemaName: string, tableName: string): Promise<void> {
+    const catalogStore = await this.getCatalogStore();
+    const metaKey = buildMetaKey('ddl', schemaName, tableName);
+    await catalogStore.delete(metaKey);
+  }
+
+  /**
+   * Load all DDL statements from the central catalog store.
    * Returns an array of DDL strings (CREATE TABLE, CREATE INDEX).
    */
-  async loadAllDDL(databaseName: string): Promise<string[]> {
-    const store = await IndexedDBStore.open({
-      path: databaseName,
-    });
+  async loadAllDDL(): Promise<string[]> {
+    const catalogStore = await this.getCatalogStore();
+    const ddlStatements: string[] = [];
+    const decoder = new TextDecoder();
 
-    try {
-      const ddlStatements: string[] = [];
-      const decoder = new TextDecoder();
-
-      // Scan all DDL metadata keys
-      const ddlBounds = buildMetaScanBounds('ddl');
-      for await (const entry of store.iterate(ddlBounds)) {
-        ddlStatements.push(decoder.decode(entry.value));
-      }
-
-      return ddlStatements;
-    } finally {
-      await store.close();
+    // Scan all DDL metadata keys
+    const ddlBounds = buildMetaScanBounds('ddl');
+    for await (const entry of catalogStore.iterate(ddlBounds)) {
+      ddlStatements.push(decoder.decode(entry.value));
     }
+
+    return ddlStatements;
   }
 }
 

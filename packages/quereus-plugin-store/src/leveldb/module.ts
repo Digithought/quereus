@@ -95,7 +95,8 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     _moduleName: string,
     schemaName: string,
     tableName: string,
-    options: LevelDBModuleConfig
+    options: LevelDBModuleConfig,
+    importedTableSchema?: TableSchema
   ): LevelDBTable {
     const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
@@ -105,16 +106,14 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
       return existing;
     }
 
-
-
     // Convert options to Record<string, SqlValue> for vtabArgs
     const vtabArgs: Record<string, SqlValue> = {};
     if (options?.path !== undefined) vtabArgs.path = options.path;
     if (options?.createIfMissing !== undefined) vtabArgs.createIfMissing = options.createIfMissing ? 1 : 0;
     if (options?.collation !== undefined) vtabArgs.collation = options.collation;
 
-    // Create a minimal table schema for connect
-    const tableSchema: TableSchema = {
+    // Use the imported schema if provided, otherwise create a minimal one
+    const tableSchema: TableSchema = importedTableSchema ?? {
       name: tableName,
       schemaName: schemaName,
       columns: Object.freeze([]),

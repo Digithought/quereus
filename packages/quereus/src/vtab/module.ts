@@ -60,6 +60,7 @@ export interface VirtualTableModule<
 	 * @param schemaName The name of the database schema
 	 * @param tableName The name of the virtual table to connect to
 	 * @param options Module-specific configuration options from the original CREATE VIRTUAL TABLE
+	 * @param tableSchema Optional table schema when connecting during import (columns, PK, etc.)
 	 * @returns The connection-specific VirtualTable instance
 	 * @throws QuereusError on failure
 	 */
@@ -69,7 +70,8 @@ export interface VirtualTableModule<
 		moduleName: string,
 		schemaName: string,
 		tableName: string,
-		options: TConfig
+		options: TConfig,
+		tableSchema?: TableSchema
 	): TTable;
 
 	/**

@@ -417,7 +417,8 @@ export class Lexer {
 
 			// String literals
 			case '\'': this.string('\''); break;
-			case '"': this.string('"'); break;
+			// Double-quoted strings are identifiers in SQL standard and SQLite
+			case '"': this.doubleQuotedIdentifier(); break;
 			case '`': this.backtickIdentifier(); break;
 			case '[': this.bracketIdentifier(); break;
 
@@ -548,6 +549,40 @@ export class Lexer {
 		}
 
 		// Consume the closing backtick
+		this.advance();
+
+		this.addToken(TokenType.IDENTIFIER, value);
+	}
+
+	/**
+	 * Parse double-quoted identifiers.
+	 * In SQL standard and SQLite, double quotes delimit identifiers (not strings).
+	 * Supports "" escape for embedded double quotes.
+	 */
+	private doubleQuotedIdentifier(): void {
+		let value = '';
+
+		while (!this.isAtEnd()) {
+			if (this.peek() === '"') {
+				// Check for escaped double quote ("")
+				if (this.peekNext() === '"') {
+					value += '"';
+					this.advance(); // First "
+					this.advance(); // Second "
+				} else {
+					break; // End of identifier
+				}
+			} else {
+				value += this.advance();
+			}
+		}
+
+		if (this.isAtEnd()) {
+			this.addErrorToken("Unterminated identifier.");
+			return;
+		}
+
+		// Consume the closing double quote
 		this.advance();
 
 		this.addToken(TokenType.IDENTIFIER, value);

@@ -1,7 +1,7 @@
 import { Schema } from './schema.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
 import type { Database } from '../core/database.js';
-import type { TableSchema, RowConstraintSchema, IndexSchema } from './table.js';
+import type { TableSchema, RowConstraintSchema, IndexSchema, IndexColumnSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
@@ -12,6 +12,7 @@ import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mu
 import type { ViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
+import { Parser } from '../parser/parser.js';
 import { SchemaChangeNotifier } from './change-events.js';
 import { checkDeterministic } from '../planner/validation/determinism-validator.js';
 import { buildExpression } from '../planner/building/expression.js';
@@ -837,8 +838,9 @@ export class SchemaManager {
 	 * Import a single DDL statement without creating storage.
 	 */
 	private async importSingleDDL(ddl: string): Promise<{ type: 'table' | 'index'; name: string }> {
-		// Parse the DDL using the database's parser
-		const statements = this.db._parse(ddl);
+		// Parse the DDL using the parser
+		const parser = new Parser();
+		const statements = parser.parseAll(ddl);
 		if (statements.length !== 1) {
 			throw new QuereusError(`importCatalog expects exactly one statement per DDL, got ${statements.length}`, StatusCode.ERROR);
 		}
@@ -953,18 +955,15 @@ export class SchemaManager {
 
 		// Use connect() instead of create() - the storage already exists
 		try {
-			const vtabInstance = moduleInfo.module.connect(
+			moduleInfo.module.connect(
 				this.db,
 				moduleInfo.auxData,
 				moduleName,
 				targetSchemaName,
 				tableName,
-				effectiveModuleArgs as BaseModuleConfig
+				effectiveModuleArgs as BaseModuleConfig,
+				tableSchema // Pass the full schema so the module can use it
 			);
-			// If module provides updated schema from connect(), use it
-			if (vtabInstance.tableSchema) {
-				Object.assign(tableSchema, vtabInstance.tableSchema);
-			}
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			throw new QuereusError(`Module '${moduleName}' connect failed during import for table '${tableName}': ${message}`, StatusCode.ERROR);
@@ -990,7 +989,7 @@ export class SchemaManager {
 	private async importIndex(stmt: AST.CreateIndexStmt): Promise<{ type: 'index'; name: string }> {
 		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
 		const tableName = stmt.table.name;
-		const indexName = stmt.indexName;
+		const indexName = stmt.index.name;
 
 		// Find the table
 		const tableSchema = this.findTable(tableName, targetSchemaName);
@@ -999,24 +998,24 @@ export class SchemaManager {
 		}
 
 		// Build index columns schema
-		const indexColumns = stmt.columns.map(col => {
-			const colIdx = tableSchema.columnIndexMap.get(col.column.toLowerCase());
+		const indexColumns: IndexColumnSchema[] = stmt.columns.map(col => {
+			const colName = col.name;
+			if (!colName) {
+				throw new QuereusError(`Expression-based index columns are not supported during import`, StatusCode.ERROR);
+			}
+			const colIdx = tableSchema.columnIndexMap.get(colName.toLowerCase());
 			if (colIdx === undefined) {
-				throw new QuereusError(`Column '${col.column}' not found in table '${tableName}'`, StatusCode.ERROR);
+				throw new QuereusError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR);
 			}
 			return {
-				columnIndex: colIdx,
-				columnName: tableSchema.columns[colIdx].name,
-				desc: col.sortOrder === 'desc',
+				index: colIdx,
+				desc: col.direction === 'desc',
 			};
 		});
 
 		const indexSchema: IndexSchema = {
 			name: indexName,
-			tableName: tableName,
-			schemaName: targetSchemaName,
 			columns: Object.freeze(indexColumns),
-			isUnique: !!stmt.isUnique,
 		};
 
 		// Add index to table without calling module.createIndex()

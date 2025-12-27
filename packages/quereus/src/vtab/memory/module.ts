@@ -58,7 +58,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Connects to an existing memory table definition
 	 */
-	connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig): MemoryTable {
+	connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig, _tableSchema?: TableSchema): MemoryTable {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const existingManager = this.tables.get(tableKey);
 

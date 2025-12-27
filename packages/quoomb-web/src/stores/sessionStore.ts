@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { subscribeWithSelector, persist } from 'zustand/middleware';
 import type { SqlValue } from '@quereus/quereus';
-import { QuereusWorkerAPI, PlanGraph, PluginRecord, PluginManifest } from '../worker/types.js';
+import { QuereusWorkerAPI, PlanGraph, PluginRecord, PluginManifest, SyncStatus, SyncEvent } from '../worker/types.js';
 import { ErrorInfo, unwrapError } from '@quereus/quereus';
 import { validatePluginUrl, interpolateConfigEnvVars } from '@quereus/plugin-loader';
 import { useSettingsStore } from './settingsStore.js';
@@ -74,6 +74,10 @@ export interface SessionState {
     fileName: string;
   };
 
+  // Sync state
+  syncStatus: SyncStatus;
+  syncEvents: SyncEvent[];
+
   // Actions
   initializeSession: () => Promise<void>;
   executeSQL: (sql: string, selectionInfo?: { isSelection: boolean; startLine: number; startColumn: number; endLine: number; endColumn: number; }) => Promise<void>;
@@ -110,6 +114,13 @@ export interface SessionState {
   getPluginError: (id: string) => string | undefined;
   clearPluginError: (id: string) => void;
   loadEnabledPlugins: () => Promise<void>;
+
+  // Sync management
+  setSyncStatus: (status: SyncStatus) => void;
+  addSyncEvent: (event: SyncEvent) => void;
+  clearSyncEvents: () => void;
+  connectSync: () => Promise<void>;
+  disconnectSync: () => Promise<void>;
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -145,8 +156,18 @@ export const useSessionStore = create<SessionState>()(
           fileName: '',
         },
 
+        // Sync state
+        syncStatus: { status: 'disconnected' } as SyncStatus,
+        syncEvents: [],
+
         // Actions
         initializeSession: async () => {
+          // Prevent duplicate initialization (e.g., React StrictMode or HMR)
+          const { isConnecting, isConnected } = get();
+          if (isConnecting || isConnected) {
+            return;
+          }
+
           set(() => ({
             isConnecting: true,
             connectionError: null,
@@ -163,6 +184,10 @@ export const useSessionStore = create<SessionState>()(
 
             // Initialize the Quereus session in the worker
             await api.initialize();
+
+            // Set the storage module based on settings
+            const { storageModule, syncUrl } = useSettingsStore.getState();
+            await api.setStorageModule(storageModule);
 
             const sessionId = crypto.randomUUID();
 
@@ -213,6 +238,36 @@ export const useSessionStore = create<SessionState>()(
 
             // Load enabled plugins after successful initialization
             await get().loadEnabledPlugins();
+
+            // Subscribe to sync events if sync module is enabled
+            if (storageModule === 'sync') {
+              // Set initial sync status
+              set({ syncStatus: { status: 'disconnected' } });
+
+              try {
+                // Subscribe to sync events from the worker
+                await api.onSyncEvent(Comlink.proxy(async (event: SyncEvent) => {
+                  get().addSyncEvent(event);
+                  // Update sync status based on state-change events
+                  if (event.type === 'state-change') {
+                    const status = await api.getSyncStatus();
+                    if (status) {
+                      get().setSyncStatus(status);
+                    }
+                  }
+                }));
+
+                // Auto-connect to sync server if URL is configured
+                if (syncUrl) {
+                  set({ syncStatus: { status: 'connecting' } });
+                  await api.connectSync(syncUrl);
+                }
+              } catch (error) {
+                console.warn('Failed to initialize sync:', error);
+                // Set status to disconnected on failure
+                set({ syncStatus: { status: 'disconnected' } });
+              }
+            }
           } catch (error) {
             set(() => ({
               isConnecting: false,
@@ -845,6 +900,8 @@ export const useSessionStore = create<SessionState>()(
             worker: null,
             api: null,
             sessionId: null,
+            syncStatus: { status: 'disconnected' } as SyncStatus,
+            syncEvents: [],
           }));
         },
 
@@ -1075,6 +1132,57 @@ export const useSessionStore = create<SessionState>()(
               // Disable the plugin if it failed to load
               useSettingsStore.getState().updatePlugin(plugin.id, { enabled: false });
             }
+          }
+        },
+
+        // Sync management
+        setSyncStatus: (status: SyncStatus) => {
+          set({ syncStatus: status });
+        },
+
+        addSyncEvent: (event: SyncEvent) => {
+          set((state) => ({
+            syncEvents: [event, ...state.syncEvents].slice(0, 100), // Keep last 100 events
+          }));
+        },
+
+        clearSyncEvents: () => {
+          set({ syncEvents: [] });
+        },
+
+        connectSync: async () => {
+          const { api } = get();
+          if (!api) {
+            throw new Error('Database not connected');
+          }
+
+          const { syncUrl, storageModule } = useSettingsStore.getState();
+
+          // Ensure sync module is enabled
+          if (storageModule !== 'sync') {
+            throw new Error('Sync module is not enabled. Enable it in Settings > Storage.');
+          }
+
+          set({ syncStatus: { status: 'connecting' } });
+
+          try {
+            await api.connectSync(syncUrl);
+            set({ syncStatus: { status: 'syncing', progress: 0 } });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Connection failed';
+            set({ syncStatus: { status: 'error', message } });
+            throw error;
+          }
+        },
+
+        disconnectSync: async () => {
+          const { api } = get();
+          if (!api) return;
+
+          try {
+            await api.disconnectSync();
+          } finally {
+            set({ syncStatus: { status: 'disconnected' } });
           }
         },
       })

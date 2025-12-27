@@ -335,7 +335,7 @@ export class Parser {
 				if (!this.checkIdentifierLike(contextualKeywords)) {
 					throw this.error(this.peek(), "Expected column name.");
 				}
-				columns.push(this.advance().lexeme);
+				columns.push(this.getIdentifierValue(this.advance()));
 			} while (this.match(TokenType.COMMA));
 
 			this.consume(TokenType.RPAREN, "Expected ')' after column list.");
@@ -596,10 +596,10 @@ export class Parser {
 				if (this.match(TokenType.AS)) {
 					if (this.checkIdentifierLike(contextualKeywords) || this.check(TokenType.STRING)) {
 						const aliasToken = this.advance();
-						alias = aliasToken.lexeme;
-						if (aliasToken.type === TokenType.STRING) {
-							alias = aliasToken.literal;
-						}
+						// For STRING tokens, use literal; for identifiers, use getIdentifierValue
+						alias = aliasToken.type === TokenType.STRING
+							? aliasToken.literal
+							: this.getIdentifierValue(aliasToken);
 					} else {
 						throw this.error(this.peek(), "Expected identifier or string after 'AS'.");
 					}
@@ -611,7 +611,7 @@ export class Parser {
 					!this.checkNext(1, TokenType.COMMA) &&
 					!this.isEndOfClause()) {
 					const aliasToken = this.advance();
-					alias = aliasToken.lexeme;
+					alias = this.getIdentifierValue(aliasToken);
 				}
 
 				columns.push({ type: 'column', expr, alias });
@@ -734,15 +734,13 @@ export class Parser {
 			if (!this.checkIdentifierLike([])) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
-			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(this.advance());
 		} else if (this.checkIdentifierLike([]) &&
 			!this.checkNext(1, TokenType.DOT) &&
 			!this.checkNext(1, TokenType.COMMA) &&
 			!this.isJoinToken() &&
 			!this.isEndOfClause()) {
-			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(this.advance());
 		} else {
 			// Generate a default alias if none provided
 			alias = `subquery_${startToken.startOffset}`;
@@ -805,15 +803,13 @@ export class Parser {
 			if (!this.checkIdentifierLike([])) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
-			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(this.advance());
 		} else if (this.checkIdentifierLike([]) &&
 			!this.checkNext(1, TokenType.DOT) &&
 			!this.checkNext(1, TokenType.COMMA) &&
 			!this.isJoinToken() &&
 			!this.isEndOfClause()) {
-			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(this.advance());
 		} else {
 			// Generate a default alias if none provided
 			alias = `mutating_subquery_${startToken.startOffset}`;
@@ -857,7 +853,7 @@ export class Parser {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
 			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(aliasToken);
 			endToken = aliasToken;
 		} else if (this.checkIdentifierLike([]) &&
 			!this.checkNext(1, TokenType.DOT) &&
@@ -865,7 +861,7 @@ export class Parser {
 			!this.isJoinToken() &&
 			!this.isEndOfClause()) {
 			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(aliasToken);
 			endToken = aliasToken;
 		}
 
@@ -918,7 +914,7 @@ export class Parser {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
 			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(aliasToken);
 			endToken = aliasToken;
 		} else if (this.checkIdentifierLike([]) &&
 			!this.checkNext(1, TokenType.DOT) &&
@@ -926,7 +922,7 @@ export class Parser {
 			!this.isJoinToken() &&
 			!this.isEndOfClause()) {
 			const aliasToken = this.advance();
-			alias = aliasToken.lexeme;
+			alias = this.getIdentifierValue(aliasToken);
 			endToken = aliasToken;
 		}
 
@@ -2337,7 +2333,7 @@ export class Parser {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected savepoint name after ROLLBACK TO.");
 			}
-			savepoint = this.advance().lexeme;
+			savepoint = this.getIdentifierValue(this.advance());
 		}
 		return { type: 'rollback', savepoint, loc: _createLoc(startToken, this.previous()) };
 	}
@@ -2459,7 +2455,7 @@ export class Parser {
 		// Optional USING module
 		if (this.match(TokenType.USING)) {
 			if (this.check(TokenType.IDENTIFIER)) {
-				moduleName = this.advance().lexeme;
+				moduleName = this.getIdentifierValue(this.advance());
 			}
 			if (this.match(TokenType.LPAREN)) {
 				moduleArgs = {};
@@ -2698,7 +2694,7 @@ export class Parser {
 		let value: AST.LiteralExpr | AST.IdentifierExpr | undefined;
 		if (this.match(TokenType.EQUAL)) {
 			if (this.check(TokenType.IDENTIFIER)) {
-				value = { type: 'identifier', name: this.advance().lexeme };
+				value = { type: 'identifier', name: this.getIdentifierValue(this.advance()) };
 			} else if (this.match(TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT, TokenType.NULL, TokenType.TRUE, TokenType.FALSE)) {
 				const token = this.previous();
 				let literal_value: SqlValue;
@@ -2762,6 +2758,15 @@ export class Parser {
 		}
 	}
 
+	/**
+	 * @internal Helper to extract the identifier value from a token.
+	 * For quoted identifiers (double-quoted, backtick, bracket), returns the unquoted value.
+	 * For unquoted identifiers, returns the lexeme.
+	 */
+	private getIdentifierValue(token: Token): string {
+		return token.literal !== undefined ? String(token.literal) : token.lexeme;
+	}
+
 	/** @internal Helper to consume an IDENTIFIER token and return its lexeme */
 	private consumeIdentifier(errorMessage: string): string;
 	private consumeIdentifier(availableKeywords: string[], errorMessage: string): string;
@@ -2779,14 +2784,14 @@ export class Parser {
 	 * @internal Helper to consume an IDENTIFIER token or specified contextual keywords
 	 * @param availableKeywords Array of keyword strings that can be used as identifiers in this context
 	 * @param errorMessage Error message if no valid token is found
-	 * @returns The lexeme of the consumed token
+	 * @returns The identifier value (unquoted for quoted identifiers)
 	 */
 	private consumeIdentifierOrContextualKeyword(availableKeywords: string[], errorMessage: string): string {
 		const token = this.peek();
 
 		// First check for regular identifier
 		if (this.check(TokenType.IDENTIFIER)) {
-			return this.advance().lexeme;
+			return this.getIdentifierValue(this.advance());
 		}
 
 		// Then check for available contextual keywords
@@ -3026,7 +3031,7 @@ export class Parser {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected collation name after COLLATE.");
 			}
-			const collation = this.advance().lexeme;
+			const collation = this.getIdentifierValue(this.advance());
 			endToken = this.previous();
 			return { type: 'collate', name, collation, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.REFERENCES)) {

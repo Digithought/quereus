@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MainLayout } from './components/MainLayout.js';
 import { LoadingSplash } from './components/LoadingSplash.js';
+import { SyncEventsPanel } from './components/SyncEventsPanel.js';
 import { useSessionStore } from './stores/sessionStore.js';
 import { useSettingsStore } from './stores/settingsStore.js';
 
@@ -92,6 +93,7 @@ export const App: React.FC = () => {
   return (
     <div className={`app ${resolvedTheme}`} data-theme={resolvedTheme}>
       <MainLayout />
+      <SyncEventsPanel />
     </div>
   );
 };

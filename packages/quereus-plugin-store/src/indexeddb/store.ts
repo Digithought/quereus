@@ -28,15 +28,34 @@ export class IndexedDBStore implements KVStore {
 
   static async open(options: KVStoreOptions): Promise<IndexedDBStore> {
     return new Promise((resolve, reject) => {
+      // Add timeout to prevent hanging indefinitely
+      const timeout = setTimeout(() => {
+        reject(new QuereusError('IndexedDB open timed out after 10 seconds', StatusCode.CANTOPEN));
+      }, 10000);
+
       const request = indexedDB.open(options.path, 1);
-      request.onerror = () => reject(new QuereusError('Failed to open IndexedDB', StatusCode.CANTOPEN));
+
+      request.onerror = () => {
+        clearTimeout(timeout);
+        reject(new QuereusError('Failed to open IndexedDB', StatusCode.CANTOPEN));
+      };
+
+      request.onblocked = () => {
+        clearTimeout(timeout);
+        reject(new QuereusError('IndexedDB is blocked by another connection', StatusCode.CANTOPEN));
+      };
+
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME);
         }
       };
-      request.onsuccess = () => resolve(new IndexedDBStore(request.result));
+
+      request.onsuccess = () => {
+        clearTimeout(timeout);
+        resolve(new IndexedDBStore(request.result));
+      };
     });
   }
 

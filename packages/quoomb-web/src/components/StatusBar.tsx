@@ -1,6 +1,7 @@
 import React from 'react';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { SyncStatusIndicator } from './SyncStatusIndicator.js';
 
 export const StatusBar: React.FC = () => {
   const {
@@ -52,8 +53,9 @@ export const StatusBar: React.FC = () => {
         )}
       </div>
 
-      {/* Right side - Statistics */}
+      {/* Right side - Statistics and Sync Status */}
       <div className="flex items-center gap-4 text-gray-500 dark:text-gray-400">
+        <SyncStatusIndicator />
         <span>History: {queryHistory.length} queries</span>
         <span>Quereus SQL Engine</span>
       </div>

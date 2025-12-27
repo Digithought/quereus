@@ -13,6 +13,45 @@ export interface PluginManifest extends BasePluginManifest {
   };
 }
 
+// ============================================================================
+// Storage Module Types
+// ============================================================================
+
+/**
+ * Available storage module types.
+ */
+export type StorageModuleType = 'memory' | 'store' | 'sync';
+
+/**
+ * Sync connection state for UI display.
+ */
+export type SyncStatus =
+  | { status: 'disconnected' }
+  | { status: 'connecting' }
+  | { status: 'syncing'; progress: number }
+  | { status: 'synced'; lastSyncTime: number }
+  | { status: 'error'; message: string };
+
+/**
+ * Sync event types for UI notifications.
+ */
+export type SyncEventType = 'remote-change' | 'local-change' | 'conflict' | 'state-change' | 'error';
+
+/**
+ * Sync event for UI display.
+ */
+export interface SyncEvent {
+  type: SyncEventType;
+  timestamp: number;
+  message: string;
+  details?: {
+    table?: string;
+    changeCount?: number;
+    conflictColumn?: string;
+    winner?: 'local' | 'remote';
+  };
+}
+
 export interface PlanGraphNode {
   id: string;                 // stable, local to this plan
   opcode: string;             // "SCAN", "HASH_JOIN", etc.
@@ -108,6 +147,61 @@ export interface QuereusWorkerAPI {
    * Close the database connection
    */
   close(): Promise<void>;
+
+  // ============================================================================
+  // Storage Module Management
+  // ============================================================================
+
+  /**
+   * Get current storage module type
+   */
+  getStorageModule(): StorageModuleType;
+
+  /**
+   * Set the default storage module
+   * Must be called before creating tables that should use the module
+   */
+  setStorageModule(module: StorageModuleType): Promise<void>;
+
+  /**
+   * Get available storage modules
+   */
+  getAvailableModules(): StorageModuleType[];
+
+  // ============================================================================
+  // Sync Operations
+  // ============================================================================
+
+  /**
+   * Get current sync status
+   */
+  getSyncStatus(): SyncStatus;
+
+  /**
+   * Connect to a sync server
+   */
+  connectSync(url: string, token?: string): Promise<void>;
+
+  /**
+   * Disconnect from sync server
+   */
+  disconnectSync(): Promise<void>;
+
+  /**
+   * Get recent sync events for display
+   */
+  getSyncEvents(limit?: number): SyncEvent[];
+
+  /**
+   * Register a callback for sync events (called via Comlink proxy)
+   * Returns an unsubscribe ID
+   */
+  onSyncEvent(callback: (event: SyncEvent) => void): string;
+
+  /**
+   * Unsubscribe from sync events
+   */
+  offSyncEvent(subscriptionId: string): void;
 }
 
 export interface QueryPlan {

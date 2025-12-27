@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { PluginRecord } from '../worker/types.js';
+import type { PluginRecord, StorageModuleType } from '../worker/types.js';
 
 export type Theme = 'light' | 'dark' | 'auto';
+
+// Re-export for convenience
+export type { StorageModuleType } from '../worker/types.js';
 
 export interface SettingsState {
   // Appearance
@@ -31,6 +34,10 @@ export interface SettingsState {
   // Plugins
   plugins: PluginRecord[];
 
+  // Storage & Sync
+  storageModule: StorageModuleType;
+  syncUrl: string;
+
   // Actions
   loadSettings: () => void;
   setTheme: (theme: Theme) => void;
@@ -51,6 +58,10 @@ export interface SettingsState {
   updatePlugin: (id: string, updates: Partial<PluginRecord>) => void;
   removePlugin: (id: string) => void;
   setPlugins: (plugins: PluginRecord[]) => void;
+
+  // Storage & Sync actions
+  setStorageModule: (module: StorageModuleType) => void;
+  setSyncUrl: (url: string) => void;
 
   resetToDefaults: () => void;
 }
@@ -74,6 +85,10 @@ const defaultSettings = {
     editor: 50,
     results: 50,
   },
+
+  // Storage & Sync defaults
+  storageModule: 'memory' as StorageModuleType,
+  syncUrl: 'ws://localhost:8080',
 };
 
 // Helper function to get resolved theme
@@ -217,6 +232,20 @@ export const useSettingsStore = create<SettingsState>()(
         set({ plugins });
       },
 
+      setStorageModule: (module: StorageModuleType) => {
+        set((state) => ({
+          ...state,
+          storageModule: module,
+        }));
+      },
+
+      setSyncUrl: (url: string) => {
+        set((state) => ({
+          ...state,
+          syncUrl: url,
+        }));
+      },
+
       resetToDefaults: () => {
         set({
           theme: 'auto',
@@ -235,6 +264,8 @@ export const useSettingsStore = create<SettingsState>()(
             results: 40,
           },
           plugins: [],
+          storageModule: 'memory',
+          syncUrl: 'ws://localhost:8080',
         });
 
         // Reapply theme

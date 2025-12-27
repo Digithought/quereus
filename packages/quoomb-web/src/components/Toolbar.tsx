@@ -7,6 +7,7 @@ import { ExportMenu } from './ExportMenu.js';
 import { CsvImportModal } from './CsvImportModal.js';
 import { SettingsModal } from './SettingsModal.js';
 import { FileMenu } from './FileMenu.js';
+import { DatabaseSelector } from './DatabaseSelector.js';
 
 export const Toolbar: React.FC = () => {
   const { queryHistory, clearHistory } = useSessionStore();
@@ -33,6 +34,11 @@ export const Toolbar: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-2">
+        {/* Database Selector - Prominent position */}
+        <DatabaseSelector />
+
+        <div className="w-px h-6 bg-gray-300 dark:bg-gray-600 mx-1" />
+
         {/* File Menu */}
         <div className="relative">
           <button

@@ -30,10 +30,11 @@ export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseM
 		_moduleName: string,
 		schemaName: string,
 		tableName: string,
-		_options: BaseModuleConfig
+		_options: BaseModuleConfig,
+		importedTableSchema?: TableSchema
 	): TestQueryTable {
-		// Retrieve schema and create test query table
-		const tableSchema = db.schemaManager.getTable(schemaName, tableName);
+		// Use imported schema if provided, otherwise retrieve from db
+		const tableSchema = importedTableSchema ?? db.schemaManager.getTable(schemaName, tableName);
 		if (!tableSchema) {
 			throw new Error(`Table ${schemaName}.${tableName} not found`);
 		}

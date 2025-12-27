@@ -29,6 +29,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     setShowExecutionTime,
     maxHistoryItems,
     setMaxHistoryItems,
+    syncUrl,
+    setSyncUrl,
     resetToDefaults,
   } = useSettingsStore();
 
@@ -277,6 +279,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   <span>10</span>
                   <span>1000</span>
                 </div>
+              </div>
+            </section>
+
+            {/* Sync Settings Section */}
+            <section>
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Sync Settings</h3>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Sync Server URL
+                </label>
+                <input
+                  type="text"
+                  value={syncUrl}
+                  onChange={(e) => setSyncUrl(e.target.value)}
+                  placeholder="ws://localhost:8080"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  WebSocket URL of the sync-coordinator server. Used when Sync database mode is selected.
+                </p>
               </div>
             </section>
           </div>

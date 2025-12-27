@@ -1,11 +1,44 @@
 import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
-import type { QuereusWorkerAPI, TableInfo, ColumnInfo, CsvPreview, PlanGraph, PlanGraphNode, PluginManifest } from './types.js';
+import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from 'quereus-plugin-store/browser';
+import { createSyncModule, type SyncManager, type SyncEventEmitter as SyncEventEmitterType } from 'quereus-plugin-sync';
+import type {
+  QuereusWorkerAPI,
+  TableInfo,
+  ColumnInfo,
+  CsvPreview,
+  PlanGraph,
+  PlanGraphNode,
+  PluginManifest,
+  StorageModuleType,
+  SyncStatus,
+  SyncEvent
+} from './types.js';
 import Papa from 'papaparse';
+
+// Maximum number of sync events to keep in history
+const MAX_SYNC_EVENTS = 100;
 
 class QuereusWorker implements QuereusWorkerAPI {
   private db: Database | null = null;
+
+  // Storage module state
+  private currentStorageModule: StorageModuleType = 'memory';
+  private storeEvents: StoreEventEmitter | null = null;
+  private kvStore: KVStore | null = null;
+  private indexedDBModule: IndexedDBModule | null = null;
+
+  // Sync module state
+  private syncManager: SyncManager | null = null;
+  private syncEvents: SyncEventEmitterType | null = null;
+  private syncStatus: SyncStatus = { status: 'disconnected' };
+  private syncEventHistory: SyncEvent[] = [];
+  private syncEventSubscribers = new Map<string, (event: SyncEvent) => void>();
+  private syncWebSocket: WebSocket | null = null;
+
+  // Initialization promises to prevent race conditions
+  private storeModuleInitPromise: Promise<void> | null = null;
 
   async initialize(): Promise<void> {
     try {
@@ -593,7 +626,393 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
   }
 
+  // ============================================================================
+  // Storage Module Management
+  // ============================================================================
+
+  getStorageModule(): StorageModuleType {
+    return this.currentStorageModule;
+  }
+
+  async setStorageModule(module: StorageModuleType): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    if (module === this.currentStorageModule) {
+      return; // Already set
+    }
+
+    // Clean up previous module state if switching away from store/sync
+    if (this.currentStorageModule === 'sync' && this.syncWebSocket) {
+      await this.disconnectSync();
+    }
+
+    switch (module) {
+      case 'memory':
+        // Set memory as the default module
+        await this.db.exec("pragma default_vtab_module = 'memory'");
+        this.currentStorageModule = 'memory';
+        break;
+
+      case 'store':
+        // Initialize IndexedDB store and set as default
+        // Set default module BEFORE restore so imported DDL uses correct module
+        await this.initializeStoreModule();
+        this.currentStorageModule = 'store';
+        break;
+
+      case 'sync':
+        // Initialize store first, then sync on top
+        await this.initializeStoreModule();
+        await this.initializeSyncModule();
+        this.currentStorageModule = 'sync';
+        break;
+
+      default:
+        throw new Error(`Unknown storage module: ${module}`);
+    }
+  }
+
+  getAvailableModules(): StorageModuleType[] {
+    return ['memory', 'store', 'sync'];
+  }
+  private async initializeStoreModule(): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    // Only initialize once - use promise to prevent race conditions
+    if (this.storeModuleInitPromise) {
+      return this.storeModuleInitPromise;
+    }
+
+    this.storeModuleInitPromise = this.doInitializeStoreModule();
+    return this.storeModuleInitPromise;
+  }
+
+  private async doInitializeStoreModule(): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    // Create store event emitter
+    this.storeEvents = new StoreEventEmitter();
+
+    // Create and register IndexedDB module
+    this.indexedDBModule = new IndexedDBModule(this.storeEvents);
+    this.db.registerVtabModule('indexeddb', this.indexedDBModule);
+
+    // Set default module BEFORE restore so imported DDL (which may lack USING clause) uses indexeddb
+    await this.db.exec("pragma default_vtab_module = 'indexeddb'");
+
+    // Open a default KV store for sync metadata and catalog
+    this.kvStore = await IndexedDBStore.open({ path: 'quoomb_sync_meta' });
+
+    // Restore persisted tables from IndexedDB
+    await this.restorePersistedTables();
+  }
+
+  private async restorePersistedTables(): Promise<void> {
+    if (!this.db || !this.indexedDBModule) {
+      console.log('[Restore] Skipping - db or indexedDBModule not initialized');
+      return;
+    }
+
+    try {
+      // Load DDL from the central catalog store
+      console.log('[Restore] Loading DDL from catalog...');
+      const ddlStatements = await this.indexedDBModule.loadAllDDL();
+      console.log(`[Restore] Found ${ddlStatements.length} DDL statement(s)`);
+      for (const ddl of ddlStatements) {
+        console.log(`[Restore] DDL: ${ddl}`);
+      }
+
+      if (ddlStatements.length > 0) {
+        console.log(`[Restore] Restoring ${ddlStatements.length} persisted table(s)...`);
+
+        // Import the catalog into the schema manager
+        // This calls connect() on the module instead of create()
+        const imported = await this.db.schemaManager.importCatalog(ddlStatements);
+        console.log(`[Restore] Restored tables: ${imported.tables.join(', ') || 'none'}`);
+        console.log(`[Restore] Restored indexes: ${imported.indexes.join(', ') || 'none'}`);
+      } else {
+        console.log('[Restore] No DDL statements found in catalog');
+      }
+    } catch (error) {
+      console.error('[Restore] Failed to restore persisted tables:', error);
+    }
+  }
+
+  private async initializeSyncModule(): Promise<void> {
+    if (!this.db || !this.storeEvents || !this.kvStore) {
+      throw new Error('Store module must be initialized first');
+    }
+
+    // Only initialize once
+    if (this.syncManager) {
+      return;
+    }
+
+    // Create sync module
+    const { syncManager, syncEvents } = await createSyncModule(
+      this.kvStore,
+      this.storeEvents
+    );
+
+    this.syncManager = syncManager;
+    this.syncEvents = syncEvents;
+
+    // Subscribe to sync events and forward to UI
+    this.setupSyncEventListeners();
+  }
+
+  private setupSyncEventListeners(): void {
+    if (!this.syncEvents) return;
+
+    // Remote changes
+    this.syncEvents.onRemoteChange((event) => {
+      this.addSyncEvent({
+        type: 'remote-change',
+        timestamp: Date.now(),
+        message: `Received ${event.changes.length} changes from peer`,
+        details: {
+          changeCount: event.changes.length,
+        },
+      });
+    });
+
+    // Local changes
+    this.syncEvents.onLocalChange((event) => {
+      this.addSyncEvent({
+        type: 'local-change',
+        timestamp: Date.now(),
+        message: `Made ${event.changes.length} local changes`,
+        details: {
+          changeCount: event.changes.length,
+        },
+      });
+    });
+
+    // Conflicts
+    this.syncEvents.onConflictResolved((event) => {
+      this.addSyncEvent({
+        type: 'conflict',
+        timestamp: Date.now(),
+        message: `Conflict resolved in ${event.table}.${event.column} (${event.winner} won)`,
+        details: {
+          table: event.table,
+          conflictColumn: event.column,
+          winner: event.winner,
+        },
+      });
+    });
+
+    // State changes
+    this.syncEvents.onSyncStateChange((state) => {
+      this.syncStatus = this.convertSyncState(state);
+      this.addSyncEvent({
+        type: 'state-change',
+        timestamp: Date.now(),
+        message: `Sync state: ${state.status}`,
+      });
+    });
+  }
+
+  private convertSyncState(state: { status: string; progress?: number; lastSyncHLC?: any; error?: Error }): SyncStatus {
+    switch (state.status) {
+      case 'disconnected':
+        return { status: 'disconnected' };
+      case 'connecting':
+        return { status: 'connecting' };
+      case 'syncing':
+        return { status: 'syncing', progress: (state as any).progress ?? 0 };
+      case 'synced':
+        return { status: 'synced', lastSyncTime: Date.now() };
+      case 'error':
+        return { status: 'error', message: (state as any).error?.message ?? 'Unknown error' };
+      default:
+        return { status: 'disconnected' };
+    }
+  }
+
+  private addSyncEvent(event: SyncEvent): void {
+    this.syncEventHistory.unshift(event);
+
+    // Trim history
+    if (this.syncEventHistory.length > MAX_SYNC_EVENTS) {
+      this.syncEventHistory = this.syncEventHistory.slice(0, MAX_SYNC_EVENTS);
+    }
+
+    // Notify subscribers
+    for (const callback of this.syncEventSubscribers.values()) {
+      try {
+        callback(event);
+      } catch (error) {
+        console.warn('Error in sync event subscriber:', error);
+      }
+    }
+  }
+
+  // ============================================================================
+  // Sync Operations
+  // ============================================================================
+
+  getSyncStatus(): SyncStatus {
+    return this.syncStatus;
+  }
+
+  async connectSync(url: string, token?: string): Promise<void> {
+    if (!this.syncManager) {
+      throw new Error('Sync module not initialized. Call setStorageModule("sync") first.');
+    }
+
+    // Close existing connection
+    if (this.syncWebSocket) {
+      this.syncWebSocket.close();
+    }
+
+    this.syncStatus = { status: 'connecting' };
+
+    return new Promise((resolve, reject) => {
+      try {
+        // Add auth token to URL if provided
+        const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
+        this.syncWebSocket = new WebSocket(wsUrl);
+
+        this.syncWebSocket.onopen = () => {
+          this.syncStatus = { status: 'syncing', progress: 0 };
+          this.addSyncEvent({
+            type: 'state-change',
+            timestamp: Date.now(),
+            message: 'Connected to sync server',
+          });
+          resolve();
+        };
+
+        this.syncWebSocket.onclose = () => {
+          this.syncStatus = { status: 'disconnected' };
+          this.addSyncEvent({
+            type: 'state-change',
+            timestamp: Date.now(),
+            message: 'Disconnected from sync server',
+          });
+        };
+
+        this.syncWebSocket.onerror = (event) => {
+          const error = new Error('WebSocket connection failed');
+          this.syncStatus = { status: 'error', message: error.message };
+          this.addSyncEvent({
+            type: 'error',
+            timestamp: Date.now(),
+            message: error.message,
+          });
+          reject(error);
+        };
+
+        this.syncWebSocket.onmessage = async (event) => {
+          await this.handleSyncMessage(event.data);
+        };
+      } catch (error) {
+        this.syncStatus = { status: 'error', message: error instanceof Error ? error.message : 'Connection failed' };
+        reject(error);
+      }
+    });
+  }
+
+  private async handleSyncMessage(data: string): Promise<void> {
+    if (!this.syncManager) return;
+
+    try {
+      const message = JSON.parse(data);
+
+      switch (message.type) {
+        case 'changes':
+          // Apply incoming changes
+          const result = await this.syncManager.applyChanges(message.changes);
+          this.addSyncEvent({
+            type: 'remote-change',
+            timestamp: Date.now(),
+            message: `Applied ${result.applied} changes (${result.conflicts} conflicts resolved)`,
+            details: { changeCount: result.applied },
+          });
+          break;
+
+        case 'request-changes':
+          // Peer is requesting changes since a certain HLC
+          const changes = await this.syncManager.getChangesSince(
+            message.siteId,
+            message.sinceHLC
+          );
+          this.syncWebSocket?.send(JSON.stringify({
+            type: 'changes',
+            changes,
+          }));
+          break;
+
+        case 'sync-complete':
+          this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
+          break;
+
+        default:
+          console.warn('Unknown sync message type:', message.type);
+      }
+    } catch (error) {
+      console.error('Error handling sync message:', error);
+      this.addSyncEvent({
+        type: 'error',
+        timestamp: Date.now(),
+        message: `Sync error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
+    }
+  }
+
+  async disconnectSync(): Promise<void> {
+    if (this.syncWebSocket) {
+      this.syncWebSocket.close();
+      this.syncWebSocket = null;
+    }
+    this.syncStatus = { status: 'disconnected' };
+  }
+
+  getSyncEvents(limit?: number): SyncEvent[] {
+    if (limit) {
+      return this.syncEventHistory.slice(0, limit);
+    }
+    return [...this.syncEventHistory];
+  }
+
+  onSyncEvent(callback: (event: SyncEvent) => void): string {
+    const id = crypto.randomUUID();
+    this.syncEventSubscribers.set(id, callback);
+    return id;
+  }
+
+  offSyncEvent(subscriptionId: string): void {
+    this.syncEventSubscribers.delete(subscriptionId);
+  }
+
   async close(): Promise<void> {
+    // Clean up sync connection
+    if (this.syncWebSocket) {
+      this.syncWebSocket.close();
+      this.syncWebSocket = null;
+    }
+
+    // Clean up KV store
+    if (this.kvStore) {
+      await this.kvStore.close();
+      this.kvStore = null;
+    }
+
+    // Reset state
+    this.syncManager = null;
+    this.syncEvents = null;
+    this.storeEvents = null;
+    this.syncEventSubscribers.clear();
+    this.syncEventHistory = [];
+    this.currentStorageModule = 'memory';
+
     if (this.db) {
       try {
         await this.db.close();

@@ -49,6 +49,8 @@
   "dependencies": {
     "@quereus/quereus": "*",
     "@quereus/plugin-loader": "*",
+    "quereus-plugin-store": "*",
+    "quereus-plugin-sync": "*",
     "@quereus/shared-ui": "*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
