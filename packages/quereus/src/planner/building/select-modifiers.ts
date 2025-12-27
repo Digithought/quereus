@@ -220,8 +220,14 @@ function isIdentityProjection(projections: Projection[], source: RelationalPlanN
 			return false;
 		}
 
-		// Alias must not change the name (undefined alias is fine)
-		if (proj.alias && proj.alias.toLowerCase() !== sourceAttr.name.toLowerCase()) {
+		// Determine the effective output column name:
+		// - If there's an explicit alias, use it
+		// - Otherwise, use the column reference's name (from the SELECT expression)
+		const effectiveOutputName = proj.alias || colRef.expression.name;
+
+		// The effective output name must match the source attribute name
+		// If they differ, we need a ProjectNode to rename the column
+		if (effectiveOutputName.toLowerCase() !== sourceAttr.name.toLowerCase()) {
 			return false;
 		}
 	}
