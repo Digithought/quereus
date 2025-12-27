@@ -1,0 +1,152 @@
+/**
+ * Tests for CoordinatorService.
+ */
+
+import { expect } from 'chai';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { CoordinatorService } from '../src/service/coordinator-service.js';
+import { DEFAULT_CONFIG, type CoordinatorConfig } from '../src/config/index.js';
+import type { ClientIdentity, CoordinatorHooks } from '../src/service/types.js';
+import { siteIdFromHex } from 'quereus-plugin-sync';
+
+describe('CoordinatorService', () => {
+  let service: CoordinatorService;
+  let testDataDir: string;
+
+  beforeEach(async () => {
+    testDataDir = join(tmpdir(), `sync-coordinator-test-${randomUUID()}`);
+    const config: CoordinatorConfig = {
+      ...DEFAULT_CONFIG,
+      dataDir: testDataDir,
+    };
+    service = new CoordinatorService({ config });
+    await service.initialize();
+  });
+
+  afterEach(async () => {
+    await service.shutdown();
+    // Clean up test data
+    try {
+      await rm(testDataDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  describe('initialization', () => {
+    it('should initialize successfully', () => {
+      const siteId = service.getSiteId();
+      expect(siteId).to.be.instanceOf(Uint8Array);
+      expect(siteId.length).to.equal(16);
+    });
+
+    it('should have a current HLC', () => {
+      const hlc = service.getCurrentHLC();
+      expect(hlc).to.have.property('timestamp');
+      expect(hlc).to.have.property('counter');
+      expect(hlc).to.have.property('siteId');
+    });
+  });
+
+  describe('authentication', () => {
+    it('should authenticate with siteId in none mode', async () => {
+      const siteIdHex = '0123456789abcdef0123456789abcdef';
+      const identity = await service.authenticate({
+        siteIdRaw: siteIdHex,
+      });
+      expect(identity.siteId).to.deep.equal(siteIdFromHex(siteIdHex));
+    });
+
+    it('should reject without siteId', async () => {
+      try {
+        await service.authenticate({});
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect((err as Error).message).to.equal('Site ID required');
+      }
+    });
+  });
+
+  describe('authorization', () => {
+    it('should allow all operations by default', async () => {
+      const client: ClientIdentity = {
+        siteId: siteIdFromHex('0123456789abcdef0123456789abcdef'),
+      };
+
+      const allowed = await service.authorize(client, { type: 'get_changes' });
+      expect(allowed).to.be.true;
+    });
+  });
+
+  describe('hooks', () => {
+    it('should call onAuthenticate hook', async () => {
+      let hookCalled = false;
+      const hooks: CoordinatorHooks = {
+        async onAuthenticate(context) {
+          hookCalled = true;
+          return { siteId: context.siteId! };
+        },
+      };
+
+      const config: CoordinatorConfig = {
+        ...DEFAULT_CONFIG,
+        dataDir: join(tmpdir(), `sync-coordinator-test-hooks-${randomUUID()}`),
+      };
+      const hookedService = new CoordinatorService({ config, hooks });
+      await hookedService.initialize();
+
+      try {
+        await hookedService.authenticate({
+          siteIdRaw: '0123456789abcdef0123456789abcdef',
+          siteId: siteIdFromHex('0123456789abcdef0123456789abcdef'),
+        });
+        expect(hookCalled).to.be.true;
+      } finally {
+        await hookedService.shutdown();
+        await rm(config.dataDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('should call onAuthorize hook', async () => {
+      let authorizedOperation: string | undefined;
+      const hooks: CoordinatorHooks = {
+        async onAuthorize(_client, operation) {
+          authorizedOperation = operation.type;
+          return true;
+        },
+      };
+
+      const config: CoordinatorConfig = {
+        ...DEFAULT_CONFIG,
+        dataDir: join(tmpdir(), `sync-coordinator-test-auth-${randomUUID()}`),
+      };
+      const hookedService = new CoordinatorService({ config, hooks });
+      await hookedService.initialize();
+
+      try {
+        const client: ClientIdentity = {
+          siteId: siteIdFromHex('0123456789abcdef0123456789abcdef'),
+        };
+        await hookedService.authorize(client, { type: 'get_snapshot' });
+        expect(authorizedOperation).to.equal('get_snapshot');
+      } finally {
+        await hookedService.shutdown();
+        await rm(config.dataDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  });
+
+  describe('getStatus', () => {
+    it('should return server status', () => {
+      const status = service.getStatus();
+      expect(status).to.have.property('siteId');
+      expect(status).to.have.property('connectedClients');
+      expect(status).to.have.property('uptime');
+      expect(status.connectedClients).to.equal(0);
+    });
+  });
+});
+

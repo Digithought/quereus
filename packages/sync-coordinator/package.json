@@ -1,0 +1,70 @@
+{
+  "name": "sync-coordinator",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Standalone coordinator backend for Quereus Sync - production-ready sync server",
+  "keywords": [
+    "quereus",
+    "sync",
+    "crdt",
+    "replication",
+    "coordinator",
+    "server",
+    "fastify",
+    "websocket"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/sync-coordinator"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "sync-coordinator": "./dist/src/bin/sync-coordinator.js"
+  },
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "dev": "tsc && node dist/src/bin/sync-coordinator.js",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/sync-coordinator/register.mjs node_modules/mocha/bin/mocha.js \"packages/sync-coordinator/test/**/*.spec.ts\" --colors",
+    "test:single": "cd ../.. && node --import ./packages/sync-coordinator/register.mjs node_modules/mocha/bin/mocha.js --bail",
+		"start": "npx sync-coordinator --port 8080 --debug 'sync-coordinator:*'"
+  },
+  "dependencies": {
+    "quereus-plugin-store": "*",
+    "quereus-plugin-sync": "*",
+    "@quereus/quereus": "*",
+    "fastify": "^5.2.1",
+    "@fastify/cors": "^10.0.2",
+    "@fastify/websocket": "^11.0.2",
+    "commander": "^14.0.0",
+    "debug": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.12",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
+    "@types/ws": "^8.18.1",
+    "chai": "^5.2.0",
+    "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
+
