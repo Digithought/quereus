@@ -50,6 +50,17 @@ export {
   registerWebSocket,
 } from './server/index.js';
 
+// Metrics
+export {
+  type CoordinatorMetrics,
+  type CounterMetric,
+  type GaugeMetric,
+  type HistogramMetric,
+  MetricsRegistry,
+  globalRegistry,
+  createCoordinatorMetrics,
+} from './metrics/index.js';
+
 // Common utilities
 export { createLogger } from './common/index.js';
 

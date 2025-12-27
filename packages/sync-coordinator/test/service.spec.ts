@@ -45,7 +45,7 @@ describe('CoordinatorService', () => {
 
     it('should have a current HLC', () => {
       const hlc = service.getCurrentHLC();
-      expect(hlc).to.have.property('timestamp');
+      expect(hlc).to.have.property('wallTime');
       expect(hlc).to.have.property('counter');
       expect(hlc).to.have.property('siteId');
     });

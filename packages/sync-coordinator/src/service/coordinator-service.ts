@@ -20,6 +20,10 @@ import {
 } from 'quereus-plugin-sync';
 import { serviceLog, authLog } from '../common/logger.js';
 import type { CoordinatorConfig } from '../config/types.js';
+import {
+  createCoordinatorMetrics,
+  type CoordinatorMetrics,
+} from '../metrics/index.js';
 import type {
   ClientIdentity,
   ClientSession,
@@ -36,6 +40,8 @@ export interface CoordinatorServiceOptions {
   config: CoordinatorConfig;
   /** Custom hooks for validation/auth */
   hooks?: CoordinatorHooks;
+  /** Custom metrics (uses global registry if not provided) */
+  metrics?: CoordinatorMetrics;
 }
 
 /**
@@ -44,6 +50,7 @@ export interface CoordinatorServiceOptions {
 export class CoordinatorService {
   private readonly config: CoordinatorConfig;
   private readonly hooks: CoordinatorHooks;
+  private readonly metrics: CoordinatorMetrics;
   private syncManager!: SyncManager;
   private kvStore!: LevelDBStore;
 
@@ -57,6 +64,7 @@ export class CoordinatorService {
   constructor(options: CoordinatorServiceOptions) {
     this.config = options.config;
     this.hooks = options.hooks || {};
+    this.metrics = options.metrics || createCoordinatorMetrics();
   }
 
   /**
@@ -120,31 +128,37 @@ export class CoordinatorService {
    */
   async authenticate(context: AuthContext): Promise<ClientIdentity> {
     authLog('Authenticating request, siteId: %s', context.siteIdRaw?.slice(0, 16));
+    this.metrics.registry.incCounter(this.metrics.authAttemptsTotal);
 
-    // Token-whitelist mode
-    if (this.config.auth.mode === 'token-whitelist') {
-      if (!context.token) {
-        throw new Error('Authentication required');
+    try {
+      // Token-whitelist mode
+      if (this.config.auth.mode === 'token-whitelist') {
+        if (!context.token) {
+          throw new Error('Authentication required');
+        }
+        if (!this.config.auth.tokens?.includes(context.token)) {
+          throw new Error('Invalid token');
+        }
       }
-      if (!this.config.auth.tokens?.includes(context.token)) {
-        throw new Error('Invalid token');
+
+      // Custom hook
+      if (this.hooks.onAuthenticate) {
+        return await this.hooks.onAuthenticate(context);
       }
-    }
 
-    // Custom hook
-    if (this.hooks.onAuthenticate) {
-      return this.hooks.onAuthenticate(context);
-    }
+      // Default: allow all, use provided siteId
+      if (!context.siteId && context.siteIdRaw) {
+        context.siteId = siteIdFromHex(context.siteIdRaw);
+      }
+      if (!context.siteId) {
+        throw new Error('Site ID required');
+      }
 
-    // Default: allow all, use provided siteId
-    if (!context.siteId && context.siteIdRaw) {
-      context.siteId = siteIdFromHex(context.siteIdRaw);
+      return { siteId: context.siteId };
+    } catch (err) {
+      this.metrics.registry.incCounter(this.metrics.authFailuresTotal);
+      throw err;
     }
-    if (!context.siteId) {
-      throw new Error('Site ID required');
-    }
-
-    return { siteId: context.siteId };
   }
 
   /**
@@ -190,13 +204,18 @@ export class CoordinatorService {
     serviceLog('getChangesSince for %s, sinceHLC: %O',
       Buffer.from(client.siteId).toString('hex').slice(0, 16), sinceHLC);
 
+    const endTimer = this.metrics.registry.startTimer(this.metrics.getChangesDuration);
+
     // Authorize
     const allowed = await this.authorize(client, { type: 'get_changes', sinceHLC });
     if (!allowed) {
       throw new Error('Not authorized');
     }
 
-    return this.syncManager.getChangesSince(client.siteId, sinceHLC);
+    const changes = await this.syncManager.getChangesSince(client.siteId, sinceHLC);
+    endTimer();
+
+    return changes;
   }
 
   /**
@@ -208,6 +227,10 @@ export class CoordinatorService {
   ): Promise<ApplyResult> {
     serviceLog('applyChanges from %s, count: %d',
       Buffer.from(client.siteId).toString('hex').slice(0, 16), changes.length);
+
+    const endTimer = this.metrics.registry.startTimer(this.metrics.applyChangesDuration);
+    this.metrics.registry.incCounter(this.metrics.changesReceivedTotal, {}, changes.length);
+    this.metrics.registry.observeHistogram(this.metrics.changeBatchSize, changes.length);
 
     // Authorize
     const allowed = await this.authorize(client, {
@@ -227,11 +250,15 @@ export class CoordinatorService {
         serviceLog('Rejected %d changes from %s',
           result.rejected.length,
           Buffer.from(client.siteId).toString('hex').slice(0, 16));
+        this.metrics.registry.incCounter(this.metrics.changesRejectedTotal, {}, result.rejected.length);
       }
     }
 
     // Apply
     const result = await this.syncManager.applyChanges(approvedChanges);
+    endTimer();
+
+    this.metrics.registry.incCounter(this.metrics.changesAppliedTotal, {}, result.applied);
 
     // Post-apply hook
     if (this.hooks.onAfterApplyChanges) {
@@ -256,13 +283,18 @@ export class CoordinatorService {
     serviceLog('getSnapshotStream for %s',
       Buffer.from(client.siteId).toString('hex').slice(0, 16));
 
+    this.metrics.registry.incCounter(this.metrics.snapshotRequestsTotal);
+
     // Authorize
     const allowed = await this.authorize(client, { type: 'get_snapshot' });
     if (!allowed) {
       throw new Error('Not authorized');
     }
 
-    yield* this.syncManager.getSnapshotStream(chunkSize);
+    for await (const chunk of this.syncManager.getSnapshotStream(chunkSize)) {
+      this.metrics.registry.incCounter(this.metrics.snapshotChunksTotal);
+      yield chunk;
+    }
   }
 
   /**
@@ -313,6 +345,10 @@ export class CoordinatorService {
     }
     connections.add(connectionId);
 
+    // Update metrics
+    this.metrics.registry.incCounter(this.metrics.wsConnectionsTotal);
+    this.metrics.registry.incGauge(this.metrics.wsConnectionsActive);
+
     serviceLog('Session registered: %s (site: %s)',
       connectionId.slice(0, 8), siteIdHex.slice(0, 16));
 
@@ -344,6 +380,9 @@ export class CoordinatorService {
       }
     }
 
+    // Update metrics
+    this.metrics.registry.decGauge(this.metrics.wsConnectionsActive);
+
     serviceLog('Session unregistered: %s', connectionId.slice(0, 8));
   }
 
@@ -373,6 +412,7 @@ export class CoordinatorService {
       changeSets: changes,
     });
 
+    let broadcastCount = 0;
     for (const session of this.sessions.values()) {
       // Don't send to the originator
       if (siteIdEquals(session.siteId, senderSiteId)) {
@@ -381,7 +421,16 @@ export class CoordinatorService {
 
       if (session.socket.readyState === 1) { // WebSocket.OPEN
         session.socket.send(message);
+        broadcastCount++;
       }
+    }
+
+    if (broadcastCount > 0) {
+      this.metrics.registry.incCounter(
+        this.metrics.changesBroadcastTotal,
+        {},
+        changes.length * broadcastCount
+      );
     }
   }
 
@@ -398,6 +447,13 @@ export class CoordinatorService {
       connectedClients: this.sessions.size,
       uptime: process.uptime(),
     };
+  }
+
+  /**
+   * Get the metrics registry for this service.
+   */
+  getMetrics(): CoordinatorMetrics {
+    return this.metrics;
   }
 }
 

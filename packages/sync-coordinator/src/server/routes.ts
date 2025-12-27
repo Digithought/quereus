@@ -60,6 +60,16 @@ export function registerRoutes(
     return reply.send({ ok: true, data: status });
   });
 
+  // GET /metrics - Prometheus metrics
+  app.get(`${basePath}/metrics`, async (_request, reply) => {
+    httpLog('GET %s/metrics', basePath);
+    const metrics = service.getMetrics();
+    const output = metrics.registry.format();
+    return reply
+      .header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+      .send(output);
+  });
+
   // GET /changes - Get changes since HLC
   app.get(`${basePath}/changes`, async (request, reply) => {
     httpLog('GET %s/changes', basePath);

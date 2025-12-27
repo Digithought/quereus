@@ -352,32 +352,33 @@ DEBUG=sync-coordinator:*,quereus:sync:*
 For custom deployments, import and extend the service:
 
 ```typescript
-import { CoordinatorService, createServer } from 'sync-coordinator';
+import { createCoordinatorServer, loadConfig, type CoordinatorHooks } from 'sync-coordinator';
 
-const service = new CoordinatorService({
-  dataDir: './data',
-  hooks: {
-    async onAuthenticate(ctx) {
-      // Custom auth: verify JWT, check database, etc.
-      const user = await verifyToken(ctx.token);
-      return { userId: user.id, siteId: ctx.siteId };
-    },
-    async onAuthorize(client, operation) {
-      // Check permissions
-      return hasPermission(client.userId, operation);
-    },
-    async onBeforeApplyChanges(client, changes) {
-      // Validate business rules
-      return validateChanges(changes);
-    }
+const hooks: CoordinatorHooks = {
+  async onAuthenticate(ctx) {
+    // Custom auth: verify JWT, check database, etc.
+    const user = await verifyToken(ctx.token);
+    return { userId: user.id, siteId: ctx.siteId! };
+  },
+  async onAuthorize(client, operation) {
+    // Check permissions
+    return hasPermission(client.userId, operation);
+  },
+  async onBeforeApplyChanges(client, changes) {
+    // Validate business rules
+    return validateChanges(changes);
+  }
+};
+
+const config = loadConfig({
+  overrides: {
+    port: 3000,
+    dataDir: './data',
+    cors: { origin: ['https://myapp.com'] }
   }
 });
 
-const server = await createServer(service, {
-  port: 3000,
-  cors: { origin: ['https://myapp.com'] }
-});
-
+const server = await createCoordinatorServer({ config, hooks });
 await server.start();
 ```
 
@@ -433,25 +434,24 @@ packages/sync-coordinator/
 - **Snapshot streaming**: Memory-efficient chunked transfer for large datasets.
 - **LevelDB backend**: Fast local storage; suitable for single-node deployments. For multi-node, use a shared database backend (requires custom KVStore implementation).
 
-## TODO
+## Status
 
-### Implementation Progress
+### Completed
 
-- [ ] Package structure and build setup
-- [ ] Configuration system with CLI, env, and file support
-- [ ] CoordinatorService with hook infrastructure
-- [ ] HTTP routes (Fastify)
-- [ ] WebSocket handler with session management
-- [ ] CORS middleware
-- [ ] Token-whitelist authentication mode
-- [ ] CLI entry point with Commander
-- [ ] Unit tests for service layer
-- [ ] Integration tests for HTTP and WebSocket
+- [x] Package structure and build setup
+- [x] Configuration system with CLI, env, and file support
+- [x] CoordinatorService with hook infrastructure
+- [x] HTTP routes (Fastify)
+- [x] WebSocket handler with session management
+- [x] CORS middleware
+- [x] Token-whitelist authentication mode
+- [x] CLI entry point with Commander
+- [x] Unit tests for service and config
+- [x] Integration tests for HTTP and WebSocket
+- [x] Metrics endpoint (Prometheus format)
 
 ### Future Enhancements
 
-- [ ] Metrics endpoint (Prometheus format)
 - [ ] Admin API for runtime configuration
-- [ ] Cluster mode with shared state (Redis/PostgreSQL backend)
 - [ ] Client SDK helpers for common patterns
 - [ ] Docker image and Helm chart
