@@ -4,7 +4,7 @@
  * Coordinates CRDT metadata tracking and sync operations.
  */
 
-import type { KVStore, StoreEventEmitter, DataChangeEvent } from 'quereus-plugin-store';
+import type { KVStore, StoreEventEmitter, DataChangeEvent, SchemaChangeEvent } from 'quereus-plugin-store';
 import type { SqlValue, Row } from '@quereus/quereus';
 import { HLCManager, type HLC, compareHLC } from '../clock/hlc.js';
 import {
@@ -18,7 +18,7 @@ import {
 import { ColumnVersionStore, type ColumnVersion, deserializeColumnVersion } from '../metadata/column-version.js';
 import { TombstoneStore, deserializeTombstone } from '../metadata/tombstones.js';
 import { PeerStateStore } from '../metadata/peer-state.js';
-import { deserializeMigration } from '../metadata/schema-migration.js';
+import { SchemaMigrationStore, deserializeMigration } from '../metadata/schema-migration.js';
 import { ChangeLogStore } from '../metadata/change-log.js';
 import {
   SYNC_KEY_PREFIX,
@@ -41,6 +41,7 @@ import type {
   ApplyResult,
   Snapshot,
   SchemaMigration,
+  SchemaMigrationType,
   TableSnapshot,
   SnapshotChunk,
   SnapshotProgress,
@@ -50,6 +51,9 @@ import type {
   SnapshotTableEndChunk,
   SnapshotSchemaMigrationChunk,
   SnapshotFooterChunk,
+  ApplyToStoreCallback,
+  DataChangeToApply,
+  SchemaChangeToApply,
 } from './protocol.js';
 import { SyncEventEmitterImpl, type ConflictEvent } from './events.js';
 
@@ -70,7 +74,9 @@ export class SyncManagerImpl implements SyncManager {
   private readonly tombstones: TombstoneStore;
   private readonly peerStates: PeerStateStore;
   private readonly changeLog: ChangeLogStore;
+  private readonly schemaMigrations: SchemaMigrationStore;
   private readonly syncEvents: SyncEventEmitterImpl;
+  private readonly applyToStore?: ApplyToStoreCallback;
 
   // Pending changes for the current transaction
   private pendingChanges: Change[] = [];
@@ -80,26 +86,36 @@ export class SyncManagerImpl implements SyncManager {
     kv: KVStore,
     config: SyncConfig,
     hlcManager: HLCManager,
-    syncEvents: SyncEventEmitterImpl
+    syncEvents: SyncEventEmitterImpl,
+    applyToStore?: ApplyToStoreCallback
   ) {
     this.kv = kv;
     this.config = config;
     this.hlcManager = hlcManager;
     this.syncEvents = syncEvents;
+    this.applyToStore = applyToStore;
     this.columnVersions = new ColumnVersionStore(kv);
     this.tombstones = new TombstoneStore(kv, config.tombstoneTTL);
     this.peerStates = new PeerStateStore(kv);
     this.changeLog = new ChangeLogStore(kv);
+    this.schemaMigrations = new SchemaMigrationStore(kv);
   }
 
   /**
    * Create a new SyncManager, initializing or loading site identity.
+   *
+   * @param kv - KV store for sync metadata
+   * @param storeEvents - Store event emitter to subscribe to local changes
+   * @param config - Sync configuration
+   * @param syncEvents - Sync event emitter for UI integration
+   * @param applyToStore - Optional callback for applying remote changes to the store
    */
   static async create(
     kv: KVStore,
     storeEvents: StoreEventEmitter,
     config: SyncConfig,
-    syncEvents: SyncEventEmitterImpl
+    syncEvents: SyncEventEmitterImpl,
+    applyToStore?: ApplyToStoreCallback
   ): Promise<SyncManagerImpl> {
     // Load or create site identity
     const siteIdKey = new TextEncoder().encode(SITE_ID_KEY);
@@ -130,10 +146,11 @@ export class SyncManagerImpl implements SyncManager {
     }
 
     const hlcManager = new HLCManager(siteId, hlcState);
-    const manager = new SyncManagerImpl(kv, config, hlcManager, syncEvents);
+    const manager = new SyncManagerImpl(kv, config, hlcManager, syncEvents, applyToStore);
 
     // Subscribe to store events
     storeEvents.onDataChange((event) => manager.handleDataChange(event));
+    storeEvents.onSchemaChange((event) => manager.handleSchemaChange(event));
 
     return manager;
   }
@@ -149,8 +166,12 @@ export class SyncManagerImpl implements SyncManager {
   /**
    * Handle a data change event from the store.
    * Records CRDT metadata for the change.
+   * Skips remote events to prevent duplicate recording.
    */
   private async handleDataChange(event: DataChangeEvent): Promise<void> {
+    // Skip events from remote sync - metadata already recorded by the originating replica
+    if (event.remote) return;
+
     const hlc = this.hlcManager.tick();
     const { schemaName, tableName, key: pk, type, oldRow, newRow } = event;
     const batch = this.kv.batch();
@@ -194,6 +215,65 @@ export class SyncManagerImpl implements SyncManager {
     this.syncEvents.emitLocalChange({
       transactionId: this.currentTransactionId || crypto.randomUUID(),
       changes: [...this.pendingChanges],
+      pendingSync: true,
+    });
+  }
+
+  /**
+   * Handle a schema change event from the store.
+   * Records schema migrations for sync.
+   * Skips remote events to prevent duplicate recording.
+   */
+  private async handleSchemaChange(event: SchemaChangeEvent): Promise<void> {
+    // Skip events from remote sync - metadata already recorded by the originating replica
+    if (event.remote) return;
+
+    const hlc = this.hlcManager.tick();
+    const { type, objectType, schemaName, objectName, ddl } = event;
+
+    // Map store event type to migration type
+    let migrationType: SchemaMigrationType;
+    if (objectType === 'table') {
+      switch (type) {
+        case 'create': migrationType = 'create_table'; break;
+        case 'drop': migrationType = 'drop_table'; break;
+        case 'alter': migrationType = 'alter_column'; break;
+        default: return; // Unknown type
+      }
+    } else if (objectType === 'index') {
+      switch (type) {
+        case 'create': migrationType = 'add_index'; break;
+        case 'drop': migrationType = 'drop_index'; break;
+        default: return; // Unknown type
+      }
+    } else {
+      return; // Unknown object type
+    }
+
+    // Get next schema version for this table
+    const currentVersion = await this.schemaMigrations.getCurrentVersion(schemaName, objectName);
+    const newVersion = currentVersion + 1;
+
+    // Record the migration
+    await this.schemaMigrations.recordMigration(schemaName, objectName, {
+      type: migrationType,
+      ddl: ddl || '',
+      hlc,
+      schemaVersion: newVersion,
+    });
+
+    // Persist HLC state
+    const hlcState = this.hlcManager.getState();
+    const hlcBuffer = new Uint8Array(10);
+    const hlcView = new DataView(hlcBuffer.buffer);
+    hlcView.setBigUint64(0, hlcState.wallTime, false);
+    hlcView.setUint16(8, hlcState.counter, false);
+    await this.kv.put(SYNC_KEY_PREFIX.HLC_STATE, hlcBuffer);
+
+    // Emit local change event for the schema migration
+    this.syncEvents.emitLocalChange({
+      transactionId: crypto.randomUUID(),
+      changes: [],
       pendingSync: true,
     });
   }
@@ -423,16 +503,56 @@ export class SyncManagerImpl implements SyncManager {
     let skipped = 0;
     let conflicts = 0;
 
+    // Collect changes to apply to the store (grouped by row for column merging)
+    const dataChangesToApply: DataChangeToApply[] = [];
+    const schemaChangesToApply: SchemaChangeToApply[] = [];
+    const appliedChanges: Array<{ change: Change; siteId: SiteId }> = [];
+
     for (const changeSet of changes) {
       // Update our clock with the remote HLC
       this.hlcManager.receive(changeSet.hlc);
 
-      for (const change of changeSet.changes) {
-        const result = await this.applyChange(change, changeSet.siteId);
-        if (result === 'applied') applied++;
-        else if (result === 'skipped') skipped++;
-        else if (result === 'conflict') conflicts++;
+      // Process schema migrations first (DDL before DML)
+      for (const migration of changeSet.schemaMigrations) {
+        // TODO: Add schema conflict resolution with column-level HLCs
+        schemaChangesToApply.push({
+          type: migration.type,
+          schema: migration.schema,
+          table: migration.table,
+          ddl: migration.ddl,
+        });
       }
+
+      // Process data changes
+      for (const change of changeSet.changes) {
+        const result = await this.resolveAndRecordChange(change, changeSet.siteId);
+        if (result.outcome === 'applied') {
+          applied++;
+          appliedChanges.push({ change, siteId: changeSet.siteId });
+          if (result.dataChange) {
+            dataChangesToApply.push(result.dataChange);
+          }
+        } else if (result.outcome === 'skipped') {
+          skipped++;
+        } else if (result.outcome === 'conflict') {
+          conflicts++;
+        }
+      }
+    }
+
+    // Apply data and schema changes to the store via callback
+    if (this.applyToStore && (dataChangesToApply.length > 0 || schemaChangesToApply.length > 0)) {
+      await this.applyToStore(dataChangesToApply, schemaChangesToApply, { remote: true });
+    }
+
+    // Emit remote change events for UI reactivity
+    for (const { change, siteId } of appliedChanges) {
+      this.syncEvents.emitRemoteChange({
+        siteId,
+        transactionId: crypto.randomUUID(),
+        changes: [change],
+        appliedAt: this.hlcManager.now(),
+      });
     }
 
     await this.persistHLCState();
@@ -445,10 +565,17 @@ export class SyncManagerImpl implements SyncManager {
     };
   }
 
-  private async applyChange(
+  /**
+   * Resolve CRDT conflicts and record metadata for a change.
+   * Returns outcome and the data change to apply (if any).
+   */
+  private async resolveAndRecordChange(
     change: Change,
-    remoteSiteId: SiteId
-  ): Promise<'applied' | 'skipped' | 'conflict'> {
+    _remoteSiteId: SiteId
+  ): Promise<{
+    outcome: 'applied' | 'skipped' | 'conflict';
+    dataChange?: DataChangeToApply;
+  }> {
     if (change.type === 'delete') {
       // Check if we should apply this deletion
       const existingTombstone = await this.tombstones.getTombstone(
@@ -458,21 +585,23 @@ export class SyncManagerImpl implements SyncManager {
       );
 
       if (existingTombstone && compareHLC(change.hlc, existingTombstone.hlc) <= 0) {
-        return 'skipped';
+        return { outcome: 'skipped' };
       }
 
-      // Apply the deletion
+      // Record the tombstone and delete column versions (metadata update)
       await this.tombstones.setTombstone(change.schema, change.table, change.pk, change.hlc);
       await this.columnVersions.deleteRowVersions(change.schema, change.table, change.pk);
 
-      this.syncEvents.emitRemoteChange({
-        siteId: remoteSiteId,
-        transactionId: crypto.randomUUID(),
-        changes: [change],
-        appliedAt: this.hlcManager.now(),
-      });
-
-      return 'applied';
+      // Return the data change for the store
+      return {
+        outcome: 'applied',
+        dataChange: {
+          type: 'delete',
+          schema: change.schema,
+          table: change.table,
+          pk: change.pk,
+        },
+      };
     } else {
       // Column change
       const shouldApply = await this.columnVersions.shouldApplyWrite(
@@ -505,7 +634,7 @@ export class SyncManagerImpl implements SyncManager {
           this.syncEvents.emitConflictResolved(conflictEvent);
         }
 
-        return 'conflict';
+        return { outcome: 'conflict' };
       }
 
       // Check for tombstone blocking
@@ -518,10 +647,10 @@ export class SyncManagerImpl implements SyncManager {
       );
 
       if (isBlocked) {
-        return 'skipped';
+        return { outcome: 'skipped' };
       }
 
-      // Apply the column change
+      // Record the column version (metadata update)
       await this.columnVersions.setColumnVersion(
         change.schema,
         change.table,
@@ -530,14 +659,17 @@ export class SyncManagerImpl implements SyncManager {
         { hlc: change.hlc, value: change.value }
       );
 
-      this.syncEvents.emitRemoteChange({
-        siteId: remoteSiteId,
-        transactionId: crypto.randomUUID(),
-        changes: [change],
-        appliedAt: this.hlcManager.now(),
-      });
-
-      return 'applied';
+      // Return the data change for the store
+      return {
+        outcome: 'applied',
+        dataChange: {
+          type: 'update',  // Column changes are updates (or inserts handled by store)
+          schema: change.schema,
+          table: change.table,
+          pk: change.pk,
+          columns: { [change.column]: change.value },
+        },
+      };
     }
   }
 

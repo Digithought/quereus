@@ -385,80 +385,243 @@ type SyncState =
 
 ### Integration with Store Events
 
-The sync module subscribes to the store's `StoreEventEmitter` to capture all mutations:
+The sync module subscribes to the store's `StoreEventEmitter` to capture mutations. A key design goal is that reactive events fire **exactly once** for each change, whether the change is local or remote.
+
+#### Event Flow
+
+**Local Changes:**
+```
+User SQL → Store executes → Store emits event (remote=false) → SyncManager records metadata → UI receives event
+```
+
+**Remote Changes:**
+```
+SyncManager receives remote change → Updates metadata → Calls applyToStore → Store executes → Store emits event (remote=true) → SyncManager ignores → UI receives event
+```
+
+In both cases, the UI receives exactly one event from the Store. The `remote` flag determines whether the SyncManager should record CRDT metadata (local) or skip (remote).
+
+#### The `remote` Flag
+
+Both `DataChangeEvent` and `SchemaChangeEvent` include a `remote?: boolean` flag:
+
+```typescript
+interface DataChangeEvent {
+  type: 'insert' | 'update' | 'delete';
+  schemaName: string;
+  tableName: string;
+  key: SqlValue[];
+  oldRow?: Row;
+  newRow?: Row;
+  remote?: boolean;  // True if from sync or cross-tab
+}
+
+interface SchemaChangeEvent {
+  type: 'create' | 'alter' | 'drop';
+  objectType: 'table' | 'index' | 'view' | 'trigger';
+  schemaName: string;
+  objectName: string;
+  ddl?: string;
+  remote?: boolean;  // True if from sync
+}
+```
+
+#### Sync Module Event Handling
 
 ```typescript
 // Sync module listens to store events
 storeEventEmitter.onDataChange((event) => {
-  // Record CRDT metadata for this change
+  // Skip events from remote sync - metadata already recorded
+  if (event.remote) return;
+
+  // Record CRDT metadata for local changes only
   syncModule.recordChange(event);
 
-  // Emit for UI reactivity
+  // Emit for UI reactivity (local change pending sync)
   syncEventEmitter.emitLocalChange({
     transactionId: currentTxId,
     changes: [eventToChange(event)],
     pendingSync: true,
   });
 });
+
+storeEventEmitter.onSchemaChange((event) => {
+  // Skip events from remote sync - metadata already recorded
+  if (event.remote) return;
+
+  // Record schema CRDT metadata for local changes
+  syncModule.recordSchemaChange(event);
+});
+```
+
+#### Applying Remote Changes
+
+When the SyncManager applies remote changes, it must execute SQL in a way that the resulting store events are marked with `remote: true`:
+
+```typescript
+// SyncManager applies a remote changeset
+async applyRemoteChangeset(changeset: ChangeSet): Promise<void> {
+  // 1. Update CRDT metadata first (before SQL execution)
+  for (const change of changeset.changes) {
+    await this.updateMetadataForRemote(change);
+  }
+
+  // 2. Apply to store with remote flag
+  await this.applyToStore(changeset.changes, { remote: true });
+  // Store emits events with remote=true, SyncManager ignores them
+}
+```
+
+The store plugin provides a mechanism to execute SQL with the remote flag:
+
+```typescript
+interface ApplyOptions {
+  remote?: boolean;  // Mark resulting events as remote
+}
+
+// Store implementation ensures emitted events have remote=true
+async applyChanges(changes: Change[], options: ApplyOptions): Promise<void> {
+  for (const change of changes) {
+    // Execute SQL...
+    // When emitting event, include remote flag from options
+    this.events.emitDataChange({ ...event, remote: options.remote });
+  }
+}
 ```
 
 ## Schema Synchronization
 
-Schema changes are tracked as first-class sync operations:
+Schema (catalog) changes are synchronized using the same CRDT approach as data, ensuring eventual convergence across all replicas without requiring a perpetual migration log.
 
-### Schema Version Tracking
+### Design Principles
 
-Each table maintains a monotonically increasing schema version:
+1. **Catalog as Data**: Schema elements (tables, columns, indexes) are tracked with HLCs just like row data
+2. **Column-Level Granularity**: Each column definition has its own HLC, enabling parallel schema changes
+3. **Most Destructive Wins**: DROP operations take precedence over modifications
+4. **DDL Before DML**: Sync batches always apply schema changes before data changes
+5. **No Perpetual Log**: Only current state is tracked, not a history of migrations
+
+### Schema Metadata Storage
+
+Schema metadata is stored alongside data metadata using the same patterns:
+
+| Key Pattern | Purpose | Value |
+|-------------|---------|-------|
+| `sv:{schema}.{table}:__table__` | Table existence | `{hlc, exists, ddl}` |
+| `sv:{schema}.{table}:{column}` | Column definition | `{hlc, definition, deleted?}` |
+| `sv:{schema}.{table}:{index}:__index__` | Index definition | `{hlc, definition, deleted?}` |
+
+### Conflict Resolution: Most Destructive Wins
+
+Schema conflicts follow a hierarchy where more destructive operations take precedence:
+
+```
+DROP TABLE > DROP COLUMN > ALTER COLUMN > ADD COLUMN
+DROP TABLE > DROP INDEX > CREATE INDEX
+```
+
+Within the same level of destructiveness, Last-Write-Wins (LWW) applies based on HLC.
+
+**Examples:**
+
+```
+Replica A: DROP COLUMN foo      @ HLC(1000, 1, A)
+Replica B: ALTER COLUMN foo...  @ HLC(2000, 1, B)
+
+Resolution: DROP wins (more destructive), even though B has higher HLC.
+```
+
+```
+Replica A: ALTER COLUMN foo SET DEFAULT 'x'  @ HLC(1000, 1, A)
+Replica B: ALTER COLUMN foo SET DEFAULT 'y'  @ HLC(2000, 1, B)
+
+Resolution: B wins (same level, higher HLC).
+```
+
+```
+Replica A: ADD COLUMN bar INTEGER  @ HLC(1000, 1, A)
+Replica B: ADD COLUMN bar TEXT     @ HLC(2000, 1, B)
+
+Resolution: B wins (same level, higher HLC). Column ends up as TEXT.
+```
+
+### DDL Application Order
+
+When applying a sync batch:
+
+1. **Schema changes first**: All DDL operations are applied before any DML
+2. **Destructive operations first**: DROP TABLE, then DROP COLUMN, then ALTER/ADD
+3. **Data changes second**: INSERT/UPDATE/DELETE applied to the now-correct schema
+
+This ensures that structures always exist before data referencing them arrives.
+
+### Schema Change Types
 
 ```typescript
-interface TableSchemaState {
-  schemaName: string;
-  tableName: string;
-  version: number;           // Increments on each schema change
-  migrations: SchemaMigration[];  // History of changes
+type SchemaChangeType =
+  | 'create_table'
+  | 'drop_table'
+  | 'add_column'
+  | 'drop_column'
+  | 'alter_column'
+  | 'create_index'
+  | 'drop_index'
+  | 'create_view'
+  | 'drop_view'
+  | 'create_trigger'
+  | 'drop_trigger';
+
+interface SchemaChange {
+  type: SchemaChangeType;
+  schema: string;
+  table: string;
+  column?: string;           // For column operations
+  objectName?: string;       // For index/view/trigger
+  definition?: string;       // DDL or column definition
+  hlc: HLC;
+  deleted?: boolean;         // True for DROP operations
 }
 ```
 
-### Conflict Resolution: First-Writer-Wins
+### Applying Remote Schema Changes
 
-If two replicas make conflicting schema changes (e.g., adding columns with the same name but different types), the first change (by HLC) wins:
+When a remote schema change is received:
 
-```
-Replica A: ALTER TABLE users ADD COLUMN age INTEGER  @ HLC(1000, 1, A)
-Replica B: ALTER TABLE users ADD COLUMN age TEXT     @ HLC(1000, 2, B)
-
-Resolution: A's change wins (lower HLC). B receives A's migration and skips its own.
-```
-
-### Migration Application
+1. Compare HLCs using the "most destructive wins" rule
+2. If remote wins, update local schema metadata
+3. Execute the DDL against the database (with `remote: true` flag)
+4. The store emits schema change events for UI reactivity
 
 ```typescript
-async applyMigrations(migrations: SchemaMigration[]): Promise<void> {
-  // Sort by (table, schemaVersion)
-  const sorted = migrations.sort((a, b) =>
-    a.schemaVersion - b.schemaVersion
-  );
+async applySchemaChange(change: SchemaChange): Promise<'applied' | 'skipped'> {
+  const local = await this.getSchemaVersion(change.schema, change.table, change.column);
 
-  for (const migration of sorted) {
-    const current = await this.getTableSchemaVersion(migration.table);
-
-    if (migration.schemaVersion <= current) {
-      // Already applied, check for conflict
-      const existing = await this.getMigration(migration.table, migration.schemaVersion);
-      if (existing && existing.ddl !== migration.ddl) {
-        // Conflict: compare HLC, keep first writer
-        if (compareHLC(migration.hlc, existing.hlc) < 0) {
-          // Remote is older, it should have been applied
-          // This is an error state - log warning
-        }
-      }
-      continue;  // Skip already-applied
-    }
-
-    // Apply migration
-    await this.db.exec(migration.ddl);
-    await this.recordMigration(migration);
+  if (local && !this.shouldApplySchemaChange(change, local)) {
+    return 'skipped';
   }
+
+  // Update metadata
+  await this.setSchemaVersion(change.schema, change.table, change.column, {
+    hlc: change.hlc,
+    definition: change.definition,
+    deleted: change.deleted,
+  });
+
+  // Execute DDL via callback (store applies with remote flag)
+  if (change.definition) {
+    await this.applyDDL(change.definition, { remote: true });
+  }
+
+  return 'applied';
+}
+
+private shouldApplySchemaChange(remote: SchemaChange, local: SchemaVersion): boolean {
+  // Most destructive wins
+  if (remote.deleted && !local.deleted) return true;   // DROP beats non-DROP
+  if (!remote.deleted && local.deleted) return false;  // non-DROP loses to DROP
+
+  // Same level: LWW
+  return compareHLC(remote.hlc, local.hlc) > 0;
 }
 ```
 
@@ -645,14 +808,42 @@ async function resumeSnapshot(ws: WebSocket) {
 - [x] `getSnapshotCheckpoint()` / `resumeSnapshotStream()` - Resumable transfers
 - [x] HLC-indexed change log for efficient delta queries
 
-### Remaining Work
+#### Phase 9: Remote Change Application ✅
+- [x] `remote?: boolean` flag exists on both `DataChangeEvent` and `SchemaChangeEvent`
+- [x] `handleDataChange()` skips events with `remote === true`
+- [x] `handleSchemaChange()` skips events with `remote === true`
+- [x] `applyToStore` callback mechanism for applying remote changes
+  - [x] `ApplyToStoreCallback` type with `{ remote: true }` option
+  - [x] `DataChangeToApply` / `SchemaChangeToApply` types for callback parameters
+  - [x] Store implementations can emit events with `remote: true` flag
+- [x] Reactive events fire exactly once (UI receives from Store, SyncManager ignores remote events)
+- [x] Unit tests for `applyToStore` callback behavior
 
-#### Integration Tests
-- [ ] Integration tests with IndexedDB
-- [ ] Multi-replica conflict scenarios
-- [ ] Tombstone TTL expiration tests
-- [ ] Schema migration conflict tests
+#### 🔴 Store Integration (Blocking)
+- [ ] Implement `applyToStore` callback in LevelDBStore
+- [ ] Implement `applyToStore` callback in IndexedDBStore
+- [ ] Handle UPSERT semantics (column changes may be insert or update)
+- [ ] Handle row deletions by primary key
+- [ ] Execute DDL for schema changes with `remote: true`
+- [ ] Ensure proper transaction boundaries
 
-#### Documentation & Examples
+#### 🟡 Schema Sync Refinement
+- [ ] Replace `SchemaMigrationStore` with column-level schema version storage
+- [ ] Implement "most destructive wins" conflict resolution
+- [ ] Track schema elements with HLCs: `sv:{schema}.{table}:{column}` pattern
+- [ ] Implement `shouldApplySchemaChange()` with destructiveness hierarchy
+- [ ] Schema conflict tests (ADD vs ALTER, DROP vs ALTER, concurrent ADD same column)
+
+#### 🟡 Integration Testing
+- [ ] E2E test: two replicas with bidirectional sync
+- [ ] Multi-replica conflict scenarios (concurrent writes to same column)
+- [ ] Tombstone TTL expiration and fallback to snapshot
+- [ ] Large dataset streaming snapshot tests
+- [ ] Network interruption / resume tests
+- [ ] Integration tests with IndexedDB (browser environment)
+
+#### 🟢 Documentation & Examples
 - [ ] Example: WebSocket sync transport
 - [ ] Example: HTTP polling sync transport
+- [ ] Example: Implementing `applyToStore` callback
+- [ ] Performance benchmarks

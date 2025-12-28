@@ -17,6 +17,8 @@ import {
   type SnapshotChunk,
   siteIdFromHex,
   siteIdEquals,
+  siteIdToHex,
+  serializeHLC,
 } from 'quereus-plugin-sync';
 import { serviceLog, authLog } from '../common/logger.js';
 import type { CoordinatorConfig } from '../config/types.js';
@@ -407,9 +409,11 @@ export class CoordinatorService {
    * Broadcast changes to all connected clients except the sender.
    */
   private broadcastChanges(senderSiteId: SiteId, changes: ChangeSet[]): void {
+    // Serialize changesets for JSON transport
+    const serializedChangeSets = changes.map(cs => this.serializeChangeSet(cs));
     const message = JSON.stringify({
       type: 'push_changes',
-      changeSets: changes,
+      changeSets: serializedChangeSets,
     });
 
     let broadcastCount = 0;
@@ -432,6 +436,32 @@ export class CoordinatorService {
         changes.length * broadcastCount
       );
     }
+  }
+
+  /**
+   * Serialize a ChangeSet for JSON transport.
+   */
+  private serializeChangeSet(cs: ChangeSet): object {
+    const hlcBytes = serializeHLC(cs.hlc);
+    return {
+      siteId: siteIdToHex(cs.siteId),
+      transactionId: cs.transactionId,
+      hlc: Buffer.from(hlcBytes).toString('base64'),
+      changes: cs.changes.map(c => {
+        const chlcBytes = serializeHLC(c.hlc);
+        return {
+          ...c,
+          hlc: Buffer.from(chlcBytes).toString('base64'),
+        };
+      }),
+      schemaMigrations: cs.schemaMigrations.map(m => {
+        const mhlcBytes = serializeHLC(m.hlc);
+        return {
+          ...m,
+          hlc: Buffer.from(mhlcBytes).toString('base64'),
+        };
+      }),
+    };
   }
 
   /**

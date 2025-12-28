@@ -37,7 +37,7 @@
   "scripts": {
     "clean": "rimraf dist",
     "build": "tsc",
-    "dev": "tsx watch --clear-screen=false src/bin/sync-coordinator.ts -- --port 8080 --debug 'sync-coordinator:*'",
+    "dev": "tsx watch --clear-screen=false src/bin/sync-coordinator.ts --port 8080",
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && node --import ./packages/sync-coordinator/register.mjs node_modules/mocha/bin/mocha.js \"packages/sync-coordinator/test/**/*.spec.ts\" --colors",
     "test:single": "cd ../.. && node --import ./packages/sync-coordinator/register.mjs node_modules/mocha/bin/mocha.js --bail",

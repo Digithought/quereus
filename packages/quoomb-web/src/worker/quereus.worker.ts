@@ -6,12 +6,14 @@ import {
   createSyncModule,
   siteIdToHex,
   siteIdFromHex,
+  serializeHLC,
   deserializeHLC,
   type SyncManager,
   type SyncEventEmitter as SyncEventEmitterType,
   type ChangeSet,
   type Change,
   type SchemaMigration,
+  type SiteId,
   type RemoteChangeEvent,
   type LocalChangeEvent,
   type ConflictEvent,
@@ -51,6 +53,30 @@ function deserializeChangeSet(cs: Record<string, unknown>): ChangeSet {
   };
 }
 
+// Helper to serialize a ChangeSet for JSON transport
+function serializeChangeSet(cs: ChangeSet): object {
+  const hlcBytes = serializeHLC(cs.hlc);
+  return {
+    siteId: siteIdToHex(cs.siteId),
+    transactionId: cs.transactionId,
+    hlc: btoa(String.fromCharCode(...hlcBytes)),
+    changes: cs.changes.map(c => {
+      const chlcBytes = serializeHLC(c.hlc);
+      return {
+        ...c,
+        hlc: btoa(String.fromCharCode(...chlcBytes)),
+      };
+    }),
+    schemaMigrations: cs.schemaMigrations.map(m => {
+      const mhlcBytes = serializeHLC(m.hlc);
+      return {
+        ...m,
+        hlc: btoa(String.fromCharCode(...mhlcBytes)),
+      };
+    }),
+  };
+}
+
 class QuereusWorker implements QuereusWorkerAPI {
   private db: Database | null = null;
 
@@ -67,6 +93,7 @@ class QuereusWorker implements QuereusWorkerAPI {
   private syncEventHistory: SyncEvent[] = [];
   private syncEventSubscribers = new Map<string, (event: SyncEvent) => void>();
   private syncWebSocket: WebSocket | null = null;
+  private serverSiteId: SiteId | null = null;
 
   // Initialization promises to prevent race conditions
   private storeModuleInitPromise: Promise<void> | null = null;
@@ -801,8 +828,8 @@ class QuereusWorker implements QuereusWorkerAPI {
       });
     });
 
-    // Local changes
-    this.syncEvents.onLocalChange((event: LocalChangeEvent) => {
+    // Local changes - send to server if connected
+    this.syncEvents.onLocalChange(async (event: LocalChangeEvent) => {
       this.addSyncEvent({
         type: 'local-change',
         timestamp: Date.now(),
@@ -811,6 +838,28 @@ class QuereusWorker implements QuereusWorkerAPI {
           changeCount: event.changes.length,
         },
       });
+
+      // Send changes to server if connected
+      if (this.syncWebSocket?.readyState === WebSocket.OPEN && this.serverSiteId && this.syncManager) {
+        try {
+          // Get all pending changes to send to server
+          const changesToSend = await this.syncManager.getChangesSince(this.serverSiteId);
+          if (changesToSend.length > 0) {
+            const serialized = changesToSend.map(cs => serializeChangeSet(cs));
+            this.syncWebSocket.send(JSON.stringify({
+              type: 'apply_changes',
+              changes: serialized,
+            }));
+            this.addSyncEvent({
+              type: 'state-change',
+              timestamp: Date.now(),
+              message: `Sent ${changesToSend.length} changeset(s) to server`,
+            });
+          }
+        } catch (err) {
+          console.error('Failed to send local changes to server:', err);
+        }
+      }
     });
 
     // Conflicts
@@ -956,7 +1005,10 @@ class QuereusWorker implements QuereusWorkerAPI {
 
       switch (message.type) {
         case 'handshake_ack':
-          // Server acknowledged our handshake
+          // Server acknowledged our handshake - store server's siteId
+          if (message.serverSiteId) {
+            this.serverSiteId = siteIdFromHex(message.serverSiteId);
+          }
           this.addSyncEvent({
             type: 'state-change',
             timestamp: Date.now(),
@@ -969,7 +1021,8 @@ class QuereusWorker implements QuereusWorkerAPI {
           break;
 
         case 'changes':
-          // Deserialize and apply incoming changes
+        case 'push_changes':
+          // Deserialize and apply incoming changes (from initial sync or broadcast)
           const changeSets: ChangeSet[] = (message.changeSets || []).map(
             (cs: Record<string, unknown>) => deserializeChangeSet(cs)
           );
@@ -1026,6 +1079,7 @@ class QuereusWorker implements QuereusWorkerAPI {
       this.syncWebSocket.close();
       this.syncWebSocket = null;
     }
+    this.serverSiteId = null;
     this.syncStatus = { status: 'disconnected' };
   }
 

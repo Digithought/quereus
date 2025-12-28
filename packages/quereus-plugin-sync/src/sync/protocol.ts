@@ -242,6 +242,74 @@ export interface SnapshotProgress {
 }
 
 // ============================================================================
+// Apply-to-Store Callback Types
+// ============================================================================
+
+/**
+ * Options for applying changes to the store.
+ */
+export interface ApplyToStoreOptions {
+  /**
+   * Mark resulting events as remote (from sync).
+   * When true, the store should emit events with `remote: true`,
+   * preventing the SyncManager from re-recording CRDT metadata.
+   */
+  readonly remote: boolean;
+}
+
+/**
+ * A data change to apply to the store.
+ */
+export interface DataChangeToApply {
+  readonly type: 'insert' | 'update' | 'delete';
+  readonly schema: string;
+  readonly table: string;
+  readonly pk: SqlValue[];
+  /** Column values to apply. Keys are column names, values are column values. */
+  readonly columns?: Record<string, SqlValue>;
+}
+
+/**
+ * A schema change to apply to the store.
+ */
+export interface SchemaChangeToApply {
+  readonly type: SchemaMigrationType;
+  readonly schema: string;
+  readonly table: string;
+  /** The DDL statement to execute. */
+  readonly ddl: string;
+}
+
+/**
+ * Result of applying changes to the store.
+ */
+export interface ApplyToStoreResult {
+  /** Number of data changes successfully applied. */
+  dataChangesApplied: number;
+  /** Number of schema changes successfully applied. */
+  schemaChangesApplied: number;
+  /** Errors encountered (empty if all succeeded). */
+  errors: Array<{ change: DataChangeToApply | SchemaChangeToApply; error: Error }>;
+}
+
+/**
+ * Callback interface for applying remote changes to the store.
+ *
+ * The SyncManager uses this callback to apply changes from remote replicas.
+ * The implementation should:
+ * 1. Execute the changes against the actual data store
+ * 2. Emit events with `remote: true` when `options.remote` is true
+ *
+ * This allows the store plugin to handle the actual data manipulation
+ * while the sync module handles CRDT metadata.
+ */
+export type ApplyToStoreCallback = (
+  dataChanges: DataChangeToApply[],
+  schemaChanges: SchemaChangeToApply[],
+  options: ApplyToStoreOptions
+) => Promise<ApplyToStoreResult>;
+
+// ============================================================================
 // Peer State Tracking
 // ============================================================================
 

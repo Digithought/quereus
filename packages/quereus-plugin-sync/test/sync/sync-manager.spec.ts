@@ -455,4 +455,215 @@ describe('SyncManager', () => {
       expect(pruned).to.equal(0);
     });
   });
+
+  describe('applyToStore callback', () => {
+    it('should call applyToStore with data changes when applying remote changes', async () => {
+      const appliedChanges: { data: unknown[]; schema: unknown[]; options: unknown } = {
+        data: [],
+        schema: [],
+        options: null,
+      };
+
+      const applyToStore = async (
+        dataChanges: unknown[],
+        schemaChanges: unknown[],
+        options: unknown
+      ) => {
+        appliedChanges.data = dataChanges;
+        appliedChanges.schema = schemaChanges;
+        appliedChanges.options = options;
+        return { dataChangesApplied: dataChanges.length, schemaChangesApplied: schemaChanges.length, errors: [] };
+      };
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, applyToStore);
+      const remoteSiteId = generateSiteId();
+
+      const changeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      await manager.applyChanges([changeSet]);
+
+      // Verify applyToStore was called with correct data
+      expect(appliedChanges.data).to.have.lengthOf(1);
+      expect(appliedChanges.options).to.deep.equal({ remote: true });
+
+      const dataChange = appliedChanges.data[0] as { type: string; table: string; pk: unknown[]; columns: Record<string, unknown> };
+      expect(dataChange.type).to.equal('update');
+      expect(dataChange.table).to.equal('users');
+      expect(dataChange.pk).to.deep.equal([1]);
+      expect(dataChange.columns).to.deep.equal({ name: 'Alice' });
+    });
+
+    it('should call applyToStore with delete changes', async () => {
+      const appliedChanges: { data: unknown[] } = { data: [] };
+
+      const applyToStore = async (dataChanges: unknown[], schemaChanges: unknown[]) => {
+        appliedChanges.data = dataChanges;
+        return { dataChangesApplied: dataChanges.length, schemaChangesApplied: schemaChanges.length, errors: [] };
+      };
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, applyToStore);
+      const remoteSiteId = generateSiteId();
+
+      const changeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        changes: [
+          {
+            type: 'delete',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      await manager.applyChanges([changeSet]);
+
+      expect(appliedChanges.data).to.have.lengthOf(1);
+      const dataChange = appliedChanges.data[0] as { type: string; table: string; pk: unknown[] };
+      expect(dataChange.type).to.equal('delete');
+      expect(dataChange.table).to.equal('users');
+      expect(dataChange.pk).to.deep.equal([1]);
+    });
+
+    it('should not call applyToStore when no callback provided', async () => {
+      // Create manager without callback
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+      const remoteSiteId = generateSiteId();
+
+      const changeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      // Should not throw, just update metadata
+      const result = await manager.applyChanges([changeSet]);
+      expect(result.applied).to.equal(1);
+    });
+
+    it('should not call applyToStore for skipped changes', async () => {
+      let callCount = 0;
+      const applyToStore = async () => {
+        callCount++;
+        return { dataChangesApplied: 0, schemaChangesApplied: 0, errors: [] };
+      };
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, applyToStore);
+      const remoteSiteId = generateSiteId();
+      const now = Date.now();
+
+      // Apply newer change first
+      const newerChangeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-2',
+        hlc: { wallTime: BigInt(now + 1000), counter: 1, siteId: remoteSiteId },
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Bob',
+            hlc: { wallTime: BigInt(now + 1000), counter: 1, siteId: remoteSiteId },
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      await manager.applyChanges([newerChangeSet]);
+      expect(callCount).to.equal(1);
+
+      // Try to apply older change - should be skipped
+      const olderChangeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(now), counter: 1, siteId: remoteSiteId },
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: { wallTime: BigInt(now), counter: 1, siteId: remoteSiteId },
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      const result = await manager.applyChanges([olderChangeSet]);
+
+      // applyToStore should not be called again (no changes to apply)
+      expect(callCount).to.equal(1);
+      expect(result.conflicts).to.equal(1);
+      expect(result.applied).to.equal(0);
+    });
+
+    it('should emit remote change events after applying changes', async () => {
+      const remoteEvents: unknown[] = [];
+      syncEvents.onRemoteChange((event) => {
+        remoteEvents.push(event);
+      });
+
+      const applyToStore = async () => ({ dataChangesApplied: 1, schemaChangesApplied: 0, errors: [] });
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, applyToStore);
+      const remoteSiteId = generateSiteId();
+
+      const changeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      await manager.applyChanges([changeSet]);
+
+      expect(remoteEvents).to.have.lengthOf(1);
+    });
+  });
 });

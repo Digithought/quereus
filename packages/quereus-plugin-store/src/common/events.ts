@@ -13,6 +13,8 @@ export interface SchemaChangeEvent {
   schemaName: string;
   objectName: string;
   ddl?: string;
+  /** True if this event originated from sync (remote replica) or cross-tab. */
+  remote?: boolean;
 }
 
 /**

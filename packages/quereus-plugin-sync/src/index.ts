@@ -72,6 +72,12 @@ export {
   type SnapshotFooterChunk,
   type SnapshotChunk,
   type SnapshotProgress,
+  // Apply-to-store callback types
+  type ApplyToStoreOptions,
+  type DataChangeToApply,
+  type SchemaChangeToApply,
+  type ApplyToStoreResult,
+  type ApplyToStoreCallback,
   // Configuration
   type SyncConfig,
   DEFAULT_SYNC_CONFIG,
@@ -82,7 +88,11 @@ export { type SyncManager, type SnapshotCheckpoint } from './sync/manager.js';
 export { SyncManagerImpl } from './sync/sync-manager-impl.js';
 
 // Factory function
-export { createSyncModule, type CreateSyncModuleResult } from './create-sync-module.js';
+export {
+  createSyncModule,
+  type CreateSyncModuleResult,
+  type CreateSyncModuleOptions,
+} from './create-sync-module.js';
 
 // Reactive events
 export {
