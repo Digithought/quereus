@@ -19,16 +19,43 @@
 		"directory": "packages/quereus-vscode"
 	},
 	"license": "MIT",
-	"engines": { "vscode": "^1.84.0" },
-	"categories": ["Programming Languages"],
+	"engines": {
+		"vscode": "^1.84.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
 	"main": "./client/out/extension.js",
 	"contributes": {
 		"languages": [
-			{ "id": "quereus-sql", "aliases": ["Quereus SQL", "qsql"], "extensions": [".qsql", ".quereus.sql"], "configuration": "./language-configuration.json" },
-			{ "id": "sql", "aliases": ["SQL"], "extensions": [".sql"] }
+			{
+				"id": "quereus-sql",
+				"aliases": [
+					"Quereus SQL",
+					"qsql"
+				],
+				"extensions": [
+					".qsql",
+					".quereus.sql"
+				],
+				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "sql",
+				"aliases": [
+					"SQL"
+				],
+				"extensions": [
+					".sql"
+				]
+			}
 		],
 		"grammars": [
-			{ "language": "quereus-sql", "scopeName": "source.quereus", "path": "./syntaxes/quereus.tmLanguage.json" }
+			{
+				"language": "quereus-sql",
+				"scopeName": "source.quereus",
+				"path": "./syntaxes/quereus.tmLanguage.json"
+			}
 		]
 	},
 	"activationEvents": [
@@ -58,5 +85,3 @@
 		"vscode-languageserver-textdocument": "^1.0.11"
 	}
 }
-
-

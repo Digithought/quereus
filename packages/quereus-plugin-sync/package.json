@@ -48,11 +48,11 @@
   },
   "devDependencies": {
     "@quereus/quereus": "*",
-    "quereus-plugin-store": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.15.29",
     "chai": "^5.2.0",
     "mocha": "^11.5.0",
+    "quereus-plugin-store": "*",
     "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
@@ -63,4 +63,3 @@
     }
   }
 }
-

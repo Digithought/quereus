@@ -22,9 +22,7 @@
   "license": "MIT",
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
-  "bin": {
-    "sync-coordinator": "./dist/src/bin/sync-coordinator.js"
-  },
+  "bin": "./dist/src/bin/sync-coordinator.js",
   "files": [
     "src",
     "dist",
@@ -39,21 +37,21 @@
   "scripts": {
     "clean": "rimraf dist",
     "build": "tsc",
-    "dev": "tsc && node dist/src/bin/sync-coordinator.js",
+    "dev": "tsx watch --clear-screen=false src/bin/sync-coordinator.ts -- --port 8080 --debug 'sync-coordinator:*'",
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && node --import ./packages/sync-coordinator/register.mjs node_modules/mocha/bin/mocha.js \"packages/sync-coordinator/test/**/*.spec.ts\" --colors",
     "test:single": "cd ../.. && node --import ./packages/sync-coordinator/register.mjs node_modules/mocha/bin/mocha.js --bail",
-		"start": "npx sync-coordinator --port 8080 --debug 'sync-coordinator:*'"
+    "start": "npx sync-coordinator --port 8080 --debug 'sync-coordinator:*'"
   },
   "dependencies": {
-    "quereus-plugin-store": "*",
-    "quereus-plugin-sync": "*",
-    "@quereus/quereus": "*",
-    "fastify": "^5.2.1",
     "@fastify/cors": "^10.0.2",
     "@fastify/websocket": "^11.0.2",
+    "@quereus/quereus": "*",
     "commander": "^14.0.0",
-    "debug": "^4.4.0"
+    "debug": "^4.4.0",
+    "fastify": "^5.2.1",
+    "quereus-plugin-store": "*",
+    "quereus-plugin-sync": "*"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
@@ -64,7 +62,7 @@
     "mocha": "^11.5.0",
     "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
+    "tsx": "^4.19.0",
     "typescript": "^5.8.3"
   }
 }
-

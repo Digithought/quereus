@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Quoomb UI Kit - Shared UI components for Quoomb applications",
-	"publisher": "Got Choices Foundation",
+  "publisher": "Got Choices Foundation",
   "repository": {
     "type": "git",
     "url": "https://github.com/gotchoices/quereus.git",
@@ -35,24 +35,24 @@
     "build-storybook": "storybook build"
   },
   "devDependencies": {
-    "@types/react": "^19.1.6",
-    "@types/react-dom": "^19.1.5",
-    "@vitejs/plugin-react": "^4.5.0",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.5",
-    "vitest": "^3.1.4",
-    "eslint": "^9.28.0",
-    "@typescript-eslint/eslint-plugin": "^8.33.0",
-    "@typescript-eslint/parser": "^8.33.0",
     "@storybook/react": "^9.0.2",
     "@storybook/react-vite": "^9.0.2",
-    "rimraf": "^6.1.2"
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@typescript-eslint/eslint-plugin": "^8.33.0",
+    "@typescript-eslint/parser": "^8.33.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "eslint": "^9.28.0",
+    "rimraf": "^6.1.2",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.1.4"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.511.0",
-    "clsx": "^2.1.1"
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   },
   "peerDependencies": {
     "react": "^19.1.0",
