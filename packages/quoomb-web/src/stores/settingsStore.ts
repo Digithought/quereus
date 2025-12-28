@@ -88,7 +88,7 @@ const defaultSettings = {
 
   // Storage & Sync defaults
   storageModule: 'memory' as StorageModuleType,
-  syncUrl: 'ws://localhost:8080',
+  syncUrl: 'ws://localhost:8080/sync/ws',
 };
 
 // Helper function to get resolved theme
@@ -265,7 +265,7 @@ export const useSettingsStore = create<SettingsState>()(
           },
           plugins: [],
           storageModule: 'memory',
-          syncUrl: 'ws://localhost:8080',
+          syncUrl: 'ws://localhost:8080/sync/ws',
         });
 
         // Reapply theme

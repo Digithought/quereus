@@ -7,7 +7,6 @@ import {
   type CounterMetric,
   type GaugeMetric,
   type HistogramMetric,
-  type Histogram,
   DEFAULT_DURATION_BUCKETS,
 } from './types.js';
 

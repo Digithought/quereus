@@ -2,7 +2,17 @@ import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
 import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from 'quereus-plugin-store/browser';
-import { createSyncModule, type SyncManager, type SyncEventEmitter as SyncEventEmitterType } from 'quereus-plugin-sync';
+import {
+  createSyncModule,
+  siteIdToHex,
+  siteIdFromHex,
+  deserializeHLC,
+  type SyncManager,
+  type SyncEventEmitter as SyncEventEmitterType,
+  type ChangeSet,
+  type Change,
+  type SchemaMigration,
+} from 'quereus-plugin-sync';
 import type {
   QuereusWorkerAPI,
   TableInfo,
@@ -19,6 +29,23 @@ import Papa from 'papaparse';
 
 // Maximum number of sync events to keep in history
 const MAX_SYNC_EVENTS = 100;
+
+// Helper to deserialize a ChangeSet from JSON transport format
+function deserializeChangeSet(cs: Record<string, unknown>): ChangeSet {
+  return {
+    siteId: siteIdFromHex(cs.siteId as string),
+    transactionId: cs.transactionId as string,
+    hlc: deserializeHLC(Uint8Array.from(atob(cs.hlc as string), c => c.charCodeAt(0))),
+    changes: (cs.changes as Record<string, unknown>[]).map(c => ({
+      ...c,
+      hlc: deserializeHLC(Uint8Array.from(atob(c.hlc as string), ch => ch.charCodeAt(0))),
+    })) as Change[],
+    schemaMigrations: ((cs.schemaMigrations as Record<string, unknown>[]) || []).map(m => ({
+      ...m,
+      hlc: deserializeHLC(Uint8Array.from(atob(m.hlc as string), ch => ch.charCodeAt(0))),
+    })) as SchemaMigration[],
+  };
+}
 
 class QuereusWorker implements QuereusWorkerAPI {
   private db: Database | null = null;
@@ -715,29 +742,17 @@ class QuereusWorker implements QuereusWorkerAPI {
 
   private async restorePersistedTables(): Promise<void> {
     if (!this.db || !this.indexedDBModule) {
-      console.log('[Restore] Skipping - db or indexedDBModule not initialized');
       return;
     }
 
     try {
       // Load DDL from the central catalog store
-      console.log('[Restore] Loading DDL from catalog...');
       const ddlStatements = await this.indexedDBModule.loadAllDDL();
-      console.log(`[Restore] Found ${ddlStatements.length} DDL statement(s)`);
-      for (const ddl of ddlStatements) {
-        console.log(`[Restore] DDL: ${ddl}`);
-      }
 
       if (ddlStatements.length > 0) {
-        console.log(`[Restore] Restoring ${ddlStatements.length} persisted table(s)...`);
-
         // Import the catalog into the schema manager
         // This calls connect() on the module instead of create()
         const imported = await this.db.schemaManager.importCatalog(ddlStatements);
-        console.log(`[Restore] Restored tables: ${imported.tables.join(', ') || 'none'}`);
-        console.log(`[Restore] Restored indexes: ${imported.indexes.join(', ') || 'none'}`);
-      } else {
-        console.log('[Restore] No DDL statements found in catalog');
       }
     } catch (error) {
       console.error('[Restore] Failed to restore persisted tables:', error);
@@ -881,11 +896,20 @@ class QuereusWorker implements QuereusWorkerAPI {
         this.syncWebSocket = new WebSocket(wsUrl);
 
         this.syncWebSocket.onopen = () => {
+          // Send handshake message with our siteId
+          const siteId = this.syncManager!.getSiteId();
+          const handshake = JSON.stringify({
+            type: 'handshake',
+            siteId: siteIdToHex(siteId),
+            token: token,
+          });
+          this.syncWebSocket!.send(handshake);
+
           this.syncStatus = { status: 'syncing', progress: 0 };
           this.addSyncEvent({
             type: 'state-change',
             timestamp: Date.now(),
-            message: 'Connected to sync server',
+            message: 'Connected to sync server, handshake sent',
           });
           resolve();
         };
@@ -927,31 +951,57 @@ class QuereusWorker implements QuereusWorkerAPI {
       const message = JSON.parse(data);
 
       switch (message.type) {
+        case 'handshake_ack':
+          // Server acknowledged our handshake
+          this.addSyncEvent({
+            type: 'state-change',
+            timestamp: Date.now(),
+            message: `Authenticated with server (connection: ${message.connectionId?.slice(0, 8) ?? 'unknown'})`,
+          });
+          // Request initial changes from server
+          this.syncWebSocket?.send(JSON.stringify({
+            type: 'get_changes',
+          }));
+          break;
+
         case 'changes':
-          // Apply incoming changes
-          const result = await this.syncManager.applyChanges(message.changes);
+          // Deserialize and apply incoming changes
+          const changeSets: ChangeSet[] = (message.changeSets || []).map(
+            (cs: Record<string, unknown>) => deserializeChangeSet(cs)
+          );
+          const result = await this.syncManager.applyChanges(changeSets);
           this.addSyncEvent({
             type: 'remote-change',
             timestamp: Date.now(),
             message: `Applied ${result.applied} changes (${result.conflicts} conflicts resolved)`,
             details: { changeCount: result.applied },
           });
+          this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
           break;
 
-        case 'request-changes':
+        case 'request_changes':
           // Peer is requesting changes since a certain HLC
           const changes = await this.syncManager.getChangesSince(
             message.siteId,
             message.sinceHLC
           );
           this.syncWebSocket?.send(JSON.stringify({
-            type: 'changes',
+            type: 'apply_changes',
             changes,
           }));
           break;
 
-        case 'sync-complete':
-          this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
+        case 'error':
+          // Server sent an error
+          this.addSyncEvent({
+            type: 'error',
+            timestamp: Date.now(),
+            message: `Server error: ${message.message} (${message.code})`,
+          });
+          break;
+
+        case 'pong':
+          // Heartbeat response - no action needed
           break;
 
         default:

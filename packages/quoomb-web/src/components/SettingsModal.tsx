@@ -294,11 +294,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   type="text"
                   value={syncUrl}
                   onChange={(e) => setSyncUrl(e.target.value)}
-                  placeholder="ws://localhost:8080"
+                  placeholder="ws://localhost:8080/sync/ws"
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  WebSocket URL of the sync-coordinator server. Used when Sync database mode is selected.
+                  WebSocket URL of the sync-coordinator server (e.g., ws://host:port/sync/ws).
                 </p>
               </div>
             </section>

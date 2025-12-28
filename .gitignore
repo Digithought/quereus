@@ -2,3 +2,5 @@ node_modules
 dist
 doc
 **/*.tsbuildinfo
+packages/sync-coordinator/.data
+.yarn
