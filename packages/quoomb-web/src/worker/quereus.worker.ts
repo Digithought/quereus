@@ -12,6 +12,10 @@ import {
   type ChangeSet,
   type Change,
   type SchemaMigration,
+  type RemoteChangeEvent,
+  type LocalChangeEvent,
+  type ConflictEvent,
+  type SyncState,
 } from 'quereus-plugin-sync';
 import type {
   QuereusWorkerAPI,
@@ -786,7 +790,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     if (!this.syncEvents) return;
 
     // Remote changes
-    this.syncEvents.onRemoteChange((event) => {
+    this.syncEvents.onRemoteChange((event: RemoteChangeEvent) => {
       this.addSyncEvent({
         type: 'remote-change',
         timestamp: Date.now(),
@@ -798,7 +802,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     });
 
     // Local changes
-    this.syncEvents.onLocalChange((event) => {
+    this.syncEvents.onLocalChange((event: LocalChangeEvent) => {
       this.addSyncEvent({
         type: 'local-change',
         timestamp: Date.now(),
@@ -810,7 +814,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     });
 
     // Conflicts
-    this.syncEvents.onConflictResolved((event) => {
+    this.syncEvents.onConflictResolved((event: ConflictEvent) => {
       this.addSyncEvent({
         type: 'conflict',
         timestamp: Date.now(),
@@ -824,7 +828,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     });
 
     // State changes
-    this.syncEvents.onSyncStateChange((state) => {
+    this.syncEvents.onSyncStateChange((state: SyncState) => {
       this.syncStatus = this.convertSyncState(state);
       this.addSyncEvent({
         type: 'state-change',
@@ -834,18 +838,18 @@ class QuereusWorker implements QuereusWorkerAPI {
     });
   }
 
-  private convertSyncState(state: { status: string; progress?: number; lastSyncHLC?: any; error?: Error }): SyncStatus {
+  private convertSyncState(state: SyncState): SyncStatus {
     switch (state.status) {
       case 'disconnected':
         return { status: 'disconnected' };
       case 'connecting':
         return { status: 'connecting' };
       case 'syncing':
-        return { status: 'syncing', progress: (state as any).progress ?? 0 };
+        return { status: 'syncing', progress: state.progress ?? 0 };
       case 'synced':
         return { status: 'synced', lastSyncTime: Date.now() };
       case 'error':
-        return { status: 'error', message: (state as any).error?.message ?? 'Unknown error' };
+        return { status: 'error', message: state.error?.message ?? 'Unknown error' };
       default:
         return { status: 'disconnected' };
     }
