@@ -85,6 +85,8 @@ export interface BestAccessPlanResult {
 	rows: number | undefined;
 	/** Ordering guaranteed by this access plan */
 	providesOrdering?: readonly OrderingSpec[];
+	/** Name of the index that provides the ordering (if any) */
+	orderingIndexName?: string;
 	/** Whether this plan guarantees unique rows (helps DISTINCT optimization) */
 	isSet?: boolean;
 	/** Free-text explanation for debugging */

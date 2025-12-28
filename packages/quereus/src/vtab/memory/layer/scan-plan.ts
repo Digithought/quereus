@@ -52,12 +52,12 @@ export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema:
 	let upperBound: ScanPlanRangeBound | undefined = undefined;
 	const params = new Map<string, string>();
 	idxStr?.split(';').forEach(part => { const [key, value] = part.split('=', 2); if (key && value !== undefined) params.set(key, value); });
-	const idxNameMatch = params.get('idx')?.match(/^(.*?)\\((\\d+)\\)$/);
+	const idxNameMatch = params.get('idx')?.match(/^(.*?)\((\d+)\)$/);
 	if (idxNameMatch) indexName = idxNameMatch[1] === '_primary_' ? 'primary' : idxNameMatch[1];
 	const planType = parseInt(params.get('plan') ?? '0', 10);
 	descending = params.get('ordCons') === 'DESC' || planType === 1 || planType === 4;
 	const argvMap = new Map<number, number>();
-	params.get('argvMap')?.match(/\\[(\\d+),(\\d+)\\]/g)?.forEach(m => { const p = m.match(/\\[(\\d+),(\\d+)\\]/); if (p) argvMap.set(parseInt(p[1]), parseInt(p[2])); });
+	params.get('argvMap')?.match(/\[(\d+),(\d+)\]/g)?.forEach(m => { const p = m.match(/\[(\d+),(\d+)\]/); if (p) argvMap.set(parseInt(p[1]), parseInt(p[2])); });
 	const currentSchema = tableSchema;
 	const indexSchemaForPlan = indexName === 'primary' ? { name: '_primary_', columns: currentSchema.primaryKeyDefinition ?? [{ index: -1, desc: false, collation: 'BINARY' }] } : currentSchema.indexes?.find(i => i.name === indexName);
 	if (planType === 2) { // EQ Plan
