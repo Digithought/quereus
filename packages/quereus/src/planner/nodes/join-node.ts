@@ -295,13 +295,18 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
-		return {
+		const attrs: Record<string, unknown> = {
 			joinType: this.joinType,
 			hasCondition: !!this.condition,
 			usingColumns: this.usingColumns,
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows
 		};
+		// Expose unique keys computed by physical properties
+		if (this.physical?.uniqueKeys) {
+			attrs.uniqueKeys = this.physical.uniqueKeys;
+		}
+		return attrs;
 	}
 
 	public getJoinType(): JoinType {

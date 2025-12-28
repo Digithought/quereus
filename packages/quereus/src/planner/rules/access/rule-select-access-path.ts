@@ -313,12 +313,27 @@ function selectPhysicalNode(
 		);
 	} else if (providesOrdering) {
 		// Ordering benefit without explicit range constraints: prefer index scan
-		log('Using index scan (ordering provided)');
+		// Use the index that provides the ordering, or fall back to primary
+		const indexName = accessPlan.orderingIndexName ?? 'primary';
+		log('Using index scan (ordering provided by %s)', indexName);
+
+		// Build FilterInfo with the correct index name for the runtime
+		const indexIdxStr = indexName === 'primary' ? '_primary_' : indexName;
+		const orderingFilterInfo: FilterInfo = {
+			...filterInfo,
+			idxStr: `idx=${indexIdxStr}(0);plan=0`,
+			indexInfoOutput: {
+				...filterInfo.indexInfoOutput,
+				idxStr: `idx=${indexIdxStr}(0);plan=0`,
+				orderByConsumed: true,
+			}
+		};
+
 		return new IndexScanNode(
 			tableRef.scope,
 			tableRef,
-			filterInfo,
-			'primary',
+			orderingFilterInfo,
+			indexName,
 			providesOrdering,
 			accessPlan.cost
 		);

@@ -133,8 +133,15 @@ export function buildSelectStmt(
 		selectContext = { ...selectContext, scope: aggregateResult.aggregateScope };
 
 		// Build final projections if needed
-		if (aggregateResult.needsFinalProjection) {
-			const finalProjections = buildFinalAggregateProjections(stmt, selectContext, aggregateResult.aggregateScope);
+		if (aggregateResult.needsFinalProjection && aggregateResult.aggregateNode && aggregateResult.groupByExpressions) {
+			const finalProjections = buildFinalAggregateProjections(
+				stmt,
+				selectContext,
+				aggregateResult.aggregateScope,
+				aggregateResult.aggregateNode,
+				aggregates,
+				aggregateResult.groupByExpressions
+			);
 			input = new ProjectNode(selectScope, input, finalProjections, undefined, undefined, preserveInputColumns);
 		}
 	}

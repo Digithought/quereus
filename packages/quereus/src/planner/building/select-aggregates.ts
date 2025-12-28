@@ -28,6 +28,8 @@ export function buildAggregatePhase(
 	aggregateScope?: RegisteredScope;
 	needsFinalProjection: boolean;
 	preAggregateSort: boolean;
+	aggregateNode?: RelationalPlanNode;
+	groupByExpressions?: ScalarPlanNode[];
 } {
 		const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
 
@@ -69,8 +71,9 @@ export function buildAggregatePhase(
 	const groupByExpressions = stmt.groupBy ?
 		stmt.groupBy.map(expr => buildExpression(selectContext, expr, false)) : [];
 
-		// Create AggregateNode
-	currentInput = new AggregateNode(selectContext.scope, currentInput, groupByExpressions, aggregates);
+	// Create AggregateNode
+	const aggregateNode = new AggregateNode(selectContext.scope, currentInput, groupByExpressions, aggregates);
+	currentInput = aggregateNode;
 
 	// Create aggregate output scope
 	const aggregateOutputScope = createAggregateOutputScope(
@@ -93,7 +96,9 @@ export function buildAggregatePhase(
 		output: currentInput,
 		aggregateScope: aggregateOutputScope,
 		needsFinalProjection,
-		preAggregateSort
+		preAggregateSort,
+		aggregateNode,
+		groupByExpressions
 	};
 }
 
@@ -266,14 +271,34 @@ function checkNeedsFinalProjection(projections: Projection[]): boolean {
 export function buildFinalAggregateProjections(
 	stmt: AST.SelectStmt,
 	selectContext: PlanningContext,
-	aggregateOutputScope: RegisteredScope
+	aggregateOutputScope: RegisteredScope,
+	aggregateNode: RelationalPlanNode,
+	aggregates: { expression: ScalarPlanNode; alias: string }[],
+	groupByExpressions: ScalarPlanNode[]
 ): Projection[] {
 	const finalProjections: Projection[] = [];
+	const aggregateAttributes = aggregateNode.getAttributes();
+
+	// Build context with aggregates so buildFunctionCall can resolve aggregate references
+	const aggregatesContext = aggregates.map((agg, index) => {
+		const columnIndex = groupByExpressions.length + index;
+		const attr = aggregateAttributes[columnIndex];
+		return {
+			expression: agg.expression,
+			alias: agg.alias,
+			columnIndex,
+			attributeId: attr.id
+		};
+	});
 
 	for (const column of stmt.columns) {
 		if (column.type === 'column') {
 			// Re-build the expression in the context of the aggregate output
-			const finalContext: PlanningContext = { ...selectContext, scope: aggregateOutputScope };
+			const finalContext: PlanningContext = {
+				...selectContext,
+				scope: aggregateOutputScope,
+				aggregates: aggregatesContext
+			};
 			const scalarNode = buildExpression(finalContext, column.expr, true);
 
 			let attrId: number | undefined = undefined;

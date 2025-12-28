@@ -272,6 +272,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 					...plan,
 					cost: adjustedCost,
 					providesOrdering: request.requiredOrdering,
+					orderingIndexName: index.name,
 					explains: `${plan.explains} with ordering from ${index.name}`
 				};
 			}
