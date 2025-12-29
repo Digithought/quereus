@@ -67,6 +67,29 @@ await db.exec(`
 `);
 ```
 
+### Browser (Unified IndexedDB - Recommended)
+
+For applications with multiple tables, use `UnifiedIndexedDBModule` which stores all tables in a single IndexedDB database. This enables atomic cross-table transactions:
+
+```typescript
+import { Database } from '@quereus/quereus';
+import { UnifiedIndexedDBModule } from 'quereus-plugin-store';
+
+const db = new Database();
+const module = new UnifiedIndexedDBModule();
+db.registerVtabModule('store', module);
+
+// All tables share the same IDB database
+await db.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT) USING store`);
+await db.exec(`CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER) USING store`);
+
+// Cross-table atomic writes (useful for sync operations)
+const batch = module.createMultiStoreBatch();
+batch.putToStore('main.users', key1, value1);
+batch.putToStore('main.orders', key2, value2);
+await batch.write();  // Atomic across both tables
+```
+
 ## Features
 
 - **Cross-platform**: LevelDB for Node.js, IndexedDB for browsers
@@ -125,8 +148,11 @@ await db.exec('COMMIT');
 ### Exports
 
 - `LevelDBModule` - Node.js virtual table module
-- `IndexedDBModule` - Browser virtual table module  
+- `IndexedDBModule` - Browser virtual table module (one IDB database per table)
+- `UnifiedIndexedDBModule` - Browser module with single shared IDB database (recommended)
 - `LevelDBStore` / `IndexedDBStore` - Low-level key-value store
+- `UnifiedIndexedDBStore` / `UnifiedIndexedDBManager` - Unified IDB store and manager
+- `MultiStoreWriteBatch` - Atomic writes across multiple object stores
 - `LevelDBConnection` / `IndexedDBConnection` - Transaction connection
 - `TransactionCoordinator` - Shared transaction management
 - `CrossTabSync` - Browser tab synchronization

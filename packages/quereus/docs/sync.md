@@ -126,36 +126,31 @@ The reverse order (metadata first) would be dangerous: if we crash after writing
 
 **Per-Table Batching**: Within each table, changes should be applied using `WriteBatch` for atomicity. The `TransactionCoordinator` in the Store module provides this capability.
 
-**Atomicity Gap (IndexedDB)**: The current IndexedDB architecture uses separate databases per table. This means sync cannot atomically commit data changes AND CRDT metadata together—they're in different databases. See [Future: Single-Database Architecture](#future-single-database-architecture) below.
+**Atomicity Gap (IndexedDB)**: The legacy `IndexedDBModule` uses separate databases per table. The new `UnifiedIndexedDBModule` (Store Phase 7) solves this by placing all tables in a single database with object stores, enabling atomic cross-table transactions via `MultiStoreWriteBatch`.
 
 **Isolation Gap**: Even with correct write ordering, readers may see partially-applied state during sync. True isolation would require Store-level support—see [Future: Store Isolation](#future-store-isolation) below.
 
-### Future: Single-Database Architecture
+### Single-Database Architecture (Store Phase 7) ✓
 
-The current IndexedDB implementation uses separate databases per table (e.g., `quereus_main_users`, `quereus_main_orders`). This prevents cross-table atomicity.
+The `UnifiedIndexedDBModule` uses a single IndexedDB database with multiple object stores (one per table). This enables atomic cross-table transactions.
 
-**Key insight**: Browser storage quotas are per-origin, not per-database. Separate databases provide no storage benefit—all databases under the same origin share the same quota.
-
-**Preferred direction**: Migrate to a single IndexedDB database with multiple object stores:
-
-| Single Database | Multiple Databases (current) |
-|-----------------|------------------------------|
+| UnifiedIndexedDBModule | Legacy IndexedDBModule |
+|------------------------|------------------------|
 | ✅ Native cross-table IDB transactions | ❌ No cross-DB transactions |
 | ✅ Sync metadata + data in one transaction | ❌ Sequential commits |
 | ✅ No WAL needed for crash recovery | ⚠️ Would need WAL |
 | ✅ Same storage quota | ✅ Same storage quota |
 
-With single-database architecture, sync could:
-```
-const tx = idb.transaction(['users', 'orders', 'sync_meta'], 'readwrite');
-// Apply all data changes
-// Apply all CRDT metadata
-tx.commit();  // Native atomicity across all stores
+With `UnifiedIndexedDBModule`, sync can use `MultiStoreWriteBatch`:
+```typescript
+const batch = module.createMultiStoreBatch();
+batch.putToStore('main.users', userKey, userData);
+batch.putToStore('main.orders', orderKey, orderData);
+batch.putToStore('__catalog__', metaKey, syncMetadata);
+await batch.write();  // Native atomicity across all stores
 ```
 
-This is tracked in store.md as Phase 7.
-
-### Future: Store Isolation
+### Store Isolation (Store Phase 8 - Future)
 
 Longer-term, the Store module should provide transaction isolation similar to the memory vtab's layered architecture:
 
@@ -948,10 +943,11 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 - [ ] Use `WriteBatch` for per-table atomicity when applying remote changes
 - [ ] Consider using `TransactionCoordinator` in store adapter for batched writes
 
-#### Single-Database Architecture (Future - Store Phase 7)
-- [ ] Migrate IndexedDB to single database with multiple object stores (see [Future: Single-Database Architecture](#future-single-database-architecture))
-- [ ] Place sync metadata in same database as data tables
-- [ ] Leverage native IDB transactions for cross-table atomicity
+#### Single-Database Architecture (Store Phase 7) ✓
+- [x] Migrate IndexedDB to single database with multiple object stores (`UnifiedIndexedDBModule`)
+- [x] Place sync metadata in same database as data tables (`__catalog__` object store)
+- [x] Leverage native IDB transactions for cross-table atomicity (`MultiStoreWriteBatch`)
+- [ ] Update sync store adapter to use `UnifiedIndexedDBModule` for atomic sync writes
 
 #### Store Isolation (Longer-term - Store Phase 8)
 - [ ] Implement isolation in Store module using memory vtab's TransactionLayer pattern

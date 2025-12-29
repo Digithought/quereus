@@ -30,7 +30,21 @@ export * from './common/index.js';
 export { LevelDBStore, LevelDBModule, LevelDBTable, LevelDBConnection, TransactionCoordinator, type LevelDBModuleConfig, type TransactionCallbacks } from './leveldb/index.js';
 
 // IndexedDB module (Browser)
-export { IndexedDBStore, IndexedDBModule, IndexedDBTable, IndexedDBConnection, CrossTabSync, type IndexedDBModuleConfig } from './indexeddb/index.js';
+export {
+  IndexedDBStore,
+  IndexedDBModule,
+  IndexedDBTable,
+  IndexedDBConnection,
+  CrossTabSync,
+  type IndexedDBModuleConfig,
+  // Unified database architecture (Phase 7)
+  UnifiedIndexedDBManager,
+  UnifiedIndexedDBStore,
+  UnifiedIndexedDBModule,
+  MultiStoreWriteBatch,
+  type UnifiedKVStoreOptions,
+  type UnifiedIndexedDBModuleConfig,
+} from './indexeddb/index.js';
 
 // Platform detection for conditional exports
 const isNode = typeof process !== 'undefined'

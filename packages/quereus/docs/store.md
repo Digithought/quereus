@@ -486,12 +486,15 @@ packages/quereus-plugin-store/
 - [x] Collation-aware binary encoding infrastructure
 - [ ] Per-column collation specification for keys/indexes (TODO)
 
-### Phase 7: IndexedDB Single-Database Architecture (Future)
-- [ ] Migrate from separate IDB databases to single database with multiple object stores
-- [ ] One object store per table (named by schema.table)
-- [ ] Sync metadata object store in same database
-- [ ] Native cross-table IDB transactions for atomicity
-- [ ] No WAL needed for crash recovery
+### Phase 7: IndexedDB Single-Database Architecture ✓
+- [x] Migrate from separate IDB databases to single database with multiple object stores
+- [x] One object store per table (named by schema.table)
+- [x] Sync metadata object store in same database (`__catalog__`)
+- [x] Native cross-table IDB transactions for atomicity (`MultiStoreWriteBatch`)
+- [x] No WAL needed for crash recovery
+
+**Implementation**: `UnifiedIndexedDBModule` and `UnifiedIndexedDBStore` provide the new architecture.
+Use `UnifiedIndexedDBModule` instead of `IndexedDBModule` to opt-in to the unified database.
 
 ### Phase 8: Transaction Isolation (Longer-term)
 - [ ] Implement TransactionLayer pattern (similar to memory vtab) for read isolation
