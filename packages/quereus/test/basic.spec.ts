@@ -197,5 +197,31 @@ describe(`Basic query`, () => {
 
 			await selectStmt.finalize();
 		});
+
+		it('should update NULL column to non-NULL value with parameterized SET and WHERE', async () => {
+			// Regression test: UPDATE with both SET and WHERE parameterized failed
+			// because parameter indices were assigned in wrong order (WHERE before SET)
+			await db.exec('CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT, description TEXT NULL)');
+			await db.exec('INSERT INTO items (id, name, description) VALUES (?, ?, ?)', ['item-1', 'Coffee', null]);
+
+			// Verify initial value is null
+			const beforeRows: any[] = [];
+			for await (const row of db.eval('SELECT description FROM items WHERE id = ?', ['item-1'])) {
+				beforeRows.push(row);
+			}
+			void expect(beforeRows).to.have.length(1);
+			void expect(beforeRows[0].description).to.equal(null);
+
+			// Update with parameterized SET and WHERE - this was the failing case
+			await db.exec('UPDATE items SET description = ? WHERE id = ?', ['dddd', 'item-1']);
+
+			// Verify update was applied
+			const afterRows: any[] = [];
+			for await (const row of db.eval('SELECT description FROM items WHERE id = ?', ['item-1'])) {
+				afterRows.push(row);
+			}
+			void expect(afterRows).to.have.length(1);
+			void expect(afterRows[0].description).to.equal('dddd');
+		});
 	});
 });

@@ -66,11 +66,9 @@ export function buildUpdateStmt(
   // Create a new planning context with the updated scope for WHERE clause resolution
   const updateCtx = { ...ctx, scope: tableScope };
 
-  if (stmt.where) {
-    const filterExpression = buildExpression(updateCtx, stmt.where);
-    sourceNode = new FilterNode(updateCtx.scope, sourceNode, filterExpression);
-  }
-
+  // IMPORTANT: Build assignments FIRST to ensure parameter indices match SQL text order.
+  // SQL: UPDATE t SET col = ?1 WHERE id = ?2
+  // The SET clause parameters must be resolved before WHERE clause parameters.
   const assignments: UpdateAssignment[] = stmt.assignments.map(assign => {
     // TODO: Validate assign.column against tableReference.tableSchema
     const targetColumn: AST.ColumnExpr = { type: 'column', name: assign.column, table: stmt.table.name, schema: stmt.table.schema };
@@ -79,6 +77,12 @@ export function buildUpdateStmt(
       value: buildExpression(updateCtx, assign.value),
     };
   });
+
+  // Now build the WHERE filter (parameters here get indices after SET clause parameters)
+  if (stmt.where) {
+    const filterExpression = buildExpression(updateCtx, stmt.where);
+    sourceNode = new FilterNode(updateCtx.scope, sourceNode, filterExpression);
+  }
 
   // Create OLD/NEW attributes for UPDATE (used for both RETURNING and non-RETURNING paths)
   const oldAttributes = tableReference.tableSchema.columns.map((col) => ({
