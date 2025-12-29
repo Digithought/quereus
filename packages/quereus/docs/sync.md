@@ -965,3 +965,133 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 - [ ] Example: HTTP polling sync transport
 - [ ] Example: Implementing `applyToStore` callback
 - [ ] Performance benchmarks
+
+---
+
+## Schema Seed: App Provider as Sync Peer
+
+This section describes how to distribute app schema migrations as a static "seed" that syncs into the user's database using the existing sync infrastructure. This pattern treats the app provider as a read-only peer with a well-known site ID.
+
+### Motivation
+
+When distributing an app with Quereus, the initial database schema (and optionally seed data) must be applied to each user's local database. Rather than using imperative migrations or version checks, we can leverage the CRDT sync infrastructure:
+
+1. **Build time**: Generate a JSON bundle containing sync metadata for the app's schema
+2. **Runtime**: Sync from the bundled seed into the user's database using `applyChanges()`
+3. **Updates**: On app updates, only new schema changes are applied (delta sync)
+
+This approach:
+- Reuses existing sync code paths (no new migration infrastructure)
+- Handles user customizations naturally via CRDT semantics
+- Enables efficient delta sync on app updates (only new schema since last sync)
+- Works offline (seed is bundled with the app)
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              BUILD TIME                                      │
+│                                                                              │
+│   DDL Statements ──▶ SyncManager ──▶ Serialize ──▶ schema-seed.json         │
+│   (CREATE TABLE...)   (in-memory)     Metadata                               │
+│                                                                              │
+│   • Fixed APP_PROVIDER_SITE_ID (well-known, e.g., all zeros)                │
+│   • Build timestamp as HLC base                                              │
+│   • Records: SchemaMigrations, ColumnVersions for table columns              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              RUNTIME                                         │
+│                                                                              │
+│   ┌──────────────┐    getChangesSince()     ┌──────────────────────────┐    │
+│   │  Seed Store  │ ─────────────────────▶   │   User's SyncManager     │    │
+│   │  (read-only) │                          │                          │    │
+│   └──────────────┘                          │   applyChanges()         │    │
+│         │                                   │         │                │    │
+│         │ lastSeedHLC                       │         ▼                │    │
+│         │ (user metadata)                   │   Schema DDL executed    │    │
+│         ▼                                   │   CRDT metadata recorded │    │
+│   Only changes after lastSeedHLC            └──────────────────────────┘    │
+│   are returned (efficient delta sync)                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Well-Known App Provider Site ID
+
+Use a deterministic, well-known site ID for the app provider:
+
+```typescript
+/** All-zeros site ID for app provider schema seeds */
+const APP_PROVIDER_SITE_ID = new Uint8Array(16); // 16 bytes of 0x00
+
+/** Or use a fixed base64 */
+const APP_PROVIDER_SITE_ID = siteIdFromBase64('AAAAAAAAAAAAAAAAAAAAAA');
+```
+
+This ensures:
+- The app provider's site ID is consistent across builds
+- User's local changes (with random site IDs) won't conflict with seed schema
+- Easy to identify seed-originated changes in debugging
+
+### Efficient Delta Sync
+
+The change log in the seed enables efficient delta sync:
+
+1. **First launch**: `lastSeedHLC` is undefined, all seed entries are applied
+2. **App update**: `lastSeedHLC` points to previous seed's latest HLC
+3. **Query**: Filter change log entries where `hlc > lastSeedHLC`
+4. **Result**: Only new schema changes are processed (O(k) where k = new changes)
+
+### User Schema Customizations
+
+Because the sync uses standard CRDT semantics, user schema customizations are handled naturally:
+
+1. **User adds a column**: User's column has their site ID with later HLC, preserved
+2. **App adds same column in update**: LWW resolves (later HLC wins, or user's if concurrent)
+3. **User drops a table**: "Most destructive wins" - drop persists even if app's seed has the table
+
+This means:
+- App schema is the baseline
+- User customizations layer on top
+- Conflicts resolve deterministically
+
+### What's Provided by Quereus
+
+All the primitives needed for schema seeds are available in Quereus packages:
+
+| Component | Package | Status |
+|-----------|---------|--------|
+| `SyncManager.applyChanges()` | `quereus-plugin-sync` | ✅ Available |
+| `SyncManager.getPeerSyncState()` | `quereus-plugin-sync` | ✅ Available |
+| `SyncManager.updatePeerSyncState()` | `quereus-plugin-sync` | ✅ Available |
+| `compareHLC()`, `hlcToJson()`, `hlcFromJson()` | `quereus-plugin-sync` | ✅ Available |
+| `SerializedHLC` type | `quereus-plugin-sync` | ✅ Available |
+| `InMemoryKVStore` | `quereus-plugin-store` | ✅ Available |
+| `siteIdToBase64()`, `siteIdFromBase64()` | `quereus-plugin-sync` | ✅ Available |
+| `toBase64Url()`, `fromBase64Url()` | `quereus-plugin-sync` | ✅ Available |
+
+**Usage:**
+```typescript
+import {
+  SyncManager, compareHLC,
+  hlcToJson, hlcFromJson, type SerializedHLC,
+  siteIdToBase64, siteIdFromBase64,
+  toBase64Url, fromBase64Url
+} from 'quereus-plugin-sync';
+import { InMemoryKVStore } from 'quereus-plugin-store';
+```
+
+### What's App-Specific
+
+The following should be implemented in your application:
+
+1. **`SchemaSeed` interface**: Define the JSON structure for your seed files
+2. **`generateSchemaSeed()`**: Build-time script to create seeds from DDL
+3. **`syncFromSchemaSeed()`**: Runtime function to apply seeds
+
+These are app-specific because:
+- Seed format may vary (JSON, MessagePack, etc.)
+- Generation may integrate with your build system (Vite, webpack, etc.)
+- Application may have custom sync logic or validation
+
+

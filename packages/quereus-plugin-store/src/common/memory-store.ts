@@ -1,0 +1,165 @@
+/**
+ * In-memory KVStore implementation.
+ *
+ * Useful for:
+ * - Testing without filesystem/IndexedDB dependencies
+ * - Schema seed generation at build time
+ * - Temporary storage that doesn't need persistence
+ *
+ * Keys are stored using hex encoding for correct lexicographic ordering.
+ */
+
+import type { KVStore, KVEntry, WriteBatch, IterateOptions } from './kv-store.js';
+
+/**
+ * Convert Uint8Array to hex string for Map key storage.
+ * Hex encoding preserves lexicographic ordering.
+ */
+function keyToHex(key: Uint8Array): string {
+  return Array.from(key).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Compare two hex strings lexicographically.
+ */
+function compareHex(a: string, b: string): number {
+  return a.localeCompare(b);
+}
+
+/**
+ * In-memory implementation of KVStore.
+ * Uses a Map with hex-encoded keys for correct byte ordering.
+ */
+export class InMemoryKVStore implements KVStore {
+  private data = new Map<string, { key: Uint8Array; value: Uint8Array }>();
+  private closed = false;
+
+  async get(key: Uint8Array): Promise<Uint8Array | undefined> {
+    this.checkOpen();
+    return this.data.get(keyToHex(key))?.value;
+  }
+
+  async put(key: Uint8Array, value: Uint8Array): Promise<void> {
+    this.checkOpen();
+    // Store copies to prevent external mutation
+    this.data.set(keyToHex(key), {
+      key: new Uint8Array(key),
+      value: new Uint8Array(value),
+    });
+  }
+
+  async delete(key: Uint8Array): Promise<void> {
+    this.checkOpen();
+    this.data.delete(keyToHex(key));
+  }
+
+  async has(key: Uint8Array): Promise<boolean> {
+    this.checkOpen();
+    return this.data.has(keyToHex(key));
+  }
+
+  async *iterate(options?: IterateOptions): AsyncIterable<KVEntry> {
+    this.checkOpen();
+
+    // Sort entries by hex key for correct ordering
+    const entries = Array.from(this.data.entries())
+      .sort((a, b) => compareHex(a[0], b[0]));
+
+    // Apply reverse if requested
+    if (options?.reverse) {
+      entries.reverse();
+    }
+
+    // Calculate bounds
+    const gteHex = options?.gte ? keyToHex(options.gte) : undefined;
+    const gtHex = options?.gt ? keyToHex(options.gt) : undefined;
+    const lteHex = options?.lte ? keyToHex(options.lte) : undefined;
+    const ltHex = options?.lt ? keyToHex(options.lt) : undefined;
+
+    let count = 0;
+    const limit = options?.limit;
+
+    for (const [keyHex, { key, value }] of entries) {
+      // Check lower bounds
+      if (gteHex !== undefined && keyHex < gteHex) continue;
+      if (gtHex !== undefined && keyHex <= gtHex) continue;
+
+      // Check upper bounds
+      if (lteHex !== undefined && keyHex > lteHex) break;
+      if (ltHex !== undefined && keyHex >= ltHex) break;
+
+      // Check limit
+      if (limit !== undefined && count >= limit) break;
+
+      yield { key, value };
+      count++;
+    }
+  }
+
+  batch(): WriteBatch {
+    const ops: Array<{ type: 'put' | 'delete'; key: Uint8Array; value?: Uint8Array }> = [];
+    const store = this;
+
+    return {
+      put(key: Uint8Array, value: Uint8Array): void {
+        ops.push({ type: 'put', key: new Uint8Array(key), value: new Uint8Array(value) });
+      },
+      delete(key: Uint8Array): void {
+        ops.push({ type: 'delete', key: new Uint8Array(key) });
+      },
+      async write(): Promise<void> {
+        for (const op of ops) {
+          if (op.type === 'put') {
+            await store.put(op.key, op.value!);
+          } else {
+            await store.delete(op.key);
+          }
+        }
+        ops.length = 0;
+      },
+      clear(): void {
+        ops.length = 0;
+      },
+    };
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.data.clear();
+  }
+
+  async approximateCount(options?: IterateOptions): Promise<number> {
+    this.checkOpen();
+    if (!options) {
+      return this.data.size;
+    }
+    // Count entries in range
+    let count = 0;
+    for await (const _ of this.iterate(options)) {
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * Clear all data without closing the store.
+   */
+  clear(): void {
+    this.checkOpen();
+    this.data.clear();
+  }
+
+  /**
+   * Get the number of entries in the store.
+   */
+  get size(): number {
+    return this.data.size;
+  }
+
+  private checkOpen(): void {
+    if (this.closed) {
+      throw new Error('InMemoryKVStore is closed');
+    }
+  }
+}
+

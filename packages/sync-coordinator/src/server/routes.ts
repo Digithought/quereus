@@ -3,7 +3,7 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { siteIdFromHex, deserializeHLC, serializeHLC, type HLC, type ChangeSet } from 'quereus-plugin-sync';
+import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HLC, type ChangeSet } from 'quereus-plugin-sync';
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { AuthContext, ClientIdentity } from '../service/types.js';
 import { httpLog } from '../common/logger.js';
@@ -28,7 +28,7 @@ export function registerRoutes(
     return {
       token,
       siteIdRaw,
-      siteId: siteIdRaw ? siteIdFromHex(siteIdRaw) : undefined,
+      siteId: siteIdRaw ? siteIdFromBase64(siteIdRaw) : undefined,
       request,
     };
   };
@@ -92,7 +92,7 @@ export function registerRoutes(
       // Serialize HLCs in response for JSON transport
       const serializedChanges = changes.map(cs => ({
         ...cs,
-        siteId: Buffer.from(cs.siteId).toString('hex'),
+        siteId: siteIdToBase64(cs.siteId),
         hlc: Buffer.from(serializeHLC(cs.hlc)).toString('base64'),
         changes: cs.changes.map(c => ({
           ...c,
@@ -127,7 +127,7 @@ export function registerRoutes(
 
       // Deserialize HLCs from JSON transport format
       const changes: ChangeSet[] = (body.changes as Record<string, unknown>[]).map((cs) => ({
-        siteId: siteIdFromHex(cs.siteId as string),
+        siteId: siteIdFromBase64(cs.siteId as string),
         transactionId: cs.transactionId as string,
         hlc: deserializeHLC(Buffer.from(cs.hlc as string, 'base64')),
         changes: (cs.changes as Record<string, unknown>[]).map(c => ({

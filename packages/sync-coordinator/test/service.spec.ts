@@ -10,7 +10,10 @@ import { rm } from 'node:fs/promises';
 import { CoordinatorService } from '../src/service/coordinator-service.js';
 import { DEFAULT_CONFIG, type CoordinatorConfig } from '../src/config/index.js';
 import type { ClientIdentity, CoordinatorHooks } from '../src/service/types.js';
-import { siteIdFromHex } from 'quereus-plugin-sync';
+import { siteIdFromBase64 } from 'quereus-plugin-sync';
+
+// Test site ID: ASNFZ4mrze8BI0VniavN7w (base64url of 0x0123456789abcdef0123456789abcdef)
+const TEST_SITE_ID_BASE64 = 'ASNFZ4mrze8BI0VniavN7w';
 
 describe('CoordinatorService', () => {
   let service: CoordinatorService;
@@ -53,11 +56,10 @@ describe('CoordinatorService', () => {
 
   describe('authentication', () => {
     it('should authenticate with siteId in none mode', async () => {
-      const siteIdHex = '0123456789abcdef0123456789abcdef';
       const identity = await service.authenticate({
-        siteIdRaw: siteIdHex,
+        siteIdRaw: TEST_SITE_ID_BASE64,
       });
-      expect(identity.siteId).to.deep.equal(siteIdFromHex(siteIdHex));
+      expect(identity.siteId).to.deep.equal(siteIdFromBase64(TEST_SITE_ID_BASE64));
     });
 
     it('should reject without siteId', async () => {
@@ -73,7 +75,7 @@ describe('CoordinatorService', () => {
   describe('authorization', () => {
     it('should allow all operations by default', async () => {
       const client: ClientIdentity = {
-        siteId: siteIdFromHex('0123456789abcdef0123456789abcdef'),
+        siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
       };
 
       const allowed = await service.authorize(client, { type: 'get_changes' });
@@ -100,8 +102,8 @@ describe('CoordinatorService', () => {
 
       try {
         await hookedService.authenticate({
-          siteIdRaw: '0123456789abcdef0123456789abcdef',
-          siteId: siteIdFromHex('0123456789abcdef0123456789abcdef'),
+          siteIdRaw: TEST_SITE_ID_BASE64,
+          siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
         });
         expect(hookCalled).to.be.true;
       } finally {
@@ -128,7 +130,7 @@ describe('CoordinatorService', () => {
 
       try {
         const client: ClientIdentity = {
-          siteId: siteIdFromHex('0123456789abcdef0123456789abcdef'),
+          siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
         };
         await hookedService.authorize(client, { type: 'get_snapshot' });
         expect(authorizedOperation).to.equal('get_snapshot');

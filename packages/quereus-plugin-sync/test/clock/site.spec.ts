@@ -1,10 +1,10 @@
 import { expect } from 'chai';
 import {
   generateSiteId,
-  siteIdToHex,
-  siteIdFromHex,
-  siteIdToUUID,
-  siteIdFromUUID,
+  siteIdToBase64,
+  siteIdFromBase64,
+  toBase64Url,
+  fromBase64Url,
   siteIdEquals,
   serializeSiteIdentity,
   deserializeSiteIdentity,
@@ -37,39 +37,52 @@ describe('Site ID', () => {
     });
   });
 
-  describe('hex conversion', () => {
-    it('should round-trip through hex', () => {
+  describe('base64url conversion', () => {
+    it('should round-trip through base64url', () => {
       const original = generateSiteId();
-      const hex = siteIdToHex(original);
-      const restored = siteIdFromHex(hex);
+      const base64 = siteIdToBase64(original);
+      const restored = siteIdFromBase64(base64);
       expect(siteIdEquals(original, restored)).to.be.true;
     });
 
-    it('should produce 32-character hex string', () => {
+    it('should produce 22-character base64url string', () => {
       const id = generateSiteId();
-      const hex = siteIdToHex(id);
-      expect(hex.length).to.equal(32);
-      expect(/^[0-9a-f]+$/.test(hex)).to.be.true;
+      const base64 = siteIdToBase64(id);
+      expect(base64.length).to.equal(22);
+      // Base64url uses A-Z, a-z, 0-9, -, _
+      expect(/^[A-Za-z0-9_-]+$/.test(base64)).to.be.true;
     });
 
-    it('should throw on invalid hex length', () => {
-      expect(() => siteIdFromHex('abc')).to.throw('Invalid site ID hex length');
+    it('should throw on invalid base64 length', () => {
+      expect(() => siteIdFromBase64('abc')).to.throw('Invalid site ID base64 length');
+    });
+
+    it('should handle all byte values correctly', () => {
+      // Test with a known pattern
+      const testBytes = new Uint8Array([
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+      ]);
+      const base64 = siteIdToBase64(testBytes);
+      const restored = siteIdFromBase64(base64);
+      expect(siteIdEquals(testBytes, restored)).to.be.true;
     });
   });
 
-  describe('UUID conversion', () => {
-    it('should round-trip through UUID', () => {
-      const original = generateSiteId();
-      const uuid = siteIdToUUID(original);
-      const restored = siteIdFromUUID(uuid);
-      expect(siteIdEquals(original, restored)).to.be.true;
+  describe('generic base64url utilities', () => {
+    it('should round-trip arbitrary bytes', () => {
+      const original = new Uint8Array([255, 0, 128, 64, 32, 16, 8, 4, 2, 1]);
+      const encoded = toBase64Url(original);
+      const decoded = fromBase64Url(encoded);
+      expect(decoded).to.deep.equal(original);
     });
 
-    it('should produce valid UUID format', () => {
-      const id = generateSiteId();
-      const uuid = siteIdToUUID(id);
-      // UUID format: 8-4-4-4-12
-      expect(uuid).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    it('should handle empty array', () => {
+      const empty = new Uint8Array(0);
+      const encoded = toBase64Url(empty);
+      expect(encoded).to.equal('');
+      const decoded = fromBase64Url('');
+      expect(decoded.length).to.equal(0);
     });
   });
 

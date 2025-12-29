@@ -15,9 +15,9 @@ import {
   type ChangeSet,
   type ApplyResult,
   type SnapshotChunk,
-  siteIdFromHex,
+  siteIdFromBase64,
   siteIdEquals,
-  siteIdToHex,
+  siteIdToBase64,
   serializeHLC,
 } from 'quereus-plugin-sync';
 import { serviceLog, authLog } from '../common/logger.js';
@@ -98,7 +98,7 @@ export class CoordinatorService {
     this.initialized = true;
 
     serviceLog('CoordinatorService initialized, siteId: %s',
-      Buffer.from(syncManager.getSiteId()).toString('hex').slice(0, 16) + '...');
+      siteIdToBase64(syncManager.getSiteId()));
   }
 
   /**
@@ -150,7 +150,7 @@ export class CoordinatorService {
 
       // Default: allow all, use provided siteId
       if (!context.siteId && context.siteIdRaw) {
-        context.siteId = siteIdFromHex(context.siteIdRaw);
+        context.siteId = siteIdFromBase64(context.siteIdRaw);
       }
       if (!context.siteId) {
         throw new Error('Site ID required');
@@ -171,7 +171,7 @@ export class CoordinatorService {
       const allowed = await this.hooks.onAuthorize(client, operation);
       if (!allowed) {
         authLog('Authorization denied for %s: %O',
-          Buffer.from(client.siteId).toString('hex').slice(0, 16), operation);
+          siteIdToBase64(client.siteId), operation);
       }
       return allowed;
     }
@@ -204,7 +204,7 @@ export class CoordinatorService {
     sinceHLC?: HLC
   ): Promise<ChangeSet[]> {
     serviceLog('getChangesSince for %s, sinceHLC: %O',
-      Buffer.from(client.siteId).toString('hex').slice(0, 16), sinceHLC);
+      siteIdToBase64(client.siteId), sinceHLC);
 
     const endTimer = this.metrics.registry.startTimer(this.metrics.getChangesDuration);
 
@@ -228,7 +228,7 @@ export class CoordinatorService {
     changes: ChangeSet[]
   ): Promise<ApplyResult> {
     serviceLog('applyChanges from %s, count: %d',
-      Buffer.from(client.siteId).toString('hex').slice(0, 16), changes.length);
+      siteIdToBase64(client.siteId), changes.length);
 
     const endTimer = this.metrics.registry.startTimer(this.metrics.applyChangesDuration);
     this.metrics.registry.incCounter(this.metrics.changesReceivedTotal, {}, changes.length);
@@ -251,7 +251,7 @@ export class CoordinatorService {
       if (result.rejected.length > 0) {
         serviceLog('Rejected %d changes from %s',
           result.rejected.length,
-          Buffer.from(client.siteId).toString('hex').slice(0, 16));
+          siteIdToBase64(client.siteId));
         this.metrics.registry.incCounter(this.metrics.changesRejectedTotal, {}, result.rejected.length);
       }
     }
@@ -301,7 +301,7 @@ export class CoordinatorService {
     chunkSize?: number
   ): AsyncIterable<SnapshotChunk> {
     serviceLog('getSnapshotStream for %s',
-      Buffer.from(client.siteId).toString('hex').slice(0, 16));
+      siteIdToBase64(client.siteId));
 
     this.metrics.registry.incCounter(this.metrics.snapshotRequestsTotal);
 
@@ -336,7 +336,7 @@ export class CoordinatorService {
     identity: ClientIdentity
   ): Promise<ClientSession> {
     const connectionId = randomUUID();
-    const siteIdHex = Buffer.from(identity.siteId).toString('hex');
+    const siteIdKey = siteIdToBase64(identity.siteId);
 
     // Call connect hook
     if (this.hooks.onClientConnect) {
@@ -358,10 +358,10 @@ export class CoordinatorService {
     this.sessions.set(connectionId, session);
 
     // Track by siteId for broadcasting
-    let connections = this.siteIdToConnections.get(siteIdHex);
+    let connections = this.siteIdToConnections.get(siteIdKey);
     if (!connections) {
       connections = new Set();
-      this.siteIdToConnections.set(siteIdHex, connections);
+      this.siteIdToConnections.set(siteIdKey, connections);
     }
     connections.add(connectionId);
 
@@ -370,7 +370,7 @@ export class CoordinatorService {
     this.metrics.registry.incGauge(this.metrics.wsConnectionsActive);
 
     serviceLog('Session registered: %s (site: %s)',
-      connectionId.slice(0, 8), siteIdHex.slice(0, 16));
+      connectionId.slice(0, 8), siteIdKey);
 
     return session;
   }
@@ -382,7 +382,7 @@ export class CoordinatorService {
     const session = this.sessions.get(connectionId);
     if (!session) return;
 
-    const siteIdHex = Buffer.from(session.siteId).toString('hex');
+    const siteIdKey = siteIdToBase64(session.siteId);
 
     // Call disconnect hook
     if (this.hooks.onClientDisconnect) {
@@ -392,11 +392,11 @@ export class CoordinatorService {
     this.sessions.delete(connectionId);
 
     // Remove from siteId tracking
-    const connections = this.siteIdToConnections.get(siteIdHex);
+    const connections = this.siteIdToConnections.get(siteIdKey);
     if (connections) {
       connections.delete(connectionId);
       if (connections.size === 0) {
-        this.siteIdToConnections.delete(siteIdHex);
+        this.siteIdToConnections.delete(siteIdKey);
       }
     }
 
@@ -462,7 +462,7 @@ export class CoordinatorService {
   private serializeChangeSet(cs: ChangeSet): object {
     const hlcBytes = serializeHLC(cs.hlc);
     return {
-      siteId: siteIdToHex(cs.siteId),
+      siteId: siteIdToBase64(cs.siteId),
       transactionId: cs.transactionId,
       hlc: Buffer.from(hlcBytes).toString('base64'),
       changes: cs.changes.map(c => {
@@ -491,7 +491,7 @@ export class CoordinatorService {
     uptime: number;
   } {
     return {
-      siteId: Buffer.from(this.syncManager.getSiteId()).toString('hex'),
+      siteId: siteIdToBase64(this.syncManager.getSiteId()),
       connectedClients: this.sessions.size,
       uptime: process.uptime(),
     };

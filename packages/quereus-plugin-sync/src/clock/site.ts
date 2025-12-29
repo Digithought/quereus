@@ -37,44 +37,81 @@ export function generateSiteId(): SiteId {
   return id;
 }
 
+// Base64url alphabet (RFC 4648 Section 5)
+const BASE64URL_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
 /**
- * Convert site ID to hex string for display.
+ * Convert a Uint8Array to base64url encoding (no padding).
  */
-export function siteIdToHex(siteId: SiteId): string {
-  return Array.from(siteId)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
+export function toBase64Url(bytes: Uint8Array): string {
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const byte1 = bytes[i];
+    const byte2 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const byte3 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+
+    const triplet = (byte1 << 16) | (byte2 << 8) | byte3;
+
+    result += BASE64URL_CHARS[(triplet >>> 18) & 0x3f];
+    result += BASE64URL_CHARS[(triplet >>> 12) & 0x3f];
+    if (i + 1 < bytes.length) {
+      result += BASE64URL_CHARS[(triplet >>> 6) & 0x3f];
+    }
+    if (i + 2 < bytes.length) {
+      result += BASE64URL_CHARS[triplet & 0x3f];
+    }
+  }
+  return result;
 }
 
 /**
- * Parse site ID from hex string.
+ * Convert a base64url string to Uint8Array.
  */
-export function siteIdFromHex(hex: string): SiteId {
-  if (hex.length !== 32) {
-    throw new Error(`Invalid site ID hex length: ${hex.length}, expected 32`);
+export function fromBase64Url(str: string): Uint8Array {
+  // Build reverse lookup table
+  const lookup: Record<string, number> = {};
+  for (let i = 0; i < BASE64URL_CHARS.length; i++) {
+    lookup[BASE64URL_CHARS[i]] = i;
   }
 
-  const id = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) {
-    id[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  // Calculate output length (no padding in base64url)
+  const len = str.length;
+  const outputLen = Math.floor((len * 3) / 4);
+  const result = new Uint8Array(outputLen);
+
+  let writePos = 0;
+  for (let i = 0; i < len; i += 4) {
+    const c1 = lookup[str[i]] ?? 0;
+    const c2 = lookup[str[i + 1]] ?? 0;
+    const c3 = i + 2 < len ? lookup[str[i + 2]] ?? 0 : 0;
+    const c4 = i + 3 < len ? lookup[str[i + 3]] ?? 0 : 0;
+
+    const triplet = (c1 << 18) | (c2 << 12) | (c3 << 6) | c4;
+
+    if (writePos < outputLen) result[writePos++] = (triplet >>> 16) & 0xff;
+    if (writePos < outputLen) result[writePos++] = (triplet >>> 8) & 0xff;
+    if (writePos < outputLen) result[writePos++] = triplet & 0xff;
   }
-  return id;
+
+  return result;
 }
 
 /**
- * Format site ID as UUID string (8-4-4-4-12 format).
+ * Convert site ID to base64url string for serialization.
+ * 16 bytes → 22 characters (no padding).
  */
-export function siteIdToUUID(siteId: SiteId): string {
-  const hex = siteIdToHex(siteId);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+export function siteIdToBase64(siteId: SiteId): string {
+  return toBase64Url(siteId);
 }
 
 /**
- * Parse site ID from UUID string.
+ * Parse site ID from base64url string.
  */
-export function siteIdFromUUID(uuid: string): SiteId {
-  const hex = uuid.replace(/-/g, '');
-  return siteIdFromHex(hex);
+export function siteIdFromBase64(base64: string): SiteId {
+  if (base64.length !== 22) {
+    throw new Error(`Invalid site ID base64 length: ${base64.length}, expected 22`);
+  }
+  return fromBase64Url(base64);
 }
 
 /**

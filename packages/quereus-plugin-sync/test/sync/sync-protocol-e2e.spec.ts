@@ -16,7 +16,7 @@ import {
   type ApplyToStoreCallback,
   type SnapshotChunk,
 } from '../../src/sync/protocol.js';
-import { StoreEventEmitter, type KVStore, type WriteBatch } from 'quereus-plugin-store';
+import { StoreEventEmitter, InMemoryKVStore } from 'quereus-plugin-store';
 import { generateSiteId } from '../../src/clock/site.js';
 import { compareHLC } from '../../src/clock/hlc.js';
 import type { SyncManager } from '../../src/sync/manager.js';
@@ -25,65 +25,6 @@ import type { SqlValue } from '@quereus/quereus';
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
-
-/** Mock KVStore for testing - uses hex encoding for binary key safety */
-class MockKVStore implements KVStore {
-  private data = new Map<string, { key: Uint8Array; value: Uint8Array }>();
-
-  async get(key: Uint8Array): Promise<Uint8Array | undefined> {
-    return this.data.get(this.keyToHex(key))?.value;
-  }
-
-  async put(key: Uint8Array, value: Uint8Array): Promise<void> {
-    this.data.set(this.keyToHex(key), { key: new Uint8Array(key), value });
-  }
-
-  async delete(key: Uint8Array): Promise<void> {
-    this.data.delete(this.keyToHex(key));
-  }
-
-  async has(key: Uint8Array): Promise<boolean> {
-    return this.data.has(this.keyToHex(key));
-  }
-
-  async *iterate(options?: { gte?: Uint8Array; lt?: Uint8Array }): AsyncIterable<{ key: Uint8Array; value: Uint8Array }> {
-    const entries = Array.from(this.data.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    const gteHex = options?.gte ? this.keyToHex(options.gte) : '';
-    const ltHex = options?.lt ? this.keyToHex(options.lt) : 'ff'.repeat(1000);
-
-    for (const [keyHex, { key, value }] of entries) {
-      if (keyHex < gteHex) continue;
-      if (keyHex >= ltHex) continue;
-      yield { key, value };
-    }
-  }
-
-  batch(): WriteBatch {
-    const ops: Array<{ type: 'put' | 'delete'; key: Uint8Array; value?: Uint8Array }> = [];
-    const store = this;
-    return {
-      put(key: Uint8Array, value: Uint8Array) { ops.push({ type: 'put', key: new Uint8Array(key), value }); },
-      delete(key: Uint8Array) { ops.push({ type: 'delete', key: new Uint8Array(key) }); },
-      async write() {
-        for (const op of ops) {
-          if (op.type === 'put') await store.put(op.key, op.value!);
-          else await store.delete(op.key);
-        }
-      },
-      clear() { ops.length = 0; },
-    };
-  }
-
-  async close(): Promise<void> {}
-
-  async approximateCount(): Promise<number> {
-    return this.data.size;
-  }
-
-  private keyToHex(key: Uint8Array): string {
-    return Array.from(key).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-}
 
 /** In-memory store that tracks applied changes */
 interface AppliedChange {
@@ -151,7 +92,7 @@ class MockDataStore {
 /** Represents a sync replica (host or guest) */
 interface Replica {
   name: string;
-  kv: MockKVStore;
+  kv: InMemoryKVStore;
   dataStore: MockDataStore;
   storeEvents: StoreEventEmitter;
   syncEvents: SyncEventEmitterImpl;
@@ -160,7 +101,7 @@ interface Replica {
 
 /** Creates a configured replica with store and sync manager */
 async function createReplica(name: string, config: SyncConfig): Promise<Replica> {
-  const kv = new MockKVStore();
+  const kv = new InMemoryKVStore();
   const dataStore = new MockDataStore();
   const storeEvents = new StoreEventEmitter();
   const syncEvents = new SyncEventEmitterImpl();
@@ -771,7 +712,7 @@ describe('Sync Protocol E2E', () => {
         ],
       };
 
-      const store = new MockKVStore();
+      const store = new InMemoryKVStore();
       const dataStore = new MockDataStore();
       const storeEvents = new StoreEventEmitter();
       const syncEvents = new SyncEventEmitterImpl();
@@ -838,7 +779,7 @@ describe('Sync Protocol E2E', () => {
       };
 
       // Source replica with schema
-      const sourceStore = new MockKVStore();
+      const sourceStore = new InMemoryKVStore();
       const sourceEvents = new StoreEventEmitter();
       const sourceSyncEvents = new SyncEventEmitterImpl();
       const sourceDataStore = new MockDataStore();
@@ -853,7 +794,7 @@ describe('Sync Protocol E2E', () => {
       );
 
       // Destination replica with same schema
-      const destStore = new MockKVStore();
+      const destStore = new InMemoryKVStore();
       const destEvents = new StoreEventEmitter();
       const destSyncEvents = new SyncEventEmitterImpl();
       const destDataStore = new MockDataStore();
@@ -941,7 +882,7 @@ describe('Sync Protocol E2E', () => {
       };
 
       // Browser A (source)
-      const browserAStore = new MockKVStore();
+      const browserAStore = new InMemoryKVStore();
       const browserAEvents = new StoreEventEmitter();
       const browserASyncEvents = new SyncEventEmitterImpl();
       const browserADataStore = new MockDataStore();
@@ -955,7 +896,7 @@ describe('Sync Protocol E2E', () => {
       );
 
       // Coordinator (no schema, no applyToStore - just CRDT metadata)
-      const coordStore = new MockKVStore();
+      const coordStore = new InMemoryKVStore();
       const coordEvents = new StoreEventEmitter();
       const coordSyncEvents = new SyncEventEmitterImpl();
       const coordinator = await SyncManagerImpl.create(
@@ -967,7 +908,7 @@ describe('Sync Protocol E2E', () => {
       );
 
       // Browser B (destination)
-      const browserBStore = new MockKVStore();
+      const browserBStore = new InMemoryKVStore();
       const browserBEvents = new StoreEventEmitter();
       const browserBSyncEvents = new SyncEventEmitterImpl();
       const browserBDataStore = new MockDataStore();
@@ -1056,7 +997,7 @@ describe('Sync Protocol E2E', () => {
       };
 
       // Browser A (source)
-      const browserAStore = new MockKVStore();
+      const browserAStore = new InMemoryKVStore();
       const browserAEvents = new StoreEventEmitter();
       const browserASyncEvents = new SyncEventEmitterImpl();
       const browserADataStore = new MockDataStore();
@@ -1070,7 +1011,7 @@ describe('Sync Protocol E2E', () => {
       );
 
       // Coordinator (no schema, no applyToStore - just CRDT metadata)
-      const coordStore = new MockKVStore();
+      const coordStore = new InMemoryKVStore();
       const coordEvents = new StoreEventEmitter();
       const coordSyncEvents = new SyncEventEmitterImpl();
       const coordinator = await SyncManagerImpl.create(
@@ -1108,7 +1049,7 @@ describe('Sync Protocol E2E', () => {
       expect(coordResult.applied).to.be.greaterThan(0);
 
       // Step 4: Browser B connects LATER and requests changes
-      const browserBStore = new MockKVStore();
+      const browserBStore = new InMemoryKVStore();
       const browserBEvents = new StoreEventEmitter();
       const browserBSyncEvents = new SyncEventEmitterImpl();
       const browserBDataStore = new MockDataStore();
@@ -1164,8 +1105,8 @@ describe('Sync Protocol E2E', () => {
       // This simulates the browser scenario where we have TWO different stores:
       // 1. syncMetaStore - where sync metadata lives (quoomb_sync_meta)
       // 2. tableDataStore - where actual table data lives (quereus_main_test)
-      const syncMetaStore = new MockKVStore();
-      const tableDataStore = new MockKVStore();
+      const syncMetaStore = new InMemoryKVStore();
+      const tableDataStore = new InMemoryKVStore();
 
       const tableSchema = {
         schemaName: 'main',

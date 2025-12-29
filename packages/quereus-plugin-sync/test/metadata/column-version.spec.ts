@@ -6,51 +6,7 @@ import { expect } from 'chai';
 import { ColumnVersionStore, serializeColumnVersion, deserializeColumnVersion, type ColumnVersion } from '../../src/metadata/column-version.js';
 import type { HLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
-
-// Mock KVStore for testing
-class MockKVStore {
-  private data = new Map<string, Uint8Array>();
-
-  async get(key: Uint8Array): Promise<Uint8Array | undefined> {
-    return this.data.get(this.keyToString(key));
-  }
-
-  async put(key: Uint8Array, value: Uint8Array): Promise<void> {
-    this.data.set(this.keyToString(key), value);
-  }
-
-  async delete(key: Uint8Array): Promise<void> {
-    this.data.delete(this.keyToString(key));
-  }
-
-  async *iterate(options?: { gte?: Uint8Array; lt?: Uint8Array }): AsyncIterable<{ key: Uint8Array; value: Uint8Array }> {
-    const entries = Array.from(this.data.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    for (const [keyStr, value] of entries) {
-      const key = new TextEncoder().encode(keyStr);
-      if (options?.gte && this.keyToString(key) < this.keyToString(options.gte)) continue;
-      if (options?.lt && this.keyToString(key) >= this.keyToString(options.lt)) continue;
-      yield { key, value };
-    }
-  }
-
-  batch() {
-    const ops: Array<{ type: 'put' | 'delete'; key: Uint8Array; value?: Uint8Array }> = [];
-    return {
-      put: (key: Uint8Array, value: Uint8Array) => ops.push({ type: 'put', key, value }),
-      delete: (key: Uint8Array) => ops.push({ type: 'delete', key }),
-      commit: async () => {
-        for (const op of ops) {
-          if (op.type === 'put') await this.put(op.key, op.value!);
-          else await this.delete(op.key);
-        }
-      },
-    };
-  }
-
-  private keyToString(key: Uint8Array): string {
-    return new TextDecoder().decode(key);
-  }
-}
+import { InMemoryKVStore } from 'quereus-plugin-store';
 
 describe('ColumnVersion', () => {
   describe('serialization', () => {
@@ -98,11 +54,11 @@ describe('ColumnVersion', () => {
 
   describe('ColumnVersionStore', () => {
     let store: ColumnVersionStore;
-    let kv: MockKVStore;
+    let kv: InMemoryKVStore;
 
     beforeEach(() => {
-      kv = new MockKVStore();
-      store = new ColumnVersionStore(kv as any);
+      kv = new InMemoryKVStore();
+      store = new ColumnVersionStore(kv);
     });
 
     it('should store and retrieve column versions', async () => {

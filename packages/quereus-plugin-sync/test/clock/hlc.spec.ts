@@ -6,8 +6,10 @@ import {
   createHLC,
   serializeHLC,
   deserializeHLC,
+  hlcToJson,
+  hlcFromJson,
 } from '../../src/clock/hlc.js';
-import { generateSiteId } from '../../src/clock/site.js';
+import { generateSiteId, siteIdEquals } from '../../src/clock/site.js';
 
 describe('HLC (Hybrid Logical Clock)', () => {
   describe('compareHLC', () => {
@@ -74,6 +76,59 @@ describe('HLC (Hybrid Logical Clock)', () => {
 
     it('should throw on invalid buffer length', () => {
       expect(() => deserializeHLC(new Uint8Array(10))).to.throw('Invalid HLC buffer length');
+    });
+  });
+
+  describe('JSON serialization', () => {
+    it('should round-trip through JSON', () => {
+      const siteId = generateSiteId();
+      const original = createHLC(1234567890123n, 42, siteId);
+
+      const json = hlcToJson(original);
+      const restored = hlcFromJson(json);
+
+      expect(restored.wallTime).to.equal(original.wallTime);
+      expect(restored.counter).to.equal(original.counter);
+      expect(siteIdEquals(restored.siteId, original.siteId)).to.be.true;
+    });
+
+    it('should produce JSON-serializable object', () => {
+      const siteId = generateSiteId();
+      const hlc = createHLC(1234567890123n, 42, siteId);
+
+      const json = hlcToJson(hlc);
+
+      // Should be JSON-serializable
+      const jsonString = JSON.stringify(json);
+      const parsed = JSON.parse(jsonString);
+      const restored = hlcFromJson(parsed);
+
+      expect(hlcEquals(restored, hlc)).to.be.true;
+    });
+
+    it('should use base64url for siteId (22 chars)', () => {
+      const siteId = generateSiteId();
+      const hlc = createHLC(1000n, 1, siteId);
+
+      const json = hlcToJson(hlc);
+
+      // Base64url encoding of 16 bytes = 22 characters (no padding)
+      expect(json.siteId.length).to.equal(22);
+      // Base64url uses A-Z, a-z, 0-9, -, _
+      expect(/^[A-Za-z0-9_-]+$/.test(json.siteId)).to.be.true;
+    });
+
+    it('should use string for wallTime to preserve bigint', () => {
+      const siteId = generateSiteId();
+      const hlc = createHLC(9007199254740993n, 0, siteId); // Larger than MAX_SAFE_INTEGER
+
+      const json = hlcToJson(hlc);
+
+      expect(typeof json.wallTime).to.equal('string');
+      expect(json.wallTime).to.equal('9007199254740993');
+
+      const restored = hlcFromJson(json);
+      expect(restored.wallTime).to.equal(9007199254740993n);
     });
   });
 

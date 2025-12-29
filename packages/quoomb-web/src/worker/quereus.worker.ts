@@ -5,8 +5,8 @@ import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from
 import {
   createSyncModule,
   createStoreAdapter,
-  siteIdToHex,
-  siteIdFromHex,
+  siteIdToBase64,
+  siteIdFromBase64,
   serializeHLC,
   deserializeHLC,
   type SyncManager,
@@ -40,7 +40,7 @@ const MAX_SYNC_EVENTS = 100;
 // Helper to deserialize a ChangeSet from JSON transport format
 function deserializeChangeSet(cs: Record<string, unknown>): ChangeSet {
   return {
-    siteId: siteIdFromHex(cs.siteId as string),
+    siteId: siteIdFromBase64(cs.siteId as string),
     transactionId: cs.transactionId as string,
     hlc: deserializeHLC(Uint8Array.from(atob(cs.hlc as string), c => c.charCodeAt(0))),
     changes: (cs.changes as Record<string, unknown>[]).map(c => ({
@@ -58,7 +58,7 @@ function deserializeChangeSet(cs: Record<string, unknown>): ChangeSet {
 function serializeChangeSet(cs: ChangeSet): object {
   const hlcBytes = serializeHLC(cs.hlc);
   return {
-    siteId: siteIdToHex(cs.siteId),
+    siteId: siteIdToBase64(cs.siteId),
     transactionId: cs.transactionId,
     hlc: btoa(String.fromCharCode(...hlcBytes)),
     changes: cs.changes.map(c => {
@@ -989,7 +989,7 @@ class QuereusWorker implements QuereusWorkerAPI {
           const siteId = this.syncManager!.getSiteId();
           const handshake = JSON.stringify({
             type: 'handshake',
-            siteId: siteIdToHex(siteId),
+            siteId: siteIdToBase64(siteId),
             token: token,
           });
           this.syncWebSocket!.send(handshake);
@@ -1043,7 +1043,7 @@ class QuereusWorker implements QuereusWorkerAPI {
         case 'handshake_ack':
           // Server acknowledged our handshake - store server's siteId
           if (message.serverSiteId) {
-            this.serverSiteId = siteIdFromHex(message.serverSiteId);
+            this.serverSiteId = siteIdFromBase64(message.serverSiteId);
           }
           this.addSyncEvent({
             type: 'state-change',

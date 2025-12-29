@@ -13,77 +13,18 @@ import {
   type SnapshotFooterChunk,
   type ChangeSet,
 } from '../../src/sync/protocol.js';
-import { StoreEventEmitter, type KVStore, type WriteBatch } from 'quereus-plugin-store';
+import { StoreEventEmitter, InMemoryKVStore } from 'quereus-plugin-store';
 import { generateSiteId, siteIdEquals } from '../../src/clock/site.js';
 import { type HLC, compareHLC } from '../../src/clock/hlc.js';
 
-// Mock KVStore for testing - uses hex encoding for binary key safety
-class MockKVStore implements KVStore {
-  private data = new Map<string, { key: Uint8Array; value: Uint8Array }>();
-
-  async get(key: Uint8Array): Promise<Uint8Array | undefined> {
-    return this.data.get(this.keyToHex(key))?.value;
-  }
-
-  async put(key: Uint8Array, value: Uint8Array): Promise<void> {
-    this.data.set(this.keyToHex(key), { key: new Uint8Array(key), value });
-  }
-
-  async delete(key: Uint8Array): Promise<void> {
-    this.data.delete(this.keyToHex(key));
-  }
-
-  async has(key: Uint8Array): Promise<boolean> {
-    return this.data.has(this.keyToHex(key));
-  }
-
-  async *iterate(options?: { gte?: Uint8Array; lt?: Uint8Array }): AsyncIterable<{ key: Uint8Array; value: Uint8Array }> {
-    const entries = Array.from(this.data.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    const gteHex = options?.gte ? this.keyToHex(options.gte) : '';
-    const ltHex = options?.lt ? this.keyToHex(options.lt) : 'ff'.repeat(1000);
-
-    for (const [keyHex, { key, value }] of entries) {
-      if (keyHex < gteHex) continue;
-      if (keyHex >= ltHex) continue;
-      yield { key, value };
-    }
-  }
-
-  batch(): WriteBatch {
-    const ops: Array<{ type: 'put' | 'delete'; key: Uint8Array; value?: Uint8Array }> = [];
-    const store = this;
-    return {
-      put(key: Uint8Array, value: Uint8Array) { ops.push({ type: 'put', key: new Uint8Array(key), value }); },
-      delete(key: Uint8Array) { ops.push({ type: 'delete', key: new Uint8Array(key) }); },
-      async write() {
-        for (const op of ops) {
-          if (op.type === 'put') await store.put(op.key, op.value!);
-          else await store.delete(op.key);
-        }
-      },
-      clear() { ops.length = 0; },
-    };
-  }
-
-  async close(): Promise<void> {}
-
-  async approximateCount(): Promise<number> {
-    return this.data.size;
-  }
-
-  private keyToHex(key: Uint8Array): string {
-    return Array.from(key).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-}
-
 describe('SyncManager', () => {
-  let kv: MockKVStore;
+  let kv: InMemoryKVStore;
   let storeEvents: StoreEventEmitter;
   let syncEvents: SyncEventEmitterImpl;
   let config: SyncConfig;
 
   beforeEach(() => {
-    kv = new MockKVStore();
+    kv = new InMemoryKVStore();
     storeEvents = new StoreEventEmitter();
     syncEvents = new SyncEventEmitterImpl();
     config = { ...DEFAULT_SYNC_CONFIG };
@@ -204,7 +145,7 @@ describe('SyncManager', () => {
   describe('applySnapshot', () => {
     it('should apply snapshot and update HLC', async () => {
       const manager1 = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
-      const manager2 = await SyncManagerImpl.create(new MockKVStore(), storeEvents, config, syncEvents);
+      const manager2 = await SyncManagerImpl.create(new InMemoryKVStore(), storeEvents, config, syncEvents);
 
       // Get snapshot from manager1
       const snapshot = await manager1.getSnapshot();
@@ -250,7 +191,7 @@ describe('SyncManager', () => {
 
     it('should apply streamed snapshot', async () => {
       const manager1 = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
-      const manager2 = await SyncManagerImpl.create(new MockKVStore(), storeEvents, config, syncEvents);
+      const manager2 = await SyncManagerImpl.create(new InMemoryKVStore(), storeEvents, config, syncEvents);
 
       // Stream snapshot from manager1
       const chunks: SnapshotChunk[] = [];
@@ -670,8 +611,8 @@ describe('SyncManager', () => {
   describe('bidirectional sync', () => {
     it('should sync changes between two replicas', async () => {
       // Create two replicas with separate stores
-      const kv1 = new MockKVStore();
-      const kv2 = new MockKVStore();
+      const kv1 = new InMemoryKVStore();
+      const kv2 = new InMemoryKVStore();
       const events1 = new StoreEventEmitter();
       const events2 = new StoreEventEmitter();
       const syncEvents1 = new SyncEventEmitterImpl();
@@ -709,8 +650,8 @@ describe('SyncManager', () => {
     });
 
     it('should resolve concurrent updates with LWW', async () => {
-      const kv1 = new MockKVStore();
-      const kv2 = new MockKVStore();
+      const kv1 = new InMemoryKVStore();
+      const kv2 = new InMemoryKVStore();
       const events1 = new StoreEventEmitter();
       const events2 = new StoreEventEmitter();
       const syncEvents1 = new SyncEventEmitterImpl();
@@ -772,7 +713,7 @@ describe('SyncManager', () => {
     });
 
     it('should handle delete-update conflicts', async () => {
-      const kv1 = new MockKVStore();
+      const kv1 = new InMemoryKVStore();
       const events1 = new StoreEventEmitter();
       const syncEvents1 = new SyncEventEmitterImpl();
 
@@ -824,8 +765,8 @@ describe('SyncManager', () => {
     });
 
     it('should sync full snapshot between replicas', async () => {
-      const kv1 = new MockKVStore();
-      const kv2 = new MockKVStore();
+      const kv1 = new InMemoryKVStore();
+      const kv2 = new InMemoryKVStore();
       const events1 = new StoreEventEmitter();
       const events2 = new StoreEventEmitter();
       const syncEvents1 = new SyncEventEmitterImpl();
@@ -948,8 +889,8 @@ describe('SyncManager', () => {
     });
 
     it('should sync schema migrations between two replicas', async () => {
-      const kv1 = new MockKVStore();
-      const kv2 = new MockKVStore();
+      const kv1 = new InMemoryKVStore();
+      const kv2 = new InMemoryKVStore();
       const events1 = new StoreEventEmitter();
       const events2 = new StoreEventEmitter();
       const syncEvents1 = new SyncEventEmitterImpl();

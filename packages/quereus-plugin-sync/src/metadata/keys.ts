@@ -83,13 +83,27 @@ export function buildTransactionKey(transactionId: string): Uint8Array {
   return encoder.encode(`tx:${transactionId}`);
 }
 
+// Base64url alphabet (RFC 4648 Section 5)
+const BASE64URL_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
 /**
  * Build a peer sync state key.
- * Format: ps:{siteId_hex}
+ * Format: ps:{siteId_base64url}
  */
 export function buildPeerStateKey(siteId: SiteId): Uint8Array {
-  const hex = Array.from(siteId).map(b => b.toString(16).padStart(2, '0')).join('');
-  return encoder.encode(`ps:${hex}`);
+  // Inline base64url encoding to avoid import cycle
+  let base64 = '';
+  for (let i = 0; i < siteId.length; i += 3) {
+    const byte1 = siteId[i];
+    const byte2 = i + 1 < siteId.length ? siteId[i + 1] : 0;
+    const byte3 = i + 2 < siteId.length ? siteId[i + 2] : 0;
+    const triplet = (byte1 << 16) | (byte2 << 8) | byte3;
+    base64 += BASE64URL_CHARS[(triplet >>> 18) & 0x3f];
+    base64 += BASE64URL_CHARS[(triplet >>> 12) & 0x3f];
+    if (i + 1 < siteId.length) base64 += BASE64URL_CHARS[(triplet >>> 6) & 0x3f];
+    if (i + 2 < siteId.length) base64 += BASE64URL_CHARS[triplet & 0x3f];
+  }
+  return encoder.encode(`ps:${base64}`);
 }
 
 /**

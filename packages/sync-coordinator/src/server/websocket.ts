@@ -5,8 +5,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket, RawData } from 'ws';
 import {
-  siteIdFromHex,
-  siteIdToHex,
+  siteIdFromBase64,
+  siteIdToBase64,
   deserializeHLC,
   serializeHLC,
   type HLC,
@@ -136,7 +136,7 @@ export function registerWebSocket(
         const identity: ClientIdentity = await service.authenticate({
           token: msg.token,
           siteIdRaw: msg.siteId,
-          siteId: siteIdFromHex(msg.siteId),
+          siteId: siteIdFromBase64(msg.siteId),
           socket,
         });
 
@@ -144,7 +144,7 @@ export function registerWebSocket(
 
         sendMessage({
           type: 'handshake_ack',
-          serverSiteId: siteIdToHex(service.getSiteId()),
+          serverSiteId: siteIdToBase64(service.getSiteId()),
           connectionId: session.connectionId,
         });
 
@@ -211,7 +211,7 @@ export function registerWebSocket(
 
 function serializeChangeSet(cs: ChangeSet): object {
   return {
-    siteId: siteIdToHex(cs.siteId),
+    siteId: siteIdToBase64(cs.siteId),
     transactionId: cs.transactionId,
     hlc: Buffer.from(serializeHLC(cs.hlc)).toString('base64'),
     changes: cs.changes.map(c => ({
@@ -228,7 +228,7 @@ function serializeChangeSet(cs: ChangeSet): object {
 function deserializeChangeSet(cs: unknown): ChangeSet {
   const obj = cs as Record<string, unknown>;
   return {
-    siteId: siteIdFromHex(obj.siteId as string),
+    siteId: siteIdFromBase64(obj.siteId as string),
     transactionId: obj.transactionId as string,
     hlc: deserializeHLC(Buffer.from(obj.hlc as string, 'base64')),
     changes: (obj.changes as Record<string, unknown>[]).map(c => ({

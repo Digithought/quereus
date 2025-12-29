@@ -6,71 +6,15 @@ import { expect } from 'chai';
 import { ChangeLogStore } from '../../src/metadata/change-log.js';
 import { type HLC, compareHLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
-import type { KVStore, WriteBatch } from 'quereus-plugin-store';
-
-// Mock KVStore for testing - uses hex encoding for binary key safety
-class MockKVStore implements KVStore {
-  private data = new Map<string, { key: Uint8Array; value: Uint8Array }>();
-
-  async get(key: Uint8Array): Promise<Uint8Array | undefined> {
-    return this.data.get(this.keyToHex(key))?.value;
-  }
-
-  async put(key: Uint8Array, value: Uint8Array): Promise<void> {
-    this.data.set(this.keyToHex(key), { key: new Uint8Array(key), value });
-  }
-
-  async delete(key: Uint8Array): Promise<void> {
-    this.data.delete(this.keyToHex(key));
-  }
-
-  async has(key: Uint8Array): Promise<boolean> {
-    return this.data.has(this.keyToHex(key));
-  }
-
-  async *iterate(options?: { gte?: Uint8Array; lt?: Uint8Array }): AsyncIterable<{ key: Uint8Array; value: Uint8Array }> {
-    const entries = Array.from(this.data.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    const gteHex = options?.gte ? this.keyToHex(options.gte) : '';
-    const ltHex = options?.lt ? this.keyToHex(options.lt) : '\xff'.repeat(1000);
-
-    for (const [keyHex, { key, value }] of entries) {
-      if (keyHex < gteHex) continue;
-      if (keyHex >= ltHex) continue;
-      yield { key, value };
-    }
-  }
-
-  batch(): WriteBatch {
-    const ops: Array<{ type: 'put' | 'delete'; key: Uint8Array; value?: Uint8Array }> = [];
-    const store = this;
-    return {
-      put(key: Uint8Array, value: Uint8Array) { ops.push({ type: 'put', key: new Uint8Array(key), value }); },
-      delete(key: Uint8Array) { ops.push({ type: 'delete', key: new Uint8Array(key) }); },
-      async write() {
-        for (const op of ops) {
-          if (op.type === 'put') await store.put(op.key, op.value!);
-          else await store.delete(op.key);
-        }
-      },
-      clear() { ops.length = 0; },
-    };
-  }
-
-  async close(): Promise<void> {}
-  async approximateCount(): Promise<number> { return this.data.size; }
-
-  private keyToHex(key: Uint8Array): string {
-    return Array.from(key).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-}
+import { InMemoryKVStore } from 'quereus-plugin-store';
 
 describe('ChangeLogStore', () => {
-  let kv: MockKVStore;
+  let kv: InMemoryKVStore;
   let store: ChangeLogStore;
   let siteId: Uint8Array;
 
   beforeEach(() => {
-    kv = new MockKVStore();
+    kv = new InMemoryKVStore();
     store = new ChangeLogStore(kv);
     siteId = generateSiteId();
   });

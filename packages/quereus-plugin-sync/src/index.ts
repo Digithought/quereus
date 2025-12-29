@@ -31,13 +31,18 @@ export {
   createHLC,
   serializeHLC,
   deserializeHLC,
+  // HLC JSON serialization (for schema seeds and transport)
+  type SerializedHLC,
+  hlcToJson,
+  hlcFromJson,
   // Site ID types and functions
   type SiteId,
   generateSiteId,
-  siteIdToHex,
-  siteIdFromHex,
-  siteIdToUUID,
-  siteIdFromUUID,
+  // Base64url encoding
+  siteIdToBase64,
+  siteIdFromBase64,
+  toBase64Url,
+  fromBase64Url,
   siteIdEquals,
   type SiteIdentity,
   serializeSiteIdentity,

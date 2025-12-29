@@ -69,3 +69,6 @@ export {
   type TransactionCallbacks,
 } from './transaction.js';
 
+// In-memory KV store
+export { InMemoryKVStore } from './memory-store.js';
+
