@@ -806,9 +806,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     const db = this.db;
     const indexedDBModule = this.indexedDBModule;
     const getTableSchema = (schemaName: string, tableName: string) => {
-      const schema = db.schemaManager.getTable(schemaName, tableName);
-      console.log(`[Worker] getTableSchema(${schemaName}, ${tableName}):`, schema ? `found ${schema.columns.length} columns` : 'NOT FOUND');
-      return schema;
+      return db.schemaManager.getTable(schemaName, tableName);
     };
 
     // Get the correct KV store for each table
@@ -882,19 +880,7 @@ class QuereusWorker implements QuereusWorkerAPI {
         try {
           // Get all pending changes to send to server
           const changesToSend = await this.syncManager.getChangesSince(this.serverSiteId);
-          console.log('[Worker] Changes to send:', changesToSend.length, 'changesets');
           if (changesToSend.length > 0) {
-            // Log column names for debugging
-            for (const cs of changesToSend) {
-              console.log('[Worker] Changeset with', cs.changes.length, 'changes');
-              for (const c of cs.changes) {
-                if (c.type === 'column') {
-                  console.log(`[Worker]   Column change: ${c.schema}.${c.table}.${c.column} = ${c.value}`);
-                } else if (c.type === 'delete') {
-                  console.log(`[Worker]   Delete: ${c.schema}.${c.table} pk=${JSON.stringify(c.pk)}`);
-                }
-              }
-            }
             const serialized = changesToSend.map(cs => serializeChangeSet(cs));
             this.syncWebSocket.send(JSON.stringify({
               type: 'apply_changes',
@@ -1073,23 +1059,10 @@ class QuereusWorker implements QuereusWorkerAPI {
         case 'changes':
         case 'push_changes':
           // Deserialize and apply incoming changes (from initial sync or broadcast)
-          console.log('[Worker] Received', message.type, 'with', (message.changeSets || []).length, 'changesets');
           const changeSets: ChangeSet[] = (message.changeSets || []).map(
             (cs: Record<string, unknown>) => deserializeChangeSet(cs)
           );
-          // Log what we're about to apply
-          for (const cs of changeSets) {
-            console.log('[Worker] Applying changeset with', cs.changes.length, 'changes,', (cs.schemaMigrations || []).length, 'schema migrations');
-            for (const c of cs.changes) {
-              if (c.type === 'column') {
-                console.log(`[Worker]   Column: ${c.schema}.${c.table}.${c.column} = ${c.value}`);
-              } else if (c.type === 'delete') {
-                console.log(`[Worker]   Delete: ${c.schema}.${c.table} pk=${JSON.stringify(c.pk)}`);
-              }
-            }
-          }
           const result = await this.syncManager.applyChanges(changeSets);
-          console.log('[Worker] Apply result:', result);
           this.addSyncEvent({
             type: 'remote-change',
             timestamp: Date.now(),

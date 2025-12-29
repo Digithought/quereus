@@ -290,9 +290,57 @@ The coordinator maintains a stack of pending operations, rolling back to the app
 - Savepoints tracked via operation snapshots
 
 ### IndexedDB Backend
-- Transaction spans multiple object stores
-- Native IDB transaction provides atomicity
+
+**Current architecture**: Each table gets its own IndexedDB **database** by default (e.g., `quereus_main_users`, `quereus_main_orders`). Each database contains a single object store for key-value storage.
+
+- Tables can share a database via `database='shared_name'` option
+- Native IDB transaction provides atomicity within a single database
 - `transaction.abort()` for rollback
+
+### IndexedDB Architecture Gap
+
+**Current limitation**: The default separate-database-per-table architecture prevents cross-table atomicity:
+
+| Scenario | Atomicity |
+|----------|-----------|
+| Multiple tables in SAME IDB database | ✅ Native IDB transaction |
+| Multiple tables in DIFFERENT IDB databases | ❌ Sequential commits |
+| Data tables + sync metadata (different DBs) | ❌ Sequential commits |
+
+**Note on storage quotas**: Browser storage quotas are per-origin, not per-database. Having separate databases does **not** increase available storage—all databases under the same origin share the same quota (~60% of disk on Chrome, ~50% on Firefox, ~1GB on Safari).
+
+**Preferred direction**: Consolidate to a **single IndexedDB database** with multiple object stores (one per table):
+
+| Single Database | Multiple Databases (current) |
+|-----------------|------------------------------|
+| ✅ Native cross-table transactions | ❌ No cross-DB transactions |
+| ✅ Atomicity for sync operations | ❌ Sequential commits |
+| ✅ Same storage quota | ✅ Same storage quota |
+| ✅ No WAL needed | ⚠️ Would need WAL for atomicity |
+| ⚠️ Slightly more complex object store management | ✅ Each table is self-contained |
+
+This matches LevelDB's architecture (single database, key prefixes for tables) and would enable native ACID semantics.
+
+### Isolation Gap
+
+**Additional limitation**: Even with single-database atomicity, the Store module does not provide **isolation** (preventing readers from seeing intermediate states during a transaction).
+
+| Backend | Atomicity | Isolation |
+|---------|-----------|-----------|
+| LevelDB | ✅ WriteBatch | ❌ Readers see intermediate state |
+| IndexedDB (single DB) | ✅ IDB transaction | ❌ Readers see intermediate state |
+
+**Future direction**: Implement isolation using a layered architecture similar to the memory vtab module:
+
+1. **TransactionLayer pattern**: Writers work on an isolated layer that inherits from the committed base
+2. **Copy-on-write semantics**: Uncommitted changes are invisible to readers
+3. **Atomic visibility**: All changes become visible at once on commit
+4. **Rollback**: Discard the transaction layer without affecting readers
+
+This would provide true ACID semantics and enable features like:
+- Consistent reads during long-running transactions
+- Sync operations that apply atomically across tables
+- Snapshot isolation for reporting queries
 
 ## Statistics
 
@@ -437,3 +485,17 @@ packages/quereus-plugin-store/
 - [x] Multi-table transactions via TransactionCoordinator
 - [x] Collation-aware binary encoding infrastructure
 - [ ] Per-column collation specification for keys/indexes (TODO)
+
+### Phase 7: IndexedDB Single-Database Architecture (Future)
+- [ ] Migrate from separate IDB databases to single database with multiple object stores
+- [ ] One object store per table (named by schema.table)
+- [ ] Sync metadata object store in same database
+- [ ] Native cross-table IDB transactions for atomicity
+- [ ] No WAL needed for crash recovery
+
+### Phase 8: Transaction Isolation (Longer-term)
+- [ ] Implement TransactionLayer pattern (similar to memory vtab) for read isolation
+- [ ] Copy-on-write layer that inherits from committed base
+- [ ] Readers see committed snapshot; writers work on isolated layer
+- [ ] Atomic visibility on commit
+- [ ] Enable sync plugin to leverage Store isolation for ACID sync operations

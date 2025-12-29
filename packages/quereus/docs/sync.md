@@ -1,4 +1,4 @@
-# Sync Module - Multi-Master CRDT Replication
+﻿# Sync Module - Multi-Master CRDT Replication
 
 This document describes the architecture for `quereus-plugin-sync`, a fully automatic multi-master CRDT replication system for Quereus. It enables offline-first applications where multiple replicas can independently modify data and converge to a consistent state.
 
@@ -102,6 +102,76 @@ Changes are grouped by transaction. When syncing:
 - All changes within a transaction are sent as a unit
 - Applying changes is atomic per transaction
 - This preserves referential integrity across related writes
+
+### Transactional Integrity During Sync
+
+When applying remote changes, the sync system must write to two separate stores:
+1. **CRDT metadata** → sync metadata store (column versions, tombstones, peer state)
+2. **Actual table data** → each table's data store
+
+**Challenge**: In IndexedDB, each table has its own database, so we cannot have a single atomic transaction spanning both the metadata store and multiple table stores. LevelDB uses a single database with key prefixes, allowing atomic `WriteBatch` commits across tables.
+
+**Write Order**: To ensure crash safety, changes must be applied in this order:
+1. **Data first**: Write table data to the data store
+2. **Metadata second**: Write CRDT metadata to the sync store
+
+This order is safe because:
+- If crash occurs before data: nothing written, re-sync will retry
+- If crash occurs after data but before metadata: CRDT state is "dirty" and will re-apply the same changes on next sync. Since CRDT operations are idempotent (same HLC → same LWW outcome), re-applying is safe.
+- If crash occurs after metadata: all writes complete, consistent state
+
+The reverse order (metadata first) would be dangerous: if we crash after writing metadata but before data, the CRDT state believes the change is applied but data is missing—and re-sync won't retry.
+
+**Current Status**: ⚠️ The current implementation writes metadata first, then data. This should be reversed.
+
+**Per-Table Batching**: Within each table, changes should be applied using `WriteBatch` for atomicity. The `TransactionCoordinator` in the Store module provides this capability.
+
+**Atomicity Gap (IndexedDB)**: The current IndexedDB architecture uses separate databases per table. This means sync cannot atomically commit data changes AND CRDT metadata together—they're in different databases. See [Future: Single-Database Architecture](#future-single-database-architecture) below.
+
+**Isolation Gap**: Even with correct write ordering, readers may see partially-applied state during sync. True isolation would require Store-level support—see [Future: Store Isolation](#future-store-isolation) below.
+
+### Future: Single-Database Architecture
+
+The current IndexedDB implementation uses separate databases per table (e.g., `quereus_main_users`, `quereus_main_orders`). This prevents cross-table atomicity.
+
+**Key insight**: Browser storage quotas are per-origin, not per-database. Separate databases provide no storage benefit—all databases under the same origin share the same quota.
+
+**Preferred direction**: Migrate to a single IndexedDB database with multiple object stores:
+
+| Single Database | Multiple Databases (current) |
+|-----------------|------------------------------|
+| ✅ Native cross-table IDB transactions | ❌ No cross-DB transactions |
+| ✅ Sync metadata + data in one transaction | ❌ Sequential commits |
+| ✅ No WAL needed for crash recovery | ⚠️ Would need WAL |
+| ✅ Same storage quota | ✅ Same storage quota |
+
+With single-database architecture, sync could:
+```
+const tx = idb.transaction(['users', 'orders', 'sync_meta'], 'readwrite');
+// Apply all data changes
+// Apply all CRDT metadata
+tx.commit();  // Native atomicity across all stores
+```
+
+This is tracked in store.md as Phase 7.
+
+### Future: Store Isolation
+
+Longer-term, the Store module should provide transaction isolation similar to the memory vtab's layered architecture:
+
+1. **TransactionLayer pattern**: Writers work on an isolated layer; readers see committed snapshot
+2. **Copy-on-write semantics**: Inherited from memory vtab's BTree layering
+3. **Atomic visibility**: All changes become visible at once on commit
+
+If Store provides this primitive, sync can leverage it:
+```
+store.beginTransaction()    // Isolated write context
+// Apply all data changes   (invisible to readers)
+// Apply all CRDT metadata  (invisible to readers)
+store.commit()              // Atomically visible
+```
+
+This would eliminate the isolation gap, providing true ACID semantics for sync operations across multiple tables. This is tracked in store.md as Phase 8.
 
 ## Storage Layout
 
@@ -873,13 +943,28 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 
 ### Remaining Work
 
-#### 🟡 Advanced Testing
+#### Transactional Integrity (Short-term)
+- [ ] Fix write order in `applyChanges`: write data first, then CRDT metadata (see [Transactional Integrity During Sync](#transactional-integrity-during-sync))
+- [ ] Use `WriteBatch` for per-table atomicity when applying remote changes
+- [ ] Consider using `TransactionCoordinator` in store adapter for batched writes
+
+#### Single-Database Architecture (Future - Store Phase 7)
+- [ ] Migrate IndexedDB to single database with multiple object stores (see [Future: Single-Database Architecture](#future-single-database-architecture))
+- [ ] Place sync metadata in same database as data tables
+- [ ] Leverage native IDB transactions for cross-table atomicity
+
+#### Store Isolation (Longer-term - Store Phase 8)
+- [ ] Implement isolation in Store module using memory vtab's TransactionLayer pattern
+- [ ] Leverage Store isolation for sync to get true ACID semantics (see [Future: Store Isolation](#future-store-isolation))
+
+#### Advanced Testing
 - [ ] Tombstone TTL expiration and fallback to snapshot
 - [ ] Large dataset streaming snapshot tests
 - [ ] Network interruption / resume tests
 - [ ] Integration tests with IndexedDB (browser environment)
+- [ ] Crash recovery tests (verify idempotent re-apply after partial sync)
 
-#### 🟢 Documentation & Examples
+#### Documentation & Examples
 - [ ] Example: WebSocket sync transport
 - [ ] Example: HTTP polling sync transport
 - [ ] Example: Implementing `applyToStore` callback

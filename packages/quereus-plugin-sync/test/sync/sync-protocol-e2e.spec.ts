@@ -1102,11 +1102,9 @@ describe('Sync Protocol E2E', () => {
 
       // Step 2: Browser A sends changes to coordinator
       const changesToCoordinator = await browserA.getChangesSince(coordinator.getSiteId());
-      console.log('Changes to coordinator:', changesToCoordinator.length, 'changesets');
 
       // Step 3: Coordinator applies changes
       const coordResult = await coordinator.applyChanges(changesToCoordinator);
-      console.log('Coordinator apply result:', coordResult);
       expect(coordResult.applied).to.be.greaterThan(0);
 
       // Step 4: Browser B connects LATER and requests changes
@@ -1125,21 +1123,16 @@ describe('Sync Protocol E2E', () => {
 
       // Browser B requests all changes from coordinator (no sinceHLC)
       const changesForB = await coordinator.getChangesSince(browserB.getSiteId());
-      console.log('Changes for Browser B:', changesForB.length, 'changesets');
-      console.log('  Schema migrations:', changesForB[0]?.schemaMigrations?.length ?? 0);
-      console.log('  Data changes:', changesForB[0]?.changes?.length ?? 0);
 
       // This is the key assertion - coordinator should have changes to send
       expect(changesForB.length).to.be.greaterThan(0);
 
       // Browser B applies the changes
       const resultB = await browserB.applyChanges(changesForB);
-      console.log('Browser B apply result:', resultB);
       expect(resultB.applied).to.be.greaterThan(0);
 
       // Verify Browser B has the data
       const bDataChanges = browserBDataStore.changeLog.filter(c => c.type === 'data');
-      console.log('Browser B data changes:', bDataChanges.length);
       expect(bDataChanges.length).to.be.greaterThan(0);
 
       // Collect all column values
@@ -1250,25 +1243,18 @@ describe('Sync Protocol E2E', () => {
       }];
 
       const result = await syncManager.applyChanges(changes);
-      console.log('Apply result:', result);
       expect(result.applied).to.equal(2);
 
       // Check what's in each store
       const syncMetaKeys: string[] = [];
       for await (const entry of syncMetaStore.iterate()) {
-        const keyStr = new TextDecoder().decode(entry.key);
-        syncMetaKeys.push(keyStr);
+        syncMetaKeys.push(new TextDecoder().decode(entry.key));
       }
-      console.log('syncMetaStore has', syncMetaKeys.length, 'keys');
-      console.log('  Keys starting with "d:":', syncMetaKeys.filter(k => k.startsWith('d:')).length);
 
       const tableDataKeys: string[] = [];
       for await (const entry of tableDataStore.iterate()) {
-        const keyStr = new TextDecoder().decode(entry.key);
-        tableDataKeys.push(keyStr);
+        tableDataKeys.push(new TextDecoder().decode(entry.key));
       }
-      console.log('tableDataStore has', tableDataKeys.length, 'keys');
-      console.log('  Keys starting with "d:":', tableDataKeys.filter(k => k.startsWith('d:')).length);
 
       // FIXED: Data should now be in tableDataStore, NOT syncMetaStore
       const dataKeysInSyncMeta = syncMetaKeys.filter(k => k.startsWith('d:'));
