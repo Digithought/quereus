@@ -5,6 +5,22 @@ import { resolve } from 'path';
 export default defineConfig({
   plugins: [react()],
 
+  resolve: {
+    alias: [
+      // Redirect quereus-plugin-store to browser-only entry point
+      // This prevents LevelDB (Node.js-only) from being bundled
+      // Order matters: more specific paths first
+      {
+        find: 'quereus-plugin-store/browser',
+        replacement: resolve(__dirname, '../../node_modules/quereus-plugin-store/dist/src/browser.js'),
+      },
+      {
+        find: 'quereus-plugin-store',
+        replacement: resolve(__dirname, '../../node_modules/quereus-plugin-store/dist/src/browser.js'),
+      },
+    ],
+  },
+
   build: {
     rollupOptions: {
       input: {

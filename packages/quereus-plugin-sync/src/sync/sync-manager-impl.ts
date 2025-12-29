@@ -5,7 +5,13 @@
  */
 
 import type { KVStore, StoreEventEmitter, DataChangeEvent, SchemaChangeEvent } from 'quereus-plugin-store';
-import type { SqlValue, Row } from '@quereus/quereus';
+import type { SqlValue, Row, TableSchema } from '@quereus/quereus';
+
+/**
+ * Callback to get table schema by name.
+ * Used to map column indices to actual column names.
+ */
+export type GetTableSchemaCallback = (schemaName: string, tableName: string) => TableSchema | undefined;
 import { HLCManager, type HLC, compareHLC } from '../clock/hlc.js';
 import {
   generateSiteId,
@@ -77,6 +83,7 @@ export class SyncManagerImpl implements SyncManager {
   private readonly schemaMigrations: SchemaMigrationStore;
   private readonly syncEvents: SyncEventEmitterImpl;
   private readonly applyToStore?: ApplyToStoreCallback;
+  private readonly getTableSchema?: GetTableSchemaCallback;
 
   // Pending changes for the current transaction
   private pendingChanges: Change[] = [];
@@ -87,13 +94,15 @@ export class SyncManagerImpl implements SyncManager {
     config: SyncConfig,
     hlcManager: HLCManager,
     syncEvents: SyncEventEmitterImpl,
-    applyToStore?: ApplyToStoreCallback
+    applyToStore?: ApplyToStoreCallback,
+    getTableSchema?: GetTableSchemaCallback
   ) {
     this.kv = kv;
     this.config = config;
     this.hlcManager = hlcManager;
     this.syncEvents = syncEvents;
     this.applyToStore = applyToStore;
+    this.getTableSchema = getTableSchema;
     this.columnVersions = new ColumnVersionStore(kv);
     this.tombstones = new TombstoneStore(kv, config.tombstoneTTL);
     this.peerStates = new PeerStateStore(kv);
@@ -109,13 +118,15 @@ export class SyncManagerImpl implements SyncManager {
    * @param config - Sync configuration
    * @param syncEvents - Sync event emitter for UI integration
    * @param applyToStore - Optional callback for applying remote changes to the store
+   * @param getTableSchema - Optional callback for getting table schema by name
    */
   static async create(
     kv: KVStore,
     storeEvents: StoreEventEmitter,
     config: SyncConfig,
     syncEvents: SyncEventEmitterImpl,
-    applyToStore?: ApplyToStoreCallback
+    applyToStore?: ApplyToStoreCallback,
+    getTableSchema?: GetTableSchemaCallback
   ): Promise<SyncManagerImpl> {
     // Load or create site identity
     const siteIdKey = new TextEncoder().encode(SITE_ID_KEY);
@@ -146,7 +157,7 @@ export class SyncManagerImpl implements SyncManager {
     }
 
     const hlcManager = new HLCManager(siteId, hlcState);
-    const manager = new SyncManagerImpl(kv, config, hlcManager, syncEvents, applyToStore);
+    const manager = new SyncManagerImpl(kv, config, hlcManager, syncEvents, applyToStore, getTableSchema);
 
     // Subscribe to store events
     storeEvents.onDataChange((event) => manager.handleDataChange(event));
@@ -173,7 +184,13 @@ export class SyncManagerImpl implements SyncManager {
     if (event.remote) return;
 
     const hlc = this.hlcManager.tick();
-    const { schemaName, tableName, key: pk, type, oldRow, newRow } = event;
+    const { schemaName, tableName, type, oldRow, newRow } = event;
+    // Support both 'key' and 'pk' property names
+    const pk = event.key ?? event.pk;
+    if (!pk) {
+      // Cannot record change without primary key
+      return;
+    }
     const batch = this.kv.batch();
 
     if (type === 'delete') {
@@ -287,6 +304,15 @@ export class SyncManagerImpl implements SyncManager {
     newRow: Row,
     hlc: HLC
   ): Promise<void> {
+    // Try to get actual column names from schema
+    const tableSchema = this.getTableSchema?.(schemaName, tableName);
+    const columnNames = tableSchema?.columns?.map(c => c.name);
+
+    // Debug logging for column name resolution
+    if (!tableSchema) {
+      console.warn(`[Sync] No table schema found for ${schemaName}.${tableName} - using fallback column names`);
+    }
+
     // For each column that changed, record the new version
     for (let i = 0; i < newRow.length; i++) {
       const oldValue = oldRow?.[i];
@@ -294,9 +320,8 @@ export class SyncManagerImpl implements SyncManager {
 
       // Only record if value changed (or it's an insert)
       if (!oldRow || oldValue !== newValue) {
-        // We need column names - for now use index as placeholder
-        // In real implementation, we'd get column names from schema
-        const column = `col_${i}`;
+        // Use actual column name if available, otherwise fall back to index-based
+        const column = columnNames?.[i] ?? `col_${i}`;
         const version: ColumnVersion = { hlc, value: newValue };
         this.columnVersions.setColumnVersionBatch(batch, schemaName, tableName, pk, column, version);
 
@@ -514,13 +539,26 @@ export class SyncManagerImpl implements SyncManager {
 
       // Process schema migrations first (DDL before DML)
       for (const migration of changeSet.schemaMigrations) {
-        // TODO: Add schema conflict resolution with column-level HLCs
+        // Record the migration in our metadata store so we can forward it to other peers
+        // Use the incoming schemaVersion if provided, otherwise calculate next version
+        const schemaVersion = migration.schemaVersion ??
+          (await this.schemaMigrations.getCurrentVersion(migration.schema, migration.table)) + 1;
+
+        await this.schemaMigrations.recordMigration(migration.schema, migration.table, {
+          type: migration.type,
+          ddl: migration.ddl,
+          hlc: migration.hlc,
+          schemaVersion,
+        });
+
         schemaChangesToApply.push({
           type: migration.type,
           schema: migration.schema,
           table: migration.table,
           ddl: migration.ddl,
         });
+        // Count schema migrations as applied changes
+        applied++;
       }
 
       // Process data changes

@@ -87,11 +87,15 @@ export {
 export { type SyncManager, type SnapshotCheckpoint } from './sync/manager.js';
 export { SyncManagerImpl } from './sync/sync-manager-impl.js';
 
+// Store adapter for applying remote changes
+export { createStoreAdapter, type SyncStoreAdapterOptions } from './sync/store-adapter.js';
+
 // Factory function
 export {
   createSyncModule,
   type CreateSyncModuleResult,
   type CreateSyncModuleOptions,
+  type GetTableSchemaCallback,
 } from './create-sync-module.js';
 
 // Reactive events
@@ -134,5 +138,20 @@ export {
   PeerStateStore,
   serializePeerState,
   deserializePeerState,
+  // Schema versions (column-level)
+  type SchemaVersion,
+  type SchemaVersionType,
+  type SchemaChangeOperation,
+  SchemaVersionStore,
+  buildSchemaVersionKey,
+  buildSchemaVersionScanBounds,
+  buildAllSchemaVersionsScanBounds,
+  serializeSchemaVersion,
+  deserializeSchemaVersion,
+  parseSchemaVersionKey,
+  // Most destructive wins
+  getDestructiveness,
+  getOperationDestructiveness,
+  shouldApplySchemaChangeByOperation,
 } from './metadata/index.js';
 

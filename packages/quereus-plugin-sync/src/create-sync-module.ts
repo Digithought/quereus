@@ -6,10 +6,17 @@
  */
 
 import type { KVStore, StoreEventEmitter } from 'quereus-plugin-store';
+import type { TableSchema } from '@quereus/quereus';
 import { SyncManagerImpl } from './sync/sync-manager-impl.js';
 import { SyncEventEmitterImpl } from './sync/events.js';
 import { DEFAULT_SYNC_CONFIG, type SyncConfig, type ApplyToStoreCallback } from './sync/protocol.js';
 import type { SyncManager } from './sync/manager.js';
+
+/**
+ * Function to get table schema by name.
+ * Used to map column indices to column names for sync.
+ */
+export type GetTableSchemaCallback = (schemaName: string, tableName: string) => TableSchema | undefined;
 
 /**
  * Result of creating a sync module.
@@ -37,6 +44,17 @@ export interface CreateSyncModuleOptions extends Partial<SyncConfig> {
    * is responsible for applying changes separately.
    */
   applyToStore?: ApplyToStoreCallback;
+
+  /**
+   * Callback for getting table schema by name.
+   *
+   * When provided, the SyncManager uses this to get actual column names
+   * for sync. This is required for proper column-level CRDT tracking.
+   *
+   * If not provided, column names will be derived from row indices (col_0,
+   * col_1, etc.), which may not match across replicas if table schemas differ.
+   */
+  getTableSchema?: GetTableSchemaCallback;
 }
 
 /**
@@ -75,7 +93,7 @@ export async function createSyncModule(
   storeEvents: StoreEventEmitter,
   options: CreateSyncModuleOptions = {}
 ): Promise<CreateSyncModuleResult> {
-  const { applyToStore, ...configOverrides } = options;
+  const { applyToStore, getTableSchema, ...configOverrides } = options;
 
   const fullConfig: SyncConfig = {
     ...DEFAULT_SYNC_CONFIG,
@@ -89,7 +107,8 @@ export async function createSyncModule(
     storeEvents,
     fullConfig,
     syncEvents,
-    applyToStore
+    applyToStore,
+    getTableSchema
   );
 
   return {

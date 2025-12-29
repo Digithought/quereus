@@ -256,8 +256,23 @@ export class CoordinatorService {
       }
     }
 
+    // Log changes before applying for debugging
+    for (const cs of approvedChanges) {
+      serviceLog('ChangeSet has %d changes, %d schemaMigrations',
+        cs.changes.length, cs.schemaMigrations?.length ?? 0);
+      for (const c of cs.changes) {
+        if (c.type === 'column') {
+          serviceLog('  Column: %s.%s.%s = %O', c.schema, c.table, c.column, c.value);
+        } else if (c.type === 'delete') {
+          serviceLog('  Delete: %s.%s pk=%O', c.schema, c.table, c.pk);
+        }
+      }
+    }
+
     // Apply
     const result = await this.syncManager.applyChanges(approvedChanges);
+    serviceLog('Apply result: applied=%d, skipped=%d, conflicts=%d',
+      result.applied, result.skipped, result.conflicts);
     endTimer();
 
     this.metrics.registry.incCounter(this.metrics.changesAppliedTotal, {}, result.applied);
@@ -269,7 +284,10 @@ export class CoordinatorService {
 
     // Broadcast to other connected clients
     if (result.applied > 0) {
+      serviceLog('Broadcasting %d changes to other clients', approvedChanges.length);
       this.broadcastChanges(client.siteId, approvedChanges);
+    } else {
+      serviceLog('No changes applied, not broadcasting');
     }
 
     return result;

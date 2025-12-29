@@ -35,7 +35,7 @@ export type SyncStatus =
 /**
  * Sync event types for UI notifications.
  */
-export type SyncEventType = 'remote-change' | 'local-change' | 'conflict' | 'state-change' | 'error';
+export type SyncEventType = 'remote-change' | 'local-change' | 'conflict' | 'state-change' | 'error' | 'info';
 
 /**
  * Sync event for UI display.

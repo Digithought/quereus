@@ -24,10 +24,15 @@ export interface DataChangeEvent {
   type: 'insert' | 'update' | 'delete';
   schemaName: string;
   tableName: string;
-  key: SqlValue[];
+  /** Primary key values. Alias: pk */
+  key?: SqlValue[];
+  /** Primary key values. Alias: key */
+  pk?: SqlValue[];
   oldRow?: Row;
   newRow?: Row;
-  /** True if this event originated from another browser tab (IndexedDB only). */
+  /** Column names that were changed (for update events). */
+  changedColumns?: string[];
+  /** True if this event originated from sync (remote replica) or cross-tab. */
   remote?: boolean;
 }
 
@@ -38,6 +43,16 @@ export type SchemaChangeListener = (event: SchemaChangeEvent) => void;
 export type DataChangeListener = (event: DataChangeEvent) => void;
 
 /**
+ * Key for identifying a pending remote schema event.
+ */
+interface PendingRemoteSchemaEvent {
+  type: 'create' | 'alter' | 'drop';
+  objectType: 'table' | 'index';
+  schemaName: string;
+  objectName: string;
+}
+
+/**
  * Simple event emitter for store events.
  */
 export class StoreEventEmitter {
@@ -45,6 +60,11 @@ export class StoreEventEmitter {
   private dataListeners: Set<DataChangeListener> = new Set();
   private batchedDataEvents: DataChangeEvent[] = [];
   private isBatching = false;
+  /**
+   * Pending remote schema events that should be marked as remote when they arrive.
+   * Uses a Map with stringified key for O(1) lookup.
+   */
+  private pendingRemoteSchemaEvents: Map<string, number> = new Map();
 
   /**
    * Subscribe to schema change events.
@@ -66,13 +86,60 @@ export class StoreEventEmitter {
 
   /**
    * Emit a schema change event.
+   * If the event matches a pending remote event, it's automatically marked as remote.
    */
   emitSchemaChange(event: SchemaChangeEvent): void {
+    // Check if this event matches a pending remote event
+    const key = this.makeSchemaEventKey(event);
+    const pendingCount = this.pendingRemoteSchemaEvents.get(key);
+    if (pendingCount !== undefined && pendingCount > 0) {
+      // Mark as remote and decrement the pending count
+      event = { ...event, remote: true };
+      if (pendingCount === 1) {
+        this.pendingRemoteSchemaEvents.delete(key);
+      } else {
+        this.pendingRemoteSchemaEvents.set(key, pendingCount - 1);
+      }
+    }
+
     for (const listener of this.schemaListeners) {
       try {
         listener(event);
       } catch (e) {
         console.error('Schema change listener error:', e);
+      }
+    }
+  }
+
+  /**
+   * Create a unique key for a schema event signature.
+   */
+  private makeSchemaEventKey(event: PendingRemoteSchemaEvent): string {
+    return `${event.type}:${event.objectType}:${event.schemaName.toLowerCase()}:${event.objectName.toLowerCase()}`;
+  }
+
+  /**
+   * Register an expected remote schema event.
+   * When a matching event is emitted, it will be automatically marked as remote.
+   * Uses reference counting to handle concurrent applies of the same event type.
+   */
+  expectRemoteSchemaEvent(event: PendingRemoteSchemaEvent): void {
+    const key = this.makeSchemaEventKey(event);
+    const current = this.pendingRemoteSchemaEvents.get(key) ?? 0;
+    this.pendingRemoteSchemaEvents.set(key, current + 1);
+  }
+
+  /**
+   * Clear an expected remote schema event (e.g., if the operation failed).
+   */
+  clearExpectedRemoteSchemaEvent(event: PendingRemoteSchemaEvent): void {
+    const key = this.makeSchemaEventKey(event);
+    const current = this.pendingRemoteSchemaEvents.get(key);
+    if (current !== undefined && current > 0) {
+      if (current === 1) {
+        this.pendingRemoteSchemaEvents.delete(key);
+      } else {
+        this.pendingRemoteSchemaEvents.set(key, current - 1);
       }
     }
   }

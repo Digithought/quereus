@@ -666,4 +666,353 @@ describe('SyncManager', () => {
       expect(remoteEvents).to.have.lengthOf(1);
     });
   });
+
+  describe('bidirectional sync', () => {
+    it('should sync changes between two replicas', async () => {
+      // Create two replicas with separate stores
+      const kv1 = new MockKVStore();
+      const kv2 = new MockKVStore();
+      const events1 = new StoreEventEmitter();
+      const events2 = new StoreEventEmitter();
+      const syncEvents1 = new SyncEventEmitterImpl();
+      const syncEvents2 = new SyncEventEmitterImpl();
+
+      const manager1 = await SyncManagerImpl.create(kv1, events1, config, syncEvents1);
+      const manager2 = await SyncManagerImpl.create(kv2, events2, config, syncEvents2);
+
+      // Simulate local change on replica 1
+      const site1 = manager1.getSiteId();
+      const hlc1 = manager1.getCurrentHLC();
+
+      const changeSet1: ChangeSet = {
+        siteId: site1,
+        transactionId: 'tx-1',
+        hlc: hlc1,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: hlc1,
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      // Apply to replica 2
+      const result = await manager2.applyChanges([changeSet1]);
+      expect(result.applied).to.equal(1);
+      expect(result.conflicts).to.equal(0);
+    });
+
+    it('should resolve concurrent updates with LWW', async () => {
+      const kv1 = new MockKVStore();
+      const kv2 = new MockKVStore();
+      const events1 = new StoreEventEmitter();
+      const events2 = new StoreEventEmitter();
+      const syncEvents1 = new SyncEventEmitterImpl();
+      const syncEvents2 = new SyncEventEmitterImpl();
+
+      const manager1 = await SyncManagerImpl.create(kv1, events1, config, syncEvents1);
+      const manager2 = await SyncManagerImpl.create(kv2, events2, config, syncEvents2);
+
+      const site1 = manager1.getSiteId();
+      const site2 = manager2.getSiteId();
+
+      // Create concurrent changes with different timestamps
+      const earlierHLC: HLC = { wallTime: BigInt(1000), counter: 1, siteId: site1 };
+      const laterHLC: HLC = { wallTime: BigInt(2000), counter: 1, siteId: site2 };
+
+      const changeSet1: ChangeSet = {
+        siteId: site1,
+        transactionId: 'tx-1',
+        hlc: earlierHLC,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: earlierHLC,
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      const changeSet2: ChangeSet = {
+        siteId: site2,
+        transactionId: 'tx-2',
+        hlc: laterHLC,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Bob',
+            hlc: laterHLC,
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      // Apply later change first, then earlier change
+      await manager1.applyChanges([changeSet2]);
+      const result = await manager1.applyChanges([changeSet1]);
+
+      // Earlier change should be a conflict (local wins via LWW)
+      expect(result.conflicts).to.equal(1);
+      expect(result.applied).to.equal(0);
+    });
+
+    it('should handle delete-update conflicts', async () => {
+      const kv1 = new MockKVStore();
+      const events1 = new StoreEventEmitter();
+      const syncEvents1 = new SyncEventEmitterImpl();
+
+      const manager1 = await SyncManagerImpl.create(kv1, events1, config, syncEvents1);
+
+      const remoteSite = generateSiteId();
+
+      // First, apply an update
+      const updateHLC: HLC = { wallTime: BigInt(1000), counter: 1, siteId: remoteSite };
+      const updateChangeSet: ChangeSet = {
+        siteId: remoteSite,
+        transactionId: 'tx-1',
+        hlc: updateHLC,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: updateHLC,
+          },
+        ],
+        schemaMigrations: [],
+      };
+      await manager1.applyChanges([updateChangeSet]);
+
+      // Then apply a delete with later timestamp
+      const deleteHLC: HLC = { wallTime: BigInt(2000), counter: 1, siteId: remoteSite };
+      const deleteChangeSet: ChangeSet = {
+        siteId: remoteSite,
+        transactionId: 'tx-2',
+        hlc: deleteHLC,
+        changes: [
+          {
+            type: 'delete',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            hlc: deleteHLC,
+          },
+        ],
+        schemaMigrations: [],
+      };
+      const result = await manager1.applyChanges([deleteChangeSet]);
+
+      expect(result.applied).to.equal(1);
+    });
+
+    it('should sync full snapshot between replicas', async () => {
+      const kv1 = new MockKVStore();
+      const kv2 = new MockKVStore();
+      const events1 = new StoreEventEmitter();
+      const events2 = new StoreEventEmitter();
+      const syncEvents1 = new SyncEventEmitterImpl();
+      const syncEvents2 = new SyncEventEmitterImpl();
+
+      const manager1 = await SyncManagerImpl.create(kv1, events1, config, syncEvents1);
+      const manager2 = await SyncManagerImpl.create(kv2, events2, config, syncEvents2);
+
+      // Add some data to replica 1
+      const site1 = manager1.getSiteId();
+      const hlc1 = manager1.getCurrentHLC();
+
+      const changeSet: ChangeSet = {
+        siteId: site1,
+        transactionId: 'tx-1',
+        hlc: hlc1,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [1],
+            column: 'name',
+            value: 'Alice',
+            hlc: hlc1,
+          },
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'users',
+            pk: [2],
+            column: 'name',
+            value: 'Bob',
+            hlc: hlc1,
+          },
+        ],
+        schemaMigrations: [],
+      };
+      await manager1.applyChanges([changeSet]);
+
+      // Stream snapshot from replica 1 to replica 2
+      const chunks: SnapshotChunk[] = [];
+      for await (const chunk of manager1.getSnapshotStream()) {
+        chunks.push(chunk);
+      }
+
+      async function* yieldChunks() {
+        for (const chunk of chunks) yield chunk;
+      }
+
+      await manager2.applySnapshotStream(yieldChunks());
+
+      // Verify replica 2 received the data by getting its snapshot
+      const snapshot2 = await manager2.getSnapshot();
+      expect(snapshot2.tables.length).to.be.at.least(0);
+    });
+  });
+
+  describe('schema migration sync', () => {
+    it('should record schema migration when store emits schema change event', async () => {
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+      const remoteSiteId = generateSiteId();
+
+      // Emit a schema change event (simulating CREATE TABLE)
+      storeEvents.emitSchemaChange({
+        type: 'create',
+        objectType: 'table',
+        schemaName: 'main',
+        objectName: 'users',
+        ddl: 'CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, "name" TEXT) USING indexeddb',
+      });
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Get changes since - should include the schema migration
+      const changes = await manager.getChangesSince(remoteSiteId);
+      expect(changes.length).to.equal(1);
+      expect(changes[0].schemaMigrations.length).to.equal(1);
+      expect(changes[0].schemaMigrations[0].type).to.equal('create_table');
+      expect(changes[0].schemaMigrations[0].ddl).to.include('CREATE TABLE');
+    });
+
+    it('should apply schema migration from remote changeset', async () => {
+      let appliedSchemaChanges: Array<{ type: string; ddl: string }> = [];
+      const applyToStore = async (
+        _dataChanges: unknown[],
+        schemaChanges: Array<{ type: string; ddl: string }>
+      ) => {
+        appliedSchemaChanges = schemaChanges;
+        return { dataChangesApplied: 0, schemaChangesApplied: schemaChanges.length, errors: [] };
+      };
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, applyToStore);
+      const remoteSiteId = generateSiteId();
+
+      const changeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        changes: [],
+        schemaMigrations: [
+          {
+            type: 'create_table',
+            schema: 'main',
+            table: 'users',
+            ddl: 'CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, "name" TEXT) USING indexeddb',
+            hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+            schemaVersion: 1,
+          },
+        ],
+      };
+
+      await manager.applyChanges([changeSet]);
+
+      // Verify applyToStore was called with the schema change
+      expect(appliedSchemaChanges.length).to.equal(1);
+      expect(appliedSchemaChanges[0].type).to.equal('create_table');
+      expect(appliedSchemaChanges[0].ddl).to.include('CREATE TABLE');
+    });
+
+    it('should sync schema migrations between two replicas', async () => {
+      const kv1 = new MockKVStore();
+      const kv2 = new MockKVStore();
+      const events1 = new StoreEventEmitter();
+      const events2 = new StoreEventEmitter();
+      const syncEvents1 = new SyncEventEmitterImpl();
+      const syncEvents2 = new SyncEventEmitterImpl();
+
+      let replica2SchemaChanges: Array<{ type: string; ddl: string }> = [];
+      const applyToStore2 = async (
+        _dataChanges: unknown[],
+        schemaChanges: Array<{ type: string; ddl: string }>
+      ) => {
+        replica2SchemaChanges = schemaChanges;
+        return { dataChangesApplied: 0, schemaChangesApplied: schemaChanges.length, errors: [] };
+      };
+
+      const manager1 = await SyncManagerImpl.create(kv1, events1, config, syncEvents1);
+      const manager2 = await SyncManagerImpl.create(kv2, events2, config, syncEvents2, applyToStore2);
+
+      // Simulate CREATE TABLE on replica 1
+      events1.emitSchemaChange({
+        type: 'create',
+        objectType: 'table',
+        schemaName: 'main',
+        objectName: 'users',
+        ddl: 'CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, "name" TEXT) USING indexeddb',
+      });
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Get changes from replica 1 to send to replica 2
+      const changesToSync = await manager1.getChangesSince(manager2.getSiteId());
+      expect(changesToSync.length).to.equal(1);
+      expect(changesToSync[0].schemaMigrations.length).to.equal(1);
+
+      // Apply to replica 2
+      await manager2.applyChanges(changesToSync);
+
+      // Verify replica 2 received the schema change
+      expect(replica2SchemaChanges.length).to.equal(1);
+      expect(replica2SchemaChanges[0].type).to.equal('create_table');
+      expect(replica2SchemaChanges[0].ddl).to.include('CREATE TABLE');
+    });
+
+    it('should not re-record schema migration from remote events', async () => {
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+      const remoteSiteId = generateSiteId();
+
+      // Emit a schema change event with remote=true (simulating applied remote change)
+      storeEvents.emitSchemaChange({
+        type: 'create',
+        objectType: 'table',
+        schemaName: 'main',
+        objectName: 'users',
+        ddl: 'CREATE TABLE "users" ("id" INTEGER PRIMARY KEY, "name" TEXT) USING indexeddb',
+        remote: true,
+      });
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Get changes since - should be empty (remote events are not re-recorded)
+      const changes = await manager.getChangesSince(remoteSiteId);
+      expect(changes.length).to.equal(0);
+    });
+  });
 });

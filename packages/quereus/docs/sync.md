@@ -749,6 +749,35 @@ async function resumeSnapshot(ws: WebSocket) {
 }
 ```
 
+### Store Adapter for Remote Changes
+
+The `createStoreAdapter` function creates a unified adapter for applying remote changes to LevelDB and IndexedDB stores:
+
+```typescript
+import { createStoreAdapter } from 'quereus-plugin-sync';
+import { LevelDBStore, StoreEventEmitter } from 'quereus-plugin-store';
+
+// Create event emitter for store events
+const storeEvents = new StoreEventEmitter();
+
+// Open your KV store
+const kvStore = await LevelDBStore.open({ path: './data' });
+
+// Create the store adapter
+const applyToStore = createStoreAdapter(kvStore, storeEvents);
+
+// Use with SyncManager - remote changes are applied via the adapter
+const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToStore, {
+  tombstoneTTL: 30 * 24 * 60 * 60 * 1000,
+});
+
+// When remote changes arrive, the adapter:
+// 1. Handles UPSERT semantics (insert if row doesn't exist, update if it does)
+// 2. Deletes rows by primary key
+// 3. Executes DDL for schema changes
+// 4. Emits events with remote=true to prevent re-recording CRDT metadata
+```
+
 ## Implementation Status
 
 ### Completed
@@ -819,24 +848,32 @@ async function resumeSnapshot(ws: WebSocket) {
 - [x] Reactive events fire exactly once (UI receives from Store, SyncManager ignores remote events)
 - [x] Unit tests for `applyToStore` callback behavior
 
-#### 🔴 Store Integration (Blocking)
-- [ ] Implement `applyToStore` callback in LevelDBStore
-- [ ] Implement `applyToStore` callback in IndexedDBStore
-- [ ] Handle UPSERT semantics (column changes may be insert or update)
-- [ ] Handle row deletions by primary key
-- [ ] Execute DDL for schema changes with `remote: true`
-- [ ] Ensure proper transaction boundaries
+#### Phase 10: Store Integration ✅
+- [x] Implement `createStoreAdapter()` - unified adapter for LevelDB and IndexedDB
+- [x] Handle UPSERT semantics (column changes may be insert or update)
+- [x] Handle row deletions by primary key
+- [x] Execute DDL for schema changes with `remote: true`
+- [x] Emit data change events with `remote: true` to prevent re-recording CRDT metadata
 
-#### 🟡 Schema Sync Refinement
-- [ ] Replace `SchemaMigrationStore` with column-level schema version storage
-- [ ] Implement "most destructive wins" conflict resolution
-- [ ] Track schema elements with HLCs: `sv:{schema}.{table}:{column}` pattern
-- [ ] Implement `shouldApplySchemaChange()` with destructiveness hierarchy
-- [ ] Schema conflict tests (ADD vs ALTER, DROP vs ALTER, concurrent ADD same column)
+#### Phase 11: Schema Sync Refinement ✅
+- [x] Implement column-level schema version storage (`SchemaVersionStore`)
+- [x] Track schema elements with HLCs: `sv:{schema}.{table}:{column}` pattern
+- [x] Implement "most destructive wins" conflict resolution
+  - [x] `getDestructiveness()` - rank schema version types
+  - [x] `getOperationDestructiveness()` - rank schema change operations
+  - [x] `shouldApplySchemaChangeByOperation()` - compare changes with destructiveness hierarchy
+- [x] Schema conflict tests (destructiveness ranking, LWW for same level)
 
-#### 🟡 Integration Testing
-- [ ] E2E test: two replicas with bidirectional sync
-- [ ] Multi-replica conflict scenarios (concurrent writes to same column)
+#### Phase 12: Integration Testing ✅
+- [x] E2E test: two replicas with bidirectional sync
+- [x] Multi-replica conflict scenarios (concurrent writes to same column)
+- [x] LWW conflict resolution tests
+- [x] Delete-update conflict handling tests
+- [x] Full snapshot sync between replicas
+
+### Remaining Work
+
+#### 🟡 Advanced Testing
 - [ ] Tombstone TTL expiration and fallback to snapshot
 - [ ] Large dataset streaming snapshot tests
 - [ ] Network interruption / resume tests
