@@ -1,6 +1,6 @@
 {
-  "name": "quereus-store-indexeddb",
-  "version": "0.1.0",
+  "name": "@quereus/store-indexeddb",
+  "version": "0.2.0",
   "type": "module",
   "description": "IndexedDB KVStore implementation for Quereus - browser persistent storage",
   "keywords": [
@@ -23,7 +23,6 @@
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [
-    "src",
     "dist",
     "!**/*.tsbuildinfo"
   ],
@@ -39,10 +38,10 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "quereus-plugin-store": "*"
+    "@quereus/plugin-store": "*"
   },
   "devDependencies": {
-    "quereus-plugin-store": "*",
+    "@quereus/plugin-store": "*",
     "rimraf": "^6.1.2",
     "typescript": "^5.8.3"
   }
