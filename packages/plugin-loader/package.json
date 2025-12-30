@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-loader",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "Plugin loading system for Quereus - supports dynamic imports for Node.js and browsers",
   "publisher": "Got Choices Foundation",
@@ -13,7 +13,6 @@
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [
-    "src",
     "dist",
     "!**/*.tsbuildinfo"
   ],
