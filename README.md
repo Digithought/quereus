@@ -96,8 +96,18 @@ Quereus is built around a three-layer architecture:
 
 This repository contains multiple packages:
 
+### Core
 - **[`packages/quereus/`](packages/quereus/)** — Core SQL engine and runtime
-- **[`packages/quereus-plugin-store/`](packages/quereus-plugin-store/)** — Persistent storage plugin (LevelDB for Node.js, IndexedDB for browsers)
+
+### Storage
+- **[`packages/quereus-plugin-store/`](packages/quereus-plugin-store/)** — Core store plugin (platform-agnostic interfaces and utilities)
+- **[`packages/quereus-store-leveldb/`](packages/quereus-store-leveldb/)** — LevelDB storage backend for Node.js
+- **[`packages/quereus-store-indexeddb/`](packages/quereus-store-indexeddb/)** — IndexedDB storage backend for browsers
+
+### Sync
+- **[`packages/quereus-plugin-sync/`](packages/quereus-plugin-sync/)** — Multi-master CRDT replication plugin
+
+### Tools
 - **[`packages/plugin-loader/`](packages/plugin-loader/)** — Dynamic plugin loading system
 - **[`packages/quoomb-web/`](packages/quoomb-web/)** — Web-based query interface and visualizer
 - **[`packages/quoomb-cli/`](packages/quoomb-cli/)** — Command-line interface
@@ -111,7 +121,11 @@ This repository contains multiple packages:
 - **[Virtual Tables](packages/quereus/docs/memory-table.md)** — Virtual table system and memory tables
 - **[Runtime Architecture](packages/quereus/docs/runtime.md)** — Execution engine internals
 
-### Advanced Topics  
+### Storage & Sync
+- **[Persistent Store](packages/quereus/docs/store.md)** — LevelDB/IndexedDB storage architecture
+- **[Store Plugin README](packages/quereus-plugin-store/README.md)** — Quick start and API reference
+
+### Advanced Topics
 - **[Query Optimizer](packages/quereus/docs/optimizer.md)** — Query planning and optimization
 - **[Usage Examples](packages/quereus/docs/usage.md)** — Practical examples and patterns
 

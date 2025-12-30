@@ -24,6 +24,8 @@
     "build:engine": "yarn workspace @quereus/quereus build",
     "build:loader": "yarn workspace @quereus/plugin-loader build",
     "build:store": "yarn workspace quereus-plugin-store build",
+    "build:store-leveldb": "yarn workspace quereus-store-leveldb build",
+    "build:store-indexeddb": "yarn workspace quereus-store-indexeddb build",
     "build:sync": "yarn workspace quereus-plugin-sync build",
     "build:plugins": "yarn workspace @quereus/sample-plugins build",
     "build:vscode": "yarn workspace quereus-vscode build",

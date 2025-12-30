@@ -6140,6 +6140,32 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"quereus-store-indexeddb@workspace:packages/quereus-store-indexeddb":
+  version: 0.0.0-use.local
+  resolution: "quereus-store-indexeddb@workspace:packages/quereus-store-indexeddb"
+  dependencies:
+    quereus-plugin-store: "npm:*"
+    rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    quereus-plugin-store: "*"
+  languageName: unknown
+  linkType: soft
+
+"quereus-store-leveldb@workspace:packages/quereus-store-leveldb":
+  version: 0.0.0-use.local
+  resolution: "quereus-store-leveldb@workspace:packages/quereus-store-leveldb"
+  dependencies:
+    "@types/node": "npm:^22.15.29"
+    classic-level: "npm:^2.0.0"
+    quereus-plugin-store: "npm:*"
+    rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    quereus-plugin-store: "*"
+  languageName: unknown
+  linkType: soft
+
 "quereus-vscode@workspace:packages/quereus-vscode":
   version: 0.0.0-use.local
   resolution: "quereus-vscode@workspace:packages/quereus-vscode"

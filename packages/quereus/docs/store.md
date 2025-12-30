@@ -95,29 +95,78 @@ Events received from other tabs have `event.remote = true` to distinguish them f
 
 ## Overview
 
-The store module provides persistent table storage while maintaining Quereus's key-based addressing model. Both backends expose a unified `KVStore` interface, with platform-specific modules (`leveldb`, `indexeddb`) that share common logic.
+The store module provides persistent table storage while maintaining Quereus's key-based addressing model. The architecture uses a **platform abstraction layer** that separates core virtual table logic from platform-specific storage backends.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    quereus-plugin-store                       │
+│                    quereus-plugin-store (core)                │
 ├──────────────────────────────────────────────────────────────┤
-│  Common Layer                                                 │
+│  Interfaces                                                   │
+│  ┌─────────────────┐  ┌─────────────────────────────────┐    │
+│  │ KVStore         │  │ KVStoreProvider                  │    │
+│  │ - get/put/delete│  │ - getStore(schema, table)       │    │
+│  │ - iterate/batch │  │ - getCatalogStore()             │    │
+│  └─────────────────┘  │ - closeStore/closeAll           │    │
+│                       └─────────────────────────────────┘    │
+├──────────────────────────────────────────────────────────────┤
+│  Generic Virtual Table                                        │
+│  ┌─────────────────┐  ┌─────────────────────────────────┐    │
+│  │ StoreTable      │  │ StoreConnection                  │    │
+│  │ - query/update  │  │ - begin/commit/rollback         │    │
+│  │ - getBestPlan   │  │ - savepoints                    │    │
+│  └─────────────────┘  └─────────────────────────────────┘    │
+├──────────────────────────────────────────────────────────────┤
+│  Common Utilities                                             │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐   │
-│  │ Key Encoder │  │ Row Serial. │  │ KVTable (base)      │   │
-│  │ (sort-safe) │  │ (ext. JSON) │  │ - getBestAccessPlan │   │
-│  └─────────────┘  └─────────────┘  │ - query, update     │   │
-│                                    └─────────────────────┘   │
-├──────────────────────────────────────────────────────────────┤
-│  KVStore Interface                                            │
-│  get | put | delete | iterate | batch | close                 │
-├──────────────┬───────────────────────────────────────────────┤
-│  LevelDB     │  IndexedDB                                     │
-│  (Node.js)   │  (Browser)                                     │
-│  classic-lvl │  Native API                                    │
-└──────────────┴───────────────────────────────────────────────┘
+│  │ Key Encoder │  │ Row Serial. │  │ TransactionCoord.   │   │
+│  │ (sort-safe) │  │ (ext. JSON) │  │ - multi-table atomic│   │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘   │
+└──────────────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+┌─────────────────────────┐     ┌─────────────────────────────┐
+│ quereus-store-leveldb   │     │ quereus-store-indexeddb     │
+├─────────────────────────┤     ├─────────────────────────────┤
+│ LevelDBStore            │     │ IndexedDBStore              │
+│ LevelDBProvider         │     │ IndexedDBProvider           │
+│ - uses classic-level    │     │ - uses native IndexedDB API │
+│ - Node.js only          │     │ - CrossTabSync              │
+└─────────────────────────┘     │ - Browser only              │
+                                └─────────────────────────────┘
 ```
+
+### Key Interfaces
+
+**KVStore** - Abstract key-value store interface:
+```typescript
+interface KVStore {
+  get(key: Uint8Array): Promise<Uint8Array | undefined>;
+  put(key: Uint8Array, value: Uint8Array): Promise<void>;
+  delete(key: Uint8Array): Promise<void>;
+  has(key: Uint8Array): Promise<boolean>;
+  iterate(options?: IterateOptions): AsyncIterable<KVEntry>;
+  batch(): WriteBatch;
+  close(): Promise<void>;
+}
+```
+
+**KVStoreProvider** - Factory for platform-specific stores:
+```typescript
+interface KVStoreProvider {
+  getStore(schemaName: string, tableName: string, options?: StoreOptions): Promise<KVStore>;
+  getCatalogStore(): Promise<KVStore>;
+  closeStore(schemaName: string, tableName: string): Promise<void>;
+  closeAll(): Promise<void>;
+}
+```
+
+This architecture enables:
+- **Platform portability** - Same SQL tables work across Node.js, browsers, and mobile
+- **Custom storage backends** - Implement `KVStore` for SQLite, LMDB, or cloud storage
+- **Dependency injection** - Use `KVStoreProvider` for store management
 
 ## Storage Layout
 
@@ -421,29 +470,42 @@ CREATE INDEX idx_name ON t(name COLLATE BINARY);
 
 ## Package Structure
 
+The store plugin is split across three packages to enable platform-specific packaging:
+
 ```
-packages/quereus-plugin-store/
+packages/quereus-plugin-store/         # Core (platform-agnostic)
   src/
     common/
       encoding.ts       # Key encoding utilities (type-prefixed sort-safe encoding)
       key-builder.ts    # Data/index key construction and scan bounds
       serialization.ts  # Extended JSON row serialization
       kv-store.ts       # KVStore interface with iterate and batch support
+      kv-store-provider.ts  # KVStoreProvider interface for dependency injection
       events.ts         # Schema and data change event emitter
       ddl-generator.ts  # Generate CREATE TABLE/INDEX DDL from schemas
       index.ts          # Common module exports
-    leveldb/
-      store.ts          # LevelDBStore (classic-level wrapper)
-      module.ts         # LevelDBModule (VirtualTableModule with createIndex)
-      table.ts          # LevelDBTable (VirtualTable with query/update)
-      index.ts          # LevelDB module exports
-    indexeddb/
-      store.ts          # IndexedDBStore (browser native API wrapper)
-      module.ts         # IndexedDBModule (VirtualTableModule with createIndex)
-      table.ts          # IndexedDBTable (VirtualTable with query/update)
-      broadcast.ts      # CrossTabSync for BroadcastChannel notifications
-      index.ts          # IndexedDB module exports
+    table/
+      store-table.ts    # Generic StoreTable (uses KVStore abstraction)
+      store-connection.ts  # Generic transaction connection
+      index.ts          # Table module exports
+    leveldb/            # Node.js-specific (wraps platform package)
+      ...
+    indexeddb/          # Browser-specific (wraps platform package)
+      ...
     index.ts            # Platform-conditional exports
+
+packages/quereus-store-leveldb/        # Node.js LevelDB implementation
+  src/
+    store.ts            # LevelDBStore (classic-level wrapper)
+    provider.ts         # LevelDBProvider (KVStoreProvider implementation)
+    index.ts            # Package exports
+
+packages/quereus-store-indexeddb/      # Browser IndexedDB implementation
+  src/
+    store.ts            # IndexedDBStore (native IndexedDB wrapper)
+    provider.ts         # IndexedDBProvider (KVStoreProvider implementation)
+    broadcast.ts        # CrossTabSync for BroadcastChannel notifications
+    index.ts            # Package exports
 ```
 
 ## Implementation Status
@@ -496,7 +558,18 @@ packages/quereus-plugin-store/
 **Implementation**: `UnifiedIndexedDBModule` and `UnifiedIndexedDBStore` provide the new architecture.
 Use `UnifiedIndexedDBModule` instead of `IndexedDBModule` to opt-in to the unified database.
 
-### Phase 8: Transaction Isolation (Longer-term)
+### Phase 8: Platform Abstraction Layer ✓
+- [x] Define `KVStoreProvider` interface for dependency injection
+- [x] Create generic `StoreTable` that works with any `KVStore`
+- [x] Create generic `StoreConnection` for transaction management
+- [x] Split LevelDB implementation into `quereus-store-leveldb` package
+- [x] Split IndexedDB implementation into `quereus-store-indexeddb` package
+- [x] Create `LevelDBProvider` and `IndexedDBProvider` implementations
+- [x] Factory functions: `createLevelDBProvider()` and `createIndexedDBProvider()`
+
+This enables custom storage backends by implementing `KVStore` and `KVStoreProvider`.
+
+### Phase 9: Transaction Isolation (Longer-term)
 - [ ] Implement TransactionLayer pattern (similar to memory vtab) for read isolation
 - [ ] Copy-on-write layer that inherits from committed base
 - [ ] Readers see committed snapshot; writers work on isolated layer

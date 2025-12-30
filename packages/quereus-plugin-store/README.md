@@ -2,10 +2,42 @@
 
 Persistent storage plugin for [Quereus](https://github.com/gotchoices/quereus) providing LevelDB (Node.js) and IndexedDB (browser) backends.
 
+## Architecture
+
+The store plugin uses a **platform abstraction layer** that separates the core virtual table logic from platform-specific storage:
+
+```
+quereus-plugin-store (core)
+├── KVStore interface           - Abstract key-value store
+├── KVStoreProvider interface   - Store factory/management
+├── StoreTable                  - Generic virtual table implementation
+├── StoreConnection             - Generic transaction support
+└── Common utilities            - Encoding, serialization, events
+
+quereus-store-leveldb (Node.js)      quereus-store-indexeddb (Browser)
+├── LevelDBStore                      ├── IndexedDBStore
+└── LevelDBProvider                   ├── IndexedDBProvider
+                                      └── CrossTabSync
+```
+
+This architecture enables:
+- **Platform portability** - Same SQL tables work across Node.js, browsers, and mobile
+- **Custom storage backends** - Implement `KVStore` for SQLite, LMDB, or cloud storage
+- **Dependency injection** - Use `KVStoreProvider` for store management
+
 ## Installation
 
 ```bash
 npm install quereus-plugin-store
+```
+
+For platform-specific stores:
+```bash
+# Node.js
+npm install quereus-store-leveldb
+
+# Browser
+npm install quereus-store-indexeddb
 ```
 
 ## Quick Start
@@ -143,24 +175,102 @@ await db.exec('ROLLBACK TO sp1');  // Undo the insert
 await db.exec('COMMIT');
 ```
 
+## KVStore Interface
+
+The `KVStore` interface is the foundation for all storage backends:
+
+```typescript
+interface KVStore {
+  get(key: Uint8Array): Promise<Uint8Array | undefined>;
+  put(key: Uint8Array, value: Uint8Array): Promise<void>;
+  delete(key: Uint8Array): Promise<void>;
+  has(key: Uint8Array): Promise<boolean>;
+  iterate(options?: IterateOptions): AsyncIterable<KVEntry>;
+  batch(): WriteBatch;
+  close(): Promise<void>;
+}
+```
+
+### Using KVStoreProvider
+
+For dependency injection and store management, use `KVStoreProvider`:
+
+```typescript
+import { createLevelDBProvider } from 'quereus-store-leveldb';
+// OR for browsers:
+import { createIndexedDBProvider } from 'quereus-store-indexeddb';
+
+// Node.js
+const provider = createLevelDBProvider({ basePath: './data' });
+
+// Browser
+const provider = createIndexedDBProvider({ prefix: 'myapp' });
+
+// Get stores for tables
+const userStore = await provider.getStore('main', 'users');
+const catalogStore = await provider.getCatalogStore();
+
+// Clean up
+await provider.closeAll();
+```
+
+### Custom Storage Backends
+
+Implement `KVStore` to create custom storage backends:
+
+```typescript
+import type { KVStore, KVStoreProvider } from 'quereus-plugin-store';
+
+class MyCustomStore implements KVStore {
+  async get(key: Uint8Array) { /* ... */ }
+  async put(key: Uint8Array, value: Uint8Array) { /* ... */ }
+  // ... implement remaining methods
+}
+
+class MyCustomProvider implements KVStoreProvider {
+  async getStore(schemaName: string, tableName: string) {
+    return new MyCustomStore(/* ... */);
+  }
+  async getCatalogStore() { /* ... */ }
+  async closeStore(schemaName: string, tableName: string) { /* ... */ }
+  async closeAll() { /* ... */ }
+}
+```
+
 ## API
 
-### Exports
+### Core Exports
+
+- `KVStore` - Key-value store interface (type)
+- `KVStoreProvider` - Store factory interface (type)
+- `StoreTable` - Generic virtual table class
+- `StoreConnection` - Generic transaction connection
+- `TransactionCoordinator` - Shared transaction management
+- `StoreEventEmitter` - Event system for data/schema changes
+
+### Module Exports
 
 - `LevelDBModule` - Node.js virtual table module
 - `IndexedDBModule` - Browser virtual table module (one IDB database per table)
 - `UnifiedIndexedDBModule` - Browser module with single shared IDB database (recommended)
-- `LevelDBStore` / `IndexedDBStore` - Low-level key-value store
+
+### Store Exports
+
+- `LevelDBStore` / `IndexedDBStore` - Low-level key-value store implementations
 - `UnifiedIndexedDBStore` / `UnifiedIndexedDBManager` - Unified IDB store and manager
 - `MultiStoreWriteBatch` - Atomic writes across multiple object stores
-- `LevelDBConnection` / `IndexedDBConnection` - Transaction connection
-- `TransactionCoordinator` - Shared transaction management
 - `CrossTabSync` - Browser tab synchronization
 - `platform` - `{ isNode: boolean, isBrowser: boolean }`
 
 ### Default Export
 
 The default export is a plugin registration function for use with `registerPlugin()`.
+
+## Related Packages
+
+- [`quereus-store-leveldb`](../quereus-store-leveldb/) - LevelDB store implementation for Node.js
+- [`quereus-store-indexeddb`](../quereus-store-indexeddb/) - IndexedDB store implementation for browsers
+- [`quereus-plugin-sync`](../quereus-plugin-sync/) - CRDT sync layer (uses `KVStore` for metadata)
 
 ## License
 

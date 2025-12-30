@@ -116,3 +116,49 @@ export interface KVStoreOptions {
   errorIfExists?: boolean;
 }
 
+/**
+ * Provider interface for creating/getting KVStore instances.
+ *
+ * This abstraction allows different storage backends (LevelDB, IndexedDB,
+ * React Native AsyncStorage, etc.) to be used with the StoreModule.
+ *
+ * Implementations should manage store lifecycle and caching.
+ */
+export interface KVStoreProvider {
+  /**
+   * Get or create a KVStore for a table.
+   * @param schemaName - The schema name (e.g., 'main')
+   * @param tableName - The table name
+   * @param options - Additional options passed from CREATE TABLE
+   * @returns The KVStore instance
+   */
+  getStore(schemaName: string, tableName: string, options?: Record<string, unknown>): Promise<KVStore>;
+
+  /**
+   * Get or create a KVStore for catalog/DDL metadata.
+   * Some providers may use the same store as data, others may use a separate store.
+   * @returns The KVStore instance for catalog data
+   */
+  getCatalogStore(): Promise<KVStore>;
+
+  /**
+   * Close a specific store.
+   * @param schemaName - The schema name
+   * @param tableName - The table name
+   */
+  closeStore(schemaName: string, tableName: string): Promise<void>;
+
+  /**
+   * Close all stores managed by this provider.
+   */
+  closeAll(): Promise<void>;
+
+  /**
+   * Optional: Called when a store is first accessed to perform any setup.
+   * @param store - The store that was just opened
+   * @param schemaName - The schema name
+   * @param tableName - The table name
+   */
+  onStoreOpened?(store: KVStore, schemaName: string, tableName: string): void;
+}
+
