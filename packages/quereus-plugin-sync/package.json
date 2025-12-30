@@ -1,6 +1,6 @@
 {
-  "name": "quereus-plugin-sync",
-  "version": "0.1.0",
+  "name": "@quereus/plugin-sync",
+  "version": "0.2.0",
   "type": "module",
   "description": "Multi-master CRDT replication for Quereus - automatic sync with conflict resolution",
   "keywords": [
@@ -25,7 +25,6 @@
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [
-    "src",
     "dist",
     "!**/*.tsbuildinfo"
   ],
@@ -43,16 +42,16 @@
     "test:single": "cd ../.. && node --import ./packages/quereus-plugin-sync/register.mjs node_modules/mocha/bin/mocha.js --bail"
   },
   "peerDependencies": {
-    "@quereus/quereus": "*",
-    "quereus-plugin-store": "*"
+    "@quereus/plugin-store": "*",
+    "@quereus/quereus": "*"
   },
   "devDependencies": {
+    "@quereus/plugin-store": "*",
     "@quereus/quereus": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.15.29",
     "chai": "^5.2.0",
     "mocha": "^11.5.0",
-    "quereus-plugin-store": "*",
     "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
