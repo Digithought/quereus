@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-store",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Persistent key-value storage module for Quereus - LevelDB (Node.js) and IndexedDB (browser)",
   "keywords": [
