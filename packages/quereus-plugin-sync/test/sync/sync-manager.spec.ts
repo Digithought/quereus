@@ -13,7 +13,7 @@ import {
   type SnapshotFooterChunk,
   type ChangeSet,
 } from '../../src/sync/protocol.js';
-import { StoreEventEmitter, InMemoryKVStore } from 'quereus-plugin-store';
+import { StoreEventEmitter, InMemoryKVStore } from '@quereus/plugin-store';
 import { generateSiteId, siteIdEquals } from '../../src/clock/site.js';
 import { type HLC, compareHLC } from '../../src/clock/hlc.js';
 

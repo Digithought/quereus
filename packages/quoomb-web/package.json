@@ -13,9 +13,7 @@
   "main": "dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "src",
     "dist",
-    "public",
     "!**/*.tsbuildinfo"
   ],
   "scripts": {
@@ -49,6 +47,8 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@quereus/plugin-loader": "*",
+    "@quereus/plugin-store": "*",
+    "@quereus/plugin-sync": "*",
     "@quereus/quereus": "*",
     "@quereus/shared-ui": "*",
     "@tanstack/react-table": "^8.21.3",
@@ -57,8 +57,6 @@
     "lucide-react": "^0.511.0",
     "monaco-editor": "^0.52.2",
     "papaparse": "^5.5.3",
-    "quereus-plugin-store": "*",
-    "quereus-plugin-sync": "*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-split": "^2.0.14",

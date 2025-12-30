@@ -5,7 +5,7 @@
  */
 
 import { ClassicLevel } from 'classic-level';
-import type { KVStore, KVEntry, WriteBatch, IterateOptions, KVStoreOptions } from 'quereus-plugin-store';
+import type { KVStore, KVEntry, WriteBatch, IterateOptions, KVStoreOptions } from '@quereus/plugin-store';
 
 /**
  * LevelDB implementation of KVStore.

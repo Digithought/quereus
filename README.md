@@ -89,6 +89,7 @@ Quereus is built around a three-layer architecture:
 ### 3. **Storage Layer**
 - **Virtual Table Interface** — Pluggable data access abstraction
 - **Memory Tables** — High-performance in-memory storage with MVCC
+- **Store** — Persistent storage with KV/Pair (includes LevelDB and IndexedDB)
 - **JSON Tables** — Direct JSON data querying capabilities
 - **Custom Modules** — Extensible interface for any data source
 

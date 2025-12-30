@@ -1,4 +1,4 @@
-# quereus-plugin-store
+# @quereus/plugin-store
 
 Persistent storage plugin for [Quereus](https://github.com/gotchoices/quereus) providing LevelDB (Node.js) and IndexedDB (browser) backends.
 
@@ -7,14 +7,15 @@ Persistent storage plugin for [Quereus](https://github.com/gotchoices/quereus) p
 The store plugin uses a **platform abstraction layer** that separates the core virtual table logic from platform-specific storage:
 
 ```
-quereus-plugin-store (core)
+@quereus/plugin-store (core)
 ├── KVStore interface           - Abstract key-value store
 ├── KVStoreProvider interface   - Store factory/management
+├── StoreModule                 - Generic VirtualTableModule (takes KVStoreProvider)
 ├── StoreTable                  - Generic virtual table implementation
 ├── StoreConnection             - Generic transaction support
 └── Common utilities            - Encoding, serialization, events
 
-quereus-store-leveldb (Node.js)      quereus-store-indexeddb (Browser)
+@quereus/store-leveldb (Node.js)      @quereus/store-indexeddb (Browser)
 ├── LevelDBStore                      ├── IndexedDBStore
 └── LevelDBProvider                   ├── IndexedDBProvider
                                       └── CrossTabSync
@@ -28,16 +29,16 @@ This architecture enables:
 ## Installation
 
 ```bash
-npm install quereus-plugin-store
+npm install @quereus/plugin-store
 ```
 
 For platform-specific stores:
 ```bash
 # Node.js
-npm install quereus-store-leveldb
+npm install @quereus/store-leveldb
 
 # Browser
-npm install quereus-store-indexeddb
+npm install @quereus/store-indexeddb
 ```
 
 ## Quick Start
@@ -46,7 +47,7 @@ The simplest way to use this plugin is with Quereus's `registerPlugin` helper, w
 
 ```typescript
 import { Database, registerPlugin } from '@quereus/quereus';
-import storePlugin from 'quereus-plugin-store';
+import storePlugin from '@quereus/plugin-store';
 
 const db = new Database();
 await registerPlugin(db, storePlugin);
@@ -71,7 +72,7 @@ const users = await db.all('SELECT * FROM users');
 
 ```typescript
 import { Database } from '@quereus/quereus';
-import { LevelDBModule } from 'quereus-plugin-store';
+import { LevelDBModule } from '@quereus/plugin-store';
 
 const db = new Database();
 const leveldbModule = new LevelDBModule();
@@ -87,7 +88,7 @@ await db.exec(`
 
 ```typescript
 import { Database } from '@quereus/quereus';
-import { IndexedDBModule } from 'quereus-plugin-store';
+import { IndexedDBModule } from '@quereus/plugin-store';
 
 const db = new Database();
 const indexeddbModule = new IndexedDBModule();
@@ -105,7 +106,7 @@ For applications with multiple tables, use `UnifiedIndexedDBModule` which stores
 
 ```typescript
 import { Database } from '@quereus/quereus';
-import { UnifiedIndexedDBModule } from 'quereus-plugin-store';
+import { UnifiedIndexedDBModule } from '@quereus/plugin-store';
 
 const db = new Database();
 const module = new UnifiedIndexedDBModule();
@@ -196,9 +197,9 @@ interface KVStore {
 For dependency injection and store management, use `KVStoreProvider`:
 
 ```typescript
-import { createLevelDBProvider } from 'quereus-store-leveldb';
+import { createLevelDBProvider } from '@quereus/store-leveldb';
 // OR for browsers:
-import { createIndexedDBProvider } from 'quereus-store-indexeddb';
+import { createIndexedDBProvider } from '@quereus/store-indexeddb';
 
 // Node.js
 const provider = createLevelDBProvider({ basePath: './data' });
@@ -219,7 +220,7 @@ await provider.closeAll();
 Implement `KVStore` to create custom storage backends:
 
 ```typescript
-import type { KVStore, KVStoreProvider } from 'quereus-plugin-store';
+import type { KVStore, KVStoreProvider } from '@quereus/plugin-store';
 
 class MyCustomStore implements KVStore {
   async get(key: Uint8Array) { /* ... */ }
@@ -237,12 +238,39 @@ class MyCustomProvider implements KVStoreProvider {
 }
 ```
 
+### Using StoreModule with Custom Provider
+
+Once you have a `KVStoreProvider`, use the generic `StoreModule` to create a virtual table module:
+
+```typescript
+import { Database } from '@quereus/quereus';
+import { StoreModule } from '@quereus/plugin-store';
+
+// Your custom provider (e.g., for React Native)
+const provider = new MyCustomProvider({ path: './data' });
+
+// Create the module with your provider
+const module = new StoreModule(provider);
+
+// Register it with the database
+db.registerVtabModule('store', module);
+
+// Now use it in SQL
+await db.exec(`
+  CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)
+  USING store
+`);
+```
+
+This pattern enables any storage backend (React Native, SQLite, cloud, etc.) without modifying the core module logic.
+
 ## API
 
 ### Core Exports
 
 - `KVStore` - Key-value store interface (type)
 - `KVStoreProvider` - Store factory interface (type)
+- `StoreModule` - Generic virtual table module (takes any `KVStoreProvider`)
 - `StoreTable` - Generic virtual table class
 - `StoreConnection` - Generic transaction connection
 - `TransactionCoordinator` - Shared transaction management
@@ -250,9 +278,10 @@ class MyCustomProvider implements KVStoreProvider {
 
 ### Module Exports
 
-- `LevelDBModule` - Node.js virtual table module
-- `IndexedDBModule` - Browser virtual table module (one IDB database per table)
-- `UnifiedIndexedDBModule` - Browser module with single shared IDB database (recommended)
+- `StoreModule` - **Recommended** - Generic module that works with any `KVStoreProvider`
+- `LevelDBModule` - Node.js virtual table module (legacy, uses LevelDB directly)
+- `IndexedDBModule` - Browser virtual table module (legacy, one IDB database per table)
+- `UnifiedIndexedDBModule` - Browser module with single shared IDB database
 
 ### Store Exports
 
@@ -268,9 +297,9 @@ The default export is a plugin registration function for use with `registerPlugi
 
 ## Related Packages
 
-- [`quereus-store-leveldb`](../quereus-store-leveldb/) - LevelDB store implementation for Node.js
-- [`quereus-store-indexeddb`](../quereus-store-indexeddb/) - IndexedDB store implementation for browsers
-- [`quereus-plugin-sync`](../quereus-plugin-sync/) - CRDT sync layer (uses `KVStore` for metadata)
+- [`@quereus/store-leveldb`](../quereus-store-leveldb/) - LevelDB store implementation for Node.js
+- [`@quereus/store-indexeddb`](../quereus-store-indexeddb/) - IndexedDB store implementation for browsers
+- [`@quereus/plugin-sync`](../quereus-plugin-sync/) - CRDT sync layer (uses `KVStore` for metadata)
 
 ## License
 

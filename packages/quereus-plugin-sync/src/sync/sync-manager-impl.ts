@@ -4,7 +4,7 @@
  * Coordinates CRDT metadata tracking and sync operations.
  */
 
-import type { KVStore, StoreEventEmitter, DataChangeEvent, SchemaChangeEvent } from 'quereus-plugin-store';
+import type { KVStore, StoreEventEmitter, DataChangeEvent, SchemaChangeEvent } from '@quereus/plugin-store';
 import type { SqlValue, Row, TableSchema } from '@quereus/quereus';
 
 /**
@@ -296,7 +296,7 @@ export class SyncManagerImpl implements SyncManager {
   }
 
   private async recordColumnVersions(
-    batch: import('quereus-plugin-store').WriteBatch,
+    batch: import('@quereus/plugin-store').WriteBatch,
     schemaName: string,
     tableName: string,
     pk: SqlValue[],

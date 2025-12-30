@@ -5,16 +5,16 @@
  *
  * Usage with registerPlugin (auto-detects platform):
  *   import { Database, registerPlugin } from '@quereus/quereus';
- *   import storePlugin from 'quereus-plugin-store';
+ *   import storePlugin from '@quereus/plugin-store';
  *   await registerPlugin(db, storePlugin, { path: './data' });
  *
  * Manual usage (Node.js):
- *   import { LevelDBModule } from 'quereus-plugin-store';
+ *   import { LevelDBModule } from '@quereus/plugin-store';
  *   const leveldbModule = new LevelDBModule();
  *   db.registerVtabModule('store', leveldbModule);
  *
  * Manual usage (Browser):
- *   import { IndexedDBModule } from 'quereus-plugin-store';
+ *   import { IndexedDBModule } from '@quereus/plugin-store';
  *   const indexeddbModule = new IndexedDBModule();
  *   db.registerVtabModule('store', indexeddbModule);
  */
@@ -72,7 +72,7 @@ export const platform = {
  * @example
  * ```typescript
  * import { Database, registerPlugin } from '@quereus/quereus';
- * import storePlugin from 'quereus-plugin-store';
+ * import storePlugin from '@quereus/plugin-store';
  *
  * const db = new Database();
  * await registerPlugin(db, storePlugin);
@@ -95,7 +95,7 @@ export default function register(
     module = new IndexedDBModule();
   } else {
     throw new QuereusError(
-      'quereus-plugin-store: Unable to detect platform. Use LevelDBModule (Node.js) or IndexedDBModule (browser) directly.',
+      '@quereus/plugin-store: Unable to detect platform. Use LevelDBModule (Node.js) or IndexedDBModule (browser) directly.',
       StatusCode.ERROR
     );
   }

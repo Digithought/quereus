@@ -1170,6 +1170,44 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@quereus/plugin-store@npm:*, @quereus/plugin-store@workspace:packages/quereus-plugin-store":
+  version: 0.0.0-use.local
+  resolution: "@quereus/plugin-store@workspace:packages/quereus-plugin-store"
+  dependencies:
+    "@quereus/quereus": "npm:*"
+    "@types/mocha": "npm:^10.0.10"
+    "@types/node": "npm:^22.15.29"
+    chai: "npm:^5.2.0"
+    classic-level: "npm:^2.0.0"
+    fake-indexeddb: "npm:^6.2.5"
+    mocha: "npm:^11.5.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/quereus": "*"
+  languageName: unknown
+  linkType: soft
+
+"@quereus/plugin-sync@npm:*, @quereus/plugin-sync@workspace:packages/quereus-plugin-sync":
+  version: 0.0.0-use.local
+  resolution: "@quereus/plugin-sync@workspace:packages/quereus-plugin-sync"
+  dependencies:
+    "@quereus/plugin-store": "npm:*"
+    "@quereus/quereus": "npm:*"
+    "@types/mocha": "npm:^10.0.10"
+    "@types/node": "npm:^22.15.29"
+    chai: "npm:^5.2.0"
+    mocha: "npm:^11.5.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/plugin-store": "*"
+    "@quereus/quereus": "*"
+  languageName: unknown
+  linkType: soft
+
 "@quereus/quereus@npm:*, @quereus/quereus@workspace:packages/quereus":
   version: 0.0.0-use.local
   resolution: "@quereus/quereus@workspace:packages/quereus"
@@ -1245,6 +1283,8 @@ __metadata:
   dependencies:
     "@monaco-editor/react": "npm:^4.7.0"
     "@quereus/plugin-loader": "npm:*"
+    "@quereus/plugin-store": "npm:*"
+    "@quereus/plugin-sync": "npm:*"
     "@quereus/quereus": "npm:*"
     "@quereus/shared-ui": "npm:*"
     "@tanstack/react-table": "npm:^8.21.3"
@@ -1264,8 +1304,6 @@ __metadata:
     papaparse: "npm:^5.5.3"
     playwright: "npm:^1.52.0"
     postcss: "npm:^8.5.4"
-    quereus-plugin-store: "npm:*"
-    quereus-plugin-sync: "npm:*"
     react: "npm:^19.1.0"
     react-dom: "npm:^19.1.0"
     react-split: "npm:^2.0.14"
@@ -1309,6 +1347,59 @@ __metadata:
   peerDependencies:
     react: ^19.1.0
     react-dom: ^19.1.0
+  languageName: unknown
+  linkType: soft
+
+"@quereus/store-indexeddb@workspace:packages/quereus-store-indexeddb":
+  version: 0.0.0-use.local
+  resolution: "@quereus/store-indexeddb@workspace:packages/quereus-store-indexeddb"
+  dependencies:
+    "@quereus/plugin-store": "npm:*"
+    rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/plugin-store": "*"
+  languageName: unknown
+  linkType: soft
+
+"@quereus/store-leveldb@workspace:packages/quereus-store-leveldb":
+  version: 0.0.0-use.local
+  resolution: "@quereus/store-leveldb@workspace:packages/quereus-store-leveldb"
+  dependencies:
+    "@quereus/plugin-store": "npm:*"
+    "@types/node": "npm:^22.15.29"
+    classic-level: "npm:^2.0.0"
+    rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/plugin-store": "*"
+  languageName: unknown
+  linkType: soft
+
+"@quereus/sync-coordinator@workspace:packages/sync-coordinator":
+  version: 0.0.0-use.local
+  resolution: "@quereus/sync-coordinator@workspace:packages/sync-coordinator"
+  dependencies:
+    "@fastify/cors": "npm:^10.0.2"
+    "@fastify/websocket": "npm:^11.0.2"
+    "@quereus/plugin-store": "npm:*"
+    "@quereus/plugin-sync": "npm:*"
+    "@quereus/quereus": "npm:*"
+    "@types/debug": "npm:^4.1.12"
+    "@types/mocha": "npm:^10.0.10"
+    "@types/node": "npm:^22.15.29"
+    "@types/ws": "npm:^8.18.1"
+    chai: "npm:^5.2.0"
+    commander: "npm:^14.0.0"
+    debug: "npm:^4.4.0"
+    fastify: "npm:^5.2.1"
+    mocha: "npm:^11.5.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    tsx: "npm:^4.19.0"
+    typescript: "npm:^5.8.3"
+  bin:
+    sync-coordinator: ./dist/src/bin/sync-coordinator.js
   languageName: unknown
   linkType: soft
 
@@ -6102,70 +6193,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"quereus-plugin-store@npm:*, quereus-plugin-store@workspace:packages/quereus-plugin-store":
-  version: 0.0.0-use.local
-  resolution: "quereus-plugin-store@workspace:packages/quereus-plugin-store"
-  dependencies:
-    "@quereus/quereus": "npm:*"
-    "@types/mocha": "npm:^10.0.10"
-    "@types/node": "npm:^22.15.29"
-    chai: "npm:^5.2.0"
-    classic-level: "npm:^2.0.0"
-    fake-indexeddb: "npm:^6.2.5"
-    mocha: "npm:^11.5.0"
-    rimraf: "npm:^6.1.2"
-    ts-node: "npm:^10.9.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    "@quereus/quereus": "*"
-  languageName: unknown
-  linkType: soft
-
-"quereus-plugin-sync@npm:*, quereus-plugin-sync@workspace:packages/quereus-plugin-sync":
-  version: 0.0.0-use.local
-  resolution: "quereus-plugin-sync@workspace:packages/quereus-plugin-sync"
-  dependencies:
-    "@quereus/quereus": "npm:*"
-    "@types/mocha": "npm:^10.0.10"
-    "@types/node": "npm:^22.15.29"
-    chai: "npm:^5.2.0"
-    mocha: "npm:^11.5.0"
-    quereus-plugin-store: "npm:*"
-    rimraf: "npm:^6.1.2"
-    ts-node: "npm:^10.9.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    "@quereus/quereus": "*"
-    quereus-plugin-store: "*"
-  languageName: unknown
-  linkType: soft
-
-"quereus-store-indexeddb@workspace:packages/quereus-store-indexeddb":
-  version: 0.0.0-use.local
-  resolution: "quereus-store-indexeddb@workspace:packages/quereus-store-indexeddb"
-  dependencies:
-    quereus-plugin-store: "npm:*"
-    rimraf: "npm:^6.1.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    quereus-plugin-store: "*"
-  languageName: unknown
-  linkType: soft
-
-"quereus-store-leveldb@workspace:packages/quereus-store-leveldb":
-  version: 0.0.0-use.local
-  resolution: "quereus-store-leveldb@workspace:packages/quereus-store-leveldb"
-  dependencies:
-    "@types/node": "npm:^22.15.29"
-    classic-level: "npm:^2.0.0"
-    quereus-plugin-store: "npm:*"
-    rimraf: "npm:^6.1.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    quereus-plugin-store: "*"
-  languageName: unknown
-  linkType: soft
-
 "quereus-vscode@workspace:packages/quereus-vscode":
   version: 0.0.0-use.local
   resolution: "quereus-vscode@workspace:packages/quereus-vscode"
@@ -7066,33 +7093,6 @@ __metadata:
   checksum: 10c0/6c4032340701a9950865f7ae8ef38578d8d7053f5e10518076e6554a9381fa91bd9c6850193695c141f32b21f979c985db07265a758867bac95de05f7d8aeb39
   languageName: node
   linkType: hard
-
-"sync-coordinator@workspace:packages/sync-coordinator":
-  version: 0.0.0-use.local
-  resolution: "sync-coordinator@workspace:packages/sync-coordinator"
-  dependencies:
-    "@fastify/cors": "npm:^10.0.2"
-    "@fastify/websocket": "npm:^11.0.2"
-    "@quereus/quereus": "npm:*"
-    "@types/debug": "npm:^4.1.12"
-    "@types/mocha": "npm:^10.0.10"
-    "@types/node": "npm:^22.15.29"
-    "@types/ws": "npm:^8.18.1"
-    chai: "npm:^5.2.0"
-    commander: "npm:^14.0.0"
-    debug: "npm:^4.4.0"
-    fastify: "npm:^5.2.1"
-    mocha: "npm:^11.5.0"
-    quereus-plugin-store: "npm:*"
-    quereus-plugin-sync: "npm:*"
-    rimraf: "npm:^6.1.2"
-    ts-node: "npm:^10.9.2"
-    tsx: "npm:^4.19.0"
-    typescript: "npm:^5.8.3"
-  bin:
-    sync-coordinator: ./dist/src/bin/sync-coordinator.js
-  languageName: unknown
-  linkType: soft
 
 "tailwindcss@npm:^3.4.15":
   version: 3.4.17

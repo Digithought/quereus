@@ -4,7 +4,7 @@
  * Manages IndexedDB stores for the StoreModule.
  */
 
-import type { KVStore, KVStoreProvider } from 'quereus-plugin-store';
+import type { KVStore, KVStoreProvider } from '@quereus/plugin-store';
 import { IndexedDBStore } from './store.js';
 
 /**

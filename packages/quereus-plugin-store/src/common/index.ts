@@ -80,3 +80,6 @@ export {
   type StoreTableModule,
 } from './store-table.js';
 export { StoreConnection } from './store-connection.js';
+
+// Generic store module
+export { StoreModule, type StoreModuleConfig } from './store-module.js';

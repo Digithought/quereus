@@ -1,6 +1,6 @@
-# sync-coordinator
+# @quereus/sync-coordinator
 
-Standalone coordinator backend for [Quereus Sync](../quereus-plugin-sync) — a production-ready server for multi-master CRDT replication.
+Standalone coordinator backend for [@quereus/plugin-sync](../quereus-plugin-sync) — a production-ready server for multi-master CRDT replication.
 
 ## Features
 
@@ -12,7 +12,7 @@ Standalone coordinator backend for [Quereus Sync](../quereus-plugin-sync) — a 
 ## Installation
 
 ```bash
-npm install sync-coordinator
+npm install @quereus/sync-coordinator
 ```
 
 ## Quick Start
@@ -33,7 +33,7 @@ npx sync-coordinator --auth-mode token-whitelist --auth-tokens "secret1,secret2"
 ### Programmatic
 
 ```typescript
-import { createCoordinatorServer, loadConfig } from 'sync-coordinator';
+import { createCoordinatorServer, loadConfig } from '@quereus/sync-coordinator';
 
 const config = loadConfig({
   overrides: {
@@ -105,7 +105,7 @@ sync_get_changes_duration_seconds    # Get changes duration histogram
 Extend the coordinator with custom logic:
 
 ```typescript
-import { createCoordinatorServer, loadConfig, type CoordinatorHooks } from 'sync-coordinator';
+import { createCoordinatorServer, loadConfig, type CoordinatorHooks } from '@quereus/sync-coordinator';
 
 const hooks: CoordinatorHooks = {
   async onAuthenticate(ctx) {

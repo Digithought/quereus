@@ -5,7 +5,7 @@
  */
 
 import path from 'node:path';
-import type { KVStore, KVStoreProvider } from 'quereus-plugin-store';
+import type { KVStore, KVStoreProvider } from '@quereus/plugin-store';
 import { LevelDBStore } from './store.js';
 
 /**

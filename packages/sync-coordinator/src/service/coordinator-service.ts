@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
-import { LevelDBStore, StoreEventEmitter } from 'quereus-plugin-store';
+import { LevelDBStore, StoreEventEmitter } from '@quereus/plugin-store';
 import {
   createSyncModule,
   type SyncManager,
@@ -19,7 +19,7 @@ import {
   siteIdEquals,
   siteIdToBase64,
   serializeHLC,
-} from 'quereus-plugin-sync';
+} from '@quereus/plugin-sync';
 import { serviceLog, authLog } from '../common/logger.js';
 import type { CoordinatorConfig } from '../config/types.js';
 import {

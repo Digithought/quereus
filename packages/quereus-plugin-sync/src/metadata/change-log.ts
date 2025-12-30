@@ -5,7 +5,7 @@
  * enabling efficient getChangesSince() queries without scanning all data.
  */
 
-import type { KVStore, WriteBatch } from 'quereus-plugin-store';
+import type { KVStore, WriteBatch } from '@quereus/plugin-store';
 import type { SqlValue } from '@quereus/quereus';
 import type { HLC } from '../clock/hlc.js';
 import {

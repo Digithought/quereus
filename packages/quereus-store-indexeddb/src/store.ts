@@ -3,7 +3,7 @@
  * Uses the native IndexedDB API for persistent storage.
  */
 
-import type { KVStore, KVEntry, WriteBatch, IterateOptions, KVStoreOptions } from 'quereus-plugin-store';
+import type { KVStore, KVEntry, WriteBatch, IterateOptions, KVStoreOptions } from '@quereus/plugin-store';
 
 const STORE_NAME = 'kv';
 

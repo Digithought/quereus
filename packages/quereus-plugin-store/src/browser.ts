@@ -5,7 +5,7 @@
  * avoiding any Node.js-specific dependencies like LevelDB.
  *
  * Usage:
- *   import { IndexedDBModule, IndexedDBStore, StoreEventEmitter } from 'quereus-plugin-store/browser';
+ *   import { IndexedDBModule, IndexedDBStore, StoreEventEmitter } from '@quereus/plugin-store/browser';
  */
 
 // Re-export common utilities (these are platform-agnostic)

@@ -2,13 +2,13 @@
  * LevelDB KVStore implementation for Quereus.
  *
  * Provides a LevelDB-based KVStore for Node.js environments.
- * This package contains only the store implementation - use quereus-plugin-store
+ * This package contains only the store implementation - use @quereus/plugin-store
  * for the full virtual table module.
  *
  * @example
  * ```typescript
- * import { LevelDBStore, createLevelDBProvider } from 'quereus-store-leveldb';
- * import { StoreModule } from 'quereus-plugin-store';
+ * import { LevelDBStore, createLevelDBProvider } from '@quereus/store-leveldb';
+ * import { StoreModule } from '@quereus/plugin-store';
  *
  * // Using the provider with StoreModule
  * const provider = createLevelDBProvider({ basePath: './data' });

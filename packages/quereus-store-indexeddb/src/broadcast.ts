@@ -4,7 +4,7 @@
  * Propagates DataChangeEvent across browser tabs sharing the same origin.
  */
 
-import type { DataChangeEvent, StoreEventEmitter } from 'quereus-plugin-store';
+import type { DataChangeEvent, StoreEventEmitter } from '@quereus/plugin-store';
 
 /** Channel name prefix for Quereus store broadcasts. */
 const CHANNEL_PREFIX = 'quereus-store:';

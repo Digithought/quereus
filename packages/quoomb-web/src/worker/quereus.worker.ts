@@ -1,7 +1,7 @@
 import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
-import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from 'quereus-plugin-store/browser';
+import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from '@quereus/plugin-store/browser';
 import {
   createSyncModule,
   createStoreAdapter,
@@ -19,7 +19,7 @@ import {
   type LocalChangeEvent,
   type ConflictEvent,
   type SyncState,
-} from 'quereus-plugin-sync';
+} from '@quereus/plugin-sync';
 import type {
   QuereusWorkerAPI,
   TableInfo,

@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { createCoordinatorServer, loadConfig } from 'sync-coordinator';
+ * import { createCoordinatorServer, loadConfig } from '@quereus/sync-coordinator';
  *
  * const config = loadConfig({ overrides: { port: 8080 } });
  * const server = await createCoordinatorServer({ config });

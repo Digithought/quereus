@@ -6,7 +6,7 @@ import { expect } from 'chai';
 import { ChangeLogStore } from '../../src/metadata/change-log.js';
 import { type HLC, compareHLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
-import { InMemoryKVStore } from 'quereus-plugin-store';
+import { InMemoryKVStore } from '@quereus/plugin-store';
 
 describe('ChangeLogStore', () => {
   let kv: InMemoryKVStore;

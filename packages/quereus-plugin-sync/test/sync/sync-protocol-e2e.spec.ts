@@ -16,7 +16,7 @@ import {
   type ApplyToStoreCallback,
   type SnapshotChunk,
 } from '../../src/sync/protocol.js';
-import { StoreEventEmitter, InMemoryKVStore } from 'quereus-plugin-store';
+import { StoreEventEmitter, InMemoryKVStore } from '@quereus/plugin-store';
 import { generateSiteId } from '../../src/clock/site.js';
 import { compareHLC } from '../../src/clock/hlc.js';
 import type { SyncManager } from '../../src/sync/manager.js';

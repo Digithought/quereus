@@ -18,7 +18,7 @@
  * - ADD COLUMN/CREATE TABLE: 1 (least destructive)
  */
 
-import type { KVStore, WriteBatch } from 'quereus-plugin-store';
+import type { KVStore, WriteBatch } from '@quereus/plugin-store';
 import { type HLC, serializeHLC, deserializeHLC, compareHLC } from '../clock/hlc.js';
 
 const encoder = new TextEncoder();
