@@ -1,6 +1,6 @@
 {
-  "name": "sync-coordinator",
-  "version": "0.1.0",
+  "name": "@quereus/sync-coordinator",
+  "version": "0.2.0",
   "type": "module",
   "description": "Standalone coordinator backend for Quereus Sync - production-ready sync server",
   "keywords": [
@@ -24,7 +24,6 @@
   "types": "./dist/src/index.d.ts",
   "bin": "./dist/src/bin/sync-coordinator.js",
   "files": [
-    "src",
     "dist",
     "!**/*.tsbuildinfo"
   ],
@@ -46,12 +45,12 @@
   "dependencies": {
     "@fastify/cors": "^10.0.2",
     "@fastify/websocket": "^11.0.2",
+    "@quereus/plugin-store": "*",
+    "@quereus/plugin-sync": "*",
     "@quereus/quereus": "*",
     "commander": "^14.0.0",
     "debug": "^4.4.0",
-    "fastify": "^5.2.1",
-    "quereus-plugin-store": "*",
-    "quereus-plugin-sync": "*"
+    "fastify": "^5.2.1"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
