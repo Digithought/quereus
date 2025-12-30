@@ -587,6 +587,27 @@ export class SchemaManager {
 	async createTable(stmt: AST.CreateTableStmt): Promise<TableSchema> {
 		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
 		const tableName = stmt.table.name;
+
+		// Check IF NOT EXISTS
+		const schema = this.getSchema(targetSchemaName);
+		if (!schema) {
+			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found.`, StatusCode.INTERNAL);
+		}
+
+		const existingTable = schema.getTable(tableName);
+		const existingView = schema.getView(tableName);
+
+		if (existingTable || existingView) {
+			if (stmt.ifNotExists) {
+				log(`Skipping CREATE TABLE: Item %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, tableName);
+				if (existingTable) return existingTable;
+				throw new QuereusError(`Cannot CREATE TABLE ${targetSchemaName}.${tableName}: a VIEW with the same name already exists.`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			} else {
+				const itemType = existingTable ? 'Table' : 'View';
+				throw new QuereusError(`${itemType} ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			}
+		}
+
 		let moduleName: string;
 		let effectiveModuleArgs: Record<string, SqlValue>;
 
@@ -739,11 +760,6 @@ export class SchemaManager {
 			throw new QuereusError(`Module '${moduleName}' create failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
 
-		const schema = this.getSchema(targetSchemaName);
-		if (!schema) {
-			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found.`, StatusCode.INTERNAL);
-		}
-
 		const finalRegisteredSchema = tableInstance.tableSchema;
 		if (!finalRegisteredSchema) {
 			throw new QuereusError(`Module '${moduleName}' create did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
@@ -770,20 +786,6 @@ export class SchemaManager {
 			vtabAuxData: moduleInfo.auxData,
 			estimatedRows: correctedSchema.estimatedRows ?? 0,
 		};
-
-		const existingTable = schema.getTable(tableName);
-		const existingView = schema.getView(tableName);
-
-		if (existingTable || existingView) {
-			if (stmt.ifNotExists) {
-				log(`Skipping CREATE TABLE: Item %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, tableName);
-				if (existingTable) return existingTable;
-				throw new QuereusError(`Cannot CREATE TABLE ${targetSchemaName}.${tableName}: a VIEW with the same name already exists.`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-			} else {
-				const itemType = existingTable ? 'Table' : 'View';
-				throw new QuereusError(`${itemType} ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-			}
-		}
 
 		schema.addTable(completeTableSchema);
 		log(`Successfully created table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
