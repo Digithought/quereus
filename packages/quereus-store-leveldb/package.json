@@ -1,6 +1,6 @@
 {
-  "name": "quereus-store-leveldb",
-  "version": "0.1.0",
+  "name": "@quereus/store-leveldb",
+  "version": "0.2.0",
   "type": "module",
   "description": "LevelDB KVStore implementation for Quereus - Node.js persistent storage",
   "keywords": [
@@ -22,7 +22,6 @@
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [
-    "src",
     "dist",
     "!**/*.tsbuildinfo"
   ],
@@ -38,14 +37,14 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "quereus-plugin-store": "*"
+    "@quereus/plugin-store": "*"
   },
   "dependencies": {
     "classic-level": "^2.0.0"
   },
   "devDependencies": {
+    "@quereus/plugin-store": "*",
     "@types/node": "^22.15.29",
-    "quereus-plugin-store": "*",
     "rimraf": "^6.1.2",
     "typescript": "^5.8.3"
   }
