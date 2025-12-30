@@ -1,6 +1,6 @@
 {
   "name": "@quereus/shared-ui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Quoomb UI Kit - Shared UI components for Quoomb applications",
   "publisher": "Got Choices Foundation",
@@ -13,7 +13,6 @@
   "main": "dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "src",
     "dist",
     "!**/*.tsbuildinfo"
   ],
