@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Federated SQL query processor",
   "publisher": "Got Choices Foundation",
@@ -13,10 +13,10 @@
   "main": "dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "files": [
-    "src",
     "dist",
     "!dist/test",
-    "!**/*.tsbuildinfo"
+    "!**/*.tsbuildinfo",
+    "!**/*.js.map"
   ],
   "exports": {
     ".": {
