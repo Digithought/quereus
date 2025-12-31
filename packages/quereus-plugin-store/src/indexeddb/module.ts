@@ -96,6 +96,13 @@ export class IndexedDBModule implements VirtualTableModule<IndexedDBTable, Index
 
     this.tables.set(tableKey, table);
 
+    // Save DDL immediately so it persists even if the table isn't accessed
+    // This is important for sync scenarios where a remote CREATE TABLE
+    // may not be followed by immediate data access
+    this.saveTableDDL(tableSchema).catch(err => {
+      console.error(`Failed to save DDL for ${tableKey}:`, err);
+    });
+
     // Emit schema change event for table creation
     this.eventEmitter?.emitSchemaChange({
       type: 'create',

@@ -651,24 +651,22 @@ describe('SyncManager', () => {
 
     it('should resolve concurrent updates with LWW', async () => {
       const kv1 = new InMemoryKVStore();
-      const kv2 = new InMemoryKVStore();
       const events1 = new StoreEventEmitter();
-      const events2 = new StoreEventEmitter();
       const syncEvents1 = new SyncEventEmitterImpl();
-      const syncEvents2 = new SyncEventEmitterImpl();
 
       const manager1 = await SyncManagerImpl.create(kv1, events1, config, syncEvents1);
-      const manager2 = await SyncManagerImpl.create(kv2, events2, config, syncEvents2);
 
-      const site1 = manager1.getSiteId();
-      const site2 = manager2.getSiteId();
+      // Use separate site IDs for the remote changes (not manager1's own siteId)
+      // This simulates receiving changes from two different remote peers
+      const remoteSite1 = generateSiteId();
+      const remoteSite2 = generateSiteId();
 
       // Create concurrent changes with different timestamps
-      const earlierHLC: HLC = { wallTime: BigInt(1000), counter: 1, siteId: site1 };
-      const laterHLC: HLC = { wallTime: BigInt(2000), counter: 1, siteId: site2 };
+      const earlierHLC: HLC = { wallTime: BigInt(1000), counter: 1, siteId: remoteSite1 };
+      const laterHLC: HLC = { wallTime: BigInt(2000), counter: 1, siteId: remoteSite2 };
 
       const changeSet1: ChangeSet = {
-        siteId: site1,
+        siteId: remoteSite1,
         transactionId: 'tx-1',
         hlc: earlierHLC,
         changes: [
@@ -686,7 +684,7 @@ describe('SyncManager', () => {
       };
 
       const changeSet2: ChangeSet = {
-        siteId: site2,
+        siteId: remoteSite2,
         transactionId: 'tx-2',
         hlc: laterHLC,
         changes: [
@@ -954,6 +952,225 @@ describe('SyncManager', () => {
       // Get changes since - should be empty (remote events are not re-recorded)
       const changes = await manager.getChangesSince(remoteSiteId);
       expect(changes.length).to.equal(0);
+    });
+  });
+
+  describe('echo prevention (hub-and-spoke topology)', () => {
+    it('should skip changes that originated from ourselves when receiving via relay', async () => {
+      // This test simulates a hub-and-spoke sync topology:
+      // 1. Client A makes a change
+      // 2. A sends to Coordinator, which broadcasts to B
+      // 3. B receives A's changes and stores them
+      // 4. B sends ALL its changes to Coordinator (including A's changes it received)
+      // 5. Coordinator broadcasts to A
+      // 6. A should NOT treat its own changes as conflicts
+
+      const kvA = new InMemoryKVStore();
+      const kvB = new InMemoryKVStore();
+      const eventsA = new StoreEventEmitter();
+      const eventsB = new StoreEventEmitter();
+      const syncEventsA = new SyncEventEmitterImpl();
+      const syncEventsB = new SyncEventEmitterImpl();
+
+      // Track conflict events on A
+      const conflictsOnA: unknown[] = [];
+      syncEventsA.onConflictResolved((event) => {
+        conflictsOnA.push(event);
+      });
+
+      const managerA = await SyncManagerImpl.create(kvA, eventsA, config, syncEventsA);
+      const managerB = await SyncManagerImpl.create(kvB, eventsB, config, syncEventsB);
+
+      const siteA = managerA.getSiteId();
+      const hlcA = managerA.getCurrentHLC();
+
+      // Step 1: A creates a change with A's HLC
+      const changeFromA: ChangeSet = {
+        siteId: siteA,
+        transactionId: 'tx-a-1',
+        hlc: hlcA,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'test1',
+            pk: ['hello from a'],
+            column: 'a',
+            value: 1,
+            hlc: hlcA,
+          },
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'test1',
+            pk: ['hello from a'],
+            column: 'b',
+            value: 2,
+            hlc: hlcA,
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      // A applies its own changes locally (simulating local write)
+      // This records the column versions with A's HLC
+      await managerA.applyChanges([changeFromA]);
+
+      // Step 2-3: B receives A's changes (via coordinator broadcast)
+      const resultB = await managerB.applyChanges([changeFromA]);
+      expect(resultB.applied).to.equal(2);
+
+      // Step 4: B now has A's changes. When B calls getChangesSince for any peer,
+      // it will include A's changes (with A's HLC in each change).
+      // Simulate B sending changes to coordinator - B includes A's changes
+      const coordinatorSiteId = generateSiteId();
+      const changesFromB = await managerB.getChangesSince(coordinatorSiteId);
+
+      // B should have A's 2 column changes to send
+      expect(changesFromB.length).to.be.greaterThan(0);
+      const allChanges = changesFromB.flatMap(cs => cs.changes);
+      expect(allChanges.length).to.equal(2);
+
+      // Verify the changes have A's siteId in their HLCs
+      for (const change of allChanges) {
+        expect(siteIdEquals(change.hlc.siteId, siteA)).to.be.true;
+      }
+
+      // Step 5-6: Coordinator would broadcast B's payload (which contains A's changes) to A
+      // A receives its own changes back!
+      const resultA = await managerA.applyChanges(changesFromB);
+
+      // These should be SKIPPED, not conflicts!
+      expect(resultA.skipped).to.equal(2);
+      expect(resultA.conflicts).to.equal(0);
+      expect(resultA.applied).to.equal(0);
+
+      // No conflict events should have been emitted
+      expect(conflictsOnA).to.have.lengthOf(0);
+    });
+
+    it('should skip own deletions when receiving via relay', async () => {
+      const kvA = new InMemoryKVStore();
+      const kvB = new InMemoryKVStore();
+      const eventsA = new StoreEventEmitter();
+      const eventsB = new StoreEventEmitter();
+      const syncEventsA = new SyncEventEmitterImpl();
+      const syncEventsB = new SyncEventEmitterImpl();
+
+      const managerA = await SyncManagerImpl.create(kvA, eventsA, config, syncEventsA);
+      const managerB = await SyncManagerImpl.create(kvB, eventsB, config, syncEventsB);
+
+      const siteA = managerA.getSiteId();
+      const hlcA = managerA.getCurrentHLC();
+
+      // A creates a delete
+      const deleteFromA: ChangeSet = {
+        siteId: siteA,
+        transactionId: 'tx-a-1',
+        hlc: hlcA,
+        changes: [
+          {
+            type: 'delete',
+            schema: 'main',
+            table: 'test1',
+            pk: ['row-to-delete'],
+            hlc: hlcA,
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      // A applies its own delete locally
+      await managerA.applyChanges([deleteFromA]);
+
+      // B receives A's delete
+      await managerB.applyChanges([deleteFromA]);
+
+      // B sends changes to coordinator (includes A's delete)
+      const coordinatorSiteId = generateSiteId();
+      const changesFromB = await managerB.getChangesSince(coordinatorSiteId);
+
+      // A receives its own delete back
+      const resultA = await managerA.applyChanges(changesFromB);
+
+      // Should be skipped, not applied again
+      expect(resultA.skipped).to.equal(1);
+      expect(resultA.applied).to.equal(0);
+    });
+
+    it('should still apply changes from other peers in mixed payload', async () => {
+      // When a relay payload contains both our own changes and other peers' changes,
+      // we should skip our own but apply the others.
+
+      const kvA = new InMemoryKVStore();
+      const kvB = new InMemoryKVStore();
+      const eventsA = new StoreEventEmitter();
+      const eventsB = new StoreEventEmitter();
+      const syncEventsA = new SyncEventEmitterImpl();
+      const syncEventsB = new SyncEventEmitterImpl();
+
+      const managerA = await SyncManagerImpl.create(kvA, eventsA, config, syncEventsA);
+      const managerB = await SyncManagerImpl.create(kvB, eventsB, config, syncEventsB);
+
+      const siteA = managerA.getSiteId();
+      const hlcA = managerA.getCurrentHLC();
+
+      // A makes a change
+      const changeFromA: ChangeSet = {
+        siteId: siteA,
+        transactionId: 'tx-a-1',
+        hlc: hlcA,
+        changes: [
+          {
+            type: 'column',
+            schema: 'main',
+            table: 'test1',
+            pk: ['row-a'],
+            column: 'value',
+            value: 'from A',
+            hlc: hlcA,
+          },
+        ],
+        schemaMigrations: [],
+      };
+
+      // A applies locally
+      await managerA.applyChanges([changeFromA]);
+
+      // B receives A's change
+      await managerB.applyChanges([changeFromA]);
+
+      // B makes its own LOCAL change via store events (not applyChanges)
+      // This simulates B doing an INSERT/UPDATE locally
+      // Note: Each column in the row becomes a separate column change
+      eventsB.emitDataChange({
+        type: 'insert',
+        schemaName: 'main',
+        tableName: 'test1',
+        key: ['row-b'],
+        newRow: ['row-b', 'from B'],  // 2 columns = 2 column changes
+      });
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // B sends all changes to coordinator (both A's and B's)
+      const coordinatorSiteId = generateSiteId();
+      const changesFromB = await managerB.getChangesSince(coordinatorSiteId);
+
+      // Should have changes from both A and B:
+      // - 1 column change from A (row-a.value)
+      // - 2 column changes from B (row-b has 2 columns)
+      const allChanges = changesFromB.flatMap(cs => cs.changes);
+      expect(allChanges.length).to.equal(3);
+
+      // A receives the mixed payload
+      const resultA = await managerA.applyChanges(changesFromB);
+
+      // A's own change should be skipped, B's should be applied
+      expect(resultA.skipped).to.equal(1);  // A's 1 column change
+      expect(resultA.applied).to.equal(2);  // B's 2 column changes
+      expect(resultA.conflicts).to.equal(0);
     });
   });
 });

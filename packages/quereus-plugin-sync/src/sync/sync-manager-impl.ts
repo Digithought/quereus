@@ -228,10 +228,13 @@ export class SyncManagerImpl implements SyncManager {
 
     await batch.write();
 
-    // Emit local change event
+    // Emit local change event with current pending changes, then clear them
+    const changesToEmit = [...this.pendingChanges];
+    this.pendingChanges = [];
+
     this.syncEvents.emitLocalChange({
       transactionId: this.currentTransactionId || crypto.randomUUID(),
-      changes: [...this.pendingChanges],
+      changes: changesToEmit,
       pendingSync: true,
     });
   }
@@ -322,6 +325,26 @@ export class SyncManagerImpl implements SyncManager {
       if (!oldRow || oldValue !== newValue) {
         // Use actual column name if available, otherwise fall back to index-based
         const column = columnNames?.[i] ?? `col_${i}`;
+
+        // Look up old column version to delete stale change log entry
+        const oldVersion = await this.columnVersions.getColumnVersion(
+          schemaName, tableName, pk, column
+        );
+
+        // Delete old change log entry if exists (keeps change log as a true secondary index)
+        if (oldVersion) {
+          this.changeLog.deleteEntryBatch(
+            batch,
+            oldVersion.hlc,
+            'column',
+            schemaName,
+            tableName,
+            pk,
+            column
+          );
+        }
+
+        // Record new column version
         const version: ColumnVersion = { hlc, value: newValue };
         this.columnVersions.setColumnVersionBatch(batch, schemaName, tableName, pk, column, version);
 
@@ -539,11 +562,27 @@ export class SyncManagerImpl implements SyncManager {
 
       // Process schema migrations first (DDL before DML)
       for (const migration of changeSet.schemaMigrations) {
-        // Record the migration in our metadata store so we can forward it to other peers
         // Use the incoming schemaVersion if provided, otherwise calculate next version
         const schemaVersion = migration.schemaVersion ??
           (await this.schemaMigrations.getCurrentVersion(migration.schema, migration.table)) + 1;
 
+        // Check if we've already recorded this migration
+        const existingMigration = await this.schemaMigrations.getMigration(
+          migration.schema,
+          migration.table,
+          schemaVersion
+        );
+
+        if (existingMigration) {
+          // Already have this migration version - skip
+          // (HLC comparison for first-writer-wins is done via checkConflict if needed)
+          if (compareHLC(migration.hlc, existingMigration.hlc) <= 0) {
+            skipped++;
+            continue;
+          }
+        }
+
+        // Record the migration in our metadata store so we can forward it to other peers
         await this.schemaMigrations.recordMigration(migration.schema, migration.table, {
           type: migration.type,
           ddl: migration.ddl,
@@ -583,14 +622,30 @@ export class SyncManagerImpl implements SyncManager {
       await this.applyToStore(dataChangesToApply, schemaChangesToApply, { remote: true });
     }
 
-    // Emit remote change events for UI reactivity
-    for (const { change, siteId } of appliedChanges) {
-      this.syncEvents.emitRemoteChange({
-        siteId,
-        transactionId: crypto.randomUUID(),
-        changes: [change],
-        appliedAt: this.hlcManager.now(),
-      });
+    // Emit a single remote change event with all applied changes for UI reactivity
+    if (appliedChanges.length > 0) {
+      // Group by siteId to emit one event per originating site
+      const changesBySite = new Map<string, Change[]>();
+      for (const { change, siteId } of appliedChanges) {
+        const siteKey = Array.from(siteId).join(',');
+        const siteChanges = changesBySite.get(siteKey);
+        if (siteChanges) {
+          siteChanges.push(change);
+        } else {
+          changesBySite.set(siteKey, [change]);
+        }
+      }
+
+      const appliedAt = this.hlcManager.now();
+      for (const [siteKey, siteChanges] of changesBySite) {
+        const siteIdBytes = new Uint8Array(siteKey.split(',').map(Number));
+        this.syncEvents.emitRemoteChange({
+          siteId: siteIdBytes,
+          transactionId: crypto.randomUUID(),
+          changes: siteChanges,
+          appliedAt,
+        });
+      }
     }
 
     await this.persistHLCState();
@@ -614,6 +669,13 @@ export class SyncManagerImpl implements SyncManager {
     outcome: 'applied' | 'skipped' | 'conflict';
     dataChange?: DataChangeToApply;
   }> {
+    // Skip changes that originated from ourselves (echo prevention).
+    // This can happen when a peer re-sends changes it received from us,
+    // or when changes propagate through a coordinator back to the originator.
+    if (siteIdEquals(change.hlc.siteId, this.getSiteId())) {
+      return { outcome: 'skipped' };
+    }
+
     if (change.type === 'delete') {
       // Check if we should apply this deletion
       const existingTombstone = await this.tombstones.getTombstone(
@@ -688,14 +750,51 @@ export class SyncManagerImpl implements SyncManager {
         return { outcome: 'skipped' };
       }
 
+      // Get old column version to clean up stale change log entry
+      const oldVersion = await this.columnVersions.getColumnVersion(
+        change.schema,
+        change.table,
+        change.pk,
+        change.column
+      );
+
+      // Use a batch to atomically update column version and change log
+      const batch = this.kv.batch();
+
+      // Delete old change log entry if exists (keeps change log as a true secondary index)
+      if (oldVersion) {
+        this.changeLog.deleteEntryBatch(
+          batch,
+          oldVersion.hlc,
+          'column',
+          change.schema,
+          change.table,
+          change.pk,
+          change.column
+        );
+      }
+
       // Record the column version (metadata update)
-      await this.columnVersions.setColumnVersion(
+      this.columnVersions.setColumnVersionBatch(
+        batch,
         change.schema,
         change.table,
         change.pk,
         change.column,
         { hlc: change.hlc, value: change.value }
       );
+
+      // Record in change log for delta sync to other peers
+      this.changeLog.recordColumnChangeBatch(
+        batch,
+        change.hlc,
+        change.schema,
+        change.table,
+        change.pk,
+        change.column
+      );
+
+      await batch.write();
 
       // Return the data change for the store
       return {

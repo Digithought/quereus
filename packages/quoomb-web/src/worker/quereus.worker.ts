@@ -9,12 +9,14 @@ import {
   siteIdFromBase64,
   serializeHLC,
   deserializeHLC,
+  compareHLC,
   type SyncManager,
   type SyncEventEmitter as SyncEventEmitterType,
   type ChangeSet,
   type Change,
   type SchemaMigration,
   type SiteId,
+  type HLC,
   type RemoteChangeEvent,
   type LocalChangeEvent,
   type ConflictEvent,
@@ -95,6 +97,25 @@ class QuereusWorker implements QuereusWorkerAPI {
   private syncEventSubscribers = new Map<string, (event: SyncEvent) => void>();
   private syncWebSocket: WebSocket | null = null;
   private serverSiteId: SiteId | null = null;
+
+  // Debounce timer for batching local change sends
+  private syncSendDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingLocalChangeCount = 0;
+
+  // Delta sync optimization: track what we've sent to avoid full scans
+  // - lastSentHLC: confirmed HLC after server ack (used for next getChangesSince)
+  // - pendingSentHLC: HLC we sent but haven't received ack for yet
+  private lastSentHLC: HLC | null = null;
+  private pendingSentHLC: HLC | null = null;
+
+  // Reconnection state
+  private syncUrl: string | null = null;
+  private syncToken: string | undefined = undefined;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private intentionalDisconnect = false;
+  private static readonly MAX_RECONNECT_DELAY_MS = 60_000; // 1 minute max
+  private static readonly INITIAL_RECONNECT_DELAY_MS = 1_000; // 1 second initial
 
   // Initialization promises to prevent race conditions
   private storeModuleInitPromise: Promise<void> | null = null;
@@ -864,8 +885,10 @@ class QuereusWorker implements QuereusWorkerAPI {
       });
     });
 
-    // Local changes - send to server if connected
-    this.syncEvents.onLocalChange(async (event: LocalChangeEvent) => {
+    // Local changes - debounce and send to server if connected
+    this.syncEvents.onLocalChange((event: LocalChangeEvent) => {
+      this.pendingLocalChangeCount += event.changes.length;
+
       this.addSyncEvent({
         type: 'local-change',
         timestamp: Date.now(),
@@ -875,27 +898,15 @@ class QuereusWorker implements QuereusWorkerAPI {
         },
       });
 
-      // Send changes to server if connected
-      if (this.syncWebSocket?.readyState === WebSocket.OPEN && this.serverSiteId && this.syncManager) {
-        try {
-          // Get all pending changes to send to server
-          const changesToSend = await this.syncManager.getChangesSince(this.serverSiteId);
-          if (changesToSend.length > 0) {
-            const serialized = changesToSend.map(cs => serializeChangeSet(cs));
-            this.syncWebSocket.send(JSON.stringify({
-              type: 'apply_changes',
-              changes: serialized,
-            }));
-            this.addSyncEvent({
-              type: 'state-change',
-              timestamp: Date.now(),
-              message: `Sent ${changesToSend.length} changeset(s) to server`,
-            });
-          }
-        } catch (err) {
-          console.error('Failed to send local changes to server:', err);
-        }
+      // Debounce: batch multiple rapid changes into a single send
+      if (this.syncSendDebounceTimer) {
+        clearTimeout(this.syncSendDebounceTimer);
       }
+
+      this.syncSendDebounceTimer = setTimeout(() => {
+        this.syncSendDebounceTimer = null;
+        this.sendPendingChangesToServer();
+      }, 50); // 50ms debounce window
     });
 
     // Conflicts
@@ -966,9 +977,69 @@ class QuereusWorker implements QuereusWorkerAPI {
     return this.syncStatus;
   }
 
+  /**
+   * Send pending local changes to the sync server.
+   * Called after debounce timer expires to batch multiple rapid changes.
+   */
+  private async sendPendingChangesToServer(): Promise<void> {
+    if (!this.syncWebSocket || this.syncWebSocket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (!this.serverSiteId || !this.syncManager) {
+      return;
+    }
+
+    const changeCount = this.pendingLocalChangeCount;
+    this.pendingLocalChangeCount = 0;
+
+    try {
+      // Use lastSentHLC for delta sync optimization - only get changes since last ack'd send
+      const changesToSend = await this.syncManager.getChangesSince(
+        this.serverSiteId,
+        this.lastSentHLC ?? undefined
+      );
+      if (changesToSend.length > 0) {
+        // Compute max HLC from changes we're sending (for tracking after ack)
+        let maxHLC: HLC | null = null;
+        for (const cs of changesToSend) {
+          if (!maxHLC || compareHLC(cs.hlc, maxHLC) > 0) {
+            maxHLC = cs.hlc;
+          }
+        }
+        this.pendingSentHLC = maxHLC;
+
+        const serialized = changesToSend.map(cs => serializeChangeSet(cs));
+        this.syncWebSocket.send(JSON.stringify({
+          type: 'apply_changes',
+          changes: serialized,
+        }));
+        this.addSyncEvent({
+          type: 'state-change',
+          timestamp: Date.now(),
+          message: `Sent ${changeCount} changes in ${changesToSend.length} changeset(s) to server`,
+        });
+      }
+      // Update status to synced after successfully sending changes
+      this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
+    } catch (err) {
+      console.error('Failed to send local changes to server:', err);
+    }
+  }
+
   async connectSync(url: string, token?: string): Promise<void> {
     if (!this.syncManager) {
       throw new Error('Sync module not initialized. Call setStorageModule("sync") first.');
+    }
+
+    // Store connection params for reconnection
+    this.syncUrl = url;
+    this.syncToken = token;
+    this.intentionalDisconnect = false;
+
+    // Clear any pending reconnect timer
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
 
     // Close existing connection
@@ -985,6 +1056,9 @@ class QuereusWorker implements QuereusWorkerAPI {
         this.syncWebSocket = new WebSocket(wsUrl);
 
         this.syncWebSocket.onopen = () => {
+          // Reset reconnect attempts on successful connection
+          this.reconnectAttempts = 0;
+
           // Send handshake message with our siteId
           const siteId = this.syncManager!.getSiteId();
           const handshake = JSON.stringify({
@@ -1010,9 +1084,10 @@ class QuereusWorker implements QuereusWorkerAPI {
             timestamp: Date.now(),
             message: 'Disconnected from sync server',
           });
+          this.scheduleReconnect();
         };
 
-        this.syncWebSocket.onerror = (event) => {
+        this.syncWebSocket.onerror = () => {
           const error = new Error('WebSocket connection failed');
           this.syncStatus = { status: 'error', message: error.message };
           this.addSyncEvent({
@@ -1020,7 +1095,12 @@ class QuereusWorker implements QuereusWorkerAPI {
             timestamp: Date.now(),
             message: error.message,
           });
-          reject(error);
+          // Don't reject on error if we're going to reconnect
+          // The close event will fire after error and trigger reconnect
+          if (this.reconnectAttempts === 0) {
+            // Only reject on first attempt so caller knows initial connect failed
+            reject(error);
+          }
         };
 
         this.syncWebSocket.onmessage = async (event) => {
@@ -1030,6 +1110,68 @@ class QuereusWorker implements QuereusWorkerAPI {
         this.syncStatus = { status: 'error', message: error instanceof Error ? error.message : 'Connection failed' };
         reject(error);
       }
+    });
+  }
+
+  /**
+   * Schedule a reconnection attempt with exponential backoff.
+   */
+  private scheduleReconnect(): void {
+    // Don't reconnect if intentionally disconnected or no URL stored
+    if (this.intentionalDisconnect || !this.syncUrl) {
+      return;
+    }
+
+    // Calculate delay with exponential backoff: 1s, 2s, 4s, 8s, ... up to max
+    const delay = Math.min(
+      QuereusWorker.INITIAL_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts),
+      QuereusWorker.MAX_RECONNECT_DELAY_MS
+    );
+
+    this.reconnectAttempts++;
+
+    this.addSyncEvent({
+      type: 'state-change',
+      timestamp: Date.now(),
+      message: `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`,
+    });
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      // Attempt reconnection
+      this.connectSync(this.syncUrl!, this.syncToken).catch(() => {
+        // Error already handled in connectSync, reconnect will be scheduled by onclose
+      });
+    }, delay);
+  }
+
+  /**
+   * Disconnect from sync server and stop reconnection attempts.
+   */
+  async disconnectSync(): Promise<void> {
+    this.intentionalDisconnect = true;
+
+    // Clear any pending reconnect timer
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Close the WebSocket
+    if (this.syncWebSocket) {
+      this.syncWebSocket.close();
+      this.syncWebSocket = null;
+    }
+
+    this.serverSiteId = null;
+    // Reset delta sync tracking - on reconnect we'll need fresh state
+    this.lastSentHLC = null;
+    this.pendingSentHLC = null;
+    this.syncStatus = { status: 'disconnected' };
+    this.addSyncEvent({
+      type: 'state-change',
+      timestamp: Date.now(),
+      message: 'Disconnected from sync server (manual)',
     });
   }
 
@@ -1050,10 +1192,17 @@ class QuereusWorker implements QuereusWorkerAPI {
             timestamp: Date.now(),
             message: `Authenticated with server (connection: ${message.connectionId?.slice(0, 8) ?? 'unknown'})`,
           });
-          // Request initial changes from server
-          this.syncWebSocket?.send(JSON.stringify({
-            type: 'get_changes',
-          }));
+          // Request changes from server since our last synced HLC with this peer
+          // This enables delta sync - we only get changes we don't already have
+          const lastSyncHLC = await this.syncManager.getPeerSyncState(this.serverSiteId!);
+          const getChangesMsg: { type: string; sinceHLC?: string } = { type: 'get_changes' };
+          if (lastSyncHLC) {
+            // Use btoa for browser-compatible base64 encoding
+            const hlcBytes = serializeHLC(lastSyncHLC);
+            const binaryStr = Array.from(hlcBytes, b => String.fromCharCode(b)).join('');
+            getChangesMsg.sinceHLC = btoa(binaryStr);
+          }
+          this.syncWebSocket?.send(JSON.stringify(getChangesMsg));
           break;
 
         case 'changes':
@@ -1062,13 +1211,34 @@ class QuereusWorker implements QuereusWorkerAPI {
           const changeSets: ChangeSet[] = (message.changeSets || []).map(
             (cs: Record<string, unknown>) => deserializeChangeSet(cs)
           );
+
           const result = await this.syncManager.applyChanges(changeSets);
-          this.addSyncEvent({
-            type: 'remote-change',
-            timestamp: Date.now(),
-            message: `Applied ${result.applied} changes (${result.conflicts} conflicts resolved)`,
-            details: { changeCount: result.applied },
-          });
+
+          // Update peer sync state with the max HLC from received changes
+          // This tracks what we've received from this peer for delta sync
+          if (changeSets.length > 0 && this.serverSiteId) {
+            let maxHLC: HLC | undefined;
+            for (const cs of changeSets) {
+              if (!maxHLC || compareHLC(cs.hlc, maxHLC) > 0) {
+                maxHLC = cs.hlc;
+              }
+            }
+            if (maxHLC) {
+              await this.syncManager.updatePeerSyncState(this.serverSiteId, maxHLC);
+            }
+          }
+
+          // Only show message if there were changes to report
+          if (result.applied > 0 || result.conflicts > 0 || result.skipped > 0) {
+            const conflictText = result.conflicts > 0 ? ` (${result.conflicts} conflicts resolved)` : '';
+            const skippedText = result.skipped > 0 ? `, ${result.skipped} skipped` : '';
+            this.addSyncEvent({
+              type: 'remote-change',
+              timestamp: Date.now(),
+              message: `Applied ${result.applied} column changes${conflictText}${skippedText}`,
+              details: { changeCount: result.applied, conflicts: result.conflicts, skipped: result.skipped },
+            });
+          }
           this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
           break;
 
@@ -1099,6 +1269,11 @@ class QuereusWorker implements QuereusWorkerAPI {
 
         case 'apply_result':
           // Server confirmed our changes were applied
+          // Update lastSentHLC to enable delta sync on next send
+          if (this.pendingSentHLC) {
+            this.lastSentHLC = this.pendingSentHLC;
+            this.pendingSentHLC = null;
+          }
           this.addSyncEvent({
             type: 'info',
             timestamp: Date.now(),
@@ -1119,14 +1294,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
   }
 
-  async disconnectSync(): Promise<void> {
-    if (this.syncWebSocket) {
-      this.syncWebSocket.close();
-      this.syncWebSocket = null;
-    }
-    this.serverSiteId = null;
-    this.syncStatus = { status: 'disconnected' };
-  }
+
 
   getSyncEvents(limit?: number): SyncEvent[] {
     if (limit) {

@@ -966,6 +966,21 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 - [ ] Example: Implementing `applyToStore` callback
 - [ ] Performance benchmarks
 
+#### Reusable Sync Client Package (`quereus-sync-client`)
+- [ ] Create new package `quereus-sync-client` for reusable client-side sync infrastructure
+- [ ] Extract `SyncClient` class from `quoomb-web` worker with:
+  - [ ] WebSocket connection management
+  - [ ] Automatic reconnection with exponential backoff (1s → 60s max)
+  - [ ] Handshake protocol handling
+  - [ ] Message serialization/deserialization (HLC, ChangeSet, etc.)
+  - [ ] Automatic change pushing on local changes (with debouncing)
+  - [ ] Connection state management and events
+- [ ] Framework-agnostic design (no React/worker dependencies)
+- [ ] Optional integrations:
+  - [ ] React hooks (`useSyncStatus`, `useSyncEvents`)
+  - [ ] Web Worker wrapper for offloading sync to background thread
+- [ ] This would reduce `quoomb-web` sync code to just configuration
+
 ---
 
 ## Schema Seed: App Provider as Sync Peer

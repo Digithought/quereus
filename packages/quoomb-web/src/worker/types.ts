@@ -47,6 +47,8 @@ export interface SyncEvent {
   details?: {
     table?: string;
     changeCount?: number;
+    conflicts?: number;
+    skipped?: number;
     conflictColumn?: string;
     winner?: 'local' | 'remote';
   };
