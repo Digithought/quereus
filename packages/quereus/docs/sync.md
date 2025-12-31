@@ -398,6 +398,155 @@ For the primary use case of a master server syncing to many frontend replicas:
        │                                            │
 ```
 
+### WebSocket Sync Protocol
+
+The WebSocket protocol provides real-time bidirectional synchronization. This is the recommended transport for interactive applications.
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        WebSocket Message Flow                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  CLIENT                                            SERVER                  │
+│    │                                                  │                    │
+│    │──────── { type: "handshake", siteId, token? } ──►│                    │
+│    │                                                  │                    │
+│    │◄─────── { type: "handshake_ack", serverSiteId } ─│                    │
+│    │                                                  │                    │
+│    │──────── { type: "get_changes", sinceHLC? } ─────►│                    │
+│    │                                                  │                    │
+│    │◄─────── { type: "changes", changeSets: [...] } ──│                    │
+│    │                                                  │                    │
+│    │──────── { type: "apply_changes", changes } ─────►│  (local changes)   │
+│    │                                                  │                    │
+│    │◄─────── { type: "apply_result", applied, ... } ──│                    │
+│    │                                                  │                    │
+│    │◄────── { type: "push_changes", changeSets } ─────│  (from other peer) │
+│    │                                                  │                    │
+│    │──────── { type: "ping" } ───────────────────────►│  (heartbeat)       │
+│    │◄─────── { type: "pong" } ────────────────────────│                    │
+│    │                                                  │                    │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Message Types
+
+**Client → Server:**
+
+| Type | Purpose | Payload |
+|------|---------|---------|
+| `handshake` | Authenticate and establish session | `{ siteId, token? }` |
+| `get_changes` | Request changes since an HLC | `{ sinceHLC? }` (base64) |
+| `apply_changes` | Push local changes to server | `{ changes: ChangeSet[] }` |
+| `get_snapshot` | Request full snapshot | (none) |
+| `ping` | Heartbeat / keepalive | (none) |
+
+**Server → Client:**
+
+| Type | Purpose | Payload |
+|------|---------|---------|
+| `handshake_ack` | Confirm authentication | `{ serverSiteId, connectionId }` |
+| `changes` | Response to `get_changes` | `{ changeSets: ChangeSet[] }` |
+| `push_changes` | Broadcast from another client | `{ changeSets: ChangeSet[] }` |
+| `apply_result` | Confirm changes applied | `{ applied, skipped, conflicts }` |
+| `snapshot_chunk` | Streamed snapshot data | `{ ...SnapshotChunk }` |
+| `error` | Error response | `{ code, message }` |
+| `pong` | Heartbeat response | (none) |
+
+#### Connection Lifecycle
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        Client Connection State Machine                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│   ┌─────────────┐                                                          │
+│   │ DISCONNECTED│◄─────────────────────────────────────────────┐           │
+│   └──────┬──────┘                                              │           │
+│          │ connectSync(url, token)                             │           │
+│          ▼                                                     │           │
+│   ┌─────────────┐                                              │           │
+│   │ CONNECTING  │──────────────────────────────────────────────┤           │
+│   └──────┬──────┘  WebSocket error or close                    │           │
+│          │ onopen → send handshake                             │           │
+│          ▼                                                     │           │
+│   ┌─────────────┐                                              │           │
+│   │   SYNCING   │──────────────────────────────────────────────┤           │
+│   └──────┬──────┘  handshake_ack → get_changes                 │           │
+│          │ changes received → applyChanges()                   │           │
+│          ▼                                                     │           │
+│   ┌─────────────┐                                              │           │
+│   │   SYNCED    │◄─────┐                                       │           │
+│   └──────┬──────┘      │ apply_result or push_changes applied  │           │
+│          │             │                                       │           │
+│          └─────────────┘ local change → apply_changes          │           │
+│          │                                                     │           │
+│          │ WebSocket close (unintentional)                     │           │
+│          ▼                                                     │           │
+│   ┌─────────────┐                                              │           │
+│   │ RECONNECTING│─── exponential backoff (1s, 2s, 4s... 60s) ──┘           │
+│   └─────────────┘                                                          │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Delta Sync Optimization
+
+To minimize data transfer, clients track sync progress with the server:
+
+1. **Receiving changes**: After applying server changes, client updates `peerSyncState[serverSiteId]` with the max HLC received
+2. **Sending changes**: Client tracks `lastSentHLC` (confirmed) and `pendingSentHLC` (awaiting ack)
+3. **Reconnection**: On reconnect, client sends `get_changes` with `sinceHLC` from peer sync state
+4. **Server tracking**: Server uses client's `sinceHLC` to return only new changes
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Delta Sync State Tracking                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Client State:                     Server State:                            │
+│  ┌─────────────────────────────┐   ┌─────────────────────────────┐          │
+│  │ peerSyncState[serverSiteId] │   │ Change Log (HLC-indexed)    │          │
+│  │   └─ lastReceivedHLC        │   │   └─ All changes since T0   │          │
+│  │                             │   │                             │          │
+│  │ lastSentHLC (confirmed)     │   │ Per-client session:         │          │
+│  │ pendingSentHLC (in-flight)  │   │   └─ lastSyncHLC            │          │
+│  └─────────────────────────────┘   └─────────────────────────────┘          │
+│                                                                             │
+│  On reconnect:                                                              │
+│  1. Client: get_changes { sinceHLC: peerSyncState[serverSiteId] }           │
+│  2. Server: Returns only changes where change.hlc > sinceHLC                │
+│  3. Client: applyChanges(), updates peerSyncState                           │
+│                                                                             │
+│  On local change:                                                           │
+│  1. Local change triggers debounced send (50ms window)                      │
+│  2. Client: getChangesSince(serverSiteId, lastSentHLC) → filtered changes   │
+│  3. Client: apply_changes { changes }                                       │
+│  4. Client: pendingSentHLC = max HLC of sent changes                        │
+│  5. Server: apply_result { applied, ... }                                   │
+│  6. Client: lastSentHLC = pendingSentHLC (on success)                       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Reconnection with Exponential Backoff
+
+When the WebSocket connection drops unexpectedly:
+
+1. Client schedules reconnect with exponential backoff: `delay = min(1s × 2^attempt, 60s)`
+2. On successful reconnect, attempt counter resets to 0
+3. Manual `disconnectSync()` sets `intentionalDisconnect = true` to prevent auto-reconnect
+4. Reconnect attempts use the same URL and token from the original connection
+
+#### Local Change Debouncing
+
+Rapid local changes are batched to reduce network overhead:
+
+1. On local change event, start/reset a 50ms debounce timer
+2. When timer fires, collect all changes since `lastSentHLC`
+3. Send batched changes in a single `apply_changes` message
+4. This reduces WebSocket messages from N per edit to 1 per burst
+
 ## Reactive Hooks
 
 The sync module exposes reactive hooks for UI integration:
@@ -967,19 +1116,54 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 - [ ] Performance benchmarks
 
 #### Reusable Sync Client Package (`quereus-sync-client`)
-- [ ] Create new package `quereus-sync-client` for reusable client-side sync infrastructure
-- [ ] Extract `SyncClient` class from `quoomb-web` worker with:
-  - [ ] WebSocket connection management
-  - [ ] Automatic reconnection with exponential backoff (1s → 60s max)
-  - [ ] Handshake protocol handling
-  - [ ] Message serialization/deserialization (HLC, ChangeSet, etc.)
-  - [ ] Automatic change pushing on local changes (with debouncing)
-  - [ ] Connection state management and events
-- [ ] Framework-agnostic design (no React/worker dependencies)
-- [ ] Optional integrations:
-  - [ ] React hooks (`useSyncStatus`, `useSyncEvents`)
-  - [ ] Web Worker wrapper for offloading sync to background thread
-- [ ] This would reduce `quoomb-web` sync code to just configuration
+
+The `quoomb-web` and `site-cad` workers contain ~200 lines of duplicate WebSocket sync client code. This should be extracted into a reusable package.
+
+**Current Implementation (in workers):**
+- [x] WebSocket connection and handshake (`handshake` → `handshake_ack`)
+- [x] Message dispatch (`changes`, `push_changes`, `apply_result`, `error`, `pong`)
+- [x] ChangeSet serialization/deserialization (HLC, siteId encoding)
+- [x] Local change debouncing (50ms window)
+- [x] Delta sync optimization (`lastSentHLC`, `pendingSentHLC` tracking)
+- [x] Peer sync state tracking (`peerSyncState[serverSiteId]`)
+- [x] Reconnection with exponential backoff (1s → 60s max)
+- [x] Connection state machine (disconnected → connecting → syncing → synced)
+
+**Proposed `SyncClient` API:**
+```typescript
+interface SyncClientOptions {
+  syncManager: SyncManager;
+  onStatusChange?: (status: SyncStatus) => void;
+  onRemoteChanges?: (result: ApplyResult, changeSets: ChangeSet[]) => void;
+  onError?: (error: Error) => void;
+  autoReconnect?: boolean;          // Default: true
+  reconnectDelayMs?: number;        // Default: 1000 (exponential backoff)
+  maxReconnectDelayMs?: number;     // Default: 60000
+  localChangeDebounceMs?: number;   // Default: 50
+}
+
+class SyncClient {
+  connect(url: string, token?: string): Promise<void>;
+  disconnect(): void;
+  readonly status: SyncStatus;
+  readonly isConnected: boolean;
+}
+```
+
+**Tasks:**
+- [ ] Create `packages/quereus-sync-client` package
+- [ ] Implement `SyncClient` class with WebSocket protocol
+- [ ] Extract serialization helpers (already exist in both workers)
+- [ ] Add reconnection state machine with exponential backoff
+- [ ] Add delta sync tracking (peer sync state, sent HLC tracking)
+- [ ] Add local change listener with debouncing
+- [ ] Update `quoomb-web` worker to use `SyncClient`
+- [ ] Update `site-cad` worker to use `SyncClient`
+- [ ] Framework-agnostic design (no React/Svelte/Worker dependencies)
+
+**Nice-to-have:**
+- [ ] HTTP polling fallback for environments without WebSocket
+- [ ] Connection quality metrics (latency, reconnect count)
 
 ---
 

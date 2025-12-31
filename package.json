@@ -38,6 +38,7 @@
     "pub:store-leveldb": "cd packages/quereus-store-leveldb && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",
     "pub:store-indexeddb": "cd packages/quereus-store-indexeddb && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",
     "pub:sync": "cd packages/quereus-plugin-sync && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",
+    "pub:sync-client": "cd packages/quereus-sync-client && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",
     "pub:sync-coordinator": "cd packages/sync-coordinator && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",
     "pub:ui": "cd packages/shared-ui && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",
     "pub:cli": "cd packages/quoomb-cli && npx bumpp --no-push --no-commit -y && npm publish --access public --registry https://registry.npmjs.org/",

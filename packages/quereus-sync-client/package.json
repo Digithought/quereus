@@ -1,0 +1,59 @@
+{
+  "name": "@quereus/sync-client",
+  "version": "0.1.1",
+  "type": "module",
+  "description": "WebSocket sync client for Quereus - handles connection, reconnection, and change synchronization",
+  "keywords": [
+    "quereus",
+    "sync",
+    "websocket",
+    "crdt",
+    "replication",
+    "offline-first",
+    "client"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/quereus-sync-client"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/quereus-sync-client/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-sync-client/test/**/*.spec.ts\" --colors",
+    "test:single": "cd ../.. && node --import ./packages/quereus-sync-client/register.mjs node_modules/mocha/bin/mocha.js --bail"
+  },
+  "peerDependencies": {
+    "@quereus/plugin-sync": "*"
+  },
+  "devDependencies": {
+    "@quereus/plugin-sync": "*",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
+    "chai": "^5.2.0",
+    "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "quereus": {
+    "provides": {
+      "sync-client": true
+    }
+  }
+}
