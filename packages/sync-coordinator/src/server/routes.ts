@@ -7,6 +7,7 @@ import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HL
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { AuthContext, ClientIdentity } from '../service/types.js';
 import { httpLog } from '../common/logger.js';
+import { isValidDatabaseId } from '../service/database-ids.js';
 
 /**
  * Register sync HTTP routes.
@@ -17,7 +18,7 @@ export function registerRoutes(
   basePath: string
 ): void {
   // Helper to extract auth context from request
-  const getAuthContext = (request: FastifyRequest): AuthContext => {
+  const getAuthContext = (request: FastifyRequest, databaseId: string): AuthContext => {
     const authHeader = request.headers.authorization;
     const token = authHeader?.startsWith('Bearer ')
       ? authHeader.slice(7)
@@ -26,6 +27,7 @@ export function registerRoutes(
     const siteIdRaw = request.headers['x-site-id'] as string | undefined;
 
     return {
+      databaseId,
       token,
       siteIdRaw,
       siteId: siteIdRaw ? siteIdFromBase64(siteIdRaw) : undefined,
@@ -41,10 +43,21 @@ export function registerRoutes(
     });
   };
 
+  // Validate database ID from path parameter
+  const validateDatabaseId = (request: FastifyRequest, reply: FastifyReply): string | null => {
+    const params = request.params as { databaseId?: string };
+    const databaseId = params.databaseId;
+    if (!databaseId || !isValidDatabaseId(databaseId)) {
+      errorResponse(reply, 'INVALID_DATABASE_ID', `Invalid database ID format: ${databaseId}`, 400);
+      return null;
+    }
+    return databaseId;
+  };
+
   // Authenticate and get client identity
-  const authenticate = async (request: FastifyRequest, reply: FastifyReply): Promise<ClientIdentity | null> => {
+  const authenticate = async (request: FastifyRequest, reply: FastifyReply, databaseId: string): Promise<ClientIdentity | null> => {
     try {
-      const context = getAuthContext(request);
+      const context = getAuthContext(request, databaseId);
       return await service.authenticate(context);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Authentication failed';
@@ -70,11 +83,14 @@ export function registerRoutes(
       .send(output);
   });
 
-  // GET /changes - Get changes since HLC
-  app.get(`${basePath}/changes`, async (request, reply) => {
-    httpLog('GET %s/changes', basePath);
+  // GET /:databaseId/changes - Get changes since HLC
+  app.get(`${basePath}/:databaseId/changes`, async (request, reply) => {
+    const databaseId = validateDatabaseId(request, reply);
+    if (!databaseId) return;
 
-    const client = await authenticate(request, reply);
+    httpLog('GET %s/%s/changes', basePath, databaseId);
+
+    const client = await authenticate(request, reply, databaseId);
     if (!client) return;
 
     try {
@@ -87,7 +103,7 @@ export function registerRoutes(
         sinceHLC = deserializeHLC(hlcBytes);
       }
 
-      const changes = await service.getChangesSince(client, sinceHLC);
+      const changes = await service.getChangesSince(databaseId, client, sinceHLC);
 
       // Serialize HLCs in response for JSON transport
       const serializedChanges = changes.map(cs => ({
@@ -107,16 +123,19 @@ export function registerRoutes(
       return reply.send({ ok: true, data: { changes: serializedChanges } });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to get changes';
-      httpLog('GET /changes error: %s', message);
+      httpLog('GET /%s/changes error: %s', databaseId, message);
       return errorResponse(reply, 'GET_CHANGES_FAILED', message, 500);
     }
   });
 
-  // POST /changes - Apply changes from client
-  app.post(`${basePath}/changes`, async (request, reply) => {
-    httpLog('POST %s/changes', basePath);
+  // POST /:databaseId/changes - Apply changes from client
+  app.post(`${basePath}/:databaseId/changes`, async (request, reply) => {
+    const databaseId = validateDatabaseId(request, reply);
+    if (!databaseId) return;
 
-    const client = await authenticate(request, reply);
+    httpLog('POST %s/%s/changes', basePath, databaseId);
+
+    const client = await authenticate(request, reply, databaseId);
     if (!client) return;
 
     try {
@@ -140,20 +159,23 @@ export function registerRoutes(
         })),
       })) as ChangeSet[];
 
-      const result = await service.applyChanges(client, changes);
+      const result = await service.applyChanges(databaseId, client, changes);
       return reply.send({ ok: true, data: result });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to apply changes';
-      httpLog('POST /changes error: %s', message);
+      httpLog('POST /%s/changes error: %s', databaseId, message);
       return errorResponse(reply, 'APPLY_CHANGES_FAILED', message, 500);
     }
   });
 
-  // GET /snapshot - Stream full snapshot
-  app.get(`${basePath}/snapshot`, async (request, reply) => {
-    httpLog('GET %s/snapshot', basePath);
+  // GET /:databaseId/snapshot - Stream full snapshot
+  app.get(`${basePath}/:databaseId/snapshot`, async (request, reply) => {
+    const databaseId = validateDatabaseId(request, reply);
+    if (!databaseId) return;
 
-    const client = await authenticate(request, reply);
+    httpLog('GET %s/%s/snapshot', basePath, databaseId);
+
+    const client = await authenticate(request, reply, databaseId);
     if (!client) return;
 
     try {
@@ -161,7 +183,7 @@ export function registerRoutes(
       reply.raw.setHeader('Content-Type', 'application/x-ndjson');
       reply.raw.setHeader('Transfer-Encoding', 'chunked');
 
-      for await (const chunk of service.getSnapshotStream(client)) {
+      for await (const chunk of service.getSnapshotStream(databaseId, client)) {
         const serialized = JSON.stringify(chunk) + '\n';
         reply.raw.write(serialized);
       }
@@ -169,7 +191,7 @@ export function registerRoutes(
       reply.raw.end();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to get snapshot';
-      httpLog('GET /snapshot error: %s', message);
+      httpLog('GET /%s/snapshot error: %s', databaseId, message);
       // Can't send error response if we've started streaming
       reply.raw.end();
     }

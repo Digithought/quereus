@@ -1,14 +1,13 @@
 /**
- * CoordinatorService - Main service layer for sync coordination.
+ * CoordinatorService - Main service layer for multi-tenant sync coordination.
  *
- * Wraps SyncManager with validation hooks and client session management.
+ * Manages multiple database stores with lazy loading and provides
+ * sync operations with validation hooks and client session management.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
-import { LevelDBStore, StoreEventEmitter } from '@quereus/plugin-store';
 import {
-  createSyncModule,
   type SyncManager,
   type HLC,
   type SiteId,
@@ -33,6 +32,8 @@ import type {
   SyncOperation,
   CoordinatorHooks,
 } from './types.js';
+import { StoreManager, type StoreEntry } from './store-manager.js';
+import { isValidDatabaseId } from './database-ids.js';
 
 /**
  * Options for creating a CoordinatorService.
@@ -47,19 +48,18 @@ export interface CoordinatorServiceOptions {
 }
 
 /**
- * Coordinator service that manages sync operations with hooks.
+ * Multi-tenant coordinator service that manages sync operations with hooks.
  */
 export class CoordinatorService {
   private readonly config: CoordinatorConfig;
   private readonly hooks: CoordinatorHooks;
   private readonly metrics: CoordinatorMetrics;
-  private syncManager!: SyncManager;
-  private kvStore!: LevelDBStore;
+  private readonly storeManager: StoreManager;
 
   /** Active WebSocket sessions by connection ID */
   private readonly sessions = new Map<string, ClientSession>();
-  /** Connection IDs by site ID for broadcasting */
-  private readonly siteIdToConnections = new Map<string, Set<string>>();
+  /** Connection IDs by database ID for broadcasting */
+  private readonly databaseToConnections = new Map<string, Set<string>>();
 
   private initialized = false;
 
@@ -67,38 +67,29 @@ export class CoordinatorService {
     this.config = options.config;
     this.hooks = options.hooks || {};
     this.metrics = options.metrics || createCoordinatorMetrics();
+    this.storeManager = new StoreManager({
+      dataDir: this.config.dataDir,
+      maxOpenStores: 100,
+      idleTimeoutMs: 5 * 60 * 1000,
+      cleanupIntervalMs: 30 * 1000,
+      syncConfig: {
+        tombstoneTTL: this.config.sync.tombstoneTTL,
+        batchSize: this.config.sync.batchSize,
+      },
+    });
   }
 
   /**
-   * Initialize the service (open store, create sync manager).
+   * Initialize the service.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    serviceLog('Initializing CoordinatorService with dataDir: %s', this.config.dataDir);
-
-    // Open LevelDB store
-    this.kvStore = await LevelDBStore.open({
-      path: this.config.dataDir,
-      createIfMissing: true,
-    });
-
-    // Create sync module
-    const storeEvents = new StoreEventEmitter();
-    const { syncManager } = await createSyncModule(
-      this.kvStore,
-      storeEvents,
-      {
-        tombstoneTTL: this.config.sync.tombstoneTTL,
-        batchSize: this.config.sync.batchSize,
-      }
-    );
-
-    this.syncManager = syncManager;
+    serviceLog('Initializing CoordinatorService (multi-tenant) with dataDir: %s', this.config.dataDir);
+    this.storeManager.start();
     this.initialized = true;
 
-    serviceLog('CoordinatorService initialized, siteId: %s',
-      siteIdToBase64(syncManager.getSiteId()));
+    serviceLog('CoordinatorService initialized, ready for multi-tenant connections');
   }
 
   /**
@@ -114,11 +105,25 @@ export class CoordinatorService {
       session.socket.close(1001, 'Server shutting down');
     }
     this.sessions.clear();
-    this.siteIdToConnections.clear();
+    this.databaseToConnections.clear();
 
-    // Close KV store
-    await this.kvStore.close();
+    // Shutdown store manager
+    await this.storeManager.shutdown();
     this.initialized = false;
+  }
+
+  /**
+   * Get a store entry for a database, acquiring if needed.
+   */
+  private async getStore(databaseId: string): Promise<StoreEntry> {
+    return this.storeManager.acquire(databaseId);
+  }
+
+  /**
+   * Release a store reference.
+   */
+  private releaseStore(databaseId: string): void {
+    this.storeManager.release(databaseId);
   }
 
   // ============================================================================
@@ -183,28 +188,39 @@ export class CoordinatorService {
   // ============================================================================
 
   /**
-   * Get this coordinator's site ID.
+   * Get the coordinator's site ID for a specific database.
    */
-  getSiteId(): SiteId {
-    return this.syncManager.getSiteId();
+  async getSiteId(databaseId: string): Promise<SiteId> {
+    const entry = await this.getStore(databaseId);
+    try {
+      return entry.syncManager.getSiteId();
+    } finally {
+      this.releaseStore(databaseId);
+    }
   }
 
   /**
-   * Get current HLC.
+   * Get current HLC for a specific database.
    */
-  getCurrentHLC(): HLC {
-    return this.syncManager.getCurrentHLC();
+  async getCurrentHLC(databaseId: string): Promise<HLC> {
+    const entry = await this.getStore(databaseId);
+    try {
+      return entry.syncManager.getCurrentHLC();
+    } finally {
+      this.releaseStore(databaseId);
+    }
   }
 
   /**
    * Get changes since a given HLC for a client.
    */
   async getChangesSince(
+    databaseId: string,
     client: ClientIdentity,
     sinceHLC?: HLC
   ): Promise<ChangeSet[]> {
-    serviceLog('getChangesSince for %s, sinceHLC: %O',
-      siteIdToBase64(client.siteId), sinceHLC);
+    serviceLog('getChangesSince db=%s client=%s, sinceHLC: %O',
+      databaseId, siteIdToBase64(client.siteId), sinceHLC);
 
     const endTimer = this.metrics.registry.startTimer(this.metrics.getChangesDuration);
 
@@ -214,21 +230,26 @@ export class CoordinatorService {
       throw new Error('Not authorized');
     }
 
-    const changes = await this.syncManager.getChangesSince(client.siteId, sinceHLC);
-    endTimer();
-
-    return changes;
+    const entry = await this.getStore(databaseId);
+    try {
+      const changes = await entry.syncManager.getChangesSince(client.siteId, sinceHLC);
+      endTimer();
+      return changes;
+    } finally {
+      this.releaseStore(databaseId);
+    }
   }
 
   /**
    * Apply changes from a client.
    */
   async applyChanges(
+    databaseId: string,
     client: ClientIdentity,
     changes: ChangeSet[]
   ): Promise<ApplyResult> {
-    serviceLog('applyChanges from %s, count: %d',
-      siteIdToBase64(client.siteId), changes.length);
+    serviceLog('applyChanges db=%s from %s, count: %d',
+      databaseId, siteIdToBase64(client.siteId), changes.length);
 
     const endTimer = this.metrics.registry.startTimer(this.metrics.applyChangesDuration);
     this.metrics.registry.incCounter(this.metrics.changesReceivedTotal, {}, changes.length);
@@ -269,39 +290,45 @@ export class CoordinatorService {
       }
     }
 
-    // Apply
-    const result = await this.syncManager.applyChanges(approvedChanges);
-    serviceLog('Apply result: applied=%d, skipped=%d, conflicts=%d',
-      result.applied, result.skipped, result.conflicts);
-    endTimer();
+    const entry = await this.getStore(databaseId);
+    try {
+      // Apply
+      const result = await entry.syncManager.applyChanges(approvedChanges);
+      serviceLog('Apply result: applied=%d, skipped=%d, conflicts=%d',
+        result.applied, result.skipped, result.conflicts);
+      endTimer();
 
-    this.metrics.registry.incCounter(this.metrics.changesAppliedTotal, {}, result.applied);
+      this.metrics.registry.incCounter(this.metrics.changesAppliedTotal, {}, result.applied);
 
-    // Post-apply hook
-    if (this.hooks.onAfterApplyChanges) {
-      this.hooks.onAfterApplyChanges(client, approvedChanges, result);
+      // Post-apply hook
+      if (this.hooks.onAfterApplyChanges) {
+        this.hooks.onAfterApplyChanges(client, approvedChanges, result);
+      }
+
+      // Broadcast to other connected clients on the same database
+      if (result.applied > 0) {
+        serviceLog('Broadcasting %d changes to other clients on db=%s', approvedChanges.length, databaseId);
+        this.broadcastChanges(databaseId, client.siteId, approvedChanges);
+      } else {
+        serviceLog('No changes applied, not broadcasting');
+      }
+
+      return result;
+    } finally {
+      this.releaseStore(databaseId);
     }
-
-    // Broadcast to other connected clients
-    if (result.applied > 0) {
-      serviceLog('Broadcasting %d changes to other clients', approvedChanges.length);
-      this.broadcastChanges(client.siteId, approvedChanges);
-    } else {
-      serviceLog('No changes applied, not broadcasting');
-    }
-
-    return result;
   }
 
   /**
    * Stream a full snapshot.
    */
   async *getSnapshotStream(
+    databaseId: string,
     client: ClientIdentity,
     chunkSize?: number
   ): AsyncIterable<SnapshotChunk> {
-    serviceLog('getSnapshotStream for %s',
-      siteIdToBase64(client.siteId));
+    serviceLog('getSnapshotStream db=%s for %s',
+      databaseId, siteIdToBase64(client.siteId));
 
     this.metrics.registry.incCounter(this.metrics.snapshotRequestsTotal);
 
@@ -311,17 +338,27 @@ export class CoordinatorService {
       throw new Error('Not authorized');
     }
 
-    for await (const chunk of this.syncManager.getSnapshotStream(chunkSize)) {
-      this.metrics.registry.incCounter(this.metrics.snapshotChunksTotal);
-      yield chunk;
+    const entry = await this.getStore(databaseId);
+    try {
+      for await (const chunk of entry.syncManager.getSnapshotStream(chunkSize)) {
+        this.metrics.registry.incCounter(this.metrics.snapshotChunksTotal);
+        yield chunk;
+      }
+    } finally {
+      this.releaseStore(databaseId);
     }
   }
 
   /**
    * Check if delta sync is possible.
    */
-  async canDeltaSync(client: ClientIdentity, sinceHLC: HLC): Promise<boolean> {
-    return this.syncManager.canDeltaSync(client.siteId, sinceHLC);
+  async canDeltaSync(databaseId: string, client: ClientIdentity, sinceHLC: HLC): Promise<boolean> {
+    const entry = await this.getStore(databaseId);
+    try {
+      return entry.syncManager.canDeltaSync(client.siteId, sinceHLC);
+    } finally {
+      this.releaseStore(databaseId);
+    }
   }
 
   // ============================================================================
@@ -332,11 +369,16 @@ export class CoordinatorService {
    * Register a new WebSocket client session.
    */
   async registerSession(
+    databaseId: string,
     socket: WebSocket,
     identity: ClientIdentity
   ): Promise<ClientSession> {
     const connectionId = randomUUID();
-    const siteIdKey = siteIdToBase64(identity.siteId);
+
+    // Validate database ID format
+    if (!isValidDatabaseId(databaseId)) {
+      throw new Error(`Invalid database ID format: ${databaseId}`);
+    }
 
     // Call connect hook
     if (this.hooks.onClientConnect) {
@@ -346,8 +388,12 @@ export class CoordinatorService {
       }
     }
 
+    // Acquire store to ensure it's open while session is active
+    await this.getStore(databaseId);
+
     const session: ClientSession = {
       connectionId,
+      databaseId,
       siteId: identity.siteId,
       identity,
       lastSyncHLC: undefined,
@@ -357,11 +403,11 @@ export class CoordinatorService {
 
     this.sessions.set(connectionId, session);
 
-    // Track by siteId for broadcasting
-    let connections = this.siteIdToConnections.get(siteIdKey);
+    // Track by databaseId for broadcasting
+    let connections = this.databaseToConnections.get(databaseId);
     if (!connections) {
       connections = new Set();
-      this.siteIdToConnections.set(siteIdKey, connections);
+      this.databaseToConnections.set(databaseId, connections);
     }
     connections.add(connectionId);
 
@@ -369,8 +415,8 @@ export class CoordinatorService {
     this.metrics.registry.incCounter(this.metrics.wsConnectionsTotal);
     this.metrics.registry.incGauge(this.metrics.wsConnectionsActive);
 
-    serviceLog('Session registered: %s (site: %s)',
-      connectionId.slice(0, 8), siteIdKey);
+    serviceLog('Session registered: %s (db: %s)',
+      connectionId.slice(0, 8), databaseId);
 
     return session;
   }
@@ -382,7 +428,7 @@ export class CoordinatorService {
     const session = this.sessions.get(connectionId);
     if (!session) return;
 
-    const siteIdKey = siteIdToBase64(session.siteId);
+    const { databaseId } = session;
 
     // Call disconnect hook
     if (this.hooks.onClientDisconnect) {
@@ -391,19 +437,22 @@ export class CoordinatorService {
 
     this.sessions.delete(connectionId);
 
-    // Remove from siteId tracking
-    const connections = this.siteIdToConnections.get(siteIdKey);
+    // Remove from databaseId tracking
+    const connections = this.databaseToConnections.get(databaseId);
     if (connections) {
       connections.delete(connectionId);
       if (connections.size === 0) {
-        this.siteIdToConnections.delete(siteIdKey);
+        this.databaseToConnections.delete(databaseId);
       }
     }
+
+    // Release the store reference
+    this.releaseStore(databaseId);
 
     // Update metrics
     this.metrics.registry.decGauge(this.metrics.wsConnectionsActive);
 
-    serviceLog('Session unregistered: %s', connectionId.slice(0, 8));
+    serviceLog('Session unregistered: %s (db: %s)', connectionId.slice(0, 8), databaseId);
   }
 
   /**
@@ -424,9 +473,9 @@ export class CoordinatorService {
   }
 
   /**
-   * Broadcast changes to all connected clients except the sender.
+   * Broadcast changes to all connected clients on the same database except the sender.
    */
-  private broadcastChanges(senderSiteId: SiteId, changes: ChangeSet[]): void {
+  private broadcastChanges(databaseId: string, senderSiteId: SiteId, changes: ChangeSet[]): void {
     // Serialize changesets for JSON transport
     const serializedChangeSets = changes.map(cs => this.serializeChangeSet(cs));
     const message = JSON.stringify({
@@ -434,8 +483,15 @@ export class CoordinatorService {
       changeSets: serializedChangeSets,
     });
 
+    // Only broadcast to clients on the same database
+    const connections = this.databaseToConnections.get(databaseId);
+    if (!connections) return;
+
     let broadcastCount = 0;
-    for (const session of this.sessions.values()) {
+    for (const connectionId of connections) {
+      const session = this.sessions.get(connectionId);
+      if (!session) continue;
+
       // Don't send to the originator
       if (siteIdEquals(session.siteId, senderSiteId)) {
         continue;
@@ -486,12 +542,12 @@ export class CoordinatorService {
    * Get server status and stats.
    */
   getStatus(): {
-    siteId: string;
+    openStores: number;
     connectedClients: number;
     uptime: number;
   } {
     return {
-      siteId: siteIdToBase64(this.syncManager.getSiteId()),
+      openStores: this.storeManager.openCount,
       connectedClients: this.sessions.size,
       uptime: process.uptime(),
     };

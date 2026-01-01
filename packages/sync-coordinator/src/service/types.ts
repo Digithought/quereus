@@ -34,6 +34,8 @@ export interface ClientIdentity {
 export interface ClientSession {
   /** Unique connection identifier */
   connectionId: string;
+  /** Database ID for multi-tenant routing (e.g., 'a1-s42') */
+  databaseId: string;
   /** Client's replica site ID */
   siteId: SiteId;
   /** Authenticated identity */
@@ -54,6 +56,8 @@ export interface ClientSession {
  * Context provided to authentication hook.
  */
 export interface AuthContext {
+  /** Database ID for multi-tenant routing (e.g., 'a1-s42') */
+  databaseId: string;
   /** Authorization header value */
   token?: string;
   /** Client-provided site ID */

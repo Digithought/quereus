@@ -5,23 +5,14 @@ import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from
 import {
   createSyncModule,
   createStoreAdapter,
-  siteIdToBase64,
-  siteIdFromBase64,
-  serializeHLC,
-  deserializeHLC,
-  compareHLC,
   type SyncManager,
   type SyncEventEmitter as SyncEventEmitterType,
-  type ChangeSet,
-  type Change,
-  type SchemaMigration,
-  type SiteId,
-  type HLC,
   type RemoteChangeEvent,
   type LocalChangeEvent,
   type ConflictEvent,
   type SyncState,
 } from '@quereus/plugin-sync';
+import { SyncClient, type SyncStatus as SyncClientStatus, type SyncEvent as SyncClientEvent } from '@quereus/sync-client';
 import type {
   QuereusWorkerAPI,
   TableInfo,
@@ -39,47 +30,6 @@ import Papa from 'papaparse';
 // Maximum number of sync events to keep in history
 const MAX_SYNC_EVENTS = 100;
 
-// Helper to deserialize a ChangeSet from JSON transport format
-function deserializeChangeSet(cs: Record<string, unknown>): ChangeSet {
-  return {
-    siteId: siteIdFromBase64(cs.siteId as string),
-    transactionId: cs.transactionId as string,
-    hlc: deserializeHLC(Uint8Array.from(atob(cs.hlc as string), c => c.charCodeAt(0))),
-    changes: (cs.changes as Record<string, unknown>[]).map(c => ({
-      ...c,
-      hlc: deserializeHLC(Uint8Array.from(atob(c.hlc as string), ch => ch.charCodeAt(0))),
-    })) as Change[],
-    schemaMigrations: ((cs.schemaMigrations as Record<string, unknown>[]) || []).map(m => ({
-      ...m,
-      hlc: deserializeHLC(Uint8Array.from(atob(m.hlc as string), ch => ch.charCodeAt(0))),
-    })) as SchemaMigration[],
-  };
-}
-
-// Helper to serialize a ChangeSet for JSON transport
-function serializeChangeSet(cs: ChangeSet): object {
-  const hlcBytes = serializeHLC(cs.hlc);
-  return {
-    siteId: siteIdToBase64(cs.siteId),
-    transactionId: cs.transactionId,
-    hlc: btoa(String.fromCharCode(...hlcBytes)),
-    changes: cs.changes.map(c => {
-      const chlcBytes = serializeHLC(c.hlc);
-      return {
-        ...c,
-        hlc: btoa(String.fromCharCode(...chlcBytes)),
-      };
-    }),
-    schemaMigrations: cs.schemaMigrations.map(m => {
-      const mhlcBytes = serializeHLC(m.hlc);
-      return {
-        ...m,
-        hlc: btoa(String.fromCharCode(...mhlcBytes)),
-      };
-    }),
-  };
-}
-
 class QuereusWorker implements QuereusWorkerAPI {
   private db: Database | null = null;
 
@@ -92,30 +42,10 @@ class QuereusWorker implements QuereusWorkerAPI {
   // Sync module state
   private syncManager: SyncManager | null = null;
   private syncEvents: SyncEventEmitterType | null = null;
+  private syncClient: SyncClient | null = null;
   private syncStatus: SyncStatus = { status: 'disconnected' };
   private syncEventHistory: SyncEvent[] = [];
   private syncEventSubscribers = new Map<string, (event: SyncEvent) => void>();
-  private syncWebSocket: WebSocket | null = null;
-  private serverSiteId: SiteId | null = null;
-
-  // Debounce timer for batching local change sends
-  private syncSendDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingLocalChangeCount = 0;
-
-  // Delta sync optimization: track what we've sent to avoid full scans
-  // - lastSentHLC: confirmed HLC after server ack (used for next getChangesSince)
-  // - pendingSentHLC: HLC we sent but haven't received ack for yet
-  private lastSentHLC: HLC | null = null;
-  private pendingSentHLC: HLC | null = null;
-
-  // Reconnection state
-  private syncUrl: string | null = null;
-  private syncToken: string | undefined = undefined;
-  private reconnectAttempts = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private intentionalDisconnect = false;
-  private static readonly MAX_RECONNECT_DELAY_MS = 60_000; // 1 minute max
-  private static readonly INITIAL_RECONNECT_DELAY_MS = 1_000; // 1 second initial
 
   // Initialization promises to prevent race conditions
   private storeModuleInitPromise: Promise<void> | null = null;
@@ -724,7 +654,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
 
     // Clean up previous module state if switching away from store/sync
-    if (this.currentStorageModule === 'sync' && this.syncWebSocket) {
+    if (this.currentStorageModule === 'sync' && this.syncClient) {
       await this.disconnectSync();
     }
 
@@ -873,7 +803,7 @@ class QuereusWorker implements QuereusWorkerAPI {
   private setupSyncEventListeners(): void {
     if (!this.syncEvents) return;
 
-    // Remote changes
+    // Remote changes from sync module (not from SyncClient - these are internal)
     this.syncEvents.onRemoteChange((event: RemoteChangeEvent) => {
       this.addSyncEvent({
         type: 'remote-change',
@@ -885,10 +815,8 @@ class QuereusWorker implements QuereusWorkerAPI {
       });
     });
 
-    // Local changes - debounce and send to server if connected
+    // Local changes - just log for UI, SyncClient handles debouncing and sending
     this.syncEvents.onLocalChange((event: LocalChangeEvent) => {
-      this.pendingLocalChangeCount += event.changes.length;
-
       this.addSyncEvent({
         type: 'local-change',
         timestamp: Date.now(),
@@ -897,16 +825,6 @@ class QuereusWorker implements QuereusWorkerAPI {
           changeCount: event.changes.length,
         },
       });
-
-      // Debounce: batch multiple rapid changes into a single send
-      if (this.syncSendDebounceTimer) {
-        clearTimeout(this.syncSendDebounceTimer);
-      }
-
-      this.syncSendDebounceTimer = setTimeout(() => {
-        this.syncSendDebounceTimer = null;
-        this.sendPendingChangesToServer();
-      }, 50); // 50ms debounce window
     });
 
     // Conflicts
@@ -923,7 +841,7 @@ class QuereusWorker implements QuereusWorkerAPI {
       });
     });
 
-    // State changes
+    // State changes from sync module
     this.syncEvents.onSyncStateChange((state: SyncState) => {
       this.syncStatus = this.convertSyncState(state);
       this.addSyncEvent({
@@ -977,321 +895,51 @@ class QuereusWorker implements QuereusWorkerAPI {
     return this.syncStatus;
   }
 
-  /**
-   * Send pending local changes to the sync server.
-   * Called after debounce timer expires to batch multiple rapid changes.
-   */
-  private async sendPendingChangesToServer(): Promise<void> {
-    if (!this.syncWebSocket || this.syncWebSocket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    if (!this.serverSiteId || !this.syncManager) {
-      return;
-    }
-
-    const changeCount = this.pendingLocalChangeCount;
-    this.pendingLocalChangeCount = 0;
-
-    try {
-      // Use lastSentHLC for delta sync optimization - only get changes since last ack'd send
-      const changesToSend = await this.syncManager.getChangesSince(
-        this.serverSiteId,
-        this.lastSentHLC ?? undefined
-      );
-      if (changesToSend.length > 0) {
-        // Compute max HLC from changes we're sending (for tracking after ack)
-        let maxHLC: HLC | null = null;
-        for (const cs of changesToSend) {
-          if (!maxHLC || compareHLC(cs.hlc, maxHLC) > 0) {
-            maxHLC = cs.hlc;
-          }
-        }
-        this.pendingSentHLC = maxHLC;
-
-        const serialized = changesToSend.map(cs => serializeChangeSet(cs));
-        this.syncWebSocket.send(JSON.stringify({
-          type: 'apply_changes',
-          changes: serialized,
-        }));
-        this.addSyncEvent({
-          type: 'state-change',
-          timestamp: Date.now(),
-          message: `Sent ${changeCount} changes in ${changesToSend.length} changeset(s) to server`,
-        });
-      }
-      // Update status to synced after successfully sending changes
-      this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
-    } catch (err) {
-      console.error('Failed to send local changes to server:', err);
-    }
-  }
-
   async connectSync(url: string, token?: string): Promise<void> {
-    if (!this.syncManager) {
+    if (!this.syncManager || !this.syncEvents) {
       throw new Error('Sync module not initialized. Call setStorageModule("sync") first.');
     }
 
-    // Store connection params for reconnection
-    this.syncUrl = url;
-    this.syncToken = token;
-    this.intentionalDisconnect = false;
-
-    // Clear any pending reconnect timer
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    // Disconnect existing client if any
+    if (this.syncClient) {
+      await this.syncClient.disconnect();
     }
 
-    // Close existing connection
-    if (this.syncWebSocket) {
-      this.syncWebSocket.close();
-    }
-
-    this.syncStatus = { status: 'connecting' };
-
-    return new Promise((resolve, reject) => {
-      try {
-        // Add auth token to URL if provided
-        const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
-        this.syncWebSocket = new WebSocket(wsUrl);
-
-        this.syncWebSocket.onopen = () => {
-          // Reset reconnect attempts on successful connection
-          this.reconnectAttempts = 0;
-
-          // Send handshake message with our siteId
-          const siteId = this.syncManager!.getSiteId();
-          const handshake = JSON.stringify({
-            type: 'handshake',
-            siteId: siteIdToBase64(siteId),
-            token: token,
-          });
-          this.syncWebSocket!.send(handshake);
-
-          this.syncStatus = { status: 'syncing', progress: 0 };
-          this.addSyncEvent({
-            type: 'state-change',
-            timestamp: Date.now(),
-            message: 'Connected to sync server, handshake sent',
-          });
-          resolve();
-        };
-
-        this.syncWebSocket.onclose = () => {
-          this.syncStatus = { status: 'disconnected' };
-          this.addSyncEvent({
-            type: 'state-change',
-            timestamp: Date.now(),
-            message: 'Disconnected from sync server',
-          });
-          this.scheduleReconnect();
-        };
-
-        this.syncWebSocket.onerror = () => {
-          const error = new Error('WebSocket connection failed');
-          this.syncStatus = { status: 'error', message: error.message };
-          this.addSyncEvent({
-            type: 'error',
-            timestamp: Date.now(),
-            message: error.message,
-          });
-          // Don't reject on error if we're going to reconnect
-          // The close event will fire after error and trigger reconnect
-          if (this.reconnectAttempts === 0) {
-            // Only reject on first attempt so caller knows initial connect failed
-            reject(error);
-          }
-        };
-
-        this.syncWebSocket.onmessage = async (event) => {
-          await this.handleSyncMessage(event.data);
-        };
-      } catch (error) {
-        this.syncStatus = { status: 'error', message: error instanceof Error ? error.message : 'Connection failed' };
-        reject(error);
-      }
-    });
-  }
-
-  /**
-   * Schedule a reconnection attempt with exponential backoff.
-   */
-  private scheduleReconnect(): void {
-    // Don't reconnect if intentionally disconnected or no URL stored
-    if (this.intentionalDisconnect || !this.syncUrl) {
-      return;
-    }
-
-    // Calculate delay with exponential backoff: 1s, 2s, 4s, 8s, ... up to max
-    const delay = Math.min(
-      QuereusWorker.INITIAL_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts),
-      QuereusWorker.MAX_RECONNECT_DELAY_MS
-    );
-
-    this.reconnectAttempts++;
-
-    this.addSyncEvent({
-      type: 'state-change',
-      timestamp: Date.now(),
-      message: `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`,
+    // Create new SyncClient with callbacks that forward to our event system
+    this.syncClient = new SyncClient({
+      syncManager: this.syncManager,
+      syncEvents: this.syncEvents,
+      autoReconnect: true,
+      onStatusChange: (status: SyncClientStatus) => {
+        // Convert SyncClient status to our SyncStatus type
+        this.syncStatus = status as SyncStatus;
+      },
+      onSyncEvent: (event: SyncClientEvent) => {
+        // Forward SyncClient events to our event history
+        this.addSyncEvent(event as SyncEvent);
+      },
+      onError: (error: Error) => {
+        this.addSyncEvent({
+          type: 'error',
+          timestamp: Date.now(),
+          message: error.message,
+        });
+      },
     });
 
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      // Attempt reconnection
-      this.connectSync(this.syncUrl!, this.syncToken).catch(() => {
-        // Error already handled in connectSync, reconnect will be scheduled by onclose
-      });
-    }, delay);
+    // Connect to the server
+    await this.syncClient.connect(url, token);
   }
 
   /**
    * Disconnect from sync server and stop reconnection attempts.
    */
   async disconnectSync(): Promise<void> {
-    this.intentionalDisconnect = true;
-
-    // Clear any pending reconnect timer
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    if (this.syncClient) {
+      await this.syncClient.disconnect();
+      this.syncClient = null;
     }
-
-    // Close the WebSocket
-    if (this.syncWebSocket) {
-      this.syncWebSocket.close();
-      this.syncWebSocket = null;
-    }
-
-    this.serverSiteId = null;
-    // Reset delta sync tracking - on reconnect we'll need fresh state
-    this.lastSentHLC = null;
-    this.pendingSentHLC = null;
     this.syncStatus = { status: 'disconnected' };
-    this.addSyncEvent({
-      type: 'state-change',
-      timestamp: Date.now(),
-      message: 'Disconnected from sync server (manual)',
-    });
-  }
-
-  private async handleSyncMessage(data: string): Promise<void> {
-    if (!this.syncManager) return;
-
-    try {
-      const message = JSON.parse(data);
-
-      switch (message.type) {
-        case 'handshake_ack':
-          // Server acknowledged our handshake - store server's siteId
-          if (message.serverSiteId) {
-            this.serverSiteId = siteIdFromBase64(message.serverSiteId);
-          }
-          this.addSyncEvent({
-            type: 'state-change',
-            timestamp: Date.now(),
-            message: `Authenticated with server (connection: ${message.connectionId?.slice(0, 8) ?? 'unknown'})`,
-          });
-          // Request changes from server since our last synced HLC with this peer
-          // This enables delta sync - we only get changes we don't already have
-          const lastSyncHLC = await this.syncManager.getPeerSyncState(this.serverSiteId!);
-          const getChangesMsg: { type: string; sinceHLC?: string } = { type: 'get_changes' };
-          if (lastSyncHLC) {
-            // Use btoa for browser-compatible base64 encoding
-            const hlcBytes = serializeHLC(lastSyncHLC);
-            const binaryStr = Array.from(hlcBytes, b => String.fromCharCode(b)).join('');
-            getChangesMsg.sinceHLC = btoa(binaryStr);
-          }
-          this.syncWebSocket?.send(JSON.stringify(getChangesMsg));
-          break;
-
-        case 'changes':
-        case 'push_changes':
-          // Deserialize and apply incoming changes (from initial sync or broadcast)
-          const changeSets: ChangeSet[] = (message.changeSets || []).map(
-            (cs: Record<string, unknown>) => deserializeChangeSet(cs)
-          );
-
-          const result = await this.syncManager.applyChanges(changeSets);
-
-          // Update peer sync state with the max HLC from received changes
-          // This tracks what we've received from this peer for delta sync
-          if (changeSets.length > 0 && this.serverSiteId) {
-            let maxHLC: HLC | undefined;
-            for (const cs of changeSets) {
-              if (!maxHLC || compareHLC(cs.hlc, maxHLC) > 0) {
-                maxHLC = cs.hlc;
-              }
-            }
-            if (maxHLC) {
-              await this.syncManager.updatePeerSyncState(this.serverSiteId, maxHLC);
-            }
-          }
-
-          // Only show message if there were changes to report
-          if (result.applied > 0 || result.conflicts > 0 || result.skipped > 0) {
-            const conflictText = result.conflicts > 0 ? ` (${result.conflicts} conflicts resolved)` : '';
-            const skippedText = result.skipped > 0 ? `, ${result.skipped} skipped` : '';
-            this.addSyncEvent({
-              type: 'remote-change',
-              timestamp: Date.now(),
-              message: `Applied ${result.applied} column changes${conflictText}${skippedText}`,
-              details: { changeCount: result.applied, conflicts: result.conflicts, skipped: result.skipped },
-            });
-          }
-          this.syncStatus = { status: 'synced', lastSyncTime: Date.now() };
-          break;
-
-        case 'request_changes':
-          // Peer is requesting changes since a certain HLC
-          const changes = await this.syncManager.getChangesSince(
-            message.siteId,
-            message.sinceHLC
-          );
-          this.syncWebSocket?.send(JSON.stringify({
-            type: 'apply_changes',
-            changes,
-          }));
-          break;
-
-        case 'error':
-          // Server sent an error
-          this.addSyncEvent({
-            type: 'error',
-            timestamp: Date.now(),
-            message: `Server error: ${message.message} (${message.code})`,
-          });
-          break;
-
-        case 'pong':
-          // Heartbeat response - no action needed
-          break;
-
-        case 'apply_result':
-          // Server confirmed our changes were applied
-          // Update lastSentHLC to enable delta sync on next send
-          if (this.pendingSentHLC) {
-            this.lastSentHLC = this.pendingSentHLC;
-            this.pendingSentHLC = null;
-          }
-          this.addSyncEvent({
-            type: 'info',
-            timestamp: Date.now(),
-            message: `Server applied ${message.applied ?? 0} change(s)`,
-          });
-          break;
-
-        default:
-          console.warn('Unknown sync message type:', message.type);
-      }
-    } catch (error) {
-      console.error('Error handling sync message:', error);
-      this.addSyncEvent({
-        type: 'error',
-        timestamp: Date.now(),
-        message: `Sync error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      });
-    }
   }
 
 
@@ -1315,9 +963,9 @@ class QuereusWorker implements QuereusWorkerAPI {
 
   async close(): Promise<void> {
     // Clean up sync connection
-    if (this.syncWebSocket) {
-      this.syncWebSocket.close();
-      this.syncWebSocket = null;
+    if (this.syncClient) {
+      await this.syncClient.disconnect();
+      this.syncClient = null;
     }
 
     // Clean up KV store

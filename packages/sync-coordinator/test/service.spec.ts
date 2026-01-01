@@ -14,6 +14,8 @@ import { siteIdFromBase64 } from '@quereus/plugin-sync';
 
 // Test site ID: ASNFZ4mrze8BI0VniavN7w (base64url of 0x0123456789abcdef0123456789abcdef)
 const TEST_SITE_ID_BASE64 = 'ASNFZ4mrze8BI0VniavN7w';
+// Test database ID in accountId-scenarioId format
+const TEST_DATABASE_ID = 'a1-s42';
 
 describe('CoordinatorService', () => {
   let service: CoordinatorService;
@@ -40,14 +42,14 @@ describe('CoordinatorService', () => {
   });
 
   describe('initialization', () => {
-    it('should initialize successfully', () => {
-      const siteId = service.getSiteId();
+    it('should initialize successfully', async () => {
+      const siteId = await service.getSiteId(TEST_DATABASE_ID);
       expect(siteId).to.be.instanceOf(Uint8Array);
       expect(siteId.length).to.equal(16);
     });
 
-    it('should have a current HLC', () => {
-      const hlc = service.getCurrentHLC();
+    it('should have a current HLC', async () => {
+      const hlc = await service.getCurrentHLC(TEST_DATABASE_ID);
       expect(hlc).to.have.property('wallTime');
       expect(hlc).to.have.property('counter');
       expect(hlc).to.have.property('siteId');
@@ -57,6 +59,7 @@ describe('CoordinatorService', () => {
   describe('authentication', () => {
     it('should authenticate with siteId in none mode', async () => {
       const identity = await service.authenticate({
+        databaseId: TEST_DATABASE_ID,
         siteIdRaw: TEST_SITE_ID_BASE64,
       });
       expect(identity.siteId).to.deep.equal(siteIdFromBase64(TEST_SITE_ID_BASE64));
@@ -64,7 +67,7 @@ describe('CoordinatorService', () => {
 
     it('should reject without siteId', async () => {
       try {
-        await service.authenticate({});
+        await service.authenticate({ databaseId: TEST_DATABASE_ID });
         expect.fail('Should have thrown');
       } catch (err) {
         expect((err as Error).message).to.equal('Site ID required');
@@ -102,6 +105,7 @@ describe('CoordinatorService', () => {
 
       try {
         await hookedService.authenticate({
+          databaseId: TEST_DATABASE_ID,
           siteIdRaw: TEST_SITE_ID_BASE64,
           siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
         });
@@ -144,7 +148,7 @@ describe('CoordinatorService', () => {
   describe('getStatus', () => {
     it('should return server status', () => {
       const status = service.getStatus();
-      expect(status).to.have.property('siteId');
+      expect(status).to.have.property('openStores');
       expect(status).to.have.property('connectedClients');
       expect(status).to.have.property('uptime');
       expect(status.connectedClients).to.equal(0);

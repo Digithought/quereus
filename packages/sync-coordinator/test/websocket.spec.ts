@@ -10,6 +10,9 @@ import { rm } from 'node:fs/promises';
 import WebSocket from 'ws';
 import { createCoordinatorServer, loadConfig, type CoordinatorServer } from '../src/index.js';
 
+// Test database ID in accountId-scenarioId format
+const TEST_DATABASE_ID = 'a1-s42';
+
 describe('WebSocket Handler', () => {
   let server: CoordinatorServer;
   let wsUrl: string;
@@ -68,17 +71,34 @@ describe('WebSocket Handler', () => {
   }
 
   describe('Handshake', () => {
-    it('should complete handshake with valid siteId', async () => {
+    it('should complete handshake with valid databaseId and siteId', async () => {
+      const ws = await connectWs();
+      try {
+        const response = await sendAndReceive(ws, {
+          type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
+          siteId: '0123456789abcdef0123456789abcdef',
+        }) as { type: string; databaseId: string; serverSiteId: string; connectionId: string };
+
+        expect(response.type).to.equal('handshake_ack');
+        expect(response.databaseId).to.equal(TEST_DATABASE_ID);
+        expect(response.serverSiteId).to.be.a('string');
+        expect(response.connectionId).to.be.a('string');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('should reject handshake without databaseId', async () => {
       const ws = await connectWs();
       try {
         const response = await sendAndReceive(ws, {
           type: 'handshake',
           siteId: '0123456789abcdef0123456789abcdef',
-        }) as { type: string; serverSiteId: string; connectionId: string };
+        }) as { type: string; code: string };
 
-        expect(response.type).to.equal('handshake_ack');
-        expect(response.serverSiteId).to.be.a('string');
-        expect(response.connectionId).to.be.a('string');
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('MISSING_DATABASE_ID');
       } finally {
         ws.close();
       }
@@ -89,6 +109,7 @@ describe('WebSocket Handler', () => {
       try {
         const response = await sendAndReceive(ws, {
           type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
         }) as { type: string; code: string };
 
         expect(response.type).to.equal('error');
@@ -106,6 +127,7 @@ describe('WebSocket Handler', () => {
         // Handshake first
         await sendAndReceive(ws, {
           type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
           siteId: '0123456789abcdef0123456789abcdef',
         });
 
@@ -140,6 +162,7 @@ describe('WebSocket Handler', () => {
       try {
         await sendAndReceive(ws, {
           type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
           siteId: '0123456789abcdef0123456789abcdef',
         });
 
@@ -164,10 +187,12 @@ describe('WebSocket Handler', () => {
         // Handshake both
         await sendAndReceive(ws1, {
           type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
           siteId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
         });
         await sendAndReceive(ws2, {
           type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
           siteId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2',
         });
 

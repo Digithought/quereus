@@ -23,6 +23,9 @@ import { wsLog } from '../common/logger.js';
 
 interface HandshakeMessage {
   type: 'handshake';
+  /** Database ID for multi-tenant routing (e.g., 'a1-s42') */
+  databaseId: string;
+  /** Client's site ID (base64 encoded) */
   siteId: string;
   token?: string;
 }
@@ -132,26 +135,35 @@ export function registerWebSocket(
         return;
       }
 
+      if (!msg.databaseId) {
+        sendError('MISSING_DATABASE_ID', 'databaseId is required');
+        socket.close(4002, 'Missing databaseId');
+        return;
+      }
+
       try {
         const identity: ClientIdentity = await service.authenticate({
+          databaseId: msg.databaseId,
           token: msg.token,
           siteIdRaw: msg.siteId,
           siteId: siteIdFromBase64(msg.siteId),
           socket,
         });
 
-        session = await service.registerSession(socket, identity);
+        session = await service.registerSession(msg.databaseId, socket, identity);
 
+        const serverSiteId = await service.getSiteId(msg.databaseId);
         sendMessage({
           type: 'handshake_ack',
-          serverSiteId: siteIdToBase64(service.getSiteId()),
+          databaseId: msg.databaseId,
+          serverSiteId: siteIdToBase64(serverSiteId),
           connectionId: session.connectionId,
         });
 
-        wsLog('Handshake complete: %s', session.connectionId.slice(0, 8));
+        wsLog('Handshake complete: %s (db: %s)', session.connectionId.slice(0, 8), msg.databaseId);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Authentication failed';
-        sendError('AUTH_FAILED', msg);
+        const errMsg = err instanceof Error ? err.message : 'Authentication failed';
+        sendError('AUTH_FAILED', errMsg);
         socket.close(4001, 'Authentication failed');
       }
     }
@@ -167,7 +179,7 @@ export function registerWebSocket(
         sinceHLC = deserializeHLC(Buffer.from(msg.sinceHLC, 'base64'));
       }
 
-      const changes = await service.getChangesSince(session.identity, sinceHLC);
+      const changes = await service.getChangesSince(session.databaseId, session.identity, sinceHLC);
 
       // Serialize for JSON transport
       const serializedChanges = changes.map(cs => serializeChangeSet(cs));
@@ -184,7 +196,7 @@ export function registerWebSocket(
       // Deserialize from JSON transport
       const changes: ChangeSet[] = msg.changes.map(cs => deserializeChangeSet(cs));
 
-      const result = await service.applyChanges(session.identity, changes);
+      const result = await service.applyChanges(session.databaseId, session.identity, changes);
 
       sendMessage({ type: 'apply_result', ...result });
     }
@@ -196,7 +208,7 @@ export function registerWebSocket(
       }
 
       // Stream snapshot chunks
-      for await (const chunk of service.getSnapshotStream(session.identity)) {
+      for await (const chunk of service.getSnapshotStream(session.databaseId, session.identity)) {
         sendMessage({ ...chunk, type: 'snapshot_chunk' });
       }
 

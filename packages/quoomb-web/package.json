@@ -50,6 +50,7 @@
     "@quereus/plugin-store": "*",
     "@quereus/plugin-sync": "*",
     "@quereus/quereus": "*",
+    "@quereus/sync-client": "*",
     "@quereus/shared-ui": "*",
     "@tanstack/react-table": "^8.21.3",
     "comlink": "^4.4.2",

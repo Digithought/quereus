@@ -31,6 +31,7 @@ import {
   serializeChangeSet,
   deserializeChangeSet,
   serializeHLCForTransport,
+  deserializeHLCFromTransport,
 } from './serialization.js';
 
 // Default configuration values
@@ -230,6 +231,11 @@ export class SyncClient {
         // Heartbeat response - no action needed
         break;
 
+      case 'request_changes':
+        // Server is requesting changes (for peer-to-peer relay)
+        await this.handleRequestChanges(message);
+        break;
+
       default:
         console.warn('Unknown sync message type:', message.type);
     }
@@ -291,6 +297,23 @@ export class SyncClient {
       this.pendingSentHLC = null;
     }
     this.emitSyncEvent('info', `Server applied ${message.applied ?? 0} change(s)`);
+  }
+
+  private async handleRequestChanges(message: { siteId?: string; sinceHLC?: string }): Promise<void> {
+    // Server is relaying a request for changes from another peer
+    if (!message.siteId) return;
+
+    const peerSiteId = siteIdFromBase64(message.siteId);
+    const sinceHLC = message.sinceHLC ? deserializeHLCFromTransport(message.sinceHLC) : undefined;
+
+    const changes = await this.syncManager.getChangesSince(peerSiteId, sinceHLC);
+    if (changes.length > 0) {
+      const serialized = changes.map(cs => serializeChangeSet(cs));
+      this.send({
+        type: 'apply_changes',
+        changes: serialized,
+      });
+    }
   }
 
   // ==========================================================================

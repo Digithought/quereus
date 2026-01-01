@@ -17,3 +17,15 @@ export {
   type CoordinatorServiceOptions,
 } from './coordinator-service.js';
 
+export {
+  StoreManager,
+  type StoreEntry,
+  type StoreManagerOptions,
+} from './store-manager.js';
+
+export {
+  isValidDatabaseId,
+  parseDatabaseId,
+  formatDatabaseId,
+} from './database-ids.js';
+

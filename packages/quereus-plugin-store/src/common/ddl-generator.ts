@@ -30,8 +30,9 @@ export function generateTableDDL(tableSchema: TableSchema): string {
     if (col.logicalType) {
       colDef += ` ${col.logicalType.name}`;
     }
-    if (col.notNull) {
-      colDef += ' NOT NULL';
+    // Explicitly output NULL for nullable columns (Quereus defaults to NOT NULL)
+    if (!col.notNull) {
+      colDef += ' NULL';
     }
     if (col.primaryKey && tableSchema.primaryKeyDefinition.length === 1) {
       colDef += ' PRIMARY KEY';
