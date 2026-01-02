@@ -1376,6 +1376,22 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@quereus/store-rnleveldb@workspace:packages/quereus-store-rnleveldb":
+  version: 0.0.0-use.local
+  resolution: "@quereus/store-rnleveldb@workspace:packages/quereus-store-rnleveldb"
+  dependencies:
+    "@quereus/plugin-store": "npm:*"
+    rimraf: "npm:^6.1.2"
+    rn-leveldb: "portal:../../../rn-leveldb"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/plugin-store": "*"
+    react: "*"
+    react-native: "*"
+    rn-leveldb: "*"
+  languageName: unknown
+  linkType: soft
+
 "@quereus/sync-coordinator@workspace:packages/sync-coordinator":
   version: 0.0.0-use.local
   resolution: "@quereus/sync-coordinator@workspace:packages/sync-coordinator"
@@ -6508,6 +6524,15 @@ __metadata:
   checksum: 10c0/c11a6a6fad937ada03c12fe688860690df8296d7cd08dbe59e3cc087f44e43573ae26ecbe48e54cb7a6db745b8c81fe5a15b9359233cc21d52d9b5b3330fcc74
   languageName: node
   linkType: hard
+
+"rn-leveldb@portal:../../../rn-leveldb::locator=%40quereus%2Fstore-rnleveldb%40workspace%3Apackages%2Fquereus-store-rnleveldb":
+  version: 0.0.0-use.local
+  resolution: "rn-leveldb@portal:../../../rn-leveldb::locator=%40quereus%2Fstore-rnleveldb%40workspace%3Apackages%2Fquereus-store-rnleveldb"
+  peerDependencies:
+    react: "*"
+    react-native: "*"
+  languageName: node
+  linkType: soft
 
 "rollup@npm:^4.34.9":
   version: 4.41.1

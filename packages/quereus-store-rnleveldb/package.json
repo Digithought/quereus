@@ -40,14 +40,13 @@
   "peerDependencies": {
     "@quereus/plugin-store": "*",
     "react": "*",
-    "react-native": "*"
-  },
-  "dependencies": {
-    "react-native-leveldb": "^3.10.0"
+    "react-native": "*",
+    "rn-leveldb": "*"
   },
   "devDependencies": {
     "@quereus/plugin-store": "*",
     "rimraf": "^6.1.2",
+    "rn-leveldb": "portal:../../../rn-leveldb",
     "typescript": "^5.8.3"
   }
 }

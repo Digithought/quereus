@@ -32,6 +32,10 @@
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
     },
+    "./common": {
+      "types": "./dist/src/common/index.d.ts",
+      "import": "./dist/src/common/index.js"
+    },
     "./browser": {
       "types": "./dist/src/browser.d.ts",
       "import": "./dist/src/browser.js"
