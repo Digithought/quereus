@@ -70,6 +70,18 @@ const DEFAULT_SNAPSHOT_CHUNK_SIZE = 1000;
 const CHECKPOINT_PREFIX = 'sc:';
 
 /**
+ * Result of resolving a change (without writing metadata).
+ * Used to separate resolution from commit for correct write order.
+ */
+interface ResolvedChange {
+  outcome: 'applied' | 'skipped' | 'conflict';
+  change: Change;
+  dataChange?: DataChangeToApply;
+  /** For column changes: the old version to clean up in the change log */
+  oldColumnVersion?: ColumnVersion;
+}
+
+/**
  * Implementation of SyncManager.
  */
 export class SyncManagerImpl implements SyncManager {
@@ -556,6 +568,16 @@ export class SyncManagerImpl implements SyncManager {
     const schemaChangesToApply: SchemaChangeToApply[] = [];
     const appliedChanges: Array<{ change: Change; siteId: SiteId }> = [];
 
+    // Track resolved changes for the commit phase (CRDT metadata)
+    const resolvedDataChanges: ResolvedChange[] = [];
+
+    // Track schema migrations that will be applied (for metadata commit)
+    const pendingSchemaMigrations: Array<{
+      migration: SchemaMigration;
+      schemaVersion: number;
+    }> = [];
+
+    // PHASE 1: Resolve all changes (no writes yet)
     for (const changeSet of changes) {
       // Update our clock with the remote HLC
       this.hlcManager.receive(changeSet.hlc);
@@ -582,44 +604,53 @@ export class SyncManagerImpl implements SyncManager {
           }
         }
 
-        // Record the migration in our metadata store so we can forward it to other peers
-        await this.schemaMigrations.recordMigration(migration.schema, migration.table, {
-          type: migration.type,
-          ddl: migration.ddl,
-          hlc: migration.hlc,
-          schemaVersion,
-        });
-
+        // Queue schema change for application (don't record metadata yet)
         schemaChangesToApply.push({
           type: migration.type,
           schema: migration.schema,
           table: migration.table,
           ddl: migration.ddl,
         });
-        // Count schema migrations as applied changes
+        pendingSchemaMigrations.push({ migration, schemaVersion });
         applied++;
       }
 
-      // Process data changes
+      // Resolve data changes (no metadata writes)
       for (const change of changeSet.changes) {
-        const result = await this.resolveAndRecordChange(change, changeSet.siteId);
-        if (result.outcome === 'applied') {
+        const resolved = await this.resolveChange(change, changeSet.siteId);
+        if (resolved.outcome === 'applied') {
           applied++;
           appliedChanges.push({ change, siteId: changeSet.siteId });
-          if (result.dataChange) {
-            dataChangesToApply.push(result.dataChange);
+          resolvedDataChanges.push(resolved);
+          if (resolved.dataChange) {
+            dataChangesToApply.push(resolved.dataChange);
           }
-        } else if (result.outcome === 'skipped') {
+        } else if (resolved.outcome === 'skipped') {
           skipped++;
-        } else if (result.outcome === 'conflict') {
+        } else if (resolved.outcome === 'conflict') {
           conflicts++;
         }
       }
     }
 
-    // Apply data and schema changes to the store via callback
+    // PHASE 2: Apply data and schema changes to the store via callback
+    // This happens BEFORE writing CRDT metadata for crash safety
     if (this.applyToStore && (dataChangesToApply.length > 0 || schemaChangesToApply.length > 0)) {
       await this.applyToStore(dataChangesToApply, schemaChangesToApply, { remote: true });
+    }
+
+    // PHASE 3: Commit CRDT metadata (after data is safely written)
+    // If crash occurs here, re-sync will re-apply same changes (idempotent)
+    await this.commitChangeMetadata(resolvedDataChanges);
+
+    // Commit schema migration metadata
+    for (const { migration, schemaVersion } of pendingSchemaMigrations) {
+      await this.schemaMigrations.recordMigration(migration.schema, migration.table, {
+        type: migration.type,
+        ddl: migration.ddl,
+        hlc: migration.hlc,
+        schemaVersion,
+      });
     }
 
     // Emit a single remote change event with all applied changes for UI reactivity
@@ -659,21 +690,28 @@ export class SyncManagerImpl implements SyncManager {
   }
 
   /**
-   * Resolve CRDT conflicts and record metadata for a change.
-   * Returns outcome and the data change to apply (if any).
+   * Resolve CRDT conflicts for a change WITHOUT writing metadata.
+   * This is phase 1 of the two-phase apply: resolve first, then after
+   * data is written to store, call commitChangeMetadata to persist CRDT state.
+   *
+   * Write order (for crash safety):
+   * 1. Resolve all changes (this method) - no writes
+   * 2. Apply data to store (applyToStore callback)
+   * 3. Commit CRDT metadata (commitChangeMetadata)
+   *
+   * If crash occurs after data but before metadata, re-sync will re-apply
+   * the same changes. Since CRDT operations are idempotent (same HLC → same
+   * LWW outcome), this is safe.
    */
-  private async resolveAndRecordChange(
+  private async resolveChange(
     change: Change,
     _remoteSiteId: SiteId
-  ): Promise<{
-    outcome: 'applied' | 'skipped' | 'conflict';
-    dataChange?: DataChangeToApply;
-  }> {
+  ): Promise<ResolvedChange> {
     // Skip changes that originated from ourselves (echo prevention).
     // This can happen when a peer re-sends changes it received from us,
     // or when changes propagate through a coordinator back to the originator.
     if (siteIdEquals(change.hlc.siteId, this.getSiteId())) {
-      return { outcome: 'skipped' };
+      return { outcome: 'skipped', change };
     }
 
     if (change.type === 'delete') {
@@ -685,16 +723,13 @@ export class SyncManagerImpl implements SyncManager {
       );
 
       if (existingTombstone && compareHLC(change.hlc, existingTombstone.hlc) <= 0) {
-        return { outcome: 'skipped' };
+        return { outcome: 'skipped', change };
       }
 
-      // Record the tombstone and delete column versions (metadata update)
-      await this.tombstones.setTombstone(change.schema, change.table, change.pk, change.hlc);
-      await this.columnVersions.deleteRowVersions(change.schema, change.table, change.pk);
-
-      // Return the data change for the store
+      // Will apply - return the data change (metadata written in commit phase)
       return {
         outcome: 'applied',
+        change,
         dataChange: {
           type: 'delete',
           schema: change.schema,
@@ -734,7 +769,7 @@ export class SyncManagerImpl implements SyncManager {
           this.syncEvents.emitConflictResolved(conflictEvent);
         }
 
-        return { outcome: 'conflict' };
+        return { outcome: 'conflict', change };
       }
 
       // Check for tombstone blocking
@@ -747,58 +782,22 @@ export class SyncManagerImpl implements SyncManager {
       );
 
       if (isBlocked) {
-        return { outcome: 'skipped' };
+        return { outcome: 'skipped', change };
       }
 
-      // Get old column version to clean up stale change log entry
-      const oldVersion = await this.columnVersions.getColumnVersion(
+      // Get old column version for change log cleanup (done in commit phase)
+      const oldColumnVersion = await this.columnVersions.getColumnVersion(
         change.schema,
         change.table,
         change.pk,
         change.column
-      );
+      ) ?? undefined;
 
-      // Use a batch to atomically update column version and change log
-      const batch = this.kv.batch();
-
-      // Delete old change log entry if exists (keeps change log as a true secondary index)
-      if (oldVersion) {
-        this.changeLog.deleteEntryBatch(
-          batch,
-          oldVersion.hlc,
-          'column',
-          change.schema,
-          change.table,
-          change.pk,
-          change.column
-        );
-      }
-
-      // Record the column version (metadata update)
-      this.columnVersions.setColumnVersionBatch(
-        batch,
-        change.schema,
-        change.table,
-        change.pk,
-        change.column,
-        { hlc: change.hlc, value: change.value }
-      );
-
-      // Record in change log for delta sync to other peers
-      this.changeLog.recordColumnChangeBatch(
-        batch,
-        change.hlc,
-        change.schema,
-        change.table,
-        change.pk,
-        change.column
-      );
-
-      await batch.write();
-
-      // Return the data change for the store
+      // Will apply - return the data change (metadata written in commit phase)
       return {
         outcome: 'applied',
+        change,
+        oldColumnVersion,
         dataChange: {
           type: 'update',  // Column changes are updates (or inserts handled by store)
           schema: change.schema,
@@ -807,6 +806,79 @@ export class SyncManagerImpl implements SyncManager {
           columns: { [change.column]: change.value },
         },
       };
+    }
+  }
+
+  /**
+   * Commit CRDT metadata for resolved changes.
+   * This is phase 2 of the two-phase apply: called AFTER data is written to store.
+   */
+  private async commitChangeMetadata(resolvedChanges: ResolvedChange[]): Promise<void> {
+    if (resolvedChanges.length === 0) return;
+
+    const batch = this.kv.batch();
+
+    for (const resolved of resolvedChanges) {
+      if (resolved.outcome !== 'applied') continue;
+      const change = resolved.change;
+
+      if (change.type === 'delete') {
+        // Record tombstone
+        this.tombstones.setTombstoneBatch(batch, change.schema, change.table, change.pk, change.hlc);
+
+        // Record in change log for delta sync
+        this.changeLog.recordDeletionBatch(batch, change.hlc, change.schema, change.table, change.pk);
+
+        // Note: column versions deletion is done outside the batch since it requires iteration
+      } else {
+        // Column change
+        // Delete old change log entry if exists (keeps change log as a true secondary index)
+        if (resolved.oldColumnVersion) {
+          this.changeLog.deleteEntryBatch(
+            batch,
+            resolved.oldColumnVersion.hlc,
+            'column',
+            change.schema,
+            change.table,
+            change.pk,
+            change.column
+          );
+        }
+
+        // Record the column version
+        this.columnVersions.setColumnVersionBatch(
+          batch,
+          change.schema,
+          change.table,
+          change.pk,
+          change.column,
+          { hlc: change.hlc, value: change.value }
+        );
+
+        // Record in change log for delta sync
+        this.changeLog.recordColumnChangeBatch(
+          batch,
+          change.hlc,
+          change.schema,
+          change.table,
+          change.pk,
+          change.column
+        );
+      }
+    }
+
+    await batch.write();
+
+    // Handle column version deletions for delete operations (requires async iteration)
+    for (const resolved of resolvedChanges) {
+      if (resolved.outcome !== 'applied') continue;
+      if (resolved.change.type === 'delete') {
+        await this.columnVersions.deleteRowVersions(
+          resolved.change.schema,
+          resolved.change.table,
+          resolved.change.pk
+        );
+      }
     }
   }
 
@@ -910,35 +982,84 @@ export class SyncManagerImpl implements SyncManager {
   }
 
   async applySnapshot(snapshot: Snapshot): Promise<void> {
-    // Clear existing sync metadata (column versions, tombstones, and change log)
-    const batch = this.kv.batch();
+    // PHASE 1: Build data changes from snapshot (before any writes)
+    const dataChangesToApply: DataChangeToApply[] = [];
+    const schemaChangesToApply: SchemaChangeToApply[] = [];
+
+    // Build schema migrations for the store
+    for (const migration of snapshot.schemaMigrations) {
+      schemaChangesToApply.push({
+        type: migration.type,
+        schema: migration.schema,
+        table: migration.table,
+        ddl: migration.ddl,
+      });
+    }
+
+    // Build row data from column versions (grouped by pk)
+    for (const tableSnapshot of snapshot.tables) {
+      // Group column versions by pk to reconstruct rows
+      const rowsByPk = new Map<string, Record<string, SqlValue>>();
+
+      for (const [versionKey, cvEntry] of tableSnapshot.columnVersions) {
+        const lastColon = versionKey.lastIndexOf(':');
+        if (lastColon === -1) continue;
+
+        const rowKey = versionKey.slice(0, lastColon);
+        const column = versionKey.slice(lastColon + 1);
+
+        if (!rowsByPk.has(rowKey)) {
+          rowsByPk.set(rowKey, {});
+        }
+        rowsByPk.get(rowKey)![column] = cvEntry.value;
+      }
+
+      // Create data change for each row
+      for (const [rowKey, columns] of rowsByPk) {
+        const pk = JSON.parse(rowKey) as SqlValue[];
+        dataChangesToApply.push({
+          type: 'update', // Snapshot rows are upserts
+          schema: tableSnapshot.schema,
+          table: tableSnapshot.table,
+          pk,
+          columns,
+        });
+      }
+    }
+
+    // PHASE 2: Apply data to store via callback (before metadata)
+    if (this.applyToStore && (dataChangesToApply.length > 0 || schemaChangesToApply.length > 0)) {
+      await this.applyToStore(dataChangesToApply, schemaChangesToApply, { remote: true });
+    }
+
+    // PHASE 3: Clear existing CRDT metadata and apply new metadata
+    const clearBatch = this.kv.batch();
 
     // Delete all existing column versions
     const cvBounds = buildAllColumnVersionsScanBounds();
     for await (const entry of this.kv.iterate(cvBounds)) {
-      batch.delete(entry.key);
+      clearBatch.delete(entry.key);
     }
 
     // Delete all existing tombstones
     const tbBounds = buildAllTombstonesScanBounds();
     for await (const entry of this.kv.iterate(tbBounds)) {
-      batch.delete(entry.key);
+      clearBatch.delete(entry.key);
     }
 
     // Delete all existing change log entries
     const clBounds = buildAllChangeLogScanBounds();
     for await (const entry of this.kv.iterate(clBounds)) {
-      batch.delete(entry.key);
+      clearBatch.delete(entry.key);
     }
 
-    await batch.write();
+    await clearBatch.write();
 
     // Apply the snapshot's column versions and rebuild change log
     const applyBatch = this.kv.batch();
 
     for (const tableSnapshot of snapshot.tables) {
       for (const [versionKey, cvEntry] of tableSnapshot.columnVersions) {
-        // versionKey format: {rowKey}:{column}
         const lastColon = versionKey.lastIndexOf(':');
         if (lastColon === -1) continue;
 
@@ -965,6 +1086,18 @@ export class SyncManagerImpl implements SyncManager {
           column
         );
       }
+    }
+
+    // Record schema migrations
+    for (const migration of snapshot.schemaMigrations) {
+      const schemaVersion = migration.schemaVersion ??
+        (await this.schemaMigrations.getCurrentVersion(migration.schema, migration.table)) + 1;
+      await this.schemaMigrations.recordMigration(migration.schema, migration.table, {
+        type: migration.type,
+        ddl: migration.ddl,
+        hlc: migration.hlc,
+        schemaVersion,
+      });
     }
 
     await applyBatch.write();
@@ -1162,7 +1295,21 @@ export class SyncManagerImpl implements SyncManager {
     let currentTable: string | undefined;
     const completedTables: string[] = [];
 
-    // Clear existing data before applying
+    // Pending data to apply to store (batched for efficiency)
+    let pendingDataChanges: DataChangeToApply[] = [];
+    let pendingSchemaChanges: SchemaChangeToApply[] = [];
+    const DATA_FLUSH_SIZE = 100;
+
+    // Helper to flush pending data changes to store
+    const flushDataToStore = async (): Promise<void> => {
+      if (this.applyToStore && (pendingDataChanges.length > 0 || pendingSchemaChanges.length > 0)) {
+        await this.applyToStore(pendingDataChanges, pendingSchemaChanges, { remote: true });
+        pendingDataChanges = [];
+        pendingSchemaChanges = [];
+      }
+    };
+
+    // Clear existing metadata before applying
     const clearBatch = this.kv.batch();
     for await (const entry of this.kv.iterate(buildAllColumnVersionsScanBounds())) {
       clearBatch.delete(entry.key);
@@ -1175,10 +1322,15 @@ export class SyncManagerImpl implements SyncManager {
     }
     await clearBatch.write();
 
-    // Process chunks
+    // Process chunks - track column versions per row for grouping
     let batch = this.kv.batch();
     let batchSize = 0;
     const BATCH_FLUSH_SIZE = 1000;
+
+    // Track current table's rows for data application
+    let currentTableSchema: string | undefined;
+    let currentTableName: string | undefined;
+    const rowColumns = new Map<string, Record<string, SqlValue>>();
 
     for await (const chunk of chunks) {
       switch (chunk.type) {
@@ -1190,7 +1342,10 @@ export class SyncManagerImpl implements SyncManager {
 
         case 'table-start':
           currentTable = `${chunk.schema}.${chunk.table}`;
+          currentTableSchema = chunk.schema;
+          currentTableName = chunk.table;
           totalEntries += chunk.estimatedEntries;
+          rowColumns.clear();
           break;
 
         case 'column-versions':
@@ -1202,6 +1357,13 @@ export class SyncManagerImpl implements SyncManager {
             const column = versionKey.slice(lastColon + 1);
             const pk = JSON.parse(rowKey) as SqlValue[];
 
+            // Track column for data application
+            if (!rowColumns.has(rowKey)) {
+              rowColumns.set(rowKey, {});
+            }
+            rowColumns.get(rowKey)![column] = value;
+
+            // Write CRDT metadata
             this.columnVersions.setColumnVersionBatch(
               batch,
               chunk.schema,
@@ -1257,18 +1419,57 @@ export class SyncManagerImpl implements SyncManager {
           break;
 
         case 'table-end':
+          // Flush accumulated rows to store
+          if (currentTableSchema && currentTableName) {
+            for (const [rowKey, columns] of rowColumns) {
+              const pk = JSON.parse(rowKey) as SqlValue[];
+              pendingDataChanges.push({
+                type: 'update',
+                schema: currentTableSchema,
+                table: currentTableName,
+                pk,
+                columns,
+              });
+
+              if (pendingDataChanges.length >= DATA_FLUSH_SIZE) {
+                await flushDataToStore();
+              }
+            }
+            rowColumns.clear();
+          }
+
           tablesProcessed++;
           if (currentTable) {
             completedTables.push(currentTable);
           }
           break;
 
-        case 'schema-migration':
-          // TODO: Apply schema migration
+        case 'schema-migration': {
+          const migration = chunk.migration;
+          pendingSchemaChanges.push({
+            type: migration.type,
+            schema: migration.schema,
+            table: migration.table,
+            ddl: migration.ddl,
+          });
+
+          // Record migration metadata
+          const schemaVersion = migration.schemaVersion ??
+            (await this.schemaMigrations.getCurrentVersion(migration.schema, migration.table)) + 1;
+          await this.schemaMigrations.recordMigration(migration.schema, migration.table, {
+            type: migration.type,
+            ddl: migration.ddl,
+            hlc: migration.hlc,
+            schemaVersion,
+          });
           break;
+        }
 
         case 'footer':
-          // Flush remaining batch
+          // Flush remaining data to store
+          await flushDataToStore();
+
+          // Flush remaining metadata batch
           if (batchSize > 0) {
             await batch.write();
           }

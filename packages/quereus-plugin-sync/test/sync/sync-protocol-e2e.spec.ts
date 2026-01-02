@@ -1292,4 +1292,81 @@ describe('Sync Protocol E2E', () => {
       expect(bChanges.length).to.be.at.least(1); // Has Guest A's row
     });
   });
+
+  describe('Snapshot Data Application', () => {
+    it('should apply snapshot row data to guest store via callback', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Host has data
+      emitLocalInsert(host, 'main', 'users', [1], [1, 'Alice']);
+      emitLocalInsert(host, 'main', 'users', [2], [2, 'Bob']);
+      await new Promise(r => setTimeout(r, 10));
+
+      // Get and apply snapshot
+      const snapshot = await host.manager.getSnapshot();
+      await guest.manager.applySnapshot(snapshot);
+
+      // Guest's data store should have the rows applied via callback
+      const dataChanges = guest.dataStore.changeLog.filter(c => c.type === 'data');
+      expect(dataChanges.length).to.equal(2, 'Snapshot should apply row data to store');
+
+      // Verify actual row data
+      const row1 = guest.dataStore.getRow('main', 'users', [1]);
+      const row2 = guest.dataStore.getRow('main', 'users', [2]);
+      expect(row1).to.exist;
+      expect(row2).to.exist;
+    });
+
+    it('should apply streamed snapshot row data to guest store via callback', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Host has data
+      emitLocalInsert(host, 'main', 'users', [1], [1, 'Alice']);
+      emitLocalInsert(host, 'main', 'users', [2], [2, 'Bob']);
+      await new Promise(r => setTimeout(r, 10));
+
+      // Collect and apply streamed snapshot
+      const chunks: SnapshotChunk[] = [];
+      for await (const chunk of host.manager.getSnapshotStream()) {
+        chunks.push(chunk);
+      }
+
+      async function* yieldChunks(): AsyncIterable<SnapshotChunk> {
+        for (const chunk of chunks) yield chunk;
+      }
+
+      await guest.manager.applySnapshotStream(yieldChunks());
+
+      // Guest's data store should have the rows applied via callback
+      const dataChanges = guest.dataStore.changeLog.filter(c => c.type === 'data');
+      expect(dataChanges.length).to.equal(2, 'Streamed snapshot should apply row data to store');
+    });
+
+    it('should apply snapshot schema migrations to guest store via callback', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Host creates a table (schema change)
+      host.storeEvents.emitSchemaChange({
+        type: 'create',
+        objectType: 'table',
+        schemaName: 'main',
+        objectName: 'products',
+        ddl: 'CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)',
+      });
+      await new Promise(r => setTimeout(r, 10));
+
+      // Get and apply snapshot
+      const snapshot = await host.manager.getSnapshot();
+      expect(snapshot.schemaMigrations.length).to.be.at.least(1);
+
+      await guest.manager.applySnapshot(snapshot);
+
+      // Guest's data store should have the schema change applied via callback
+      const schemaChanges = guest.dataStore.changeLog.filter(c => c.type === 'schema');
+      expect(schemaChanges.length).to.be.at.least(1, 'Snapshot should apply schema migrations to store');
+    });
+  });
 });
