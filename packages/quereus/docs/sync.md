@@ -1115,53 +1115,53 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 - [ ] Example: Implementing `applyToStore` callback
 - [ ] Performance benchmarks
 
-#### Reusable Sync Client Package (`quereus-sync-client`)
+#### Reusable Sync Client Package (`@quereus/sync-client`) ✅
 
-The `quoomb-web` and `site-cad` workers contain ~200 lines of duplicate WebSocket sync client code. This should be extracted into a reusable package.
+The WebSocket sync client is now available as a standalone package: [`@quereus/sync-client`](../../quereus-sync-client/).
 
-**Current Implementation (in workers):**
+**Features:**
 - [x] WebSocket connection and handshake (`handshake` → `handshake_ack`)
 - [x] Message dispatch (`changes`, `push_changes`, `apply_result`, `error`, `pong`)
 - [x] ChangeSet serialization/deserialization (HLC, siteId encoding)
-- [x] Local change debouncing (50ms window)
+- [x] Local change debouncing (configurable, default 50ms)
 - [x] Delta sync optimization (`lastSentHLC`, `pendingSentHLC` tracking)
 - [x] Peer sync state tracking (`peerSyncState[serverSiteId]`)
 - [x] Reconnection with exponential backoff (1s → 60s max)
 - [x] Connection state machine (disconnected → connecting → syncing → synced)
+- [x] Framework-agnostic design (no React/Svelte/Worker dependencies)
 
-**Proposed `SyncClient` API:**
+**`SyncClient` API:**
 ```typescript
-interface SyncClientOptions {
-  syncManager: SyncManager;
-  onStatusChange?: (status: SyncStatus) => void;
-  onRemoteChanges?: (result: ApplyResult, changeSets: ChangeSet[]) => void;
-  onError?: (error: Error) => void;
-  autoReconnect?: boolean;          // Default: true
-  reconnectDelayMs?: number;        // Default: 1000 (exponential backoff)
-  maxReconnectDelayMs?: number;     // Default: 60000
-  localChangeDebounceMs?: number;   // Default: 50
-}
+import { SyncClient } from '@quereus/sync-client';
 
-class SyncClient {
-  connect(url: string, token?: string): Promise<void>;
-  disconnect(): void;
-  readonly status: SyncStatus;
-  readonly isConnected: boolean;
-}
+const client = new SyncClient({
+  syncManager,
+  syncEvents,                        // Local change listener
+  onStatusChange: (status) => {},    // Connection state updates
+  onRemoteChanges: (result, sets) => {}, // Applied remote changes
+  onError: (error) => {},            // Error handling
+  autoReconnect: true,               // Default: true
+  reconnectDelayMs: 1000,            // Default: 1000
+  maxReconnectDelayMs: 60000,        // Default: 60000
+  localChangeDebounceMs: 50,         // Default: 50
+});
+
+await client.connect('wss://server/sync/ws', token);
+// ... changes sync automatically ...
+await client.disconnect();
 ```
 
-**Tasks:**
-- [ ] Create `packages/quereus-sync-client` package
-- [ ] Implement `SyncClient` class with WebSocket protocol
-- [ ] Extract serialization helpers (already exist in both workers)
-- [ ] Add reconnection state machine with exponential backoff
-- [ ] Add delta sync tracking (peer sync state, sent HLC tracking)
-- [ ] Add local change listener with debouncing
-- [ ] Update `quoomb-web` worker to use `SyncClient`
-- [ ] Update `site-cad` worker to use `SyncClient`
-- [ ] Framework-agnostic design (no React/Svelte/Worker dependencies)
+**Completed:**
+- [x] Create `packages/quereus-sync-client` package
+- [x] Implement `SyncClient` class with WebSocket protocol
+- [x] Extract serialization helpers
+- [x] Add reconnection state machine with exponential backoff
+- [x] Add delta sync tracking (peer sync state, sent HLC tracking)
+- [x] Add local change listener with debouncing
+- [x] Update `quoomb-web` worker to use `SyncClient`
+- [x] Framework-agnostic design (no React/Svelte/Worker dependencies)
 
-**Nice-to-have:**
+**Nice-to-have (future):**
 - [ ] HTTP polling fallback for environments without WebSocket
 - [ ] Connection quality metrics (latency, reconnect count)
 

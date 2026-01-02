@@ -362,7 +362,7 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     } else if (basePath) {
       path = `${basePath}/${tableSchema.schemaName}/${tableSchema.name}`;
     } else {
-      path = `./.quereus/data/${tableSchema.schemaName}/${tableSchema.name}`;
+      path = `./.data/${tableSchema.schemaName}/${tableSchema.name}`;
     }
 
     return {

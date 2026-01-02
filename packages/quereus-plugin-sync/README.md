@@ -146,6 +146,7 @@ This means concurrent updates to *different* columns of the same row both apply,
 ## Related Packages
 
 - [`@quereus/plugin-store`](../quereus-plugin-store/) - Storage layer (required)
+- [`@quereus/sync-client`](../quereus-sync-client/) - WebSocket sync client (handles connection, reconnection, batching)
 - [`@quereus/sync-coordinator`](../sync-coordinator/) - Server-side coordinator
 
 ## License
