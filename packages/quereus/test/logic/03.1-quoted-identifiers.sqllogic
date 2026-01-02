@@ -1,8 +1,6 @@
 -- quoted-identifiers.sqllogic - Testing quoted identifier syntax
 -- Tests double-quoted, backtick, and bracket identifier quoting
 
-PRAGMA default_vtab_module='memory';
-
 -- Test double-quoted table name
 CREATE TABLE "QuotedTable" (id INTEGER PRIMARY KEY, value TEXT);
 INSERT INTO "QuotedTable" VALUES (1, 'test');

@@ -1,7 +1,5 @@
 -- polymorphic-types.sqllogic - Testing polymorphic function type inference
 
-PRAGMA default_vtab_module='memory';
-
 -- Test abs() with INTEGER and REAL types
 CREATE TABLE test_abs (id INTEGER PRIMARY KEY, int_val INTEGER, real_val REAL);
 INSERT INTO test_abs VALUES (1, -42, -2.5);

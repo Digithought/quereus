@@ -1,7 +1,5 @@
 -- joins.sqllogic - Testing JOIN clauses
 
-PRAGMA default_vtab_module='memory';
-
 -- Setup tables
 CREATE TABLE t_left (id INTEGER PRIMARY KEY, val_l TEXT);
 CREATE TABLE t_right (id INTEGER PRIMARY KEY, val_r TEXT, left_id INTEGER);

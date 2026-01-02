@@ -1,7 +1,5 @@
 -- aggregates.sqllogic - Testing aggregate functions and GROUP BY/HAVING
 
-PRAGMA default_vtab_module='memory';
-
 CREATE TABLE agg_t (id INTEGER PRIMARY KEY, grp TEXT, val INTEGER NULL);
 INSERT INTO agg_t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'a', 30), (4, 'b', 40), (5, 'c', 50), (6, 'a', null);
 

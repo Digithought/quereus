@@ -1,7 +1,5 @@
 -- 43-default-nullability.sqllogic - Testing default NOT NULL column behavior (Third Manifesto alignment)
 
-PRAGMA default_vtab_module='memory';
-
 -- Test default NOT NULL behavior
 CREATE TABLE test_default_notnull (
     id INTEGER PRIMARY KEY,

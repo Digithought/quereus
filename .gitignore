@@ -4,3 +4,4 @@ doc
 **/*.tsbuildinfo
 packages/sync-coordinator/.data
 .yarn
+.quereus

@@ -1,7 +1,5 @@
 -- constraints.sqllogic - Testing integrity constraints
 
-PRAGMA default_vtab_module='memory';
-
 -- Basic table creation (without constraint enforcement)
 CREATE TABLE t_basic (
     id INTEGER PRIMARY KEY,

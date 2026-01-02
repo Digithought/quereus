@@ -1,7 +1,5 @@
 -- determinism-validation.sqllogic - Testing determinism validation for constraints and defaults
 
-PRAGMA default_vtab_module='memory';
-
 -- === Test 1: Non-deterministic DEFAULT values should be rejected ===
 
 -- Attempt to create table with random() in DEFAULT - should fail

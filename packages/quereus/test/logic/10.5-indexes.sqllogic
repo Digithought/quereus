@@ -1,7 +1,5 @@
 -- indexes.sqllogic - Testing index creation and usage
 
-PRAGMA default_vtab_module='memory';
-
 -- Setup base table for index testing
 CREATE TABLE idx_test (
     id INTEGER PRIMARY KEY,

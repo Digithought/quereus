@@ -20,6 +20,12 @@ import { generateTableDDL } from '../common/ddl-generator.js';
 export interface LevelDBModuleConfig extends BaseModuleConfig {
   /** Path to the LevelDB database directory. */
   path?: string;
+  /**
+   * Base path for LevelDB databases. When specified, the actual path becomes
+   * `{basePath}/{schemaName}/{tableName}`. This is useful for setting a root
+   * directory via default_vtab_args while still giving each table its own database.
+   */
+  basePath?: string;
   /** Create database if it doesn't exist. Default: true. */
   createIfMissing?: boolean;
   /** Collation for text keys. Default: 'NOCASE'. */
@@ -346,11 +352,21 @@ export class LevelDBModule implements VirtualTableModule<LevelDBTable, LevelDBMo
     args: Record<string, SqlValue> | undefined,
     tableSchema: TableSchema
   ): LevelDBModuleConfig {
-    const path = args?.path as string | undefined;
-    const defaultPath = `./.quereus/data/${tableSchema.schemaName}/${tableSchema.name}`;
+    const explicitPath = args?.path as string | undefined;
+    const basePath = args?.basePath as string | undefined;
+
+    // Priority: explicit path > basePath + schema/table > default
+    let path: string;
+    if (explicitPath) {
+      path = explicitPath;
+    } else if (basePath) {
+      path = `${basePath}/${tableSchema.schemaName}/${tableSchema.name}`;
+    } else {
+      path = `./.quereus/data/${tableSchema.schemaName}/${tableSchema.name}`;
+    }
 
     return {
-      path: path || defaultPath,
+      path,
       createIfMissing: args?.createIfMissing !== false,
       collation: (args?.collation as 'BINARY' | 'NOCASE') || 'NOCASE',
     };

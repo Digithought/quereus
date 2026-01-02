@@ -1,7 +1,5 @@
 -- distinct_datatypes.sqllogic - Testing DISTINCT operations and data type behavior
 
-PRAGMA default_vtab_module='memory';
-
 -- Test DISTINCT operations
 CREATE TABLE distinct_test (id INTEGER PRIMARY KEY, category TEXT, value INTEGER);
 INSERT INTO distinct_test VALUES

@@ -1,7 +1,5 @@
 -- timespan.sqllogic - Testing TIMESPAN type and temporal arithmetic
 
-PRAGMA default_vtab_module='memory';
-
 -- Test TIMESPAN conversion function with ISO 8601 format
 SELECT timespan('PT1H');
 → [{"timespan('PT1H')":"PT1H"}]

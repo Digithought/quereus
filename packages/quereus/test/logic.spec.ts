@@ -2,6 +2,7 @@
 import { expect, config } from 'chai';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/database.js';
 import { QuereusError } from '../src/common/errors.js';
@@ -15,6 +16,17 @@ config.includeStack = true;
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Store mode configuration
+const USE_STORE_MODULE = process.env.QUEREUS_TEST_STORE === 'true' || process.env.QUEREUS_TEST_STORE === '1';
+
+// Files that are explicitly memory-module-specific and should be skipped in store mode
+const MEMORY_ONLY_FILES = new Set([
+  '04-transactions.sqllogic',  // Tests read-your-own-writes within transactions (store module buffers writes until commit)
+  '05-vtab_memory.sqllogic',  // Explicitly tests memory table indexing behavior
+  '06-builtin_functions.sqllogic',  // JSON normalization differs between memory and store (memory normalizes, store preserves raw)
+  '10-distinct_datatypes.sqllogic',  // Tests type affinity coercion (store module stores raw values without coercion)
+]);
 
 // Determine project root - if we're in dist/test, go up two levels, otherwise just one
 const isInDist = __dirname.includes(path.join('dist', 'test'));
@@ -400,31 +412,113 @@ function formatTraceEvents(events: any[]): string {
 	return lines.join('\n');
 }
 
-describe('SQL Logic Tests', () => {
+// Dynamically import store module only when needed (to avoid requiring LevelDB in memory-only tests)
+let LevelDBModule: any = null;
+let storeTestDir: string | null = null;
+
+async function getStoreModule() {
+	if (!LevelDBModule) {
+		const storePlugin = await import('@quereus/plugin-store');
+		LevelDBModule = storePlugin.LevelDBModule;
+	}
+	return LevelDBModule;
+}
+
+function createStoreTestDir(): string {
+	const dir = path.join(os.tmpdir(), `quereus-logic-store-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	fs.mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+function cleanupStoreTestDir(dir: string) {
+	try {
+		fs.rmSync(dir, { recursive: true, force: true });
+	} catch {
+		// Ignore cleanup errors
+	}
+}
+
+describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 	const files = fs.readdirSync(logicTestDir)
 		.filter(file => file.endsWith('.sqllogic'));
 
+	// Setup/teardown for store mode at suite level
+	before(async function() {
+		if (USE_STORE_MODULE) {
+			this.timeout(10000);
+			// Pre-load the store module
+			await getStoreModule();
+			console.log('\n📦 Running logic tests in STORE MODE (LevelDB backend)\n');
+		}
+	});
+
 	for (const file of files) {
+		// Skip memory-only files in store mode
+		if (USE_STORE_MODULE && MEMORY_ONLY_FILES.has(file)) {
+			describe(`File: ${file}`, () => {
+				it.skip('skipped in store mode (memory-only test)', () => {});
+			});
+			continue;
+		}
+
 		const filePath = path.join(logicTestDir, file);
 		const content = fs.readFileSync(filePath, 'utf-8');
 
 		describe(`File: ${file}`, () => {
 			let db: Database;
+			let testStorePath: string | null = null;
+			let leveldbModule: any = null;
 
-			beforeEach(() => {
+			beforeEach(async function() {
+				if (USE_STORE_MODULE) {
+					this.timeout(10000);
+				}
+
 				db = new Database();
 
 				// Set trace_plan_stack option if enabled
 				if (TEST_OPTIONS.tracePlanStack) {
 					db.setOption('trace_plan_stack', true);
 				}
+
+				// Configure the default vtab module
+				if (USE_STORE_MODULE) {
+					// Register leveldb and set it as default with a basePath
+					testStorePath = createStoreTestDir();
+					const LevelDBModuleClass = await getStoreModule();
+					leveldbModule = new LevelDBModuleClass();
+					db.registerVtabModule('leveldb', leveldbModule);
+					db.setOption('default_vtab_module', 'leveldb');
+					// Use basePath so each table gets its own subdirectory
+					db.setDefaultVtabArgs({ basePath: testStorePath.replace(/\\/g, '/') });
+				} else {
+					// Memory is already registered by default, just ensure it's set
+					db.setOption('default_vtab_module', 'memory');
+				}
 			});
 
-			afterEach(async () => {
+			afterEach(async function() {
+				if (USE_STORE_MODULE) {
+					this.timeout(10000);
+				}
+
 				await db.close();
+
+				// Close store module and cleanup
+				if (leveldbModule) {
+					await leveldbModule.closeAll();
+				}
+				if (testStorePath) {
+					cleanupStoreTestDir(testStorePath);
+					testStorePath = null;
+				}
 			});
 
-			it('should execute statements and match results or expected errors', async () => {
+			it('should execute statements and match results or expected errors', async function() {
+				if (USE_STORE_MODULE) {
+					this.timeout(30000); // Store tests may be slower
+				}
+
 				const lines = content.split(/\r?\n/);
 				let currentSql = '';
 				let expectedResultJson: string | null = null;

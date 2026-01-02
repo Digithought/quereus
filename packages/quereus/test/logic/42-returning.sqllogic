@@ -1,7 +1,5 @@
 -- 42-returning.sqllogic - Testing RETURNING clauses
 
-PRAGMA default_vtab_module='memory';
-
 -- === Basic RETURNING tests ===
 
 DROP TABLE IF EXISTS test_returning;

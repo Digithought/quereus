@@ -1,7 +1,5 @@
 -- set_operations.sqllogic - Testing UNION, INTERSECT, EXCEPT operations
 
-PRAGMA default_vtab_module='memory';
-
 -- Setup test tables
 CREATE TABLE set_a (id INTEGER PRIMARY KEY, value TEXT);
 CREATE TABLE set_b (id INTEGER PRIMARY KEY, value TEXT);

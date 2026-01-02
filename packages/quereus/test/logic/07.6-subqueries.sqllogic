@@ -1,7 +1,5 @@
 -- subqueries.sqllogic - Testing various subquery forms
 
-PRAGMA default_vtab_module='memory';
-
 -- Setup tables
 CREATE TABLE outer_t (id INTEGER PRIMARY KEY, grp TEXT);
 CREATE TABLE inner_t (id INTEGER PRIMARY KEY, val INTEGER, outer_id INTEGER NULL);

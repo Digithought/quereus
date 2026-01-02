@@ -13,7 +13,6 @@ SELECT like('abc%', 'abcde'), glob('a*c', 'abbbc');
 → [{"like('abc%', 'abcde')":true,"glob('a*c', 'abbbc')":true}]
 
 -- LIKE Operator Tests
-PRAGMA default_vtab_module='memory';
 CREATE TABLE like_test (id INT, name TEXT);
 INSERT INTO like_test VALUES (1, 'apple'), (2, 'berry'), (3, 'citrus'), (4, 'orange');
 
@@ -127,7 +126,6 @@ SELECT json_schema('[]', 'number[]'), json_schema('{}', '{ x: number }'), json_s
 → [{"json_schema('[]', 'number[]')":true,"json_schema('{}', '{ x: number }')":false,"json_schema('{}', '{}')":true}]
 
 -- Use in CHECK constraint
-PRAGMA default_vtab_module='memory';
 CREATE TABLE events (
   id INTEGER PRIMARY KEY,
   data JSON CHECK (json_schema(data, '{ x: number }[]'))
@@ -142,7 +140,6 @@ SELECT * FROM events;
 DROP TABLE events;
 
 -- Aggregate JSON Functions (Need table context)
-PRAGMA default_vtab_module='memory';
 CREATE TABLE json_agg_t (id INT, grp TEXT, val TEXT);
 INSERT INTO json_agg_t VALUES (1, 'A', '1'), (2, 'B', 'x'), (3, 'A', '2'), (4, 'B', 'y');
 SELECT grp, json_group_array(val) FROM json_agg_t GROUP BY grp ORDER BY grp;

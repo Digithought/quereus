@@ -1,7 +1,5 @@
 -- expressions.sqllogic - Testing various expression types and operators
 
-PRAGMA default_vtab_module='memory';
-
 CREATE TABLE expr_t (i INTEGER PRIMARY KEY, n NUMERIC, t TEXT NULL, b BLOB NULL);
 INSERT INTO expr_t VALUES (1, 10.5, 'hello', x'01ff'), (2, -5, 'world', x'02'), (3, 0, null, null);
 -- No expected output for setup

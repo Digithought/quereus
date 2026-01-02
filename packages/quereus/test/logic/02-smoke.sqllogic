@@ -3,8 +3,6 @@
 -- Test basic operations
 
 -- Set default VTab for subsequent CREATE TABLE
-PRAGMA default_vtab_module='memory';
-
 -- Create a table
 CREATE TABLE t1(a INTEGER PRIMARY KEY, b TEXT);
 --SELECT name FROM schema() WHERE type = 'table' AND name = 't1';

@@ -1,10 +1,8 @@
 -- error_paths.sqllogic - Testing expected error conditions
 
-PRAGMA default_vtab_module='memory';
-
 -- Syntax Error: Incomplete statement
 SELECT * FROM;
--- error: Expected table name. (at line 2, column 14)
+-- error: Expected table name. (at line 1, column 14)
 
 -- Syntax Error: Misspelled keyword
 CREAT TABLE t_err (a);

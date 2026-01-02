@@ -1,8 +1,6 @@
 -- views.sqllogic - Testing VIEW functionality
 
--- PRAGMA default_vtab_module='memory';
-
--- Setup base table
+-- -- Setup base table
 CREATE TABLE base_data (id INTEGER PRIMARY KEY, name TEXT, category TEXT, value INTEGER);
 INSERT INTO base_data VALUES (1, 'Alpha', 'A', 100), (2, 'Beta', 'B', 200), (3, 'Gamma', 'A', 150), (4, 'Delta', 'B', 300);
 

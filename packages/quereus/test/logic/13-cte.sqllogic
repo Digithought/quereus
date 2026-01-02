@@ -1,7 +1,5 @@
 -- cte.sqllogic - Testing Common Table Expressions (WITH clause)
 
-PRAGMA default_vtab_module='memory';
-
 -- Simple non-recursive CTE
 CREATE TABLE base_t (id INTEGER PRIMARY KEY, name TEXT);
 INSERT INTO base_t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
