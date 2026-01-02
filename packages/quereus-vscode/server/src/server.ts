@@ -38,15 +38,15 @@ const tokenTypeToIndex: Record<TokenTypeLabel, number> = Object.fromEntries(toke
 
 // Fallback keywords if engine exports are unavailable in this build context
 const DEFAULT_KEYWORDS = [
-	'WITH','RECURSIVE','SELECT','INSERT','UPDATE','DELETE','VALUES','CREATE','TABLE','VIEW','INDEX','ASSERTION','DROP','ALTER',
-	'BEGIN','COMMIT','ROLLBACK','SAVEPOINT','RELEASE','PRAGMA','RETURNING','WHERE','FROM','GROUP','BY','HAVING','ORDER','LIMIT','OFFSET',
-	'JOIN','INNER','LEFT','RIGHT','FULL','CROSS','OUTER','ON','USING','AS','DISTINCT','ALL','UNION','INTERSECT','EXCEPT','DIFF','NULL','TRUE','FALSE',
-	'IS','NOT','AND','OR','XOR','IN','LIKE','BETWEEN','EXISTS','CASE','WHEN','THEN','ELSE','END','OVER','PARTITION','ROWS','RANGE','UNBOUNDED','PRECEDING','FOLLOWING','CURRENT',
-	'COLLATE','DEFAULT','PRIMARY','KEY','CHECK','UNIQUE','FOREIGN','REFERENCES','CONSTRAINT','GENERATED','ALWAYS','STORED','VIRTUAL','INTO','USING','IF','TO','ADD','RENAME','SET','NO','ACTION','ABORT','FAIL','IGNORE','REPLACE',
+	'with','recursive','select','insert','update','delete','values','create','table','view','index','assertion','drop','alter',
+	'begin','commit','rollback','savepoint','release','pragma','returning','where','from','group','by','having','order','limit','offset',
+	'join','inner','left','right','full','cross','outer','on','using','as','distinct','all','union','intersect','except','diff','null','true','false',
+	'is','not','and','or','xor','in','like','between','exists','case','when','then','else','end','over','partition','rows','range','unbounded','preceding','following','current',
+	'collate','default','primary','key','check','unique','foreign','references','constraint','generated','always','stored','virtual','into','using','if','to','add','rename','set','no','action','abort','fail','ignore','replace',
 	// Declarative schema keywords
-	'DECLARE','SCHEMA','APPLY','EXPLAIN','VERSION','SEED',
+	'declare','schema','apply','explain','version','seed',
 	// Context variable keyword
-	'CONTEXT'
+	'context'
 ];
 
 function applySchemaSnapshot(snapshot: SchemaSnapshot): void {
@@ -202,7 +202,7 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 		const idx = m.index ?? 0;
 		if (isInsideSpans(idx)) continue;
 		const word = m[1];
-		if (DEFAULT_KEYWORDS.includes(word.toUpperCase())) {
+		if (DEFAULT_KEYWORDS.includes(word.toLowerCase())) {
 			tokens.push({ start: idx, end: idx + word.length, type: 'keyword' });
 		}
 	}
@@ -211,7 +211,7 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 		const idx = m.index ?? 0;
 		if (isInsideSpans(idx)) continue;
 		const name = m[1];
-		if (!DEFAULT_KEYWORDS.includes(name.toUpperCase())) {
+		if (!DEFAULT_KEYWORDS.includes(name.toLowerCase())) {
 			tokens.push({ start: idx, end: idx + name.length, type: 'function' });
 		}
 	}

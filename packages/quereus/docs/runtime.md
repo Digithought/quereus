@@ -146,17 +146,17 @@ Each plan node provides three complementary sources of information:
 // TableReferenceNode
 toString(): "main.users"
 
-// FilterNode  
-toString(): "WHERE age > 40"
+// FilterNode
+toString(): "where age > 40"
 
 // ProjectNode
-toString(): "SELECT name, COUNT(*) AS total"
+toString(): "select name, count(*) as total"
 
 // SortNode
-toString(): "ORDER BY name DESC, age ASC"
+toString(): "order by name desc, age asc"
 
 // AggregateNode
-toString(): "GROUP BY dept_id  AGG  COUNT(*) AS count, SUM(salary) AS total"
+toString(): "group by dept_id  agg  count(*) as count, sum(salary) as total"
 ```
 
 ### getLogicalProperties() Guidelines
@@ -1002,23 +1002,23 @@ Instead of using non-deterministic functions directly, pass values via mutation 
 
 ```sql
 -- ❌ REJECTED: Non-deterministic default
-CREATE TABLE orders (
-    id INTEGER PRIMARY KEY,
-    created_at TEXT DEFAULT datetime('now')  -- ERROR
+create table orders (
+    id integer primary key,
+    created_at text default datetime('now')  -- ERROR
 );
 
 -- ✅ ACCEPTED: Use mutation context
-CREATE TABLE orders (
-    id INTEGER PRIMARY KEY,
-    created_at TEXT DEFAULT timestamp
-) WITH CONTEXT (
-    timestamp TEXT
+create table orders (
+    id integer primary key,
+    created_at text default timestamp
+) with context (
+    timestamp text
 );
 
 -- Pass the timestamp when inserting
-INSERT INTO orders (id)
-WITH CONTEXT timestamp = datetime('now')
-VALUES (1);
+insert into orders (id)
+with context timestamp = datetime('now')
+values (1);
 ```
 
 ### Physical Properties System

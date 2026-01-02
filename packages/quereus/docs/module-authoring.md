@@ -36,7 +36,7 @@ RetrieveNode (optimizer boundary)
 
 Example:
 ```sql
-SELECT * FROM users WHERE id = 1 AND name LIKE 'A%' AND age > 30;
+select * from users where id = 1 and name like 'A%' and age > 30;
 ```
 
 If the module supports equality on `id` but not LIKE or range comparisons:
@@ -232,7 +232,7 @@ When predicates are pushed into the `Retrieve` pipeline, parameters and correlat
 
 ```typescript
 // Query with parameter
-SELECT * FROM users WHERE id = ?;
+select * from users where id = ?;
 
 // Retrieve.bindings contains: [ParameterReference(1)]
 // At runtime, the module receives the parameter value via FilterInfo.args
@@ -416,7 +416,7 @@ Mutation statements use Quereus SQL syntax with all values as literals:
 **INSERT Example:**
 ```sql
 -- Original statement with parameters
-INSERT INTO orders (id, amount) VALUES (:id, :amount)
+insert into orders (id, amount) values (:id, :amount)
 
 -- Logged mutation statement (per row)
 insert into orders (id, amount) values (1, 100)
@@ -425,9 +425,9 @@ insert into orders (id, amount) values (1, 100)
 **INSERT with Mutation Context:**
 ```sql
 -- Original statement
-INSERT INTO orders (id, amount, created_at)
-WITH CONTEXT now = DateTime('now')
-VALUES (1, 100, now)
+insert into orders (id, amount, created_at)
+with context now = datetime('now')
+values (1, 100, now)
 
 -- Logged mutation statement (context resolved to literal)
 insert into orders (id, amount, created_at) with context now = '2024-01-15T10:30:00Z' values (1, 100, '2024-01-15T10:30:00Z')
@@ -436,7 +436,7 @@ insert into orders (id, amount, created_at) with context now = '2024-01-15T10:30
 **UPDATE Example:**
 ```sql
 -- Original statement
-UPDATE users SET name = :newName WHERE id = :userId
+update users set name = :newName where id = :userId
 
 -- Logged mutation statement (per row)
 update users set name = 'Alice' where id = 1
@@ -445,7 +445,7 @@ update users set name = 'Alice' where id = 1
 **DELETE Example:**
 ```sql
 -- Original statement
-DELETE FROM sessions WHERE user_id = :userId
+delete from sessions where user_id = :userId
 
 -- Logged mutation statement (per row)
 delete from sessions where user_id = 42 and session_id = 'abc123'

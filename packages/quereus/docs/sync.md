@@ -889,11 +889,11 @@ db.registerVtabModule('store', store);
 
 // 5. Create tables (sync automatically tracks changes via storeEvents)
 await db.exec(`
-  CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
-    name TEXT,
-    email TEXT
-  ) USING store(path='./data')
+  create table users (
+    id integer primary key,
+    name text,
+    email text
+  ) using store(path='./data')
 `);
 
 // 6. Subscribe to sync events for UI

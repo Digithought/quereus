@@ -65,22 +65,22 @@ db.registerVtabModule('memory', new MemoryTableModule());
 
 // Create a table with single-column primary key
 await db.exec(`
-    CREATE TABLE main.users(
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        email TEXT,
-        created_at TEXT
+    create table main.users(
+        id integer primary key,
+        name text,
+        email text,
+        created_at text
     );
 `);
 
 // Create a table with composite primary key
 await db.exec(`
-    CREATE TABLE main.user_sessions(
-        user_id INTEGER,
-        session_id TEXT,
-        created_at TEXT,
-        expires_at TEXT,
-        PRIMARY KEY (user_id, session_id)
+    create table main.user_sessions(
+        user_id integer,
+        session_id text,
+        created_at text,
+        expires_at text,
+        primary key (user_id, session_id)
     );
 `);
 ```
@@ -89,32 +89,32 @@ await db.exec(`
 
 ```typescript
 // Create secondary indexes for efficient querying
-await db.exec("CREATE INDEX users_email_idx ON users (email)");
-await db.exec("CREATE INDEX users_created_idx ON users (created_at DESC)");
+await db.exec("create index users_email_idx on users (email)");
+await db.exec("create index users_created_idx on users (created_at desc)");
 
 // Queries automatically use appropriate indexes
-const userByEmail = await db.prepare("SELECT * FROM users WHERE email = ?").get("john@example.com");
-const recentUsers = await db.prepare("SELECT * FROM users ORDER BY created_at DESC LIMIT 10").all();
+const userByEmail = await db.prepare("select * from users where email = ?").get("john@example.com");
+const recentUsers = await db.prepare("select * from users order by created_at desc limit 10").all();
 ```
 
 ### **Transaction and Savepoint Support:**
 
 ```typescript
 // Explicit transaction with savepoints
-await db.exec("BEGIN");
+await db.exec("begin");
 try {
-    await db.exec("INSERT INTO users (id, name, email) VALUES (1, 'John', 'john@example.com')");
-    
-    await db.exec("SAVEPOINT sp1");
-    await db.exec("INSERT INTO users (id, name, email) VALUES (2, 'Jane', 'jane@example.com')");
-    
+    await db.exec("insert into users (id, name, email) values (1, 'John', 'john@example.com')");
+
+    await db.exec("savepoint sp1");
+    await db.exec("insert into users (id, name, email) values (2, 'Jane', 'jane@example.com')");
+
     // Rollback to savepoint, keeping John but removing Jane
-    await db.exec("ROLLBACK TO sp1");
-    
-    await db.exec("INSERT INTO users (id, name, email) VALUES (3, 'Bob', 'bob@example.com')");
-    await db.exec("COMMIT"); // Commits John and Bob
+    await db.exec("rollback to sp1");
+
+    await db.exec("insert into users (id, name, email) values (3, 'Bob', 'bob@example.com')");
+    await db.exec("commit"); // Commits John and Bob
 } catch (error) {
-    await db.exec("ROLLBACK");
+    await db.exec("rollback");
 }
 ```
 
@@ -122,13 +122,13 @@ try {
 
 ```typescript
 // Add new column with default value
-await db.exec("ALTER TABLE users ADD COLUMN age INTEGER DEFAULT 0");
+await db.exec("alter table users add column age integer default 0");
 
 // Create index on new column
-await db.exec("CREATE INDEX users_age_idx ON users (age)");
+await db.exec("create index users_age_idx on users (age)");
 
 // Rename column (if supported by parser)
-await db.exec("ALTER TABLE users RENAME COLUMN created_at TO registration_date");
+await db.exec("alter table users rename column created_at to registration_date");
 ```
 
 ## **Implementation Details:**

@@ -223,21 +223,21 @@ Use type conversion functions for explicit conversion:
 
 ```sql
 -- Convert string to integer
-SELECT integer('123');
+select integer('123');
 
 -- Convert timestamp to date
-SELECT date(1234567890);
+select date(1234567890);
 
 -- Convert string to real
-SELECT real('3.14');
+select real('3.14');
 
 -- Invalid conversion throws error
-SELECT integer('abc');  -- Error: Type mismatch
+select integer('abc');  -- Error: Type mismatch
 
 -- Conversion functions are just regular scalar functions
-SELECT text(42);           -- '42'
-SELECT boolean(1);         -- true
-SELECT datetime('2024-01-15T10:30:00');
+select text(42);           -- '42'
+select boolean(1);         -- true
+select datetime('2024-01-15T10:30:00');
 ```
 
 **Built-in Conversion Functions**:
@@ -394,12 +394,12 @@ export default function register(db: Database) {
 
 ```sql
 -- After loading UUID plugin
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  name TEXT NOT NULL
+create table users (
+  id uuid primary key,
+  name text not null
 );
 
-INSERT INTO users VALUES ('550e8400-e29b-41d4-a716-446655440000', 'Alice');
+insert into users values ('550e8400-e29b-41d4-a716-446655440000', 'Alice');
 ```
 
 ---

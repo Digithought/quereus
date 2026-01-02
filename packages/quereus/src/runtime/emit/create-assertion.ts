@@ -14,15 +14,15 @@ export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionCon
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
 		// Convert the CHECK expression to SQL text for storage
 		// The CHECK expression should be negated to become a violation query:
-		// CHECK (condition) becomes "SELECT 1 WHERE NOT (condition)"
+		// check (condition) becomes "select 1 where not (condition)"
 		let violationSql: string;
 		try {
 			const exprSql = expressionToString(plan.checkExpression);
-			violationSql = `SELECT 1 WHERE NOT (${exprSql})`;
+			violationSql = `select 1 where not (${exprSql})`;
 		} catch (e) {
 			log('Failed to stringify assertion expression: %O', e);
 			// Fallback for complex expressions
-			violationSql = 'SELECT 1 WHERE FALSE'; // Never violates
+			violationSql = 'select 1 where false'; // Never violates
 		}
 
 		// Create the assertion schema object

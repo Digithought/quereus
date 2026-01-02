@@ -140,10 +140,9 @@ describe('Property-Based Tests', () => {
 				}
 				const [actualA, actualB] = actualValues;
 
-				// Now compare using the converted values (what SQL actually stored)
-				// Apply the same coercion that SQL comparisons use
-				const [coercedA, coercedB] = coerceForComparison(actualA, actualB);
-				const expectedComparison = compareSqlValues(coercedA, coercedB, 'BINARY');
+				// For ORDER BY, we use compareSqlValues directly (no coercion)
+				// ORDER BY uses storage class ordering: NULL < NUMERIC < TEXT < BLOB
+				const expectedOrderByComparison = compareSqlValues(actualA, actualB, 'BINARY');
 
 				// Test ordering behavior using ORDER BY
 				const orderedValues: SqlValue[] = [];
@@ -151,11 +150,11 @@ describe('Property-Based Tests', () => {
 					orderedValues.push(row.v);
 				}
 
-				// Check if the ordering matches our expectation based on converted values
-				if (expectedComparison < 0) {
+				// Check if the ordering matches our expectation based on storage class ordering
+				if (expectedOrderByComparison < 0) {
 					expect(orderedValues).to.deep.equal([actualA, actualB],
 						`ORDER BY should place ${safeJsonStringify(actualA)} before ${safeJsonStringify(actualB)}`);
-				} else if (expectedComparison > 0) {
+				} else if (expectedOrderByComparison > 0) {
 					expect(orderedValues).to.deep.equal([actualB, actualA],
 						`ORDER BY should place ${safeJsonStringify(actualB)} before ${safeJsonStringify(actualA)}`);
 				} else {
@@ -166,7 +165,11 @@ describe('Property-Based Tests', () => {
 				}
 
 				// For non-NULL values, also test SQL boolean comparisons
+				// Comparison operators (=, <) use type coercion (numeric strings become numbers)
 				if (actualA !== null && actualB !== null) {
+					const [coercedA, coercedB] = coerceForComparison(actualA, actualB);
+					const expectedComparison = compareSqlValues(coercedA, coercedB, 'BINARY');
+
 					let dbComparison: number;
 					try {
 						// Check A = B using eval and taking the first row

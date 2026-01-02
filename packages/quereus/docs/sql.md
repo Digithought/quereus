@@ -107,8 +107,8 @@ declare schema schema_name
 -- Get migration DDL as result rows (one DDL statement per row)
 diff schema main;
 -- Returns rows like:
---   {"ddl": "CREATE TABLE users (...)"}
---   {"ddl": "DROP TABLE old_table"}
+--   {"ddl": "create table users (...)"}
+--   {"ddl": "drop table old_table"}
 -- Returns no rows if schema is already aligned
 
 -- Execute DDL yourself with custom migration logic
@@ -636,7 +636,7 @@ drop assertion assertion_name;
 
 Behavior:
 - Assertions are enforced at COMMIT. Any row produced by the stored violation query indicates a violation and the COMMIT fails with a constraint error (transaction rolled back).
-- The `check (expr)` is stored as a violation SQL: `SELECT 1 WHERE NOT (expr)`.
+- The `check (expr)` is stored as a violation SQL: `select 1 where not (expr)`.
 - Efficiency: The optimizer classifies each table reference instance in the violation query as row-specific (unique key fully covered) or global. If any changed base is global, run the violation SQL once. Otherwise, for row-specific references, the engine executes per changed primary key using prepared parameters (`pk0`, `pk1`, ... for composite keys), early-exiting on the first violation.
 
 Diagnostics:
@@ -2553,7 +2553,7 @@ create table simple_cache (
   key text primary key,
   value text              -- NOT NULL by default with 'not_null' setting
 );
--- Equivalent to: CREATE TABLE simple_cache (...) USING memory;
+-- Equivalent to: create table simple_cache (...) using memory;
 ```
 
 ### 9.4 Transactions Control PRAGMAs
