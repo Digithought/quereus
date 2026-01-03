@@ -23,7 +23,7 @@ The memory virtual table module (`@quereus/quereus`) implements its own transact
 2. Other modules (store, sync, custom) must re-implement isolation from scratch
 3. Each implementation has different semantics and edge cases
 
-The store module (`quereus-plugin-store`) currently has no read isolation—queries see committed data only, not pending writes from the current transaction.
+The store modules (`quereus-store`) currently have no read isolation—queries see committed data only, not pending writes from the current transaction.
 
 ### Desired State
 

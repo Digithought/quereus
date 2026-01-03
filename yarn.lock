@@ -1157,6 +1157,46 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@quereus/plugin-indexeddb@npm:*, @quereus/plugin-indexeddb@workspace:packages/quereus-plugin-indexeddb":
+  version: 0.0.0-use.local
+  resolution: "@quereus/plugin-indexeddb@workspace:packages/quereus-plugin-indexeddb"
+  dependencies:
+    "@quereus/quereus": "npm:*"
+    "@quereus/store": "npm:*"
+    "@types/chai": "npm:^5.2.2"
+    "@types/mocha": "npm:^10.0.10"
+    chai: "npm:^5.2.0"
+    fake-indexeddb: "npm:^6.0.0"
+    mocha: "npm:^11.1.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/quereus": ^0.24.0
+    "@quereus/store": ^0.3.5
+  languageName: unknown
+  linkType: soft
+
+"@quereus/plugin-leveldb@workspace:packages/quereus-plugin-leveldb":
+  version: 0.0.0-use.local
+  resolution: "@quereus/plugin-leveldb@workspace:packages/quereus-plugin-leveldb"
+  dependencies:
+    "@quereus/quereus": "npm:*"
+    "@quereus/store": "npm:*"
+    "@types/mocha": "npm:^10.0.10"
+    "@types/node": "npm:^22.15.29"
+    chai: "npm:^5.2.0"
+    classic-level: "npm:^2.0.0"
+    mocha: "npm:^11.5.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/quereus": ^0.24.0
+    "@quereus/store": ^0.3.5
+  languageName: unknown
+  linkType: soft
+
 "@quereus/plugin-loader@npm:*, @quereus/plugin-loader@workspace:packages/plugin-loader":
   version: 0.0.0-use.local
   resolution: "@quereus/plugin-loader@workspace:packages/plugin-loader"
@@ -1170,31 +1210,23 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/plugin-store@npm:*, @quereus/plugin-store@workspace:packages/quereus-plugin-store":
-  version: 0.0.0-use.local
-  resolution: "@quereus/plugin-store@workspace:packages/quereus-plugin-store"
+"@quereus/plugin-store@npm:*":
+  version: 0.3.5
+  resolution: "@quereus/plugin-store@npm:0.3.5"
   dependencies:
-    "@quereus/quereus": "npm:*"
-    "@types/mocha": "npm:^10.0.10"
-    "@types/node": "npm:^22.15.29"
-    chai: "npm:^5.2.0"
     classic-level: "npm:^2.0.0"
-    fake-indexeddb: "npm:^6.2.5"
-    mocha: "npm:^11.5.0"
-    rimraf: "npm:^6.1.2"
-    ts-node: "npm:^10.9.2"
-    typescript: "npm:^5.8.3"
   peerDependencies:
     "@quereus/quereus": "*"
-  languageName: unknown
-  linkType: soft
+  checksum: 10c0/31f5226b22cc84ebaa2c404377bfbeebcf868e1294299b1eeb28cad689a4c1b12a4491b7b60bfc175ce77d49441625e572912d3c03fa4af714cf2958875162b8
+  languageName: node
+  linkType: hard
 
 "@quereus/plugin-sync@npm:*, @quereus/plugin-sync@workspace:packages/quereus-plugin-sync":
   version: 0.0.0-use.local
   resolution: "@quereus/plugin-sync@workspace:packages/quereus-plugin-sync"
   dependencies:
-    "@quereus/plugin-store": "npm:*"
     "@quereus/quereus": "npm:*"
+    "@quereus/store": "npm:*"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^22.15.29"
     chai: "npm:^5.2.0"
@@ -1203,8 +1235,8 @@ __metadata:
     ts-node: "npm:^10.9.2"
     typescript: "npm:^5.8.3"
   peerDependencies:
-    "@quereus/plugin-store": "*"
     "@quereus/quereus": "*"
+    "@quereus/store": "*"
   languageName: unknown
   linkType: soft
 
@@ -1282,11 +1314,13 @@ __metadata:
   resolution: "@quereus/quoomb-web@workspace:packages/quoomb-web"
   dependencies:
     "@monaco-editor/react": "npm:^4.7.0"
+    "@quereus/plugin-indexeddb": "npm:*"
     "@quereus/plugin-loader": "npm:*"
-    "@quereus/plugin-store": "npm:*"
     "@quereus/plugin-sync": "npm:*"
     "@quereus/quereus": "npm:*"
     "@quereus/shared-ui": "npm:*"
+    "@quereus/store": "npm:*"
+    "@quereus/sync-client": "npm:*"
     "@tanstack/react-table": "npm:^8.21.3"
     "@types/node": "npm:^22.15.29"
     "@types/papaparse": "npm:^5.3.16"
@@ -1350,33 +1384,24 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/store-indexeddb@workspace:packages/quereus-store-indexeddb":
+"@quereus/store@npm:*, @quereus/store@workspace:packages/quereus-store":
   version: 0.0.0-use.local
-  resolution: "@quereus/store-indexeddb@workspace:packages/quereus-store-indexeddb"
+  resolution: "@quereus/store@workspace:packages/quereus-store"
   dependencies:
-    "@quereus/plugin-store": "npm:*"
-    rimraf: "npm:^6.1.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    "@quereus/plugin-store": "*"
-  languageName: unknown
-  linkType: soft
-
-"@quereus/store-leveldb@workspace:packages/quereus-store-leveldb":
-  version: 0.0.0-use.local
-  resolution: "@quereus/store-leveldb@workspace:packages/quereus-store-leveldb"
-  dependencies:
-    "@quereus/plugin-store": "npm:*"
+    "@quereus/quereus": "npm:*"
+    "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^22.15.29"
-    classic-level: "npm:^2.0.0"
+    chai: "npm:^5.2.0"
+    mocha: "npm:^11.5.0"
     rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
     typescript: "npm:^5.8.3"
   peerDependencies:
-    "@quereus/plugin-store": "*"
+    "@quereus/quereus": "*"
   languageName: unknown
   linkType: soft
 
-"@quereus/sync-client@workspace:packages/quereus-sync-client":
+"@quereus/sync-client@npm:*, @quereus/sync-client@workspace:packages/quereus-sync-client":
   version: 0.0.0-use.local
   resolution: "@quereus/sync-client@workspace:packages/quereus-sync-client"
   dependencies:
@@ -4011,7 +4036,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"fake-indexeddb@npm:^6.2.5":
+"fake-indexeddb@npm:^6.0.0":
   version: 6.2.5
   resolution: "fake-indexeddb@npm:6.2.5"
   checksum: 10c0/6c5e2fe84a61daa06d7ad63699d1041fe61847f15f92db12415634b3db94f363a64be9e08a3c3c4434af9c3c0132086b85c4d5dc5e8e06edae1e7daf70ce1f3c
@@ -5218,10 +5243,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lru-cache@npm:^10.2.0, lru-cache@npm:^11.1.0, lru-cache@npm:^11.2.1":
+"lru-cache@npm:^10.2.0":
   version: 10.4.3
   resolution: "lru-cache@npm:10.4.3"
   checksum: 10c0/ebd04fbca961e6c1d6c0af3799adcc966a1babe798f685bb84e6599266599cd95d94630b10262f5424539bc4640107e8a33aa28585374abf561d30d16f4b39fb
+  languageName: node
+  linkType: hard
+
+"lru-cache@npm:^11.0.0, lru-cache@npm:^11.1.0, lru-cache@npm:^11.2.1":
+  version: 11.2.4
+  resolution: "lru-cache@npm:11.2.4"
+  checksum: 10c0/4a24f9b17537619f9144d7b8e42cd5a225efdfd7076ebe7b5e7dc02b860a818455201e67fbf000765233fe7e339d3c8229fc815e9b58ee6ede511e07608c19b2
   languageName: node
   linkType: hard
 
@@ -5481,7 +5513,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"mocha@npm:^11.5.0":
+"mocha@npm:^11.1.0, mocha@npm:^11.5.0":
   version: 11.5.0
   resolution: "mocha@npm:11.5.0"
   dependencies:
@@ -5881,13 +5913,23 @@ __metadata:
   languageName: node
   linkType: hard
 
-"path-scurry@npm:^1.11.1, path-scurry@npm:^2.0.0":
+"path-scurry@npm:^1.11.1":
   version: 1.11.1
   resolution: "path-scurry@npm:1.11.1"
   dependencies:
     lru-cache: "npm:^10.2.0"
     minipass: "npm:^5.0.0 || ^6.0.2 || ^7.0.0"
   checksum: 10c0/32a13711a2a505616ae1cc1b5076801e453e7aae6ac40ab55b388bb91b9d0547a52f5aaceff710ea400205f18691120d4431e520afbe4266b836fadede15872d
+  languageName: node
+  linkType: hard
+
+"path-scurry@npm:^2.0.0":
+  version: 2.0.1
+  resolution: "path-scurry@npm:2.0.1"
+  dependencies:
+    lru-cache: "npm:^11.0.0"
+    minipass: "npm:^7.1.2"
+  checksum: 10c0/2a16ed0e81fbc43513e245aa5763354e25e787dab0d539581a6c3f0f967461a159ed6236b2559de23aa5b88e7dc32b469b6c47568833dd142a4b24b4f5cd2620
   languageName: node
   linkType: hard
 
@@ -7926,10 +7968,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"yallist@npm:^3.0.2, yallist@npm:^4.0.0":
+"yallist@npm:^3.0.2":
   version: 3.1.1
   resolution: "yallist@npm:3.1.1"
   checksum: 10c0/c66a5c46bc89af1625476f7f0f2ec3653c1a1791d2f9407cfb4c2ba812a1e1c9941416d71ba9719876530e3340a99925f697142989371b72d93b9ee628afd8c1
+  languageName: node
+  linkType: hard
+
+"yallist@npm:^4.0.0":
+  version: 4.0.0
+  resolution: "yallist@npm:4.0.0"
+  checksum: 10c0/2286b5e8dbfe22204ab66e2ef5cc9bbb1e55dfc873bbe0d568aa943eb255d131890dfd5bf243637273d31119b870f49c18fcde2c6ffbb7a7a092b870dc90625a
   languageName: node
   linkType: hard
 

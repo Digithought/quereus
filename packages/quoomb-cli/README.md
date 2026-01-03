@@ -104,7 +104,7 @@ The CLI automatically loads:
 ## Related Packages
 
 - [`quereus`](../quereus/) - Core SQL engine
-- [`@quereus/plugin-store`](../quereus-plugin-store/) - Storage plugin
+- [`@quereus/store`](../quereus-store/) - Storage plugin
 - [`@quereus/sync-coordinator`](../sync-coordinator/) - Server for sync
 
 ## License

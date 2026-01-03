@@ -1,0 +1,315 @@
+/**
+ * Unified IndexedDB Database Manager.
+ *
+ * Manages a single IndexedDB database with multiple object stores (one per table).
+ * This enables cross-table atomic transactions using native IDB transaction support.
+ *
+ * Architecture:
+ *   - Single IDB database per prefix (e.g., 'quereus')
+ *   - One object store per table (e.g., 'main.users', 'main.orders')
+ *   - One '__catalog__' object store for DDL metadata
+ *   - Native cross-table transactions for atomicity
+ */
+
+/** Reserved object store for catalog/DDL metadata. */
+const CATALOG_STORE_NAME = '__catalog__';
+
+/**
+ * Singleton manager for a unified IndexedDB database.
+ * All tables share this database with separate object stores.
+ */
+export class IndexedDBManager {
+  private static instances: Map<string, IndexedDBManager> = new Map();
+
+  private dbName: string;
+  private db: IDBDatabase | null = null;
+  private dbVersion: number = 1;
+  private objectStores: Set<string> = new Set();
+  private openPromise: Promise<void> | null = null;
+  private closed = false;
+
+  private constructor(dbName: string) {
+    this.dbName = dbName;
+  }
+
+  /**
+   * Get or create the singleton manager instance for a database name.
+   */
+  static getInstance(dbName: string): IndexedDBManager {
+    let instance = this.instances.get(dbName);
+    if (!instance) {
+      instance = new IndexedDBManager(dbName);
+      this.instances.set(dbName, instance);
+    }
+    return instance;
+  }
+
+  /**
+   * Reset a singleton instance (for testing purposes).
+   */
+  static resetInstance(dbName: string): void {
+    this.instances.delete(dbName);
+  }
+
+  /**
+   * Get the list of object store names in the database.
+   */
+  getObjectStoreNames(): string[] {
+    return Array.from(this.objectStores);
+  }
+
+  /**
+   * Ensure the database is open and has the required object stores.
+   */
+  async ensureOpen(): Promise<IDBDatabase> {
+    if (this.closed) {
+      throw new Error('IndexedDBManager is closed');
+    }
+
+    if (this.db) {
+      return this.db;
+    }
+
+    // Serialize opening to prevent race conditions
+    if (this.openPromise) {
+      await this.openPromise;
+      return this.db!;
+    }
+
+    this.openPromise = this.doOpen();
+    await this.openPromise;
+    this.openPromise = null;
+    return this.db!;
+  }
+
+  private async doOpen(): Promise<void> {
+    // First, try to open the existing database to get its version
+    const existingInfo = await this.getExistingDatabaseInfo();
+
+    if (existingInfo) {
+      this.dbVersion = existingInfo.version;
+      this.objectStores = existingInfo.objectStores;
+    }
+
+    // Open with the current version
+    this.db = await this.openDatabase(this.dbVersion);
+  }
+
+  private async getExistingDatabaseInfo(): Promise<{ version: number; objectStores: Set<string> } | null> {
+    return new Promise((resolve) => {
+      // Try to open without specifying version to get current state
+      const request = indexedDB.open(this.dbName);
+
+      request.onerror = () => resolve(null);
+
+      request.onsuccess = () => {
+        const db = request.result;
+        const stores = new Set<string>();
+        for (let i = 0; i < db.objectStoreNames.length; i++) {
+          stores.add(db.objectStoreNames[i]);
+        }
+        const version = db.version;
+        db.close();
+        resolve({ version, objectStores: stores });
+      };
+    });
+  }
+
+  private async openDatabase(version: number): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('IndexedDB open timed out after 10 seconds'));
+      }, 10000);
+
+      const request = indexedDB.open(this.dbName, version);
+
+      request.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to open IndexedDB: ${request.error?.message}`));
+      };
+
+      request.onblocked = () => {
+        clearTimeout(timeout);
+        reject(new Error('IndexedDB is blocked by another connection'));
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        // Ensure catalog store exists
+        if (!db.objectStoreNames.contains(CATALOG_STORE_NAME)) {
+          db.createObjectStore(CATALOG_STORE_NAME);
+          this.objectStores.add(CATALOG_STORE_NAME);
+        }
+      };
+
+      request.onsuccess = () => {
+        clearTimeout(timeout);
+        const db = request.result;
+        // Update objectStores from actual database
+        this.objectStores.clear();
+        for (let i = 0; i < db.objectStoreNames.length; i++) {
+          this.objectStores.add(db.objectStoreNames[i]);
+        }
+        resolve(db);
+      };
+    });
+  }
+
+  /**
+   * Ensure an object store exists for a table.
+   * Creates the store via database version upgrade if needed.
+   */
+  async ensureObjectStore(storeName: string): Promise<void> {
+    await this.ensureOpen();
+
+    if (this.objectStores.has(storeName)) {
+      return; // Already exists
+    }
+
+    // Close current connection and reopen with new version
+    this.db?.close();
+    this.db = null;
+    this.dbVersion++;
+
+    this.db = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('IndexedDB upgrade timed out'));
+      }, 10000);
+
+      const request = indexedDB.open(this.dbName, this.dbVersion);
+
+      request.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to upgrade IndexedDB: ${request.error?.message}`));
+      };
+
+      request.onblocked = () => {
+        clearTimeout(timeout);
+        reject(new Error('IndexedDB upgrade blocked'));
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains(storeName)) {
+          db.createObjectStore(storeName);
+        }
+      };
+
+      request.onsuccess = () => {
+        clearTimeout(timeout);
+        const db = request.result;
+        this.objectStores.clear();
+        for (let i = 0; i < db.objectStoreNames.length; i++) {
+          this.objectStores.add(db.objectStoreNames[i]);
+        }
+        resolve(db);
+      };
+    });
+  }
+
+  /**
+   * Delete an object store (table).
+   */
+  async deleteObjectStore(storeName: string): Promise<void> {
+    await this.ensureOpen();
+
+    if (!this.objectStores.has(storeName)) {
+      return; // Doesn't exist
+    }
+
+    // Close current connection and reopen with new version
+    this.db?.close();
+    this.db = null;
+    this.dbVersion++;
+
+    this.db = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('IndexedDB upgrade timed out'));
+      }, 10000);
+
+      const request = indexedDB.open(this.dbName, this.dbVersion);
+
+      request.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to upgrade IndexedDB: ${request.error?.message}`));
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (db.objectStoreNames.contains(storeName)) {
+          db.deleteObjectStore(storeName);
+        }
+      };
+
+      request.onsuccess = () => {
+        clearTimeout(timeout);
+        const db = request.result;
+        this.objectStores.clear();
+        for (let i = 0; i < db.objectStoreNames.length; i++) {
+          this.objectStores.add(db.objectStoreNames[i]);
+        }
+        resolve(db);
+      };
+    });
+  }
+
+  /**
+   * Check if an object store exists.
+   */
+  hasObjectStore(storeName: string): boolean {
+    return this.objectStores.has(storeName);
+  }
+
+  /**
+   * Get the underlying IDBDatabase for direct transaction creation.
+   */
+  getDatabase(): IDBDatabase | null {
+    return this.db;
+  }
+
+  /**
+   * Get the catalog store name.
+   */
+  getCatalogStoreName(): string {
+    return CATALOG_STORE_NAME;
+  }
+
+  /**
+   * Create a read-write transaction spanning multiple object stores.
+   * This enables atomic cross-table operations.
+   */
+  createTransaction(storeNames: string[], mode: IDBTransactionMode = 'readwrite'): IDBTransaction {
+    if (!this.db) {
+      throw new Error('Database not open');
+    }
+    return this.db.transaction(storeNames, mode);
+  }
+
+  /**
+   * Close the database and clean up.
+   */
+  async close(): Promise<void> {
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
+    this.closed = true;
+    IndexedDBManager.instances.delete(this.dbName);
+  }
+
+  /**
+   * Delete the entire database (for testing or reset).
+   */
+  static async deleteDatabase(dbName: string): Promise<void> {
+    const instance = this.instances.get(dbName);
+    if (instance) {
+      await instance.close();
+    }
+
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(dbName);
+      request.onerror = () => reject(new Error('Failed to delete database'));
+      request.onsuccess = () => resolve();
+    });
+  }
+}

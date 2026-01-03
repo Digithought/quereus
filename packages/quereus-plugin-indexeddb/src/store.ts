@@ -1,0 +1,349 @@
+/**
+ * IndexedDB-based KVStore implementation for browsers.
+ *
+ * Uses a unified single-database architecture where all tables share one
+ * IndexedDB database with multiple object stores (one per table).
+ * This enables cross-table atomic transactions using native IDB transaction support.
+ */
+
+import type { KVStore, KVEntry, WriteBatch, IterateOptions, KVStoreOptions } from '@quereus/store';
+import { IndexedDBManager } from './manager.js';
+
+/**
+ * Convert Uint8Array to ArrayBuffer for use as IDBValidKey.
+ */
+function toKey(key: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(key.byteLength);
+  new Uint8Array(copy).set(key);
+  return copy;
+}
+
+/**
+ * Extended options for IndexedDB store.
+ */
+export interface IndexedDBStoreOptions extends KVStoreOptions {
+  /** Object store name within the database. */
+  storeName?: string;
+}
+
+/**
+ * KVStore implementation that uses an object store within a unified IndexedDB database.
+ * All tables share this database with separate object stores.
+ */
+export class IndexedDBStore implements KVStore {
+  private manager: IndexedDBManager;
+  private storeName: string;
+  private closed = false;
+
+  private constructor(manager: IndexedDBManager, storeName: string) {
+    this.manager = manager;
+    this.storeName = storeName;
+  }
+
+  /**
+   * Open or create a store within the unified database.
+   */
+  static async open(options: KVStoreOptions): Promise<IndexedDBStore> {
+    const manager = IndexedDBManager.getInstance(options.path);
+    await manager.ensureOpen();
+
+    // storeName should come from the table key (e.g., 'main.users')
+    // For backwards compatibility, default to 'kv' for the catalog
+    const storeName = (options as IndexedDBStoreOptions).storeName || 'kv';
+    await manager.ensureObjectStore(storeName);
+
+    return new IndexedDBStore(manager, storeName);
+  }
+
+  /**
+   * Create a store for a specific table within the unified database.
+   */
+  static async openForTable(
+    dbName: string,
+    tableKey: string
+  ): Promise<IndexedDBStore> {
+    const manager = IndexedDBManager.getInstance(dbName);
+    await manager.ensureObjectStore(tableKey);
+    return new IndexedDBStore(manager, tableKey);
+  }
+
+  /**
+   * Get the underlying manager for cross-table transactions.
+   */
+  getManager(): IndexedDBManager {
+    return this.manager;
+  }
+
+  /**
+   * Get the object store name.
+   */
+  getStoreName(): string {
+    return this.storeName;
+  }
+
+  async get(key: Uint8Array): Promise<Uint8Array | undefined> {
+    this.checkOpen();
+    const db = await this.manager.ensureOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readonly');
+      const store = tx.objectStore(this.storeName);
+      const request = store.get(toKey(key));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const result = request.result;
+        resolve(result === undefined ? undefined : new Uint8Array(result));
+      };
+    });
+  }
+
+  async put(key: Uint8Array, value: Uint8Array): Promise<void> {
+    this.checkOpen();
+    const db = await this.manager.ensureOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readwrite');
+      const store = tx.objectStore(this.storeName);
+      store.put(value, toKey(key));
+      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => resolve();
+    });
+  }
+
+  async delete(key: Uint8Array): Promise<void> {
+    this.checkOpen();
+    const db = await this.manager.ensureOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readwrite');
+      const store = tx.objectStore(this.storeName);
+      store.delete(toKey(key));
+      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => resolve();
+    });
+  }
+
+  async has(key: Uint8Array): Promise<boolean> {
+    this.checkOpen();
+    const db = await this.manager.ensureOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readonly');
+      const store = tx.objectStore(this.storeName);
+      const request = store.count(toKey(key));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result > 0);
+    });
+  }
+
+  async *iterate(options?: IterateOptions): AsyncIterable<KVEntry> {
+    this.checkOpen();
+    const entries = await this.collectEntries(options);
+    for (const entry of entries) {
+      yield entry;
+    }
+  }
+
+  private async collectEntries(options?: IterateOptions): Promise<KVEntry[]> {
+    const db = await this.manager.ensureOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readonly');
+      const store = tx.objectStore(this.storeName);
+      const range = this.buildKeyRange(options);
+      const direction = options?.reverse ? 'prev' : 'next';
+      const request = store.openCursor(range, direction);
+      const entries: KVEntry[] = [];
+      const limit = options?.limit;
+
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor && (limit === undefined || entries.length < limit)) {
+          entries.push({
+            key: new Uint8Array(cursor.key as ArrayBuffer),
+            value: new Uint8Array(cursor.value as ArrayBuffer),
+          });
+          cursor.continue();
+        } else {
+          resolve(entries);
+        }
+      };
+    });
+  }
+
+  private buildKeyRange(options?: IterateOptions): IDBKeyRange | undefined {
+    if (options?.gte && options?.lt) {
+      return IDBKeyRange.bound(toKey(options.gte), toKey(options.lt), false, true);
+    } else if (options?.gte && options?.lte) {
+      return IDBKeyRange.bound(toKey(options.gte), toKey(options.lte), false, false);
+    } else if (options?.gt && options?.lt) {
+      return IDBKeyRange.bound(toKey(options.gt), toKey(options.lt), true, true);
+    } else if (options?.gt && options?.lte) {
+      return IDBKeyRange.bound(toKey(options.gt), toKey(options.lte), true, false);
+    } else if (options?.gte) {
+      return IDBKeyRange.lowerBound(toKey(options.gte), false);
+    } else if (options?.gt) {
+      return IDBKeyRange.lowerBound(toKey(options.gt), true);
+    } else if (options?.lte) {
+      return IDBKeyRange.upperBound(toKey(options.lte), false);
+    } else if (options?.lt) {
+      return IDBKeyRange.upperBound(toKey(options.lt), true);
+    }
+    return undefined;
+  }
+
+  batch(): WriteBatch {
+    this.checkOpen();
+    return new IndexedDBWriteBatch(this.manager, this.storeName);
+  }
+
+  async approximateCount(options?: IterateOptions): Promise<number> {
+    this.checkOpen();
+    const db = await this.manager.ensureOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readonly');
+      const store = tx.objectStore(this.storeName);
+      const range = this.buildKeyRange(options);
+      const request = store.count(range);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+  }
+
+  async close(): Promise<void> {
+    // Individual stores don't close the shared database
+    this.closed = true;
+  }
+
+  private checkOpen(): void {
+    if (this.closed) {
+      throw new Error('Store is closed');
+    }
+  }
+}
+
+/**
+ * Write batch for unified database - can span multiple object stores.
+ */
+class IndexedDBWriteBatch implements WriteBatch {
+  private manager: IndexedDBManager;
+  private storeName: string;
+  private ops: Array<{ type: 'put' | 'del'; key: Uint8Array; value?: Uint8Array }> = [];
+
+  constructor(manager: IndexedDBManager, storeName: string) {
+    this.manager = manager;
+    this.storeName = storeName;
+  }
+
+  put(key: Uint8Array, value: Uint8Array): void {
+    this.ops.push({ type: 'put', key, value });
+  }
+
+  delete(key: Uint8Array): void {
+    this.ops.push({ type: 'del', key });
+  }
+
+  async write(): Promise<void> {
+    const db = this.manager.getDatabase();
+    if (!db) {
+      throw new Error('Database not open');
+    }
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readwrite');
+      const store = tx.objectStore(this.storeName);
+      for (const op of this.ops) {
+        if (op.type === 'put' && op.value) {
+          store.put(op.value, toKey(op.key));
+        } else if (op.type === 'del') {
+          store.delete(toKey(op.key));
+        }
+      }
+      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => resolve();
+    });
+  }
+
+  clear(): void {
+    this.ops = [];
+  }
+}
+
+/**
+ * Multi-store write batch for cross-table atomic transactions.
+ * Collects operations across multiple object stores and commits them atomically.
+ */
+export class MultiStoreWriteBatch implements WriteBatch {
+  private manager: IndexedDBManager;
+  private ops: Array<{ storeName: string; type: 'put' | 'del'; key: Uint8Array; value?: Uint8Array }> = [];
+  private storeNames: Set<string> = new Set();
+
+  constructor(manager: IndexedDBManager) {
+    this.manager = manager;
+  }
+
+  /**
+   * Queue a put operation for a specific store.
+   */
+  putToStore(storeName: string, key: Uint8Array, value: Uint8Array): void {
+    this.ops.push({ storeName, type: 'put', key, value });
+    this.storeNames.add(storeName);
+  }
+
+  /**
+   * Queue a delete operation for a specific store.
+   */
+  deleteFromStore(storeName: string, key: Uint8Array): void {
+    this.ops.push({ storeName, type: 'del', key });
+    this.storeNames.add(storeName);
+  }
+
+  // Standard WriteBatch interface - not useful for multi-store but required
+  put(_key: Uint8Array, _value: Uint8Array): void {
+    throw new Error('Use putToStore() for MultiStoreWriteBatch');
+  }
+
+  delete(_key: Uint8Array): void {
+    throw new Error('Use deleteFromStore() for MultiStoreWriteBatch');
+  }
+
+  /**
+   * Write all operations atomically across all affected stores.
+   */
+  async write(): Promise<void> {
+    const db = this.manager.getDatabase();
+    if (!db) {
+      throw new Error('Database not open');
+    }
+
+    if (this.ops.length === 0) {
+      return;
+    }
+
+    const storeNames = Array.from(this.storeNames);
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeNames, 'readwrite');
+
+      for (const op of this.ops) {
+        const store = tx.objectStore(op.storeName);
+        if (op.type === 'put' && op.value) {
+          store.put(op.value, toKey(op.key));
+        } else if (op.type === 'del') {
+          store.delete(toKey(op.key));
+        }
+      }
+
+      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => resolve();
+    });
+  }
+
+  clear(): void {
+    this.ops = [];
+    this.storeNames.clear();
+  }
+
+  /**
+   * Get the store names involved in this batch.
+   */
+  getStoreNames(): string[] {
+    return Array.from(this.storeNames);
+  }
+}

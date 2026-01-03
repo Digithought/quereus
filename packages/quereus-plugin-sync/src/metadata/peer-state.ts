@@ -5,7 +5,7 @@
  * Used to determine what changes to send during delta sync.
  */
 
-import type { KVStore } from '@quereus/plugin-store';
+import type { KVStore } from '@quereus/store';
 import { type HLC, serializeHLC, deserializeHLC } from '../clock/hlc.js';
 import type { SiteId } from '../clock/site.js';
 import { buildPeerStateKey } from './keys.js';

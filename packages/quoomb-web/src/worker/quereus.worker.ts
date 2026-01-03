@@ -1,7 +1,8 @@
 import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
-import { IndexedDBModule, IndexedDBStore, StoreEventEmitter, type KVStore } from '@quereus/plugin-store/browser';
+import { IndexedDBStore, IndexedDBProvider } from '@quereus/plugin-indexeddb';
+import { StoreModule, StoreEventEmitter, type KVStore } from '@quereus/store';
 import {
   createSyncModule,
   createStoreAdapter,
@@ -37,7 +38,8 @@ class QuereusWorker implements QuereusWorkerAPI {
   private currentStorageModule: StorageModuleType = 'memory';
   private storeEvents: StoreEventEmitter | null = null;
   private kvStore: KVStore | null = null;
-  private indexedDBModule: IndexedDBModule | null = null;
+  private storeModule: StoreModule | null = null;
+  private indexedDBProvider: IndexedDBProvider | null = null;
 
   // Sync module state
   private syncManager: SyncManager | null = null;
@@ -709,33 +711,34 @@ class QuereusWorker implements QuereusWorkerAPI {
     // Create store event emitter
     this.storeEvents = new StoreEventEmitter();
 
-    // Create and register IndexedDB module
-    this.indexedDBModule = new IndexedDBModule(this.storeEvents);
-    this.db.registerVtabModule('indexeddb', this.indexedDBModule);
+    // Create IndexedDB provider and store module
+    this.indexedDBProvider = new IndexedDBProvider({ databaseName: 'quoomb' });
+    this.storeModule = new StoreModule(this.indexedDBProvider, this.storeEvents);
+    this.db.registerVtabModule('store', this.storeModule);
 
-    // Set default module BEFORE restore so imported DDL (which may lack USING clause) uses indexeddb
-    await this.db.exec("pragma default_vtab_module = 'indexeddb'");
+    // Set default module BEFORE restore so imported DDL (which may lack USING clause) uses store
+    await this.db.exec("pragma default_vtab_module = 'store'");
 
-    // Open a default KV store for sync metadata and catalog
-    this.kvStore = await IndexedDBStore.open({ path: 'quoomb_sync_meta' });
+    // Open a default KV store for sync metadata
+    this.kvStore = await IndexedDBStore.openForTable('quoomb', 'sync_meta');
 
     // Restore persisted tables from IndexedDB
     await this.restorePersistedTables();
   }
 
   private async restorePersistedTables(): Promise<void> {
-    if (!this.db || !this.indexedDBModule) {
+    if (!this.db || !this.storeModule) {
       return;
     }
 
     try {
       // Load DDL from the central catalog store
-      const ddlStatements = await this.indexedDBModule.loadAllDDL();
+      const ddlStatements = await this.storeModule.loadAllDDL();
 
       if (ddlStatements.length > 0) {
         // Import the catalog into the schema manager
         // This calls connect() on the module instead of create()
-        const imported = await this.db.schemaManager.importCatalog(ddlStatements);
+        await this.db.schemaManager.importCatalog(ddlStatements);
       }
     } catch (error) {
       console.error('[Restore] Failed to restore persisted tables:', error);
@@ -743,7 +746,7 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   private async initializeSyncModule(): Promise<void> {
-    if (!this.db || !this.storeEvents || !this.kvStore || !this.indexedDBModule) {
+    if (!this.db || !this.storeEvents || !this.kvStore || !this.storeModule) {
       throw new Error('Store module must be initialized first');
     }
 
@@ -755,26 +758,16 @@ class QuereusWorker implements QuereusWorkerAPI {
     // Create store adapter for applying remote changes
     // This executes DDL/DML on the local database when remote changes arrive
     const db = this.db;
-    const indexedDBModule = this.indexedDBModule;
+    const storeModule = this.storeModule;
     const getTableSchema = (schemaName: string, tableName: string) => {
       return db.schemaManager.getTable(schemaName, tableName);
     };
 
     // Get the correct KV store for each table
-    // Each IndexedDB table has its own underlying database
     const getKVStore = async (schemaName: string, tableName: string) => {
       const tableKey = `${schemaName}.${tableName}`.toLowerCase();
-      // Get the table's config to determine its database name
-      const tableSchema = db.schemaManager.getTable(schemaName, tableName);
-      if (!tableSchema) {
-        throw new Error(`Table not found: ${schemaName}.${tableName}`);
-      }
-      const config = {
-        database: (tableSchema.vtabArgs as Record<string, SqlValue>)?.database as string | undefined
-          || `quereus_${schemaName}_${tableName}`,
-        collation: 'NOCASE' as const,
-      };
-      return indexedDBModule.getStore(tableKey, config);
+      const config = { collation: 'NOCASE' as const };
+      return storeModule.getStore(tableKey, config);
     };
 
     const applyToStore = createStoreAdapter({

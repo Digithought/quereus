@@ -1,0 +1,88 @@
+{
+  "name": "@quereus/plugin-indexeddb",
+  "version": "0.2.2",
+  "type": "module",
+  "description": "IndexedDB storage plugin for Quereus - browser persistent storage",
+  "keywords": [
+    "quereus",
+    "quereus-plugin",
+    "sql",
+    "database",
+    "storage",
+    "indexeddb",
+    "kv-store",
+    "browser",
+    "persistent"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/quereus-plugin-indexeddb"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./plugin": {
+      "types": "./dist/src/plugin.d.ts",
+      "import": "./dist/src/plugin.js"
+    }
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "^0.24.0",
+    "@quereus/store": "^0.3.5"
+  },
+  "engines": {
+    "quereus": "^0.24.0"
+  },
+  "quereus": {
+    "provides": {
+      "vtables": [
+        "store"
+      ]
+    },
+    "settings": [
+      {
+        "key": "prefix",
+        "label": "Database Prefix",
+        "type": "string",
+        "default": "quereus",
+        "help": "Prefix for IndexedDB database names"
+      },
+      {
+        "key": "moduleName",
+        "label": "Module Name",
+        "type": "string",
+        "default": "store",
+        "help": "Name to register the virtual table module under"
+      }
+    ]
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/quereus-plugin-indexeddb/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-indexeddb/test/**/*.spec.ts\" --colors"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "@quereus/store": "*",
+    "@types/chai": "^5.2.2",
+    "@types/mocha": "^10.0.10",
+    "chai": "^5.2.0",
+    "fake-indexeddb": "^6.0.0",
+    "mocha": "^11.1.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

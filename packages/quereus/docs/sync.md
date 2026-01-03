@@ -39,7 +39,7 @@ This document describes the architecture for `quereus-plugin-sync`, a fully auto
 ├────────────────────────────────────┼────────────────────────────────────────┤
 │                                    ▼                                        │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │                      quereus-plugin-store                             │  │
+│  │                      quereus-store                                   │  │
 │  │  ┌─────────────────────────┐  ┌─────────────────────────┐            │  │
 │  │  │   LevelDB (Node.js)     │  │   IndexedDB (Browser)   │            │  │
 │  │  │   Data + CRDT Metadata  │  │   Data + CRDT Metadata  │            │  │
@@ -868,7 +868,7 @@ const sync = createSyncModule(storeModule, storeEventEmitter, {
 
 ```typescript
 import { Database } from '@quereus/quereus';
-import { LevelDBModule, LevelDBStore, StoreEventEmitter } from 'quereus-plugin-store';
+import { LevelDBModule, LevelDBStore, StoreEventEmitter } from 'quereus-store';
 import { createSyncModule } from 'quereus-plugin-sync';
 
 // 1. Set up store with event emitter
@@ -969,7 +969,7 @@ The `createStoreAdapter` function creates a unified adapter for applying remote 
 
 ```typescript
 import { createStoreAdapter } from 'quereus-plugin-sync';
-import { LevelDBStore, StoreEventEmitter } from 'quereus-plugin-store';
+import { LevelDBStore, StoreEventEmitter } from '@quereus/store';
 
 // Create event emitter for store events
 const storeEvents = new StoreEventEmitter();
@@ -1265,7 +1265,7 @@ All the primitives needed for schema seeds are available in Quereus packages:
 | `SyncManager.updatePeerSyncState()` | `quereus-plugin-sync` | ✅ Available |
 | `compareHLC()`, `hlcToJson()`, `hlcFromJson()` | `quereus-plugin-sync` | ✅ Available |
 | `SerializedHLC` type | `quereus-plugin-sync` | ✅ Available |
-| `InMemoryKVStore` | `quereus-plugin-store` | ✅ Available |
+| `InMemoryKVStore` | `quereus-store` | ✅ Available |
 | `siteIdToBase64()`, `siteIdFromBase64()` | `quereus-plugin-sync` | ✅ Available |
 | `toBase64Url()`, `fromBase64Url()` | `quereus-plugin-sync` | ✅ Available |
 
@@ -1277,7 +1277,7 @@ import {
   siteIdToBase64, siteIdFromBase64,
   toBase64Url, fromBase64Url
 } from 'quereus-plugin-sync';
-import { InMemoryKVStore } from 'quereus-plugin-store';
+import { InMemoryKVStore } from '@quereus/store';
 ```
 
 ### What's App-Specific

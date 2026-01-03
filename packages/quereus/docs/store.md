@@ -1,6 +1,9 @@
 # Persistent Store Module Design
 
-This document describes the design and architecture for `quereus-plugin-store`, a persistent key-value storage module for Quereus using LevelDB (Node.js) or IndexedDB (browser).
+This document describes the design and architecture for the Quereus storage system:
+- `@quereus/store` - Core storage module (StoreModule, StoreTable, utilities)
+- `@quereus/plugin-leveldb` - LevelDB plugin for Node.js
+- `@quereus/plugin-indexeddb` - IndexedDB plugin for browsers
 
 ## Reactive Hooks
 
@@ -52,11 +55,11 @@ store.onDataChange((event: DataChangeEvent) => {
 The `StoreEventEmitter` class provides the reactive hooks infrastructure:
 
 ```typescript
-import { StoreEventEmitter } from 'quereus-plugin-store';
+import { StoreEventEmitter } from '@quereus/store';
 
 // Create emitter and pass to module constructor
 const eventEmitter = new StoreEventEmitter();
-const module = new LevelDBModule({ path: './data' }, eventEmitter);
+const module = new StoreModule(provider, eventEmitter);
 
 // Subscribe to schema changes
 const unsubscribeSchema = eventEmitter.onSchemaChange((event) => {
@@ -101,7 +104,7 @@ The store module provides persistent table storage while maintaining Quereus's k
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    quereus-plugin-store (core)                │
+│                    @quereus/store (core)                      │
 ├──────────────────────────────────────────────────────────────┤
 │  Interfaces                                                   │
 │  ┌─────────────────┐  ┌─────────────────────────────────┐    │
@@ -128,7 +131,7 @@ The store module provides persistent table storage while maintaining Quereus's k
               ┌───────────────┴───────────────┐
               ▼                               ▼
 ┌─────────────────────────┐     ┌─────────────────────────────┐
-│ quereus-store-leveldb   │     │ quereus-store-indexeddb     │
+│ @quereus/plugin-leveldb │     │ @quereus/plugin-indexeddb   │
 ├─────────────────────────┤     ├─────────────────────────────┤
 │ LevelDBStore            │     │ IndexedDBStore              │
 │ LevelDBProvider         │     │ IndexedDBProvider           │
@@ -470,10 +473,10 @@ CREATE INDEX idx_name ON t(name COLLATE BINARY);
 
 ## Package Structure
 
-The store plugin is split across three packages to enable platform-specific packaging:
+The store system is split across three packages to enable platform-specific packaging:
 
 ```
-packages/quereus-plugin-store/         # Core (platform-agnostic)
+packages/quereus-store/                # Core (platform-agnostic)
   src/
     common/
       encoding.ts       # Key encoding utilities (type-prefixed sort-safe encoding)
@@ -488,23 +491,21 @@ packages/quereus-plugin-store/         # Core (platform-agnostic)
       store-table.ts    # Generic StoreTable (uses KVStore abstraction)
       store-connection.ts  # Generic transaction connection
       index.ts          # Table module exports
-    leveldb/            # Node.js-specific (wraps platform package)
-      ...
-    indexeddb/          # Browser-specific (wraps platform package)
-      ...
-    index.ts            # Platform-conditional exports
+    index.ts            # Package exports
 
-packages/quereus-store-leveldb/        # Node.js LevelDB implementation
+packages/quereus-plugin-leveldb/       # Node.js LevelDB plugin
   src/
     store.ts            # LevelDBStore (classic-level wrapper)
     provider.ts         # LevelDBProvider (KVStoreProvider implementation)
+    plugin.ts           # Plugin entry point for registerPlugin()
     index.ts            # Package exports
 
-packages/quereus-store-indexeddb/      # Browser IndexedDB implementation
+packages/quereus-plugin-indexeddb/     # Browser IndexedDB plugin
   src/
     store.ts            # IndexedDBStore (native IndexedDB wrapper)
     provider.ts         # IndexedDBProvider (KVStoreProvider implementation)
     broadcast.ts        # CrossTabSync for BroadcastChannel notifications
+    plugin.ts           # Plugin entry point for registerPlugin()
     index.ts            # Package exports
 ```
 
@@ -562,8 +563,9 @@ Use `UnifiedIndexedDBModule` instead of `IndexedDBModule` to opt-in to the unifi
 - [x] Define `KVStoreProvider` interface for dependency injection
 - [x] Create generic `StoreTable` that works with any `KVStore`
 - [x] Create generic `StoreConnection` for transaction management
-- [x] Split LevelDB implementation into `quereus-store-leveldb` package
-- [x] Split IndexedDB implementation into `quereus-store-indexeddb` package
+- [x] Core module in `@quereus/store` package
+- [x] LevelDB plugin in `@quereus/plugin-leveldb` package
+- [x] IndexedDB plugin in `@quereus/plugin-indexeddb` package
 - [x] Create `LevelDBProvider` and `IndexedDBProvider` implementations
 - [x] Factory functions: `createLevelDBProvider()` and `createIndexedDBProvider()`
 

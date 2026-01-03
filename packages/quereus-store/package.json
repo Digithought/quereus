@@ -1,0 +1,55 @@
+{
+  "name": "@quereus/store",
+  "version": "0.3.6",
+  "type": "module",
+  "description": "Abstract key-value storage module for Quereus",
+  "keywords": [
+    "quereus",
+    "sql",
+    "database",
+    "storage",
+    "kv-store",
+    "persistent",
+    "virtual-table",
+    "abstract"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/quereus-store"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/quereus-store/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-store/test/**/*.spec.ts\" --colors",
+    "test:single": "cd ../.. && node --import ./packages/quereus-store/register.mjs node_modules/mocha/bin/mocha.js --bail"
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "*"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
+    "chai": "^5.2.0",
+    "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

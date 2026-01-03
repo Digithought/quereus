@@ -101,9 +101,9 @@ This repository contains multiple packages:
 - **[`packages/quereus/`](packages/quereus/)** — Core SQL engine and runtime
 
 ### Storage
-- **[`packages/quereus-plugin-store/`](packages/quereus-plugin-store/)** — Core store plugin (platform-agnostic interfaces and utilities)
-- **[`packages/quereus-store-leveldb/`](packages/quereus-store-leveldb/)** — LevelDB storage backend for Node.js
-- **[`packages/quereus-store-indexeddb/`](packages/quereus-store-indexeddb/)** — IndexedDB storage backend for browsers
+- **[`packages/quereus-store/`](packages/quereus-store/)** — Core store plugin (platform-agnostic interfaces and utilities)
+- **[`packages/quereus-plugin-leveldb/`](packages/quereus-plugin-leveldb/)** — LevelDB storage backend for Node.js
+- **[`packages/quereus-plugin-indexeddb/`](packages/quereus-plugin-indexeddb/)** — IndexedDB storage backend for browsers
 
 ### Sync
 - **[`packages/quereus-plugin-sync/`](packages/quereus-plugin-sync/)** — Multi-master CRDT replication plugin
@@ -124,7 +124,7 @@ This repository contains multiple packages:
 
 ### Storage & Sync
 - **[Persistent Store](packages/quereus/docs/store.md)** — LevelDB/IndexedDB storage architecture
-- **[Store Plugin README](packages/quereus-plugin-store/README.md)** — Quick start and API reference
+- **[Store Plugin base README](packages/quereus-store/README.md)** — Quick start and API reference
 
 ### Advanced Topics
 - **[Query Optimizer](packages/quereus/docs/optimizer.md)** — Query planning and optimization

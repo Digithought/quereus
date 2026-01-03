@@ -6,7 +6,7 @@ import { expect } from 'chai';
 import { TombstoneStore, serializeTombstone, deserializeTombstone, type Tombstone } from '../../src/metadata/tombstones.js';
 import { type HLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
-import { InMemoryKVStore } from '@quereus/plugin-store';
+import { InMemoryKVStore } from '@quereus/store';
 
 describe('Tombstone', () => {
   describe('serialization', () => {

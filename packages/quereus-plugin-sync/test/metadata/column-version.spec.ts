@@ -6,7 +6,7 @@ import { expect } from 'chai';
 import { ColumnVersionStore, serializeColumnVersion, deserializeColumnVersion, type ColumnVersion } from '../../src/metadata/column-version.js';
 import type { HLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
-import { InMemoryKVStore } from '@quereus/plugin-store';
+import { InMemoryKVStore } from '@quereus/store';
 
 describe('ColumnVersion', () => {
   describe('serialization', () => {

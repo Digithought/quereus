@@ -155,7 +155,7 @@ npm test         # Run tests
 
 - [`@quereus/plugin-sync`](../quereus-plugin-sync/) - Client-side sync module
 - [`@quereus/sync-client`](../quereus-sync-client/) - WebSocket sync client
-- [`@quereus/plugin-store`](../quereus-plugin-store/) - Storage layer
+- [`@quereus/store`](../quereus-store/) - Storage base layer
 
 ## License
 

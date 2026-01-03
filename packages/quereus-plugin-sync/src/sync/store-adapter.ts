@@ -7,8 +7,8 @@
  */
 
 import type { Database, SqlValue, Row, TableSchema } from '@quereus/quereus';
-import type { KVStore, StoreEventEmitter } from '@quereus/plugin-store';
-import { buildDataKey, serializeRow, deserializeRow } from '@quereus/plugin-store';
+import type { KVStore, StoreEventEmitter } from '@quereus/store';
+import { buildDataKey, serializeRow, deserializeRow } from '@quereus/store';
 import type {
   ApplyToStoreCallback,
   ApplyToStoreOptions,

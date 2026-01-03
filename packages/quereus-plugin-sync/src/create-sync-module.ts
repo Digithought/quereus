@@ -5,7 +5,7 @@
  * CRDT sync capabilities.
  */
 
-import type { KVStore, StoreEventEmitter } from '@quereus/plugin-store';
+import type { KVStore, StoreEventEmitter } from '@quereus/store';
 import type { TableSchema } from '@quereus/quereus';
 import { SyncManagerImpl } from './sync/sync-manager-impl.js';
 import { SyncEventEmitterImpl } from './sync/events.js';
@@ -71,7 +71,7 @@ export interface CreateSyncModuleOptions extends Partial<SyncConfig> {
  *
  * @example
  * ```typescript
- * import { LevelDBStore, StoreEventEmitter } from '@quereus/plugin-store';
+ * import { LevelDBStore, StoreEventEmitter } from '@quereus/store';
  * import { createSyncModule } from '@quereus/plugin-sync';
  *
  * const storeEvents = new StoreEventEmitter();

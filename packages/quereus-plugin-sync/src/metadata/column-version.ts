@@ -6,7 +6,7 @@
  */
 
 import type { SqlValue } from '@quereus/quereus';
-import type { KVStore, WriteBatch } from '@quereus/plugin-store';
+import type { KVStore, WriteBatch } from '@quereus/store';
 import { type HLC, serializeHLC, deserializeHLC, compareHLC } from '../clock/hlc.js';
 import { buildColumnVersionKey, buildColumnVersionScanBounds } from './keys.js';
 

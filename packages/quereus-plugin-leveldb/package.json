@@ -1,0 +1,96 @@
+{
+  "name": "@quereus/plugin-leveldb",
+  "version": "0.2.2",
+  "type": "module",
+  "description": "LevelDB storage plugin for Quereus - Node.js persistent storage",
+  "keywords": [
+    "quereus",
+    "quereus-plugin",
+    "sql",
+    "database",
+    "storage",
+    "leveldb",
+    "kv-store",
+    "persistent"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/quereus-plugin-leveldb"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./plugin": {
+      "types": "./dist/src/plugin.d.ts",
+      "import": "./dist/src/plugin.js"
+    }
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "^0.24.0",
+    "@quereus/store": "^0.3.5"
+  },
+  "engines": {
+    "quereus": "^0.24.0"
+  },
+  "quereus": {
+    "provides": {
+      "vtables": [
+        "store"
+      ]
+    },
+    "settings": [
+      {
+        "key": "basePath",
+        "label": "Base Path",
+        "type": "string",
+        "default": "./data",
+        "help": "Base directory for all LevelDB stores"
+      },
+      {
+        "key": "createIfMissing",
+        "label": "Create If Missing",
+        "type": "boolean",
+        "default": true,
+        "help": "Create directories if they don't exist"
+      },
+      {
+        "key": "moduleName",
+        "label": "Module Name",
+        "type": "string",
+        "default": "store",
+        "help": "Name to register the virtual table module under"
+      }
+    ]
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/quereus-plugin-leveldb/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-leveldb/test/**/*.spec.ts\" --colors"
+  },
+  "dependencies": {
+    "classic-level": "^2.0.0"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "@quereus/store": "*",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
+    "chai": "^5.2.0",
+    "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

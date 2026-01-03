@@ -144,7 +144,7 @@ The client implements the Quereus sync WebSocket protocol:
 
 - [`@quereus/plugin-sync`](../quereus-plugin-sync/) - Sync module (provides SyncManager)
 - [`@quereus/sync-coordinator`](../sync-coordinator/) - Server-side coordinator
-- [`@quereus/plugin-store`](../quereus-plugin-store/) - Storage layer
+- [`@quereus/store`](../quereus-store/) - Storage base layer
 
 ## License
 

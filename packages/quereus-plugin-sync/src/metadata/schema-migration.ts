@@ -5,7 +5,7 @@
  * Uses first-writer-wins for conflict resolution on schema changes.
  */
 
-import type { KVStore, WriteBatch } from '@quereus/plugin-store';
+import type { KVStore, WriteBatch } from '@quereus/store';
 import { type HLC, serializeHLC, deserializeHLC, compareHLC } from '../clock/hlc.js';
 import { buildSchemaMigrationKey, buildSchemaMigrationScanBounds } from './keys.js';
 import type { SchemaMigrationType } from '../sync/protocol.js';

@@ -12,7 +12,7 @@
  *
  * Usage:
  *   import { createSyncModule } from '@quereus/plugin-sync';
- *   import { LevelDBModule, StoreEventEmitter } from '@quereus/plugin-store';
+ *   import { LevelDBModule, StoreEventEmitter } from '@quereus/store';
  *
  *   const storeEvents = new StoreEventEmitter();
  *   const store = new LevelDBModule(storeEvents);
