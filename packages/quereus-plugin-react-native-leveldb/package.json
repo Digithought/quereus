@@ -1,0 +1,92 @@
+{
+  "name": "@quereus/plugin-react-native-leveldb",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "React Native LevelDB storage plugin for Quereus - mobile persistent storage",
+  "keywords": [
+    "quereus",
+    "quereus-plugin",
+    "sql",
+    "database",
+    "storage",
+    "leveldb",
+    "react-native",
+    "mobile",
+    "ios",
+    "android",
+    "kv-store",
+    "persistent"
+  ],
+  "publisher": "Got Choices Foundation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/quereus.git",
+    "directory": "packages/quereus-plugin-react-native-leveldb"
+  },
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./plugin": {
+      "types": "./dist/src/plugin.d.ts",
+      "import": "./dist/src/plugin.js"
+    }
+  },
+  "peerDependencies": {
+    "@quereus/quereus": "^0.24.0",
+    "@quereus/store": "^0.3.5",
+    "react-native-leveldb": "^3.0.0"
+  },
+  "engines": {
+    "quereus": "^0.24.0"
+  },
+  "quereus": {
+    "provides": {
+      "vtables": [
+        "store"
+      ]
+    },
+    "settings": [
+      {
+        "key": "databaseName",
+        "label": "Database Name",
+        "type": "string",
+        "default": "quereus",
+        "help": "Base name for LevelDB databases"
+      },
+      {
+        "key": "moduleName",
+        "label": "Module Name",
+        "type": "string",
+        "default": "store",
+        "help": "Name to register the virtual table module under"
+      }
+    ]
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && node --import ./packages/quereus-plugin-react-native-leveldb/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-react-native-leveldb/test/**/*.spec.ts\" --colors"
+  },
+  "devDependencies": {
+    "@quereus/quereus": "*",
+    "@quereus/store": "*",
+    "@types/chai": "^5.2.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.15.29",
+    "chai": "^5.2.0",
+    "mocha": "^11.5.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
