@@ -18,7 +18,7 @@ import {
   siteIdEquals,
   siteIdToBase64,
   serializeHLC,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 import { serviceLog, authLog } from '../common/logger.js';
 import type { CoordinatorConfig } from '../config/types.js';
 import {

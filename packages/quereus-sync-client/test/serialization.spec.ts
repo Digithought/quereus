@@ -5,7 +5,7 @@ import {
   serializeHLCForTransport,
   deserializeHLCFromTransport,
 } from '../src/serialization.js';
-import { generateSiteId, type ChangeSet, type HLC } from '@quereus/plugin-sync';
+import { generateSiteId, type ChangeSet, type HLC } from '@quereus/sync';
 
 describe('Serialization', () => {
   describe('HLC serialization', () => {

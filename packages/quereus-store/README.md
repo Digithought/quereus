@@ -171,7 +171,7 @@ interface KVStoreProvider {
 
 - [`@quereus/plugin-leveldb`](../quereus-plugin-leveldb/) - LevelDB implementation for Node.js
 - [`@quereus/plugin-indexeddb`](../quereus-plugin-indexeddb/) - IndexedDB implementation for browsers
-- [`@quereus/plugin-sync`](../quereus-plugin-sync/) - CRDT sync layer
+- [`@quereus/sync`](../quereus-sync/) - CRDT sync layer
 
 ## License
 

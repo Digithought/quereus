@@ -11,7 +11,7 @@
  * - Offline-first: Works with local changes that sync later
  *
  * Usage:
- *   import { createSyncModule } from '@quereus/plugin-sync';
+ *   import { createSyncModule } from '@quereus/sync';
  *   import { LevelDBModule, StoreEventEmitter } from '@quereus/store';
  *
  *   const storeEvents = new StoreEventEmitter();

@@ -10,7 +10,7 @@ import { rm } from 'node:fs/promises';
 import { CoordinatorService } from '../src/service/coordinator-service.js';
 import { DEFAULT_CONFIG, type CoordinatorConfig } from '../src/config/index.js';
 import type { ClientIdentity, CoordinatorHooks } from '../src/service/types.js';
-import { siteIdFromBase64 } from '@quereus/plugin-sync';
+import { siteIdFromBase64 } from '@quereus/sync';
 
 // Test site ID: ASNFZ4mrze8BI0VniavN7w (base64url of 0x0123456789abcdef0123456789abcdef)
 const TEST_SITE_ID_BASE64 = 'ASNFZ4mrze8BI0VniavN7w';

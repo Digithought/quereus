@@ -12,7 +12,7 @@ import {
   type HLC,
   type ChangeSet,
   type SnapshotCheckpoint,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { ClientIdentity, ClientSession } from '../service/types.js';
 import { wsLog } from '../common/logger.js';

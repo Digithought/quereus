@@ -14,7 +14,7 @@ import {
   type Change,
   type SchemaMigration,
   type HLC,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 import type { SerializedChangeSet } from './types.js';
 
 // ============================================================================

@@ -3,7 +3,7 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HLC, type ChangeSet } from '@quereus/plugin-sync';
+import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HLC, type ChangeSet } from '@quereus/sync';
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { AuthContext, ClientIdentity } from '../service/types.js';
 import { httpLog } from '../common/logger.js';

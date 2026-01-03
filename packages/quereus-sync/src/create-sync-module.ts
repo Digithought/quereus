@@ -72,7 +72,7 @@ export interface CreateSyncModuleOptions extends Partial<SyncConfig> {
  * @example
  * ```typescript
  * import { LevelDBStore, StoreEventEmitter } from '@quereus/store';
- * import { createSyncModule } from '@quereus/plugin-sync';
+ * import { createSyncModule } from '@quereus/sync';
  *
  * const storeEvents = new StoreEventEmitter();
  * const kv = await LevelDBStore.open({ path: './data' });

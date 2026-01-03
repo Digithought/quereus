@@ -1,6 +1,6 @@
-# @quereus/plugin-sync
+# @quereus/sync
 
-CRDT-based multi-master sync plugin for [Quereus](https://github.com/gotchoices/quereus). Enables offline-first applications with automatic conflict resolution.
+CRDT-based multi-master sync framework for [Quereus](https://github.com/gotchoices/quereus). Enables offline-first applications with automatic conflict resolution.
 
 ## Features
 
@@ -14,15 +14,15 @@ CRDT-based multi-master sync plugin for [Quereus](https://github.com/gotchoices/
 ## Installation
 
 ```bash
-npm install @quereus/plugin-sync @quereus/plugin-store
+npm install @quereus/sync @quereus/store
 ```
 
 ## Quick Start
 
 ```typescript
 import { Database } from '@quereus/quereus';
-import { StoreEventEmitter, LevelDBStore } from '@quereus/plugin-store';
-import { createSyncModule, createStoreAdapter } from '@quereus/plugin-sync';
+import { StoreEventEmitter, LevelDBStore } from '@quereus/store';
+import { createSyncModule, createStoreAdapter } from '@quereus/sync';
 
 // Create the store with event emitter
 const storeEvents = new StoreEventEmitter();
@@ -60,7 +60,7 @@ const changes = await syncManager.getChangesSince(peerSiteId);
 │  ├── ChangeLogStore (HLC-indexed changes)                   │
 │  └── PeerStateStore (delta sync state)                      │
 ├─────────────────────────────────────────────────────────────┤
-│  @quereus/plugin-store (KVStore)                            │
+│  @quereus/store (KVStore)                                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 

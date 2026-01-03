@@ -1185,7 +1185,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/plugin-leveldb@workspace:packages/quereus-plugin-leveldb":
+"@quereus/plugin-leveldb@workspace:^, @quereus/plugin-leveldb@workspace:packages/quereus-plugin-leveldb":
   version: 0.0.0-use.local
   resolution: "@quereus/plugin-leveldb@workspace:packages/quereus-plugin-leveldb"
   dependencies:
@@ -1258,37 +1258,7 @@ __metadata:
   peerDependencies:
     "@quereus/quereus": ^0.24.0
     "@quereus/store": ^0.3.5
-    react-native-leveldb: ^3.0.0
-  languageName: unknown
-  linkType: soft
-
-"@quereus/plugin-store@npm:*":
-  version: 0.3.5
-  resolution: "@quereus/plugin-store@npm:0.3.5"
-  dependencies:
-    classic-level: "npm:^2.0.0"
-  peerDependencies:
-    "@quereus/quereus": "*"
-  checksum: 10c0/31f5226b22cc84ebaa2c404377bfbeebcf868e1294299b1eeb28cad689a4c1b12a4491b7b60bfc175ce77d49441625e572912d3c03fa4af714cf2958875162b8
-  languageName: node
-  linkType: hard
-
-"@quereus/plugin-sync@npm:*, @quereus/plugin-sync@workspace:packages/quereus-plugin-sync":
-  version: 0.0.0-use.local
-  resolution: "@quereus/plugin-sync@workspace:packages/quereus-plugin-sync"
-  dependencies:
-    "@quereus/quereus": "npm:*"
-    "@quereus/store": "npm:*"
-    "@types/mocha": "npm:^10.0.10"
-    "@types/node": "npm:^22.15.29"
-    chai: "npm:^5.2.0"
-    mocha: "npm:^11.5.0"
-    rimraf: "npm:^6.1.2"
-    ts-node: "npm:^10.9.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    "@quereus/quereus": "*"
-    "@quereus/store": "*"
+    rn-leveldb: ^3.11.0
   languageName: unknown
   linkType: soft
 
@@ -1296,7 +1266,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/quereus@workspace:packages/quereus"
   dependencies:
+    "@quereus/plugin-leveldb": "workspace:^"
     "@quereus/plugin-loader": "npm:*"
+    "@quereus/store": "workspace:^"
     "@types/chai": "npm:^5.2.2"
     "@types/debug": "npm:^4.1.12"
     "@types/mocha": "npm:^10.0.10"
@@ -1368,10 +1340,10 @@ __metadata:
     "@monaco-editor/react": "npm:^4.7.0"
     "@quereus/plugin-indexeddb": "npm:*"
     "@quereus/plugin-loader": "npm:*"
-    "@quereus/plugin-sync": "npm:*"
     "@quereus/quereus": "npm:*"
     "@quereus/shared-ui": "npm:*"
     "@quereus/store": "npm:*"
+    "@quereus/sync": "npm:*"
     "@quereus/sync-client": "npm:*"
     "@tanstack/react-table": "npm:^8.21.3"
     "@types/node": "npm:^22.15.29"
@@ -1436,7 +1408,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/store@npm:*, @quereus/store@workspace:packages/quereus-store":
+"@quereus/store@npm:*, @quereus/store@workspace:^, @quereus/store@workspace:packages/quereus-store":
   version: 0.0.0-use.local
   resolution: "@quereus/store@workspace:packages/quereus-store"
   dependencies:
@@ -1457,7 +1429,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/sync-client@workspace:packages/quereus-sync-client"
   dependencies:
-    "@quereus/plugin-sync": "npm:*"
+    "@quereus/sync": "npm:*"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^22.15.29"
     chai: "npm:^5.2.0"
@@ -1466,7 +1438,7 @@ __metadata:
     ts-node: "npm:^10.9.2"
     typescript: "npm:^5.8.3"
   peerDependencies:
-    "@quereus/plugin-sync": "*"
+    "@quereus/sync": "*"
   languageName: unknown
   linkType: soft
 
@@ -1476,9 +1448,9 @@ __metadata:
   dependencies:
     "@fastify/cors": "npm:^10.0.2"
     "@fastify/websocket": "npm:^11.0.2"
-    "@quereus/plugin-store": "npm:*"
-    "@quereus/plugin-sync": "npm:*"
     "@quereus/quereus": "npm:*"
+    "@quereus/store": "npm:*"
+    "@quereus/sync": "npm:*"
     "@types/debug": "npm:^4.1.12"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^22.15.29"
@@ -1494,6 +1466,25 @@ __metadata:
     typescript: "npm:^5.8.3"
   bin:
     sync-coordinator: ./dist/src/bin/sync-coordinator.js
+  languageName: unknown
+  linkType: soft
+
+"@quereus/sync@npm:*, @quereus/sync@workspace:packages/quereus-sync":
+  version: 0.0.0-use.local
+  resolution: "@quereus/sync@workspace:packages/quereus-sync"
+  dependencies:
+    "@quereus/quereus": "npm:*"
+    "@quereus/store": "npm:*"
+    "@types/mocha": "npm:^10.0.10"
+    "@types/node": "npm:^22.15.29"
+    chai: "npm:^5.2.0"
+    mocha: "npm:^11.5.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/quereus": "*"
+    "@quereus/store": "*"
   languageName: unknown
   linkType: soft
 
@@ -2925,9 +2916,9 @@ __metadata:
   linkType: hard
 
 "check-error@npm:^2.1.1":
-  version: 2.1.1
-  resolution: "check-error@npm:2.1.1"
-  checksum: 10c0/979f13eccab306cf1785fa10941a590b4e7ea9916ea2a4f8c87f0316fc3eab07eabefb6e587424ef0f88cbcd3805791f172ea739863ca3d7ce2afc54641c7f0e
+  version: 2.1.3
+  resolution: "check-error@npm:2.1.3"
+  checksum: 10c0/878e99038fb6476316b74668cd6a498c7e66df3efe48158fa40db80a06ba4258742ac3ee2229c4a2a98c5e73f5dff84eb3e50ceb6b65bbd8f831eafc8338607d
   languageName: node
   linkType: hard
 
@@ -4230,13 +4221,13 @@ __metadata:
   linkType: hard
 
 "find-my-way@npm:^9.0.0":
-  version: 9.3.0
-  resolution: "find-my-way@npm:9.3.0"
+  version: 9.4.0
+  resolution: "find-my-way@npm:9.4.0"
   dependencies:
     fast-deep-equal: "npm:^3.1.3"
     fast-querystring: "npm:^1.0.0"
     safe-regex2: "npm:^5.0.0"
-  checksum: 10c0/f221bc0c70b2c2a6f9282fd3e0ac1911fcbb68ac718da043ddcefdec3b9d884a54d6ef1bf92e1b2ff83400e50f3c22141206a8ea3308bf0e9e37fd177843425d
+  checksum: 10c0/e1294164262ae46f3ecc40a72cf875b6508cbb7d4363c7cffc82a74854eee4e24df90a743af9a193dc0541262ad3e2a8ea6cb80859f77677bc2182eac77ebcb8
   languageName: node
   linkType: hard
 

@@ -9,7 +9,7 @@ import type {
   HLC,
   ChangeSet,
   ApplyResult,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 
 // ============================================================================
 // Client Identity & Sessions

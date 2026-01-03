@@ -78,7 +78,7 @@ The **sync-coordinator** package provides a production-ready, standalone backend
 │                                    ▼                                         │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
 │  │                          SyncManager                                    │ │
-│  │              (from quereus-plugin-sync)                                 │ │
+│  │              (from quereus-sync)                                       │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
 │                                    │                                         │
 │                                    ▼                                         │
@@ -91,7 +91,7 @@ The **sync-coordinator** package provides a production-ready, standalone backend
 
 ## Service Layer Design
 
-The **CoordinatorService** is the heart of the sync-coordinator. It wraps the `SyncManager` from quereus-plugin-sync and adds:
+The **CoordinatorService** is the heart of the sync-coordinator. It wraps the `SyncManager` from quereus-sync and adds:
 
 1. **Validation Hooks**: Extensible callbacks for custom business logic
 2. **Client Session Management**: Tracks connected clients and their state

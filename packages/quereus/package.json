@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "type": "module",
   "description": "Federated SQL query processor",
   "publisher": "Got Choices Foundation",
@@ -44,7 +44,9 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@quereus/plugin-leveldb": "workspace:^",
     "@quereus/plugin-loader": "*",
+    "@quereus/store": "workspace:^",
     "@types/chai": "^5.2.2",
     "@types/debug": "^4.1.12",
     "@types/mocha": "^10.0.10",

@@ -18,7 +18,7 @@ import {
   type ChangeSet,
   type HLC,
   type SiteId,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 
 import type {
   SyncClientOptions,

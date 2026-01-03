@@ -1,6 +1,6 @@
 ﻿# Sync Module - Multi-Master CRDT Replication
 
-This document describes the architecture for `quereus-plugin-sync`, a fully automatic multi-master CRDT replication system for Quereus. It enables offline-first applications where multiple replicas can independently modify data and converge to a consistent state.
+This document describes the architecture for `quereus-sync`, a fully automatic multi-master CRDT replication system for Quereus. It enables offline-first applications where multiple replicas can independently modify data and converge to a consistent state.
 
 ## Design Goals
 
@@ -24,7 +24,7 @@ This document describes the architecture for `quereus-plugin-sync`, a fully auto
 ├─────────┼────────────────┼───────────────────────────┼──────────────────────┤
 │         ▼                ▼                           ▼                      │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │                      quereus-plugin-sync                              │  │
+│  │                      quereus-sync                                    │  │
 │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────────┐  │  │
 │  │  │    HLC     │  │  Metadata  │  │   Sync     │  │    Schema      │  │  │
 │  │  │   Clock    │  │   Store    │  │  Protocol  │  │   Tracker      │  │  │
@@ -869,7 +869,7 @@ const sync = createSyncModule(storeModule, storeEventEmitter, {
 ```typescript
 import { Database } from '@quereus/quereus';
 import { LevelDBModule, LevelDBStore, StoreEventEmitter } from 'quereus-store';
-import { createSyncModule } from 'quereus-plugin-sync';
+import { createSyncModule } from '@quereus/sync';
 
 // 1. Set up store with event emitter
 const storeEvents = new StoreEventEmitter();
@@ -968,7 +968,7 @@ async function resumeSnapshot(ws: WebSocket) {
 The `createStoreAdapter` function creates a unified adapter for applying remote changes to LevelDB and IndexedDB stores:
 
 ```typescript
-import { createStoreAdapter } from 'quereus-plugin-sync';
+import { createStoreAdapter } from '@quereus/sync';
 import { LevelDBStore, StoreEventEmitter } from '@quereus/store';
 
 // Create event emitter for store events
@@ -997,7 +997,7 @@ const syncManager = new SyncManagerImpl(metadataKvStore, storeEvents, applyToSto
 ### Completed
 
 #### Phase 1: Core Infrastructure ✅
-- [x] Create package structure (`quereus-plugin-sync`)
+- [x] Create package structure (`quereus-sync`)
 - [x] Implement HLC (Hybrid Logical Clock)
   - [x] `clock/hlc.ts` - HLC type, comparison, tick, receive
   - [x] `clock/site.ts` - Site ID generation and persistence
@@ -1260,14 +1260,14 @@ All the primitives needed for schema seeds are available in Quereus packages:
 
 | Component | Package | Status |
 |-----------|---------|--------|
-| `SyncManager.applyChanges()` | `quereus-plugin-sync` | ✅ Available |
-| `SyncManager.getPeerSyncState()` | `quereus-plugin-sync` | ✅ Available |
-| `SyncManager.updatePeerSyncState()` | `quereus-plugin-sync` | ✅ Available |
-| `compareHLC()`, `hlcToJson()`, `hlcFromJson()` | `quereus-plugin-sync` | ✅ Available |
-| `SerializedHLC` type | `quereus-plugin-sync` | ✅ Available |
+| `SyncManager.applyChanges()` | `quereus-sync` | ✅ Available |
+| `SyncManager.getPeerSyncState()` | `quereus-sync` | ✅ Available |
+| `SyncManager.updatePeerSyncState()` | `quereus-sync` | ✅ Available |
+| `compareHLC()`, `hlcToJson()`, `hlcFromJson()` | `quereus-sync` | ✅ Available |
+| `SerializedHLC` type | `quereus-sync` | ✅ Available |
 | `InMemoryKVStore` | `quereus-store` | ✅ Available |
-| `siteIdToBase64()`, `siteIdFromBase64()` | `quereus-plugin-sync` | ✅ Available |
-| `toBase64Url()`, `fromBase64Url()` | `quereus-plugin-sync` | ✅ Available |
+| `siteIdToBase64()`, `siteIdFromBase64()` | `quereus-sync` | ✅ Available |
+| `toBase64Url()`, `fromBase64Url()` | `quereus-sync` | ✅ Available |
 
 **Usage:**
 ```typescript
@@ -1276,7 +1276,7 @@ import {
   hlcToJson, hlcFromJson, type SerializedHLC,
   siteIdToBase64, siteIdFromBase64,
   toBase64Url, fromBase64Url
-} from 'quereus-plugin-sync';
+} from '@quereus/sync';
 import { InMemoryKVStore } from '@quereus/store';
 ```
 

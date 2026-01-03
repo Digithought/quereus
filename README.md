@@ -106,7 +106,7 @@ This repository contains multiple packages:
 - **[`packages/quereus-plugin-indexeddb/`](packages/quereus-plugin-indexeddb/)** — IndexedDB storage backend for browsers
 
 ### Sync
-- **[`packages/quereus-plugin-sync/`](packages/quereus-plugin-sync/)** — Multi-master CRDT replication plugin
+- **[`packages/quereus-sync/`](packages/quereus-sync/)** — Multi-master CRDT replication plugin
 
 ### Tools
 - **[`packages/plugin-loader/`](packages/plugin-loader/)** — Dynamic plugin loading system

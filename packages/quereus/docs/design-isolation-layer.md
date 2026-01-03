@@ -428,7 +428,7 @@ Create a "raw memory module" (BTrees, no isolation) and wrap with isolation laye
 
 ```typescript
 import { IsolationModule } from '@quereus/isolation';
-import { StoreModule } from '@quereus/plugin-store';
+import { StoreModule } from '@quereus/store';
 import { MemoryModule } from '@quereus/quereus';
 
 // Create underlying module (the persistent storage)

@@ -1,6 +1,6 @@
 # @quereus/sync-coordinator
 
-Standalone coordinator backend for [@quereus/plugin-sync](../quereus-plugin-sync) — a production-ready server for multi-master CRDT replication.
+Standalone coordinator backend for [@quereus/sync](../quereus-sync) — a production-ready server for multi-master CRDT replication.
 
 ## Features
 
@@ -153,7 +153,7 @@ npm test         # Run tests
 
 ## Related Packages
 
-- [`@quereus/plugin-sync`](../quereus-plugin-sync/) - Client-side sync module
+- [`@quereus/sync`](../quereus-sync/) - Client-side sync module
 - [`@quereus/sync-client`](../quereus-sync-client/) - WebSocket sync client
 - [`@quereus/store`](../quereus-store/) - Storage base layer
 

@@ -413,15 +413,16 @@ function formatTraceEvents(events: any[]): string {
 }
 
 // Dynamically import store module only when needed (to avoid requiring LevelDB in memory-only tests)
-let LevelDBModule: any = null;
-let storeTestDir: string | null = null;
+let StoreModule: any = null;
+let createLevelDBProvider: any = null;
 
-async function getStoreModule() {
-	if (!LevelDBModule) {
-		const storePlugin = await import('@quereus/plugin-store');
-		LevelDBModule = storePlugin.LevelDBModule;
+async function loadStoreModules() {
+	if (!StoreModule) {
+		const storePlugin = await import('@quereus/store');
+		StoreModule = storePlugin.StoreModule;
+		const leveldbPlugin = await import('@quereus/plugin-leveldb');
+		createLevelDBProvider = leveldbPlugin.createLevelDBProvider;
 	}
-	return LevelDBModule;
 }
 
 function createStoreTestDir(): string {
@@ -446,8 +447,8 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 	before(async function() {
 		if (USE_STORE_MODULE) {
 			this.timeout(10000);
-			// Pre-load the store module
-			await getStoreModule();
+			// Pre-load the store modules
+			await loadStoreModules();
 			console.log('\n📦 Running logic tests in STORE MODE (LevelDB backend)\n');
 		}
 	});
@@ -483,14 +484,12 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 
 				// Configure the default vtab module
 				if (USE_STORE_MODULE) {
-					// Register leveldb and set it as default with a basePath
+					// Create LevelDB provider and StoreModule, then register
 					testStorePath = createStoreTestDir();
-					const LevelDBModuleClass = await getStoreModule();
-					leveldbModule = new LevelDBModuleClass();
-					db.registerVtabModule('leveldb', leveldbModule);
-					db.setOption('default_vtab_module', 'leveldb');
-					// Use basePath so each table gets its own subdirectory
-					db.setDefaultVtabArgs({ basePath: testStorePath.replace(/\\/g, '/') });
+					const provider = createLevelDBProvider({ basePath: testStorePath.replace(/\\/g, '/') });
+					leveldbModule = new StoreModule(provider);
+					db.registerVtabModule('store', leveldbModule);
+					db.setOption('default_vtab_module', 'store');
 				} else {
 					// Memory is already registered by default, just ensure it's set
 					db.setOption('default_vtab_module', 'memory');

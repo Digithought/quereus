@@ -7,11 +7,11 @@
  */
 
 import { join } from 'node:path';
-import { LevelDBStore, StoreEventEmitter } from '@quereus/plugin-store';
+import { LevelDBStore, StoreEventEmitter } from '@quereus/store';
 import {
   createSyncModule,
   type SyncManager,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 import { serviceLog } from '../common/logger.js';
 import { getDatabaseStoragePath, parseDatabaseId } from './database-ids.js';
 

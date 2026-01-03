@@ -12,7 +12,7 @@ import {
   type LocalChangeEvent,
   type ConflictEvent,
   type SyncState,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 import { SyncClient, type SyncStatus as SyncClientStatus, type SyncEvent as SyncClientEvent } from '@quereus/sync-client';
 import type {
   QuereusWorkerAPI,

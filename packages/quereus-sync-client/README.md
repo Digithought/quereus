@@ -20,9 +20,9 @@ npm install @quereus/sync-client
 
 ```typescript
 import { SyncClient } from '@quereus/sync-client';
-import { createSyncModule } from '@quereus/plugin-sync';
+import { createSyncModule } from '@quereus/sync';
 
-// Assuming you have a SyncManager from plugin-sync
+// Assuming you have a SyncManager from sync
 const { syncManager, syncEvents } = await createSyncModule(kvStore, storeEvents);
 
 // Create the sync client
@@ -58,7 +58,7 @@ Main class for WebSocket-based synchronization.
 
 ```typescript
 interface SyncClientOptions {
-  /** SyncManager from @quereus/plugin-sync */
+  /** SyncManager from @quereus/sync */
   syncManager: SyncManager;
 
   /** SyncEventEmitter for local change notifications */
@@ -142,7 +142,7 @@ The client implements the Quereus sync WebSocket protocol:
 
 ## Related Packages
 
-- [`@quereus/plugin-sync`](../quereus-plugin-sync/) - Sync module (provides SyncManager)
+- [`@quereus/sync`](../quereus-sync/) - Sync module (provides SyncManager)
 - [`@quereus/sync-coordinator`](../sync-coordinator/) - Server-side coordinator
 - [`@quereus/store`](../quereus-store/) - Storage base layer
 

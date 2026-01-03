@@ -1,6 +1,6 @@
 {
-  "name": "@quereus/plugin-sync",
-  "version": "0.3.3",
+  "name": "@quereus/sync",
+  "version": "0.3.4",
   "type": "module",
   "description": "Multi-master CRDT replication for Quereus - automatic sync with conflict resolution",
   "keywords": [
@@ -19,7 +19,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/gotchoices/quereus.git",
-    "directory": "packages/quereus-plugin-sync"
+    "directory": "packages/quereus-sync"
   },
   "license": "MIT",
   "main": "dist/src/index.js",
@@ -38,8 +38,8 @@
     "clean": "rimraf dist",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && node --import ./packages/quereus-plugin-sync/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-sync/test/**/*.spec.ts\" --colors",
-    "test:single": "cd ../.. && node --import ./packages/quereus-plugin-sync/register.mjs node_modules/mocha/bin/mocha.js --bail"
+    "test": "cd ../.. && node --import ./packages/quereus-sync/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-sync/test/**/*.spec.ts\" --colors",
+    "test:single": "cd ../.. && node --import ./packages/quereus-sync/register.mjs node_modules/mocha/bin/mocha.js --bail"
   },
   "peerDependencies": {
     "@quereus/quereus": "*",

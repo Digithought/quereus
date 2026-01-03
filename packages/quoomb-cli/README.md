@@ -95,11 +95,11 @@ $ echo "SELECT * FROM users" | quoomb --store ./data --format json
 $ quoomb --store ./data --format csv -c "SELECT * FROM users" > users.csv
 ```
 
-## Plugins
+## Frameworks/plugins
 
 The CLI automatically loads:
-- `@quereus/plugin-store` - Persistent storage with LevelDB
-- `@quereus/plugin-sync` - CRDT sync (when `--sync` is provided)
+- `@quereus/plugin-indexeddb` - Persistent storage with IndexedDB
+- `@quereus/sync` - CRDT sync (when `--sync` is provided)
 
 ## Related Packages
 

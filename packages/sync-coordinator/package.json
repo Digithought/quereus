@@ -1,6 +1,6 @@
 {
   "name": "@quereus/sync-coordinator",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "type": "module",
   "description": "Standalone coordinator backend for Quereus Sync - production-ready sync server",
   "keywords": [
@@ -45,9 +45,9 @@
   "dependencies": {
     "@fastify/cors": "^10.0.2",
     "@fastify/websocket": "^11.0.2",
-    "@quereus/plugin-store": "*",
-    "@quereus/plugin-sync": "*",
     "@quereus/quereus": "*",
+    "@quereus/store": "*",
+    "@quereus/sync": "*",
     "commander": "^14.0.0",
     "debug": "^4.4.0",
     "fastify": "^5.2.1"

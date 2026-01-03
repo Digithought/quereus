@@ -2,7 +2,7 @@
  * Types for the WebSocket sync client.
  */
 
-import type { ApplyResult, ChangeSet, SyncManager, SyncEventEmitter } from '@quereus/plugin-sync';
+import type { ApplyResult, ChangeSet, SyncManager, SyncEventEmitter } from '@quereus/sync';
 
 // ============================================================================
 // Connection Status

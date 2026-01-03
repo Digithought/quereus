@@ -13,7 +13,7 @@ import {
   type SnapshotCheckpoint,
   type SnapshotProgress,
   type SiteId,
-} from '@quereus/plugin-sync';
+} from '@quereus/sync';
 
 /**
  * Mock SyncManager for testing.

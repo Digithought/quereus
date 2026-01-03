@@ -42,7 +42,7 @@ export interface StoreModuleConfig extends BaseModuleConfig {
  *
  * Usage:
  * ```typescript
- * import { StoreModule } from '@quereus/plugin-store';
+ * import { StoreModule } from '@quereus/store';
  * import { createLevelDBProvider } from '@quereus/store-leveldb';
  *
  * const provider = createLevelDBProvider({ basePath: './data' });
