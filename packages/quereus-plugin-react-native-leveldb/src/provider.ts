@@ -5,18 +5,24 @@
  */
 
 import type { KVStore, KVStoreProvider } from '@quereus/store';
-import { ReactNativeLevelDBStore, type LevelDBOpenFn } from './store.js';
+import { ReactNativeLevelDBStore, type LevelDBOpenFn, type LevelDBWriteBatchConstructor } from './store.js';
 
 /**
  * Options for creating a React Native LevelDB provider.
  */
 export interface ReactNativeLevelDBProviderOptions {
 	/**
-	 * The LevelDB open function from react-native-leveldb.
-	 * Obtain this from: import { LevelDB } from 'react-native-leveldb';
-	 * Then pass: LevelDB.open
+	 * The LevelDB open function from rn-leveldb.
+	 * Obtain this from: import { LevelDB } from 'rn-leveldb';
+	 * Then pass: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists)
 	 */
 	openFn: LevelDBOpenFn;
+
+	/**
+	 * The LevelDBWriteBatch constructor from rn-leveldb.
+	 * Obtain this from: import { LevelDBWriteBatch } from 'rn-leveldb';
+	 */
+	WriteBatch: LevelDBWriteBatchConstructor;
 
 	/**
 	 * Base name prefix for all LevelDB databases.
@@ -40,6 +46,7 @@ export interface ReactNativeLevelDBProviderOptions {
  */
 export class ReactNativeLevelDBProvider implements KVStoreProvider {
 	private openFn: LevelDBOpenFn;
+	private WriteBatch: LevelDBWriteBatchConstructor;
 	private databaseName: string;
 	private createIfMissing: boolean;
 	private stores = new Map<string, ReactNativeLevelDBStore>();
@@ -47,6 +54,7 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 
 	constructor(options: ReactNativeLevelDBProviderOptions) {
 		this.openFn = options.openFn;
+		this.WriteBatch = options.WriteBatch;
 		this.databaseName = options.databaseName ?? 'quereus';
 		this.createIfMissing = options.createIfMissing ?? true;
 	}
@@ -72,7 +80,7 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 
 		if (!store) {
 			const dbName = this.getDatabaseName(schemaName, tableName);
-			store = ReactNativeLevelDBStore.open(this.openFn, dbName, {
+			store = ReactNativeLevelDBStore.open(this.openFn, this.WriteBatch, dbName, {
 				createIfMissing: this.createIfMissing,
 			});
 			this.stores.set(key, store);
@@ -84,7 +92,7 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 	async getCatalogStore(): Promise<KVStore> {
 		if (!this.catalogStore) {
 			const catalogDbName = `${this.databaseName}.__catalog__`;
-			this.catalogStore = ReactNativeLevelDBStore.open(this.openFn, catalogDbName, {
+			this.catalogStore = ReactNativeLevelDBStore.open(this.openFn, this.WriteBatch, catalogDbName, {
 				createIfMissing: this.createIfMissing,
 			});
 		}

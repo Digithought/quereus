@@ -5,15 +5,16 @@ LevelDB storage plugin for Quereus on React Native. Provides fast, persistent st
 ## Features
 
 - **Fast**: LevelDB offers excellent read/write performance, significantly faster than AsyncStorage
-- **Synchronous API**: Uses react-native-leveldb's synchronous, blocking APIs
+- **Synchronous API**: Uses rn-leveldb's synchronous, blocking APIs
 - **Binary data**: Full support for binary keys and values via ArrayBuffers
 - **Sorted keys**: Efficient range queries with ordered iteration
 - **Persistent**: Data survives app restarts
+- **Atomic batch writes**: Uses native LevelDB WriteBatch for atomic multi-key operations
 
 ## Installation
 
 ```bash
-npm install @quereus/plugin-react-native-leveldb @quereus/store react-native-leveldb
+npm install @quereus/plugin-react-native-leveldb @quereus/store rn-leveldb
 
 # Don't forget to link native modules
 cd ios && pod install
@@ -24,12 +25,15 @@ cd ios && pod install
 ### With registerPlugin (Recommended)
 
 ```typescript
-import { LevelDB } from 'react-native-leveldb';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { Database, registerPlugin } from '@quereus/quereus';
 import leveldbPlugin from '@quereus/plugin-react-native-leveldb/plugin';
 
 const db = new Database();
-await registerPlugin(db, leveldbPlugin, { openFn: LevelDB.open });
+await registerPlugin(db, leveldbPlugin, {
+  openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+  WriteBatch: LevelDBWriteBatch,
+});
 
 await db.exec(`
   create table users (id integer primary key, name text)
@@ -45,13 +49,16 @@ console.log(users);
 ### Direct Usage with Provider
 
 ```typescript
-import { LevelDB } from 'react-native-leveldb';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { Database } from '@quereus/quereus';
 import { createReactNativeLevelDBProvider } from '@quereus/plugin-react-native-leveldb';
 import { StoreModule } from '@quereus/store';
 
 const db = new Database();
-const provider = createReactNativeLevelDBProvider({ openFn: LevelDB.open });
+const provider = createReactNativeLevelDBProvider({
+  openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+  WriteBatch: LevelDBWriteBatch,
+});
 const storeModule = new StoreModule(provider);
 db.registerVtabModule('store', storeModule);
 
@@ -68,11 +75,12 @@ await db.exec(`
 Low-level KVStore implementation:
 
 ```typescript
-import { LevelDB } from 'react-native-leveldb';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { ReactNativeLevelDBStore } from '@quereus/plugin-react-native-leveldb';
 
 // Open using the factory function
-const store = ReactNativeLevelDBStore.open(LevelDB.open, 'mystore');
+const openFn = (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists);
+const store = ReactNativeLevelDBStore.open(openFn, LevelDBWriteBatch, 'mystore');
 
 await store.put(key, value);
 const data = await store.get(key);
@@ -83,7 +91,7 @@ for await (const { key, value } of store.iterate({ gte: startKey, lt: endKey }))
   console.log(key, value);
 }
 
-// Batch writes
+// Atomic batch writes (uses native LevelDB WriteBatch)
 const batch = store.batch();
 batch.put(key1, value1);
 batch.put(key2, value2);
@@ -98,11 +106,12 @@ await store.close();
 Factory for managing multiple stores:
 
 ```typescript
-import { LevelDB } from 'react-native-leveldb';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { createReactNativeLevelDBProvider } from '@quereus/plugin-react-native-leveldb';
 
 const provider = createReactNativeLevelDBProvider({
-  openFn: LevelDB.open,
+  openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+  WriteBatch: LevelDBWriteBatch,
   databaseName: 'myapp',
 });
 
@@ -119,7 +128,8 @@ await provider.closeAll();
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `openFn` | function | **required** | The LevelDB.open function from react-native-leveldb |
+| `openFn` | function | **required** | Factory function: `(name, createIfMissing, errorIfExists) => LevelDB` |
+| `WriteBatch` | constructor | **required** | LevelDBWriteBatch constructor from rn-leveldb |
 | `databaseName` | string | `'quereus'` | Base name prefix for all LevelDB databases |
 | `createIfMissing` | boolean | `true` | Create databases if they don't exist |
 | `moduleName` | string | `'store'` | Name to register the virtual table module under |
@@ -127,12 +137,15 @@ await provider.closeAll();
 ## Example with Transactions
 
 ```typescript
-import { LevelDB } from 'react-native-leveldb';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { Database, registerPlugin } from '@quereus/quereus';
 import leveldbPlugin from '@quereus/plugin-react-native-leveldb/plugin';
 
 const db = new Database();
-await registerPlugin(db, leveldbPlugin, { openFn: LevelDB.open });
+await registerPlugin(db, leveldbPlugin, {
+  openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+  WriteBatch: LevelDBWriteBatch,
+});
 
 await db.exec(`create table accounts (id integer primary key, balance real) using store`);
 
@@ -149,11 +162,11 @@ try {
 
 ## Why LevelDB?
 
-react-native-leveldb provides significant performance advantages over other React Native storage options:
+rn-leveldb provides significant performance advantages over other React Native storage options:
 
 | Storage Solution | Operations/sec | Notes |
 |------------------|----------------|-------|
-| react-native-leveldb | ~50,000 | Synchronous, blocking API |
+| rn-leveldb | ~50,000 | Synchronous, blocking API |
 | AsyncStorage | ~2,000 | JSON serialization overhead |
 | react-native-sqlite-storage | ~5,000 | Full SQL parsing overhead |
 
@@ -167,7 +180,7 @@ LevelDB is ideal for Quereus because:
 This plugin requires:
 - `@quereus/quereus` ^0.24.0
 - `@quereus/store` ^0.3.5
-- `react-native-leveldb` ^3.0.0
+- `rn-leveldb` ^3.11.0
 
 ## Related Packages
 

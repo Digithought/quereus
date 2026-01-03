@@ -2,23 +2,30 @@
  * React Native LevelDB plugin for Quereus.
  *
  * Registers a StoreModule backed by LevelDB for React Native mobile environments.
+ * Uses rn-leveldb for native LevelDB bindings.
  */
 
 import type { Database, SqlValue } from '@quereus/quereus';
 import { StoreModule } from '@quereus/store';
 import { ReactNativeLevelDBProvider } from './provider.js';
-import type { LevelDBOpenFn } from './store.js';
+import type { LevelDBOpenFn, LevelDBWriteBatchConstructor } from './store.js';
 
 /**
  * Plugin configuration options.
  */
 export interface ReactNativeLevelDBPluginConfig {
 	/**
-	 * The LevelDB open function from react-native-leveldb.
-	 * Obtain this from: import { LevelDB } from 'react-native-leveldb';
-	 * Then pass: LevelDB.open
+	 * The LevelDB open function from rn-leveldb.
+	 * Obtain this from: import { LevelDB } from 'rn-leveldb';
+	 * Then pass: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists)
 	 */
 	openFn: LevelDBOpenFn;
+
+	/**
+	 * The LevelDBWriteBatch constructor from rn-leveldb.
+	 * Obtain this from: import { LevelDBWriteBatch } from 'rn-leveldb';
+	 */
+	WriteBatch: LevelDBWriteBatchConstructor;
 
 	/**
 	 * Base name prefix for all LevelDB databases.
@@ -44,12 +51,15 @@ export interface ReactNativeLevelDBPluginConfig {
  *
  * @example
  * ```typescript
- * import { LevelDB } from 'react-native-leveldb';
+ * import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
  * import { Database, registerPlugin } from '@quereus/quereus';
  * import leveldbPlugin from '@quereus/plugin-react-native-leveldb/plugin';
  *
  * const db = new Database();
- * await registerPlugin(db, leveldbPlugin, { openFn: LevelDB.open });
+ * await registerPlugin(db, leveldbPlugin, {
+ *   openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+ *   WriteBatch: LevelDBWriteBatch,
+ * });
  *
  * await db.exec(`
  *   create table users (id integer primary key, name text)
@@ -65,8 +75,17 @@ export default function register(
 	const openFn = config.openFn as unknown as LevelDBOpenFn;
 	if (!openFn) {
 		throw new Error(
-			'@quereus/plugin-react-native-leveldb requires an "openFn" option with the LevelDB.open function. ' +
-			'Import LevelDB from "react-native-leveldb" and pass LevelDB.open.'
+			'@quereus/plugin-react-native-leveldb requires an "openFn" option. ' +
+			'Import LevelDB from "rn-leveldb" and pass: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists)'
+		);
+	}
+
+	// The WriteBatch constructor must be provided
+	const WriteBatch = config.WriteBatch as unknown as LevelDBWriteBatchConstructor;
+	if (!WriteBatch) {
+		throw new Error(
+			'@quereus/plugin-react-native-leveldb requires a "WriteBatch" option. ' +
+			'Import LevelDBWriteBatch from "rn-leveldb" and pass it as WriteBatch.'
 		);
 	}
 
@@ -76,6 +95,7 @@ export default function register(
 
 	const provider = new ReactNativeLevelDBProvider({
 		openFn,
+		WriteBatch,
 		databaseName,
 		createIfMissing,
 	});

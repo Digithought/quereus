@@ -43,7 +43,7 @@
   "peerDependencies": {
     "@quereus/quereus": "^0.24.0",
     "@quereus/store": "^0.3.5",
-    "react-native-leveldb": "^3.0.0"
+    "rn-leveldb": "^3.11.0"
   },
   "engines": {
     "quereus": "^0.24.0"

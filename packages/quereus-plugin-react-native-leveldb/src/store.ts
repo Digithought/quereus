@@ -1,35 +1,62 @@
 /**
  * LevelDB-based KVStore implementation for React Native.
  *
- * Uses react-native-leveldb for LevelDB bindings on iOS/Android.
+ * Uses rn-leveldb for LevelDB bindings on iOS/Android.
  * Keys and values are stored as binary ArrayBuffers.
  */
 
 import type { KVStore, KVEntry, WriteBatch, IterateOptions } from '@quereus/store';
 
 /**
- * Type definition for react-native-leveldb database.
+ * Type definition for rn-leveldb write batch.
+ * Used internally for atomic batch writes.
+ */
+export interface LevelDBWriteBatch {
+	/**
+	 * Add a put operation to the batch.
+	 */
+	put(key: ArrayBuffer | string, value: ArrayBuffer | string): void;
+
+	/**
+	 * Add a delete operation to the batch.
+	 */
+	delete(key: ArrayBuffer | string): void;
+
+	/**
+	 * Close the batch (releases native resources).
+	 */
+	close(): void;
+}
+
+/**
+ * Constructor type for LevelDBWriteBatch.
+ * rn-leveldb exports this as a class that can be constructed without arguments.
+ */
+export type LevelDBWriteBatchConstructor = new () => LevelDBWriteBatch;
+
+/**
+ * Type definition for rn-leveldb database.
  * We use a minimal interface to avoid hard dependency on the package types.
  *
- * react-native-leveldb provides synchronous, blocking APIs which are
+ * rn-leveldb provides synchronous, blocking APIs which are
  * significantly faster than alternatives like AsyncStorage.
  */
 export interface LevelDB {
 	/**
 	 * Put a key-value pair.
 	 */
-	put(key: ArrayBuffer, value: ArrayBuffer): void;
+	put(key: ArrayBuffer | string, value: ArrayBuffer | string): void;
 
 	/**
-	 * Get a value by key.
+	 * Get a value by key as ArrayBuffer.
 	 * @returns The value as ArrayBuffer, or null if not found.
 	 */
-	getBuffer(key: ArrayBuffer): ArrayBuffer | null;
+	getBuf(key: ArrayBuffer | string): ArrayBuffer | null;
 
 	/**
 	 * Delete a key.
 	 */
-	delete(key: ArrayBuffer): void;
+	delete(key: ArrayBuffer | string): void;
 
 	/**
 	 * Close the database.
@@ -40,10 +67,15 @@ export interface LevelDB {
 	 * Create a new iterator for range scans.
 	 */
 	newIterator(): LevelDBIterator;
+
+	/**
+	 * Atomically write a batch of operations.
+	 */
+	write(batch: LevelDBWriteBatch): void;
 }
 
 /**
- * Type definition for react-native-leveldb iterator.
+ * Type definition for rn-leveldb iterator.
  */
 export interface LevelDBIterator {
 	/**
@@ -54,17 +86,17 @@ export interface LevelDBIterator {
 	/**
 	 * Move to the first entry >= the given key.
 	 */
-	seek(key: ArrayBuffer): void;
+	seek(target: ArrayBuffer | string): LevelDBIterator;
 
 	/**
 	 * Move to the first entry.
 	 */
-	seekToFirst(): void;
+	seekToFirst(): LevelDBIterator;
 
 	/**
 	 * Move to the last entry.
 	 */
-	seekToLast(): void;
+	seekLast(): LevelDBIterator;
 
 	/**
 	 * Move to the next entry.
@@ -94,17 +126,9 @@ export interface LevelDBIterator {
 
 /**
  * Factory function type for opening a LevelDB database.
- * Should be react-native-leveldb's LevelDB.open().
+ * Should be rn-leveldb's LevelDB constructor.
  */
 export type LevelDBOpenFn = (name: string, createIfMissing: boolean, errorIfExists: boolean) => LevelDB;
-
-/**
- * Options for creating a React Native LevelDB store.
- */
-export interface ReactNativeLevelDBStoreOptions {
-	/** The LevelDB database instance. */
-	db: LevelDB;
-}
 
 /**
  * LevelDB implementation of KVStore for React Native.
@@ -114,17 +138,19 @@ export interface ReactNativeLevelDBStoreOptions {
  */
 export class ReactNativeLevelDBStore implements KVStore {
 	private db: LevelDB;
+	private WriteBatchCtor: LevelDBWriteBatchConstructor;
 	private closed = false;
 
-	constructor(options: ReactNativeLevelDBStoreOptions) {
-		this.db = options.db;
+	private constructor(db: LevelDB, WriteBatch: LevelDBWriteBatchConstructor) {
+		this.db = db;
+		this.WriteBatchCtor = WriteBatch;
 	}
 
 	/**
-	 * Create a store with the given LevelDB instance.
+	 * Create a store with the given LevelDB instance and WriteBatch constructor.
 	 */
-	static create(db: LevelDB): ReactNativeLevelDBStore {
-		return new ReactNativeLevelDBStore({ db });
+	static create(db: LevelDB, WriteBatch: LevelDBWriteBatchConstructor): ReactNativeLevelDBStore {
+		return new ReactNativeLevelDBStore(db, WriteBatch);
 	}
 
 	/**
@@ -132,6 +158,7 @@ export class ReactNativeLevelDBStore implements KVStore {
 	 */
 	static open(
 		openFn: LevelDBOpenFn,
+		WriteBatch: LevelDBWriteBatchConstructor,
 		name: string,
 		options?: { createIfMissing?: boolean; errorIfExists?: boolean }
 	): ReactNativeLevelDBStore {
@@ -140,12 +167,12 @@ export class ReactNativeLevelDBStore implements KVStore {
 			options?.createIfMissing ?? true,
 			options?.errorIfExists ?? false
 		);
-		return new ReactNativeLevelDBStore({ db });
+		return new ReactNativeLevelDBStore(db, WriteBatch);
 	}
 
 	async get(key: Uint8Array): Promise<Uint8Array | undefined> {
 		this.checkOpen();
-		const result = this.db.getBuffer(toArrayBuffer(key));
+		const result = this.db.getBuf(toArrayBuffer(key));
 		return result === null ? undefined : toUint8Array(result);
 	}
 
@@ -161,7 +188,7 @@ export class ReactNativeLevelDBStore implements KVStore {
 
 	async has(key: Uint8Array): Promise<boolean> {
 		this.checkOpen();
-		const result = this.db.getBuffer(toArrayBuffer(key));
+		const result = this.db.getBuf(toArrayBuffer(key));
 		return result !== null;
 	}
 
@@ -190,7 +217,7 @@ export class ReactNativeLevelDBStore implements KVStore {
 				iterator.seek(toArrayBuffer(options.lte));
 				// If we seeked past, go back
 				if (!iterator.valid()) {
-					iterator.seekToLast();
+					iterator.seekLast();
 				} else {
 					// Check if current key is > lte (need to go back)
 					const currentKey = toUint8Array(iterator.keyBuf());
@@ -204,10 +231,10 @@ export class ReactNativeLevelDBStore implements KVStore {
 				if (iterator.valid()) {
 					iterator.prev();
 				} else {
-					iterator.seekToLast();
+					iterator.seekLast();
 				}
 			} else {
-				iterator.seekToLast();
+				iterator.seekLast();
 			}
 		} else {
 			if (options?.gte) {
@@ -258,7 +285,7 @@ export class ReactNativeLevelDBStore implements KVStore {
 
 	batch(): WriteBatch {
 		this.checkOpen();
-		return new ReactNativeLevelDBWriteBatch(this);
+		return new ReactNativeLevelDBWriteBatch(this.db, this.WriteBatchCtor);
 	}
 
 	async close(): Promise<void> {
@@ -283,52 +310,42 @@ export class ReactNativeLevelDBStore implements KVStore {
 			throw new Error('ReactNativeLevelDBStore is closed');
 		}
 	}
-
-	/**
-	 * Execute a batch of operations.
-	 * Called by ReactNativeLevelDBWriteBatch.
-	 */
-	executeBatch(ops: Array<{ type: 'put'; key: Uint8Array; value: Uint8Array } | { type: 'delete'; key: Uint8Array }>): void {
-		this.checkOpen();
-		// react-native-leveldb operations are synchronous, so we execute directly
-		for (const op of ops) {
-			if (op.type === 'put') {
-				this.db.put(toArrayBuffer(op.key), toArrayBuffer(op.value));
-			} else {
-				this.db.delete(toArrayBuffer(op.key));
-			}
-		}
-	}
 }
 
 /**
  * WriteBatch implementation for React Native LevelDB.
+ * Uses native LevelDB WriteBatch for atomic multi-key writes.
  */
 class ReactNativeLevelDBWriteBatch implements WriteBatch {
-	private store: ReactNativeLevelDBStore;
-	private ops: Array<{ type: 'put'; key: Uint8Array; value: Uint8Array } | { type: 'delete'; key: Uint8Array }> = [];
+	private db: LevelDB;
+	private WriteBatchCtor: LevelDBWriteBatchConstructor;
+	private nativeBatch: LevelDBWriteBatch;
 
-	constructor(store: ReactNativeLevelDBStore) {
-		this.store = store;
+	constructor(db: LevelDB, WriteBatch: LevelDBWriteBatchConstructor) {
+		this.db = db;
+		this.WriteBatchCtor = WriteBatch;
+		this.nativeBatch = new WriteBatch();
 	}
 
 	put(key: Uint8Array, value: Uint8Array): void {
-		this.ops.push({ type: 'put', key, value });
+		this.nativeBatch.put(toArrayBuffer(key), toArrayBuffer(value));
 	}
 
 	delete(key: Uint8Array): void {
-		this.ops.push({ type: 'delete', key });
+		this.nativeBatch.delete(toArrayBuffer(key));
 	}
 
 	async write(): Promise<void> {
-		if (this.ops.length > 0) {
-			this.store.executeBatch(this.ops);
-			this.ops = [];
-		}
+		this.db.write(this.nativeBatch);
+		// Close the old batch and create a new one for potential reuse
+		this.nativeBatch.close();
+		this.nativeBatch = new this.WriteBatchCtor();
 	}
 
 	clear(): void {
-		this.ops = [];
+		// Close the old batch and create a new empty one
+		this.nativeBatch.close();
+		this.nativeBatch = new this.WriteBatchCtor();
 	}
 }
 
