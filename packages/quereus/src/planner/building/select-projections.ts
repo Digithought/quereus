@@ -4,7 +4,7 @@ import type { PlanningContext } from '../planning-context.js';
 import type { Projection } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { AggregateFunctionCallNode as _AggregateFunctionCallNode } from '../nodes/aggregate-function.js';

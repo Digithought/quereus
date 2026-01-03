@@ -2,7 +2,7 @@ import type { Database } from '../core/database.js';
 import type { TableSchema, IndexSchema } from './table.js';
 import type { ViewSchema } from './view.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
-import { createTableToString, createViewToString, createIndexToString } from '../util/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
 
 /**

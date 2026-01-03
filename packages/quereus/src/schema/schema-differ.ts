@@ -1,6 +1,6 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
-import { createTableToString, createViewToString, createIndexToString } from '../util/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
 
 /**
  * Represents the difference between a declared schema and actual database state

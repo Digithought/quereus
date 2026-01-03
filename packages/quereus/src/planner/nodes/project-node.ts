@@ -4,7 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { projectKeys } from '../util/key-utils.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
 import { quereusError } from '../../common/errors.js';

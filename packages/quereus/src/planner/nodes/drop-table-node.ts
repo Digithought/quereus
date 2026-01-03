@@ -2,7 +2,7 @@ import type { Scope } from '../scopes/scope.js';
 import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type * as AST from '../../parser/ast.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
 
 /**
  * Represents a DROP TABLE statement in the logical query plan.

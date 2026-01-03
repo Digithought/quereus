@@ -28,12 +28,15 @@ const isValidIdentifier = (name: string): boolean => {
  * - Is a reserved keyword (case-insensitive).
  * - Does not match the valid identifier pattern (starts with letter/_, contains letters/numbers/_).
  */
-function quoteIdentifierIfNeeded(name: string): string {
+export function quoteIdentifier(name: string): string {
 	if (Object.hasOwn(KEYWORDS, name.toLowerCase()) || !isValidIdentifier(name)) {
 		return `"${name.replace(/"/g, '""')}"`; // Escape internal quotes
 	}
 	return name;
 }
+
+// Internal alias for backward compatibility
+const quoteIdentifierIfNeeded = quoteIdentifier;
 
 // Main function to convert any AST node to SQL string
 export function astToString(node: AST.AstNode): string {

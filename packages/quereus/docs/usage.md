@@ -7,7 +7,7 @@ Quereus provides a lightweight, TypeScript-native SQL interface with a focus on 
 Quereus uses native JavaScript types for SQL values. Query results are returned as objects with column names as keys:
 
 ```typescript
-import { Database } from 'quereus';
+import { Database } from '@quereus/quereus';
 
 const db = new Database();
 
@@ -39,9 +39,9 @@ See [Type System Documentation](types.md) for complete details on types, validat
 ### Creating a Database
 
 ```typescript
-import { Database } from 'quereus';
+import { Database } from '@quereus/quereus';
 // Make sure to import other necessary types if using them directly
-// import { type SqlValue, StatusCode, QuereusError, MisuseError } from 'quereus';
+// import { type SqlValue, QuereusError, MisuseError } from '@quereus/quereus';
 
 // Create an in-memory database
 const db = new Database();
@@ -137,33 +137,32 @@ try {
 }
 ```
 
-#### Fetching All Rows (`stmt.all`)
+#### Streaming All Rows (`stmt.all`)
 
-To get all results buffered into an array, prepare the statement and use `stmt.all()`.
+The `stmt.all()` method returns an async iterator for streaming results:
 
 ```typescript
 const stmt = await db.prepare("select * from users where role = ?");
 try {
-  const admins = await stmt.all(["admin"]); // Get all rows as an array of objects
-  console.log(`Found ${admins.length} admins`);
+  // Stream rows with for-await
+  for await (const admin of stmt.all(["admin"])) {
+    console.log(admin.name);
+  }
 } finally {
   await stmt.finalize();
 }
 ```
 
-#### Streaming Results with `step()` (Low Level)
-
-For maximum control, you can still use the manual `step()` loop with a prepared statement:
+To collect all rows into an array, use spread or `Array.fromAsync`:
 
 ```typescript
-const stmt = await db.prepare("select * from large_table where category = ?");
-stmt.bind(1, "electronics"); // Bind parameters first
+const stmt = await db.prepare("select * from users where role = ?");
 try {
-  while (await stmt.step() === StatusCode.ROW) {
-    const row = stmt.getAsObject();
-    // Process each row individually
-    processRow(row);
+  const admins = [];
+  for await (const row of stmt.all(["admin"])) {
+    admins.push(row);
   }
+  console.log(`Found ${admins.length} admins`);
 } finally {
   await stmt.finalize();
 }
@@ -211,14 +210,21 @@ try {
 
 ## Database API Reference
 
-### `db.exec(sql: string): Promise<void>`
-Executes one or more SQL statements separated by semicolons. Primarily intended for DDL, transaction control, or simple SQL without parameters or results. For parameterized queries or retrieving results, use `prepare` or `eval`.
+### `db.exec(sql: string, params?: SqlParameters): Promise<void>`
+Executes one or more SQL statements separated by semicolons. Primarily intended for DDL, transaction control, or DML without results. Supports optional parameters.
 
-### `db.prepare(sql: string): Promise<Statement>`
-Prepares an SQL statement for execution, returning a `Statement` object. This is the entry point for using the `Statement` API (`run`, `get`, `all`, `step`, `bind`, etc.).
+### `db.prepare(sql: string): Statement`
+Prepares an SQL statement for execution, returning a `Statement` object. This is the entry point for using the `Statement` API (`run`, `get`, `all`, `bind`, etc.).
 
-### `db.eval(sql: string, params?: SqlValue[] | Record<string, SqlValue>): AsyncIterableIterator<Record<string, SqlValue>>`
-A high-level async generator for executing a query and iterating over its results. Handles statement preparation, parameter binding, and automatic finalization. See the iteration example above.
+### `db.get(sql: string, params?: SqlParameters): Promise<Record<string, SqlValue> | undefined>`
+Convenience method to execute a query and return the first result row, or undefined if no rows. Equivalent to `db.prepare(sql).get(params)`.
+
+```typescript
+const user = await db.get("select * from users where id = ?", [1]);
+```
+
+### `db.eval(sql: string, params?: SqlParameters): AsyncIterable<Record<string, SqlValue>>`
+A high-level async generator for executing a query and iterating over its results. Handles statement preparation, parameter binding, and automatic finalization.
 
 ### `db.beginTransaction()`, `db.commit()`, `db.rollback()`
 Standard transaction control methods.
@@ -234,11 +240,7 @@ Closes the database connection and finalizes all open statements.
 
 ## Statement API Reference
 
-Quereus provides both high-level and low-level APIs for working with prepared statements.
-
-### High-Level API
-
-These methods bind parameters, execute the statement, and handle results in a single call:
+Prepared statements provide methods for executing parameterized SQL.
 
 #### `stmt.run(params?: SqlValue[] | Record<string, SqlValue>): Promise<void>`
 
@@ -260,23 +262,19 @@ if (user) {
 }
 ```
 
-#### `stmt.all(params?: SqlValue[] | Record<string, SqlValue>): Promise<Record<string, SqlValue>[]>`
+#### `stmt.all(params?: SqlValue[] | Record<string, SqlValue>): AsyncIterable<Record<string, SqlValue>>`
 
-Executes the statement and returns all result rows as an array of objects.
+Returns an async iterator over all result rows. Use `for await` to stream results:
 
 ```typescript
-const users = await stmt.all([30]); // e.g., "select * from users where age > ?"
-console.log(`Found ${users.length} users`);
-users.forEach(user => console.log(user.name));
+for await (const user of stmt.all([30])) {
+  console.log(user.name);
+}
 ```
-
-### Low-Level API
-
-For more control over execution:
 
 #### `stmt.bind(key: number | string, value: SqlValue): stmt`
 
-Binds a single parameter by position (1-based) or name.
+Binds a single parameter by position (1-based) or name. Returns the statement for chaining.
 
 ```typescript
 stmt.bind(1, "value"); // Bind first parameter
@@ -285,31 +283,12 @@ stmt.bind(":name", "John"); // Bind named parameter
 
 #### `stmt.bindAll(params: SqlValue[] | Record<string, SqlValue>): stmt`
 
-Binds multiple parameters at once.
+Binds multiple parameters at once. Returns the statement for chaining.
 
 ```typescript
 stmt.bindAll([1, "text", null]); // Positional
 stmt.bindAll({ ":id": 1, ":name": "John" }); // Named
 ```
-
-#### `stmt.step(): Promise<StatusCode>`
-
-Advances to the next row or completion. Returns `StatusCode.ROW`, `StatusCode.DONE`, or an error code.
-
-```typescript
-const status = await stmt.step();
-if (status === StatusCode.ROW) {
-  // Process the current row
-}
-```
-
-#### `stmt.getArray(): SqlValue[]`
-
-Gets current row values as an array (after `step()` returns `ROW`).
-
-#### `stmt.getAsObject(): Record<string, SqlValue>`
-
-Gets current row as an object (after `step()` returns `ROW`).
 
 #### `stmt.reset(): Promise<void>`
 
@@ -380,7 +359,7 @@ Quereus supports an order‑independent declarative schema with a separate apply
 ### Quick Start
 
 ```typescript
-import { Database } from 'quereus';
+import { Database } from '@quereus/quereus';
 
 const db = new Database();
 
@@ -503,6 +482,113 @@ try {
     console.error(`Unknown error: ${err}`);
   }
 }
+```
+
+## Direct Parser and Emitter Access
+
+For advanced use cases like building SQL tools, IDE integrations, query analysis, or programmatic SQL manipulation, Quereus exposes its SQL parser and emitter as separate subpath exports.
+
+### Parser (`@quereus/quereus/parser`)
+
+Parse SQL statements into Abstract Syntax Tree (AST) nodes:
+
+```typescript
+import { parse, parseAll, parseSelect, Parser } from '@quereus/quereus/parser';
+import type { Statement, SelectStmt, Expression, CreateTableStmt } from '@quereus/quereus/parser';
+
+// Parse a single statement
+const stmt = parse('select * from users where id = ?');
+console.log(stmt.type); // 'select'
+
+// Parse multiple statements separated by semicolons
+const stmts = parseAll('select 1; select 2;');
+console.log(stmts.length); // 2
+
+// Parse specifically as SELECT (throws if not a SELECT)
+const selectAst = parseSelect('select name, email from users');
+
+// Access the Parser class directly for more control
+const parser = new Parser();
+const ast = parser.parse('insert into users (name) values (?)');
+```
+
+**Available Exports:**
+- `parse(sql)` - Parse a single SQL statement, returns `Statement`
+- `parseAll(sql)` - Parse multiple semicolon-separated statements, returns `Statement[]`
+- `parseSelect(sql)` - Parse as SELECT statement, throws if not SELECT
+- `parseInsert(sql)` - Parse as INSERT statement, throws if not INSERT
+- `Parser` - The parser class for direct access
+- `Lexer`, `TokenType`, `KEYWORDS` - Lexer internals for tokenization
+- All AST type definitions (`Statement`, `SelectStmt`, `Expression`, etc.)
+
+### Emitter (`@quereus/quereus/emit`)
+
+Convert AST nodes back into SQL strings:
+
+```typescript
+import {
+  astToString,
+  quoteIdentifier,
+  selectToString,
+  insertToString,
+  createTableToString
+} from '@quereus/quereus/emit';
+import { parse } from '@quereus/quereus/parser';
+
+// Convert any statement AST to SQL
+const ast = parse('select * from users');
+const sql = astToString(ast);
+console.log(sql); // 'select * from "users"'
+
+// Quote identifiers safely (adds quotes when needed)
+const safeName = quoteIdentifier('my-table');  // '"my-table"'
+const simpleName = quoteIdentifier('users');   // 'users' (no quotes needed)
+
+// Statement-specific emitters
+const selectSql = selectToString(selectAst);
+const insertSql = insertToString(insertAst);
+const createSql = createTableToString(createTableAst);
+```
+
+**Available Exports:**
+- `astToString(ast)` - Convert any statement AST to SQL string
+- `quoteIdentifier(name)` - Safely quote an identifier if needed
+- `expressionToString(expr)` - Convert an expression AST to SQL
+- `selectToString`, `insertToString`, `updateToString`, `deleteToString`, `valuesToString` - DML emitters
+- `createTableToString`, `createIndexToString`, `createViewToString` - DDL emitters
+
+### Use Cases
+
+**Query Analysis:**
+```typescript
+import { parse } from '@quereus/quereus/parser';
+
+const ast = parse('select name from users where active = true');
+// Inspect tables referenced
+console.log(ast.from[0].name); // 'users'
+// Inspect columns selected
+console.log(ast.columns[0].expr.name); // 'name'
+```
+
+**Query Rewriting:**
+```typescript
+import { parse } from '@quereus/quereus/parser';
+import { astToString } from '@quereus/quereus/emit';
+
+const ast = parse('select * from users');
+// Add a WHERE clause programmatically
+ast.where = { type: 'binary', operator: '=', left: {...}, right: {...} };
+const modifiedSql = astToString(ast);
+```
+
+**SQL Formatting/Normalization:**
+```typescript
+import { parse } from '@quereus/quereus/parser';
+import { astToString } from '@quereus/quereus/emit';
+
+// Parse and re-emit to normalize formatting
+const normalized = astToString(parse('SELECT   *   FROM   users'));
+console.log(normalized); // 'select * from "users"'
 ```
 
 ## Type System Reference
@@ -815,35 +901,28 @@ console.log(math.sum); // 30 (number)
 Internally, Quereus represents rows as **arrays of values** (`Row = SqlValue[]`), but the high-level API converts them to **objects** for convenience:
 
 ```typescript
-// High-level API returns objects (Record<string, SqlValue>)
+// stmt.get() returns a single object (Record<string, SqlValue>)
 const user = await db.prepare("select id, name, email from users where id = ?").get([1]);
 // user is: { id: 1, name: "Alice", email: "alice@example.com" }
 console.log(user.name); // "Alice"
 
-// Multiple rows as objects
-const users = await db.prepare("select id, name from users").all();
-// users is: [{ id: 1, name: "Alice" }, { id: 2, name: "Bob" }]
-users.forEach(u => console.log(u.name));
+// stmt.all() returns an async iterator of objects
+const stmt = await db.prepare("select id, name from users");
+for await (const user of stmt.all()) {
+  console.log(user.name); // Each row is an object
+}
+await stmt.finalize();
 
-// Iteration with db.eval returns objects
+// db.eval() also returns an async iterator of objects
 for await (const user of db.eval("select * from users")) {
   console.log(user.name); // Each user is an object
 }
-
-// Low-level API: getArray() returns raw array
-const stmt = await db.prepare("select id, name, email from users where id = ?");
-stmt.bind(1, 1);
-await stmt.step();
-const rowArray = stmt.getArray();
-// rowArray is: [1, "Alice", "alice@example.com"] (SqlValue[])
-console.log(rowArray[0]); // 1 (access by index)
-await stmt.finalize();
 ```
 
 **Key Points:**
-- **High-level API** (`get()`, `all()`, `eval()`) returns objects with column names as keys
-- **Low-level API** (`getArray()`) returns arrays of values in column order
-- Internally, rows are always arrays - objects are created for convenience
+- All query methods return rows as objects with column names as keys
+- `get()` returns a single object (or undefined)
+- `all()` and `eval()` return async iterators for streaming
 
 ### Async Iteration and Streaming
 

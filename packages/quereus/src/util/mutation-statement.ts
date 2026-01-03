@@ -1,7 +1,7 @@
 import type { Row, SqlValue } from '../common/types.js';
 import type { TableSchema } from '../schema/table.js';
 import type * as AST from '../parser/ast.js';
-import { insertToString, updateToString, deleteToString } from './ast-stringify.js';
+import { insertToString, updateToString, deleteToString } from '../emit/ast-stringify.js';
 
 /**
  * Builds a deterministic INSERT statement for mutation logging.

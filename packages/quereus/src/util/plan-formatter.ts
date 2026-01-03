@@ -1,5 +1,5 @@
 import type { ScalarPlanNode } from '../planner/nodes/plan-node.js';
-import { expressionToString } from './ast-stringify.js';
+import { expressionToString } from '../emit/ast-stringify.js';
 import type { ScalarType } from '../common/datatype.js';
 import { SqlDataType } from '../common/types.js';
 

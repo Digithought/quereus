@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { PlanNode } from './nodes/plan-node.js';
 import { safeJsonStringify } from '../util/serialization.js';
-import { astToString } from '../util/ast-stringify.js';
+import { astToString } from '../emit/ast-stringify.js';
 import type { Instruction, InstructionTracer } from '../runtime/types.js';
 import type * as AST from '../parser/ast.js';
 import { quereusError } from '../common/errors.js';

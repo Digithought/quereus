@@ -9,7 +9,7 @@ import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { RowOpFlag } from '../../schema/table.js';
 import { withAsyncRowContext, createRowSlot } from '../context-helpers.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
 
 interface ConstraintMetadataEntry {
 	schema: RowConstraintSchema;

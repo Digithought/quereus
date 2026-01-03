@@ -2,7 +2,7 @@ import { VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import * as AST from '../../parser/ast.js';
-import { astToString } from '../../util/ast-stringify.js';
+import { astToString } from '../../emit/ast-stringify.js';
 
 export interface TransactionNode extends VoidNode {
 	nodeType: PlanNodeType.Transaction;

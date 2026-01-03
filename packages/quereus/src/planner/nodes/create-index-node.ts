@@ -2,7 +2,7 @@ import type * as AST from '../../parser/ast.js';
 import type { Scope } from '../scopes/scope.js';
 import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
-import { astToString, expressionToString } from '../../util/ast-stringify.js';
+import { astToString, expressionToString } from '../../emit/ast-stringify.js';
 
 /**
  * Represents a CREATE INDEX statement in the logical query plan.

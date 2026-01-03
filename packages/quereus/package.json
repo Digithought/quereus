@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "type": "module",
   "description": "Federated SQL query processor",
   "publisher": "Got Choices Foundation",
@@ -21,6 +21,14 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
+    },
+    "./parser": {
+      "types": "./dist/src/parser/index.d.ts",
+      "import": "./dist/src/parser/index.js"
+    },
+    "./emit": {
+      "types": "./dist/src/emit/index.d.ts",
+      "import": "./dist/src/emit/index.js"
     }
   },
   "scripts": {

@@ -114,6 +114,8 @@ export type { ColumnSchema } from './schema/column.js';
 
 // Runtime utilities
 export { isAsyncIterable, getAsyncIterator, asyncIterableToArray } from './runtime/utils.js';
+export { CollectingInstructionTracer } from './runtime/types.js';
+export type { InstructionTracer, InstructionTraceEvent } from './runtime/types.js';
 
 // Function registration utilities
 export {

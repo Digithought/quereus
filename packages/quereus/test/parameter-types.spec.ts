@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { expect } from 'chai';
 import { Database } from '../src/core/database.js';
-import { ScalarType } from '../src/common/datatype.js';
+import type { ScalarType } from '../src/common/datatype.js';
 
 describe('Parameter Type System', () => {
 	let db: Database;

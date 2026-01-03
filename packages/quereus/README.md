@@ -7,7 +7,7 @@ Quereus is a feature-complete SQL query processor specifically designed for effi
 ## Project Goals
 
 *   **Virtual Table Centric**: Provide a robust and flexible virtual table API as the primary means of interacting with data sources. All tables are virtual tables.
-*   **In-Memory Focus**: Includes a comprehensive in-memory virtual table implementation (`MemoryTable`) with support for transactions and savepoints.
+*   **In-Memory Default**: Includes a comprehensive in-memory virtual table implementation (`MemoryTable`) with support for transactions and savepoints.
 *   **Modern Type System**: Extensible logical/physical type separation with built-in temporal types (DATE, TIME, DATETIME), native JSON type with deep equality comparison, and plugin support for custom types. See [Type System Documentation](docs/types.md).
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
 *   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
@@ -55,145 +55,124 @@ The project is organized into the following main directories:
 *   `src/planner`: Building and optimizing `PlanNode` trees from AST.
 *   `src/runtime`: Emission, scheduling, and execution of runtime `Instruction`s.
 *   `src/schema`: Management of database schemas.
-*   `src/vtab`: Virtual table interface and implementations (including `memory`).
+*   `src/vtab`: Virtual table interface and build-ins (including `memory`).
 *   `src/func`: User-defined functions.
 *   `src/util`: General utility functions.
 *   `docs`: Project documentation.
 
-## Logging
-
-Quereus uses the [`debug`](https://github.com/debug-js/debug) library for internal logging. This allows for fine-grained control over log output based on namespaces, which correspond to the different modules of the system (e.g., `planner`, `runtime`, `vtab:memory`).
-
-To enable logging during development or troubleshooting, set the `DEBUG` environment variable. Examples:
-
-```bash
-# Enable all Quereus logs
-DEBUG=quereus:*
-
-# Enable all virtual table logs
-DEBUG=quereus:vtab:*
-
-# Enable VDBE runtime logs and any warnings/errors from other modules
-DEBUG=quereus:runtime,quereus:*:warn,quereus:*:error
-
-# Enable everything EXCEPT verbose runtime logs
-DEBUG=*,-quereus:runtime
-```
-
-### Developer Usage
-
-To add logging within a module:
-
-1.  **Import the logger factory:**
-    ```typescript
-    import { createLogger } from '../common/logger.js'; // Adjust path as needed
-
-    const log = createLogger('my-module:sub-feature');
-    ```
-
-2.  **Log messages:** Use the logger instance like `console.log`, utilizing format specifiers (`%s`, `%d`, `%j`, `%O`) for better performance and readability.
-    ```typescript
-    log('Processing item ID %d', itemId);
-    log('Current state: %O', complexObject);
-    ```
-
-3.  **(Optional) Create specialized loggers for levels:** You can use `.extend()` for specific levels like warnings or errors, which allows finer control via the `DEBUG` variable.
-    ```typescript
-    const warnLog = log.extend('warn');
-    const errorLog = log.extend('error');
-
-    warnLog('Potential issue detected: %s', issueDescription);
-    if (errorCondition) {
-      errorLog('Operation failed: %O', errorObject);
-      // It's often still good practice to throw an actual Error here
-    }
-    ```
-
-### Instruction Tracing
-
-For detailed runtime analysis and debugging, Quereus provides an instruction tracing system. Set a tracer on the database instance, and all statement executions will be traced:
+## Quick Start
 
 ```typescript
-import { Database, CollectingInstructionTracer } from 'quereus';
+import { Database } from '@quereus/quereus';
 
 const db = new Database();
-const tracer = new CollectingInstructionTracer();
 
-// Enable tracing for all database operations
-db.setInstructionTracer(tracer);
+// Create a table and insert data
+await db.exec("create table users (id integer primary key, name text, email text)");
+await db.exec("insert into users values (1, 'Alice', 'alice@example.com')");
 
-// Execute statements - they will automatically be traced
-await db.exec("CREATE TABLE users (id INTEGER, name TEXT)");
-await db.exec("INSERT INTO users VALUES (:id, :name)", { id: 1, name: "Alice" });
-const users = await db.prepare("SELECT * FROM users").all();
+// Query returns objects: { id: 1, name: 'Alice', email: 'alice@example.com' }
+const user = await db.get("select * from users where id = ?", [1]);
+console.log(user.name); // "Alice"
 
-// Analyze the trace
-const events = tracer.getTraceEvents();
-console.log(`Executed ${events.length} instruction operations`);
-
-// Disable tracing
-db.setInstructionTracer(null);
+// Iterate over multiple rows
+for await (const row of db.eval("select * from users")) {
+  console.log(row.name);
+}
 ```
 
-The `CollectingInstructionTracer` captures detailed information about each instruction execution, including inputs, outputs, timing, and any sub-programs. This is particularly useful for performance analysis and debugging complex query plans.
+SQL values use native JavaScript types (`string`, `number`, `bigint`, `Uint8Array`, `null`). Temporal types are ISO 8601 strings. Results stream as async iterators.
 
-## Type Representations
+See the [Usage Guide](docs/usage.md) for complete API reference, type mappings, logging, and debugging.
 
-Quereus uses native JavaScript types for SQL values. Understanding these mappings is essential when working with query results and parameters:
+## Platform Support & Storage
 
-| SQL Type | JavaScript Type | Example |
-|----------|----------------|---------|
-| `NULL` | `null` | `null` |
-| `INTEGER` | `number` or `bigint` | `42`, `9007199254740992n` |
-| `REAL` | `number` | `3.14` |
-| `TEXT` | `string` | `"hello"` |
-| `BLOB` | `Uint8Array` | `new Uint8Array([1, 2, 3])` |
-| `DATE` | `string` | `"2024-01-15"` |
-| `TIME` | `string` | `"14:30:00"` |
-| `DATETIME` | `string` | `"2024-01-15T14:30:00"` |
-| `TIMESPAN` | `string` | `"PT1H30M"` (ISO 8601 duration) |
+Quereus runs on any JavaScript runtime. For persistent storage, platform-specific plugins provide the `store` virtual table module:
 
-**Important Notes:**
-- **Dates and times are always strings** in ISO 8601 format (e.g., `date('now')` returns `"2024-01-15"`)
-- **Timespans are ISO 8601 duration strings** (e.g., `"PT1H30M"` for 1 hour 30 minutes)
-- **BLOBs are `Uint8Array`** typed arrays for binary data
-- **Large integers use `bigint`** when they exceed JavaScript's safe integer range (±2^53 - 1)
-- **Query results are objects** with column names as keys: `{ id: 1, name: "Alice" }`
-- **Rows are internally arrays** (`SqlValue[]`) but the API returns objects for convenience
-- **Results are async iterators** - use `for await` to stream rows without loading all into memory
-- **Multi-statement `eval`** returns only the last statement's results
+### Node.js
 
-See the [Usage Guide](docs/usage.md#type-representations) for detailed information on type handling, row representation, async iteration, and best practices.
+Use [`@quereus/plugin-leveldb`](packages/quereus-plugin-leveldb/) for LevelDB-based persistent storage. Each table becomes a subdirectory under `basePath`:
 
-## React Native
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import leveldbPlugin from '@quereus/plugin-leveldb/plugin';
 
-Quereus works in React Native with two considerations:
+const db = new Database();
+await registerPlugin(db, leveldbPlugin, { basePath: './data' }); // ./data/users/, ./data/orders/, etc.
 
-1. **`structuredClone` Polyfill**: React Native doesn't provide `structuredClone`. Install a polyfill like `@ungap/structured-clone` and apply it before importing Quereus:
+await db.exec(`create table users (id integer primary key, name text) using store`);
+```
 
-   ```typescript
-   import structuredClone from '@ungap/structured-clone';
-   if (typeof globalThis.structuredClone === 'undefined') {
-     globalThis.structuredClone = structuredClone;
-   }
+### Browser
 
-   import { Database } from 'quereus';
-   ```
+Use [`@quereus/plugin-indexeddb`](packages/quereus-plugin-indexeddb/) for IndexedDB-based persistent storage with cross-tab sync. All tables share one IndexedDB database:
 
-2. **Static Plugin Loading**: Dynamic `import()` isn't supported in React Native. Register plugins statically instead. See [Plugin System - Static Registration](docs/plugins.md#static-plugin-registration) for details.
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import indexeddbPlugin from '@quereus/plugin-indexeddb/plugin';
+
+const db = new Database();
+await registerPlugin(db, indexeddbPlugin, { databaseName: 'myapp' }); // IndexedDB database name
+
+await db.exec(`create table users (id integer primary key, name text) using store`);
+```
+
+### React Native
+
+Use [`@quereus/plugin-react-native-leveldb`](packages/quereus-plugin-react-native-leveldb/) for fast LevelDB storage. Each table becomes a separate LevelDB database with a name prefix:
+
+```typescript
+import { LevelDB, LevelDBWriteBatch } from 'react-native-leveldb';
+import { Database, registerPlugin } from '@quereus/quereus';
+import leveldbPlugin from '@quereus/plugin-react-native-leveldb/plugin';
+
+const db = new Database();
+await registerPlugin(db, leveldbPlugin, {
+  openFn: LevelDB.open,
+  WriteBatch: LevelDBWriteBatch,
+  databaseName: 'myapp'  // creates myapp_users, myapp_orders, etc.
+});
+
+await db.exec(`create table users (id integer primary key, name text) using store`);
+```
+
+**Note:** React Native requires a `structuredClone` polyfill and static plugin loading. See the [plugin README](packages/quereus-plugin-react-native-leveldb/) for setup details.
+
+### NativeScript
+
+Use [`@quereus/plugin-nativescript-sqlite`](packages/quereus-plugin-nativescript-sqlite/) for SQLite-based storage. All tables share one SQLite database file:
+
+```typescript
+import { openOrCreate } from '@nativescript-community/sqlite';
+import { Database, registerPlugin } from '@quereus/quereus';
+import sqlitePlugin from '@quereus/plugin-nativescript-sqlite/plugin';
+
+const sqliteDb = openOrCreate('myapp.db');  // SQLite database file
+const db = new Database();
+await registerPlugin(db, sqlitePlugin, { db: sqliteDb });
+
+await db.exec(`create table users (id integer primary key, name text) using store`);
+```
+
+See [Store Documentation](docs/store.md) for the storage architecture and custom backend implementation.
 
 ## Documentation
 
-* [Usage Guide](docs/usage.md): Detailed usage examples, type representations, and API reference
-* [SQL Reference Guide](docs/sql.md): Detailed SQL reference guide (includes Declarative Schema)
-* [Functions](docs/functions.md): Details on the built-in functions
-* [Window Function Architecture](docs/window-functions.md): Details on the window function architecture and implementation.
-* [Memory Tables](docs/memory-table.md): Implementation details of the built-in MemoryTable module
-* [Date/Time Handling](docs/datetime.md): Details on date/time parsing, functions, and the Temporal API.
-* [Runtime](docs/runtime.md): Details on the runtime and opcodes.
-* [Error Handling](docs/error.md): Details on the error handling and status codes.
-* [Plugin System](docs/plugins.md): Complete guide to creating and using plugins for virtual tables, functions, and collations.
-* [TODO List](docs/todo.md): Planned features and improvements
+* [Usage Guide](docs/usage.md): Complete API reference including:
+  - Type mappings (SQL ↔ JavaScript)
+  - Parameter binding and prepared statements
+  - Logging via `debug` library with namespace control
+  - Instruction tracing for performance analysis
+  - Transaction and savepoint management
+* [SQL Reference Guide](docs/sql.md): SQL syntax (includes Declarative Schema)
+* [Type System](docs/types.md): Logical/physical types, temporal types, JSON, custom types
+* [Functions](docs/functions.md): Built-in scalar, aggregate, window, and JSON functions
+* [Memory Tables](docs/memory-table.md): Built-in MemoryTable module
+* [Date/Time Handling](docs/datetime.md): Temporal parsing, functions, and ISO 8601 formats
+* [Runtime](docs/runtime.md): Instruction-based execution and opcodes
+* [Error Handling](docs/error.md): Error types and status codes
+* [Plugin System](docs/plugins.md): Virtual tables, functions, and collations
+* [TODO List](docs/todo.md): Planned features
 
 ### Plugin Development
 

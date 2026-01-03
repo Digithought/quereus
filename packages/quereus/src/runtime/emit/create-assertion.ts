@@ -5,7 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { IntegrityAssertionSchema, AssertionDependentTable } from '../../schema/assertion.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
 
 const log = createLogger('runtime:emit:create-assertion');
 

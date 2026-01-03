@@ -1,7 +1,7 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { CreateViewNode } from '../nodes/create-view-node.js';
-import { createViewToString } from '../../util/ast-stringify.js';
+import { createViewToString } from '../../emit/ast-stringify.js';
 
 /**
  * Builds a plan node for CREATE VIEW statements.

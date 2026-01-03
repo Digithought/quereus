@@ -2,7 +2,7 @@ import type { SqlValue } from '../../common/types.js';
 import * as AST from '../../parser/ast.js';
 import { Attribute, type RelationalPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
-import { expressionToString } from '../../util/ast-stringify.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
 import { PlanNode } from './plan-node.js';
 import { RelationType } from '../../common/datatype.js';
 import { Scope } from '../scopes/scope.js';

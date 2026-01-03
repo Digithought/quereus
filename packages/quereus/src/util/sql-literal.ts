@@ -1,5 +1,5 @@
 import type { SqlValue } from '../common/types.js';
-import { expressionToString } from './ast-stringify.js';
+import { expressionToString } from '../emit/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
 
 /**
