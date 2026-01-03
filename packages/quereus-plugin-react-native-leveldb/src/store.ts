@@ -340,7 +340,14 @@ class ReactNativeLevelDBWriteBatch implements WriteBatch {
  * Convert Uint8Array to ArrayBuffer.
  */
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-	// Create a new ArrayBuffer copy to handle views into SharedArrayBuffer
+	const buffer = bytes.buffer;
+	// Fast path: if the Uint8Array covers the full buffer and isn't shared, use directly
+	if (buffer instanceof ArrayBuffer &&
+		bytes.byteOffset === 0 &&
+		bytes.byteLength === buffer.byteLength) {
+		return buffer;
+	}
+	// Slow path: copy for views into larger buffers or SharedArrayBuffer
 	const copy = new ArrayBuffer(bytes.byteLength);
 	new Uint8Array(copy).set(bytes);
 	return copy;
