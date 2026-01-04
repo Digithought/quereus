@@ -39,7 +39,7 @@
     "test:single": "cd ../.. && node --import ./packages/quereus-sync-client/register.mjs node_modules/mocha/bin/mocha.js --bail"
   },
   "peerDependencies": {
-    "@quereus/sync": "*"
+    "@quereus/sync": "workspace:^"
   },
   "devDependencies": {
     "@quereus/sync": "*",

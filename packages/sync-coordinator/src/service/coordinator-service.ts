@@ -8,7 +8,6 @@
 import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import {
-  type SyncManager,
   type HLC,
   type SiteId,
   type ChangeSet,

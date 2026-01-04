@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-loader",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "description": "Plugin loading system for Quereus - supports dynamic imports for Node.js and browsers",
   "publisher": "Got Choices Foundation",
@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@quereus/quereus": "*"
+    "@quereus/quereus": "workspace:^"
   },
   "devDependencies": {
     "@quereus/quereus": "*",

@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-indexeddb",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "description": "IndexedDB storage plugin for Quereus - browser persistent storage",
   "keywords": [
@@ -38,8 +38,8 @@
     }
   },
   "peerDependencies": {
-    "@quereus/quereus": "^0.24.0",
-    "@quereus/store": "^0.3.5"
+    "@quereus/quereus": "workspace:^",
+    "@quereus/store": "workspace:^"
   },
   "engines": {
     "quereus": "^0.24.0"

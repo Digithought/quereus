@@ -1,6 +1,6 @@
 {
   "name": "@quereus/sync",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "Multi-master CRDT replication for Quereus - automatic sync with conflict resolution",
   "keywords": [
@@ -42,8 +42,8 @@
     "test:single": "cd ../.. && node --import ./packages/quereus-sync/register.mjs node_modules/mocha/bin/mocha.js --bail"
   },
   "peerDependencies": {
-    "@quereus/quereus": "*",
-    "@quereus/store": "*"
+    "@quereus/quereus": "workspace:^",
+    "@quereus/store": "workspace:^"
   },
   "devDependencies": {
     "@quereus/quereus": "*",

@@ -20,7 +20,7 @@ export {
 export {
   StoreManager,
   type StoreEntry,
-  type StoreManagerOptions,
+  type StoreManagerConfig,
 } from './store-manager.js';
 
 export {

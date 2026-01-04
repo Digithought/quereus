@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-nativescript-sqlite",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "NativeScript SQLite storage plugin for Quereus - mobile persistent storage",
   "keywords": [
@@ -42,8 +42,8 @@
   },
   "peerDependencies": {
     "@nativescript-community/sqlite": "^3.0.0",
-    "@quereus/quereus": "^0.24.0",
-    "@quereus/store": "^0.3.5"
+    "@quereus/quereus": "workspace:^",
+    "@quereus/store": "workspace:^"
   },
   "engines": {
     "quereus": "^0.24.0"

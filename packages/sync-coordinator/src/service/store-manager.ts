@@ -7,7 +7,8 @@
  */
 
 import { join } from 'node:path';
-import { LevelDBStore, StoreEventEmitter } from '@quereus/store';
+import { StoreEventEmitter } from '@quereus/store';
+import { LevelDBStore } from '@quereus/plugin-leveldb';
 import {
   createSyncModule,
   type SyncManager,

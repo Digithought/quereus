@@ -5,3 +5,4 @@ doc
 packages/sync-coordinator/.data
 .yarn
 .quereus
+.yarnrc.yml

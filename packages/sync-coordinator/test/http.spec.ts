@@ -12,6 +12,10 @@ import { createCoordinatorServer, loadConfig, type CoordinatorServer } from '../
 // Test database ID in accountId-scenarioId format
 const TEST_DATABASE_ID = 'a1-s42';
 
+// Valid 22-character base64url site IDs (16 bytes each)
+// These represent valid UUIDs encoded as base64url
+const TEST_SITE_ID = 'AAAAAAAAAAAAAAAAAAAAAA'; // 16 zero bytes
+
 describe('HTTP Routes', () => {
   let server: CoordinatorServer;
   let baseUrl: string;
@@ -78,9 +82,8 @@ describe('HTTP Routes', () => {
     });
 
     it('should return changes with valid site ID', async () => {
-      const siteId = '0123456789abcdef0123456789abcdef';
       const response = await fetch(`${baseUrl}/${TEST_DATABASE_ID}/changes`, {
-        headers: { 'X-Site-Id': siteId },
+        headers: { 'X-Site-Id': TEST_SITE_ID },
       });
       expect(response.ok).to.be.true;
 
@@ -90,9 +93,8 @@ describe('HTTP Routes', () => {
     });
 
     it('should reject invalid database ID format', async () => {
-      const siteId = '0123456789abcdef0123456789abcdef';
       const response = await fetch(`${baseUrl}/invalid-db-id/changes`, {
-        headers: { 'X-Site-Id': siteId },
+        headers: { 'X-Site-Id': TEST_SITE_ID },
       });
       expect(response.status).to.equal(400);
 
@@ -113,11 +115,10 @@ describe('HTTP Routes', () => {
     });
 
     it('should reject invalid body', async () => {
-      const siteId = '0123456789abcdef0123456789abcdef';
       const response = await fetch(`${baseUrl}/${TEST_DATABASE_ID}/changes`, {
         method: 'POST',
         headers: {
-          'X-Site-Id': siteId,
+          'X-Site-Id': TEST_SITE_ID,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ notChanges: true }),
@@ -130,11 +131,10 @@ describe('HTTP Routes', () => {
     });
 
     it('should accept empty changes array', async () => {
-      const siteId = '0123456789abcdef0123456789abcdef';
       const response = await fetch(`${baseUrl}/${TEST_DATABASE_ID}/changes`, {
         method: 'POST',
         headers: {
-          'X-Site-Id': siteId,
+          'X-Site-Id': TEST_SITE_ID,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ changes: [] }),
@@ -178,7 +178,7 @@ describe('HTTP Routes', () => {
 
     it('should reject without token', async () => {
       const response = await fetch(`${tokenBaseUrl}/${TEST_DATABASE_ID}/changes`, {
-        headers: { 'X-Site-Id': '0123456789abcdef0123456789abcdef' },
+        headers: { 'X-Site-Id': TEST_SITE_ID },
       });
       expect(response.status).to.equal(401);
     });
@@ -186,7 +186,7 @@ describe('HTTP Routes', () => {
     it('should reject invalid token', async () => {
       const response = await fetch(`${tokenBaseUrl}/${TEST_DATABASE_ID}/changes`, {
         headers: {
-          'X-Site-Id': '0123456789abcdef0123456789abcdef',
+          'X-Site-Id': TEST_SITE_ID,
           'Authorization': 'Bearer invalid-token',
         },
       });
@@ -196,7 +196,7 @@ describe('HTTP Routes', () => {
     it('should accept valid token', async () => {
       const response = await fetch(`${tokenBaseUrl}/${TEST_DATABASE_ID}/changes`, {
         headers: {
-          'X-Site-Id': '0123456789abcdef0123456789abcdef',
+          'X-Site-Id': TEST_SITE_ID,
           'Authorization': 'Bearer valid-token',
         },
       });

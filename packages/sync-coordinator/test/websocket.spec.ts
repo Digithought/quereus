@@ -13,6 +13,10 @@ import { createCoordinatorServer, loadConfig, type CoordinatorServer } from '../
 // Test database ID in accountId-scenarioId format
 const TEST_DATABASE_ID = 'a1-s42';
 
+// Valid 22-character base64url site IDs (16 bytes each)
+const TEST_SITE_ID_1 = 'AAAAAAAAAAAAAAAAAAAAAA'; // 16 zero bytes
+const TEST_SITE_ID_2 = 'AAAAAAAAAAAAAAAAAAAAAB'; // slightly different
+
 describe('WebSocket Handler', () => {
   let server: CoordinatorServer;
   let wsUrl: string;
@@ -77,7 +81,7 @@ describe('WebSocket Handler', () => {
         const response = await sendAndReceive(ws, {
           type: 'handshake',
           databaseId: TEST_DATABASE_ID,
-          siteId: '0123456789abcdef0123456789abcdef',
+          siteId: TEST_SITE_ID_1,
         }) as { type: string; databaseId: string; serverSiteId: string; connectionId: string };
 
         expect(response.type).to.equal('handshake_ack');
@@ -94,7 +98,7 @@ describe('WebSocket Handler', () => {
       try {
         const response = await sendAndReceive(ws, {
           type: 'handshake',
-          siteId: '0123456789abcdef0123456789abcdef',
+          siteId: TEST_SITE_ID_1,
         }) as { type: string; code: string };
 
         expect(response.type).to.equal('error');
@@ -128,7 +132,7 @@ describe('WebSocket Handler', () => {
         await sendAndReceive(ws, {
           type: 'handshake',
           databaseId: TEST_DATABASE_ID,
-          siteId: '0123456789abcdef0123456789abcdef',
+          siteId: TEST_SITE_ID_1,
         });
 
         const response = await sendAndReceive(ws, {
@@ -163,7 +167,7 @@ describe('WebSocket Handler', () => {
         await sendAndReceive(ws, {
           type: 'handshake',
           databaseId: TEST_DATABASE_ID,
-          siteId: '0123456789abcdef0123456789abcdef',
+          siteId: TEST_SITE_ID_1,
         });
 
         const response = await sendAndReceive(ws, {
@@ -184,16 +188,16 @@ describe('WebSocket Handler', () => {
       const ws2 = await connectWs();
 
       try {
-        // Handshake both
+        // Handshake both with different site IDs
         await sendAndReceive(ws1, {
           type: 'handshake',
           databaseId: TEST_DATABASE_ID,
-          siteId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+          siteId: TEST_SITE_ID_1,
         });
         await sendAndReceive(ws2, {
           type: 'handshake',
           databaseId: TEST_DATABASE_ID,
-          siteId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2',
+          siteId: TEST_SITE_ID_2,
         });
 
         // Check status
