@@ -110,6 +110,16 @@ FROM (
 ) AS u(user_id, user_name, user_email);
 → [{ "user_id": 6, "user_name": "Frank", "user_email": "frank@example.com" }]
 
+-- Test 6b: Mutating subquery with qualified SELECT *
+SELECT r.* FROM (
+    INSERT INTO users (id, name, email)
+    VALUES (60, 'Qualified', 'qualified@example.com')
+    RETURNING id, name
+) AS r;
+→ [{ "id": 60, "name": "Qualified" }]
+
+DELETE FROM users WHERE id = 60;
+
 -- Test 7: Nested mutating subqueries (complex orthogonality)
 SELECT outer_result.total_created
 FROM (

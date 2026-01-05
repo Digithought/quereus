@@ -70,5 +70,9 @@ SELECT id, grp FROM outer_t ORDER BY grp, (SELECT count(*) FROM inner_t WHERE in
 SELECT id, grp FROM outer_t ORDER BY (SELECT min(val) FROM inner_t WHERE inner_t.outer_id = outer_t.id + 100) NULLS LAST, id;
 → [{"id":1,"grp":"A"},{"id":2,"grp":"B"},{"id":3,"grp":"A"}]
 
+-- Subquery source (derived table) with alias and qualified SELECT *
+SELECT s.* FROM (SELECT id, grp FROM outer_t WHERE id > 1) s ORDER BY id;
+→ [{"id":2,"grp":"B"},{"id":3,"grp":"A"}]
+
 DROP TABLE outer_t;
 DROP TABLE inner_t;

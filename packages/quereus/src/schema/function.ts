@@ -176,13 +176,3 @@ export function getFunctionKey(name: string, numArgs: number): string {
 	return `${name.toLowerCase()}/${numArgs}`;
 }
 
-// Legacy compatibility - deprecated interfaces and column info
-/**
- * @deprecated Use RelationType.columns instead
- * Column information for table-valued functions.
- */
-export interface TVFColumnInfo {
-	name: string;
-	type: SqlDataType;
-	nullable?: boolean;
-}

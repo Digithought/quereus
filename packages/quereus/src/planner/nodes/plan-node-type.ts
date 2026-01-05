@@ -70,6 +70,7 @@ export enum PlanNodeType {
   TableFunctionReference = 'TableFunctionReference',
 
   // Special relational nodes
+  Alias = 'Alias',  // Wraps a relation with an alias for relationName
   Values = 'Values',
 	TableLiteral = "TableLiteral",
   SingleRow = 'SingleRow',  // For SELECT without FROM

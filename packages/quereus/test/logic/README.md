@@ -84,21 +84,6 @@ yarn test --verbose
 yarn test --show-plan --plan-summary --verbose --trace-plan-stack
 ```
 
-**Environment Variables (Deprecated but still supported):**
-```bash
-set QUEREUS_TEST_SHOW_PLAN=true
-yarn test      # Show query plan
-
-set QUEREUS_TEST_SHOW_PROGRAM=true
-yarn test   # Show instruction program  
-
-set QUEREUS_TEST_SHOW_TRACE=true
-yarn test     # Show execution trace
-
-set QUEREUS_TEST_TRACE_PLAN_STACK=true
-yarn test   # Enable plan stack tracing
-```
-
 You can also turn on log viewing by setting `DEBUG=quereus:...`
 
 If you need to create and run test scripts, note that this is how tests are run:

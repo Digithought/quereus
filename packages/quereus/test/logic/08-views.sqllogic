@@ -28,6 +28,10 @@ INSERT INTO base_data VALUES (5, 'Zeta', 'A', 125);
 SELECT * FROM category_a_view ORDER BY id;
 → [{"id":1,"name":"Alpha","value":100},{"id":3,"name":"Gamma","value":150},{"id":5,"name":"Zeta","value":125}]
 
+-- Test view with alias and qualified SELECT *
+SELECT v.* FROM category_a_view v ORDER BY id;
+→ [{"id":1,"name":"Alpha","value":100},{"id":3,"name":"Gamma","value":150},{"id":5,"name":"Zeta","value":125}]
+
 -- Drop views
 DROP VIEW category_a_view;
 DROP VIEW summary_view;

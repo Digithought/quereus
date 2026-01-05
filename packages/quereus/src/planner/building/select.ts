@@ -21,6 +21,7 @@ import { ColumnReferenceNode } from '../nodes/reference.js';
 import { TEXT_TYPE } from '../../types/builtin-types.js';
 import { ValuesNode } from '../nodes/values-node.js';
 import { createLogger } from '../../common/logger.js';
+import { AliasNode } from '../nodes/alias-node.js';
 
 // Import decomposed functionality
 import { buildWithContext } from './select-context.js';
@@ -271,13 +272,17 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 			// Check if this is an internal recursive CTE reference
 			if (CapabilityDetectors.isRecursiveCTERef(cteNode)) {
-				// For internal recursive references, use the node directly
-				fromTable = cteNode;
+				// For internal recursive references, wrap with AliasNode if aliased
+				let internalRefNode: RelationalPlanNode = cteNode;
+				if (fromClause.alias) {
+					internalRefNode = new AliasNode(parentContext.scope, cteNode, fromClause.alias.toLowerCase());
+				}
+				fromTable = internalRefNode;
 
 				// Create scope for internal recursive CTE columns
 				const internalScope = new RegisteredScope(parentContext.scope);
-				const internalAttributes = cteNode.getAttributes();
-				cteNode.getType().columns.forEach((c, i) => {
+				const internalAttributes = fromTable.getAttributes();
+				fromTable.getType().columns.forEach((c, i) => {
 					const attr = internalAttributes[i];
 					internalScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
 						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
@@ -366,7 +371,12 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 							alias: columnName
 						};
 					});
-					fromTable = new ProjectNode(parentContext.scope, viewSelectNode, projections);
+					viewSelectNode = new ProjectNode(parentContext.scope, viewSelectNode, projections);
+				}
+
+				// Wrap with AliasNode if aliased to update relationName on attributes
+				if (fromClause.alias) {
+					fromTable = new AliasNode(parentContext.scope, viewSelectNode, fromClause.alias.toLowerCase());
 				} else {
 					fromTable = viewSelectNode;
 				}
@@ -387,7 +397,14 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				}
 			} else {
 				// Regular table
-				fromTable = buildTableReference(fromClause, parentContext);
+				let tableNode: RelationalPlanNode = buildTableReference(fromClause, parentContext);
+
+				// Wrap with AliasNode if aliased to update relationName on attributes
+				if (fromClause.alias) {
+					tableNode = new AliasNode(parentContext.scope, tableNode, fromClause.alias.toLowerCase());
+				}
+
+				fromTable = tableNode;
 
 				// Create scope for table columns
 				const tableScope = new RegisteredScope(parentContext.scope);
@@ -407,7 +424,13 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		}
 
 	} else if (fromClause.type === 'functionSource') {
-		fromTable = buildTableFunctionCall(fromClause, parentContext);
+		let funcNode: RelationalPlanNode = buildTableFunctionCall(fromClause, parentContext);
+
+		// Wrap with AliasNode if aliased to update relationName on attributes
+		if (fromClause.alias) {
+			funcNode = new AliasNode(parentContext.scope, funcNode, fromClause.alias.toLowerCase());
+		}
+		fromTable = funcNode;
 
 		// Create scope for function columns
 		const functionScope = new RegisteredScope(parentContext.scope);
@@ -428,15 +451,19 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 	} else if (fromClause.type === 'subquerySource') {
 		// Build the subquery
+		let subqueryNode: RelationalPlanNode;
 		if (fromClause.subquery.type === 'select') {
-			fromTable = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
+			subqueryNode = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
 		} else if (fromClause.subquery.type === 'values') {
-			fromTable = buildValuesStmt(parentContext, fromClause.subquery);
+			subqueryNode = buildValuesStmt(parentContext, fromClause.subquery);
 		} else {
 			const exhaustiveCheck: never = fromClause.subquery;
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			throw new QuereusError(`Unsupported subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
+
+		// Wrap with AliasNode to update relationName on attributes
+		fromTable = new AliasNode(parentContext.scope, subqueryNode, fromClause.alias.toLowerCase());
 
 		// Create scope for subquery columns
 		const subqueryScope = new RegisteredScope(parentContext.scope);
@@ -475,7 +502,8 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			throw new QuereusError(`Unsupported mutating subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
 
-		fromTable = dmlNode;
+		// Wrap with AliasNode to update relationName on attributes
+		fromTable = new AliasNode(parentContext.scope, dmlNode, fromClause.alias.toLowerCase());
 
 		// Create scope for mutating subquery columns
 		const mutatingScope = new RegisteredScope(parentContext.scope);

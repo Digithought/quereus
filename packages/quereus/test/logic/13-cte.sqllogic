@@ -49,5 +49,68 @@ WITH RECURSIVE path_cte(id, name, level) AS (
 SELECT name, level FROM path_cte ORDER BY level, name;
 → [{"name":"Root","level":0},{"name":"Root -> Child A","level":1},{"name":"Root -> Child B","level":1},{"name":"Root -> Child A -> Grandchild A1","level":2}]
 
+-- Recursive CTE with aliased table in JOIN and qualified SELECT
+-- Bug reproduction: "Table 'E' not found in FROM clause for qualified SELECT *"
+CREATE TABLE Entity (id INTEGER PRIMARY KEY, component_id INTEGER NULL, type TEXT);
+INSERT INTO Entity VALUES (1, null, 'c'), (2, 1, 'c'), (3, 1, 'c'), (4, 2, 'c'), (5, 3, 'x');
+
+-- Test 1: Qualified column reference E.id in recursive part
+WITH RECURSIVE descendants(id) AS (
+  SELECT 1
+  UNION ALL
+  SELECT E.id FROM Entity E
+  JOIN descendants D ON E.component_id = D.id
+  WHERE E.type = 'c'
+)
+SELECT id FROM descendants ORDER BY id;
+→ [{"id":1},{"id":2},{"id":3},{"id":4}]
+
+-- Test 2: SELECT * from recursive CTE with qualified column in recursive part
+WITH RECURSIVE descendants(id) AS (
+  SELECT 1
+  UNION ALL
+  SELECT E.id FROM Entity E
+  JOIN descendants D ON E.component_id = D.id
+  WHERE E.type = 'c'
+)
+SELECT * FROM descendants ORDER BY id;
+→ [{"id":1},{"id":2},{"id":3},{"id":4}]
+
+-- Test 3: E.* in recursive part (qualified SELECT *)
+WITH RECURSIVE descendants(id, component_id, type) AS (
+  SELECT id, component_id, type FROM Entity WHERE id = 1
+  UNION ALL
+  SELECT E.* FROM Entity E
+  JOIN descendants D ON E.component_id = D.id
+  WHERE E.type = 'c'
+)
+SELECT id FROM descendants ORDER BY id;
+→ [{"id":1},{"id":2},{"id":3},{"id":4}]
+
+-- Test 4: D.* (CTE alias) in recursive part
+WITH RECURSIVE descendants(id) AS (
+  SELECT 1
+  UNION ALL
+  SELECT E.id FROM Entity E
+  JOIN descendants D ON E.component_id = D.id
+  WHERE E.type = 'c'
+)
+SELECT D.* FROM descendants D ORDER BY id;
+→ [{"id":1},{"id":2},{"id":3},{"id":4}]
+
+-- Test 5: Internal recursive CTE reference with alias and qualified SELECT *
+-- The recursive reference "descendants D" inside the recursive part
+WITH RECURSIVE descendants(id, component_id, type) AS (
+  SELECT id, component_id, type FROM Entity WHERE id = 1
+  UNION ALL
+  SELECT E.id, E.component_id, E.type FROM Entity E
+  JOIN descendants D ON E.component_id = D.id
+  WHERE E.type = 'c'
+)
+SELECT D.* FROM descendants D ORDER BY id;
+→ [{"id":1,"component_id":null,"type":"c"},{"id":2,"component_id":1,"type":"c"},{"id":3,"component_id":1,"type":"c"},{"id":4,"component_id":2,"type":"c"}]
+
+DROP TABLE Entity;
+
 DROP TABLE base_t;
 DROP TABLE hierarchy;

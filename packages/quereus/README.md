@@ -267,7 +267,6 @@ Quereus employs a multi-faceted testing strategy:
         *   `yarn test --show-stack` - Include full stack trace in diagnostics
         *   `yarn test --show-trace` - Include execution trace in diagnostics
         *   `yarn test --trace-plan-stack` - Enable plan stack tracing in runtime
-        *   Environment variables (deprecated): `QUEREUS_TEST_VERBOSE=true`, `QUEREUS_TEST_SHOW_PLAN=true`, etc.
     *   This helps pinpoint failures at the Parser, Planner, or Runtime layer while keeping output manageable.
     *   Provides comprehensive coverage of SQL features: basic CRUD, complex expressions, all join types, window functions, aggregates, subqueries, CTEs, constraints, transactions, set operations, views, and error handling.
 

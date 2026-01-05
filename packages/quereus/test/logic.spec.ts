@@ -240,8 +240,6 @@ function generateDiagnostics(db: Database, sqlBlock: string, error: Error): stri
 		diagnostics.push('  --show-stack                  - Show full stack trace');
 		diagnostics.push('  --show-trace                  - Show execution trace');
 		diagnostics.push('  --trace-plan-stack            - Enable plan stack tracing');
-		diagnostics.push('\nOr use environment variables (deprecated):');
-		diagnostics.push('  QUEREUS_TEST_VERBOSE=true, QUEREUS_TEST_SHOW_PLAN=true, etc.');
 	}
 
 	try {

@@ -392,13 +392,6 @@ export class MemoryTableManager {
 		}
 	}
 
- 	// Deprecated: conflict resolution is now passed explicitly to performMutation
- 	private extractConflictResolution(values: Row | undefined): ConflictResolution {
- 		return (values && (values as any)._onConflict)
- 			? (values as any)._onConflict as ConflictResolution
- 			: ConflictResolution.ABORT;
- 	}
-
 	private shouldSkipPkCheck(values: Row | undefined): boolean {
 		return !!(values && (values as any)._skipPkCheck);
 	}

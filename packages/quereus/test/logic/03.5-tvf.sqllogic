@@ -17,6 +17,9 @@ SELECT id, fullkey, type, atom FROM json_tree('{"a": [1, 2], "b": true}');
 -- TVF with alias (just test it runs for now)
 SELECT j.key FROM json_each('[5,6]') AS j WHERE j.value > 5;
 
+-- TVF with alias and qualified SELECT *
+SELECT j.* FROM json_each('[5,6]') AS j WHERE j.value > 5;
+
 -- TVF with root path (just test it runs for now)
 SELECT key, value FROM json_each('{"data": [1, 2]}', '$.data');
 
