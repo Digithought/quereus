@@ -182,7 +182,7 @@ export interface QuereusWorkerAPI {
   /**
    * Connect to a sync server
    */
-  connectSync(url: string, token?: string): Promise<void>;
+  connectSync(url: string, databaseId: string, token?: string): Promise<void>;
 
   /**
    * Disconnect from sync server

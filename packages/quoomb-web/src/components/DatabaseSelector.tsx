@@ -11,8 +11,9 @@ const DATABASE_OPTIONS: { value: StorageModuleType; label: string; icon: React.E
 
 export const DatabaseSelector: React.FC = () => {
   const { isConnecting, disconnect, initializeSession } = useSessionStore();
-  const { storageModule, setStorageModule, syncUrl, setSyncUrl } = useSettingsStore();
+  const { storageModule, setStorageModule, syncUrl, setSyncUrl, syncDatabaseId, setSyncDatabaseId } = useSettingsStore();
   const [editingSyncUrl, setEditingSyncUrl] = useState(syncUrl);
+  const [editingSyncDatabaseId, setEditingSyncDatabaseId] = useState(syncDatabaseId);
   const [isOpen, setIsOpen] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -36,6 +37,10 @@ export const DatabaseSelector: React.FC = () => {
     setEditingSyncUrl(syncUrl);
   }, [syncUrl]);
 
+  useEffect(() => {
+    setEditingSyncDatabaseId(syncDatabaseId);
+  }, [syncDatabaseId]);
+
   const currentOption = DATABASE_OPTIONS.find(opt => opt.value === storageModule) || DATABASE_OPTIONS[0];
   const CurrentIcon = currentOption.icon;
 
@@ -55,25 +60,54 @@ export const DatabaseSelector: React.FC = () => {
     }
   };
 
+  const handleSyncDatabaseIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEditingSyncDatabaseId(e.target.value);
+  };
+
+  const handleSyncDatabaseIdBlur = () => {
+    if (editingSyncDatabaseId !== syncDatabaseId) {
+      setSyncDatabaseId(editingSyncDatabaseId);
+    }
+  };
+
+  const handleSyncDatabaseIdKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.currentTarget.blur();
+    }
+  };
+
   const handleSelectDatabase = async (newModule: StorageModuleType) => {
     if (newModule === storageModule) {
       setIsOpen(false);
       return;
     }
 
-    // Warn if switching to sync without a URL configured
-    if (newModule === 'sync' && !editingSyncUrl) {
-      const confirmed = window.confirm(
-        'No sync server URL is configured.\n\nSwitch to Sync mode anyway?'
-      );
-      if (!confirmed) {
-        return;
+    // Warn if switching to sync without proper configuration
+    if (newModule === 'sync') {
+      if (!editingSyncUrl) {
+        const confirmed = window.confirm(
+          'No sync server URL is configured.\n\nSwitch to Sync mode anyway?'
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+      if (!editingSyncDatabaseId) {
+        const confirmed = window.confirm(
+          'No database ID is configured.\n\nSwitch to Sync mode anyway? (You may need to set it in Settings)'
+        );
+        if (!confirmed) {
+          return;
+        }
       }
     }
 
-    // Save any pending URL changes before switching
+    // Save any pending changes before switching
     if (editingSyncUrl !== syncUrl) {
       setSyncUrl(editingSyncUrl);
+    }
+    if (editingSyncDatabaseId !== syncDatabaseId) {
+      setSyncDatabaseId(editingSyncDatabaseId);
     }
 
     setIsSwitching(true);
@@ -157,19 +191,39 @@ export const DatabaseSelector: React.FC = () => {
                     </span>
                   </div>
                 </button>
-                {/* Sync URL input - shown when sync is selected or being selected */}
+                {/* Sync configuration inputs - shown when sync option is visible */}
                 {isSync && (
-                  <div className="px-3 pb-2 pt-1">
-                    <input
-                      type="text"
-                      value={editingSyncUrl}
-                      onChange={handleSyncUrlChange}
-                      onBlur={handleSyncUrlBlur}
-                      onKeyDown={handleSyncUrlKeyDown}
-                      onClick={(e) => e.stopPropagation()}
-                      placeholder="ws://localhost:8080/sync/ws"
-                      className="w-full px-2 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
-                    />
+                  <div className="px-3 pb-2 pt-1 space-y-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        Server URL
+                      </label>
+                      <input
+                        type="text"
+                        value={editingSyncUrl}
+                        onChange={handleSyncUrlChange}
+                        onBlur={handleSyncUrlBlur}
+                        onKeyDown={handleSyncUrlKeyDown}
+                        onClick={(e) => e.stopPropagation()}
+                        placeholder="ws://localhost:8080/sync/ws"
+                        className="w-full px-2 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        Database ID
+                      </label>
+                      <input
+                        type="text"
+                        value={editingSyncDatabaseId}
+                        onChange={handleSyncDatabaseIdChange}
+                        onBlur={handleSyncDatabaseIdBlur}
+                        onKeyDown={handleSyncDatabaseIdKeyDown}
+                        onClick={(e) => e.stopPropagation()}
+                        placeholder="local-s1"
+                        className="w-full px-2 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 font-mono"
+                      />
+                    </div>
                   </div>
                 )}
               </div>

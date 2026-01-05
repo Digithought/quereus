@@ -37,6 +37,7 @@ export interface SettingsState {
   // Storage & Sync
   storageModule: StorageModuleType;
   syncUrl: string;
+  syncDatabaseId: string;
 
   // Actions
   loadSettings: () => void;
@@ -62,6 +63,7 @@ export interface SettingsState {
   // Storage & Sync actions
   setStorageModule: (module: StorageModuleType) => void;
   setSyncUrl: (url: string) => void;
+  setSyncDatabaseId: (databaseId: string) => void;
 
   resetToDefaults: () => void;
 }
@@ -89,6 +91,7 @@ const defaultSettings = {
   // Storage & Sync defaults
   storageModule: 'memory' as StorageModuleType,
   syncUrl: 'ws://localhost:8080/sync/ws',
+  syncDatabaseId: 'local-s1',
 };
 
 // Helper function to get resolved theme
@@ -246,6 +249,13 @@ export const useSettingsStore = create<SettingsState>()(
         }));
       },
 
+      setSyncDatabaseId: (databaseId: string) => {
+        set((state) => ({
+          ...state,
+          syncDatabaseId: databaseId,
+        }));
+      },
+
       resetToDefaults: () => {
         set({
           theme: 'auto',
@@ -266,6 +276,7 @@ export const useSettingsStore = create<SettingsState>()(
           plugins: [],
           storageModule: 'memory',
           syncUrl: 'ws://localhost:8080/sync/ws',
+          syncDatabaseId: 'local-s1',
         });
 
         // Reapply theme

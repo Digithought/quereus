@@ -888,7 +888,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     return this.syncStatus;
   }
 
-  async connectSync(url: string, token?: string): Promise<void> {
+  async connectSync(url: string, databaseId: string, token?: string): Promise<void> {
     if (!this.syncManager || !this.syncEvents) {
       throw new Error('Sync module not initialized. Call setStorageModule("sync") first.');
     }
@@ -921,7 +921,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     });
 
     // Connect to the server
-    await this.syncClient.connect(url, token);
+    await this.syncClient.connect(url, databaseId, token);
   }
 
   /**

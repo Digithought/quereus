@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore.js';
-import { X, Sun, Moon, Monitor, Eye, EyeOff, Type, Zap, Puzzle, Settings2 } from 'lucide-react';
+import { X, Sun, Moon, Monitor, Eye, EyeOff, Type, Zap, Puzzle, Settings2, AlertCircle } from 'lucide-react';
 import { PluginsModal } from './PluginsModal.js';
 import { ConfigModal } from './ConfigModal.js';
 
@@ -31,11 +31,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     setMaxHistoryItems,
     syncUrl,
     setSyncUrl,
+    syncDatabaseId,
+    setSyncDatabaseId,
     resetToDefaults,
   } = useSettingsStore();
 
   const [showPluginsModal, setShowPluginsModal] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
+
+  // Validate database ID format
+  const validateDatabaseId = (id: string): boolean => {
+    if (!id) return false;
+    const parts = id.split('-');
+    if (parts.length !== 2) return false;
+    const [accountId, dbPart] = parts;
+    if (!accountId) return false;
+    if (dbPart === 'acc') return true;
+    if (dbPart.length < 2) return false;
+    const typeChar = dbPart[0];
+    if (typeChar !== 's' && typeChar !== 'd') return false;
+    const numStr = dbPart.slice(1);
+    const num = parseInt(numStr, 10);
+    return !isNaN(num) && num >= 1;
+  };
+
+  const isDatabaseIdValid = validateDatabaseId(syncDatabaseId);
 
   if (!isOpen) return null;
 
@@ -286,20 +306,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <section>
               <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Sync Settings</h3>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Sync Server URL
-                </label>
-                <input
-                  type="text"
-                  value={syncUrl}
-                  onChange={(e) => setSyncUrl(e.target.value)}
-                  placeholder="ws://localhost:8080/sync/ws"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  WebSocket URL of the sync-coordinator server (e.g., ws://host:port/sync/ws).
-                </p>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Sync Server URL
+                  </label>
+                  <input
+                    type="text"
+                    value={syncUrl}
+                    onChange={(e) => setSyncUrl(e.target.value)}
+                    placeholder="ws://localhost:8080/sync/ws"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    WebSocket URL of the sync-coordinator server (e.g., ws://host:port/sync/ws).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Database ID
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={syncDatabaseId}
+                      onChange={(e) => setSyncDatabaseId(e.target.value)}
+                      placeholder="local-s1"
+                      className={`w-full px-3 py-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 font-mono ${
+                        syncDatabaseId && !isDatabaseIdValid
+                          ? 'border-red-500 dark:border-red-500'
+                          : 'border-gray-300 dark:border-gray-600'
+                      }`}
+                    />
+                    {syncDatabaseId && !isDatabaseIdValid && (
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                        <AlertCircle size={16} className="text-red-500" />
+                      </div>
+                    )}
+                  </div>
+                  {syncDatabaseId && !isDatabaseIdValid ? (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1 flex items-center gap-1">
+                      <AlertCircle size={12} />
+                      Invalid format. Must be: accountId-s# or accountId-d# or accountId-acc
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Format: <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">accountId-type#</code>
+                      {' '}where type is <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">s</code> (scenario), 
+                      <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">d</code> (dynamics), or 
+                      <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">acc</code> (account).
+                      Default: <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded">local-s1</code>
+                    </p>
+                  )}
+                </div>
               </div>
             </section>
           </div>
