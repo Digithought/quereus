@@ -2,4 +2,4 @@
 * Stay DRY
 * Use yarn
 
-Start by reading packages/quereus/docs/readme.md and other docs that might be related to the topic.
+Start by reading packages/quereus/readme.md and other docs that might be related to the topic.

@@ -118,6 +118,11 @@ export class MemoryTableConnection {
 		// This ensures the snapshot is independent of the source layer
 		const snapshotLayer = new TransactionLayer(sourceLayer.getParent());
 
+		// Copy change tracking state
+		if (sourceLayer.isTrackingChanges()) {
+			snapshotLayer.copyChangeTrackingFrom(sourceLayer);
+		}
+
 		// Copy all data from the source layer to the snapshot
 		const primaryTree = sourceLayer.getModificationTree('primary');
 		if (!primaryTree) {

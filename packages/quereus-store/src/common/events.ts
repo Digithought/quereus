@@ -2,7 +2,7 @@
  * Reactive event types and emitter for schema and data changes.
  */
 
-import type { Row, SqlValue } from '@quereus/quereus';
+import type { Row, SqlValue, VTableEventEmitter, VTableDataChangeEvent, VTableSchemaChangeEvent } from '@quereus/quereus';
 
 /**
  * Schema change event types.
@@ -54,17 +54,18 @@ interface PendingRemoteSchemaEvent {
 
 /**
  * Simple event emitter for store events.
+ * Implements VTableEventEmitter for compatibility with core vtab event system.
  */
-export class StoreEventEmitter {
-  private schemaListeners: Set<SchemaChangeListener> = new Set();
-  private dataListeners: Set<DataChangeListener> = new Set();
-  private batchedDataEvents: DataChangeEvent[] = [];
-  private isBatching = false;
-  /**
-   * Pending remote schema events that should be marked as remote when they arrive.
-   * Uses a Map with stringified key for O(1) lookup.
-   */
-  private pendingRemoteSchemaEvents: Map<string, number> = new Map();
+export class StoreEventEmitter implements VTableEventEmitter {
+	private schemaListeners: Set<SchemaChangeListener> = new Set();
+	private dataListeners: Set<DataChangeListener> = new Set();
+	private batchedDataEvents: DataChangeEvent[] = [];
+	private isBatching = false;
+	/**
+	 * Pending remote schema events that should be marked as remote when they arrive.
+	 * Uses a Map with stringified key for O(1) lookup.
+	 */
+	private pendingRemoteSchemaEvents: Map<string, number> = new Map();
 
   /**
    * Subscribe to schema change events.
@@ -199,21 +200,35 @@ export class StoreEventEmitter {
     this.batchedDataEvents = [];
   }
 
-  /**
-   * Check if there are any listeners registered.
-   */
-  hasListeners(): boolean {
-    return this.schemaListeners.size > 0 || this.dataListeners.size > 0;
-  }
+	/**
+	 * Check if there are any listeners registered.
+	 */
+	hasListeners(): boolean {
+		return this.schemaListeners.size > 0 || this.dataListeners.size > 0;
+	}
 
-  /**
-   * Remove all listeners.
-   */
-  removeAllListeners(): void {
-    this.schemaListeners.clear();
-    this.dataListeners.clear();
-    this.batchedDataEvents = [];
-    this.isBatching = false;
-  }
+	/**
+	 * Check if there are any data listeners registered (VTableEventEmitter compatibility).
+	 */
+	hasDataListeners(): boolean {
+		return this.dataListeners.size > 0;
+	}
+
+	/**
+	 * Check if there are any schema listeners registered (VTableEventEmitter compatibility).
+	 */
+	hasSchemaListeners(): boolean {
+		return this.schemaListeners.size > 0;
+	}
+
+	/**
+	 * Remove all listeners.
+	 */
+	removeAllListeners(): void {
+		this.schemaListeners.clear();
+		this.dataListeners.clear();
+		this.batchedDataEvents = [];
+		this.isBatching = false;
+	}
 }
 

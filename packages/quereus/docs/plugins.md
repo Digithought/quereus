@@ -93,6 +93,8 @@ Virtual tables allow you to expose external data sources as SQL tables. Use the 
 
 **For comprehensive module authoring guidance**, including optimization integration, the Retrieve boundary architecture, and best practices, see the [Module Authoring Guide](module-authoring.md). This section covers plugin packaging; the authoring guide covers module implementation details.
 
+**For reactive patterns with mutation and schema change events**, see the [VTable Event Hooks](vtab-events.md) documentation.
+
 ### Basic Virtual Table
 
 ```typescript

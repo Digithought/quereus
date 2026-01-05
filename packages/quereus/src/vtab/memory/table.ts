@@ -15,6 +15,7 @@ import { safeJsonStringify } from '../../util/serialization.js';
 import type { VirtualTableConnection } from '../connection.js';
 import { MemoryVirtualTableConnection } from './connection.js';
 import type { ConflictResolution } from '../../common/constants.js';
+import type { VTableEventEmitter } from '../events.js';
 
 const logger = createMemoryTableLoggers('table');
 
@@ -99,6 +100,13 @@ export class MemoryTable extends VirtualTable {
 			return undefined;
 		}
 		return new MemoryVirtualTableConnection(this.tableName, this.connection);
+	}
+
+	/**
+	 * Get the event emitter for mutation and schema hooks.
+	 */
+	getEventEmitter(): VTableEventEmitter | undefined {
+		return this.manager.getEventEmitter();
 	}
 
 	// Direct async iteration for query execution

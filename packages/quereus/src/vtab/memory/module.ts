@@ -11,6 +11,7 @@ import type { MemoryTableConfig } from './types.js';
 import { createMemoryTableLoggers } from './utils/logging.js';
 import { AccessPlanBuilder, validateAccessPlan } from '../best-access-plan.js';
 import type { BestAccessPlanRequest, BestAccessPlanResult, ColumnMeta, OrderingSpec, PredicateConstraint } from '../best-access-plan.js';
+import type { VTableEventEmitter } from '../events.js';
 
 const logger = createMemoryTableLoggers('module');
 
@@ -21,8 +22,18 @@ const logger = createMemoryTableLoggers('module');
  */
 export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableConfig> {
 	public readonly tables: Map<string, MemoryTableManager> = new Map();
+	private eventEmitter?: VTableEventEmitter;
 
-	constructor() { }
+	constructor(eventEmitter?: VTableEventEmitter) {
+		this.eventEmitter = eventEmitter;
+	}
+
+	/**
+	 * Get the event emitter for this module, if one was provided.
+	 */
+	getEventEmitter(): VTableEventEmitter | undefined {
+		return this.eventEmitter;
+	}
 
 	/**
 	 * Creates a new memory table definition
@@ -34,14 +45,15 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			throw new QuereusError(`Memory table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'.`, StatusCode.ERROR);
 		}
 
-		// Create the MemoryTableManager instance
+		// Create the MemoryTableManager instance with optional event emitter
 		const manager = new MemoryTableManager(
 			db,
 			tableSchema.vtabModuleName,
 			tableSchema.schemaName,
 			tableSchema.name,
 			tableSchema,
-			tableSchema.isReadOnly ?? false
+			tableSchema.isReadOnly ?? false,
+			this.eventEmitter
 		);
 
 		// Register the manager
@@ -49,6 +61,14 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		logger.operation('Create Table', tableSchema.name, {
 			schema: tableSchema.schemaName,
 			readOnly: tableSchema.isReadOnly ?? false
+		});
+
+		// Emit schema change event
+		this.eventEmitter?.emitSchemaChange?.({
+			type: 'create',
+			objectType: 'table',
+			schemaName: tableSchema.schemaName,
+			objectName: tableSchema.name,
 		});
 
 		// Create and return the MemoryTable instance
@@ -640,6 +660,15 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			// This will call the manager's destroy method which handles cleaning up resources
 			await manager.destroy?.();
 			this.tables.delete(tableKey);
+
+			// Emit schema change event
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'drop',
+				objectType: 'table',
+				schemaName,
+				objectName: tableName,
+			});
+
 			logger.operation('Destroy Table', tableName, { schema: schemaName });
 		}
 	}

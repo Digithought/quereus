@@ -14,6 +14,16 @@ const warnLog = log.extend('warn');
 let transactionLayerCounter = 1000;
 
 /**
+ * Pending change for event emission.
+ */
+interface PendingChange {
+	type: 'insert' | 'update' | 'delete';
+	pk: BTreeKeyForPrimary;
+	oldRow?: Row;
+	newRow?: Row;
+}
+
+/**
  * Represents a set of modifications (inserts, updates, deletes) applied
  * on top of a parent Layer using inherited BTrees with copy-on-write semantics.
  * These layers are immutable once committed.
@@ -30,6 +40,9 @@ export class TransactionLayer implements Layer {
 	private secondaryIndexes: Map<string, MemoryIndex>;
 
 	private _isCommitted: boolean = false;
+
+	/** Pending changes for event emission. Null if tracking disabled. */
+	private pendingChanges: PendingChange[] | null = null;
 
 	// Cache for BTree funcs to avoid recalculation
 	private btreeFuncsCacheForKeyExtraction: Map<string | 'primary', {
@@ -105,6 +118,39 @@ export class TransactionLayer implements Layer {
 		}
 	}
 
+	/**
+	 * Enable change tracking for event emission.
+	 * Should be called before mutations if there are listeners.
+	 */
+	enableChangeTracking(): void {
+		if (!this.pendingChanges) {
+			this.pendingChanges = [];
+		}
+	}
+
+	/**
+	 * Check if change tracking is enabled.
+	 */
+	isTrackingChanges(): boolean {
+		return this.pendingChanges !== null;
+	}
+
+	/**
+	 * Get pending changes for event emission.
+	 */
+	getPendingChanges(): readonly PendingChange[] {
+		return this.pendingChanges ?? [];
+	}
+
+	/**
+	 * Copy change tracking state from another layer (for savepoint snapshots).
+	 */
+	copyChangeTrackingFrom(source: TransactionLayer): void {
+		if (source.pendingChanges) {
+			this.pendingChanges = [...source.pendingChanges];
+		}
+	}
+
 	public getPkExtractorsAndComparators(schema: TableSchema): {
 		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
 		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number
@@ -136,6 +182,16 @@ export class TransactionLayer implements Layer {
 		if (this._isCommitted) throw new QuereusError("Cannot modify a committed layer");
 
 		this.primaryModifications.upsert(newRowData);
+
+		// Track change for event emission
+		if (this.pendingChanges) {
+			this.pendingChanges.push({
+				type: oldRowDataIfUpdate ? 'update' : 'insert',
+				pk: primaryKey,
+				oldRow: oldRowDataIfUpdate ?? undefined,
+				newRow: newRowData,
+			});
+		}
 
 		// Update secondary indexes
 		const schema = this.getSchema();
@@ -177,6 +233,15 @@ export class TransactionLayer implements Layer {
 		}
 		// If key doesn't exist, there's nothing to delete - no deletion marker needed
 		// Inheritree's copy-on-write semantics handle this properly
+
+		// Track change for event emission
+		if (this.pendingChanges) {
+			this.pendingChanges.push({
+				type: 'delete',
+				pk: primaryKey,
+				oldRow: oldRowDataForIndexes,
+			});
+		}
 
 		// Update secondary indexes to remove entries
 		const schema = this.getSchema();

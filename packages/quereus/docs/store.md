@@ -52,14 +52,18 @@ store.onDataChange((event: DataChangeEvent) => {
 
 ### StoreEventEmitter API
 
-The `StoreEventEmitter` class provides the reactive hooks infrastructure:
+The `StoreEventEmitter` class provides the reactive hooks infrastructure and implements the `VTableEventEmitter` interface for compatibility with the core vtab event system:
 
 ```typescript
 import { StoreEventEmitter } from '@quereus/store';
+import type { VTableEventEmitter } from '@quereus/quereus';
 
 // Create emitter and pass to module constructor
 const eventEmitter = new StoreEventEmitter();
 const module = new StoreModule(provider, eventEmitter);
+
+// StoreEventEmitter is compatible with VTableEventEmitter
+const vtabEmitter: VTableEventEmitter = eventEmitter;
 
 // Subscribe to schema changes
 const unsubscribeSchema = eventEmitter.onSchemaChange((event) => {

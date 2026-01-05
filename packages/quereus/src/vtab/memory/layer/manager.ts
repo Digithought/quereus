@@ -20,6 +20,7 @@ import { createMemoryTableLoggers } from '../utils/logging.js';
 import { getSyncLiteral } from '../../../parser/utils.js';
 import { createLogger } from '../../../common/logger.js';
 import { validateAndParse } from '../../../types/validation.js';
+import type { VTableEventEmitter } from '../../events.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
@@ -39,13 +40,17 @@ export class MemoryTableManager {
 
 	private primaryKeyFunctions!: PrimaryKeyFunctions;
 
+	/** Optional event emitter for mutation and schema hooks */
+	private eventEmitter?: VTableEventEmitter;
+
 	constructor(
 		db: Database,
 		_moduleName: string,
 		schemaName: string,
 		tableName: string,
 		initialSchema: TableSchema,
-		readOnly: boolean = false
+		readOnly: boolean = false,
+		eventEmitter?: VTableEventEmitter
 	) {
 		this.managerId = tableManagerCounter++;
 		this.db = db;
@@ -53,6 +58,7 @@ export class MemoryTableManager {
 		this._tableName = tableName;
 		this.tableSchema = initialSchema;
 		this.isReadOnly = readOnly;
+		this.eventEmitter = eventEmitter;
 
 		this.initializePrimaryKeyFunctions();
 
@@ -62,6 +68,29 @@ export class MemoryTableManager {
 
 	private initializePrimaryKeyFunctions(): void {
 		this.primaryKeyFunctions = createPrimaryKeyFunctions(this.tableSchema);
+	}
+
+	/**
+	 * Get the event emitter if one was provided.
+	 */
+	getEventEmitter(): VTableEventEmitter | undefined {
+		return this.eventEmitter;
+	}
+
+	/**
+	 * Compute which columns changed between old and new rows.
+	 */
+	private computeChangedColumns(oldRow: Row, newRow: Row): string[] {
+		const changed: string[] = [];
+		const schema = this.tableSchema;
+
+		for (let i = 0; i < schema.columns.length && i < Math.max(oldRow.length, newRow.length); i++) {
+			if (oldRow[i] !== newRow[i]) {
+				changed.push(schema.columns[i].name);
+			}
+		}
+
+		return changed;
 	}
 
 	private get primaryKeyFromRow() {
@@ -116,6 +145,9 @@ export class MemoryTableManager {
 		const pendingLayer = connection.pendingTransactionLayer;
 		if (!pendingLayer) return;
 
+		// Capture changes before marking committed
+		const changes = pendingLayer.getPendingChanges();
+
 		const lockKey = `MemoryTable.Commit:${this.schemaName}.${this._tableName}`;
 		const release = await Latches.acquire(lockKey);
 		logger.debugLog(`[Commit ${connection.connectionId}] Acquired lock for ${this._tableName}`);
@@ -163,6 +195,27 @@ export class MemoryTableManager {
 			connection.readLayer = pendingLayer;
 			connection.pendingTransactionLayer = null;
 			connection.clearSavepoints();
+
+			// Emit data change events after successful commit
+			if (changes.length > 0 && this.eventEmitter?.emitDataChange) {
+				for (const change of changes) {
+					const event: import('../../events.js').VTableDataChangeEvent = {
+						type: change.type,
+						schemaName: this.schemaName,
+						tableName: this._tableName,
+						key: Array.isArray(change.pk) ? change.pk : [change.pk],
+						oldRow: change.oldRow,
+						newRow: change.newRow,
+					};
+
+					// Add changedColumns for update events
+					if (change.type === 'update' && change.oldRow && change.newRow) {
+						event.changedColumns = this.computeChangedColumns(change.oldRow, change.newRow);
+					}
+
+					this.eventEmitter.emitDataChange(event);
+				}
+			}
 		} finally {
 			release();
 			logger.debugLog(`[Commit ${connection.connectionId}] Released lock for ${this._tableName}`);
@@ -387,6 +440,12 @@ export class MemoryTableManager {
 		if (!connection.pendingTransactionLayer) {
 			// Lazily create a new TransactionLayer based on the current committed layer
 			connection.pendingTransactionLayer = new TransactionLayer(this._currentCommittedLayer);
+
+			// Enable change tracking if there are data listeners
+			if (this.eventEmitter?.hasDataListeners?.()) {
+				connection.pendingTransactionLayer.enableChangeTracking();
+			}
+
 			// If this method is called from a DML statement outside an explicit BEGIN, the
 			// transaction is auto-created (autocommit mode).  Leave explicitTransaction flag as-is.
 		}
@@ -531,7 +590,16 @@ export class MemoryTableManager {
 
 	public renameTable(newName: string): void {
 		logger.operation('Rename Table', this._tableName, { newName });
+		const oldName = this._tableName;
 		this._tableName = newName;
+
+		// Emit schema change event
+		this.eventEmitter?.emitSchemaChange?.({
+			type: 'alter',
+			objectType: 'table',
+			schemaName: this.schemaName,
+			objectName: newName,
+		});
 	}
 
 	// --- Schema Operations (simplified with inherited BTrees) ---
@@ -574,6 +642,16 @@ export class MemoryTableManager {
 			await this.baseLayer.addColumnToBase(newColumnSchema, defaultValue);
 			this.tableSchema = finalNewTableSchema;
 			this.initializePrimaryKeyFunctions();
+
+			// Emit schema change event
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'alter',
+				objectType: 'column',
+				schemaName: this.schemaName,
+				objectName: this._tableName,
+				columnName: newColumnSchema.name,
+			});
+
 			logger.operation('Add Column', this._tableName, { columnName: newColumnSchema.name });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
@@ -626,6 +704,16 @@ export class MemoryTableManager {
 			await this.baseLayer.dropColumnFromBase(colIndex);
 			this.tableSchema = finalNewTableSchema;
 			this.initializePrimaryKeyFunctions();
+
+			// Emit schema change event
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'drop',
+				objectType: 'column',
+				schemaName: this.schemaName,
+				objectName: this._tableName,
+				columnName,
+			});
+
 			logger.operation('Drop Column', this._tableName, { columnName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
@@ -679,6 +767,17 @@ export class MemoryTableManager {
 			await this.baseLayer.handleColumnRename();
 			this.tableSchema = finalNewTableSchema;
 			this.initializePrimaryKeyFunctions();
+
+			// Emit schema change event
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'alter',
+				objectType: 'column',
+				schemaName: this.schemaName,
+				objectName: this._tableName,
+				columnName: newColumnName,
+				oldColumnName: oldName,
+			});
+
 			logger.operation('Rename Column', this._tableName, { oldName, newName: newColumnName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
@@ -723,6 +822,15 @@ export class MemoryTableManager {
 			await this.baseLayer.addIndexToBase(newIndexSchemaEntry);
 
 			this.tableSchema = finalNewTableSchema;
+
+			// Emit schema change event
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'create',
+				objectType: 'index',
+				schemaName: this.schemaName,
+				objectName: indexName,
+			});
+
 			logger.operation('Create Index', this._tableName, { indexName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);
@@ -757,6 +865,15 @@ export class MemoryTableManager {
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.dropIndexFromBase(indexName);
 			this.tableSchema = finalNewTableSchema;
+
+			// Emit schema change event
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'drop',
+				objectType: 'index',
+				schemaName: this.schemaName,
+				objectName: indexName,
+			});
+
 			logger.operation('Drop Index', this._tableName, { indexName });
 		} catch (e: any) {
 			this.baseLayer.updateSchema(originalManagerSchema);

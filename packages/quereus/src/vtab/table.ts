@@ -8,6 +8,7 @@ import type { RowOp } from '../common/types.js';
 import type { ConflictResolution } from '../common/constants.js';
 import type { VirtualTableConnection } from './connection.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
+import type { VTableEventEmitter } from './events.js';
 
 /**
  * Arguments passed to VirtualTable.update() method.
@@ -174,4 +175,10 @@ export abstract class VirtualTable {
 	 * @param indexName The name of the index to drop
 	 */
 	dropIndex?(indexName: string): Promise<void>;
+
+	/**
+	 * Gets the event emitter for this table, if the module supports mutation/schema events.
+	 * @returns Event emitter, or undefined if not supported
+	 */
+	getEventEmitter?(): VTableEventEmitter | undefined;
 }

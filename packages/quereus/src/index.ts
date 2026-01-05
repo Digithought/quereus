@@ -26,6 +26,16 @@ export { IndexScanFlags } from './vtab/index-info.js';
 export type { FilterInfo } from './vtab/filter-info.js';
 export type { BaseModuleConfig, SchemaChangeInfo } from './vtab/module.js';
 
+// Virtual Table Event Hooks
+export type {
+	VTableDataChangeEvent,
+	VTableDataChangeListener,
+	VTableSchemaChangeEvent,
+	VTableSchemaChangeListener,
+	VTableEventEmitter
+} from './vtab/events.js';
+export { DefaultVTableEventEmitter } from './vtab/events.js';
+
 // Best Access Plan API (modern vtable planning interface)
 export type {
 	BestAccessPlanRequest,
