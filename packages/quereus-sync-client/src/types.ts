@@ -109,6 +109,7 @@ export interface SyncClientOptions {
 /** Client → Server: Handshake */
 export interface HandshakeMessage {
   type: 'handshake';
+  databaseId: string;   // Database ID for multi-tenant routing
   siteId: string;       // Base64-encoded site ID
   token?: string;       // Optional auth token
 }

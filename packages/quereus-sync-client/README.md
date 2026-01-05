@@ -41,7 +41,7 @@ const client = new SyncClient({
 });
 
 // Connect to the sync server
-await client.connect('wss://your-server.com/sync/ws', authToken);
+await client.connect('wss://your-server.com/sync/ws', 'a1-s1', authToken);
 
 // Changes are synced automatically via syncEvents listener
 // When done:
@@ -92,7 +92,7 @@ interface SyncClientOptions {
 
 #### Methods
 
-- `connect(url: string, token?: string): Promise<void>` - Connect to sync server
+- `connect(url: string, databaseId: string, token?: string): Promise<void>` - Connect to sync server
 - `disconnect(): Promise<void>` - Disconnect and stop reconnection attempts
 - `getStatus(): SyncStatus` - Get current connection status
 

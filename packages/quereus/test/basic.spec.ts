@@ -223,5 +223,183 @@ describe(`Basic query`, () => {
 			void expect(afterRows).to.have.length(1);
 			void expect(afterRows[0].description).to.equal('dddd');
 		});
+
+		it('should support parameters in simple CTEs', async () => {
+			// Regression test: Parameters in CTEs were not resolved because
+			// CTE scope creation skipped the ParameterScope in the scope chain
+			const rows: any[] = [];
+			for await (const row of db.eval(`
+				WITH filtered AS (
+					SELECT id, name FROM test_params WHERE id = ?
+				)
+				SELECT * FROM filtered
+			`, [2])) {
+				rows.push(row);
+			}
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(2);
+			void expect(rows[0].name).to.equal('Bob');
+		});
+
+		it('should support parameters in recursive CTE base case', async () => {
+			// Create a tree structure for testing
+			await db.exec('CREATE TABLE tree (id INTEGER PRIMARY KEY, parent_id INTEGER NULL, name TEXT)');
+			await db.exec("INSERT INTO tree VALUES (1, null, 'Root')");
+			await db.exec("INSERT INTO tree VALUES (2, 1, 'A')");
+			await db.exec("INSERT INTO tree VALUES (3, 1, 'B')");
+			await db.exec("INSERT INTO tree VALUES (4, 2, 'A1')");
+			await db.exec("INSERT INTO tree VALUES (5, 3, 'B1')");
+
+			// Query descendants starting from a parameterized root
+			const rows: any[] = [];
+			for await (const row of db.eval(`
+				WITH RECURSIVE descendants(id) AS (
+					SELECT ?
+					UNION ALL
+					SELECT t.id FROM tree t
+					JOIN descendants d ON t.parent_id = d.id
+				)
+				SELECT d.id, t.name FROM descendants d JOIN tree t ON d.id = t.id ORDER BY d.id
+			`, [1])) {
+				rows.push(row);
+			}
+			void expect(rows).to.have.length(5);
+			void expect(rows.map(r => r.id)).to.deep.equal([1, 2, 3, 4, 5]);
+		});
+
+		it('should support multiple parameters in recursive CTE', async () => {
+			// Create a tree structure for testing
+			await db.exec('CREATE TABLE tree2 (id INTEGER PRIMARY KEY, parent_id INTEGER NULL, name TEXT)');
+			await db.exec("INSERT INTO tree2 VALUES (1, null, 'Root')");
+			await db.exec("INSERT INTO tree2 VALUES (2, 1, 'A')");
+			await db.exec("INSERT INTO tree2 VALUES (3, 1, 'B')");
+			await db.exec("INSERT INTO tree2 VALUES (4, 2, 'A1')");
+			await db.exec("INSERT INTO tree2 VALUES (5, 3, 'B1')");
+
+			// Query descendants with filtering by name pattern
+			const rows: any[] = [];
+			for await (const row of db.eval(`
+				WITH RECURSIVE descendants(id) AS (
+					SELECT ?
+					UNION ALL
+					SELECT t.id FROM tree2 t
+					JOIN descendants d ON t.parent_id = d.id
+					WHERE t.name LIKE ?
+				)
+				SELECT d.id, t.name FROM descendants d JOIN tree2 t ON d.id = t.id ORDER BY d.id
+			`, [1, 'A%'])) {
+				rows.push(row);
+			}
+			// Should get: Root (1), A (2), A1 (4) - B and B1 are filtered out
+			void expect(rows).to.have.length(3);
+			void expect(rows.map(r => r.id)).to.deep.equal([1, 2, 4]);
+		});
+
+		it('should support same parameter value used multiple times', async () => {
+			// Regression test matching the exact bug report pattern:
+			// with recursive descendants(id) as (
+			//   select ?
+			//   union all
+			//   select E.id from Entity E
+			//   join descendants D on E.component_id = D.id
+			//   where E.type = 'c'
+			// )
+			// with params: ['site', 'site']
+			await db.exec('CREATE TABLE Entity (id TEXT PRIMARY KEY, component_id TEXT NULL, type TEXT)');
+			await db.exec("INSERT INTO Entity VALUES ('site', null, 'c')");
+			await db.exec("INSERT INTO Entity VALUES ('child1', 'site', 'c')");
+			await db.exec("INSERT INTO Entity VALUES ('child2', 'site', 'c')");
+			await db.exec("INSERT INTO Entity VALUES ('grandchild1', 'child1', 'c')");
+			await db.exec("INSERT INTO Entity VALUES ('other', 'site', 'x')"); // different type, should be excluded
+
+			const rows: any[] = [];
+			for await (const row of db.eval(`
+				WITH RECURSIVE descendants(id) AS (
+					SELECT ?
+					UNION ALL
+					SELECT E.id FROM Entity E
+					JOIN descendants D ON E.component_id = D.id
+					WHERE E.type = 'c'
+				)
+				SELECT * FROM descendants ORDER BY id
+			`, ['site'])) {
+				rows.push(row);
+			}
+			// Should get: site, child1, child2, grandchild1 (not 'other' due to type filter)
+			void expect(rows).to.have.length(4);
+			void expect(rows.map(r => r.id).sort()).to.deep.equal(['child1', 'child2', 'grandchild1', 'site']);
+		});
+
+		it('should handle extra parameters gracefully', async () => {
+			// Test what happens when more parameters are passed than needed
+			// The bug report shows params: ['site', 'site'] for a query with one ?
+			await db.exec('CREATE TABLE Entity2 (id TEXT PRIMARY KEY, component_id TEXT NULL, type TEXT)');
+			await db.exec("INSERT INTO Entity2 VALUES ('site', null, 'c')");
+			await db.exec("INSERT INTO Entity2 VALUES ('child1', 'site', 'c')");
+
+			const rows: any[] = [];
+			// Pass 2 params for a query with 1 ?
+			for await (const row of db.eval(`
+				WITH RECURSIVE descendants(id) AS (
+					SELECT ?
+					UNION ALL
+					SELECT E.id FROM Entity2 E
+					JOIN descendants D ON E.component_id = D.id
+					WHERE E.type = 'c'
+				)
+				SELECT * FROM descendants ORDER BY id
+			`, ['site', 'site'])) {
+				rows.push(row);
+			}
+			void expect(rows).to.have.length(2);
+		});
+
+		it('should handle prepared statement with CTE parameters', async () => {
+			// Test prepared statement flow - this is how quereus-worker likely uses it
+			await db.exec('CREATE TABLE Entity3 (id TEXT PRIMARY KEY, component_id TEXT NULL, type TEXT)');
+			await db.exec("INSERT INTO Entity3 VALUES ('site', null, 'c')");
+			await db.exec("INSERT INTO Entity3 VALUES ('child1', 'site', 'c')");
+
+			const sql = `
+				WITH RECURSIVE descendants(id) AS (
+					SELECT ?
+					UNION ALL
+					SELECT E.id FROM Entity3 E
+					JOIN descendants D ON E.component_id = D.id
+					WHERE E.type = 'c'
+				)
+				SELECT * FROM descendants ORDER BY id
+			`;
+
+			// Prepare without parameters first
+			const stmt = db.prepare(sql);
+
+			// Then bind and execute
+			stmt.bindAll(['site']);
+			const rows: any[] = [];
+			for await (const row of stmt.iterateRows()) {
+				rows.push(row);
+			}
+			void expect(rows).to.have.length(2);
+
+			await stmt.finalize();
+		});
+
+		it('should support parameters in main query after CTE', async () => {
+			// Test parameter in the main SELECT that uses the CTE
+			// This tests if the CTE scope correctly chains to ParameterScope
+			const rows: any[] = [];
+			for await (const row of db.eval(`
+				WITH filtered AS (
+					SELECT id, name FROM test_params
+				)
+				SELECT * FROM filtered WHERE id = ?
+			`, [2])) {
+				rows.push(row);
+			}
+			void expect(rows).to.have.length(1);
+			void expect(rows[0].id).to.equal(2);
+			void expect(rows[0].name).to.equal('Bob');
+		});
 	});
 });

@@ -59,6 +59,7 @@ export class SyncClient {
   // Connection state
   private _status: SyncStatus = { status: 'disconnected' };
   private connectionUrl: string | null = null;
+  private connectionDatabaseId: string | null = null;
   private connectionToken: string | undefined = undefined;
 
   // Reconnection state
@@ -108,12 +109,14 @@ export class SyncClient {
    * Connect to a sync server.
    *
    * @param url - WebSocket URL of the sync server
+   * @param databaseId - Database ID for multi-tenant routing
    * @param token - Optional authentication token
    * @returns Promise that resolves when connected (not yet synced)
    */
-  async connect(url: string, token?: string): Promise<void> {
+  async connect(url: string, databaseId: string, token?: string): Promise<void> {
     // Store connection params for reconnection
     this.connectionUrl = url;
+    this.connectionDatabaseId = databaseId;
     this.connectionToken = token;
     this.intentionalDisconnect = false;
 
@@ -135,7 +138,7 @@ export class SyncClient {
 
         this.ws.onopen = () => {
           this.reconnectAttempts = 0;
-          this.sendHandshake(token);
+          this.sendHandshake(databaseId, token);
           this.setStatus({ status: 'syncing', progress: 0 });
           this.emitSyncEvent('state-change', 'Connected to sync server, handshake sent');
           resolve();
@@ -320,10 +323,11 @@ export class SyncClient {
   // Private: Message Sending
   // ==========================================================================
 
-  private sendHandshake(token?: string): void {
+  private sendHandshake(databaseId: string, token?: string): void {
     const siteId = this.syncManager.getSiteId();
     this.send({
       type: 'handshake',
+      databaseId,
       siteId: siteIdToBase64(siteId),
       token,
     });
@@ -434,7 +438,7 @@ export class SyncClient {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect(this.connectionUrl!, this.connectionToken).catch(() => {
+      this.connect(this.connectionUrl!, this.connectionDatabaseId!, this.connectionToken).catch(() => {
         // Error already handled in connect, reconnect will be scheduled by onclose
       });
     }, delay);

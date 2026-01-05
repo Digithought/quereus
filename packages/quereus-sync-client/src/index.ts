@@ -20,7 +20,7 @@
  *   onRemoteChanges: (result) => console.log('Applied:', result.applied),
  * });
  *
- * await client.connect('ws://localhost:8080/sync');
+ * await client.connect('ws://localhost:8080/sync', 'a1-s1');
  * ```
  *
  * @packageDocumentation

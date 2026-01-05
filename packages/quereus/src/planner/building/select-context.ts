@@ -1,20 +1,9 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import type { CTEScopeNode } from '../nodes/cte-node.js';
-import type { Scope } from '../scopes/scope.js';
 import { RegisteredScope } from '../scopes/registered.js';
-import { ParameterScope } from '../scopes/param.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildWithClause } from './with.js';
-
-/**
- * Helper function to get the non-parameter ancestor scope.
- * This ensures table/column scopes don't inherit from ParameterScope,
- * preventing parameter resolution ambiguity in MultiScope.
- */
-export function getNonParamAncestor(scope: Scope): Scope {
-	return (scope instanceof ParameterScope) ? scope.parentScope : scope;
-}
 
 /**
  * Builds context with CTEs if present
@@ -59,7 +48,8 @@ function createCTEScope(
 	cteNodes: Map<string, CTEScopeNode>,
 	ctx: PlanningContext
 ): RegisteredScope {
-	const cteScope = new RegisteredScope(getNonParamAncestor(ctx.scope));
+	// Keep ParameterScope in the chain so parameters can be resolved in queries using CTEs
+	const cteScope = new RegisteredScope(ctx.scope);
 
 	// Register each CTE in the scope
 	for (const [cteName, cteNode] of cteNodes) {
