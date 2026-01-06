@@ -786,14 +786,15 @@ These table-valued functions provide introspection and debugging capabilities fo
 ### Schema Introspection Functions
 
 *   `schema()`
-    *   **Description:** Returns information about all schema objects (tables, views, functions) in the database.
+    *   **Description:** Returns information about all schema objects (tables, views, indexes, functions) in the database.
     *   **Arguments:** None.
     *   **Returns:** A table with columns:
-        *   `type` (TEXT) - Type of object ('table', 'view', 'function', 'module')
+        *   `type` (TEXT) - Type of object ('table', 'view', 'index', 'function')
         *   `name` (TEXT) - Name of the object
-        *   `tbl_name` (TEXT) - Table name (same as name for most objects)
+        *   `tbl_name` (TEXT) - Table name (for indexes, this is the table they belong to; same as name for other objects)
         *   `sql` (TEXT, nullable) - SQL definition of the object
     *   **Example:** `SELECT type, name FROM schema() WHERE type = 'table';`
+    *   **Example:** `SELECT name, tbl_name FROM schema() WHERE type = 'index';` - List all indexes with their table names
 
 *   `table_info(table_name)`
     *   **Description:** Returns detailed information about the columns of a specific table.

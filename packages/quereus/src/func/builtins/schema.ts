@@ -62,6 +62,36 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 						tableSchema.name,
 						createSql
 					] as Row;
+
+					// Process Indexes for this table
+					if (tableSchema.indexes) {
+						for (const indexSchema of tableSchema.indexes) {
+							let indexSql: string | null = null;
+							try {
+								const indexColumns = indexSchema.columns.map(col => {
+									const column = tableSchema.columns[col.index];
+									let colStr = `"${column.name}"`;
+									if (col.collation) {
+										colStr += ` COLLATE ${col.collation}`;
+									}
+									if (col.desc) {
+										colStr += ' DESC';
+									}
+									return colStr;
+								}).join(', ');
+								indexSql = `CREATE INDEX "${indexSchema.name}" ON "${tableSchema.name}" (${indexColumns})`;
+							} catch {
+								indexSql = null;
+							}
+
+							yield [
+								'index',
+								indexSchema.name,
+								tableSchema.name,
+								indexSql
+							] as Row;
+						}
+					}
 				}
 
 				// Process Functions
