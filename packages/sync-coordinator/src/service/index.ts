@@ -22,5 +22,6 @@ export {
   type StoreEntry,
   type StoreManagerConfig,
   type StoreManagerHooks,
+  type StoreContext,
 } from './store-manager.js';
 

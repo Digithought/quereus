@@ -25,6 +25,18 @@ export interface StoreEntry {
 }
 
 /**
+ * Context passed to store hooks for auth-aware decisions.
+ */
+export interface StoreContext {
+  /** The raw auth token (e.g., JWT) */
+  token?: string;
+  /** User ID from authentication */
+  userId?: string;
+  /** Additional metadata from authentication */
+  metadata?: Record<string, unknown>;
+}
+
+/**
  * Hooks for customizing store manager behavior.
  * Apps can provide these to implement custom database ID handling.
  */
@@ -32,18 +44,20 @@ export interface StoreManagerHooks {
   /**
    * Resolve a database ID to a storage path relative to dataDir.
    * @param databaseId The database identifier (any string)
+   * @param context Optional auth context for auth-aware path resolution
    * @returns The storage path relative to dataDir
    * @default Returns sanitized databaseId (replaces unsafe chars)
    */
-  resolveStoragePath?: (databaseId: string) => string;
+  resolveStoragePath?: (databaseId: string, context?: StoreContext) => string;
 
   /**
    * Validate a database ID.
    * @param databaseId The database identifier to validate
+   * @param context Optional auth context for auth-aware validation
    * @returns True if valid, false otherwise
    * @default Returns true for non-empty strings
    */
-  isValidDatabaseId?: (databaseId: string) => boolean;
+  isValidDatabaseId?: (databaseId: string, context?: StoreContext) => boolean;
 }
 
 export interface StoreManagerConfig {
@@ -76,14 +90,14 @@ function sanitizeDatabaseId(databaseId: string): string {
 /**
  * Default storage path resolver - just uses the sanitized database ID.
  */
-function defaultResolveStoragePath(databaseId: string): string {
+function defaultResolveStoragePath(databaseId: string, _context?: StoreContext): string {
   return sanitizeDatabaseId(databaseId);
 }
 
 /**
  * Default database ID validator - accepts non-empty strings.
  */
-function defaultIsValidDatabaseId(databaseId: string): boolean {
+function defaultIsValidDatabaseId(databaseId: string, _context?: StoreContext): boolean {
   return typeof databaseId === 'string' && databaseId.length > 0;
 }
 
@@ -99,8 +113,8 @@ const DEFAULT_CONFIG: StoreManagerConfig = {
  */
 export class StoreManager {
   private readonly config: StoreManagerConfig;
-  private readonly resolveStoragePath: (databaseId: string) => string;
-  private readonly isValidDatabaseId: (databaseId: string) => boolean;
+  private readonly resolveStoragePath: (databaseId: string, context?: StoreContext) => string;
+  private readonly isValidDatabaseId: (databaseId: string, context?: StoreContext) => boolean;
   private readonly stores = new Map<string, StoreEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private shutdownPromise: Promise<void> | null = null;
@@ -122,8 +136,10 @@ export class StoreManager {
 
   /**
    * Get or open a store for a database. Increments refCount.
+   * @param databaseId The database identifier
+   * @param context Optional auth context for auth-aware path resolution
    */
-  async acquire(databaseId: string): Promise<StoreEntry> {
+  async acquire(databaseId: string, context?: StoreContext): Promise<StoreEntry> {
     // Check if already open
     let entry = this.stores.get(databaseId);
     if (entry) {
@@ -139,7 +155,7 @@ export class StoreManager {
     }
 
     // Open new store
-    entry = await this.openStore(databaseId);
+    entry = await this.openStore(databaseId, context);
     this.stores.set(databaseId, entry);
     serviceLog('Store acquired (opened): %s', databaseId);
     return entry;
@@ -180,9 +196,11 @@ export class StoreManager {
 
   /**
    * Check if a database ID is valid.
+   * @param databaseId The database identifier
+   * @param context Optional auth context for auth-aware validation
    */
-  validateDatabaseId(databaseId: string): boolean {
-    return this.isValidDatabaseId(databaseId);
+  validateDatabaseId(databaseId: string, context?: StoreContext): boolean {
+    return this.isValidDatabaseId(databaseId, context);
   }
 
   /**
@@ -214,13 +232,13 @@ export class StoreManager {
     return this.shutdownPromise;
   }
 
-  private async openStore(databaseId: string): Promise<StoreEntry> {
+  private async openStore(databaseId: string, context?: StoreContext): Promise<StoreEntry> {
     // Validate database ID
-    if (!this.isValidDatabaseId(databaseId)) {
+    if (!this.isValidDatabaseId(databaseId, context)) {
       throw new Error(`Invalid database ID: ${databaseId}`);
     }
 
-    const storagePath = this.resolveStoragePath(databaseId);
+    const storagePath = this.resolveStoragePath(databaseId, context);
     const fullPath = join(this.config.dataDir, storagePath);
 
     serviceLog('Opening store at: %s', fullPath);

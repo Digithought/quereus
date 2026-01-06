@@ -142,17 +142,18 @@ export function registerWebSocket(
       }
 
       try {
-        const identity: ClientIdentity = await service.authenticate({
+        const authContext = {
           databaseId: msg.databaseId,
           token: msg.token,
           siteIdRaw: msg.siteId,
           siteId: siteIdFromBase64(msg.siteId),
           socket,
-        });
+        };
+        const identity: ClientIdentity = await service.authenticate(authContext);
 
-        session = await service.registerSession(msg.databaseId, socket, identity);
+        session = await service.registerSession(msg.databaseId, socket, identity, authContext);
 
-        const serverSiteId = await service.getSiteId(msg.databaseId);
+        const serverSiteId = await service.getSiteId(msg.databaseId, identity);
         sendMessage({
           type: 'handshake_ack',
           databaseId: msg.databaseId,

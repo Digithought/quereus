@@ -31,7 +31,7 @@ import type {
   SyncOperation,
   CoordinatorHooks,
 } from './types.js';
-import { StoreManager, type StoreEntry, type StoreManagerHooks } from './store-manager.js';
+import { StoreManager, type StoreEntry, type StoreManagerHooks, type StoreContext } from './store-manager.js';
 
 /**
  * Options for creating a CoordinatorService.
@@ -114,10 +114,21 @@ export class CoordinatorService {
   }
 
   /**
+   * Build a StoreContext from auth information.
+   */
+  private buildStoreContext(authContext?: AuthContext, identity?: ClientIdentity): StoreContext {
+    return {
+      token: authContext?.token,
+      userId: identity?.userId,
+      metadata: identity?.metadata,
+    };
+  }
+
+  /**
    * Get a store entry for a database, acquiring if needed.
    */
-  private async getStore(databaseId: string): Promise<StoreEntry> {
-    return this.storeManager.acquire(databaseId);
+  private async getStore(databaseId: string, context?: StoreContext): Promise<StoreEntry> {
+    return this.storeManager.acquire(databaseId, context);
   }
 
   /**
@@ -191,8 +202,9 @@ export class CoordinatorService {
   /**
    * Get the coordinator's site ID for a specific database.
    */
-  async getSiteId(databaseId: string): Promise<SiteId> {
-    const entry = await this.getStore(databaseId);
+  async getSiteId(databaseId: string, client?: ClientIdentity): Promise<SiteId> {
+    const context = client ? this.buildStoreContext(undefined, client) : undefined;
+    const entry = await this.getStore(databaseId, context);
     try {
       return entry.syncManager.getSiteId();
     } finally {
@@ -203,8 +215,9 @@ export class CoordinatorService {
   /**
    * Get current HLC for a specific database.
    */
-  async getCurrentHLC(databaseId: string): Promise<HLC> {
-    const entry = await this.getStore(databaseId);
+  async getCurrentHLC(databaseId: string, client?: ClientIdentity): Promise<HLC> {
+    const context = client ? this.buildStoreContext(undefined, client) : undefined;
+    const entry = await this.getStore(databaseId, context);
     try {
       return entry.syncManager.getCurrentHLC();
     } finally {
@@ -231,7 +244,8 @@ export class CoordinatorService {
       throw new Error('Not authorized');
     }
 
-    const entry = await this.getStore(databaseId);
+    const context = this.buildStoreContext(undefined, client);
+    const entry = await this.getStore(databaseId, context);
     try {
       const changes = await entry.syncManager.getChangesSince(client.siteId, sinceHLC);
       endTimer();
@@ -291,7 +305,8 @@ export class CoordinatorService {
       }
     }
 
-    const entry = await this.getStore(databaseId);
+    const context = this.buildStoreContext(undefined, client);
+    const entry = await this.getStore(databaseId, context);
     try {
       // Apply
       const result = await entry.syncManager.applyChanges(approvedChanges);
@@ -339,7 +354,8 @@ export class CoordinatorService {
       throw new Error('Not authorized');
     }
 
-    const entry = await this.getStore(databaseId);
+    const context = this.buildStoreContext(undefined, client);
+    const entry = await this.getStore(databaseId, context);
     try {
       for await (const chunk of entry.syncManager.getSnapshotStream(chunkSize)) {
         this.metrics.registry.incCounter(this.metrics.snapshotChunksTotal);
@@ -354,7 +370,8 @@ export class CoordinatorService {
    * Check if delta sync is possible.
    */
   async canDeltaSync(databaseId: string, client: ClientIdentity, sinceHLC: HLC): Promise<boolean> {
-    const entry = await this.getStore(databaseId);
+    const context = this.buildStoreContext(undefined, client);
+    const entry = await this.getStore(databaseId, context);
     try {
       return entry.syncManager.canDeltaSync(client.siteId, sinceHLC);
     } finally {
@@ -368,16 +385,22 @@ export class CoordinatorService {
 
   /**
    * Register a new WebSocket client session.
+   * @param databaseId The database to connect to
+   * @param socket The WebSocket connection
+   * @param identity The authenticated client identity
+   * @param authContext Optional auth context with raw token for store hooks
    */
   async registerSession(
     databaseId: string,
     socket: WebSocket,
-    identity: ClientIdentity
+    identity: ClientIdentity,
+    authContext?: AuthContext
   ): Promise<ClientSession> {
     const connectionId = randomUUID();
+    const storeContext = this.buildStoreContext(authContext, identity);
 
     // Validate database ID
-    if (!this.storeManager.validateDatabaseId(databaseId)) {
+    if (!this.storeManager.validateDatabaseId(databaseId, storeContext)) {
       throw new Error(`Invalid database ID: ${databaseId}`);
     }
 
@@ -390,7 +413,7 @@ export class CoordinatorService {
     }
 
     // Acquire store to ensure it's open while session is active
-    await this.getStore(databaseId);
+    await this.getStore(databaseId, storeContext);
 
     const session: ClientSession = {
       connectionId,

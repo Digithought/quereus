@@ -43,6 +43,7 @@ export {
   type StoreEntry,
   type StoreManagerConfig,
   type StoreManagerHooks,
+  type StoreContext,
 } from './service/index.js';
 
 // Server
