@@ -259,6 +259,9 @@ export class SyncClient {
 
     // Subscribe to local changes for pushing to server
     this.subscribeToLocalChanges();
+
+    // Push any existing local changes to server (changes made while offline)
+    await this.pushLocalChanges();
   }
 
   private async handleChanges(serializedChangeSets: SerializedChangeSet[]): Promise<void> {
@@ -380,11 +383,13 @@ export class SyncClient {
   }
 
   private async pushLocalChanges(): Promise<void> {
-    if (!this.isConnected) return;
+    if (!this.isConnected || !this.serverSiteId) return;
 
     // Get changes since lastSentHLC (delta sync)
+    // Use serverSiteId to filter out changes that originated from the server
+    // (which we already have), keeping our local changes to send
     const changes = await this.syncManager.getChangesSince(
-      this.syncManager.getSiteId(),
+      this.serverSiteId,
       this.lastSentHLC ?? undefined
     );
 

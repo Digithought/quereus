@@ -16,7 +16,7 @@ export const ctxLog = createLogger('runtime:context');
 
 /**
  * Check if a value is an AsyncIterable.
- * 
+ *
  * NOTE: Hermes (React Native's JS engine) has a bug where AsyncGenerator objects
  * don't have Symbol.asyncIterator as an own or inherited property, even though
  * they are valid async iterables. We work around this by also checking for
@@ -32,7 +32,7 @@ export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
 	}
 	// Hermes workaround: AsyncGenerator has .next() but not Symbol.asyncIterator
 	const maybeAsyncGen = value as { next?: unknown; constructor?: { name?: string } };
-	if (typeof maybeAsyncGen.next === 'function' && 
+	if (typeof maybeAsyncGen.next === 'function' &&
 	    maybeAsyncGen.constructor?.name === 'AsyncGenerator') {
 		return true;
 	}
@@ -41,7 +41,7 @@ export function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
 
 /**
  * Get an AsyncIterator from an AsyncIterable, handling Hermes's missing Symbol.asyncIterator.
- * 
+ *
  * @throws TypeError if value is not a valid async iterable
  */
 export function getAsyncIterator<T>(value: AsyncIterable<T>): AsyncIterator<T> {
@@ -51,7 +51,7 @@ export function getAsyncIterator<T>(value: AsyncIterable<T>): AsyncIterator<T> {
 	}
 	// Hermes workaround: AsyncGenerator is its own iterator
 	const maybeAsyncGen = value as unknown as { next?: () => Promise<IteratorResult<T>>; constructor?: { name?: string } };
-	if (typeof maybeAsyncGen.next === 'function' && 
+	if (typeof maybeAsyncGen.next === 'function' &&
 	    maybeAsyncGen.constructor?.name === 'AsyncGenerator') {
 		return maybeAsyncGen as AsyncIterator<T>;
 	}
