@@ -31,8 +31,7 @@ import type {
   SyncOperation,
   CoordinatorHooks,
 } from './types.js';
-import { StoreManager, type StoreEntry } from './store-manager.js';
-import { isValidDatabaseId } from './database-ids.js';
+import { StoreManager, type StoreEntry, type StoreManagerHooks } from './store-manager.js';
 
 /**
  * Options for creating a CoordinatorService.
@@ -44,6 +43,8 @@ export interface CoordinatorServiceOptions {
   hooks?: CoordinatorHooks;
   /** Custom metrics (uses global registry if not provided) */
   metrics?: CoordinatorMetrics;
+  /** Hooks for customizing store behavior (database ID handling, path resolution) */
+  storeHooks?: StoreManagerHooks;
 }
 
 /**
@@ -75,6 +76,7 @@ export class CoordinatorService {
         tombstoneTTL: this.config.sync.tombstoneTTL,
         batchSize: this.config.sync.batchSize,
       },
+      hooks: options.storeHooks,
     });
   }
 
@@ -374,9 +376,9 @@ export class CoordinatorService {
   ): Promise<ClientSession> {
     const connectionId = randomUUID();
 
-    // Validate database ID format
-    if (!isValidDatabaseId(databaseId)) {
-      throw new Error(`Invalid database ID format: ${databaseId}`);
+    // Validate database ID
+    if (!this.storeManager.validateDatabaseId(databaseId)) {
+      throw new Error(`Invalid database ID: ${databaseId}`);
     }
 
     // Call connect hook
@@ -535,6 +537,13 @@ export class CoordinatorService {
         };
       }),
     };
+  }
+
+  /**
+   * Check if a database ID is valid.
+   */
+  isValidDatabaseId(databaseId: string): boolean {
+    return this.storeManager.validateDatabaseId(databaseId);
   }
 
   /**

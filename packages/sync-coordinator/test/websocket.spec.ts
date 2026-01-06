@@ -11,7 +11,7 @@ import WebSocket from 'ws';
 import { createCoordinatorServer, loadConfig, type CoordinatorServer } from '../src/index.js';
 
 // Test database ID in accountId-scenarioId format
-const TEST_DATABASE_ID = 'a1-s42';
+const TEST_DATABASE_ID = 'my-test-database';
 
 // Valid 22-character base64url site IDs (16 bytes each)
 const TEST_SITE_ID_1 = 'AAAAAAAAAAAAAAAAAAAAAA'; // 16 zero bytes

@@ -21,11 +21,6 @@ export {
   StoreManager,
   type StoreEntry,
   type StoreManagerConfig,
+  type StoreManagerHooks,
 } from './store-manager.js';
-
-export {
-  isValidDatabaseId,
-  parseDatabaseId,
-  formatDatabaseId,
-} from './database-ids.js';
 

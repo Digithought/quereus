@@ -14,7 +14,6 @@ import {
   type SyncManager,
 } from '@quereus/sync';
 import { serviceLog } from '../common/logger.js';
-import { getDatabaseStoragePath, parseDatabaseId } from './database-ids.js';
 
 export interface StoreEntry {
   databaseId: string;
@@ -23,6 +22,28 @@ export interface StoreEntry {
   storeEvents: StoreEventEmitter;
   refCount: number;
   lastAccess: number;
+}
+
+/**
+ * Hooks for customizing store manager behavior.
+ * Apps can provide these to implement custom database ID handling.
+ */
+export interface StoreManagerHooks {
+  /**
+   * Resolve a database ID to a storage path relative to dataDir.
+   * @param databaseId The database identifier (any string)
+   * @returns The storage path relative to dataDir
+   * @default Returns sanitized databaseId (replaces unsafe chars)
+   */
+  resolveStoragePath?: (databaseId: string) => string;
+
+  /**
+   * Validate a database ID.
+   * @param databaseId The database identifier to validate
+   * @returns True if valid, false otherwise
+   * @default Returns true for non-empty strings
+   */
+  isValidDatabaseId?: (databaseId: string) => boolean;
 }
 
 export interface StoreManagerConfig {
@@ -39,6 +60,31 @@ export interface StoreManagerConfig {
     tombstoneTTL?: number;
     batchSize?: number;
   };
+  /** Hooks for customizing behavior */
+  hooks?: StoreManagerHooks;
+}
+
+/**
+ * Sanitize a database ID for use as a filesystem path.
+ * Replaces unsafe characters with underscores.
+ */
+function sanitizeDatabaseId(databaseId: string): string {
+  // Allow alphanumeric, dash, underscore; replace others with underscore
+  return databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+/**
+ * Default storage path resolver - just uses the sanitized database ID.
+ */
+function defaultResolveStoragePath(databaseId: string): string {
+  return sanitizeDatabaseId(databaseId);
+}
+
+/**
+ * Default database ID validator - accepts non-empty strings.
+ */
+function defaultIsValidDatabaseId(databaseId: string): boolean {
+  return typeof databaseId === 'string' && databaseId.length > 0;
 }
 
 const DEFAULT_CONFIG: StoreManagerConfig = {
@@ -53,12 +99,16 @@ const DEFAULT_CONFIG: StoreManagerConfig = {
  */
 export class StoreManager {
   private readonly config: StoreManagerConfig;
+  private readonly resolveStoragePath: (databaseId: string) => string;
+  private readonly isValidDatabaseId: (databaseId: string) => boolean;
   private readonly stores = new Map<string, StoreEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private shutdownPromise: Promise<void> | null = null;
 
   constructor(config: Partial<StoreManagerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.resolveStoragePath = config.hooks?.resolveStoragePath ?? defaultResolveStoragePath;
+    this.isValidDatabaseId = config.hooks?.isValidDatabaseId ?? defaultIsValidDatabaseId;
   }
 
   /**
@@ -129,6 +179,13 @@ export class StoreManager {
   }
 
   /**
+   * Check if a database ID is valid.
+   */
+  validateDatabaseId(databaseId: string): boolean {
+    return this.isValidDatabaseId(databaseId);
+  }
+
+  /**
    * Shutdown all stores.
    */
   async shutdown(): Promise<void> {
@@ -158,10 +215,12 @@ export class StoreManager {
   }
 
   private async openStore(databaseId: string): Promise<StoreEntry> {
-    // Validate database ID format
-    parseDatabaseId(databaseId);
+    // Validate database ID
+    if (!this.isValidDatabaseId(databaseId)) {
+      throw new Error(`Invalid database ID: ${databaseId}`);
+    }
 
-    const storagePath = getDatabaseStoragePath(databaseId);
+    const storagePath = this.resolveStoragePath(databaseId);
     const fullPath = join(this.config.dataDir, storagePath);
 
     serviceLog('Opening store at: %s', fullPath);

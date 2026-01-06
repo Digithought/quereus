@@ -8,6 +8,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import type { CoordinatorConfig } from '../config/types.js';
 import { CoordinatorService, type CoordinatorServiceOptions } from '../service/coordinator-service.js';
 import type { CoordinatorHooks } from '../service/types.js';
+import type { StoreManagerHooks } from '../service/store-manager.js';
 import { registerRoutes } from './routes.js';
 import { registerWebSocket } from './websocket.js';
 import { serverLog } from '../common/logger.js';
@@ -20,6 +21,8 @@ export interface CoordinatorServerOptions {
   config: CoordinatorConfig;
   /** Custom hooks for validation/auth */
   hooks?: CoordinatorHooks;
+  /** Hooks for customizing store behavior (database ID handling, path resolution) */
+  storeHooks?: StoreManagerHooks;
 }
 
 /**
@@ -42,7 +45,7 @@ export interface CoordinatorServer {
 export async function createCoordinatorServer(
   options: CoordinatorServerOptions
 ): Promise<CoordinatorServer> {
-  const { config, hooks } = options;
+  const { config, hooks, storeHooks } = options;
 
   serverLog('Creating coordinator server');
 
@@ -64,6 +67,7 @@ export async function createCoordinatorServer(
   const serviceOptions: CoordinatorServiceOptions = {
     config,
     hooks,
+    storeHooks,
   };
   const service = new CoordinatorService(serviceOptions);
 

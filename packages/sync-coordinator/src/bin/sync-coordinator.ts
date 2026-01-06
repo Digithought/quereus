@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * CLI entry point for sync-coordinator.
+ *
+ * Database IDs are just strings. The default behavior sanitizes the database ID
+ * and uses it directly as the storage folder name under dataDir.
  */
 
 import { Command } from 'commander';

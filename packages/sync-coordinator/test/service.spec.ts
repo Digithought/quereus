@@ -15,7 +15,7 @@ import { siteIdFromBase64 } from '@quereus/sync';
 // Test site ID: ASNFZ4mrze8BI0VniavN7w (base64url of 0x0123456789abcdef0123456789abcdef)
 const TEST_SITE_ID_BASE64 = 'ASNFZ4mrze8BI0VniavN7w';
 // Test database ID in accountId-scenarioId format
-const TEST_DATABASE_ID = 'a1-s42';
+const TEST_DATABASE_ID = 'my-test-database';
 
 describe('CoordinatorService', () => {
   let service: CoordinatorService;

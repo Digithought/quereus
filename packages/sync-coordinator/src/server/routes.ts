@@ -7,7 +7,6 @@ import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HL
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { AuthContext, ClientIdentity } from '../service/types.js';
 import { httpLog } from '../common/logger.js';
-import { isValidDatabaseId } from '../service/database-ids.js';
 
 /**
  * Register sync HTTP routes.
@@ -47,8 +46,8 @@ export function registerRoutes(
   const validateDatabaseId = (request: FastifyRequest, reply: FastifyReply): string | null => {
     const params = request.params as { databaseId?: string };
     const databaseId = params.databaseId;
-    if (!databaseId || !isValidDatabaseId(databaseId)) {
-      errorResponse(reply, 'INVALID_DATABASE_ID', `Invalid database ID format: ${databaseId}`, 400);
+    if (!databaseId || !service.isValidDatabaseId(databaseId)) {
+      errorResponse(reply, 'INVALID_DATABASE_ID', `Invalid database ID: ${databaseId}`, 400);
       return null;
     }
     return databaseId;

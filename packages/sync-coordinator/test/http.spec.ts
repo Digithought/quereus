@@ -7,10 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
-import { createCoordinatorServer, loadConfig, type CoordinatorServer } from '../src/index.js';
+import {
+  createCoordinatorServer,
+  loadConfig,
+  type CoordinatorServer,
+} from '../src/index.js';
 
-// Test database ID in accountId-scenarioId format
-const TEST_DATABASE_ID = 'a1-s42';
+// Database IDs are just strings
+const TEST_DATABASE_ID = 'my-test-database';
 
 // Valid 22-character base64url site IDs (16 bytes each)
 // These represent valid UUIDs encoded as base64url
@@ -92,8 +96,9 @@ describe('HTTP Routes', () => {
       expect(body.data.changes).to.be.an('array');
     });
 
-    it('should reject invalid database ID format', async () => {
-      const response = await fetch(`${baseUrl}/invalid-db-id/changes`, {
+    it('should reject empty database ID', async () => {
+      // Empty path segment is invalid
+      const response = await fetch(`${baseUrl}//changes`, {
         headers: { 'X-Site-Id': TEST_SITE_ID },
       });
       expect(response.status).to.equal(400);

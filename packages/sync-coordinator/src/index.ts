@@ -39,6 +39,10 @@ export {
   type CoordinatorHooks,
   CoordinatorService,
   type CoordinatorServiceOptions,
+  StoreManager,
+  type StoreEntry,
+  type StoreManagerConfig,
+  type StoreManagerHooks,
 } from './service/index.js';
 
 // Server
