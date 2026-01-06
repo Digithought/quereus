@@ -19,7 +19,7 @@ export function emitRemoteQuery(plan: RemoteQueryNode, _ctx: EmissionContext): I
 		const vtabModule = (moduleCtx as { vtabModule?: AnyVirtualTableModule } | undefined)?.vtabModule ?? tableRef.vtabModule;
 
 		// Connect to the table to get the instance
-		const table = vtabModule.connect(
+		const table = await vtabModule.connect(
 			rctx.db,
 			undefined, // pAux
 			tableSchema.vtabModuleName,

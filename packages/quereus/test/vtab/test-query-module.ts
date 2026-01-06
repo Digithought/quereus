@@ -19,12 +19,12 @@ import { FilterInfo } from '../../src/vtab/filter-info.js';
  */
 export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseModuleConfig> {
 
-	create(db: Database, tableSchema: TableSchema): TestQueryTable {
+	async create(db: Database, tableSchema: TableSchema): Promise<TestQueryTable> {
 		// Create test query table
 		return new TestQueryTable(db, tableSchema);
 	}
 
-	connect(
+	async connect(
 		db: Database,
 		_pAux: unknown,
 		_moduleName: string,
@@ -32,7 +32,7 @@ export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseM
 		tableName: string,
 		_options: BaseModuleConfig,
 		importedTableSchema?: TableSchema
-	): TestQueryTable {
+	): Promise<TestQueryTable> {
 		// Use imported schema if provided, otherwise retrieve from db
 		const tableSchema = importedTableSchema ?? db.schemaManager.getTable(schemaName, tableName);
 		if (!tableSchema) {

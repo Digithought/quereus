@@ -63,7 +63,7 @@ const provider = createSQLiteProvider({ db: sqliteDb });
 const storeModule = new StoreModule(provider);
 
 const db = new Database();
-db.registerVtabModule('store', storeModule);
+db.registerModule('store', storeModule);
 
 await db.exec(`
   create table users (id integer primary key, name text)

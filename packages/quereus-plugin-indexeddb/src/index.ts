@@ -24,7 +24,7 @@
  *
  * const provider = createIndexedDBProvider({ prefix: 'myapp' });
  * const storeModule = new StoreModule(provider);
- * db.registerVtabModule('store', storeModule);
+ * db.registerModule('store', storeModule);
  * ```
  */
 

@@ -44,6 +44,7 @@ import type { EncodeOptions } from './encoding.js';
 /** Number of mutations before persisting statistics. */
 const STATS_FLUSH_INTERVAL = 100;
 
+
 /**
  * Configuration for a store table.
  */

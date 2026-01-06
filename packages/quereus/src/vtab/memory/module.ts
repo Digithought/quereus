@@ -38,7 +38,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Creates a new memory table definition
 	 */
-	create(db: Database, tableSchema: TableSchema): MemoryTable {
+	async create(db: Database, tableSchema: TableSchema): Promise<MemoryTable> {
 		// Ensure table doesn't already exist
 		const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 		if (this.tables.has(tableKey)) {
@@ -63,7 +63,10 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			readOnly: tableSchema.isReadOnly ?? false
 		});
 
-		// Emit schema change event
+		// Create the MemoryTable instance
+		const table = new MemoryTable(db, this, manager);
+
+		// Emit schema change event after table is fully created
 		this.eventEmitter?.emitSchemaChange?.({
 			type: 'create',
 			objectType: 'table',
@@ -71,14 +74,13 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			objectName: tableSchema.name,
 		});
 
-		// Create and return the MemoryTable instance
-		return new MemoryTable(db, this, manager);
+		return table;
 	}
 
 	/**
 	 * Connects to an existing memory table definition
 	 */
-	connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig, _tableSchema?: TableSchema): MemoryTable {
+	async connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig, _tableSchema?: TableSchema): Promise<MemoryTable> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const existingManager = this.tables.get(tableKey);
 

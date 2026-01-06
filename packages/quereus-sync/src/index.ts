@@ -18,7 +18,7 @@
  *   const store = new LevelDBModule(storeEvents);
  *   const { syncModule, syncManager, syncEvents } = createSyncModule(store, storeEvents);
  *
- *   db.registerVtabModule('store', syncModule);
+ *   db.registerModule('store', syncModule);
  */
 
 // Clock module

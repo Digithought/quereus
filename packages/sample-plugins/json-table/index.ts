@@ -155,7 +155,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
   // Virtual table module implementation
   const jsonTableModule = {
     // Engine calls create(db, tableSchema)
-    create: (db: Database, tableSchema: any) => {
+    create: async (db: Database, tableSchema: any) => {
       // Build instance compatible with VirtualTable interface shape
       const instance = {
         db,
@@ -205,7 +205,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
       return instance;
     },
     // Connect is same as create for this simple module
-    connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
+    connect: async (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
       const tableSchema = {
         name: tableName,
         schemaName,
@@ -219,7 +219,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
         vtabArgs: options || {},
         estimatedRows: 0
       };
-      return jsonTableModule.create(db, tableSchema);
+      return await jsonTableModule.create(db, tableSchema);
     }
   };
 

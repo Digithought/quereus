@@ -885,7 +885,7 @@ const { syncManager, syncEvents } = await createSyncModule(kvStore, storeEvents,
 
 // 4. Register store module with database
 const db = new Database();
-db.registerVtabModule('store', store);
+db.registerModule('store', store);
 
 // 5. Create tables (sync automatically tracks changes via storeEvents)
 await db.exec(`

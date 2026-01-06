@@ -42,21 +42,21 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
 			throw new QuereusError(`Virtual table module '${schema.vtabModuleName}' does not implement connect`, StatusCode.MISUSE);
 		}
 
-		let vtabInstance: VirtualTable;
+	let vtabInstance: VirtualTable;
     try {
       const options: BaseModuleConfig = (schema.vtabArgs ?? {}) as BaseModuleConfig;
-			vtabInstance = module.connect(
-				runtimeCtx.db,
-				capturedModuleInfo.auxData,
-				schema.vtabModuleName,
-				schema.schemaName,
-				schema.name,
-				options
-			);
-		} catch (e: any) {
-			const message = e instanceof Error ? e.message : String(e);
-			throw new QuereusError(`Module '${schema.vtabModuleName}' connect failed for table '${schema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
-		}
+		vtabInstance = await module.connect(
+			runtimeCtx.db,
+			capturedModuleInfo.auxData,
+			schema.vtabModuleName,
+			schema.schemaName,
+			schema.name,
+			options
+		);
+	} catch (e: any) {
+		const message = e instanceof Error ? e.message : String(e);
+		throw new QuereusError(`Module '${schema.vtabModuleName}' connect failed for table '${schema.name}': ${message}`, e instanceof QuereusError ? e.code : StatusCode.ERROR, e instanceof Error ? e : undefined);
+	}
 
 		if (typeof vtabInstance.query !== 'function') {
 			// Fallback or error if query is not available. For now, throwing an error.

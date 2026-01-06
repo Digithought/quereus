@@ -84,30 +84,30 @@ describe("Memory VTable Module", () => {
 	describe("Module Creation and Connection", () => {
 		it("should create a new memory table", async () => {
 			const schema = createTableSchema('users');
-			const table = module.create(db, schema);
+			const table = await module.create(db, schema);
 
 			expect(table).to.be.instanceOf(MemoryTable);
 			expect(table.tableName).to.equal('users');
 			expect(table.schemaName).to.equal('main');
 		});
 
-		it("should connect to an existing memory table", async () => {
-			const schema = createTableSchema('users');
-			module.create(db, schema);
+	it("should connect to an existing memory table", async () => {
+		const schema = createTableSchema('users');
+		await module.create(db, schema);
 
-			const table2 = module.connect(db, null, 'memory', 'main', 'users', {});
-			expect(table2).to.be.instanceOf(MemoryTable);
-			expect(table2.tableName).to.equal('users');
-		});
+		const table2 = await module.connect(db, null, 'memory', 'main', 'users', {});
+		expect(table2).to.be.instanceOf(MemoryTable);
+		expect(table2.tableName).to.equal('users');
+	});
 
-		it("should fail to connect to non-existent table", async () => {
-			try {
-				module.connect(db, null, 'memory', 'main', 'nonexistent', {});
-				expect.fail("Should have thrown error");
-			} catch (error: any) {
-				expect(error.message).to.include('not found');
-			}
-		});
+	it("should fail to connect to non-existent table", async () => {
+		try {
+			await module.connect(db, null, 'memory', 'main', 'nonexistent', {});
+			expect.fail("Should have thrown error");
+		} catch (error: any) {
+			expect(error.message).to.include('not found');
+		}
+	});
 	});
 
 	describe("Basic CRUD Operations via query and update", () => {
@@ -121,7 +121,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'price', logicalType: REAL_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'category', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 		});
 
 		it("should insert data via update", async () => {
@@ -218,7 +218,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'email', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 		});
 
 		it("should enforce primary key uniqueness", async () => {
@@ -260,7 +260,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'session_id', logicalType: TEXT_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'created_at', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['user_id', 'session_id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 		});
 
 		it("should handle composite primary key operations", async () => {
@@ -327,7 +327,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'department', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'salary', logicalType: REAL_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 		});
 
 		it("should create secondary indexes", async () => {
@@ -382,7 +382,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'balance', logicalType: REAL_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 
 			// Insert initial data
 			await table.update({ operation: 'insert', values: [1, 1000.0] });
@@ -458,7 +458,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'name', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 			await table.update({ operation: 'insert', values: [1, 'test'] });
 		});
 
@@ -536,7 +536,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'blob_col', logicalType: BLOB_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'null_col', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['id']);
-			table = module.create(db, schema);
+			table = await module.create(db, schema);
 		});
 
 		it("should handle various data types", async () => {
@@ -563,7 +563,7 @@ describe("Memory VTable Module", () => {
 				{ name: 'part2', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
 				{ name: 'value', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
 			], ['part1', 'part2']);
-			const table2 = module.create(db, schema);
+			const table2 = await module.create(db, schema);
 
 			await table2.update({ operation: 'insert', values: ['a', 1, 'value1'] });
 			await table2.update({ operation: 'insert', values: [null, 2, 'value2'] });
@@ -597,7 +597,7 @@ describe("Memory VTable Module", () => {
 				...createTableSchema('readonly_data'),
 				isReadOnly: true
 			};
-			const table = module.create(db, schema);
+			const table = await module.create(db, schema);
 
 			void expect(table.isReadOnly()).to.be.true;
 
@@ -614,7 +614,7 @@ describe("Memory VTable Module", () => {
 				...createTableSchema('readonly_data'),
 				isReadOnly: true
 			};
-			const table = module.create(db, schema);
+			const table = await module.create(db, schema);
 
 			try {
 				await table.update({ operation: 'insert', values: [1, 'test'] });
@@ -628,13 +628,13 @@ describe("Memory VTable Module", () => {
 	describe("Module Cleanup", () => {
 		it("should destroy tables and clean up resources", async () => {
 			const schema = createTableSchema('temp_table');
-			module.create(db, schema);
+			await module.create(db, schema);
 
 			await module.destroy(db, null, 'memory', 'main', 'temp_table');
 
 			// Should not be able to connect to destroyed table
 			try {
-				module.connect(db, null, 'memory', 'main', 'temp_table', {});
+				await module.connect(db, null, 'memory', 'main', 'temp_table', {});
 				expect.fail("Should not be able to connect to destroyed table");
 			} catch (error: any) {
 				expect(error.message).to.include('not found');

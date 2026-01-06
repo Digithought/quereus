@@ -65,7 +65,7 @@ class KeyValueStore {
 }
 
 const keyValueModule = {
-  create: (db: Database, tableSchema: any) => {
+  create: async (db: Database, tableSchema: any) => {
     const args = [tableSchema.vtabArgs && tableSchema.vtabArgs.store ? tableSchema.vtabArgs.store : 'default'];
     const table = new KeyValueStore(args, tableSchema.vtabArgs || {});
     // Minimal instance compatible with VirtualTable
@@ -110,6 +110,7 @@ const keyValueModule = {
     };
   },
   connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
+    // Build table schema for connect (connect is synchronous, so we create the table inline)
     const tableSchema = {
       name: tableName,
       schemaName,
@@ -126,7 +127,48 @@ const keyValueModule = {
       vtabArgs: options || {},
       estimatedRows: 0
     };
-    return keyValueModule.create(db, tableSchema);
+    const args = [options && options.store ? options.store : 'default'];
+    const table = new KeyValueStore(args, options || {});
+    // Return minimal instance compatible with VirtualTable
+    return {
+      db,
+      module: keyValueModule,
+      schemaName: tableSchema.schemaName,
+      tableName: tableSchema.name,
+      tableSchema,
+      disconnect: async () => {},
+      async update(updateArgs: { operation: string; values?: any; oldKeyValues?: any }) {
+        if (updateArgs.operation === 'insert' && updateArgs.values) {
+          table.insert({ key: updateArgs.values[0], value: updateArgs.values[1] });
+          return updateArgs.values;
+        } else if (updateArgs.operation === 'update' && updateArgs.values && updateArgs.oldKeyValues) {
+          table.update({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] }, { key: updateArgs.values[0], value: updateArgs.values[1] });
+          return updateArgs.values;
+        } else if (updateArgs.operation === 'delete' && updateArgs.oldKeyValues) {
+          table.delete({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] });
+          return undefined;
+        }
+        return undefined;
+      },
+      *query() {
+        for (const row of table.scan()) {
+          yield [row.key, row.value];
+        }
+      },
+      async createConnection() {
+        return {
+          connectionId: 'kv:' + tableSchema.schemaName + '.' + tableSchema.name,
+          tableName: tableSchema.name,
+          begin: async () => {},
+          commit: async () => {},
+          rollback: async () => {},
+          createSavepoint: async () => {},
+          releaseSavepoint: async () => {},
+          rollbackToSavepoint: async () => {},
+          disconnect: async () => {}
+        };
+      }
+    };
   }
 };
 

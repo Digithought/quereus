@@ -166,19 +166,19 @@ class MyTable extends VirtualTable {
 
 // Module implementation
 class MyTableModule implements VirtualTableModule<MyTable, MyTableConfig> {
-  create(db: Database, tableSchema: TableSchema): MyTable {
+  async create(db: Database, tableSchema: TableSchema): Promise<MyTable> {
     const config: MyTableConfig = {}; // Parse from tableSchema if needed
     return new MyTable(db, this, tableSchema.schemaName, tableSchema.tableName, config);
   }
 
-  connect(
+  async connect(
     db: Database,
     pAux: unknown,
     moduleName: string,
     schemaName: string,
     tableName: string,
     options: MyTableConfig
-  ): MyTable {
+  ): Promise<MyTable> {
     return new MyTable(db, this, schemaName, tableName, options);
   }
 
@@ -684,7 +684,7 @@ export default function register(db: Database, config: Record<string, SqlValue> 
       {
         name: 'key_value',
         module: {
-          create: (db: Database, tableSchema: any) => {
+          create: async (db: Database, tableSchema: any) => {
             const table = new KeyValueStore();
             return {
               db,
@@ -700,9 +700,22 @@ export default function register(db: Database, config: Record<string, SqlValue> 
               }
             };
           },
-          connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
-            // Similar to create
-            return this.create(db, { schemaName, name: tableName });
+          connect: async (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, _options: any) => {
+            // Connect also returns a Promise for async initialization
+            const table = new KeyValueStore();
+            return {
+              db,
+              module: this,
+              schemaName,
+              tableName,
+              async disconnect() {},
+              async update() { return undefined; },
+              async *query() {
+                for (const row of table.scan()) {
+                  yield [row.key, row.value];
+                }
+              }
+            };
           }
         }
       }
@@ -1019,7 +1032,7 @@ const registrations = await myPlugin(db, {
 // Manually register each component type
 if (registrations.vtables) {
   for (const vtable of registrations.vtables) {
-    db.registerVtabModule(vtable.name, vtable.module, vtable.auxData);
+    db.registerModule(vtable.name, vtable.module, vtable.auxData);
   }
 }
 

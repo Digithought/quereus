@@ -258,7 +258,7 @@ class JsonTable {
  */
 const jsonTableModule = {
   // Engine calls create(db, tableSchema)
-  create: (db, tableSchema) => {
+  create: async (db, tableSchema) => {
     // Build instance compatible with VirtualTable interface shape
     const instance = {
       db,
@@ -309,7 +309,7 @@ const jsonTableModule = {
     return instance;
   },
   // Connect is same as create for this simple module
-  connect: (db, _pAux, _moduleName, schemaName, tableName, options) => {
+  connect: async (db, _pAux, _moduleName, schemaName, tableName, options) => {
     const tableSchema = {
       name: tableName,
       schemaName,
@@ -323,7 +323,7 @@ const jsonTableModule = {
       vtabArgs: options || {},
       estimatedRows: 0
     };
-    return jsonTableModule.create(db, tableSchema);
+    return await jsonTableModule.create(db, tableSchema);
   }
 };
 

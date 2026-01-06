@@ -87,7 +87,7 @@ class KeyValueStore {
 }
 
 const keyValueModule = {
-  create: (db, tableSchema) => {
+  async create(db, tableSchema) {
     const args = [tableSchema.vtabArgs && tableSchema.vtabArgs.store ? tableSchema.vtabArgs.store : 'default'];
     const table = new KeyValueStore(args, tableSchema.vtabArgs || {});
     // Minimal instance compatible with VirtualTable
@@ -111,7 +111,7 @@ const keyValueModule = {
         }
         return undefined;
       },
-      *query() {
+      async *query(_filterInfo) {
         for (const row of table.scan()) {
           yield [row.key, row.value];
         }
@@ -131,7 +131,7 @@ const keyValueModule = {
       }
     };
   },
-  connect: (db, _pAux, _moduleName, schemaName, tableName, options) => {
+  async connect(db, _pAux, _moduleName, schemaName, tableName, options) {
     const tableSchema = {
       name: tableName,
       schemaName,
@@ -148,7 +148,7 @@ const keyValueModule = {
       vtabArgs: options || {},
       estimatedRows: 0
     };
-    return keyValueModule.create(db, tableSchema);
+    return await keyValueModule.create(db, tableSchema);
   }
 };
 

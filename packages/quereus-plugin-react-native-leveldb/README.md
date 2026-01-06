@@ -60,7 +60,7 @@ const provider = createReactNativeLevelDBProvider({
   WriteBatch: LevelDBWriteBatch,
 });
 const storeModule = new StoreModule(provider);
-db.registerVtabModule('store', storeModule);
+db.registerModule('store', storeModule);
 
 await db.exec(`
   create table users (id integer primary key, name text)

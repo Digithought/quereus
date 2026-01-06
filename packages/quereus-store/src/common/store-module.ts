@@ -47,7 +47,7 @@ export interface StoreModuleConfig extends BaseModuleConfig {
  *
  * const provider = createLevelDBProvider({ basePath: './data' });
  * const module = new StoreModule(provider);
- * db.registerVtabModule('store', module);
+ * db.registerModule('store', module);
  * ```
  */
 export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleConfig>, StoreTableModule {
@@ -79,8 +79,12 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
   /**
    * Creates a new store-backed table.
    * Called by CREATE TABLE.
+   *
+   * This method eagerly initializes the underlying storage (e.g., IndexedDB object store)
+   * before emitting schema change events. This ensures the storage is ready before any
+   * event handlers (like sync module) try to access it.
    */
-  create(db: Database, tableSchema: TableSchema): StoreTable {
+  async create(db: Database, tableSchema: TableSchema): Promise<StoreTable> {
     const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 
     if (this.tables.has(tableKey)) {
@@ -92,17 +96,24 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 
     const config = this.parseConfig(tableSchema.vtabArgs as Record<string, SqlValue> | undefined);
 
+    // Eagerly initialize the store BEFORE creating the table or emitting events.
+    // This ensures the underlying storage (e.g., IndexedDB object store) exists
+    // before any schema change handlers try to access it.
+    const store = await this.provider.getStore(tableSchema.schemaName, tableSchema.name);
+    this.stores.set(tableKey, store);
+
     const table = new StoreTable(
       db,
       this,
       tableSchema,
       config,
       this.eventEmitter
+      // isConnected defaults to false for newly created tables
     );
 
     this.tables.set(tableKey, table);
 
-    // Emit schema change event for table creation
+    // Emit schema change event AFTER storage is initialized
     this.eventEmitter?.emitSchemaChange({
       type: 'create',
       objectType: 'table',
@@ -118,7 +129,7 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
    * Connects to an existing store-backed table.
    * Called when loading schema from persistent storage.
    */
-  connect(
+  async connect(
     db: Database,
     _pAux: unknown,
     _moduleName: string,
@@ -126,7 +137,7 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
     tableName: string,
     options: StoreModuleConfig,
     importedTableSchema?: TableSchema
-  ): StoreTable {
+  ): Promise<StoreTable> {
     const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
     // Check if we already have this table connected

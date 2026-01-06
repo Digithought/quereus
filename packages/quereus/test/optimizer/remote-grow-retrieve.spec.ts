@@ -8,7 +8,7 @@ describe('Retrieve growth with supports() (remote query)', () => {
   beforeEach(() => {
     db = new Database();
     // Register query-based module with an alias for tests
-    db.registerVtabModule('query_test', new TestQueryModule());
+    db.registerModule('query_test', new TestQueryModule());
   });
 
   afterEach(async () => {

@@ -42,7 +42,7 @@ import { StoreModule } from '@quereus/store';
 const db = new Database();
 const provider = createLevelDBProvider({ basePath: './data' });
 const storeModule = new StoreModule(provider);
-db.registerVtabModule('store', storeModule);
+db.registerModule('store', storeModule);
 
 await db.exec(`
   create table users (id integer primary key, name text)

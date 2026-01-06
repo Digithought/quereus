@@ -129,8 +129,9 @@ export class IndexedDBManager {
       };
 
       request.onblocked = () => {
-        clearTimeout(timeout);
-        reject(new Error('IndexedDB is blocked by another connection'));
+        // Don't reject immediately - the onversionchange handler on the blocking
+        // connection should close it, allowing the upgrade to proceed.
+        console.warn('IndexedDB open is blocked, waiting for other connections to close...');
       };
 
       request.onupgradeneeded = (event) => {
@@ -145,6 +146,15 @@ export class IndexedDBManager {
       request.onsuccess = () => {
         clearTimeout(timeout);
         const db = request.result;
+
+        // Handle version change requests from other connections (or ourselves)
+        // This is critical for allowing version upgrades when the same manager
+        // needs to create new object stores while transactions are pending
+        db.onversionchange = () => {
+          db.close();
+          this.db = null;
+        };
+
         // Update objectStores from actual database
         this.objectStores.clear();
         for (let i = 0; i < db.objectStoreNames.length; i++) {
@@ -184,8 +194,10 @@ export class IndexedDBManager {
       };
 
       request.onblocked = () => {
-        clearTimeout(timeout);
-        reject(new Error('IndexedDB upgrade blocked'));
+        // Don't reject immediately - the onversionchange handler on the blocking
+        // connection should close it, allowing the upgrade to proceed.
+        // The timeout will catch cases where the upgrade truly can't proceed.
+        console.warn(`IndexedDB upgrade to create '${storeName}' is blocked, waiting for other connections to close...`);
       };
 
       request.onupgradeneeded = (event) => {
@@ -198,6 +210,13 @@ export class IndexedDBManager {
       request.onsuccess = () => {
         clearTimeout(timeout);
         const db = request.result;
+
+        // Handle version change requests
+        db.onversionchange = () => {
+          db.close();
+          this.db = null;
+        };
+
         this.objectStores.clear();
         for (let i = 0; i < db.objectStoreNames.length; i++) {
           this.objectStores.add(db.objectStoreNames[i]);
@@ -244,6 +263,13 @@ export class IndexedDBManager {
       request.onsuccess = () => {
         clearTimeout(timeout);
         const db = request.result;
+
+        // Handle version change requests
+        db.onversionchange = () => {
+          db.close();
+          this.db = null;
+        };
+
         this.objectStores.clear();
         for (let i = 0; i < db.objectStoreNames.length; i++) {
           this.objectStores.add(db.objectStoreNames[i]);

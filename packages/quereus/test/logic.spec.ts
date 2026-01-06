@@ -486,7 +486,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 					testStorePath = createStoreTestDir();
 					const provider = createLevelDBProvider({ basePath: testStorePath.replace(/\\/g, '/') });
 					leveldbModule = new StoreModule(provider);
-					db.registerVtabModule('store', leveldbModule);
+					db.registerModule('store', leveldbModule);
 					db.setOption('default_vtab_module', 'store');
 				} else {
 					// Memory is already registered by default, just ensure it's set

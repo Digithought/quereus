@@ -714,7 +714,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     // Create IndexedDB provider and store module
     this.indexedDBProvider = new IndexedDBProvider({ databaseName: 'quoomb' });
     this.storeModule = new StoreModule(this.indexedDBProvider, this.storeEvents);
-    this.db.registerVtabModule('store', this.storeModule);
+    this.db.registerModule('store', this.storeModule);
 
     // Set default module BEFORE restore so imported DDL (which may lack USING clause) uses store
     await this.db.exec("pragma default_vtab_module = 'store'");

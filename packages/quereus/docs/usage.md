@@ -229,7 +229,7 @@ A high-level async generator for executing a query and iterating over its result
 ### `db.beginTransaction()`, `db.commit()`, `db.rollback()`
 Standard transaction control methods.
 
-### `db.registerVtabModule(...)`, `db.createScalarFunction(...)`, `db.createAggregateFunction(...)`, `db.registerCollation(...)`
+### `db.registerModule(...)`, `db.createScalarFunction(...)`, `db.createAggregateFunction(...)`, `db.registerCollation(...)`
 Methods for extending database functionality.
 
 ### `db.setInstructionTracer(tracer: InstructionTracer | null)`
@@ -308,7 +308,7 @@ The explicit way to create a virtual table is using the `create table ... using 
 
 ```typescript
 // Register a virtual table module (e.g., a module for reading JSON)
-db.registerVtabModule('json_data', new JsonTableModule());
+db.registerModule('json_data', new JsonTableModule());
 
 // Create a virtual table using the module with specific arguments
 await db.exec(\`

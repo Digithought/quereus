@@ -2,7 +2,7 @@
  * Reactive event types and emitter for schema and data changes.
  */
 
-import type { Row, SqlValue, VTableEventEmitter, VTableDataChangeEvent, VTableSchemaChangeEvent } from '@quereus/quereus';
+import type { Row, SqlValue, VTableEventEmitter } from '@quereus/quereus';
 
 /**
  * Schema change event types.

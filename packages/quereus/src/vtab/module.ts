@@ -40,19 +40,26 @@ export interface VirtualTableModule<
 	 * Creates the persistent definition of a virtual table.
 	 * Called by CREATE VIRTUAL TABLE to define schema and initialize storage.
 	 *
+	 * This method is async to allow modules to perform storage initialization
+	 * (e.g., creating IndexedDB object stores) before returning. This ensures
+	 * the table's storage is ready before any schema change events are processed.
+	 *
 	 * @param db The database connection
 	 * @param tableSchema The schema definition for the table being created
-	 * @returns The new VirtualTable instance
+	 * @returns Promise resolving to the new VirtualTable instance
 	 * @throws QuereusError on failure
 	 */
 	create(
 		db: Database,
 		tableSchema: TableSchema,
-	): TTable;
+	): Promise<TTable>;
 
 	/**
 	 * Connects to an existing virtual table definition.
 	 * Called when the schema is loaded or a connection needs to interact with the table.
+	 *
+	 * This method is async to allow modules to perform async initialization when connecting
+	 * to existing tables (e.g., opening IndexedDB transactions, loading metadata).
 	 *
 	 * @param db The database connection
 	 * @param pAux Client data passed during module registration
@@ -61,7 +68,7 @@ export interface VirtualTableModule<
 	 * @param tableName The name of the virtual table to connect to
 	 * @param options Module-specific configuration options from the original CREATE VIRTUAL TABLE
 	 * @param tableSchema Optional table schema when connecting during import (columns, PK, etc.)
-	 * @returns The connection-specific VirtualTable instance
+	 * @returns Promise resolving to the connection-specific VirtualTable instance
 	 * @throws QuereusError on failure
 	 */
 	connect(
@@ -72,7 +79,7 @@ export interface VirtualTableModule<
 		tableName: string,
 		options: TConfig,
 		tableSchema?: TableSchema
-	): TTable;
+	): Promise<TTable>;
 
 	/**
 	 * Determines if this module can execute a plan subtree starting at the given node.

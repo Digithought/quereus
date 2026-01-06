@@ -329,7 +329,7 @@ export const manifest = {
 export async function register(quereus, config) {
   // Register virtual table module
   const module = new MyTableModule(config);
-  quereus.registerVtabModule('my_table', module);
+  quereus.registerModule('my_table', module);
   
   return manifest;
 }

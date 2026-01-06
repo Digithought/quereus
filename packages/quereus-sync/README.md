@@ -33,7 +33,7 @@ const { syncModule, syncManager, syncEvents } = createSyncModule(store, storeEve
 
 // Register with database
 const db = new Database();
-db.registerVtabModule('store', syncModule);
+db.registerModule('store', syncModule);
 
 // Create tables and use normally - all changes are tracked
 await db.exec(`

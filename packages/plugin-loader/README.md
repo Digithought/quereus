@@ -52,7 +52,7 @@ const registrations = await myPlugin(db, { /* config */ });
 // Register vtables
 if (registrations.vtables) {
   for (const vtable of registrations.vtables) {
-    db.registerVtabModule(vtable.name, vtable.module, vtable.auxData);
+    db.registerModule(vtable.name, vtable.module, vtable.auxData);
   }
 }
 

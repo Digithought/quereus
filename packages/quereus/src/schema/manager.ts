@@ -750,7 +750,7 @@ export class SchemaManager {
 
 		let tableInstance: VirtualTable;
 		try {
-			tableInstance = moduleInfo.module.create(
+			tableInstance = await moduleInfo.module.create(
 				this.db,
 				baseTableSchema
 			);

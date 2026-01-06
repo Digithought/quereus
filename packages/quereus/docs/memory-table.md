@@ -68,7 +68,7 @@ import { Database, MemoryTableModule } from 'quereus';
 
 const db = new Database();
 // Register the module (typically done once)
-db.registerVtabModule('memory', new MemoryTableModule());
+db.registerModule('memory', new MemoryTableModule());
 
 // Create a table with single-column primary key
 await db.exec(`

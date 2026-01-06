@@ -29,7 +29,7 @@
  * const sqliteDb = openOrCreate('quereus.db');
  * const provider = createSQLiteProvider({ db: sqliteDb });
  * const storeModule = new StoreModule(provider);
- * db.registerVtabModule('store', storeModule);
+ * db.registerModule('store', storeModule);
  * ```
  */
 

@@ -339,7 +339,7 @@ export class Database {
 	 * @param module The module implementation.
 	 * @param auxData Optional client data passed to create/connect.
 	 */
-	registerVtabModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
+	registerModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
 		this.checkOpen();
 		this.schemaManager.registerModule(name, module, auxData);
 	}

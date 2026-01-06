@@ -11,7 +11,7 @@
  *
  *   const provider: KVStoreProvider = createYourProvider();
  *   const module = new StoreModule(provider);
- *   db.registerVtabModule('store', module);
+ *   db.registerModule('store', module);
  */
 
 // Export all common utilities and abstractions

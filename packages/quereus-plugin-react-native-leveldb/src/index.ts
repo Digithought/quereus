@@ -33,7 +33,7 @@
  *   WriteBatch: LevelDBWriteBatch,
  * });
  * const storeModule = new StoreModule(provider);
- * db.registerVtabModule('store', storeModule);
+ * db.registerModule('store', storeModule);
  * ```
  */
 

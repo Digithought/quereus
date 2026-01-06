@@ -59,7 +59,7 @@ const provider = createLevelDBProvider({ basePath: './data' });
 
 // Create the generic store module with your provider
 const storeModule = new StoreModule(provider);
-db.registerVtabModule('store', storeModule);
+db.registerModule('store', storeModule);
 
 // Use it in SQL
 await db.exec(`
@@ -97,7 +97,7 @@ class MyCustomProvider implements KVStoreProvider {
 // Use it with StoreModule
 const provider = new MyCustomProvider();
 const module = new StoreModule(provider);
-db.registerVtabModule('store', module);
+db.registerModule('store', module);
 ```
 
 ## KVStore Interface
