@@ -73,7 +73,7 @@ export function buildCommonTableExpr(
 
 	// Check if this is a recursive CTE with UNION structure
 	if (isRecursive && cte.query.type === 'select' && cte.query.compound) {
-		return buildRecursiveCTE(cteContext, cte, options);
+		return buildRecursiveCTE(cteContext, cte, existingCTEs, options);
 	}
 
 	// For non-recursive CTEs or recursive CTEs without UNION structure
@@ -113,6 +113,7 @@ export function buildCommonTableExpr(
 function buildRecursiveCTE(
 	ctx: PlanningContext,
 	cte: AST.CommonTableExpr,
+	existingCTEs: Map<string, CTEScopeNode>,
 	options?: AST.WithClauseOptions
 ): RecursiveCTENode {
 	const selectStmt = cte.query as AST.SelectStmt;
@@ -135,7 +136,8 @@ function buildRecursiveCTE(
 	const isUnionAll = selectStmt.compound.op === 'unionAll';
 
 	// Build the base case query (without CTE self-reference)
-	const baseCaseQuery = buildSelectStmt(ctx, baseCaseStmt) as RelationalPlanNode;
+	// Pass existingCTEs so the base case can reference earlier CTEs
+	const baseCaseQuery = buildSelectStmt(ctx, baseCaseStmt, existingCTEs) as RelationalPlanNode;
 
 	// Determine materialization strategy (recursive CTEs should typically be materialized)
 	const materializationHint = cte.materializationHint || 'materialized';
@@ -168,6 +170,11 @@ function buildRecursiveCTE(
 	// Build the recursive case query with a simple replacement strategy
 	// We'll replace CTE references with the internal recursive reference during the FROM clause processing
 	const recursiveCteMap = new Map<string, CTEScopeNode>();
+	// Include all existing CTEs so they're available in the recursive case
+	for (const [name, node] of existingCTEs) {
+		recursiveCteMap.set(name, node);
+	}
+	// Override the current CTE with the internal recursive reference
 	recursiveCteMap.set(cte.name.toLowerCase(), internalRefNode);
 
 	// Build the recursive case query
