@@ -52,6 +52,11 @@ export class IndexedDBProvider implements KVStoreProvider {
 
     if (!store) {
       store = await IndexedDBStore.openForTable(this.databaseName, key);
+
+      if (!store) {
+        throw new Error(`IndexedDBStore.openForTable returned null/undefined for ${key}`);
+      }
+
       this.stores.set(key, store);
     }
 

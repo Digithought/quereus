@@ -386,6 +386,11 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
     if (!store) {
       const [schemaName, tableName] = tableKey.split('.');
       store = await this.provider.getStore(schemaName, tableName);
+
+      if (!store) {
+        throw new Error(`Provider.getStore returned null/undefined for ${tableKey}`);
+      }
+
       this.stores.set(tableKey, store);
     }
     return store;

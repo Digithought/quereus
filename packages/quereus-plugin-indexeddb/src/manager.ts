@@ -26,6 +26,7 @@ export class IndexedDBManager {
   private dbVersion: number = 1;
   private objectStores: Set<string> = new Set();
   private openPromise: Promise<void> | null = null;
+  private upgradePromise: Promise<void> | null = null;
   private closed = false;
 
   private constructor(dbName: string) {
@@ -64,6 +65,11 @@ export class IndexedDBManager {
   async ensureOpen(): Promise<IDBDatabase> {
     if (this.closed) {
       throw new Error('IndexedDBManager is closed');
+    }
+
+    // Wait for any ongoing upgrade to complete
+    if (this.upgradePromise) {
+      await this.upgradePromise;
     }
 
     if (this.db) {
@@ -170,12 +176,27 @@ export class IndexedDBManager {
    * Creates the store via database version upgrade if needed.
    */
   async ensureObjectStore(storeName: string): Promise<void> {
+    // Wait for any ongoing upgrade to complete
+    if (this.upgradePromise) {
+      await this.upgradePromise;
+    }
+
     await this.ensureOpen();
 
     if (this.objectStores.has(storeName)) {
       return; // Already exists
     }
 
+    // Serialize upgrades to prevent race conditions
+    this.upgradePromise = this.doUpgrade(storeName);
+    try {
+      await this.upgradePromise;
+    } finally {
+      this.upgradePromise = null;
+    }
+  }
+
+  private async doUpgrade(storeName: string): Promise<void> {
     // Close current connection and reopen with new version
     this.db?.close();
     this.db = null;

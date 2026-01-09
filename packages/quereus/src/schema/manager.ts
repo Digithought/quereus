@@ -957,7 +957,7 @@ export class SchemaManager {
 
 		// Use connect() instead of create() - the storage already exists
 		try {
-			moduleInfo.module.connect(
+			await moduleInfo.module.connect(
 				this.db,
 				moduleInfo.auxData,
 				moduleName,
