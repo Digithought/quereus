@@ -37,16 +37,26 @@ export {
   type TableStats,
 } from './serialization.js';
 
-// Key building
+// Key building - new API
 export {
-  KEY_PREFIX,
-  buildDataKey,
-  buildIndexKey,
-  buildMetaKey,
-  buildTablePrefix,
-  buildTableScanBounds,
-  buildIndexScanBounds,
-  buildMetaScanBounds,
+	STORE_SUFFIX,
+	CATALOG_STORE_NAME,
+	buildDataStoreName,
+	buildIndexStoreName,
+	buildStatsStoreName,
+	buildDataKey,
+	buildIndexKey,
+	buildCatalogKey,
+	buildFullScanBounds,
+	buildIndexPrefixBounds,
+	buildCatalogScanBounds,
+	// Legacy exports (deprecated)
+	KEY_PREFIX,
+	buildTablePrefix,
+	buildTableScanBounds,
+	buildIndexScanBounds,
+	buildMetaKey,
+	buildMetaScanBounds,
 } from './key-builder.js';
 
 // Events

@@ -213,7 +213,7 @@ async function applyRowChanges(
   }
 
   const encodeOptions = { collation };
-  const dataKey = buildDataKey(schema, table, pk, encodeOptions);
+  const dataKey = buildDataKey(pk, encodeOptions);
 
   // Check for delete operations first
   const deleteChange = changes.find(c => c.type === 'delete');

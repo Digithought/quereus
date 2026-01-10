@@ -3,6 +3,11 @@
  *
  * This is a platform-agnostic table implementation that works with any
  * KVStore implementation (LevelDB, IndexedDB, or custom stores).
+ *
+ * Storage architecture:
+ *   - Data store: {schema}.{table} - row data keyed by encoded PK
+ *   - Index stores: {schema}.{table}_idx_{name} - one per secondary index
+ *   - Stats store: {schema}.{table}_stats - row count and metadata
  */
 
 import {
@@ -28,9 +33,8 @@ import type { TransactionCoordinator } from './transaction.js';
 import { StoreConnection } from './store-connection.js';
 import {
 	buildDataKey,
-	buildTableScanBounds,
 	buildIndexKey,
-	buildMetaKey,
+	buildFullScanBounds,
 } from './key-builder.js';
 import {
 	serializeRow,
@@ -44,6 +48,8 @@ import type { EncodeOptions } from './encoding.js';
 /** Number of mutations before persisting statistics. */
 const STATS_FLUSH_INTERVAL = 100;
 
+/** Single key used in the stats store (stats store has only one entry). */
+const STATS_KEY = new Uint8Array(0);
 
 /**
  * Configuration for a store table.
@@ -60,8 +66,12 @@ export interface StoreTableConfig {
  * Provides access to stores and coordinators.
  */
 export interface StoreTableModule {
-	/** Get a store for a table. */
+	/** Get the data store for a table. */
 	getStore(tableKey: string, config: StoreTableConfig): Promise<KVStore>;
+	/** Get an index store for a table. */
+	getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore>;
+	/** Get the stats store for a table. */
+	getStatsStore(schemaName: string, tableName: string): Promise<KVStore>;
 	/** Get a coordinator for a table. */
 	getCoordinator(tableKey: string, config: StoreTableConfig): Promise<TransactionCoordinator>;
 	/** Save table DDL to persistent storage. */
@@ -80,6 +90,8 @@ export class StoreTable extends VirtualTable {
 	protected config: StoreTableConfig;
 	protected store: KVStore | null = null;
 	protected storeInitPromise: Promise<KVStore> | null = null;
+	protected indexStores: Map<string, KVStore> = new Map();
+	protected statsStore: KVStore | null = null;
 	protected coordinator: TransactionCoordinator | null = null;
 	protected connection: StoreConnection | null = null;
 	protected eventEmitter?: StoreEventEmitter;
@@ -121,22 +133,19 @@ export class StoreTable extends VirtualTable {
 	}
 
 	/**
-	 * Ensure the store is open and DDL is persisted.
+	 * Ensure the data store is open and DDL is persisted.
 	 * Uses a promise-based singleton pattern to prevent race conditions
 	 * when multiple concurrent queries access the same table.
 	 */
 	protected ensureStore(): Promise<KVStore> {
-		// If already resolved, return immediately
 		if (this.store) {
 			return Promise.resolve(this.store);
 		}
 
-		// If initialization is in progress, return the existing promise
 		if (this.storeInitPromise) {
 			return this.storeInitPromise;
 		}
 
-		// Start initialization and cache the promise
 		this.storeInitPromise = this.initializeStore();
 		return this.storeInitPromise;
 	}
@@ -163,10 +172,31 @@ export class StoreTable extends VirtualTable {
 
 			return this.store;
 		} catch (error) {
-			// Clear the promise so retries are possible
 			this.storeInitPromise = null;
 			throw error;
 		}
+	}
+
+	/**
+	 * Get or create an index store for the given index name.
+	 */
+	protected async ensureIndexStore(indexName: string): Promise<KVStore> {
+		let indexStore = this.indexStores.get(indexName);
+		if (!indexStore) {
+			indexStore = await this.storeModule.getIndexStore(this.schemaName, this.tableName, indexName);
+			this.indexStores.set(indexName, indexStore);
+		}
+		return indexStore;
+	}
+
+	/**
+	 * Get or create the stats store.
+	 */
+	protected async ensureStatsStore(): Promise<KVStore> {
+		if (!this.statsStore) {
+			this.statsStore = await this.storeModule.getStatsStore(this.schemaName, this.tableName);
+		}
+		return this.statsStore;
 	}
 
 	/**
@@ -177,18 +207,15 @@ export class StoreTable extends VirtualTable {
 			const tableKey = `${this.schemaName}.${this.tableName}`.toLowerCase();
 			this.coordinator = await this.storeModule.getCoordinator(tableKey, this.config);
 
-			// Register callbacks for transaction lifecycle
 			this.coordinator.registerCallbacks({
 				onCommit: () => this.applyPendingStats(),
 				onRollback: () => this.discardPendingStats(),
 			});
 		}
 
-		// Ensure connection is registered with database
 		if (!this.connection) {
 			this.connection = new StoreConnection(this.tableName, this.coordinator);
 
-			// Register with the database for transaction management
 			const dbInternal = this.db as unknown as {
 				registerConnection(conn: VirtualTableConnection): Promise<void>;
 			};
@@ -210,7 +237,6 @@ export class StoreTable extends VirtualTable {
 		this.mutationCount += Math.abs(this.pendingStatsDelta);
 		this.pendingStatsDelta = 0;
 
-		// Schedule lazy flush if needed
 		if (this.mutationCount >= STATS_FLUSH_INTERVAL && !this.statsFlushPending) {
 			this.statsFlushPending = true;
 			queueMicrotask(() => this.flushStats());
@@ -222,18 +248,17 @@ export class StoreTable extends VirtualTable {
 		this.pendingStatsDelta = 0;
 	}
 
-	/** Flush statistics to persistent storage. */
+	/** Flush statistics to the stats store. */
 	protected async flushStats(): Promise<void> {
 		this.statsFlushPending = false;
 		this.mutationCount = 0;
 
-		if (!this.cachedStats || !this.store) {
+		if (!this.cachedStats) {
 			return;
 		}
 
-		const schema = this.tableSchema!;
-		const statsKey = buildMetaKey('stats', schema.schemaName, schema.name);
-		await this.store.put(statsKey, serializeStats(this.cachedStats));
+		const statsStore = await this.ensureStatsStore();
+		await statsStore.put(STATS_KEY, serializeStats(this.cachedStats));
 	}
 
 	/** Create a new connection for transaction support. */
@@ -257,13 +282,10 @@ export class StoreTable extends VirtualTable {
 	async *query(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const store = await this.ensureStore();
 
-		const schema = this.tableSchema!;
-
-		// Check if we can use PK-based access
 		const pkAccess = this.analyzePKAccess(filterInfo);
 
 		if (pkAccess.type === 'point') {
-			const key = buildDataKey(schema.schemaName, schema.name, pkAccess.values!, this.encodeOptions);
+			const key = buildDataKey(pkAccess.values!, this.encodeOptions);
 			const value = await store.get(key);
 			if (value) {
 				const row = deserializeRow(value);
@@ -280,7 +302,7 @@ export class StoreTable extends VirtualTable {
 		}
 
 		// Full table scan
-		const bounds = buildTableScanBounds(schema.schemaName, schema.name);
+		const bounds = buildFullScanBounds();
 		for await (const entry of store.iterate(bounds)) {
 			const row = deserializeRow(entry.value);
 			if (this.matchesFilters(row, filterInfo)) {
@@ -347,8 +369,7 @@ export class StoreTable extends VirtualTable {
 		_access: PKAccessPattern,
 		filterInfo: FilterInfo
 	): AsyncIterable<Row> {
-		const schema = this.tableSchema!;
-		const bounds = buildTableScanBounds(schema.schemaName, schema.name);
+		const bounds = buildFullScanBounds();
 
 		// TODO: Refine bounds based on range constraints
 		for await (const entry of store.iterate(bounds)) {
@@ -413,7 +434,7 @@ export class StoreTable extends VirtualTable {
 			case 'insert': {
 				if (!values) throw new QuereusError('INSERT requires values', StatusCode.MISUSE);
 				const pk = this.extractPK(values);
-				const key = buildDataKey(schema.schemaName, schema.name, pk, this.encodeOptions);
+				const key = buildDataKey(pk, this.encodeOptions);
 
 				// Check for existing row (for conflict handling)
 				const existing = await store.get(key);
@@ -429,7 +450,7 @@ export class StoreTable extends VirtualTable {
 				}
 
 				// Update secondary indexes
-				await this.updateSecondaryIndexes(coordinator, inTransaction, null, values, pk);
+				await this.updateSecondaryIndexes(inTransaction, null, values, pk);
 
 				// Track statistics (only count as new if not replacing)
 				if (!existing) {
@@ -457,8 +478,8 @@ export class StoreTable extends VirtualTable {
 				if (!values || !oldKeyValues) throw new QuereusError('UPDATE requires values and oldKeyValues', StatusCode.MISUSE);
 				const oldPk = this.extractPK(oldKeyValues);
 				const newPk = this.extractPK(values);
-				const oldKey = buildDataKey(schema.schemaName, schema.name, oldPk, this.encodeOptions);
-				const newKey = buildDataKey(schema.schemaName, schema.name, newPk, this.encodeOptions);
+				const oldKey = buildDataKey(oldPk, this.encodeOptions);
+				const newKey = buildDataKey(newPk, this.encodeOptions);
 
 				// Get old row for index updates
 				const oldRowData = await store.get(oldKey);
@@ -481,7 +502,7 @@ export class StoreTable extends VirtualTable {
 				}
 
 				// Update secondary indexes
-				await this.updateSecondaryIndexes(coordinator, inTransaction, oldRow, values, newPk);
+				await this.updateSecondaryIndexes(inTransaction, oldRow, values, newPk);
 
 				// Queue or emit event
 				const updateEvent = {
@@ -504,7 +525,7 @@ export class StoreTable extends VirtualTable {
 			case 'delete': {
 				if (!oldKeyValues) throw new QuereusError('DELETE requires oldKeyValues', StatusCode.MISUSE);
 				const pk = this.extractPK(oldKeyValues);
-				const key = buildDataKey(schema.schemaName, schema.name, pk, this.encodeOptions);
+				const key = buildDataKey(pk, this.encodeOptions);
 
 				// Get old row for index cleanup
 				const oldRowData = await store.get(key);
@@ -518,7 +539,7 @@ export class StoreTable extends VirtualTable {
 
 				// Remove from secondary indexes
 				if (oldRow) {
-					await this.updateSecondaryIndexes(coordinator, inTransaction, oldRow, null, pk);
+					await this.updateSecondaryIndexes(inTransaction, oldRow, null, pk);
 					this.trackMutation(-1, inTransaction);
 				}
 
@@ -546,7 +567,6 @@ export class StoreTable extends VirtualTable {
 
 	/** Update secondary indexes after a row change. */
 	protected async updateSecondaryIndexes(
-		coordinator: TransactionCoordinator,
 		inTransaction: boolean,
 		oldRow: Row | null,
 		newRow: Row | null,
@@ -554,46 +574,38 @@ export class StoreTable extends VirtualTable {
 	): Promise<void> {
 		const schema = this.tableSchema!;
 		const indexes = schema.indexes || [];
-		const store = coordinator.getStore();
 
 		for (const index of indexes) {
+			const indexStore = await this.ensureIndexStore(index.name);
 			const indexCols = index.columns.map(c => c.index);
 
 			// Remove old index entry
 			if (oldRow) {
 				const oldIndexValues = indexCols.map(i => oldRow[i]);
-				const oldIndexKey = buildIndexKey(
-					schema.schemaName,
-					schema.name,
-					index.name,
-					oldIndexValues,
-					pk,
-					this.encodeOptions
-				);
-				if (inTransaction) {
-					coordinator.delete(oldIndexKey);
+				const oldIndexKey = buildIndexKey(oldIndexValues, pk, this.encodeOptions);
+
+				if (inTransaction && this.coordinator) {
+					// For transactions, we need to track index operations separately
+					// For now, apply directly (transaction support for indexes is TODO)
+					await indexStore.delete(oldIndexKey);
 				} else {
-					await store.delete(oldIndexKey);
+					await indexStore.delete(oldIndexKey);
 				}
 			}
 
 			// Add new index entry
 			if (newRow) {
 				const newIndexValues = indexCols.map(i => newRow[i]);
-				const newIndexKey = buildIndexKey(
-					schema.schemaName,
-					schema.name,
-					index.name,
-					newIndexValues,
-					pk,
-					this.encodeOptions
-				);
+				const newIndexKey = buildIndexKey(newIndexValues, pk, this.encodeOptions);
 				// Index value is empty - we just need the key for lookups
 				const emptyValue = new Uint8Array(0);
-				if (inTransaction) {
-					coordinator.put(newIndexKey, emptyValue);
+
+				if (inTransaction && this.coordinator) {
+					// For transactions, we need to track index operations separately
+					// For now, apply directly (transaction support for indexes is TODO)
+					await indexStore.put(newIndexKey, emptyValue);
 				} else {
-					await store.put(newIndexKey, emptyValue);
+					await indexStore.put(newIndexKey, emptyValue);
 				}
 			}
 		}
@@ -626,10 +638,8 @@ export class StoreTable extends VirtualTable {
 			return this.cachedStats.rowCount;
 		}
 
-		const store = await this.ensureStore();
-		const schema = this.tableSchema!;
-		const statsKey = buildMetaKey('stats', schema.schemaName, schema.name);
-		const statsData = await store.get(statsKey);
+		const statsStore = await this.ensureStatsStore();
+		const statsData = await statsStore.get(STATS_KEY);
 
 		if (statsData) {
 			this.cachedStats = deserializeStats(statsData);

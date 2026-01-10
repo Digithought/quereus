@@ -27,6 +27,23 @@ This architecture enables:
 - **Custom storage backends** - Implement `KVStore` for IndexedDB, LevelDB, LMDB, or other "NoSQL" stores
 - **Dependency injection** - Use `KVStoreProvider` for store management
 
+## Storage Architecture
+
+The store module uses separate logical stores for different data types:
+
+**Store Naming Convention:**
+- `{schema}.{table}` - Data store (row data)
+- `{schema}.{table}_idx_{indexName}` - Index stores (one per secondary index)
+- `{schema}.{table}_stats` - Stats store (row count, metadata)
+- `__catalog__` - Catalog store (DDL metadata)
+
+**Key Formats:**
+- **Data keys**: Encoded primary key (no prefix)
+- **Index keys**: Encoded index columns + encoded PK
+- **Catalog keys**: `{schema}.{table}` as string
+
+This design eliminates redundant prefixes and groups related stores together by table name.
+
 ## Installation
 
 ```bash
@@ -83,14 +100,22 @@ class MyCustomStore implements KVStore {
   iterate(options?: IterateOptions) { /* ... */ }
   batch() { /* ... */ }
   async close() { /* ... */ }
+  async approximateCount(options?: IterateOptions) { /* ... */ }
 }
 
 class MyCustomProvider implements KVStoreProvider {
   async getStore(schemaName: string, tableName: string) {
     return new MyCustomStore(/* ... */);
   }
+  async getIndexStore(schemaName: string, tableName: string, indexName: string) {
+    return new MyCustomStore(/* ... */);
+  }
+  async getStatsStore(schemaName: string, tableName: string) {
+    return new MyCustomStore(/* ... */);
+  }
   async getCatalogStore() { /* ... */ }
   async closeStore(schemaName: string, tableName: string) { /* ... */ }
+  async closeIndexStore(schemaName: string, tableName: string, indexName: string) { /* ... */ }
   async closeAll() { /* ... */ }
 }
 
@@ -113,13 +138,30 @@ interface KVStore {
   iterate(options?: IterateOptions): AsyncIterable<KVEntry>;
   batch(): WriteBatch;
   close(): Promise<void>;
+  approximateCount(options?: IterateOptions): Promise<number>;
 }
 
 interface KVStoreProvider {
+  // Get data store for a table
   getStore(schemaName: string, tableName: string): Promise<KVStore>;
+  
+  // Get index store for a secondary index
+  getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore>;
+  
+  // Get stats store for table statistics
+  getStatsStore(schemaName: string, tableName: string): Promise<KVStore>;
+  
+  // Get catalog store for DDL metadata
   getCatalogStore(): Promise<KVStore>;
+  
+  // Close specific stores
   closeStore(schemaName: string, tableName: string): Promise<void>;
+  closeIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void>;
   closeAll(): Promise<void>;
+  
+  // Optional: Delete stores
+  deleteIndexStore?(schemaName: string, tableName: string, indexName: string): Promise<void>;
+  deleteTableStores?(schemaName: string, tableName: string): Promise<void>;
 }
 ```
 
@@ -162,10 +204,17 @@ interface KVStoreProvider {
 
 | Export | Description |
 |--------|-------------|
-| `buildDataKey` | Build key for row data |
+| `buildDataStoreName` | Build store name for table data |
+| `buildIndexStoreName` | Build store name for an index |
+| `buildStatsStoreName` | Build store name for table stats |
+| `buildDataKey` | Build key for row data (encoded PK) |
 | `buildIndexKey` | Build key for index entry |
-| `buildMetaKey` | Build key for metadata |
-| `buildTableScanBounds` | Build bounds for table scan |
+| `buildCatalogKey` | Build key for catalog metadata |
+| `buildFullScanBounds` | Build bounds for full table scan |
+| `buildIndexPrefixBounds` | Build bounds for index prefix scan |
+| `buildCatalogScanBounds` | Build bounds for catalog scan |
+| `CATALOG_STORE_NAME` | Reserved catalog store name constant |
+| `STORE_SUFFIX` | Store name suffixes (INDEX, STATS) |
 
 ## Related Packages
 
@@ -176,4 +225,3 @@ interface KVStoreProvider {
 ## License
 
 MIT
-

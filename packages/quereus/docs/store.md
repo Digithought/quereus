@@ -5,6 +5,15 @@ This document describes the design and architecture for the Quereus storage syst
 - `@quereus/plugin-leveldb` - LevelDB plugin for Node.js
 - `@quereus/plugin-indexeddb` - IndexedDB plugin for browsers
 
+## Storage Architecture
+
+The store module uses a **multi-store architecture** where different types of data are stored in separate logical stores:
+
+- **Data stores**: `{schema}.{table}` - One per table, containing row data keyed by encoded primary key
+- **Index stores**: `{schema}.{table}_idx_{indexName}` - One per secondary index, containing index entries
+- **Stats stores**: `{schema}.{table}_stats` - One per table, containing row count and metadata
+- **Catalog store**: `__catalog__` - Single store containing DDL for all tables
+
 ## Reactive Hooks
 
 The store module exposes reactive JavaScript hooks for schema and data changes, enabling UI updates, caching invalidation, and real-time synchronization.
@@ -163,10 +172,26 @@ interface KVStore {
 **KVStoreProvider** - Factory for platform-specific stores:
 ```typescript
 interface KVStoreProvider {
+  // Get data store for a table
   getStore(schemaName: string, tableName: string, options?: StoreOptions): Promise<KVStore>;
+  
+  // Get index store for a secondary index
+  getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore>;
+  
+  // Get stats store for table statistics
+  getStatsStore(schemaName: string, tableName: string): Promise<KVStore>;
+  
+  // Get catalog store for DDL metadata
   getCatalogStore(): Promise<KVStore>;
+  
+  // Close specific stores
   closeStore(schemaName: string, tableName: string): Promise<void>;
+  closeIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void>;
   closeAll(): Promise<void>;
+  
+  // Optional: Delete stores
+  deleteIndexStore?(schemaName: string, tableName: string, indexName: string): Promise<void>;
+  deleteTableStores?(schemaName: string, tableName: string): Promise<void>;
 }
 ```
 
@@ -177,15 +202,41 @@ This architecture enables:
 
 ## Storage Layout
 
-### Key Structure
+### Store Naming Convention
 
-All keys are byte arrays with type-prefixed encoding for correct sort order:
+The module uses separate logical stores for different data types:
 
-| Prefix | Purpose | Format |
-|--------|---------|--------|
-| `d:` | Data rows | `d:{schema}.{table}:{encoded_pk}` |
-| `i:` | Secondary index | `i:{schema}.{table}.{index}:{encoded_cols}:{pk}` |
-| `m:` | Metadata | `m:ddl:{schema}.{table}`, `m:stats:{schema}.{table}` |
+| Store Name | Purpose | Examples |
+|------------|---------|----------|
+| `{schema}.{table}` | Table data | `main.users`, `main.orders` |
+| `{schema}.{table}_idx_{name}` | Secondary indexes | `main.users_idx_email` |
+| `{schema}.{table}_stats` | Table statistics | `main.users_stats` |
+| `__catalog__` | DDL metadata | Single catalog store |
+
+**Benefits:**
+- Clean grouping by table name (all stores for a table appear together)
+- Each index gets its own store (no prefix required in keys)
+- Shorter keys (no redundant schema.table prefixes)
+- Simpler iteration (no prefix filtering needed)
+
+### Key Formats
+
+**Data Keys** (in `{schema}.{table}` store):
+- Format: Encoded primary key (no prefix)
+- Example: For `users` table with PK `id=42`, key is just the encoded `42`
+
+**Index Keys** (in `{schema}.{table}_idx_{name}` stores):
+- Format: Encoded index columns + encoded PK
+- Example: For email index, key is `encoded("alice@example.com") + encoded(42)`
+
+**Catalog Keys** (in `__catalog__` store):
+- Format: `{schema}.{table}` as UTF-8 string
+- Value: DDL statement for table creation
+- Example: Key `main.users` → `CREATE TABLE main.users (...)`
+
+**Stats Keys** (in `{schema}.{table}_stats` stores):
+- Format: Empty key (single entry per store)
+- Value: JSON `{rowCount: number, updatedAt: timestamp}`
 
 ### Primary Key Encoding
 
@@ -204,26 +255,27 @@ Rows are stored as values using Quereus's extended JSON serializer, which handle
 - `Uint8Array` via `{"$blob": "base64..."}`
 - Standard JSON types
 
-### Metadata Storage
-
-| Key | Value |
-|-----|-------|
-| `m:ddl:{schema}.{table}` | CREATE TABLE DDL string |
-| `m:ddl:{schema}.{table}#{index}` | CREATE INDEX DDL string |
-| `m:stats:{schema}.{table}` | `{rows: number, updated: timestamp}` |
-
 ## Secondary Indexes
 
-Indexes are stored as separate key-value entries pointing back to the primary key:
+Indexes are stored in separate stores, with keys containing the indexed values plus the primary key:
 
 ```
-Data:   d:main.users:42        → {id:42, email:"a@b.com", name:"Alice"}
-Index:  i:main.users.idx_email:a@b.com:42 → (empty or pk bytes)
+Data store (main.users):
+  key: encoded(42)  → value: {id:42, email:"alice@example.com", name:"Alice"}
+
+Index store (main.users_idx_email):
+  key: encoded("alice@example.com") + encoded(42)  → value: (empty)
 ```
+
+**Benefits of separate index stores:**
+- No prefix needed in index keys (store name already identifies the index)
+- Simpler iteration (no filtering required)
+- Each index can be managed independently
+- Clean separation for index-specific operations
 
 Index maintenance occurs during `update()`:
-- INSERT: Add index entries for new row
-- DELETE: Remove index entries for old row  
+- INSERT: Add index entries for new row in each index store
+- DELETE: Remove index entries for old row from each index store
 - UPDATE: Remove old entries, add new entries
 
 The module's `getBestAccessPlan()` considers available indexes when evaluating filter constraints.
@@ -244,7 +296,7 @@ Non-BINARY collations: The module cannot provide collation-aware ordering. It re
 
 ## Schema Discovery
 
-When connecting to existing storage, the module reads DDL from metadata keys and uses `importCatalog()` to register tables without triggering creation hooks.
+When connecting to existing storage, the module reads DDL from the catalog store and uses `importCatalog()` to register tables without triggering creation hooks.
 
 ### Interface Extension
 
@@ -262,7 +314,7 @@ This method:
 ### Discovery Flow
 
 1. Module opens storage at configured path/database
-2. Scans `m:ddl:*` keys to collect DDL statements
+2. Scans catalog store (keys are `{schema}.{table}`, values are DDL)
 3. Calls `db.importCatalog(ddlStatements)`
 4. Tables become queryable
 
@@ -402,7 +454,9 @@ This would provide true ACID semantics and enable features like:
 
 Row counts are maintained lazily for efficient query planning:
 
-- **Storage**: `m:stats:{schema}.{table}` contains `{rowCount, updatedAt}`
+- **Storage**: Each table has a dedicated stats store (`{schema}.{table}_stats`) with a single entry
+- **Key format**: Empty key (stats store contains only one value)
+- **Value format**: JSON `{rowCount: number, updatedAt: timestamp}`
 - **Tracking**: Each insert increments count (+1), each delete decrements (-1)
 - **Persistence**: After ~100 mutations, stats are flushed to storage in a microtask
 - **Flush on close**: Stats are persisted when a table is disconnected
@@ -484,18 +538,16 @@ packages/quereus-store/                # Core (platform-agnostic)
   src/
     common/
       encoding.ts       # Key encoding utilities (type-prefixed sort-safe encoding)
-      key-builder.ts    # Data/index key construction and scan bounds
+      key-builder.ts    # Store naming and key construction utilities
       serialization.ts  # Extended JSON row serialization
-      kv-store.ts       # KVStore interface with iterate and batch support
-      kv-store-provider.ts  # KVStoreProvider interface for dependency injection
+      kv-store.ts       # KVStore and KVStoreProvider interfaces
       events.ts         # Schema and data change event emitter
       ddl-generator.ts  # Generate CREATE TABLE/INDEX DDL from schemas
-      index.ts          # Common module exports
-    table/
       store-table.ts    # Generic StoreTable (uses KVStore abstraction)
       store-connection.ts  # Generic transaction connection
-      index.ts          # Table module exports
-    index.ts            # Package exports
+      store-module.ts   # Generic StoreModule
+      transaction.ts    # Transaction coordinator
+      index.ts          # Common module exports
 
 packages/quereus-plugin-leveldb/       # Node.js LevelDB plugin
   src/
@@ -507,6 +559,7 @@ packages/quereus-plugin-leveldb/       # Node.js LevelDB plugin
 packages/quereus-plugin-indexeddb/     # Browser IndexedDB plugin
   src/
     store.ts            # IndexedDBStore (native IndexedDB wrapper)
+    manager.ts          # IndexedDBManager (unified database management)
     provider.ts         # IndexedDBProvider (KVStoreProvider implementation)
     broadcast.ts        # CrossTabSync for BroadcastChannel notifications
     plugin.ts           # Plugin entry point for registerPlugin()

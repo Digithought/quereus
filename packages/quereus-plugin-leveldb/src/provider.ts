@@ -2,27 +2,34 @@
  * LevelDB KVStore provider implementation.
  *
  * Manages LevelDB stores for the StoreModule.
+ *
+ * Storage naming convention:
+ *   {basePath}/{schema}/{table}              - Data store (row data)
+ *   {basePath}/{schema}/{table}_idx_{name}   - Index store (secondary indexes)
+ *   {basePath}/{schema}/{table}_stats        - Stats store (row count, etc.)
+ *   {basePath}/__catalog__                   - Catalog store (DDL metadata)
  */
 
 import path from 'node:path';
 import type { KVStore, KVStoreProvider } from '@quereus/store';
+import { STORE_SUFFIX, CATALOG_STORE_NAME } from '@quereus/store';
 import { LevelDBStore } from './store.js';
 
 /**
  * Options for creating a LevelDB provider.
  */
 export interface LevelDBProviderOptions {
-  /**
-   * Base path for all LevelDB stores.
-   * Each table gets a subdirectory under this path.
-   */
-  basePath: string;
+	/**
+	 * Base path for all LevelDB stores.
+	 * Each table gets a subdirectory under this path.
+	 */
+	basePath: string;
 
-  /**
-   * Create directories if they don't exist.
-   * @default true
-   */
-  createIfMissing?: boolean;
+	/**
+	 * Create directories if they don't exist.
+	 * @default true
+	 */
+	createIfMissing?: boolean;
 }
 
 /**
@@ -32,85 +39,121 @@ export interface LevelDBProviderOptions {
  * in subdirectories under the configured base path.
  */
 export class LevelDBProvider implements KVStoreProvider {
-  private basePath: string;
-  private createIfMissing: boolean;
-  private stores = new Map<string, LevelDBStore>();
-  private catalogStore: LevelDBStore | null = null;
+	private basePath: string;
+	private createIfMissing: boolean;
+	private stores = new Map<string, LevelDBStore>();
+	private catalogStore: LevelDBStore | null = null;
 
-  constructor(options: LevelDBProviderOptions) {
-    this.basePath = options.basePath;
-    this.createIfMissing = options.createIfMissing ?? true;
-  }
+	constructor(options: LevelDBProviderOptions) {
+		this.basePath = options.basePath;
+		this.createIfMissing = options.createIfMissing ?? true;
+	}
 
-  /**
-   * Get the storage path for a table.
-   */
-  private getStorePath(schemaName: string, tableName: string): string {
-    return path.join(this.basePath, schemaName, tableName);
-  }
+	async getStore(schemaName: string, tableName: string, options?: Record<string, unknown>): Promise<KVStore> {
+		const storeName = `${schemaName}.${tableName}`.toLowerCase();
+		const storePath = (options?.path as string) || path.join(this.basePath, schemaName, tableName);
+		return this.getOrCreateStore(storeName, storePath);
+	}
 
-  /**
-   * Get the key for the store cache.
-   */
-  private getStoreKey(schemaName: string, tableName: string): string {
-    return `${schemaName}.${tableName}`.toLowerCase();
-  }
+	async getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore> {
+		const storeName = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}${indexName}`.toLowerCase();
+		const storePath = path.join(this.basePath, schemaName, `${tableName}${STORE_SUFFIX.INDEX}${indexName}`);
+		return this.getOrCreateStore(storeName, storePath);
+	}
 
-  async getStore(schemaName: string, tableName: string, options?: Record<string, unknown>): Promise<KVStore> {
-    const key = this.getStoreKey(schemaName, tableName);
-    let store = this.stores.get(key);
+	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
+		const storeName = `${schemaName}.${tableName}${STORE_SUFFIX.STATS}`.toLowerCase();
+		const storePath = path.join(this.basePath, schemaName, `${tableName}${STORE_SUFFIX.STATS}`);
+		return this.getOrCreateStore(storeName, storePath);
+	}
 
-    if (!store) {
-      // Use custom path if provided, otherwise use default
-      const storePath = (options?.path as string) || this.getStorePath(schemaName, tableName);
+	async getCatalogStore(): Promise<KVStore> {
+		if (!this.catalogStore) {
+			const catalogPath = path.join(this.basePath, CATALOG_STORE_NAME);
+			this.catalogStore = await LevelDBStore.open({
+				path: catalogPath,
+				createIfMissing: this.createIfMissing,
+			});
+		}
+		return this.catalogStore;
+	}
 
-      store = await LevelDBStore.open({
-        path: storePath,
-        createIfMissing: this.createIfMissing,
-      });
-      this.stores.set(key, store);
-    }
+	async closeStore(schemaName: string, tableName: string): Promise<void> {
+		const storeName = `${schemaName}.${tableName}`.toLowerCase();
+		await this.closeStoreByName(storeName);
+	}
 
-    return store;
-  }
+	async closeIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
+		const storeName = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}${indexName}`.toLowerCase();
+		await this.closeStoreByName(storeName);
+	}
 
-  async getCatalogStore(): Promise<KVStore> {
-    if (!this.catalogStore) {
-      const catalogPath = path.join(this.basePath, '__catalog__');
-      this.catalogStore = await LevelDBStore.open({
-        path: catalogPath,
-        createIfMissing: this.createIfMissing,
-      });
-    }
-    return this.catalogStore;
-  }
+	async closeAll(): Promise<void> {
+		for (const store of this.stores.values()) {
+			await store.close();
+		}
+		this.stores.clear();
 
-  async closeStore(schemaName: string, tableName: string): Promise<void> {
-    const key = this.getStoreKey(schemaName, tableName);
-    const store = this.stores.get(key);
-    if (store) {
-      await store.close();
-      this.stores.delete(key);
-    }
-  }
+		if (this.catalogStore) {
+			await this.catalogStore.close();
+			this.catalogStore = null;
+		}
+	}
 
-  async closeAll(): Promise<void> {
-    for (const store of this.stores.values()) {
-      await store.close();
-    }
-    this.stores.clear();
+	async deleteIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
+		const storeName = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}${indexName}`.toLowerCase();
+		await this.closeStoreByName(storeName);
+		// Note: LevelDB doesn't have a built-in delete, would need fs.rm
+		// For now, just close the store - actual deletion would require filesystem ops
+	}
 
-    if (this.catalogStore) {
-      await this.catalogStore.close();
-      this.catalogStore = null;
-    }
-  }
+	async deleteTableStores(schemaName: string, tableName: string): Promise<void> {
+		// Close data store
+		const dataStoreName = `${schemaName}.${tableName}`.toLowerCase();
+		await this.closeStoreByName(dataStoreName);
+
+		// Close stats store
+		const statsStoreName = `${schemaName}.${tableName}${STORE_SUFFIX.STATS}`.toLowerCase();
+		await this.closeStoreByName(statsStoreName);
+
+		// Close all index stores for this table
+		const indexPrefix = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}`.toLowerCase();
+		for (const [name, store] of this.stores) {
+			if (name.startsWith(indexPrefix)) {
+				await store.close();
+				this.stores.delete(name);
+			}
+		}
+
+		// Note: Actual directory deletion would require filesystem operations
+	}
+
+	private async getOrCreateStore(storeName: string, storePath: string): Promise<LevelDBStore> {
+		let store = this.stores.get(storeName);
+
+		if (!store) {
+			store = await LevelDBStore.open({
+				path: storePath,
+				createIfMissing: this.createIfMissing,
+			});
+			this.stores.set(storeName, store);
+		}
+
+		return store;
+	}
+
+	private async closeStoreByName(storeName: string): Promise<void> {
+		const store = this.stores.get(storeName);
+		if (store) {
+			await store.close();
+			this.stores.delete(storeName);
+		}
+	}
 }
 
 /**
  * Create a LevelDB provider with the given options.
  */
 export function createLevelDBProvider(options: LevelDBProviderOptions): LevelDBProvider {
-  return new LevelDBProvider(options);
+	return new LevelDBProvider(options);
 }
-

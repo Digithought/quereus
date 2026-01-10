@@ -11,8 +11,7 @@
  *   - Native cross-table transactions for atomicity
  */
 
-/** Reserved object store for catalog/DDL metadata. */
-const CATALOG_STORE_NAME = '__catalog__';
+import { CATALOG_STORE_NAME } from '@quereus/store';
 
 /**
  * Singleton manager for a unified IndexedDB database.

@@ -2,9 +2,16 @@
  * React Native LevelDB KVStore provider implementation.
  *
  * Manages LevelDB stores for the StoreModule in React Native environments.
+ *
+ * Storage naming convention:
+ *   {prefix}.{schema}.{table}              - Data store (row data)
+ *   {prefix}.{schema}.{table}_idx_{name}   - Index store (secondary indexes)
+ *   {prefix}.{schema}.{table}_stats        - Stats store (row count, etc.)
+ *   {prefix}.__catalog__                   - Catalog store (DDL metadata)
  */
 
 import type { KVStore, KVStoreProvider } from '@quereus/store';
+import { STORE_SUFFIX } from '@quereus/store';
 import { ReactNativeLevelDBStore, type LevelDBOpenFn, type LevelDBWriteBatchConstructor } from './store.js';
 
 /**
@@ -76,17 +83,19 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 
 	async getStore(schemaName: string, tableName: string, _options?: Record<string, unknown>): Promise<KVStore> {
 		const key = this.getStoreKey(schemaName, tableName);
-		let store = this.stores.get(key);
+		return this.getOrCreateStore(key, this.getDatabaseName(schemaName, tableName));
+	}
 
-		if (!store) {
-			const dbName = this.getDatabaseName(schemaName, tableName);
-			store = ReactNativeLevelDBStore.open(this.openFn, this.WriteBatch, dbName, {
-				createIfMissing: this.createIfMissing,
-			});
-			this.stores.set(key, store);
-		}
+	async getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore> {
+		const key = `${this.getStoreKey(schemaName, tableName)}${STORE_SUFFIX.INDEX}${indexName}`;
+		const dbName = `${this.getDatabaseName(schemaName, tableName)}${STORE_SUFFIX.INDEX}${indexName}`;
+		return this.getOrCreateStore(key, dbName);
+	}
 
-		return store;
+	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
+		const key = `${this.getStoreKey(schemaName, tableName)}${STORE_SUFFIX.STATS}`;
+		const dbName = `${this.getDatabaseName(schemaName, tableName)}${STORE_SUFFIX.STATS}`;
+		return this.getOrCreateStore(key, dbName);
 	}
 
 	async getCatalogStore(): Promise<KVStore> {
@@ -101,11 +110,12 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 
 	async closeStore(schemaName: string, tableName: string): Promise<void> {
 		const key = this.getStoreKey(schemaName, tableName);
-		const store = this.stores.get(key);
-		if (store) {
-			await store.close();
-			this.stores.delete(key);
-		}
+		await this.closeStoreByKey(key);
+	}
+
+	async closeIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
+		const key = `${this.getStoreKey(schemaName, tableName)}${STORE_SUFFIX.INDEX}${indexName}`;
+		await this.closeStoreByKey(key);
 	}
 
 	async closeAll(): Promise<void> {
@@ -119,6 +129,52 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 			this.catalogStore = null;
 		}
 	}
+
+	async deleteIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
+		const key = `${this.getStoreKey(schemaName, tableName)}${STORE_SUFFIX.INDEX}${indexName}`;
+		await this.closeStoreByKey(key);
+		// Note: LevelDB doesn't have a built-in delete, would need filesystem ops
+	}
+
+	async deleteTableStores(schemaName: string, tableName: string): Promise<void> {
+		// Close data store
+		const dataKey = this.getStoreKey(schemaName, tableName);
+		await this.closeStoreByKey(dataKey);
+
+		// Close stats store
+		const statsKey = `${dataKey}${STORE_SUFFIX.STATS}`;
+		await this.closeStoreByKey(statsKey);
+
+		// Close all index stores for this table
+		const indexPrefix = `${dataKey}${STORE_SUFFIX.INDEX}`;
+		for (const [key, store] of this.stores) {
+			if (key.startsWith(indexPrefix)) {
+				await store.close();
+				this.stores.delete(key);
+			}
+		}
+	}
+
+	private getOrCreateStore(key: string, dbName: string): ReactNativeLevelDBStore {
+		let store = this.stores.get(key);
+
+		if (!store) {
+			store = ReactNativeLevelDBStore.open(this.openFn, this.WriteBatch, dbName, {
+				createIfMissing: this.createIfMissing,
+			});
+			this.stores.set(key, store);
+		}
+
+		return store;
+	}
+
+	private async closeStoreByKey(key: string): Promise<void> {
+		const store = this.stores.get(key);
+		if (store) {
+			await store.close();
+			this.stores.delete(key);
+		}
+	}
 }
 
 /**
@@ -127,4 +183,3 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 export function createReactNativeLevelDBProvider(options: ReactNativeLevelDBProviderOptions): ReactNativeLevelDBProvider {
 	return new ReactNativeLevelDBProvider(options);
 }
-

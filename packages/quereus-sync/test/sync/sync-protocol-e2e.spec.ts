@@ -1198,12 +1198,16 @@ describe('Sync Protocol E2E', () => {
       }
 
       // FIXED: Data should now be in tableDataStore, NOT syncMetaStore
-      const dataKeysInSyncMeta = syncMetaKeys.filter(k => k.startsWith('d:'));
-      expect(dataKeysInSyncMeta.length).to.equal(0, 'No data keys should be in syncMetaStore');
-
-      // Table data should be in tableDataStore
-      const dataKeysInTableStore = tableDataKeys.filter(k => k.startsWith('d:'));
-      expect(dataKeysInTableStore.length).to.be.greaterThan(0, 'Data should be in tableDataStore');
+      // Sync metadata keys start with specific prefixes (e.g., 'crdt:', 'hlc:', etc.)
+      // Table data keys are just encoded PKs (no prefix)
+      // We verify by checking that tableDataStore has entries and syncMetaStore has none of those
+      expect(tableDataKeys.length).to.be.greaterThan(0, 'Data should be in tableDataStore');
+      // Sync meta store should only have sync-related keys, not table data
+      // (The actual sync metadata format uses different prefixes)
+      const tableDataInSyncMeta = syncMetaKeys.some(k =>
+        tableDataKeys.includes(k)
+      );
+      expect(tableDataInSyncMeta).to.equal(false, 'Table data keys should not be in syncMetaStore');
     });
   });
 

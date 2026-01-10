@@ -5,17 +5,23 @@
  * to create StoreTable instances. This enables any storage backend
  * (LevelDB, IndexedDB, React Native, etc.) to be used with the same
  * table implementation.
+ *
+ * Storage architecture:
+ *   - Data store: {schema}.{table} - row data keyed by encoded PK
+ *   - Index stores: {schema}.{table}_idx_{name} - one per secondary index
+ *   - Stats store: {schema}.{table}_stats - row count and metadata
+ *   - Catalog store: __catalog__ - DDL metadata keyed by {schema}.{table}
  */
 
 import type {
-  Database,
-  TableSchema,
-  TableIndexSchema,
-  VirtualTableModule,
-  BaseModuleConfig,
-  BestAccessPlanRequest,
-  BestAccessPlanResult,
-  SqlValue,
+	Database,
+	TableSchema,
+	TableIndexSchema,
+	VirtualTableModule,
+	BaseModuleConfig,
+	BestAccessPlanRequest,
+	BestAccessPlanResult,
+	SqlValue,
 } from '@quereus/quereus';
 import { AccessPlanBuilder, QuereusError, StatusCode } from '@quereus/quereus';
 
@@ -23,18 +29,23 @@ import type { KVStore, KVStoreProvider } from './kv-store.js';
 import type { StoreEventEmitter } from './events.js';
 import { TransactionCoordinator } from './transaction.js';
 import { StoreTable, type StoreTableConfig, type StoreTableModule } from './store-table.js';
-import { buildMetaKey, buildMetaScanBounds, buildIndexKey, buildTableScanBounds } from './key-builder.js';
-import { serializeRow, deserializeRow } from './serialization.js';
+import {
+	buildCatalogKey,
+	buildCatalogScanBounds,
+	buildIndexKey,
+	buildFullScanBounds,
+} from './key-builder.js';
+import { deserializeRow } from './serialization.js';
 import { generateTableDDL } from './ddl-generator.js';
 
 /**
  * Configuration options for StoreModule tables.
  */
 export interface StoreModuleConfig extends BaseModuleConfig {
-  /** Collation for text keys. Default: 'NOCASE'. */
-  collation?: 'BINARY' | 'NOCASE';
-  /** Additional platform-specific options. */
-  [key: string]: unknown;
+	/** Collation for text keys. Default: 'NOCASE'. */
+	collation?: 'BINARY' | 'NOCASE';
+	/** Additional platform-specific options. */
+	[key: string]: unknown;
 }
 
 /**
@@ -51,440 +62,443 @@ export interface StoreModuleConfig extends BaseModuleConfig {
  * ```
  */
 export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleConfig>, StoreTableModule {
-  private provider: KVStoreProvider;
-  private stores: Map<string, KVStore> = new Map();
-  private coordinators: Map<string, TransactionCoordinator> = new Map();
-  private tables: Map<string, StoreTable> = new Map();
-  private eventEmitter?: StoreEventEmitter;
+	private provider: KVStoreProvider;
+	private stores: Map<string, KVStore> = new Map();
+	private coordinators: Map<string, TransactionCoordinator> = new Map();
+	private tables: Map<string, StoreTable> = new Map();
+	private eventEmitter?: StoreEventEmitter;
 
-  constructor(provider: KVStoreProvider, eventEmitter?: StoreEventEmitter) {
-    this.provider = provider;
-    this.eventEmitter = eventEmitter;
-  }
+	constructor(provider: KVStoreProvider, eventEmitter?: StoreEventEmitter) {
+		this.provider = provider;
+		this.eventEmitter = eventEmitter;
+	}
 
-  /**
-   * Get the event emitter for this module.
-   */
-  getEventEmitter(): StoreEventEmitter | undefined {
-    return this.eventEmitter;
-  }
+	/**
+	 * Get the event emitter for this module.
+	 */
+	getEventEmitter(): StoreEventEmitter | undefined {
+		return this.eventEmitter;
+	}
 
-  /**
-   * Get the KVStoreProvider used by this module.
-   */
-  getProvider(): KVStoreProvider {
-    return this.provider;
-  }
+	/**
+	 * Get the KVStoreProvider used by this module.
+	 */
+	getProvider(): KVStoreProvider {
+		return this.provider;
+	}
 
-  /**
-   * Creates a new store-backed table.
-   * Called by CREATE TABLE.
-   *
-   * This method eagerly initializes the underlying storage (e.g., IndexedDB object store)
-   * before emitting schema change events. This ensures the storage is ready before any
-   * event handlers (like sync module) try to access it.
-   */
-  async create(db: Database, tableSchema: TableSchema): Promise<StoreTable> {
-    const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
+	/**
+	 * Creates a new store-backed table.
+	 * Called by CREATE TABLE.
+	 *
+	 * This method eagerly initializes the underlying storage (e.g., IndexedDB object store)
+	 * before emitting schema change events. This ensures the storage is ready before any
+	 * event handlers (like sync module) try to access it.
+	 */
+	async create(db: Database, tableSchema: TableSchema): Promise<StoreTable> {
+		const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
 
-    if (this.tables.has(tableKey)) {
-      throw new QuereusError(
-        `Store table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'`,
-        StatusCode.ERROR
-      );
-    }
+		if (this.tables.has(tableKey)) {
+			throw new QuereusError(
+				`Store table '${tableSchema.name}' already exists in schema '${tableSchema.schemaName}'`,
+				StatusCode.ERROR
+			);
+		}
 
-    const config = this.parseConfig(tableSchema.vtabArgs as Record<string, SqlValue> | undefined);
+		const config = this.parseConfig(tableSchema.vtabArgs as Record<string, SqlValue> | undefined);
 
-    // Eagerly initialize the store BEFORE creating the table or emitting events.
-    // This ensures the underlying storage (e.g., IndexedDB object store) exists
-    // before any schema change handlers try to access it.
-    const store = await this.provider.getStore(tableSchema.schemaName, tableSchema.name);
-    this.stores.set(tableKey, store);
+		// Eagerly initialize the store BEFORE creating the table or emitting events.
+		// This ensures the underlying storage (e.g., IndexedDB object store) exists
+		// before any schema change handlers try to access it.
+		const store = await this.provider.getStore(tableSchema.schemaName, tableSchema.name);
+		this.stores.set(tableKey, store);
 
-    const table = new StoreTable(
-      db,
-      this,
-      tableSchema,
-      config,
-      this.eventEmitter
-      // isConnected defaults to false for newly created tables
-    );
+		const table = new StoreTable(
+			db,
+			this,
+			tableSchema,
+			config,
+			this.eventEmitter
+			// isConnected defaults to false for newly created tables
+		);
 
-    this.tables.set(tableKey, table);
+		this.tables.set(tableKey, table);
 
-    // Emit schema change event AFTER storage is initialized
-    this.eventEmitter?.emitSchemaChange({
-      type: 'create',
-      objectType: 'table',
-      schemaName: tableSchema.schemaName,
-      objectName: tableSchema.name,
-      ddl: generateTableDDL(tableSchema),
-    });
+		// Emit schema change event AFTER storage is initialized
+		this.eventEmitter?.emitSchemaChange({
+			type: 'create',
+			objectType: 'table',
+			schemaName: tableSchema.schemaName,
+			objectName: tableSchema.name,
+			ddl: generateTableDDL(tableSchema),
+		});
 
-    return table;
-  }
+		return table;
+	}
 
-  /**
-   * Connects to an existing store-backed table.
-   * Called when loading schema from persistent storage.
-   */
-  async connect(
-    db: Database,
-    _pAux: unknown,
-    _moduleName: string,
-    schemaName: string,
-    tableName: string,
-    options: StoreModuleConfig,
-    importedTableSchema?: TableSchema
-  ): Promise<StoreTable> {
-    const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+	/**
+	 * Connects to an existing store-backed table.
+	 * Called when loading schema from persistent storage.
+	 */
+	async connect(
+		db: Database,
+		_pAux: unknown,
+		_moduleName: string,
+		schemaName: string,
+		tableName: string,
+		options: StoreModuleConfig,
+		importedTableSchema?: TableSchema
+	): Promise<StoreTable> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
-    // Check if we already have this table connected
-    const existing = this.tables.get(tableKey);
-    if (existing) {
-      return existing;
-    }
+		// Check if we already have this table connected
+		const existing = this.tables.get(tableKey);
+		if (existing) {
+			return existing;
+		}
 
-    // Convert options to Record<string, SqlValue> for vtabArgs
-    const vtabArgs: Record<string, SqlValue> = {};
-    if (options?.collation !== undefined) vtabArgs.collation = options.collation;
+		// Convert options to Record<string, SqlValue> for vtabArgs
+		const vtabArgs: Record<string, SqlValue> = {};
+		if (options?.collation !== undefined) vtabArgs.collation = options.collation;
 
-    // Use the imported schema if provided, otherwise create a minimal one
-    const tableSchema: TableSchema = importedTableSchema ?? {
-      name: tableName,
-      schemaName: schemaName,
-      columns: Object.freeze([]),
-      columnIndexMap: new Map(),
-      primaryKeyDefinition: [],
-      checkConstraints: Object.freeze([]),
-      isTemporary: false,
-      isView: false,
-      vtabModuleName: 'store',
-      vtabArgs,
-      vtabModule: this,
-      estimatedRows: 0,
-    };
+		// Use the imported schema if provided, otherwise create a minimal one
+		const tableSchema: TableSchema = importedTableSchema ?? {
+			name: tableName,
+			schemaName: schemaName,
+			columns: Object.freeze([]),
+			columnIndexMap: new Map(),
+			primaryKeyDefinition: [],
+			checkConstraints: Object.freeze([]),
+			isTemporary: false,
+			isView: false,
+			vtabModuleName: 'store',
+			vtabArgs,
+			vtabModule: this,
+			estimatedRows: 0,
+		};
 
-    const config = this.parseConfig(vtabArgs);
+		const config = this.parseConfig(vtabArgs);
 
-    const table = new StoreTable(
-      db,
-      this,
-      tableSchema,
-      config,
-      this.eventEmitter,
-      true // isConnected - DDL already exists in storage
-    );
+		const table = new StoreTable(
+			db,
+			this,
+			tableSchema,
+			config,
+			this.eventEmitter,
+			true // isConnected - DDL already exists in storage
+		);
 
-    this.tables.set(tableKey, table);
-    return table;
-  }
+		this.tables.set(tableKey, table);
+		return table;
+	}
 
-  /**
-   * Destroys a store table and its storage.
-   */
-  async destroy(
-    _db: Database,
-    _pAux: unknown,
-    _moduleName: string,
-    schemaName: string,
-    tableName: string
-  ): Promise<void> {
-    const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+	/**
+	 * Destroys a store table and its storage.
+	 */
+	async destroy(
+		_db: Database,
+		_pAux: unknown,
+		_moduleName: string,
+		schemaName: string,
+		tableName: string
+	): Promise<void> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
-    const table = this.tables.get(tableKey);
-    if (table) {
-      await table.disconnect();
-      this.tables.delete(tableKey);
-    }
+		const table = this.tables.get(tableKey);
+		if (table) {
+			await table.disconnect();
+			this.tables.delete(tableKey);
+		}
 
-    // Close the store via provider
-    await this.provider.closeStore(schemaName, tableName);
-    this.stores.delete(tableKey);
-    this.coordinators.delete(tableKey);
+		// Delete all stores for this table (data, indexes, stats)
+		if (this.provider.deleteTableStores) {
+			await this.provider.deleteTableStores(schemaName, tableName);
+		} else {
+			// Fallback: just close the data store
+			await this.provider.closeStore(schemaName, tableName);
+		}
 
-    // Emit schema change event for table drop
-    this.eventEmitter?.emitSchemaChange({
-      type: 'drop',
-      objectType: 'table',
-      schemaName,
-      objectName: tableName,
-    });
-  }
+		this.stores.delete(tableKey);
+		this.coordinators.delete(tableKey);
 
-  /**
-   * Creates an index on a store-backed table.
-   */
-  async createIndex(
-    _db: Database,
-    schemaName: string,
-    tableName: string,
-    indexSchema: TableIndexSchema
-  ): Promise<void> {
-    const tableKey = `${schemaName}.${tableName}`.toLowerCase();
-    const table = this.tables.get(tableKey);
+		// Remove DDL from catalog
+		await this.removeTableDDL(schemaName, tableName);
 
-    if (!table) {
-      throw new QuereusError(
-        `Store table '${tableName}' not found in schema '${schemaName}'`,
-        StatusCode.NOTFOUND
-      );
-    }
+		// Emit schema change event for table drop
+		this.eventEmitter?.emitSchemaChange({
+			type: 'drop',
+			objectType: 'table',
+			schemaName,
+			objectName: tableName,
+		});
+	}
 
-    const store = await this.getStore(tableKey, table.getConfig());
-    const tableSchema = table.getSchema();
+	/**
+	 * Creates an index on a store-backed table.
+	 */
+	async createIndex(
+		_db: Database,
+		schemaName: string,
+		tableName: string,
+		indexSchema: TableIndexSchema
+	): Promise<void> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		const table = this.tables.get(tableKey);
 
-    // Store index metadata
-    const indexMetaKey = buildMetaKey('index', schemaName, tableName, indexSchema.name);
-    const indexMetaValue = serializeRow([
-      indexSchema.name,
-      JSON.stringify(indexSchema.columns),
-    ]);
-    await store.put(indexMetaKey, indexMetaValue);
+		if (!table) {
+			throw new QuereusError(
+				`Store table '${tableName}' not found in schema '${schemaName}'`,
+				StatusCode.NOTFOUND
+			);
+		}
 
-    // Build index entries for existing rows
-    await this.buildIndexEntries(store, tableSchema, indexSchema);
+		// Create the index store
+		const indexStore = await this.provider.getIndexStore(schemaName, tableName, indexSchema.name);
 
-    // Emit schema change event
-    this.eventEmitter?.emitSchemaChange({
-      type: 'create',
-      objectType: 'index',
-      schemaName,
-      objectName: indexSchema.name,
-    });
-  }
+		// Build index entries for existing rows
+		const dataStore = await this.getStore(tableKey, table.getConfig());
+		const tableSchema = table.getSchema();
+		await this.buildIndexEntries(dataStore, indexStore, tableSchema, indexSchema);
 
-  /**
-   * Build index entries for all existing rows in a table.
-   */
-  private async buildIndexEntries(
-    store: KVStore,
-    tableSchema: TableSchema,
-    indexSchema: TableIndexSchema
-  ): Promise<void> {
-    const encodeOptions = { collation: 'NOCASE' as const };
+		// Emit schema change event
+		this.eventEmitter?.emitSchemaChange({
+			type: 'create',
+			objectType: 'index',
+			schemaName,
+			objectName: indexSchema.name,
+		});
+	}
 
-    // Scan all data rows
-    const bounds = buildTableScanBounds(tableSchema.schemaName, tableSchema.name);
-    const batch = store.batch();
+	/**
+	 * Build index entries for all existing rows in a table.
+	 */
+	private async buildIndexEntries(
+		dataStore: KVStore,
+		indexStore: KVStore,
+		tableSchema: TableSchema,
+		indexSchema: TableIndexSchema
+	): Promise<void> {
+		const encodeOptions = { collation: 'NOCASE' as const };
 
-    for await (const entry of store.iterate(bounds)) {
-      const row = deserializeRow(entry.value);
+		// Scan all data rows
+		const bounds = buildFullScanBounds();
+		const batch = indexStore.batch();
 
-      // Extract PK values
-      const pkValues = tableSchema.primaryKeyDefinition.map(pk => row[pk.index]);
+		for await (const entry of dataStore.iterate(bounds)) {
+			const row = deserializeRow(entry.value);
 
-      // Extract index column values
-      const indexValues = indexSchema.columns.map(col => row[col.index]);
+			// Extract PK values
+			const pkValues = tableSchema.primaryKeyDefinition.map(pk => row[pk.index]);
 
-      // Build and store index key
-      const indexKey = buildIndexKey(
-        tableSchema.schemaName,
-        tableSchema.name,
-        indexSchema.name,
-        indexValues,
-        pkValues,
-        encodeOptions
-      );
-      batch.put(indexKey, new Uint8Array(0)); // Index value is empty
-    }
+			// Extract index column values
+			const indexValues = indexSchema.columns.map(col => row[col.index]);
 
-    await batch.write();
-  }
+			// Build and store index key
+			const indexKey = buildIndexKey(indexValues, pkValues, encodeOptions);
+			batch.put(indexKey, new Uint8Array(0)); // Index value is empty
+		}
 
-  /**
-   * Modern access planning interface.
-   */
-  getBestAccessPlan(
-    _db: Database,
-    tableInfo: TableSchema,
-    request: BestAccessPlanRequest
-  ): BestAccessPlanResult {
-    const estimatedRows = request.estimatedRows ?? 1000;
+		await batch.write();
+	}
 
-    // Check for primary key equality constraints
-    const pkColumns = tableInfo.primaryKeyDefinition.map(pk => pk.index);
-    const pkFilters = request.filters.filter(f =>
-      f.columnIndex !== undefined &&
-      pkColumns.includes(f.columnIndex) &&
-      f.op === '='
-    );
+	/**
+	 * Modern access planning interface.
+	 */
+	getBestAccessPlan(
+		_db: Database,
+		tableInfo: TableSchema,
+		request: BestAccessPlanRequest
+	): BestAccessPlanResult {
+		const estimatedRows = request.estimatedRows ?? 1000;
 
-    if (pkFilters.length === pkColumns.length && pkColumns.length > 0) {
-      // Full PK match - point lookup
-      const handledFilters = request.filters.map(f =>
-        pkFilters.some(pf => pf.columnIndex === f.columnIndex && pf.op === f.op)
-      );
-      return AccessPlanBuilder
-        .eqMatch(1, 0.1)
-        .setHandledFilters(handledFilters)
-        .setIsSet(true)
-        .setExplanation('Store primary key lookup')
-        .build();
-    }
+		// Check for primary key equality constraints
+		const pkColumns = tableInfo.primaryKeyDefinition.map(pk => pk.index);
+		const pkFilters = request.filters.filter(f =>
+			f.columnIndex !== undefined &&
+			pkColumns.includes(f.columnIndex) &&
+			f.op === '='
+		);
 
-    // Check for range constraints on PK
-    const rangeOps = ['<', '<=', '>', '>='];
-    const rangeFilters = request.filters.filter(f =>
-      f.columnIndex !== undefined &&
-      pkColumns.includes(f.columnIndex) &&
-      rangeOps.includes(f.op)
-    );
+		if (pkFilters.length === pkColumns.length && pkColumns.length > 0) {
+			// Full PK match - point lookup
+			const handledFilters = request.filters.map(f =>
+				pkFilters.some(pf => pf.columnIndex === f.columnIndex && pf.op === f.op)
+			);
+			return AccessPlanBuilder
+				.eqMatch(1, 0.1)
+				.setHandledFilters(handledFilters)
+				.setIsSet(true)
+				.setExplanation('Store primary key lookup')
+				.build();
+		}
 
-    if (rangeFilters.length > 0) {
-      // Range scan on PK
-      const handledFilters = request.filters.map(f =>
-        rangeFilters.some(rf => rf.columnIndex === f.columnIndex && rf.op === f.op)
-      );
-      const rangeRows = Math.max(1, Math.floor(estimatedRows * 0.3));
-      return AccessPlanBuilder
-        .rangeScan(rangeRows, 0.2)
-        .setHandledFilters(handledFilters)
-        .setExplanation('Store primary key range scan')
-        .build();
-    }
+		// Check for range constraints on PK
+		const rangeOps = ['<', '<=', '>', '>='];
+		const rangeFilters = request.filters.filter(f =>
+			f.columnIndex !== undefined &&
+			pkColumns.includes(f.columnIndex) &&
+			rangeOps.includes(f.op)
+		);
 
-    // Check for secondary index usage
-    const indexes = tableInfo.indexes || [];
-    for (const index of indexes) {
-      const indexColumns = index.columns.map(c => c.index);
-      const indexFilters = request.filters.filter(f =>
-        f.columnIndex !== undefined &&
-        indexColumns.includes(f.columnIndex) &&
-        f.op === '='
-      );
+		if (rangeFilters.length > 0) {
+			// Range scan on PK
+			const handledFilters = request.filters.map(f =>
+				rangeFilters.some(rf => rf.columnIndex === f.columnIndex && rf.op === f.op)
+			);
+			const rangeRows = Math.max(1, Math.floor(estimatedRows * 0.3));
+			return AccessPlanBuilder
+				.rangeScan(rangeRows, 0.2)
+				.setHandledFilters(handledFilters)
+				.setExplanation('Store primary key range scan')
+				.build();
+		}
 
-      if (indexFilters.length > 0) {
-        const handledFilters = request.filters.map(f =>
-          indexFilters.some(idf => idf.columnIndex === f.columnIndex && idf.op === f.op)
-        );
-        const matchedRows = Math.max(1, Math.floor(estimatedRows * 0.1));
-        return AccessPlanBuilder
-          .eqMatch(matchedRows, 0.3)
-          .setHandledFilters(handledFilters)
-          .setExplanation(`Store index scan on ${index.name}`)
-          .build();
-      }
-    }
+		// Check for secondary index usage
+		const indexes = tableInfo.indexes || [];
+		for (const index of indexes) {
+			const indexColumns = index.columns.map(c => c.index);
+			const indexFilters = request.filters.filter(f =>
+				f.columnIndex !== undefined &&
+				indexColumns.includes(f.columnIndex) &&
+				f.op === '='
+			);
 
-    // Fallback to full scan
-    return AccessPlanBuilder
-      .fullScan(estimatedRows)
-      .setHandledFilters(new Array(request.filters.length).fill(false))
-      .setExplanation('Store full table scan')
-      .build();
-  }
+			if (indexFilters.length > 0) {
+				const handledFilters = request.filters.map(f =>
+					indexFilters.some(idf => idf.columnIndex === f.columnIndex && idf.op === f.op)
+				);
+				const matchedRows = Math.max(1, Math.floor(estimatedRows * 0.1));
+				return AccessPlanBuilder
+					.eqMatch(matchedRows, 0.3)
+					.setHandledFilters(handledFilters)
+					.setExplanation(`Store index scan on ${index.name}`)
+					.build();
+			}
+		}
 
-  // --- StoreTableModule interface implementation ---
+		// Fallback to full scan
+		return AccessPlanBuilder
+			.fullScan(estimatedRows)
+			.setHandledFilters(new Array(request.filters.length).fill(false))
+			.setExplanation('Store full table scan')
+			.build();
+	}
 
-  /**
-   * Get or create a store for a table.
-   */
-  async getStore(tableKey: string, _config: StoreTableConfig): Promise<KVStore> {
-    let store = this.stores.get(tableKey);
-    if (!store) {
-      const [schemaName, tableName] = tableKey.split('.');
-      store = await this.provider.getStore(schemaName, tableName);
+	// --- StoreTableModule interface implementation ---
 
-      if (!store) {
-        throw new Error(`Provider.getStore returned null/undefined for ${tableKey}`);
-      }
+	/**
+	 * Get or create a data store for a table.
+	 */
+	async getStore(tableKey: string, _config: StoreTableConfig): Promise<KVStore> {
+		let store = this.stores.get(tableKey);
+		if (!store) {
+			const [schemaName, tableName] = tableKey.split('.');
+			store = await this.provider.getStore(schemaName, tableName);
 
-      this.stores.set(tableKey, store);
-    }
-    return store;
-  }
+			if (!store) {
+				throw new Error(`Provider.getStore returned null/undefined for ${tableKey}`);
+			}
 
-  /**
-   * Get or create a transaction coordinator for a table.
-   */
-  async getCoordinator(tableKey: string, config: StoreTableConfig): Promise<TransactionCoordinator> {
-    let coordinator = this.coordinators.get(tableKey);
-    if (!coordinator) {
-      const store = await this.getStore(tableKey, config);
-      coordinator = new TransactionCoordinator(store, this.eventEmitter);
-      this.coordinators.set(tableKey, coordinator);
-    }
-    return coordinator;
-  }
+			this.stores.set(tableKey, store);
+		}
+		return store;
+	}
 
-  /**
-   * Save table DDL to persistent storage (both table store and catalog).
-   */
-  async saveTableDDL(tableSchema: TableSchema): Promise<void> {
-    const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`.toLowerCase();
-    const ddl = generateTableDDL(tableSchema);
-    const metaKey = buildMetaKey('ddl', tableSchema.schemaName, tableSchema.name);
-    const encoder = new TextEncoder();
-    const encodedDDL = encoder.encode(ddl);
+	/**
+	 * Get or create an index store for a table.
+	 */
+	async getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore> {
+		return this.provider.getIndexStore(schemaName, tableName, indexName);
+	}
 
-    // Save to table's own store
-    const store = this.stores.get(tableKey);
-    if (store) {
-      await store.put(metaKey, encodedDDL);
-    }
+	/**
+	 * Get or create a stats store for a table.
+	 */
+	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
+		return this.provider.getStatsStore(schemaName, tableName);
+	}
 
-    // Also save to catalog store for discovery
-    const catalogStore = await this.provider.getCatalogStore();
-    await catalogStore.put(metaKey, encodedDDL);
-  }
+	/**
+	 * Get or create a transaction coordinator for a table.
+	 */
+	async getCoordinator(tableKey: string, config: StoreTableConfig): Promise<TransactionCoordinator> {
+		let coordinator = this.coordinators.get(tableKey);
+		if (!coordinator) {
+			const store = await this.getStore(tableKey, config);
+			coordinator = new TransactionCoordinator(store, this.eventEmitter);
+			this.coordinators.set(tableKey, coordinator);
+		}
+		return coordinator;
+	}
 
-  /**
-   * Load all DDL statements from the catalog store.
-   * Used to restore persisted tables on startup.
-   */
-  async loadAllDDL(): Promise<string[]> {
-    const catalogStore = await this.provider.getCatalogStore();
-    const bounds = buildMetaScanBounds('ddl');
-    const decoder = new TextDecoder();
-    const ddlStatements: string[] = [];
+	/**
+	 * Save table DDL to the catalog store.
+	 */
+	async saveTableDDL(tableSchema: TableSchema): Promise<void> {
+		const ddl = generateTableDDL(tableSchema);
+		const catalogKey = buildCatalogKey(tableSchema.schemaName, tableSchema.name);
+		const encoder = new TextEncoder();
+		const encodedDDL = encoder.encode(ddl);
 
-    for await (const entry of catalogStore.iterate(bounds)) {
-      const ddl = decoder.decode(entry.value);
-      ddlStatements.push(ddl);
-    }
+		const catalogStore = await this.provider.getCatalogStore();
+		await catalogStore.put(catalogKey, encodedDDL);
+	}
 
-    return ddlStatements;
-  }
+	/**
+	 * Load all DDL statements from the catalog store.
+	 * Used to restore persisted tables on startup.
+	 */
+	async loadAllDDL(): Promise<string[]> {
+		const catalogStore = await this.provider.getCatalogStore();
+		const bounds = buildCatalogScanBounds();
+		const decoder = new TextDecoder();
+		const ddlStatements: string[] = [];
 
-  /**
-   * Remove DDL from the catalog store when a table is dropped.
-   */
-  async removeTableDDL(schemaName: string, tableName: string): Promise<void> {
-    const metaKey = buildMetaKey('ddl', schemaName, tableName);
-    const catalogStore = await this.provider.getCatalogStore();
-    await catalogStore.delete(metaKey);
-  }
+		for await (const entry of catalogStore.iterate(bounds)) {
+			const ddl = decoder.decode(entry.value);
+			ddlStatements.push(ddl);
+		}
 
-  /**
-   * Parse module configuration from vtab args.
-   */
-  private parseConfig(args: Record<string, SqlValue> | undefined): StoreModuleConfig {
-    return {
-      collation: (args?.collation as 'BINARY' | 'NOCASE') || 'NOCASE',
-    };
-  }
+		return ddlStatements;
+	}
 
-  /**
-   * Close all stores.
-   */
-  async closeAll(): Promise<void> {
-    for (const table of this.tables.values()) {
-      await table.disconnect();
-    }
-    this.tables.clear();
-    this.coordinators.clear();
+	/**
+	 * Remove DDL from the catalog store when a table is dropped.
+	 */
+	async removeTableDDL(schemaName: string, tableName: string): Promise<void> {
+		const catalogKey = buildCatalogKey(schemaName, tableName);
+		const catalogStore = await this.provider.getCatalogStore();
+		await catalogStore.delete(catalogKey);
+	}
 
-    await this.provider.closeAll();
-    this.stores.clear();
-  }
+	/**
+	 * Parse module configuration from vtab args.
+	 */
+	private parseConfig(args: Record<string, SqlValue> | undefined): StoreModuleConfig {
+		return {
+			collation: (args?.collation as 'BINARY' | 'NOCASE') || 'NOCASE',
+		};
+	}
 
-  /**
-   * Get a table by schema and name.
-   */
-  getTable(schemaName: string, tableName: string): StoreTable | undefined {
-    const tableKey = `${schemaName}.${tableName}`.toLowerCase();
-    return this.tables.get(tableKey);
-  }
+	/**
+	 * Close all stores.
+	 */
+	async closeAll(): Promise<void> {
+		for (const table of this.tables.values()) {
+			await table.disconnect();
+		}
+		this.tables.clear();
+		this.coordinators.clear();
+
+		await this.provider.closeAll();
+		this.stores.clear();
+	}
+
+	/**
+	 * Get a table by schema and name.
+	 */
+	getTable(schemaName: string, tableName: string): StoreTable | undefined {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		return this.tables.get(tableKey);
+	}
 }
