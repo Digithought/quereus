@@ -166,6 +166,17 @@ export class Database {
 			}
 		});
 
+		this.options.registerOption('schema_path', {
+			type: 'string',
+			defaultValue: 'main',
+			aliases: ['search_path'],
+			description: 'Comma-separated list of schemas to search for unqualified table names',
+			onChange: (event) => {
+				const value = event.newValue as string;
+				log('Schema search path changed to: %s', value);
+			}
+		});
+
 		this.options.registerOption('trace_plan_stack', {
 			type: 'boolean',
 			defaultValue: false,
@@ -558,6 +569,41 @@ export class Database {
 	}
 
 	/**
+	 * Sets the default schema search path for resolving unqualified table names.
+	 * This is a convenience method equivalent to setting the 'schema_path' option.
+	 * 
+	 * @param paths Array of schema names to search in order
+	 * 
+	 * @example
+	 * ```typescript
+	 * db.setSchemaPath(['main', 'extensions', 'plugins']);
+	 * // Now unqualified tables search: main → extensions → plugins
+	 * ```
+	 */
+	setSchemaPath(paths: string[]): void {
+		this.checkOpen();
+		const pathString = paths.join(',');
+		this.options.setOption('schema_path', pathString);
+	}
+
+	/**
+	 * Gets the current schema search path.
+	 * 
+	 * @returns Array of schema names in search order
+	 * 
+	 * @example
+	 * ```typescript
+	 * const path = db.getSchemaPath();
+	 * console.log(path); // ['main', 'extensions', 'plugins']
+	 * ```
+	 */
+	getSchemaPath(): string[] {
+		this.checkOpen();
+		const pathString = this.options.getStringOption('schema_path');
+		return pathString.split(',').map(s => s.trim()).filter(s => s.length > 0);
+	}
+
+	/**
 	 * Set database configuration options
 	 * @param option The option name
 	 * @param value The option value
@@ -944,6 +990,10 @@ export class Database {
 		// This ParameterScope is for the entire batch. It has globalScope as its parent.
 		const parameterScope = new ParameterScope(globalScope, parameterTypes);
 
+		// Get default schema path from options
+		const schemaPathString = this.options.getStringOption('schema_path');
+		const schemaPath = schemaPathString ? schemaPathString.split(',').map(s => s.trim()).filter(s => s.length > 0) : undefined;
+
 		const ctx: PlanningContext = {
 			db: this,
 			schemaManager: this.schemaManager,
@@ -953,7 +1003,8 @@ export class Database {
 			schemaDependencies: new BuildTimeDependencyTracker(),
 			schemaCache: new Map(),
 			cteReferenceCache: new Map(),
-			outputScopes: new Map()
+			outputScopes: new Map(),
+			schemaPath
 		};
 
 		return buildBlock(ctx, statements);

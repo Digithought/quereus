@@ -64,8 +64,13 @@ export function buildSelectStmt(
   preserveInputColumns: boolean = true
 ): PlanNode {
 
+	// Apply schema path from statement if present
+	const contextWithSchemaPath = stmt.schemaPath
+		? { ...ctx, schemaPath: stmt.schemaPath }
+		: ctx;
+
 	// Phase 0: Handle WITH clause if present
-	const { contextWithCTEs, cteNodes } = buildWithContext(ctx, stmt, parentCTEs);
+	const { contextWithCTEs, cteNodes } = buildWithContext(contextWithSchemaPath, stmt, parentCTEs);
 
 	// Handle compound set operations (UNION / INTERSECT / EXCEPT)
 	if (stmt.compound) {

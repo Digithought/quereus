@@ -342,6 +342,7 @@ export class Parser {
 		}
 
 		// Parse mutation context assignments if present (after column list, before VALUES/SELECT)
+		// Note: Can also appear after VALUES/SELECT via parseTrailingWithClauses
 		let contextValues: AST.ContextAssignment[] | undefined;
 		if (this.matchKeyword('WITH')) {
 			if (this.matchKeyword('CONTEXT')) {
@@ -385,6 +386,19 @@ export class Parser {
 			throw this.error(this.peek(), "Expected VALUES or SELECT after INSERT.");
 		}
 
+		// Parse trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA in any order)
+		const trailingClauses = this.parseTrailingWithClauses();
+		if (trailingClauses.contextValues) {
+			if (contextValues) {
+				throw this.error(this.previous(), "Duplicate WITH CONTEXT clause");
+			}
+			contextValues = trailingClauses.contextValues;
+		}
+		const schemaPath = trailingClauses.schemaPath;
+		if (schemaPath) {
+			lastConsumedToken = this.previous(); // After schema path
+		}
+
 		// Parse RETURNING clause if present
 		let returning: AST.ResultColumn[] | undefined;
 		if (this.matchKeyword('RETURNING')) {
@@ -400,6 +414,7 @@ export class Parser {
 			select,
 			returning,
 			contextValues,
+			schemaPath,
 			loc: _createLoc(startToken, lastConsumedToken),
 		};
 	}
@@ -453,6 +468,15 @@ export class Parser {
 		if (this.match(TokenType.HAVING)) {
 			having = this.expression();
 			lastConsumedToken = this.previous(); // After having expression
+		}
+
+		// Parse WITH SCHEMA clause if present (must come before ORDER BY/LIMIT)
+		let schemaPath: string[] | undefined;
+		if (!isCompoundSubquery) {
+			schemaPath = this.parseSchemaPath();
+			if (schemaPath) {
+				lastConsumedToken = this.previous(); // After schema path
+			}
 		}
 
 		// Check for compound set operations (UNION / INTERSECT / EXCEPT) BEFORE ORDER BY/LIMIT
@@ -560,6 +584,7 @@ export class Parser {
 			distinct,
 			all,
 			compound,
+			schemaPath,
 			loc: _createLoc(start, lastConsumedToken),
 		};
 	}
@@ -1873,7 +1898,7 @@ export class Parser {
 	private updateStatement(startToken: Token, _withClause?: AST.WithClause): AST.UpdateStmt {
 		const table = this.tableIdentifier();
 
-		// Parse mutation context assignments if present
+		// Parse mutation context assignments if present (can also appear after WHERE)
 		let contextValues: AST.ContextAssignment[] | undefined;
 		if (this.matchKeyword('WITH')) {
 			if (this.matchKeyword('CONTEXT')) {
@@ -1896,13 +1921,25 @@ export class Parser {
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
 		}
+
+		// Parse trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA in any order)
+		const trailingClauses = this.parseTrailingWithClauses();
+		if (trailingClauses.contextValues) {
+			if (contextValues) {
+				throw this.error(this.previous(), "Duplicate WITH CONTEXT clause");
+			}
+			contextValues = trailingClauses.contextValues;
+		}
+		const schemaPath = trailingClauses.schemaPath;
+
 		// Parse RETURNING clause if present
 		let returning: AST.ResultColumn[] | undefined;
 		if (this.matchKeyword('RETURNING')) {
 			returning = this.columnList();
 		}
+
 		const endToken = this.previous();
-		return { type: 'update', table, assignments, where, returning, contextValues, loc: _createLoc(startToken, endToken) };
+		return { type: 'update', table, assignments, where, returning, contextValues, schemaPath, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
@@ -1910,21 +1947,15 @@ export class Parser {
 		this.matchKeyword('FROM');
 		const table = this.tableIdentifier();
 
-		// Parse mutation context assignments if present
-		let contextValues: AST.ContextAssignment[] | undefined;
-		if (this.matchKeyword('WITH')) {
-			if (this.matchKeyword('CONTEXT')) {
-				contextValues = this.parseContextAssignments();
-			} else {
-				// Not a WITH CONTEXT clause, backtrack
-				this.current--;
-			}
-		}
-
 		let where: AST.Expression | undefined;
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
 		}
+
+		// Parse trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA in any order)
+		const trailingClauses = this.parseTrailingWithClauses();
+		const contextValues = trailingClauses.contextValues;
+		const schemaPath = trailingClauses.schemaPath;
 
 		// Parse RETURNING clause if present
 		let returning: AST.ResultColumn[] | undefined;
@@ -1933,7 +1964,7 @@ export class Parser {
 		}
 
 		const endToken = this.previous();
-		return { type: 'delete', table, where, returning, contextValues, loc: _createLoc(startToken, endToken) };
+		return { type: 'delete', table, where, returning, contextValues, schemaPath, loc: _createLoc(startToken, endToken) };
 	}
 
 	/** @internal */
@@ -2944,6 +2975,60 @@ export class Parser {
 		} while (this.match(TokenType.COMMA));
 
 		return assignments;
+	}
+
+	/** @internal Parses schema search path: WITH SCHEMA schema1, schema2, ... */
+	private parseSchemaPath(): string[] | undefined {
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('SCHEMA')) {
+				const schemas: string[] = [];
+				do {
+					const schemaName = this.consumeIdentifier("Expected schema name in WITH SCHEMA clause.");
+					schemas.push(schemaName);
+				} while (this.match(TokenType.COMMA));
+				return schemas;
+			} else {
+				// Not a WITH SCHEMA clause, backtrack
+				this.current--;
+				return undefined;
+			}
+		}
+		return undefined;
+	}
+
+	/** 
+	 * @internal Parses trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA) in any order.
+	 * Returns both contextValues and schemaPath, or undefined if not present.
+	 */
+	private parseTrailingWithClauses(): { contextValues?: AST.ContextAssignment[], schemaPath?: string[] } {
+		let contextValues: AST.ContextAssignment[] | undefined;
+		let schemaPath: string[] | undefined;
+
+		// Keep trying to parse WITH clauses until we don't find any more
+		while (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				if (contextValues) {
+					throw this.error(this.previous(), "Duplicate WITH CONTEXT clause");
+				}
+				contextValues = this.parseContextAssignments();
+			} else if (this.matchKeyword('SCHEMA')) {
+				if (schemaPath) {
+					throw this.error(this.previous(), "Duplicate WITH SCHEMA clause");
+				}
+				const schemas: string[] = [];
+				do {
+					const schemaName = this.consumeIdentifier("Expected schema name in WITH SCHEMA clause.");
+					schemas.push(schemaName);
+				} while (this.match(TokenType.COMMA));
+				schemaPath = schemas;
+			} else {
+				// Not a WITH CONTEXT or WITH SCHEMA clause, backtrack
+				this.current--;
+				break;
+			}
+		}
+
+		return { contextValues, schemaPath };
 	}
 
 	/** @internal Parses column constraints */

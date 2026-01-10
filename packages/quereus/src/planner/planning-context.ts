@@ -187,4 +187,11 @@ export interface PlanningContext {
 
   /** maps a RelationalPlanNode to its column scope during building */
   readonly outputScopes: Map<PlanNode, Scope>;
+
+  /**
+   * Optional schema search path for resolving unqualified table names.
+   * Overrides the database-level default search path when present.
+   * Comes from the WITH SCHEMA clause on statements.
+   */
+  readonly schemaPath?: string[];
 }

@@ -235,6 +235,27 @@ Methods for extending database functionality.
 ### `db.setInstructionTracer(tracer: InstructionTracer | null)`
 Sets an instruction tracer for debugging and performance analysis. The tracer will be used for all statement executions on this database instance.
 
+### `db.setSchemaPath(paths: string[])`
+Sets the default schema search path for resolving unqualified table names. This is a convenience method equivalent to `PRAGMA schema_path`.
+
+```typescript
+// Set search path programmatically
+db.setSchemaPath(['main', 'extensions', 'plugins']);
+
+// Now unqualified tables search in order: main → extensions → plugins
+for await (const user of db.eval('select * from users')) {
+  console.log(user);
+}
+```
+
+### `db.getSchemaPath(): string[]`
+Returns the current schema search path.
+
+```typescript
+const path = db.getSchemaPath();
+console.log(path); // ['main', 'extensions', 'plugins']
+```
+
 ### `db.close()`
 Closes the database connection and finalizes all open statements.
 
@@ -351,6 +372,54 @@ const results = await db.prepare("select * from my_memory_table").all();
 **Note:** When using a default module with `create table`, the module's `create` function receives the table definition (columns, constraints) parsed from the `create table` statement itself, rather than relying solely on arguments passed via `using (...)` or `pragma default_vtab_args`. The `memory` module is designed to work this way.
 
 See the [Memory Table documentation](./memory-table.md) for more details on the built-in memory table implementation.
+
+### Working with Multiple Schemas
+
+Quereus supports organizing tables into multiple named schemas for better modularity. Unqualified table names can be resolved using a flexible search path system.
+
+```typescript
+import { Database } from '@quereus/quereus';
+
+const db = new Database();
+
+// Create tables in different schemas
+await db.exec("create table main.users (id integer primary key, name text)");
+await db.exec("create table extensions.plugins (id integer primary key, config json)");
+
+// Option 1: Use qualified names
+const user = await db.get("select * from main.users where id = ?", [1]);
+const plugin = await db.get("select * from extensions.plugins where id = ?", [1]);
+
+// Option 2: Set a session-wide search path
+db.setSchemaPath(['main', 'extensions']);
+// or via SQL:
+await db.exec("pragma schema_path = 'main,extensions'");
+
+// Now unqualified names search in order
+const users = await db.get("select * from users where id = ?", [1]); // Searches main.users first
+
+// Option 3: Use per-query search path with WITH SCHEMA
+for await (const row of db.eval(`
+  select * from users, plugins
+  with schema extensions, main
+`)) {
+  console.log(row);
+}
+```
+
+**Use Cases for Multiple Schemas:**
+
+- **Plugin Systems**: Core tables in `main`, plugin tables in separate schemas
+- **Multi-Tenancy**: Separate schemas per tenant for isolation
+- **Modularity**: Logical grouping of related tables
+- **Testing**: Test tables in `temp` schema, production in `main`
+
+**Resolution Order:**
+
+1. Qualified names (`schema.table`) - Always resolved exactly
+2. `WITH SCHEMA` clause - Per-query explicit search path
+3. `PRAGMA schema_path` / `db.setSchemaPath()` - Session default
+4. Default schema (`main`) - Final fallback
 
 ## Declarative Schema Workflow
 

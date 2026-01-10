@@ -223,6 +223,7 @@ See the [Plugin System documentation](docs/plugins.md#comparison-and-coercion-ut
 *   **JavaScript Types**: Uses standard JavaScript types (`number`, `string`, `bigint`, `boolean`, `Uint8Array`, `null`) internally.
 *   **Object-Based API**: Uses classes (`Database`, `Statement`) to represent resources with lifecycles, rather than handles.
 *   **Transient Schema**: Schema information is primarily in-memory; persistence is not a goal. Emission of schema SQL export is supported.
+*   **Multi-Schema Support**: Organize tables across multiple schemas with flexible search paths for modular designs.
 *   **Bags vs Sets Distinction**: Explicit type-level distinction between relations that guarantee unique rows (sets) and those that allow duplicates (bags), enabling sophisticated optimizations and maintaining algebraic correctness in line with Third Manifesto principles.
 *   **Attribute-Based Context System**: Robust column reference resolution using stable attribute IDs eliminates architectural fragilities and provides deterministic context lookup across plan transformations.
 

@@ -182,6 +182,7 @@ export interface SelectStmt extends AstNode {
 	union?: SelectStmt;
 	unionAll?: boolean;
 	compound?: { op: 'union' | 'unionAll' | 'intersect' | 'except' | 'diff'; select: SelectStmt };
+	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause
 }
 
 // INSERT statement
@@ -195,6 +196,7 @@ export interface InsertStmt extends AstNode {
 	onConflict?: ConflictResolution;
 	returning?: ResultColumn[];
 	contextValues?: ContextAssignment[]; // Optional mutation context assignments
+	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause
 }
 
 // UPDATE statement
@@ -207,6 +209,7 @@ export interface UpdateStmt extends AstNode {
 	onConflict?: ConflictResolution;
 	returning?: ResultColumn[];
 	contextValues?: ContextAssignment[]; // Optional mutation context assignments
+	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause
 }
 
 // DELETE statement
@@ -217,6 +220,7 @@ export interface DeleteStmt extends AstNode {
 	where?: Expression;
 	returning?: ResultColumn[];
 	contextValues?: ContextAssignment[]; // Optional mutation context assignments
+	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause
 }
 
 // VALUES statement

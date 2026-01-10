@@ -192,6 +192,7 @@ select [distinct | all] select_expr [, select_expr ...]
 +| [ intersect select_statement ]
 +| [ except select_statement ]
 +| [ diff select_statement ]
+[ with schema schema_name [, schema_name...] ]
 ```
 
 **Options:**
@@ -206,6 +207,7 @@ select [distinct | all] select_expr [, select_expr ...]
 - `order by`: Sorts the result set
 - `limit/offset`: Restricts the number of rows returned
 - `union`/`intersect`/`except`/`diff`: Set operations combining two result sets
+- `with schema`: Specifies an ordered search path for resolving unqualified table names (see section 2.1.1)
 
 **Set operations:**
 - `union all`: Concatenation (bag semantics)
@@ -254,6 +256,102 @@ select not exists(
     select * from b
   )
 ) as tables_equal;
+
+-- Query with explicit schema search path
+select * from users, orders
+with schema sales, main;
+```
+
+#### 2.1.1 Schema Search Path (WITH SCHEMA)
+
+Quereus supports flexible schema resolution through search paths. Unqualified table names are resolved by searching schemas in a specified order.
+
+**Resolution Hierarchy:**
+1. **Qualified names** (`schema.table`) - Always used exactly as specified
+2. **WITH SCHEMA clause** - Per-query explicit search path
+3. **PRAGMA schema_path** - Session-level default search path
+4. **Default schema** - Typically `main`
+
+**WITH SCHEMA Syntax:**
+```sql
+SELECT ... FROM table1, table2
+WITH SCHEMA schema1, schema2, schema3;
+```
+
+The `WITH SCHEMA` clause specifies an ordered list of schemas to search when resolving unqualified table names. The first schema containing a matching table is used.
+
+**Examples:**
+
+```sql
+-- Explicitly search sales schema, then main
+SELECT * FROM orders, customers
+WITH SCHEMA sales, main;
+-- If 'orders' exists in 'sales', uses sales.orders
+-- If 'customers' only exists in 'main', uses main.customers
+
+-- Works with CTEs
+-- Note: WITH SCHEMA applies only to the outer query.
+-- The CTE (recent_orders) uses the connection/database default schema path.
+WITH recent_orders AS (
+  SELECT * FROM orders WHERE date > date('now', '-7 days')
+)
+SELECT * FROM recent_orders
+WITH SCHEMA sales, archive, main;
+
+-- To apply schema path to the CTE query itself, use a nested WITH SCHEMA:
+WITH recent_orders AS (
+  SELECT * FROM orders WHERE date > date('now', '-7 days')
+  WITH SCHEMA sales, archive
+)
+SELECT * FROM recent_orders;
+
+-- DML operations also support WITH SCHEMA
+UPDATE inventory SET quantity = quantity - 1
+WHERE sku = 'ABC123'
+WITH SCHEMA warehouse, main;
+
+INSERT INTO logs (message) VALUES ('Order processed')
+WITH SCHEMA audit, main
+RETURNING id;
+
+DELETE FROM temp_data WHERE expired = 1
+WITH SCHEMA workspace, main;
+```
+
+**Error Messages:**
+
+When a table is not found, Quereus provides helpful diagnostics:
+
+```sql
+-- Table not in search path
+SELECT * FROM products WITH SCHEMA sales, finance;
+-- Error: Table 'products' not found in schema path: sales, finance
+--        Did you mean 'main.products'?
+--        Or add 'main' to your schema path?
+
+-- Table doesn't exist anywhere
+SELECT * FROM nonexistent WITH SCHEMA main, sales;
+-- Error: Table 'nonexistent' not found in schema path: main, sales
+```
+
+**Best Practices:**
+
+- Use qualified names (`schema.table`) when you need precision
+- Use `WITH SCHEMA` for cross-schema queries without qualification
+- Set `PRAGMA schema_path` for session-wide defaults
+- Default to `main` schema for simple, single-schema applications
+
+**Order Independence:**
+
+The `WITH CONTEXT` and `WITH SCHEMA` clauses can appear in any order:
+
+```sql
+-- Both are valid:
+INSERT INTO table VALUES (...) WITH CONTEXT (x = 1) WITH SCHEMA sales;
+INSERT INTO table VALUES (...) WITH SCHEMA sales WITH CONTEXT (x = 1);
+
+UPDATE table SET col = val WITH SCHEMA main WITH CONTEXT (x = 1);
+DELETE FROM table WHERE id = 1 WITH CONTEXT (x = 1) WITH SCHEMA main;
 ```
 
 ### 2.2 INSERT Statement
@@ -266,6 +364,7 @@ The insert statement adds new rows to a table.
   insert into table_name [(column [, column...])]
   { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
   [ with context (variable = expr [, ...]) ]
+  [ with schema schema_name [, schema_name...] ]
   [ returning [qualifier.]expr [, [qualifier.]expr...] ]
 ```
 
@@ -276,6 +375,7 @@ The insert statement adds new rows to a table.
 - `values`: A list of value sets to insert
 - `select_statement`: A select query whose results are inserted
 - `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
+- `with schema`: Specifies schema search path for resolving table names (see section 2.1.1)
 - `returning`: Returns specified expressions from the inserted rows (supports NEW qualifier)
 
 **Examples:**
@@ -329,6 +429,7 @@ The update statement modifies existing rows in a table.
     set column = expr [, column = expr...]
     [ where condition ]
     [ with context (variable = expr [, ...]) ]
+    [ with schema schema_name [, schema_name...] ]
     [ returning [qualifier.]expr [, [qualifier.]expr...] ]
 ```
 
@@ -338,6 +439,7 @@ The update statement modifies existing rows in a table.
 - `set`: Column assignments with new values
 - `where`: Optional condition to specify which rows to update
 - `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
+- `with schema`: Specifies schema search path for resolving table names (see section 2.1.1)
 - `returning`: Returns specified expressions from the updated rows (supports OLD and NEW qualifiers)
 
 **Examples:**
@@ -408,6 +510,7 @@ The delete statement removes rows from a table.
 delete from table_name
 [ where condition ]
 [ with context (variable = expr [, ...]) ]
+[ with schema schema_name [, schema_name...] ]
 [ returning [qualifier.]expr [, [qualifier.]expr...] ]
 ```
 
@@ -416,6 +519,7 @@ delete from table_name
 - `table_name`: Table to delete from
 - `where`: Optional condition to specify which rows to delete
 - `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
+- `with schema`: Specifies schema search path for resolving table names (see section 2.1.1)
 - `returning`: Returns specified expressions from the deleted rows (supports OLD qualifier)
 
 **Examples:**
@@ -2538,6 +2642,47 @@ create table users (
 
 **Note:** Primary key columns are always NOT NULL regardless of this setting.
 
+#### 9.2.4 schema_path
+
+Sets or queries the default schema search path used when resolving unqualified table names. The value is a comma-separated list of schema names.
+
+**Values:**
+- Comma-separated list of schema names (e.g., `'main,extensions,plugins'`)
+- Empty string or `'main'` to use only the default schema
+
+```sql
+-- Set search path for the connection
+pragma schema_path = 'main,extensions,plugins';
+
+-- Query current search path
+pragma schema_path;
+-- Returns: "main,extensions,plugins"
+
+-- Reset to default
+pragma schema_path = 'main';
+```
+
+**Resolution Order:**
+
+When resolving unqualified table names:
+1. Qualified names (`schema.table`) are used exactly as specified
+2. `WITH SCHEMA` clause on the statement (highest priority)
+3. `PRAGMA schema_path` setting (session default)
+4. Default schema (`main`)
+
+**Examples:**
+
+```sql
+-- Set search path for the session
+pragma schema_path = 'workspace,main';
+
+-- All subsequent queries use this path
+select * from users;  -- Searches workspace.users, then main.users
+
+-- Override per-query with WITH SCHEMA
+select * from users with schema main;  -- Only searches main.users
+```
+
 ### 9.3 Examples
 
 ```sql
@@ -2548,12 +2693,18 @@ pragma default_vtab_args = '[]';
 -- Set Third Manifesto-aligned nullability (default)
 pragma default_column_nullability = 'not_null';
 
+-- Set schema search path
+pragma schema_path = 'main,extensions';
+
 -- Create a table using the default module and nullability
 create table simple_cache (
   key text primary key,
   value text              -- NOT NULL by default with 'not_null' setting
 );
 -- Equivalent to: create table simple_cache (...) using memory;
+
+-- Tables will be resolved from main first, then extensions
+select * from users;  -- Searches main.users, then extensions.users
 ```
 
 ### 9.4 Transactions Control PRAGMAs

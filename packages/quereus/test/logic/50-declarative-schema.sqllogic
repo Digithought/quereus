@@ -135,10 +135,10 @@ select count(*) from users;
 → [{"count(*)": 2}]
 
 select count(*) from posts;
--- error: Table not found
+-- error: Table 'posts' not found in schema path
 
 select count(*) from comments;
--- error: Table not found
+-- error: Table 'comments' not found in schema path
 
 -- Step 18: Test composite schema with multiple seeds and forward refs
 -- Declare a completely new schema (replacing the previous one)
@@ -185,7 +185,7 @@ order by c.id, p.id;
 
 -- Step 21: Verify old tables are gone
 select count(*) from users;
--- error: Table not found
+-- error: not found in schema path:
 
 -- Step 22: Test trailing commas in table definitions
 declare schema main {
@@ -207,11 +207,11 @@ select count(*) from config;
 
 -- Verify products table was dropped
 select count(*) from products;
--- error: Table not found
+-- error: not found in schema path:
 
 -- Verify categories table was dropped
 select count(*) from categories;
--- error: Table not found
+-- error: not found in schema path:
 
 -- Step 23: Test explicit main schema qualification
 select count(*) from main.config;
@@ -388,7 +388,7 @@ apply schema main;
 
 -- Step 37: Verify view is gone
 select count(*) from user_summary;
--- error: Table not found
+-- error: not found in schema path:
 
 -- Step 38: Test indexes in declarative schema
 -- Note: Using a unique table name to avoid DROP TABLE bug where data persists

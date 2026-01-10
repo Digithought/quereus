@@ -185,7 +185,12 @@ export function buildInsertStmt(
 	ctx: PlanningContext,
 	stmt: AST.InsertStmt,
 ): PlanNode {
-	const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+	// Apply schema path from statement if present
+	const contextWithSchemaPath = stmt.schemaPath
+		? { ...ctx, schemaPath: stmt.schemaPath }
+		: ctx;
+
+	const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
 	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
 	// Process mutation context assignments if present
@@ -210,7 +215,7 @@ export function buildInsertStmt(
 		});
 
 		// Create a new scope for mutation context
-		contextScope = new RegisteredScope(ctx.scope);
+		contextScope = new RegisteredScope(contextWithSchemaPath.scope);
 
 		// Register mutation context variables in the scope (before evaluating expressions)
 		contextAttributes.forEach((attr, index) => {
@@ -227,7 +232,7 @@ export function buildInsertStmt(
 		});
 
 		// Build context value expressions using the context scope
-		const contextWithScope = { ...ctx, scope: contextScope };
+		const contextWithScope = { ...contextWithSchemaPath, scope: contextScope };
 		stmt.contextValues.forEach((assignment) => {
 			const valueExpr = buildExpression(contextWithScope, assignment.value) as ScalarPlanNode;
 			mutationContextValues.set(assignment.name, valueExpr);
@@ -248,7 +253,7 @@ export function buildInsertStmt(
 	if (stmt.values) {
 		// VALUES clause - build the VALUES node
 		const rows = stmt.values.map(rowExprs =>
-			rowExprs.map(expr => buildExpression(ctx, expr) as PlanNode as ScalarPlanNode)
+			rowExprs.map(expr => buildExpression(contextWithSchemaPath, expr) as PlanNode as ScalarPlanNode)
 		);
 
 		// Check that there are the right number of columns in each row
@@ -260,15 +265,15 @@ export function buildInsertStmt(
 
 		// Create VALUES node with target column names
 		const targetColumnNames = targetColumns.map(col => col.name);
-		sourceNode = new ValuesNode(ctx.scope, rows, targetColumnNames);
+		sourceNode = new ValuesNode(contextWithSchemaPath.scope, rows, targetColumnNames);
 
 	} else if (stmt.select) {
 		// SELECT clause - build the SELECT statement
 		let parentCtes: Map<string, CTEScopeNode> = new Map();
 		if (stmt.withClause) {
-			parentCtes = buildWithClause(ctx, stmt.withClause);
+			parentCtes = buildWithClause(contextWithSchemaPath, stmt.withClause);
 		}
-		const selectPlan = buildSelectStmt(ctx, stmt.select, parentCtes);
+		const selectPlan = buildSelectStmt(contextWithSchemaPath, stmt.select, parentCtes);
 		if (selectPlan.getType().typeClass !== 'relation') {
 			throw new QuereusError('SELECT statement in INSERT did not produce a relational plan.', StatusCode.INTERNAL, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}

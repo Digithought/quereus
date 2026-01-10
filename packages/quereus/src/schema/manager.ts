@@ -274,18 +274,29 @@ export class SchemaManager {
 
 	/**
 	 * @internal Finds a table or virtual table by name across schemas
+	 * 
+	 * @param tableName Name of the table to find
+	 * @param dbName Optional specific schema name to search (overrides search path)
+	 * @param schemaPath Optional ordered list of schemas to search (overrides default search order)
+	 * @returns The TableSchema if found, undefined otherwise
 	 */
-	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
+	_findTable(tableName: string, dbName?: string, schemaPath?: string[]): TableSchema | undefined {
 		const lowerTableName = tableName.toLowerCase();
 
-
-
 		if (dbName) {
-			// Search specific schema
+			// Search specific schema (qualified name)
 			const schema = this.schemas.get(dbName.toLowerCase());
 			return schema?.getTable(lowerTableName);
+		} else if (schemaPath && schemaPath.length > 0) {
+			// Search through provided schema path in order
+			for (const schemaName of schemaPath) {
+				const schema = this.schemas.get(schemaName.toLowerCase());
+				const table = schema?.getTable(lowerTableName);
+				if (table) return table;
+			}
+			return undefined;
 		} else {
-			// Search order: main, then temp (and attached later)
+			// Default search order: main, then temp (and attached later)
 			const mainSchema = this.schemas.get('main');
 			let table = mainSchema?.getTable(lowerTableName);
 			if (table) return table;
@@ -301,10 +312,31 @@ export class SchemaManager {
 	 *
 	 * @param tableName Name of the table
 	 * @param dbName Optional specific schema name to search
+	 * @param schemaPath Optional ordered list of schemas to search
 	 * @returns The TableSchema or undefined if not found
 	 */
-	findTable(tableName: string, dbName?: string): TableSchema | undefined {
-		return this._findTable(tableName, dbName);
+	findTable(tableName: string, dbName?: string, schemaPath?: string[]): TableSchema | undefined {
+		return this._findTable(tableName, dbName, schemaPath);
+	}
+
+	/**
+	 * Finds all schemas that contain a table with the given name.
+	 * Useful for generating helpful error messages.
+	 * 
+	 * @param tableName Name of the table to search for
+	 * @returns Array of schema names that contain the table
+	 */
+	findSchemasContainingTable(tableName: string): string[] {
+		const lowerTableName = tableName.toLowerCase();
+		const schemaNames: string[] = [];
+
+		for (const [schemaName, schema] of this.schemas) {
+			if (schema.getTable(lowerTableName)) {
+				schemaNames.push(schemaName);
+			}
+		}
+
+		return schemaNames;
 	}
 
 	/**

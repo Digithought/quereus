@@ -17,23 +17,77 @@ export function resolveTableSchema(
 	tableName: string,
 	schemaName?: string
 ): TableSchema {
-	const resolvedSchemaName = schemaName || ctx.db.schemaManager.getCurrentSchemaName();
-	const cacheKey = `table:${resolvedSchemaName}:${tableName}`;
+	// If schema is explicitly provided, search only that schema
+	if (schemaName) {
+		const resolvedSchemaName = schemaName;
+		const cacheKey = `table:${resolvedSchemaName}:${tableName}`;
+
+		// Check cache first
+		const cached = ctx.schemaCache.get(cacheKey);
+		if (cached) {
+			log('Using cached table schema: %s.%s', resolvedSchemaName, tableName);
+			return cached as TableSchema;
+		}
+
+		// Resolve table schema with explicit schema name
+		const tableSchema = ctx.schemaManager.findTable(tableName, resolvedSchemaName);
+		if (!tableSchema) {
+			throw new QuereusError(
+				`Table not found: ${resolvedSchemaName}.${tableName}`,
+				StatusCode.ERROR
+			);
+		}
+
+		// Record dependency
+		const dependency: SchemaDependency = {
+			type: 'table',
+			schemaName: tableSchema.schemaName,
+			objectName: tableSchema.name
+		};
+		ctx.schemaDependencies.recordDependency(dependency, tableSchema);
+
+		// Cache result
+		ctx.schemaCache.set(cacheKey, tableSchema);
+
+		log('Resolved table schema: %s.%s', tableSchema.schemaName, tableSchema.name);
+		return tableSchema;
+	}
+
+	// No explicit schema, use search path
+	const schemaPath = ctx.schemaPath;
+	const cacheKey = schemaPath
+		? `table:path(${schemaPath.join(',')}):${tableName}`
+		: `table:default:${tableName}`;
 
 	// Check cache first
 	const cached = ctx.schemaCache.get(cacheKey);
 	if (cached) {
-		log('Using cached table schema: %s.%s', resolvedSchemaName, tableName);
+		log('Using cached table schema: %s (from search path)', tableName);
 		return cached as TableSchema;
 	}
 
-	// Resolve table schema
-	const tableSchema = ctx.schemaManager.findTable(tableName, resolvedSchemaName);
+	// Resolve table schema using search path
+	const tableSchema = ctx.schemaManager.findTable(tableName, undefined, schemaPath);
 	if (!tableSchema) {
-		throw new QuereusError(
-			`Table not found: ${resolvedSchemaName}.${tableName}`,
-			StatusCode.ERROR
-		);
+		// Generate helpful error message
+		const searchedSchemas = schemaPath || ['main', 'temp'];
+		const existsIn = ctx.schemaManager.findSchemasContainingTable(tableName);
+
+		let errorMsg = `Table '${tableName}' not found in schema path: ${searchedSchemas.join(', ')}`;
+		
+		if (existsIn.length > 0) {
+			// Table exists in other schemas - suggest qualified name
+			const suggestions = existsIn.map(s => `${s}.${tableName}`).join(', ');
+			errorMsg += `\n  Did you mean: ${suggestions}?`;
+			if (!schemaPath) {
+				// Also suggest adding to search path if not using WITH SCHEMA
+				errorMsg += `\n  Or add '${existsIn[0]}' to your schema path with: PRAGMA schema_path = '${searchedSchemas.join(',')},${existsIn[0]}'`;
+			} else {
+				errorMsg += `\n  Or add '${existsIn[0]}' to your WITH SCHEMA clause`;
+			}
+		}
+
+		throw new QuereusError(errorMsg, StatusCode.ERROR);
 	}
 
 	// Record dependency
@@ -47,7 +101,7 @@ export function resolveTableSchema(
 	// Cache result
 	ctx.schemaCache.set(cacheKey, tableSchema);
 
-	log('Resolved table schema: %s.%s', tableSchema.schemaName, tableSchema.name);
+	log('Resolved table schema: %s.%s (from search path)', tableSchema.schemaName, tableSchema.name);
 	return tableSchema;
 }
 

@@ -21,7 +21,12 @@ export function buildDeleteStmt(
   ctx: PlanningContext,
   stmt: AST.DeleteStmt,
 ): PlanNode {
-  const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  // Apply schema path from statement if present
+  const contextWithSchemaPath = stmt.schemaPath
+    ? { ...ctx, schemaPath: stmt.schemaPath }
+    : ctx;
+
+  const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
   const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
 
   // Process mutation context assignments if present
@@ -46,7 +51,7 @@ export function buildDeleteStmt(
 
     // Build context value expressions (evaluated in the base scope, before table scope)
     stmt.contextValues.forEach((assignment) => {
-      const valueExpr = buildExpression(ctx, assignment.value) as ScalarPlanNode;
+      const valueExpr = buildExpression(contextWithSchemaPath, assignment.value) as ScalarPlanNode;
       mutationContextValues.set(assignment.name, valueExpr);
     });
   }
