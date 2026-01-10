@@ -1,5 +1,6 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
+import type { SqlValue } from '../common/types.js';
 import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
 
 /**
@@ -44,6 +45,10 @@ export function computeSchemaDiff(
 
 	const targetSchemaName = actualCatalog.schemaName;
 
+	// Extract schema-level default module settings
+	const defaultVtabModule = declaredSchema.using?.defaultVtabModule;
+	const defaultVtabArgs = declaredSchema.using?.defaultVtabArgs;
+
 	// Build maps of declared items
 	const declaredTables = new Map<string, AST.DeclaredTable>();
 	const declaredViews = new Map<string, AST.DeclaredView>();
@@ -71,20 +76,10 @@ export function computeSchemaDiff(
 	// Find tables to create (in declared but not in actual)
 	for (const [name, declaredTable] of declaredTables) {
 		if (!actualTables.has(name)) {
-			// Qualify with schema if not main
+			// Build the effective table statement, applying schema-level defaults
 			const tableStmt = declaredTable.tableStmt;
-			if (targetSchemaName && targetSchemaName !== 'main' && !tableStmt.table.schema) {
-				const qualifiedStmt: AST.CreateTableStmt = {
-					...tableStmt,
-					table: {
-						...tableStmt.table,
-						schema: targetSchemaName
-					}
-				};
-				diff.tablesToCreate.push(createTableToString(qualifiedStmt));
-			} else {
-				diff.tablesToCreate.push(createTableToString(tableStmt));
-			}
+			const effectiveStmt = applyTableDefaults(tableStmt, targetSchemaName, defaultVtabModule, defaultVtabArgs);
+			diff.tablesToCreate.push(createTableToString(effectiveStmt));
 		} else {
 			// Table exists - check if it needs alteration
 			const alterDiff = computeTableAlterDiff(declaredTable, actualTables.get(name)!);
@@ -130,6 +125,43 @@ export function computeSchemaDiff(
 	}
 
 	return diff;
+}
+
+/**
+ * Applies schema-level defaults (schema name, default vtab module) to a table statement
+ */
+function applyTableDefaults(
+	tableStmt: AST.CreateTableStmt,
+	targetSchemaName: string,
+	defaultVtabModule?: string,
+	defaultVtabArgs?: string
+): AST.CreateTableStmt {
+	let result = tableStmt;
+
+	// Apply schema name if not main and not already specified
+	if (targetSchemaName && targetSchemaName !== 'main' && !tableStmt.table.schema) {
+		result = {
+			...result,
+			table: {
+				...result.table,
+				schema: targetSchemaName
+			}
+		};
+	}
+
+	// Apply default vtab module if table doesn't have an explicit one
+	if (!tableStmt.moduleName && defaultVtabModule) {
+		const parsedArgs: Record<string, SqlValue> = defaultVtabArgs
+			? JSON.parse(defaultVtabArgs) as Record<string, SqlValue>
+			: {};
+		result = {
+			...result,
+			moduleName: defaultVtabModule,
+			moduleArgs: parsedArgs
+		};
+	}
+
+	return result;
 }
 
 function computeTableAlterDiff(

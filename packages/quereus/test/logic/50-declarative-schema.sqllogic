@@ -480,4 +480,59 @@ apply schema check_not_exists;
 
 -- run
 
+-- Step 49: Test schema-level default vtab module
+-- When using (default_vtab_module = 'memory') is specified, tables without explicit USING
+-- should inherit the schema-level default module
+declare schema test_default_module using (default_vtab_module = 'memory') {
+	table items {
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL
+	}
+}
+
+-- run
+
+-- Diff should show the table with USING memory clause applied
+diff schema test_default_module;
+→ [{"ddl": "create table test_default_module.items (id INTEGER primary key, name TEXT not null) using memory"}]
+
+-- Apply the schema
+apply schema test_default_module;
+
+-- run
+
+-- Verify table works
+insert into test_default_module.items values (1, 'Test Item');
+select * from test_default_module.items;
+→ [{"id": 1, "name": "Test Item"}]
+
+-- Step 50: Test that explicit USING clause takes precedence over schema default
+declare schema test_explicit_module using (default_vtab_module = 'memory') {
+	table default_table {
+		id INTEGER PRIMARY KEY,
+		name TEXT
+	}
+
+	table explicit_table using memory {
+		id INTEGER PRIMARY KEY,
+		value TEXT
+	}
+}
+
+-- run
+
+-- Both tables should use memory module (one from default, one explicit)
+diff schema test_explicit_module;
+→ [{"ddl": "create table test_explicit_module.default_table (id INTEGER primary key, name TEXT) using memory"}, {"ddl": "create table test_explicit_module.explicit_table (id INTEGER primary key, value TEXT) using memory"}]
+
+apply schema test_explicit_module;
+
+-- run
+
+-- Verify both tables work
+insert into test_explicit_module.default_table values (1, 'Default');
+insert into test_explicit_module.explicit_table values (1, 'Explicit');
+select dt.name, et.value from test_explicit_module.default_table as dt cross join test_explicit_module.explicit_table as et;
+→ [{"name": "Default", "value": "Explicit"}]
+
 
