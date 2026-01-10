@@ -1,6 +1,6 @@
 {
   "name": "@quereus/sync",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
   "description": "Multi-master CRDT replication for Quereus - automatic sync with conflict resolution",
   "keywords": [
