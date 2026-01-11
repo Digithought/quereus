@@ -34,7 +34,7 @@ The store module uses separate logical stores for different data types:
 **Store Naming Convention:**
 - `{schema}.{table}` - Data store (row data)
 - `{schema}.{table}_idx_{indexName}` - Index stores (one per secondary index)
-- `{schema}.{table}_stats` - Stats store (row count, metadata)
+- `{prefix}.__stats__` - Unified stats store (row counts for all tables)
 - `__catalog__` - Catalog store (DDL metadata)
 
 **Key Formats:**

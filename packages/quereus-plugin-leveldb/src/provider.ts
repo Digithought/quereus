@@ -6,13 +6,13 @@
  * Storage naming convention:
  *   {basePath}/{schema}/{table}              - Data store (row data)
  *   {basePath}/{schema}/{table}_idx_{name}   - Index store (secondary indexes)
- *   {basePath}/{schema}/{table}_stats        - Stats store (row count, etc.)
+ *   {basePath}/__stats__                     - Unified stats store (row counts for all tables)
  *   {basePath}/__catalog__                   - Catalog store (DDL metadata)
  */
 
 import path from 'node:path';
 import type { KVStore, KVStoreProvider } from '@quereus/store';
-import { STORE_SUFFIX, CATALOG_STORE_NAME } from '@quereus/store';
+import { STORE_SUFFIX, CATALOG_STORE_NAME, STATS_STORE_NAME } from '@quereus/store';
 import { LevelDBStore } from './store.js';
 
 /**
@@ -43,6 +43,7 @@ export class LevelDBProvider implements KVStoreProvider {
 	private createIfMissing: boolean;
 	private stores = new Map<string, LevelDBStore>();
 	private catalogStore: LevelDBStore | null = null;
+	private statsStore: LevelDBStore | null = null;
 
 	constructor(options: LevelDBProviderOptions) {
 		this.basePath = options.basePath;
@@ -61,10 +62,16 @@ export class LevelDBProvider implements KVStoreProvider {
 		return this.getOrCreateStore(storeName, storePath);
 	}
 
-	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
-		const storeName = `${schemaName}.${tableName}${STORE_SUFFIX.STATS}`.toLowerCase();
-		const storePath = path.join(this.basePath, schemaName, `${tableName}${STORE_SUFFIX.STATS}`);
-		return this.getOrCreateStore(storeName, storePath);
+	async getStatsStore(_schemaName: string, _tableName: string): Promise<KVStore> {
+		// Use the unified __stats__ store for all tables
+		if (!this.statsStore) {
+			const statsPath = path.join(this.basePath, STATS_STORE_NAME);
+			this.statsStore = await LevelDBStore.open({
+				path: statsPath,
+				createIfMissing: this.createIfMissing,
+			});
+		}
+		return this.statsStore;
 	}
 
 	async getCatalogStore(): Promise<KVStore> {
@@ -98,6 +105,11 @@ export class LevelDBProvider implements KVStoreProvider {
 			await this.catalogStore.close();
 			this.catalogStore = null;
 		}
+
+		if (this.statsStore) {
+			await this.statsStore.close();
+			this.statsStore = null;
+		}
 	}
 
 	async deleteIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
@@ -112,9 +124,8 @@ export class LevelDBProvider implements KVStoreProvider {
 		const dataStoreName = `${schemaName}.${tableName}`.toLowerCase();
 		await this.closeStoreByName(dataStoreName);
 
-		// Close stats store
-		const statsStoreName = `${schemaName}.${tableName}${STORE_SUFFIX.STATS}`.toLowerCase();
-		await this.closeStoreByName(statsStoreName);
+		// Stats are in the unified __stats__ store, so no need to close a separate store
+		// The individual stats entry will be removed by the calling code if needed
 
 		// Close all index stores for this table
 		const indexPrefix = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}`.toLowerCase();

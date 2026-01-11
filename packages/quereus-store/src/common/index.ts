@@ -41,9 +41,11 @@ export {
 export {
 	STORE_SUFFIX,
 	CATALOG_STORE_NAME,
+	STATS_STORE_NAME,
 	buildDataStoreName,
 	buildIndexStoreName,
 	buildStatsStoreName,
+	buildStatsKey,
 	buildDataKey,
 	buildIndexKey,
 	buildCatalogKey,

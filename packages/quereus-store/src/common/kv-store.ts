@@ -125,7 +125,7 @@ export interface KVStoreOptions {
  * Storage naming convention:
  *   {schema}.{table}              - Data store (row data)
  *   {schema}.{table}_idx_{name}   - Index store (secondary indexes)
- *   {schema}.{table}_stats        - Stats store (row count, etc.)
+ *   {prefix}.__stats__            - Unified stats store (row counts for all tables)
  *   __catalog__                   - Catalog store (DDL metadata)
  *
  * Implementations should manage store lifecycle and caching.
@@ -152,11 +152,12 @@ export interface KVStoreProvider {
 	getIndexStore(schemaName: string, tableName: string, indexName: string): Promise<KVStore>;
 
 	/**
-	 * Get or create a KVStore for table statistics.
-	 * Store name: {schema}.{table}_stats
-	 * @param schemaName - The schema name
-	 * @param tableName - The table name
-	 * @returns The KVStore instance for stats
+	 * Get or create the unified KVStore for table statistics.
+	 * All table statistics are stored in a single __stats__ store, keyed by {schema}.{table}.
+	 * Note: schemaName and tableName parameters are ignored (kept for API compatibility).
+	 * @param schemaName - Unused (kept for API compatibility)
+	 * @param tableName - Unused (kept for API compatibility)
+	 * @returns The unified __stats__ KVStore instance
 	 */
 	getStatsStore(schemaName: string, tableName: string): Promise<KVStore>;
 

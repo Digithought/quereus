@@ -7,7 +7,7 @@
  * Storage architecture:
  *   - Data store: {schema}.{table} - row data keyed by encoded PK
  *   - Index stores: {schema}.{table}_idx_{name} - one per secondary index
- *   - Stats store: {schema}.{table}_stats - row count and metadata
+ *   - Stats store: __stats__ - unified store for all table statistics, keyed by {schema}.{table}
  */
 
 import {
@@ -35,6 +35,7 @@ import {
 	buildDataKey,
 	buildIndexKey,
 	buildFullScanBounds,
+	buildStatsKey,
 } from './key-builder.js';
 import {
 	serializeRow,
@@ -47,9 +48,6 @@ import type { EncodeOptions } from './encoding.js';
 
 /** Number of mutations before persisting statistics. */
 const STATS_FLUSH_INTERVAL = 100;
-
-/** Single key used in the stats store (stats store has only one entry). */
-const STATS_KEY = new Uint8Array(0);
 
 /**
  * Configuration for a store table.
@@ -258,7 +256,8 @@ export class StoreTable extends VirtualTable {
 		}
 
 		const statsStore = await this.ensureStatsStore();
-		await statsStore.put(STATS_KEY, serializeStats(this.cachedStats));
+		const statsKey = buildStatsKey(this.schemaName, this.tableName);
+		await statsStore.put(statsKey, serializeStats(this.cachedStats));
 	}
 
 	/** Create a new connection for transaction support. */
@@ -639,7 +638,8 @@ export class StoreTable extends VirtualTable {
 		}
 
 		const statsStore = await this.ensureStatsStore();
-		const statsData = await statsStore.get(STATS_KEY);
+		const statsKey = buildStatsKey(this.schemaName, this.tableName);
+		const statsData = await statsStore.get(statsKey);
 
 		if (statsData) {
 			this.cachedStats = deserializeStats(statsData);

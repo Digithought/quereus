@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-indexeddb",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "type": "module",
   "description": "IndexedDB storage plugin for Quereus - browser persistent storage",
   "keywords": [

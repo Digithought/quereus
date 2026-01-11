@@ -6,12 +6,12 @@
  * Storage naming convention:
  *   {prefix}.{schema}.{table}              - Data store (row data)
  *   {prefix}.{schema}.{table}_idx_{name}   - Index store (secondary indexes)
- *   {prefix}.{schema}.{table}_stats        - Stats store (row count, etc.)
+ *   {prefix}.__stats__                     - Unified stats store (row counts for all tables)
  *   {prefix}.__catalog__                   - Catalog store (DDL metadata)
  */
 
 import type { KVStore, KVStoreProvider } from '@quereus/store';
-import { STORE_SUFFIX } from '@quereus/store';
+import { STORE_SUFFIX, STATS_STORE_NAME } from '@quereus/store';
 import { ReactNativeLevelDBStore, type LevelDBOpenFn, type LevelDBWriteBatchConstructor } from './store.js';
 
 /**
@@ -58,6 +58,7 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 	private createIfMissing: boolean;
 	private stores = new Map<string, ReactNativeLevelDBStore>();
 	private catalogStore: ReactNativeLevelDBStore | null = null;
+	private statsStore: ReactNativeLevelDBStore | null = null;
 
 	constructor(options: ReactNativeLevelDBProviderOptions) {
 		this.openFn = options.openFn;
@@ -92,10 +93,15 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 		return this.getOrCreateStore(key, dbName);
 	}
 
-	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
-		const key = `${this.getStoreKey(schemaName, tableName)}${STORE_SUFFIX.STATS}`;
-		const dbName = `${this.getDatabaseName(schemaName, tableName)}${STORE_SUFFIX.STATS}`;
-		return this.getOrCreateStore(key, dbName);
+	async getStatsStore(_schemaName: string, _tableName: string): Promise<KVStore> {
+		// Use the unified __stats__ store for all tables
+		if (!this.statsStore) {
+			const statsDbName = `${this.databaseName}.${STATS_STORE_NAME}`;
+			this.statsStore = ReactNativeLevelDBStore.open(this.openFn, this.WriteBatch, statsDbName, {
+				createIfMissing: this.createIfMissing,
+			});
+		}
+		return this.statsStore;
 	}
 
 	async getCatalogStore(): Promise<KVStore> {
@@ -128,6 +134,11 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 			await this.catalogStore.close();
 			this.catalogStore = null;
 		}
+
+		if (this.statsStore) {
+			await this.statsStore.close();
+			this.statsStore = null;
+		}
 	}
 
 	async deleteIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
@@ -141,9 +152,8 @@ export class ReactNativeLevelDBProvider implements KVStoreProvider {
 		const dataKey = this.getStoreKey(schemaName, tableName);
 		await this.closeStoreByKey(dataKey);
 
-		// Close stats store
-		const statsKey = `${dataKey}${STORE_SUFFIX.STATS}`;
-		await this.closeStoreByKey(statsKey);
+		// Stats are in the unified __stats__ store, so no need to close a separate store
+		// The individual stats entry will be removed by the calling code if needed
 
 		// Close all index stores for this table
 		const indexPrefix = `${dataKey}${STORE_SUFFIX.INDEX}`;

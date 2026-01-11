@@ -8,7 +8,7 @@
  * Storage naming convention:
  *   {schema}.{table}              - Data store (row data)
  *   {schema}.{table}_idx_{name}   - Index store (secondary indexes)
- *   {schema}.{table}_stats        - Stats store (row count, etc.)
+ *   __stats__                     - Unified stats store (row counts for all tables)
  *   __catalog__                   - Catalog store (DDL metadata)
  */
 
@@ -16,8 +16,8 @@ import type { KVStore, KVStoreProvider } from '@quereus/store';
 import {
 	buildDataStoreName,
 	buildIndexStoreName,
-	buildStatsStoreName,
 	CATALOG_STORE_NAME,
+	STATS_STORE_NAME,
 	STORE_SUFFIX,
 } from '@quereus/store';
 import { IndexedDBStore } from './store.js';
@@ -45,6 +45,7 @@ export class IndexedDBProvider implements KVStoreProvider {
 	private databaseName: string;
 	private stores = new Map<string, IndexedDBStore>();
 	private catalogStore: IndexedDBStore | null = null;
+	private statsStore: IndexedDBStore | null = null;
 	private manager: IndexedDBManager;
 
 	constructor(options: IndexedDBProviderOptions = {}) {
@@ -62,9 +63,15 @@ export class IndexedDBProvider implements KVStoreProvider {
 		return this.getOrCreateStore(storeName);
 	}
 
-	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
-		const storeName = buildStatsStoreName(schemaName, tableName);
-		return this.getOrCreateStore(storeName);
+	async getStatsStore(_schemaName: string, _tableName: string): Promise<KVStore> {
+		// Use the unified __stats__ store for all tables
+		if (!this.statsStore) {
+			this.statsStore = await IndexedDBStore.openForTable(
+				this.databaseName,
+				STATS_STORE_NAME
+			);
+		}
+		return this.statsStore;
 	}
 
 	async getCatalogStore(): Promise<KVStore> {
@@ -98,6 +105,11 @@ export class IndexedDBProvider implements KVStoreProvider {
 			this.catalogStore = null;
 		}
 
+		if (this.statsStore) {
+			await this.statsStore.close();
+			this.statsStore = null;
+		}
+
 		// Close the shared database manager
 		await this.manager.close();
 	}
@@ -110,7 +122,6 @@ export class IndexedDBProvider implements KVStoreProvider {
 
 	async deleteTableStores(schemaName: string, tableName: string): Promise<void> {
 		const dataStoreName = buildDataStoreName(schemaName, tableName);
-		const statsStoreName = buildStatsStoreName(schemaName, tableName);
 
 		// Close and delete data store
 		await this.closeStoreByName(dataStoreName);
@@ -118,11 +129,8 @@ export class IndexedDBProvider implements KVStoreProvider {
 			await this.manager.deleteObjectStore(dataStoreName);
 		}
 
-		// Close and delete stats store
-		await this.closeStoreByName(statsStoreName);
-		if (this.manager.hasObjectStore(statsStoreName)) {
-			await this.manager.deleteObjectStore(statsStoreName);
-		}
+		// Stats are in the unified __stats__ store, so no need to delete a separate store
+		// The individual stats entry will be removed by the calling code if needed
 
 		// Find and delete all index stores for this table
 		const indexPrefix = `${dataStoreName}${STORE_SUFFIX.INDEX}`;

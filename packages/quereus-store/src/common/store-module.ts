@@ -9,7 +9,7 @@
  * Storage architecture:
  *   - Data store: {schema}.{table} - row data keyed by encoded PK
  *   - Index stores: {schema}.{table}_idx_{name} - one per secondary index
- *   - Stats store: {schema}.{table}_stats - row count and metadata
+ *   - {prefix}.__stats__ - Unified stats store (row counts for all tables)
  *   - Catalog store: __catalog__ - DDL metadata keyed by {schema}.{table}
  */
 

@@ -30,6 +30,9 @@ export const STORE_SUFFIX = {
 /** Reserved catalog store name. */
 export const CATALOG_STORE_NAME = '__catalog__';
 
+/** Reserved stats store name. */
+export const STATS_STORE_NAME = '__stats__';
+
 /**
  * Build the store name for a table's data.
  * Format: {schema}.{table}
@@ -52,10 +55,19 @@ export function buildIndexStoreName(
 
 /**
  * Build the store name for table statistics.
+ * @deprecated Stats are now stored in the unified __stats__ store. Use buildStatsKey instead.
  * Format: {schema}.{table}_stats
  */
 export function buildStatsStoreName(schemaName: string, tableName: string): string {
 	return `${schemaName}.${tableName}_stats`.toLowerCase();
+}
+
+/**
+ * Build a stats key for use in the unified __stats__ store.
+ * Format: {schema}.{table}
+ */
+export function buildStatsKey(schemaName: string, tableName: string): Uint8Array {
+	return encoder.encode(`${schemaName}.${tableName}`.toLowerCase());
 }
 
 /**

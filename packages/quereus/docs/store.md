@@ -11,7 +11,7 @@ The store module uses a **multi-store architecture** where different types of da
 
 - **Data stores**: `{schema}.{table}` - One per table, containing row data keyed by encoded primary key
 - **Index stores**: `{schema}.{table}_idx_{indexName}` - One per secondary index, containing index entries
-- **Stats stores**: `{schema}.{table}_stats` - One per table, containing row count and metadata
+- **Stats store**: `__stats__` - Single unified store containing row count and metadata for all tables, keyed by `{schema}.{table}`
 - **Catalog store**: `__catalog__` - Single store containing DDL for all tables
 
 ## Reactive Hooks
@@ -210,7 +210,7 @@ The module uses separate logical stores for different data types:
 |------------|---------|----------|
 | `{schema}.{table}` | Table data | `main.users`, `main.orders` |
 | `{schema}.{table}_idx_{name}` | Secondary indexes | `main.users_idx_email` |
-| `{schema}.{table}_stats` | Table statistics | `main.users_stats` |
+| `__stats__` | All table statistics | Single unified store |
 | `__catalog__` | DDL metadata | Single catalog store |
 
 **Benefits:**
@@ -218,6 +218,7 @@ The module uses separate logical stores for different data types:
 - Each index gets its own store (no prefix required in keys)
 - Shorter keys (no redundant schema.table prefixes)
 - Simpler iteration (no prefix filtering needed)
+- Unified stats store eliminates late database upgrades for stats
 
 ### Key Formats
 
@@ -234,9 +235,10 @@ The module uses separate logical stores for different data types:
 - Value: DDL statement for table creation
 - Example: Key `main.users` → `CREATE TABLE main.users (...)`
 
-**Stats Keys** (in `{schema}.{table}_stats` stores):
-- Format: Empty key (single entry per store)
+**Stats Keys** (in `__stats__` store):
+- Format: `{schema}.{table}` as UTF-8 string
 - Value: JSON `{rowCount: number, updatedAt: timestamp}`
+- Example: Key `main.users` → `{"rowCount": 1000, "updatedAt": 1704067200000}`
 
 ### Primary Key Encoding
 
@@ -454,12 +456,13 @@ This would provide true ACID semantics and enable features like:
 
 Row counts are maintained lazily for efficient query planning:
 
-- **Storage**: Each table has a dedicated stats store (`{schema}.{table}_stats`) with a single entry
-- **Key format**: Empty key (stats store contains only one value)
+- **Storage**: All table statistics are stored in the unified `__stats__` store, keyed by `{schema}.{table}`
+- **Key format**: `{schema}.{table}` as UTF-8 string (e.g., `main.users`)
 - **Value format**: JSON `{rowCount: number, updatedAt: timestamp}`
 - **Tracking**: Each insert increments count (+1), each delete decrements (-1)
 - **Persistence**: After ~100 mutations, stats are flushed to storage in a microtask
 - **Flush on close**: Stats are persisted when a table is disconnected
+- **No database upgrades**: The `__stats__` store is created at database initialization, so stats persistence never triggers schema upgrades
 
 ```typescript
 // Access statistics programmatically

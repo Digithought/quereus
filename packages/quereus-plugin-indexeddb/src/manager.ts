@@ -11,7 +11,7 @@
  *   - Native cross-table transactions for atomicity
  */
 
-import { CATALOG_STORE_NAME } from '@quereus/store';
+import { CATALOG_STORE_NAME, STATS_STORE_NAME } from '@quereus/store';
 
 /**
  * Singleton manager for a unified IndexedDB database.
@@ -94,6 +94,15 @@ export class IndexedDBManager {
     if (existingInfo) {
       this.dbVersion = existingInfo.version;
       this.objectStores = existingInfo.objectStores;
+
+      // Check if we need to upgrade to add missing system stores
+      const needsCatalog = !existingInfo.objectStores.has(CATALOG_STORE_NAME);
+      const needsStats = !existingInfo.objectStores.has(STATS_STORE_NAME);
+
+      if (needsCatalog || needsStats) {
+        // Eagerly upgrade to create system stores before any operations
+        this.dbVersion++;
+      }
     }
 
     // Open with the current version
@@ -145,6 +154,11 @@ export class IndexedDBManager {
         if (!db.objectStoreNames.contains(CATALOG_STORE_NAME)) {
           db.createObjectStore(CATALOG_STORE_NAME);
           this.objectStores.add(CATALOG_STORE_NAME);
+        }
+        // Ensure unified stats store exists
+        if (!db.objectStoreNames.contains(STATS_STORE_NAME)) {
+          db.createObjectStore(STATS_STORE_NAME);
+          this.objectStores.add(STATS_STORE_NAME);
         }
       };
 

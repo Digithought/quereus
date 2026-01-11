@@ -7,12 +7,12 @@
  * Storage naming convention:
  *   {prefix}{schema}_{table}              - Data store (row data)
  *   {prefix}{schema}_{table}_idx_{name}   - Index store (secondary indexes)
- *   {prefix}{schema}_{table}_stats        - Stats store (row count, etc.)
+ *   {prefix}__stats__                     - Unified stats store (row counts for all tables)
  *   {prefix}__catalog__                   - Catalog store (DDL metadata)
  */
 
 import type { KVStore, KVStoreProvider } from '@quereus/store';
-import { STORE_SUFFIX } from '@quereus/store';
+import { STORE_SUFFIX, STATS_STORE_NAME } from '@quereus/store';
 import { SQLiteStore, type SQLiteDatabase } from './store.js';
 
 /**
@@ -43,6 +43,7 @@ export class SQLiteProvider implements KVStoreProvider {
 	private tablePrefix: string;
 	private stores = new Map<string, SQLiteStore>();
 	private catalogStore: SQLiteStore | null = null;
+	private statsStore: SQLiteStore | null = null;
 
 	constructor(options: SQLiteProviderOptions) {
 		this.db = options.db;
@@ -76,10 +77,12 @@ export class SQLiteProvider implements KVStoreProvider {
 		return this.getOrCreateStore(key, sqliteTableName);
 	}
 
-	async getStatsStore(schemaName: string, tableName: string): Promise<KVStore> {
-		const key = `${this.getStoreKey(schemaName, tableName)}${STORE_SUFFIX.STATS}`;
-		const sqliteTableName = `${this.getTableName(schemaName, tableName)}${STORE_SUFFIX.STATS}`.replace(/[^a-zA-Z0-9_]/g, '_');
-		return this.getOrCreateStore(key, sqliteTableName);
+	async getStatsStore(_schemaName: string, _tableName: string): Promise<KVStore> {
+		// Use the unified __stats__ store for all tables
+		if (!this.statsStore) {
+			this.statsStore = SQLiteStore.create(this.db, `${this.tablePrefix}${STATS_STORE_NAME}`);
+		}
+		return this.statsStore;
 	}
 
 	async getCatalogStore(): Promise<KVStore> {
@@ -110,6 +113,11 @@ export class SQLiteProvider implements KVStoreProvider {
 			this.catalogStore = null;
 		}
 
+		if (this.statsStore) {
+			await this.statsStore.close();
+			this.statsStore = null;
+		}
+
 		// Close the underlying database
 		this.db.close();
 	}
@@ -125,9 +133,8 @@ export class SQLiteProvider implements KVStoreProvider {
 		const dataKey = this.getStoreKey(schemaName, tableName);
 		await this.closeStoreByKey(dataKey);
 
-		// Close stats store
-		const statsKey = `${dataKey}${STORE_SUFFIX.STATS}`;
-		await this.closeStoreByKey(statsKey);
+		// Stats are in the unified __stats__ store, so no need to close a separate store
+		// The individual stats entry will be removed by the calling code if needed
 
 		// Close all index stores for this table
 		const indexPrefix = `${dataKey}${STORE_SUFFIX.INDEX}`;
