@@ -358,10 +358,42 @@ export class Statement {
 
 	/**
 	 * Executes the prepared statement with the given parameters until completion.
+	 * Automatically wraps execution in an implicit transaction if in autocommit mode
+	 * and not already in an explicit transaction.
 	 */
 	async run(params?: SqlParameters | SqlValue[]): Promise<void> {
 		this.validateStatement("run");
-		for await (const _ of this.iterateRows(params)) { /* Consume */ }
+
+		const needsImplicitTransaction = this.db.getAutocommit();
+
+		let executionError: Error | null = null;
+		try {
+			if (needsImplicitTransaction) {
+				await this.db._beginImplicitTransaction();
+			}
+
+			try {
+				for await (const _ of this.iterateRows(params)) {
+					/* Consume all rows */
+				}
+			} catch (err) {
+				const error = err instanceof Error ? err : new Error(String(err));
+				executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
+			}
+
+		} finally {
+			if (needsImplicitTransaction) {
+				if (executionError) {
+					await this.db._rollbackImplicitTransaction();
+				} else {
+					await this.db._commitImplicitTransaction();
+				}
+			}
+		}
+
+		if (executionError) {
+			throw executionError;
+		}
 	}
 
 	/**

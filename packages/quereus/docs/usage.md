@@ -170,6 +170,43 @@ try {
 
 ### Transactions
 
+Quereus supports explicit transaction control using `BEGIN`, `COMMIT`, and `ROLLBACK`. Additionally, both `db.exec()` and `statement.run()` automatically wrap their execution in implicit transactions when in autocommit mode.
+
+#### Implicit Transactions
+
+When not in an explicit transaction (autocommit mode), both `db.exec()` and `statement.run()` automatically wrap their execution in an implicit transaction:
+
+```typescript
+// db.exec() - wraps entire batch in one transaction
+await db.exec("insert into users (name) values ('User 1')");
+// Automatically committed after successful execution
+
+// statement.run() - wraps execution in transaction
+const stmt = db.prepare("insert into users (name) values (?)");
+await stmt.run(["User 2"]);
+await stmt.finalize();
+// Automatically committed after successful execution
+
+// Multiple statements in db.exec() are atomic
+await db.exec(`
+  insert into users (name) values ('User 3');
+  insert into users (name) values ('User 4');
+`);
+// All statements commit together, or all rollback on error
+
+// On error, implicit transactions automatically rollback
+try {
+  await db.exec("insert into users (id, name) values (1, 'User 5')");
+  await db.exec("insert into users (id, name) values (1, 'Duplicate')"); // Error!
+} catch (e) {
+  // Second exec() was automatically rolled back
+}
+```
+
+#### Explicit Transactions
+
+For fine-grained control, use explicit transaction commands:
+
 ```typescript
 // Simple transaction
 await db.exec("begin transaction");
@@ -206,12 +243,22 @@ try {
   await db.exec("rollback");
   throw e;
 }
+
+// Within explicit transactions, no nested implicit transactions occur
+await db.exec("begin");
+const stmt = db.prepare("insert into users (name) values (?)");
+await stmt.run(["User 5"]); // No implicit transaction - part of explicit one
+await stmt.run(["User 6"]); // Same transaction
+await stmt.finalize();
+await db.exec("commit"); // Commits both inserts
 ```
 
 ## Database API Reference
 
 ### `db.exec(sql: string, params?: SqlParameters): Promise<void>`
 Executes one or more SQL statements separated by semicolons. Primarily intended for DDL, transaction control, or DML without results. Supports optional parameters.
+
+**Implicit Transaction Behavior:** When in autocommit mode (not within an explicit `BEGIN...COMMIT`), `exec()` automatically wraps the entire batch of statements in an implicit transaction. All statements commit together on success, or all rollback on error. This provides batch-level atomicity.
 
 ### `db.prepare(sql: string): Statement`
 Prepares an SQL statement for execution, returning a `Statement` object. This is the entry point for using the `Statement` API (`run`, `get`, `all`, `bind`, etc.).
@@ -266,6 +313,8 @@ Prepared statements provide methods for executing parameterized SQL.
 #### `stmt.run(params?: SqlValue[] | Record<string, SqlValue>): Promise<void>`
 
 Executes the statement until completion, ignoring any result rows. Ideal for INSERT, UPDATE, or DELETE operations.
+
+**Implicit Transaction Behavior:** When in autocommit mode (not within an explicit `BEGIN...COMMIT`), `run()` automatically wraps its execution in an implicit transaction. The statement commits on success, or rolls back on error.
 
 ```typescript
 await stmt.run(["param1", 42]); // Positional parameters

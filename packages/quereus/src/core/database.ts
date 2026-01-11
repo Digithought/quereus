@@ -316,7 +316,7 @@ export class Database {
 		let executionError: Error | null = null;
 		try {
 			if (needsImplicitTransaction) {
-				await this.beginImplicitTransaction();
+				await this._beginImplicitTransaction();
 			}
 
 			for (let i = 0; i < batch.length; i++) {
@@ -332,9 +332,9 @@ export class Database {
 		} finally {
 			if (needsImplicitTransaction) {
 				if (executionError) {
-					await this.rollbackImplicitTransaction();
+					await this._rollbackImplicitTransaction();
 				} else {
-					await this.commitImplicitTransaction();
+					await this._commitImplicitTransaction();
 				}
 			}
 		}
@@ -571,9 +571,9 @@ export class Database {
 	/**
 	 * Sets the default schema search path for resolving unqualified table names.
 	 * This is a convenience method equivalent to setting the 'schema_path' option.
-	 * 
+	 *
 	 * @param paths Array of schema names to search in order
-	 * 
+	 *
 	 * @example
 	 * ```typescript
 	 * db.setSchemaPath(['main', 'extensions', 'plugins']);
@@ -588,9 +588,9 @@ export class Database {
 
 	/**
 	 * Gets the current schema search path.
-	 * 
+	 *
 	 * @returns Array of schema names in search order
-	 * 
+	 *
 	 * @example
 	 * ```typescript
 	 * const path = db.getSchemaPath();
@@ -1111,7 +1111,8 @@ export class Database {
 	/**
 	 * Begin an implicit transaction and coordinate with virtual table connections
 	 */
-	private async beginImplicitTransaction(): Promise<void> {
+	/** @internal Begin an implicit transaction */
+	async _beginImplicitTransaction(): Promise<void> {
 		debugLog("Database: Starting implicit transaction for multi-statement block.");
 
 		this.inImplicitTransaction = true;
@@ -1134,8 +1135,9 @@ export class Database {
 
 	/**
 	 * Commit an implicit transaction and coordinate with virtual table connections
+	 * @internal
 	 */
-	private async commitImplicitTransaction(): Promise<void> {
+	async _commitImplicitTransaction(): Promise<void> {
 		debugLog("Database: Committing implicit transaction.");
 
 		try {
@@ -1483,7 +1485,8 @@ export class Database {
 	/**
 	 * Rollback an implicit transaction and coordinate with virtual table connections
 	 */
-	private async rollbackImplicitTransaction(): Promise<void> {
+	/** @internal Rollback an implicit transaction */
+	async _rollbackImplicitTransaction(): Promise<void> {
 		debugLog("Database: Rolling back implicit transaction.");
 
 		// Rollback all active connections

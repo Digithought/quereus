@@ -1,4 +1,47 @@
--- transactions.sqllogic - Testing BEGIN, COMMIT, ROLLBACK, SAVEPOINT
+-- transactions.sqllogic - Testing BEGIN, COMMIT, ROLLBACK, SAVEPOINT, and implicit transactions
+
+-- ===================================
+-- Implicit Transaction Tests
+-- ===================================
+-- When not in an explicit transaction (autocommit mode), each statement
+-- or batch of statements is automatically wrapped in an implicit transaction
+
+CREATE TABLE implicit_tx (id INTEGER PRIMARY KEY, val TEXT);
+
+-- Single statement should auto-commit
+INSERT INTO implicit_tx VALUES (1, 'auto-committed');
+SELECT val FROM implicit_tx WHERE id = 1;
+→ [{ "val": "auto-committed" }]
+
+-- Multiple statements in one exec should be atomic (all or nothing)
+INSERT INTO implicit_tx VALUES (2, 'batch-a');
+INSERT INTO implicit_tx VALUES (3, 'batch-b');
+INSERT INTO implicit_tx VALUES (4, 'batch-c');
+SELECT count(*) as cnt FROM implicit_tx;
+→ [{ "cnt": 4 }]
+
+-- Error in batch should rollback entire batch
+-- This should fail on duplicate key and rollback both inserts
+INSERT INTO implicit_tx VALUES (10, 'new1');
+INSERT INTO implicit_tx VALUES (1, 'duplicate');
+INSERT INTO implicit_tx VALUES (11, 'new2');
+-- error: UNIQUE constraint failed
+
+-- Verify the failed batch was rolled back (row 10 should not exist)
+SELECT count(*) as cnt FROM implicit_tx WHERE id = 10;
+→ [{ "cnt": 0 }]
+SELECT count(*) as cnt FROM implicit_tx WHERE id = 11;
+→ [{ "cnt": 0 }]
+
+-- Original data should be intact
+SELECT count(*) as cnt FROM implicit_tx;
+→ [{ "cnt": 4 }]
+
+DROP TABLE implicit_tx;
+
+-- ===================================
+-- Explicit Transaction Tests
+-- ===================================
 
 CREATE TABLE tx_t (id INTEGER PRIMARY KEY, val TEXT);
 INSERT INTO tx_t VALUES (1, 'initial');

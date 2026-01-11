@@ -85,16 +85,10 @@ class QuereusWorker implements QuereusWorkerAPI {
     }
 
     try {
-      if (params) {
-        const stmt = await this.db.prepare(sql);
-        try {
-          await stmt.run(params);
-        } finally {
-          await stmt.finalize();
-        }
-      } else {
-        await this.db.exec(sql);
-      }
+      // Use db.exec() instead of stmt.run() to get automatic transaction wrapping
+      // Quereus requires mutations to be wrapped in transactions, and db.exec()
+      // automatically creates an implicit transaction for single statements
+      await this.db.exec(sql, params);
     } catch (error) {
       throw new Error(`Statement execution failed: ${error instanceof Error ? error.message : error}`);
     }

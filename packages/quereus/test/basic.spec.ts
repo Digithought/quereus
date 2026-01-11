@@ -402,4 +402,45 @@ describe(`Basic query`, () => {
 			void expect(rows[0].name).to.equal('Bob');
 		});
 	});
+
+	describe('Implicit transaction behavior', () => {
+		// Most implicit transaction behavior is tested in test/logic/04-transactions.sqllogic
+		// These tests just verify the TypeScript API works correctly
+
+		it('statement.run() should complete successfully', async () => {
+			await db.exec('CREATE TABLE implicit_tx (id INTEGER PRIMARY KEY, val TEXT)');
+
+			const stmt = db.prepare('INSERT INTO implicit_tx VALUES (?, ?)');
+			await stmt.run([1, 'a']);
+			await stmt.finalize();
+
+			// Verify data was committed
+			const result = await db.get('SELECT val FROM implicit_tx WHERE id = 1');
+			void expect(result).to.exist;
+			void expect(result?.val).to.equal('a');
+		});
+
+		it('statement.run() should rollback on error', async () => {
+			await db.exec('CREATE TABLE implicit_tx (id INTEGER PRIMARY KEY, val TEXT)');
+			await db.exec("INSERT INTO implicit_tx VALUES (1, 'initial')");
+
+			const stmt = db.prepare("INSERT INTO implicit_tx VALUES (1, 'duplicate')");
+
+			// This should fail with duplicate key error and rollback
+			let errorThrown = false;
+			try {
+				await stmt.run();
+			} catch (e) {
+				errorThrown = true;
+			}
+			await stmt.finalize();
+
+			void expect(errorThrown).to.be.true;
+
+			// Verify original data is still there and not corrupted
+			const result = await db.get('SELECT val FROM implicit_tx WHERE id = 1');
+			void expect(result).to.exist;
+			void expect(result?.val).to.equal('initial');
+		});
+	});
 });
