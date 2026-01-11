@@ -133,8 +133,13 @@ export function buildConstraintChecks(
     }
 
     try {
+      // Create a context with the table's schema in the search path
+      // This ensures unqualified table references in subqueries resolve to the same schema
+      const constraintSchemaPath = [tableSchema.schemaName];
+      const constraintCtx = { ...ctx, scope: constraintScope, schemaPath: constraintSchemaPath };
+
       const expression = buildExpression(
-        { ...ctx, scope: constraintScope },
+        constraintCtx,
         constraint.expr
       ) as ScalarPlanNode;
 

@@ -1947,6 +1947,17 @@ export class Parser {
 		this.matchKeyword('FROM');
 		const table = this.tableIdentifier();
 
+		// Parse mutation context assignments if present (can also appear after WHERE)
+		let contextValues: AST.ContextAssignment[] | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				contextValues = this.parseContextAssignments();
+			} else {
+				// Not a WITH CONTEXT clause, backtrack
+				this.current--;
+			}
+		}
+
 		let where: AST.Expression | undefined;
 		if (this.match(TokenType.WHERE)) {
 			where = this.expression();
@@ -1954,7 +1965,12 @@ export class Parser {
 
 		// Parse trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA in any order)
 		const trailingClauses = this.parseTrailingWithClauses();
-		const contextValues = trailingClauses.contextValues;
+		if (trailingClauses.contextValues) {
+			if (contextValues) {
+				throw this.error(this.previous(), "Duplicate WITH CONTEXT clause");
+			}
+			contextValues = trailingClauses.contextValues;
+		}
 		const schemaPath = trailingClauses.schemaPath;
 
 		// Parse RETURNING clause if present

@@ -10,7 +10,7 @@ CREAT TABLE t_err (a);
 
 -- Semantic Error: Table not found
 SELECT * FROM non_existent_table;
--- error: Table not found: main.non_existent_table
+-- error: not found in schema path
 
 -- Semantic Error: Column not found
 CREATE TABLE t_err_col (a INTEGER);

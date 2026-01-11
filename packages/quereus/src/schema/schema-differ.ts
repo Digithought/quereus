@@ -113,8 +113,9 @@ export function computeSchemaDiff(
 	// Find indexes to create/drop
 	for (const [name, declaredIndex] of declaredIndexes) {
 		if (!actualIndexes.has(name)) {
-			// Generate proper index DDL using AST stringifier
-			diff.indexesToCreate.push(createIndexToString(declaredIndex.indexStmt));
+			// Apply schema name to the index and its table reference
+			const effectiveStmt = applyIndexDefaults(declaredIndex.indexStmt, targetSchemaName);
+			diff.indexesToCreate.push(createIndexToString(effectiveStmt));
 		}
 	}
 
@@ -159,6 +160,42 @@ function applyTableDefaults(
 			moduleName: defaultVtabModule,
 			moduleArgs: parsedArgs
 		};
+	}
+
+	return result;
+}
+
+/**
+ * Applies schema name to an index statement and its table reference
+ */
+function applyIndexDefaults(
+	indexStmt: AST.CreateIndexStmt,
+	targetSchemaName: string
+): AST.CreateIndexStmt {
+	let result = indexStmt;
+
+	// Apply schema name to the index if not main and not already specified
+	if (targetSchemaName && targetSchemaName !== 'main') {
+		// Apply schema to the index name
+		if (!indexStmt.index.schema) {
+			result = {
+				...result,
+				index: {
+					...result.index,
+					schema: targetSchemaName
+				}
+			};
+		}
+		// Apply schema to the table reference
+		if (!indexStmt.table.schema) {
+			result = {
+				...result,
+				table: {
+					...result.table,
+					schema: targetSchemaName
+				}
+			};
+		}
 	}
 
 	return result;
