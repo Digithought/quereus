@@ -117,7 +117,7 @@ Quereus runs on any JavaScript runtime. For persistent storage, platform-specifi
 
 ### Node.js
 
-Use [`@quereus/plugin-leveldb`](packages/quereus-plugin-leveldb/) for LevelDB-based persistent storage. Each table becomes a subdirectory under `basePath`:
+Use [`@quereus/plugin-leveldb`](packages/quereus-plugin-leveldb/) for LevelDB-based persistent storage with full transaction isolation. Each table becomes a subdirectory under `basePath`:
 
 ```typescript
 import { Database, registerPlugin } from '@quereus/quereus';
@@ -127,11 +127,17 @@ const db = new Database();
 await registerPlugin(db, leveldbPlugin, { basePath: './data' }); // ./data/users/, ./data/orders/, etc.
 
 await db.exec(`create table users (id integer primary key, name text) using store`);
+
+// Full transaction isolation enabled by default
+await db.exec('BEGIN');
+await db.exec(`INSERT INTO users VALUES (1, 'Alice')`);
+const user = await db.get('SELECT * FROM users WHERE id = 1'); // Sees uncommitted insert
+await db.exec('COMMIT');
 ```
 
 ### Browser
 
-Use [`@quereus/plugin-indexeddb`](packages/quereus-plugin-indexeddb/) for IndexedDB-based persistent storage with cross-tab sync. All tables share one IndexedDB database:
+Use [`@quereus/plugin-indexeddb`](packages/quereus-plugin-indexeddb/) for IndexedDB-based persistent storage with cross-tab sync and full transaction isolation. All tables share one IndexedDB database:
 
 ```typescript
 import { Database, registerPlugin } from '@quereus/quereus';
@@ -145,7 +151,7 @@ await db.exec(`create table users (id integer primary key, name text) using stor
 
 ### React Native
 
-Use [`@quereus/plugin-react-native-leveldb`](packages/quereus-plugin-react-native-leveldb/) for fast LevelDB storage. Each table becomes a separate LevelDB database with a name prefix:
+Use [`@quereus/plugin-react-native-leveldb`](packages/quereus-plugin-react-native-leveldb/) for fast LevelDB storage with full transaction isolation. Each table becomes a separate LevelDB database with a name prefix:
 
 ```typescript
 import { LevelDB, LevelDBWriteBatch } from 'react-native-leveldb';
@@ -166,7 +172,7 @@ await db.exec(`create table users (id integer primary key, name text) using stor
 
 ### NativeScript
 
-Use [`@quereus/plugin-nativescript-sqlite`](packages/quereus-plugin-nativescript-sqlite/) for SQLite-based storage. All tables share one SQLite database file:
+Use [`@quereus/plugin-nativescript-sqlite`](packages/quereus-plugin-nativescript-sqlite/) for SQLite-based storage with full transaction isolation. All tables share one SQLite database file:
 
 ```typescript
 import { openOrCreate } from '@nativescript-community/sqlite';

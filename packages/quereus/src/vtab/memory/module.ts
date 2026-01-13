@@ -12,6 +12,7 @@ import { createMemoryTableLoggers } from './utils/logging.js';
 import { AccessPlanBuilder, validateAccessPlan } from '../best-access-plan.js';
 import type { BestAccessPlanRequest, BestAccessPlanResult, ColumnMeta, OrderingSpec, PredicateConstraint } from '../best-access-plan.js';
 import type { VTableEventEmitter } from '../events.js';
+import type { ModuleCapabilities } from '../capabilities.js';
 
 const logger = createMemoryTableLoggers('module');
 
@@ -33,6 +34,20 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	 */
 	getEventEmitter(): VTableEventEmitter | undefined {
 		return this.eventEmitter;
+	}
+
+	/**
+	 * Returns capability flags for this module.
+	 * Memory module has built-in isolation and savepoint support.
+	 */
+	getCapabilities(): ModuleCapabilities {
+		return {
+			isolation: true,
+			savepoints: true,
+			persistent: false,
+			secondaryIndexes: true,
+			rangeScans: true,
+		};
 	}
 
 	/**

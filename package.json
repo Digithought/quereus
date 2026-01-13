@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "clean": "yarn workspaces foreach -A run clean",
-    "build": "yarn clean && yarn build:engine && yarn build:loader && yarn build:store && yarn build:plugin-indexeddb && yarn build:plugin-leveldb && yarn build:sync && yarn build:sync-client && yarn build:sync-coordinator && yarn build:ui && yarn build:plugins && yarn build:vscode && yarn build:cli && yarn build:web",
+    "build": "yarn clean && yarn build:engine && yarn build:loader && yarn build:isolation && yarn build:store && yarn build:plugin-indexeddb && yarn build:plugin-leveldb && yarn build:sync && yarn build:sync-client && yarn build:sync-coordinator && yarn build:ui && yarn build:plugins && yarn build:vscode && yarn build:cli && yarn build:web",
     "lint": "yarn workspaces foreach -A run lint",
     "test": "yarn workspaces foreach -A run test",
     "test:all": "yarn workspaces foreach -A run test:all",
@@ -23,6 +23,7 @@
     "build:cli": "yarn workspace @quereus/quoomb-cli build",
     "build:engine": "yarn workspace @quereus/quereus build",
     "build:loader": "yarn workspace @quereus/plugin-loader build",
+    "build:isolation": "yarn workspace @quereus/isolation build",
     "build:store": "yarn workspace @quereus/store build",
     "build:plugin-leveldb": "yarn workspace @quereus/plugin-leveldb build",
     "build:plugin-indexeddb": "yarn workspace @quereus/plugin-indexeddb build",
@@ -35,6 +36,7 @@
     "preview:web": "yarn workspace @quereus/quoomb-web preview",
     "pub:quereus": "cd packages/quereus && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
     "pub:loader": "cd packages/plugin-loader && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
+    "pub:isolation": "cd packages/quereus-isolation && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
     "pub:store": "cd packages/quereus-store && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
     "pub:sync": "cd packages/quereus-sync && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
     "pub:sync-client": "cd packages/quereus-sync-client && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
@@ -45,7 +47,7 @@
     "pub:plugin-ns": "cd packages/quereus-plugin-nativescript-sqlite && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
     "pub:ui": "cd packages/shared-ui && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
     "pub:cli": "cd packages/quoomb-cli && yarn clean && yarn build && npx bumpp --no-push --no-commit --no-tag --no-git-check -y && yarn npm publish --access public",
-    "pub": "yarn pub:quereus && yarn pub:loader && yarn pub:store && yarn pub:plugin-indexeddb && yarn pub:plugin-leveldb && yarn pub:sync && yarn pub:sync-client && yarn pub:sync-coordinator && yarn pub:ui && yarn pub:cli && yarn pub:rn && yarn pub:nativescript"
+    "pub": "yarn pub:quereus && yarn pub:loader && yarn pub:isolation && yarn pub:store && yarn pub:plugin-indexeddb && yarn pub:plugin-leveldb && yarn pub:plugin-rn && yarn pub:plugin-ns && yarn pub:sync && yarn pub:sync-client && yarn pub:sync-coordinator && yarn pub:ui && yarn pub:cli"
   },
   "devDependencies": {
     "bumpp": "^10.0.3",

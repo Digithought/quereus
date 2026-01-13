@@ -95,3 +95,10 @@ export { StoreConnection } from './store-connection.js';
 
 // Generic store module
 export { StoreModule, type StoreModuleConfig } from './store-module.js';
+
+// Isolation layer utilities
+export {
+	createIsolatedStoreModule,
+	hasIsolation,
+	type IsolatedStoreModuleConfig,
+} from './isolated-store.js';

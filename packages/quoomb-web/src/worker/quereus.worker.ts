@@ -351,17 +351,22 @@ class QuereusWorker implements QuereusWorkerAPI {
 
       const table = tableResults[0];
 
-      // Get column information
-      const columns: ColumnInfo[] = [];
-      for await (const row of this.db.eval(`PRAGMA table_info(${tableName})`)) {
-        columns.push({
-          name: row.name as string,
-          type: (row.type as string) || 'TEXT',
-          nullable: !(row.notnull as boolean),
-          defaultValue: row.dflt_value as SqlValue,
-          primaryKey: row.pk as boolean,
-        });
+      // Get column information from schemaManager
+      const tableSchema = this.db.schemaManager.getTable('main', tableName);
+      if (!tableSchema) {
+        throw new Error(`Table schema not found for '${tableName}'`);
       }
+
+      const columns: ColumnInfo[] = tableSchema.columns.map((col, index) => {
+        const isPrimaryKey = tableSchema.primaryKeyDefinition.some(pk => pk.index === index);
+        return {
+          name: col.name,
+          type: col.logicalType.name,
+          nullable: !col.notNull,
+          defaultValue: col.defaultValue,
+          primaryKey: isPrimaryKey,
+        };
+      });
 
       return {
         name: table.name,
@@ -657,7 +662,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     switch (module) {
       case 'memory':
         // Set memory as the default module
-        await this.db.exec("pragma default_vtab_module = 'memory'");
+        this.db.setDefaultVtabName('memory');
         this.currentStorageModule = 'memory';
         break;
 
@@ -711,7 +716,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     this.db.registerModule('store', this.storeModule);
 
     // Set default module BEFORE restore so imported DDL (which may lack USING clause) uses store
-    await this.db.exec("pragma default_vtab_module = 'store'");
+    this.db.setDefaultVtabName('store');
 
     // Open a default KV store for sync metadata
     this.kvStore = await IndexedDBStore.openForTable('quoomb', 'sync_meta');

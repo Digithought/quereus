@@ -5,6 +5,7 @@ import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema, IndexSchema } from '../schema/table.js'; // Add import for TableSchema and IndexSchema
 import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-plan.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
+import type { ModuleCapabilities } from './capabilities.js';
 
 /**
  * Base interface for module-specific configuration passed to create/connect.
@@ -151,6 +152,12 @@ export interface VirtualTableModule<
 	 * @returns true if the name would conflict
 	 */
 	shadowName?(name: string): boolean;
+
+	/**
+	 * Returns capability flags for this module.
+	 * Used for runtime capability discovery.
+	 */
+	getCapabilities?(): ModuleCapabilities;
 }
 
 /**

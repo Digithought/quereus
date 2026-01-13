@@ -163,6 +163,7 @@ import './runtime/register.js';
 
 // Re-export virtual table framework
 export type { VirtualTableModule } from './vtab/module.js';
+export type { ModuleCapabilities, IsolationCapableTable } from './vtab/capabilities.js';
 
 // Re-export plugin manifest types (for plugin authors, but not the loader)
 export type {

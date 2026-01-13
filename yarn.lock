@@ -1165,6 +1165,23 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@quereus/isolation@npm:*, @quereus/isolation@workspace:packages/quereus-isolation":
+  version: 0.0.0-use.local
+  resolution: "@quereus/isolation@workspace:packages/quereus-isolation"
+  dependencies:
+    "@quereus/quereus": "npm:*"
+    "@types/mocha": "npm:^10.0.10"
+    "@types/node": "npm:^22.15.29"
+    chai: "npm:^5.2.0"
+    mocha: "npm:^11.5.0"
+    rimraf: "npm:^6.1.2"
+    ts-node: "npm:^10.9.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@quereus/quereus": "workspace:^"
+  languageName: unknown
+  linkType: soft
+
 "@quereus/plugin-indexeddb@workspace:^, @quereus/plugin-indexeddb@workspace:packages/quereus-plugin-indexeddb":
   version: 0.0.0-use.local
   resolution: "@quereus/plugin-indexeddb@workspace:packages/quereus-plugin-indexeddb"
@@ -1398,6 +1415,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/store@workspace:packages/quereus-store"
   dependencies:
+    "@quereus/isolation": "npm:*"
     "@quereus/quereus": "npm:*"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^22.15.29"
@@ -1407,6 +1425,7 @@ __metadata:
     ts-node: "npm:^10.9.2"
     typescript: "npm:^5.8.3"
   peerDependencies:
+    "@quereus/isolation": "workspace:^"
     "@quereus/quereus": "workspace:^"
   languageName: unknown
   linkType: soft

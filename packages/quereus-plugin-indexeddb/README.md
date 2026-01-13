@@ -5,13 +5,14 @@ IndexedDB storage plugin for Quereus. Provides persistent storage for browser en
 ## Features
 
 - **Browser-native**: Uses IndexedDB for reliable persistent storage
+- **Transaction isolation**: Read-your-own-writes and snapshot isolation by default
 - **Cross-tab sync**: BroadcastChannel-based synchronization across browser tabs
 - **Async iteration**: Efficient range queries with cursor-based iteration
 
 ## Installation
 
 ```bash
-npm install @quereus/plugin-indexeddb @quereus/store
+npm install @quereus/plugin-indexeddb @quereus/store @quereus/isolation
 ```
 
 ## Quick Start
@@ -26,6 +27,23 @@ const db = new Database();
 await registerPlugin(db, indexeddbPlugin, { prefix: 'myapp' });
 
 await db.exec(`create table users (id integer primary key, name text) using store`);
+
+// Full transaction isolation enabled by default
+await db.exec('BEGIN');
+await db.exec(`INSERT INTO users VALUES (1, 'Alice')`);
+const user = await db.get('SELECT * FROM users WHERE id = 1'); // Sees uncommitted insert
+await db.exec('COMMIT');
+```
+
+### Disabling Isolation
+
+If you need maximum performance and don't require read-your-own-writes within transactions:
+
+```typescript
+await registerPlugin(db, indexeddbPlugin, { 
+	prefix: 'myapp',
+	isolation: false  // Disable isolation layer
+});
 ```
 
 ### Direct Usage with Provider
@@ -33,11 +51,13 @@ await db.exec(`create table users (id integer primary key, name text) using stor
 ```typescript
 import { Database } from '@quereus/quereus';
 import { createIndexedDBProvider } from '@quereus/plugin-indexeddb';
-import { StoreModule } from '@quereus/store';
+import { createIsolatedStoreModule } from '@quereus/store';
 
 const db = new Database();
 const provider = createIndexedDBProvider({ prefix: 'myapp' });
-const storeModule = new StoreModule(provider);
+
+// With isolation (recommended)
+const storeModule = createIsolatedStoreModule({ provider });
 db.registerModule('store', storeModule);
 
 await db.exec(`create table users (id integer primary key, name text) using store`);

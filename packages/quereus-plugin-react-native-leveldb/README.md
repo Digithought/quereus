@@ -5,6 +5,7 @@ LevelDB storage plugin for Quereus on React Native. Provides fast, persistent st
 ## Features
 
 - **Fast**: LevelDB offers excellent read/write performance, significantly faster than AsyncStorage
+- **Transaction isolation**: Read-your-own-writes and snapshot isolation by default
 - **Synchronous API**: Uses rn-leveldb's synchronous, blocking APIs
 - **Binary data**: Full support for binary keys and values via ArrayBuffers
 - **Sorted keys**: Efficient range queries with ordered iteration
@@ -14,7 +15,7 @@ LevelDB storage plugin for Quereus on React Native. Provides fast, persistent st
 ## Installation
 
 ```bash
-npm install @quereus/plugin-react-native-leveldb @quereus/store rn-leveldb
+npm install @quereus/plugin-react-native-leveldb @quereus/store @quereus/isolation rn-leveldb
 
 # Don't forget to link native modules
 cd ios && pod install
@@ -31,19 +32,32 @@ import leveldbPlugin from '@quereus/plugin-react-native-leveldb/plugin';
 
 const db = new Database();
 await registerPlugin(db, leveldbPlugin, {
-  openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
-  WriteBatch: LevelDBWriteBatch,
+	openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+	WriteBatch: LevelDBWriteBatch,
 });
 
 await db.exec(`
-  create table users (id integer primary key, name text)
-  using store
+	create table users (id integer primary key, name text)
+	using store
 `);
 
+// Full transaction isolation enabled by default
+await db.exec('BEGIN');
 await db.exec(`insert into users (id, name) values (1, 'Alice')`);
+const user = await db.get('select * from users where id = 1'); // Sees uncommitted insert
+await db.exec('COMMIT');
+```
 
-const users = await db.all('select * from users');
-console.log(users);
+### Disabling Isolation
+
+If you need maximum performance and don't require read-your-own-writes within transactions:
+
+```typescript
+await registerPlugin(db, leveldbPlugin, {
+	openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+	WriteBatch: LevelDBWriteBatch,
+	isolation: false  // Disable isolation layer
+});
 ```
 
 ### Direct Usage with Provider
@@ -52,12 +66,12 @@ console.log(users);
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { Database } from '@quereus/quereus';
 import { createReactNativeLevelDBProvider } from '@quereus/plugin-react-native-leveldb';
-import { StoreModule } from '@quereus/store';
+import { createIsolatedStoreModule } from '@quereus/store';
 
 const db = new Database();
 const provider = createReactNativeLevelDBProvider({
-  openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
-  WriteBatch: LevelDBWriteBatch,
+	openFn: (name, createIfMissing, errorIfExists) => new LevelDB(name, createIfMissing, errorIfExists),
+	WriteBatch: LevelDBWriteBatch,
 });
 const storeModule = new StoreModule(provider);
 db.registerModule('store', storeModule);

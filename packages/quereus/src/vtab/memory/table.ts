@@ -1,7 +1,7 @@
 import { VirtualTable } from '../table.js';
 import type { AnyVirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
-import type { Row } from '../../common/types.js';
+import type { Row, SqlValue, CompareFn } from '../../common/types.js';
 import { type IndexSchema, type TableSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
@@ -16,6 +16,7 @@ import type { VirtualTableConnection } from '../connection.js';
 import { MemoryVirtualTableConnection } from './connection.js';
 import type { ConflictResolution } from '../../common/constants.js';
 import type { VTableEventEmitter } from '../events.js';
+import { compareSqlValues } from '../../util/comparison.js';
 
 const logger = createMemoryTableLoggers('table');
 
@@ -251,6 +252,55 @@ export class MemoryTable extends VirtualTable {
 		this.tableSchema = this.manager.tableSchema;
 	}
 	// --- End Index DDL methods ---
+
+	// --- Isolation Layer Support ---
+
+	/**
+	 * Extract primary key values from a row.
+	 * Returns the PK column values in PK order.
+	 */
+	extractPrimaryKey(row: Row): SqlValue[] {
+		const pkIndices = this.getPrimaryKeyIndices();
+		return pkIndices.map(i => row[i]);
+	}
+
+	/**
+	 * Compare two rows by their primary key values.
+	 * Uses compareSqlValues for each PK column in order.
+	 * @returns negative if a < b, 0 if equal, positive if a > b
+	 */
+	comparePrimaryKey(a: SqlValue[], b: SqlValue[]): number {
+		for (let i = 0; i < a.length; i++) {
+			const cmp = compareSqlValues(a[i], b[i]);
+			if (cmp !== 0) return cmp;
+		}
+		return 0;
+	}
+
+	/**
+	 * Get the primary key column indices in the row.
+	 * Returns indices based on the table's primary key definition.
+	 */
+	getPrimaryKeyIndices(): number[] {
+		const schema = this.tableSchema;
+		if (!schema) return [];
+		return schema.primaryKeyDefinition.map(pkDef => pkDef.index);
+	}
+
+	/**
+	 * Get a comparator function for a specific index.
+	 * Used when merging index scans from overlay and underlying tables.
+	 */
+	getIndexComparator(indexName: string): CompareFn | undefined {
+		const schema = this.tableSchema;
+		if (!schema) return undefined;
+
+		const index = schema.indexes?.find(idx => idx.name.toLowerCase() === indexName.toLowerCase());
+		if (!index) return undefined;
+
+		return (a: SqlValue, b: SqlValue): number => compareSqlValues(a, b);
+	}
+	// --- End Isolation Layer Support ---
 }
 
 // Helper function (moved from MemoryTableCursor and adapted)

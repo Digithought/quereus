@@ -22,6 +22,7 @@ import type {
 	BestAccessPlanRequest,
 	BestAccessPlanResult,
 	SqlValue,
+	ModuleCapabilities,
 } from '@quereus/quereus';
 import { AccessPlanBuilder, QuereusError, StatusCode } from '@quereus/quereus';
 
@@ -71,6 +72,35 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 	constructor(provider: KVStoreProvider, eventEmitter?: StoreEventEmitter) {
 		this.provider = provider;
 		this.eventEmitter = eventEmitter;
+	}
+
+	/**
+	 * Returns capability flags for this module.
+	 *
+	 * The base StoreModule does NOT provide transaction isolation.
+	 * Without isolation, queries see only committed data (no read-your-own-writes
+	 * within a transaction). To enable isolation, wrap with IsolationModule:
+	 *
+	 * ```typescript
+	 * import { IsolationModule, MemoryTableModule } from '@quereus/quereus';
+	 * import { StoreModule } from '@quereus/store';
+	 *
+	 * const storeModule = new StoreModule(provider);
+	 * const isolatedModule = new IsolationModule({
+	 *   underlying: storeModule,
+	 *   overlay: new MemoryTableModule(),
+	 * });
+	 * db.registerModule('store', isolatedModule);
+	 * ```
+	 */
+	getCapabilities(): ModuleCapabilities {
+		return {
+			isolation: false,
+			savepoints: false,
+			persistent: true,
+			secondaryIndexes: true,
+			rangeScans: true,
+		};
 	}
 
 	/**

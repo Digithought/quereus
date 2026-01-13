@@ -6,7 +6,7 @@
  */
 
 import type { Database, SqlValue } from '@quereus/quereus';
-import { StoreModule } from '@quereus/store';
+import { StoreModule, createIsolatedStoreModule } from '@quereus/store';
 import { ReactNativeLevelDBProvider } from './provider.js';
 import type { LevelDBOpenFn, LevelDBWriteBatchConstructor } from './store.js';
 
@@ -44,6 +44,13 @@ export interface ReactNativeLevelDBPluginConfig {
 	 * @default 'store'
 	 */
 	moduleName?: string;
+
+	/**
+	 * Enable transaction isolation (read-your-own-writes, snapshot isolation).
+	 * When true, wraps the store module with an isolation layer.
+	 * @default true
+	 */
+	isolation?: boolean;
 }
 
 /**
@@ -92,6 +99,7 @@ export default function register(
 	const databaseName = (config.databaseName as string) ?? 'quereus';
 	const createIfMissing = config.createIfMissing !== false;
 	const moduleName = (config.moduleName as string) ?? 'store';
+	const isolation = (config.isolation as boolean) ?? true;
 
 	const provider = new ReactNativeLevelDBProvider({
 		openFn,
@@ -100,7 +108,9 @@ export default function register(
 		createIfMissing,
 	});
 
-	const storeModule = new StoreModule(provider);
+	const storeModule = isolation
+		? createIsolatedStoreModule({ provider })
+		: new StoreModule(provider);
 
 	return {
 		vtables: [
@@ -111,4 +121,5 @@ export default function register(
 		],
 	};
 }
+
 

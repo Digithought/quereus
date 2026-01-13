@@ -165,6 +165,81 @@ interface KVStoreProvider {
 }
 ```
 
+## Module Capabilities
+
+The `StoreModule` reports its capabilities via `getCapabilities()`:
+
+```typescript
+const storeModule = new StoreModule(provider);
+const caps = storeModule.getCapabilities();
+
+// {
+//   isolation: false,      // Store module does NOT provide transaction isolation
+//   savepoints: false,     // No savepoint support without isolation layer
+//   persistent: true,      // Data persists across restarts
+//   secondaryIndexes: true,// Supports secondary indexes
+//   rangeScans: true       // Supports range scans
+// }
+```
+
+**Important:** The base `StoreModule` does not provide transaction isolation. Without isolation:
+- Reads see only committed data (no read-your-own-writes within a transaction)
+- Concurrent readers may see partial writes
+- Savepoints are not supported
+
+## Transaction Isolation
+
+To add full ACID transaction semantics with read-your-own-writes, wrap the store module with the `IsolationModule`:
+
+```typescript
+import { Database, MemoryTableModule } from '@quereus/quereus';
+import { IsolationModule } from '@quereus/isolation';
+import { StoreModule, createIsolatedStoreModule } from '@quereus/store';
+import { createLevelDBProvider } from '@quereus/plugin-leveldb';
+
+const db = new Database();
+const provider = createLevelDBProvider({ basePath: './data' });
+
+// Option 1: Use the convenience function
+const isolatedModule = createIsolatedStoreModule({ provider });
+db.registerModule('store', isolatedModule);
+
+// Option 2: Manual wrapping for more control
+const storeModule = new StoreModule(provider);
+const isolatedModule = new IsolationModule({
+	underlying: storeModule,
+	overlay: new MemoryTableModule(),
+});
+db.registerModule('store', isolatedModule);
+
+// Now transactions have full isolation
+await db.exec('BEGIN');
+await db.exec(`INSERT INTO users VALUES (1, 'Alice')`);
+
+// Read-your-own-writes: sees uncommitted insert
+const user = await db.get('SELECT * FROM users WHERE id = 1');
+console.log(user.name); // 'Alice'
+
+await db.exec('COMMIT'); // Or ROLLBACK to discard
+```
+
+The isolation layer provides:
+- **Read-your-own-writes** within transactions
+- **Snapshot isolation** for consistent reads
+- **Savepoint support** via the overlay module
+
+### Checking for Isolation Support
+
+```typescript
+import { hasIsolation } from '@quereus/store';
+
+const storeModule = new StoreModule(provider);
+console.log(hasIsolation(storeModule)); // false
+
+const isolatedModule = createIsolatedStoreModule({ provider });
+console.log(hasIsolation(isolatedModule)); // true
+```
+
 ## API
 
 ### Core Exports
@@ -180,6 +255,14 @@ interface KVStoreProvider {
 | `StoreConnection` | Transaction connection |
 | `TransactionCoordinator` | Transaction management |
 | `StoreEventEmitter` | Event system for data/schema changes |
+
+### Isolation Layer Utilities
+
+| Export | Description |
+|--------|-------------|
+| `createIsolatedStoreModule` | Create store module with isolation layer |
+| `hasIsolation` | Check if a module has isolation capability |
+| `IsolatedStoreModuleConfig` | Configuration for isolated store module |
 
 ### Encoding Utilities
 

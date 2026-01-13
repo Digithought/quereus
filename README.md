@@ -102,6 +102,7 @@ This repository contains multiple packages:
 
 ### Storage
 - **[`packages/quereus-store/`](packages/quereus-store/)** — Core store plugin (platform-agnostic interfaces and utilities)
+- **[`packages/quereus-isolation/`](packages/quereus-isolation/)** — Transaction isolation layer for virtual table modules
 - **[`packages/quereus-plugin-leveldb/`](packages/quereus-plugin-leveldb/)** — LevelDB storage backend for Node.js
 - **[`packages/quereus-plugin-indexeddb/`](packages/quereus-plugin-indexeddb/)** — IndexedDB storage backend for browsers
 
@@ -139,7 +140,8 @@ This repository contains multiple packages:
 - **Advanced Features** — Recursive CTEs, constraints, savepoints
 
 ### Virtual Table Ecosystem
-- **Memory Tables** — ACID-compliant in-memory storage with indexing
+- **Memory Tables** — ACID-compliant in-memory storage with MVCC isolation
+- **Persistent Storage** — LevelDB/IndexedDB with optional transaction isolation layer
 - **JSON Processing** — Native JSON querying with `json_each()` and `json_tree()`
 - **Function Tables** — Table-valued functions like `generate_series()`
 - **Custom Modules** — Build your own data source integrations

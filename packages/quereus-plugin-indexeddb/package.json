@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-indexeddb",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "type": "module",
   "description": "IndexedDB storage plugin for Quereus - browser persistent storage",
   "keywords": [
@@ -37,10 +37,11 @@
       "import": "./dist/src/plugin.js"
     }
   },
-  "peerDependencies": {
-    "@quereus/quereus": "workspace:^",
-    "@quereus/store": "workspace:^"
-  },
+	"peerDependencies": {
+		"@quereus/isolation": "workspace:^",
+		"@quereus/quereus": "workspace:^",
+		"@quereus/store": "workspace:^"
+	},
   "engines": {
     "quereus": "^0.24.0"
   },
@@ -58,13 +59,20 @@
         "default": "quereus",
         "help": "Prefix for IndexedDB database names"
       },
-      {
-        "key": "moduleName",
-        "label": "Module Name",
-        "type": "string",
-        "default": "store",
-        "help": "Name to register the virtual table module under"
-      }
+		{
+			"key": "moduleName",
+			"label": "Module Name",
+			"type": "string",
+			"default": "store",
+			"help": "Name to register the virtual table module under"
+		},
+		{
+			"key": "isolation",
+			"label": "Transaction Isolation",
+			"type": "boolean",
+			"default": true,
+			"help": "Enable transaction isolation (read-your-own-writes, snapshot isolation)"
+		}
     ]
   },
   "scripts": {
@@ -73,9 +81,10 @@
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && node --import ./packages/quereus-plugin-indexeddb/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-indexeddb/test/**/*.spec.ts\" --colors"
   },
-  "devDependencies": {
-    "@quereus/quereus": "*",
-    "@quereus/store": "*",
+	"devDependencies": {
+		"@quereus/isolation": "*",
+		"@quereus/quereus": "*",
+		"@quereus/store": "*",
     "@types/chai": "^5.2.2",
     "@types/mocha": "^10.0.10",
     "chai": "^5.2.0",

@@ -5,6 +5,7 @@ SQLite storage plugin for Quereus on NativeScript. Provides persistent storage f
 ## Features
 
 - **Native SQLite**: Uses the device's built-in SQLite via `@nativescript-community/sqlite`
+- **Transaction isolation**: Read-your-own-writes and snapshot isolation by default
 - **Order-preserving keys**: BLOB keys with `memcmp()` comparison ensure correct lexicographic byte ordering
 - **Single database file**: All stores share one SQLite database (separate tables)
 - **ACID transactions**: SQLite transactions for atomic batch writes
@@ -13,7 +14,7 @@ SQLite storage plugin for Quereus on NativeScript. Provides persistent storage f
 ## Installation
 
 ```bash
-npm install @quereus/plugin-nativescript-sqlite @quereus/store @nativescript-community/sqlite
+npm install @quereus/plugin-nativescript-sqlite @quereus/store @quereus/isolation @nativescript-community/sqlite
 ```
 
 Or with NativeScript CLI:
@@ -41,13 +42,26 @@ await registerPlugin(db, sqlitePlugin, { db: sqliteDb });
 
 // Create tables using the 'store' module
 await db.exec(`
-  create table users (id integer primary key, name text)
-  using store
+	create table users (id integer primary key, name text)
+	using store
 `);
 
-// Use standard SQL
+// Full transaction isolation enabled by default
+await db.exec('BEGIN');
 await db.exec(`insert into users values (1, 'Alice')`);
-const users = await db.all(`select * from users`);
+const user = await db.get(`select * from users where id = 1`); // Sees uncommitted insert
+await db.exec('COMMIT');
+```
+
+### Disabling Isolation
+
+If you need maximum performance and don't require read-your-own-writes within transactions:
+
+```typescript
+await registerPlugin(db, sqlitePlugin, { 
+	db: sqliteDb,
+	isolation: false  // Disable isolation layer
+});
 ```
 
 ### Direct Usage with Provider
@@ -56,7 +70,8 @@ const users = await db.all(`select * from users`);
 import { openOrCreate } from '@nativescript-community/sqlite';
 import { Database } from '@quereus/quereus';
 import { createSQLiteProvider } from '@quereus/plugin-nativescript-sqlite';
-import { StoreModule } from '@quereus/store';
+import { createIsolatedStoreModule } from '@quereus/store';
+
 
 const sqliteDb = openOrCreate('quereus.db');
 const provider = createSQLiteProvider({ db: sqliteDb });

@@ -1,7 +1,7 @@
 import type { AnyVirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { MaybePromise, Row } from '../common/types.js';
+import type { MaybePromise, Row, SqlValue, CompareFn } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
 import type { RowOp } from '../common/types.js';
@@ -181,4 +181,33 @@ export abstract class VirtualTable {
 	 * @returns Event emitter, or undefined if not supported
 	 */
 	getEventEmitter?(): VTableEventEmitter | undefined;
+
+	// --- Isolation Layer Support ---
+
+	/**
+	 * Extract primary key values from a row.
+	 * Override in subclasses that support isolation layer wrapping.
+	 */
+	extractPrimaryKey?(row: Row): SqlValue[];
+
+	/**
+	 * Compare two rows by primary key.
+	 * Override in subclasses that support isolation layer wrapping.
+	 * @returns negative if a < b, 0 if equal, positive if a > b
+	 */
+	comparePrimaryKey?(a: SqlValue[], b: SqlValue[]): number;
+
+	/**
+	 * Get primary key column indices.
+	 * Override in subclasses that support isolation layer wrapping.
+	 */
+	getPrimaryKeyIndices?(): number[];
+
+	/**
+	 * Get a comparator function for a specific index.
+	 * Used when merging index scans from overlay and underlying tables.
+	 * @param indexName The name of the index
+	 * @returns Comparator function, or undefined if index doesn't exist
+	 */
+	getIndexComparator?(indexName: string): CompareFn | undefined;
 }

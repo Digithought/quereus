@@ -5,6 +5,7 @@ LevelDB storage plugin for Quereus. Provides persistent storage for Node.js envi
 ## Features
 
 - **Fast**: LevelDB offers excellent read/write performance for key-value workloads
+- **Transaction isolation**: Read-your-own-writes and snapshot isolation by default
 - **Sorted keys**: Efficient range queries with ordered iteration
 - **ACID batches**: Atomic writes across multiple keys
 - **Compression**: Built-in Snappy compression for reduced disk usage
@@ -12,7 +13,7 @@ LevelDB storage plugin for Quereus. Provides persistent storage for Node.js envi
 ## Installation
 
 ```bash
-npm install @quereus/plugin-leveldb @quereus/store
+npm install @quereus/plugin-leveldb @quereus/store @quereus/isolation
 ```
 
 ## Quick Start
@@ -27,9 +28,26 @@ const db = new Database();
 await registerPlugin(db, leveldbPlugin, { basePath: './data' });
 
 await db.exec(`
-  create table users (id integer primary key, name text)
-  using store
+	create table users (id integer primary key, name text)
+	using store
 `);
+
+// Full transaction isolation enabled by default
+await db.exec('BEGIN');
+await db.exec(`INSERT INTO users VALUES (1, 'Alice')`);
+const user = await db.get('SELECT * FROM users WHERE id = 1'); // Sees uncommitted insert
+await db.exec('COMMIT');
+```
+
+### Disabling Isolation
+
+If you need maximum performance and don't require read-your-own-writes within transactions:
+
+```typescript
+await registerPlugin(db, leveldbPlugin, { 
+	basePath: './data',
+	isolation: false  // Disable isolation layer
+});
 ```
 
 ### Direct Usage with Provider
@@ -37,16 +55,18 @@ await db.exec(`
 ```typescript
 import { Database } from '@quereus/quereus';
 import { createLevelDBProvider } from '@quereus/plugin-leveldb';
-import { StoreModule } from '@quereus/store';
+import { createIsolatedStoreModule } from '@quereus/store';
 
 const db = new Database();
 const provider = createLevelDBProvider({ basePath: './data' });
-const storeModule = new StoreModule(provider);
+
+// With isolation (recommended)
+const storeModule = createIsolatedStoreModule({ provider });
 db.registerModule('store', storeModule);
 
 await db.exec(`
-  create table users (id integer primary key, name text)
-  using store
+	create table users (id integer primary key, name text)
+	using store
 `);
 ```
 

@@ -1,6 +1,6 @@
 {
   "name": "@quereus/store",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "type": "module",
   "description": "Abstract key-value storage module for Quereus",
   "keywords": [
@@ -40,9 +40,11 @@
     "test:single": "cd ../.. && node --import ./packages/quereus-store/register.mjs node_modules/mocha/bin/mocha.js --bail"
   },
   "peerDependencies": {
+    "@quereus/isolation": "workspace:^",
     "@quereus/quereus": "workspace:^"
   },
   "devDependencies": {
+    "@quereus/isolation": "*",
     "@quereus/quereus": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.15.29",

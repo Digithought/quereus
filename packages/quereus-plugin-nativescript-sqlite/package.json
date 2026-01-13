@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-nativescript-sqlite",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "type": "module",
   "description": "NativeScript SQLite storage plugin for Quereus - mobile persistent storage",
   "keywords": [
@@ -40,11 +40,12 @@
       "import": "./dist/src/plugin.js"
     }
   },
-  "peerDependencies": {
-    "@nativescript-community/sqlite": "^3.0.0",
-    "@quereus/quereus": "workspace:^",
-    "@quereus/store": "workspace:^"
-  },
+	"peerDependencies": {
+		"@nativescript-community/sqlite": "^3.0.0",
+		"@quereus/isolation": "workspace:^",
+		"@quereus/quereus": "workspace:^",
+		"@quereus/store": "workspace:^"
+	},
   "engines": {
     "quereus": "^0.24.0"
   },
@@ -62,13 +63,20 @@
         "default": "quereus.db",
         "help": "Path to the SQLite database file"
       },
-      {
-        "key": "moduleName",
-        "label": "Module Name",
-        "type": "string",
-        "default": "store",
-        "help": "Name to register the virtual table module under"
-      }
+		{
+			"key": "moduleName",
+			"label": "Module Name",
+			"type": "string",
+			"default": "store",
+			"help": "Name to register the virtual table module under"
+		},
+		{
+			"key": "isolation",
+			"label": "Transaction Isolation",
+			"type": "boolean",
+			"default": true,
+			"help": "Enable transaction isolation (read-your-own-writes, snapshot isolation)"
+		}
     ]
   },
   "scripts": {
@@ -77,9 +85,10 @@
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && node --import ./packages/quereus-plugin-nativescript-sqlite/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-nativescript-sqlite/test/**/*.spec.ts\" --colors"
   },
-  "devDependencies": {
-    "@quereus/quereus": "*",
-    "@quereus/store": "*",
+	"devDependencies": {
+		"@quereus/isolation": "*",
+		"@quereus/quereus": "*",
+		"@quereus/store": "*",
     "@types/better-sqlite3": "^7.6.13",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
