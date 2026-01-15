@@ -168,7 +168,12 @@ await registerPlugin(db, leveldbPlugin, {
 await db.exec(`create table users (id integer primary key, name text) using store`);
 ```
 
-**Note:** React Native requires a `structuredClone` polyfill and static plugin loading. See the [plugin README](packages/quereus-plugin-react-native-leveldb/) for setup details.
+**Note:** React Native requires runtime polyfills and static plugin loading. See the [plugin README](packages/quereus-plugin-react-native-leveldb/) for setup details.
+
+**Required polyfills:**
+- `structuredClone` (Quereus uses it internally)
+- `TextEncoder` / `TextDecoder` (used by store plugins)
+- `Symbol.asyncIterator` (required for async-iterable support; Quereus has a Hermes workaround for AsyncGenerator iterables, but the symbol must exist)
 
 ### NativeScript
 

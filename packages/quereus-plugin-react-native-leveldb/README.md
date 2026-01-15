@@ -21,6 +21,37 @@ npm install @quereus/plugin-react-native-leveldb @quereus/store @quereus/isolati
 cd ios && pod install
 ```
 
+## Required Polyfills
+
+React Native apps typically need a few runtime polyfills for Quereus and its plugins:
+
+- **`structuredClone`** - Quereus uses it internally for deep cloning operations
+- **`TextEncoder` / `TextDecoder`** - Used by store plugins for binary data encoding
+- **`Symbol.asyncIterator`** - Required for async-iterable support (for-await-of loops, async generators)
+  - Quereus uses async iterables extensively for query results and data streaming
+  - While Hermes has a workaround for AsyncGenerator objects, the `Symbol.asyncIterator` symbol itself must exist
+  - Without it, you'll get `ReferenceError: Can't find variable: Symbol` when checking for async iterables
+
+**The plugin automatically checks for these polyfills** and throws a clear error message with installation instructions if any are missing.
+
+You can use packages like `core-js` or provide your own implementations:
+
+```bash
+npm install core-js text-encoding
+```
+
+Then in your app's entry point:
+
+```typescript
+import 'core-js/features/structured-clone';
+import 'text-encoding';
+
+// Ensure Symbol.asyncIterator exists
+if (typeof Symbol.asyncIterator === 'undefined') {
+  (Symbol as any).asyncIterator = Symbol.for('Symbol.asyncIterator');
+}
+```
+
 ## Quick Start
 
 ### With registerPlugin (Recommended)
