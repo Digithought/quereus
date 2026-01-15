@@ -40,12 +40,12 @@
       "import": "./dist/src/plugin.js"
     }
   },
-	"peerDependencies": {
-		"@quereus/isolation": "workspace:^",
-		"@quereus/quereus": "workspace:^",
-		"@quereus/store": "workspace:^",
-		"rn-leveldb": "^3.11.0"
-	},
+  "peerDependencies": {
+    "@quereus/isolation": "workspace:^",
+    "@quereus/quereus": "workspace:^",
+    "@quereus/store": "workspace:^",
+    "rn-leveldb": "^3.11.0"
+  },
   "engines": {
     "quereus": "^0.24.0"
   },
@@ -63,20 +63,20 @@
         "default": "quereus",
         "help": "Base name for LevelDB databases"
       },
-		{
-			"key": "moduleName",
-			"label": "Module Name",
-			"type": "string",
-			"default": "store",
-			"help": "Name to register the virtual table module under"
-		},
-		{
-			"key": "isolation",
-			"label": "Transaction Isolation",
-			"type": "boolean",
-			"default": true,
-			"help": "Enable transaction isolation (read-your-own-writes, snapshot isolation)"
-		}
+      {
+        "key": "moduleName",
+        "label": "Module Name",
+        "type": "string",
+        "default": "store",
+        "help": "Name to register the virtual table module under"
+      },
+      {
+        "key": "isolation",
+        "label": "Transaction Isolation",
+        "type": "boolean",
+        "default": true,
+        "help": "Enable transaction isolation (read-your-own-writes, snapshot isolation)"
+      }
     ]
   },
   "scripts": {
@@ -85,10 +85,10 @@
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && node --import ./packages/quereus-plugin-react-native-leveldb/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-react-native-leveldb/test/**/*.spec.ts\" --colors"
   },
-	"devDependencies": {
-		"@quereus/isolation": "*",
-		"@quereus/quereus": "*",
-		"@quereus/store": "*",
+  "devDependencies": {
+    "@quereus/isolation": "*",
+    "@quereus/quereus": "*",
+    "@quereus/store": "*",
     "@types/chai": "^5.2.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.15.29",

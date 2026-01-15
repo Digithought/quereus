@@ -66,6 +66,40 @@ Configuration sources (highest priority first):
 | `SYNC_AUTH_MODE` | Auth mode: `none`, `token-whitelist` | `none` |
 | `SYNC_AUTH_TOKENS` | Comma-separated allowed tokens | — |
 
+### S3 Durable Storage (Optional)
+
+Enable S3 batch storage for durability and disaster recovery:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `S3_BUCKET` | S3 bucket name (required to enable) | — |
+| `S3_REGION` | AWS region | `us-east-1` |
+| `S3_ENDPOINT` | Custom endpoint for MinIO/compatible | — |
+| `S3_ACCESS_KEY_ID` | AWS access key | — |
+| `S3_SECRET_ACCESS_KEY` | AWS secret key | — |
+| `S3_FORCE_PATH_STYLE` | Use path-style URLs (for MinIO) | `false` |
+| `S3_KEY_PREFIX` | Key prefix for all objects | — |
+
+#### Local Testing with MinIO
+
+```bash
+# Start MinIO (Docker)
+docker run -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio server /data --console-address ":9001"
+
+# Create bucket via MinIO Console at http://localhost:9001
+
+# Run coordinator with MinIO
+S3_BUCKET=sync-batches \
+S3_ENDPOINT=http://localhost:9000 \
+S3_ACCESS_KEY_ID=minioadmin \
+S3_SECRET_ACCESS_KEY=minioadmin \
+S3_FORCE_PATH_STYLE=true \
+npx sync-coordinator
+```
+
 ### CLI Options
 
 ```bash

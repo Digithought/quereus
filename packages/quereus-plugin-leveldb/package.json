@@ -36,11 +36,11 @@
       "import": "./dist/src/plugin.js"
     }
   },
-	"peerDependencies": {
-		"@quereus/isolation": "workspace:^",
-		"@quereus/quereus": "workspace:^",
-		"@quereus/store": "workspace:^"
-	},
+  "peerDependencies": {
+    "@quereus/isolation": "workspace:^",
+    "@quereus/quereus": "workspace:^",
+    "@quereus/store": "workspace:^"
+  },
   "engines": {
     "quereus": "^0.24.0"
   },
@@ -65,20 +65,20 @@
         "default": true,
         "help": "Create directories if they don't exist"
       },
-		{
-			"key": "moduleName",
-			"label": "Module Name",
-			"type": "string",
-			"default": "store",
-			"help": "Name to register the virtual table module under"
-		},
-		{
-			"key": "isolation",
-			"label": "Transaction Isolation",
-			"type": "boolean",
-			"default": true,
-			"help": "Enable transaction isolation (read-your-own-writes, snapshot isolation)"
-		}
+      {
+        "key": "moduleName",
+        "label": "Module Name",
+        "type": "string",
+        "default": "store",
+        "help": "Name to register the virtual table module under"
+      },
+      {
+        "key": "isolation",
+        "label": "Transaction Isolation",
+        "type": "boolean",
+        "default": true,
+        "help": "Enable transaction isolation (read-your-own-writes, snapshot isolation)"
+      }
     ]
   },
   "scripts": {
@@ -90,10 +90,10 @@
   "dependencies": {
     "classic-level": "^2.0.0"
   },
-	"devDependencies": {
-		"@quereus/isolation": "*",
-		"@quereus/quereus": "*",
-		"@quereus/store": "*",
+  "devDependencies": {
+    "@quereus/isolation": "*",
+    "@quereus/quereus": "*",
+    "@quereus/store": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.15.29",
     "chai": "^5.2.0",

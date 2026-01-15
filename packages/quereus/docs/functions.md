@@ -193,7 +193,7 @@ These functions operate on single values and return a single value.
         *   `Y` (INTEGER - start position, 1-based). If positive, starts from the beginning. If negative, starts from the end (-1 is the last character).
         *   `Z` (Optional, INTEGER - length). If omitted, returns the rest of the string. If negative, returns an empty string.
     *   **Returns:** The extracted TEXT substring. Returns `NULL` if X or Y is `NULL`, or if Y or Z is non-integer.
-    *   **Example:** `substr('SQLite', 1, 3)` returns `'SQL'`, `substr('SQLite', -4)` returns `'Lite'`, `substr('SQLite', 4, 2)` returns `'it'`, `substr('SQLite', 4, -1)` returns `''`.
+    *   **Example:** `substr('Quereus', 1, 3)` returns `'Que'`, `substr('Quereus', -4)` returns `'reus'`, `substr('Quereus', 4, 2)` returns `'re'`, `substr('Quereus', 4, -1)` returns `''`.
 
 *   `trim(X)`, `trim(X, Y)`
     *   **Description:** Removes leading and trailing characters from string X. If Y is omitted, removes whitespace. If Y is provided, removes any character present in string Y from both ends of X.
@@ -211,7 +211,7 @@ These functions operate on single values and return a single value.
     *   **Description:** Returns the uppercase equivalent of string X.
     *   **Arguments:** `X` (TEXT).
     *   **Returns:** The uppercase TEXT string. Returns `NULL` if X is `NULL` or not a string.
-    *   **Example:** `upper('Sqlite')` returns `'SQLITE'`.
+    *   **Example:** `upper('Quereus')` returns `'QUEREUS'`.
 
 ## Aggregate Functions
 

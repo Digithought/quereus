@@ -7,6 +7,7 @@
  */
 
 import { join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { StoreEventEmitter } from '@quereus/store';
 import { LevelDBStore } from '@quereus/plugin-leveldb';
 import {
@@ -14,6 +15,7 @@ import {
   type SyncManager,
 } from '@quereus/sync';
 import { serviceLog } from '../common/logger.js';
+import { getDatabaseStoragePath, isValidDatabaseId } from './database-ids.js';
 
 export interface StoreEntry {
   databaseId: string;
@@ -79,26 +81,48 @@ export interface StoreManagerConfig {
 }
 
 /**
- * Sanitize a database ID for use as a filesystem path.
+ * Sanitize a string for use as a filesystem path component.
  * Replaces unsafe characters with underscores.
  */
-function sanitizeDatabaseId(databaseId: string): string {
+function sanitizePathComponent(value: string): string {
   // Allow alphanumeric, dash, underscore; replace others with underscore
-  return databaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return value.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 /**
- * Default storage path resolver - just uses the sanitized database ID.
+ * Default storage path resolver - uses the new org-based format.
+ *
+ * For database IDs in format <org_id>:<type>_<id>:
+ *   Returns: <org_id>/<type>_<id>
+ *
+ * For legacy database IDs (no colon):
+ *   Returns: _legacy/<sanitized_id>
  */
 function defaultResolveStoragePath(databaseId: string, _context?: StoreContext): string {
-  return sanitizeDatabaseId(databaseId);
+  // Try new format first
+  if (isValidDatabaseId(databaseId)) {
+    return getDatabaseStoragePath(databaseId);
+  }
+
+  // Legacy fallback for old-format IDs
+  return `_legacy/${sanitizePathComponent(databaseId)}`;
 }
 
 /**
- * Default database ID validator - accepts non-empty strings.
+ * Default database ID validator - accepts new format or legacy format.
  */
 function defaultIsValidDatabaseId(databaseId: string, _context?: StoreContext): boolean {
-  return typeof databaseId === 'string' && databaseId.length > 0;
+  if (typeof databaseId !== 'string' || databaseId.length === 0) {
+    return false;
+  }
+
+  // Accept new format
+  if (isValidDatabaseId(databaseId)) {
+    return true;
+  }
+
+  // Accept legacy format (alphanumeric with dashes/underscores)
+  return /^[a-zA-Z0-9_-]+$/.test(databaseId);
 }
 
 const DEFAULT_CONFIG: StoreManagerConfig = {
@@ -240,6 +264,10 @@ export class StoreManager {
 
     const storagePath = this.resolveStoragePath(databaseId, context);
     const fullPath = join(this.config.dataDir, storagePath);
+
+    // Ensure parent directories exist (org folder for new org-based format)
+    const parentPath = join(this.config.dataDir, storagePath.split('/')[0]);
+    await mkdir(parentPath, { recursive: true });
 
     serviceLog('Opening store at: %s', fullPath);
 

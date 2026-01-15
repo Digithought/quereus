@@ -43,6 +43,7 @@
     "start": "npx sync-coordinator --port 8080 --debug 'sync-coordinator:*'"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.969.0",
     "@fastify/cors": "^10.0.2",
     "@fastify/websocket": "^11.0.2",
     "@quereus/plugin-leveldb": "workspace:^",

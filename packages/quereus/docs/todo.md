@@ -16,11 +16,13 @@ This list reflects the current and upcoming work for Quereus. Completed items an
   - 📋 FK→PK join inference: derive keys when ON aligns a PK with an inferred unique set on the other side (e.g., via DISTINCT/GROUP BY)
   - 📋 Optimizer exploitation: prefer join strategies and pruning using `[[]]` and preserved keys
 
-## Stand-alone isolation layer system
+## Stand-alone isolation layer optimizations
 
 See `packages/quereus/docs/design-isolation-layer.md`
 
 ## 🔄 Current Development Focus
+
+- [ ] Need to update the BNF in sql.md
 
 **Query Optimization (Current Priority)**
 - [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model

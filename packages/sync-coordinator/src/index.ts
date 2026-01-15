@@ -44,6 +44,32 @@ export {
   type StoreManagerConfig,
   type StoreManagerHooks,
   type StoreContext,
+  // S3 Storage
+  type S3StorageConfig,
+  createS3Client,
+  buildBatchKey,
+  buildSnapshotKey,
+  parseS3ConfigFromEnv,
+  S3BatchStore,
+  createS3BatchStore,
+  type SyncBatch,
+  S3SnapshotStore,
+  createS3SnapshotStore,
+  type SnapshotMetadata,
+  type SnapshotScheduleConfig,
+  // Cascade Delete
+  CascadeDeleteService,
+  type ArchiveRecord,
+  type ArchiveStore,
+  type RelatedDatabaseQuery,
+  type CascadeDeleteServiceConfig,
+  // Database IDs
+  parseDatabaseId,
+  getDatabaseStoragePath,
+  buildDatabaseId,
+  isValidDatabaseId,
+  type ParsedDatabaseId,
+  type DatabaseType,
 } from './service/index.js';
 
 // Server

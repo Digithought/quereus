@@ -2814,7 +2814,7 @@ select 'text' + 42 from users;
 
 ## 11. Quereus vs. SQLite
 
-While Quereus supports standard SQL syntax, it has evolved into a distinct system with significant architectural and design differences from SQLite. Understanding these differences is important when porting applications from SQLite or creating new applications with Quereus.
+While Quereus supports similar SQL syntax, it has evolved into a distinct system with significant architectural and design differences from SQLite. Understanding these differences is important when porting applications from SQLite or creating new applications with Quereus.
 
 ### 11.1 Key Similarities
 
@@ -2904,7 +2904,7 @@ create table products (
 
 #### 11.2.5 Performance Characteristics
 
-- **Quereus**: JavaScript-based with optimization for in-memory operations
+- **Quereus**: JavaScript-based with optimization for federated operations (handed off to modules)
 - **SQLite**: C-based with focus on disk I/O efficiency
 
 ### 11.3 Migration Considerations

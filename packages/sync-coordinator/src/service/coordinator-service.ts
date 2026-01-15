@@ -32,6 +32,11 @@ import type {
   CoordinatorHooks,
 } from './types.js';
 import { StoreManager, type StoreEntry, type StoreManagerHooks, type StoreContext } from './store-manager.js';
+import { type S3StorageConfig, createS3Client } from './s3-config.js';
+import { S3BatchStore } from './s3-batch-store.js';
+import { S3SnapshotStore, type SnapshotScheduleConfig } from './s3-snapshot-store.js';
+import { CascadeDeleteService, type ArchiveStore, type RelatedDatabaseQuery } from './cascade-delete.js';
+import { parseDatabaseId } from './database-ids.js';
 
 /**
  * Options for creating a CoordinatorService.
@@ -45,6 +50,14 @@ export interface CoordinatorServiceOptions {
   metrics?: CoordinatorMetrics;
   /** Hooks for customizing store behavior (database ID handling, path resolution) */
   storeHooks?: StoreManagerHooks;
+  /** S3 configuration for durable batch storage (optional) */
+  s3Config?: S3StorageConfig;
+  /** Snapshot schedule configuration (optional) */
+  snapshotConfig?: Partial<SnapshotScheduleConfig>;
+  /** Archive store for cascade delete (optional) */
+  archiveStore?: ArchiveStore;
+  /** Query interface for finding related databases (optional) */
+  relatedDatabaseQuery?: RelatedDatabaseQuery;
 }
 
 /**
@@ -55,6 +68,9 @@ export class CoordinatorService {
   private readonly hooks: CoordinatorHooks;
   private readonly metrics: CoordinatorMetrics;
   private readonly storeManager: StoreManager;
+  private readonly s3BatchStore?: S3BatchStore;
+  private readonly s3SnapshotStore?: S3SnapshotStore;
+  private readonly cascadeDeleteService?: CascadeDeleteService;
 
   /** Active WebSocket sessions by connection ID */
   private readonly sessions = new Map<string, ClientSession>();
@@ -78,6 +94,27 @@ export class CoordinatorService {
       },
       hooks: options.storeHooks,
     });
+
+    // Initialize S3 stores if configured
+    if (options.s3Config) {
+      const s3Client = createS3Client(options.s3Config);
+      this.s3BatchStore = new S3BatchStore(s3Client, options.s3Config);
+      this.s3SnapshotStore = new S3SnapshotStore(s3Client, options.s3Config, options.snapshotConfig);
+      serviceLog('S3 batch storage enabled: bucket=%s', options.s3Config.bucket);
+    }
+
+    // Initialize cascade delete service if query interface is provided
+    if (options.relatedDatabaseQuery) {
+      this.cascadeDeleteService = new CascadeDeleteService(
+        {
+          dataDir: this.config.dataDir,
+          archiveRetentionDays: 30,
+        },
+        this.storeManager,
+        options.relatedDatabaseQuery,
+        options.archiveStore
+      );
+    }
   }
 
   /**
@@ -88,6 +125,13 @@ export class CoordinatorService {
 
     serviceLog('Initializing CoordinatorService (multi-tenant) with dataDir: %s', this.config.dataDir);
     this.storeManager.start();
+
+    // Start snapshot store if configured
+    if (this.s3SnapshotStore) {
+      this.s3SnapshotStore.start();
+      serviceLog('S3 snapshot store started');
+    }
+
     this.initialized = true;
 
     serviceLog('CoordinatorService initialized, ready for multi-tenant connections');
@@ -100,6 +144,16 @@ export class CoordinatorService {
     if (!this.initialized) return;
 
     serviceLog('Shutting down CoordinatorService');
+
+    // Stop snapshot store
+    if (this.s3SnapshotStore) {
+      this.s3SnapshotStore.stop();
+    }
+
+    // Shutdown cascade delete service
+    if (this.cascadeDeleteService) {
+      this.cascadeDeleteService.shutdown();
+    }
 
     // Close all WebSocket connections
     for (const session of this.sessions.values()) {
@@ -321,6 +375,30 @@ export class CoordinatorService {
         this.hooks.onAfterApplyChanges(client, approvedChanges, result);
       }
 
+      // Store batch to S3 for durability (non-blocking)
+      if (this.s3BatchStore && result.applied > 0) {
+        this.s3BatchStore.storeBatch(
+          databaseId,
+          siteIdToBase64(client.siteId),
+          approvedChanges,
+          { applied: result.applied, skipped: result.skipped, conflicts: result.conflicts }
+        ).catch(err => {
+          serviceLog('S3 batch storage failed (non-fatal): %s', err.message);
+        });
+      }
+
+      // Record changes for snapshot scheduling
+      if (this.s3SnapshotStore && result.applied > 0) {
+        this.s3SnapshotStore.recordChanges(databaseId, result.applied);
+
+        // Check if snapshot is needed (non-blocking)
+        if (this.s3SnapshotStore.needsSnapshot(databaseId)) {
+          this.s3SnapshotStore.createSnapshot(databaseId, entry.syncManager).catch(err => {
+            serviceLog('Snapshot creation failed (non-fatal): %s', err.message);
+          });
+        }
+      }
+
       // Broadcast to other connected clients on the same database
       if (result.applied > 0) {
         serviceLog('Broadcasting %d changes to other clients on db=%s', approvedChanges.length, databaseId);
@@ -413,7 +491,19 @@ export class CoordinatorService {
     }
 
     // Acquire store to ensure it's open while session is active
-    await this.getStore(databaseId, storeContext);
+    const entry = await this.getStore(databaseId, storeContext);
+
+    // Register cascade delete listener for account databases
+    if (this.cascadeDeleteService) {
+      try {
+        const { type } = parseDatabaseId(databaseId);
+        if (type === 'account') {
+          this.cascadeDeleteService.registerAccountListener(databaseId, entry.storeEvents);
+        }
+      } catch {
+        // Ignore parse errors for legacy database IDs
+      }
+    }
 
     const session: ClientSession = {
       connectionId,
@@ -589,6 +679,47 @@ export class CoordinatorService {
    */
   getMetrics(): CoordinatorMetrics {
     return this.metrics;
+  }
+
+  // ============================================================================
+  // Snapshot and Archive Operations
+  // ============================================================================
+
+  /**
+   * Manually trigger a snapshot for a database.
+   */
+  async createSnapshot(databaseId: string, client?: ClientIdentity): Promise<{ snapshotId: string } | null> {
+    if (!this.s3SnapshotStore) {
+      serviceLog('Snapshot store not configured');
+      return null;
+    }
+
+    const context = client ? this.buildStoreContext(undefined, client) : undefined;
+    const entry = await this.getStore(databaseId, context);
+    try {
+      const metadata = await this.s3SnapshotStore.forceSnapshot(databaseId, entry.syncManager);
+      return { snapshotId: metadata.snapshotId };
+    } finally {
+      this.releaseStore(databaseId);
+    }
+  }
+
+  /**
+   * Get databases that need snapshots according to schedule.
+   */
+  getDatabasesNeedingSnapshot(): string[] {
+    if (!this.s3SnapshotStore) return [];
+    return this.s3SnapshotStore.getDatabasesNeedingSnapshot();
+  }
+
+  /**
+   * Manually cascade delete a site and its related databases.
+   */
+  async cascadeDeleteSite(orgId: string, siteId: string, deletedBy: string | null): Promise<void> {
+    if (!this.cascadeDeleteService) {
+      throw new Error('Cascade delete service not configured');
+    }
+    await this.cascadeDeleteService.cascadeDeleteSite(orgId, siteId, deletedBy);
   }
 }
 
