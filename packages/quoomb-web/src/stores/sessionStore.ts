@@ -1217,12 +1217,23 @@ export const useSessionStore = create<SessionState>()(
     ),
     {
       name: 'quoomb-session',
-      version: 1,
+      version: 2,
       // Only persist tabs, query history, and UI state - not connection state
       partialize: (state) => ({
         tabs: state.tabs,
         activeTabId: state.activeTabId,
-        queryHistory: state.queryHistory.slice(0, 50), // Limit history to last 50 queries to avoid localStorage bloat
+        // Persist query history metadata only, excluding large result sets to avoid localStorage quota errors
+        queryHistory: state.queryHistory.slice(0, 50).map(result => ({
+          id: result.id,
+          sql: result.sql,
+          error: result.error,
+          errorChain: result.errorChain,
+          executionTime: result.executionTime,
+          timestamp: result.timestamp,
+          planMode: result.planMode,
+          selectionInfo: result.selectionInfo,
+          // Omit: results, queryPlan, program, trace, rowTrace, planGraph, selectedNodeId
+        })),
         activeResultId: state.activeResultId,
         selectedPanel: state.selectedPanel,
       }),

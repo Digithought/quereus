@@ -52,7 +52,7 @@ describe('INTEGER to REAL compatibility fix', () => {
 		}
 
 		expect(rows).to.have.length(2); // 100 and 50.5
-		
+
 		await stmt.finalize();
 	});
 

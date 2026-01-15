@@ -285,10 +285,10 @@ Quoomb Web automatically persists the following data across browser sessions:
 - **Open Tabs** — All editor tabs with their names and active state
 - **Editor Content** — SQL code in each tab, including unsaved changes
 - **Dirty State** — Remembers which tabs have unsaved modifications (shown with • indicator)
-- **Query History** — Recent query executions and results (limited to last 50 for performance)
+- **Query History** — Query metadata including SQL text, execution time, and errors (limited to last 50). Result data is not persisted to avoid storage quota issues.
 - **UI State** — Active tab, selected result panel, and query execution state
 
-**Storage Location**: Data is stored in browser localStorage under the key `quoomb-session`. This data persists until explicitly cleared or when localStorage is purged by the browser.
+**Storage Location**: Data is stored in browser localStorage under the key `quoomb-session`. Query result sets are intentionally excluded from persistence to prevent localStorage quota errors when working with large datasets.
 
 **Privacy**: All persistence happens locally in your browser. No data is sent to external servers.
 
