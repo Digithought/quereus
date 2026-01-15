@@ -1,5 +1,7 @@
 import * as Comlink from 'comlink';
 import { Database, type SqlValue } from '@quereus/quereus';
+import { expressionToString } from '@quereus/quereus/emit';
+import type { Expression } from '@quereus/quereus/parser';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
 import { IndexedDBStore, IndexedDBProvider } from '@quereus/plugin-indexeddb';
 import { StoreModule, StoreEventEmitter, type KVStore } from '@quereus/store';
@@ -52,6 +54,21 @@ class QuereusWorker implements QuereusWorkerAPI {
   // Initialization promises to prevent race conditions
   private storeModuleInitPromise: Promise<void> | null = null;
 
+  private requireDb(): Database {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return this.db;
+  }
+
+  private async collectRows(iter: AsyncIterable<Record<string, SqlValue>>): Promise<Record<string, SqlValue>[]> {
+    const results: Record<string, SqlValue>[] = [];
+    for await (const row of iter) {
+      results.push(row);
+    }
+    return results;
+  }
+
   async initialize(): Promise<void> {
     try {
       this.db = new Database();
@@ -62,152 +79,89 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   async executeQuery(sql: string, params?: SqlValue[] | Record<string, SqlValue>): Promise<Record<string, SqlValue>[]> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      const results: Record<string, SqlValue>[] = [];
-
-      for await (const row of this.db.eval(sql, params)) {
-        results.push(row);
-      }
-
-      return results;
+      return await this.collectRows(db.eval(sql, params));
     } catch (error) {
       throw new Error(`Query execution failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
   async executeStatement(sql: string, params?: SqlValue[] | Record<string, SqlValue>): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
       // Use db.exec() instead of stmt.run() to get automatic transaction wrapping
       // Quereus requires mutations to be wrapped in transactions, and db.exec()
       // automatically creates an implicit transaction for single statements
-      await this.db.exec(sql, params);
+      await db.exec(sql, params);
     } catch (error) {
       throw new Error(`Statement execution failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
-  async explainQuery(sql: string): Promise<any> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+  async explainQuery(sql: string): Promise<Record<string, SqlValue>[]> {
+    const db = this.requireDb();
 
     try {
       // Use Quereus's query_plan() function with parameterized query to avoid escaping issues
-      console.log('Original SQL:', sql);
-
-      const results: Record<string, SqlValue>[] = [];
-
       // Try using parameterized query instead of string interpolation
-      for await (const row of this.db.eval('SELECT * FROM query_plan(?)', [sql])) {
-        results.push(row);
-      }
-
-      return results;
+      return await this.collectRows(db.eval('SELECT * FROM query_plan(?)', [sql]));
     } catch (error) {
-      console.error('Query plan error:', error);
       throw new Error(`Query explanation failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
   async explainProgram(sql: string): Promise<Record<string, SqlValue>[]> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      console.log('Explaining program for SQL:', sql);
-
-      const results: Record<string, SqlValue>[] = [];
-
       // Use Quereus's scheduler_program() function
-      for await (const row of this.db.eval('SELECT * FROM scheduler_program(?)', [sql])) {
-        results.push(row);
-      }
-
-      return results;
+      return await this.collectRows(db.eval('SELECT * FROM scheduler_program(?)', [sql]));
     } catch (error) {
-      console.error('Program explanation error:', error);
       throw new Error(`Program explanation failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
   async executionTrace(sql: string): Promise<Record<string, SqlValue>[]> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      console.log('Getting execution trace for SQL:', sql);
-
-      const results: Record<string, SqlValue>[] = [];
-
       // Use Quereus's execution_trace() function to get detailed instruction-level trace
-      for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
-        results.push(row);
-      }
-
-      return results;
+      return await this.collectRows(db.eval('SELECT * FROM execution_trace(?)', [sql]));
     } catch (error) {
-      console.error('Execution trace error:', error);
       throw new Error(`Execution trace failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
   async rowTrace(sql: string): Promise<Record<string, SqlValue>[]> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      console.log('Getting row trace for SQL:', sql);
-
-      const results: Record<string, SqlValue>[] = [];
-
       // Use Quereus's row_trace() function to get detailed row-level trace
-      for await (const row of this.db.eval('SELECT * FROM row_trace(?)', [sql])) {
-        results.push(row);
-      }
-
-      return results;
+      return await this.collectRows(db.eval('SELECT * FROM row_trace(?)', [sql]));
     } catch (error) {
-      console.error('Row trace error:', error);
       throw new Error(`Row trace failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
   async explainPlanGraph(sql: string, options?: { withActual?: boolean }): Promise<PlanGraph> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      console.log('Getting plan graph for SQL:', sql, 'withActual:', options?.withActual);
-
       // Get the base query plan
-      const planResults: Record<string, SqlValue>[] = [];
-      for await (const row of this.db.eval('SELECT * FROM query_plan(?)', [sql])) {
-        planResults.push(row);
-      }
+      const planResults = await this.collectRows(db.eval('SELECT * FROM query_plan(?)', [sql]));
 
       // Get actual execution data if requested
       let traceResults: Record<string, SqlValue>[] = [];
       if (options?.withActual) {
         try {
           // First execute the query to get actual timing data
-          await this.db.eval(sql);
+          await this.collectRows(db.eval(sql));
 
           // Then get execution trace
-          for await (const row of this.db.eval('SELECT * FROM execution_trace(?)', [sql])) {
-            traceResults.push(row);
-          }
+          traceResults = await this.collectRows(db.eval('SELECT * FROM execution_trace(?)', [sql]));
         } catch (error) {
           console.warn('Could not get actual execution data:', error);
           // Continue with estimated data only
@@ -217,18 +171,23 @@ class QuereusWorker implements QuereusWorkerAPI {
       // Convert to graph structure
       return this.buildPlanGraph(planResults, traceResults, sql);
     } catch (error) {
-      console.error('Plan graph error:', error);
       throw new Error(`Plan graph failed: ${error instanceof Error ? error.message : error}`);
     }
   }
 
-  private buildPlanGraph(planRows: Record<string, SqlValue>[], traceRows: Record<string, SqlValue>[], originalSql: string): PlanGraph {
+  private buildPlanGraph(planRows: Record<string, SqlValue>[], traceRows: Record<string, SqlValue>[], _originalSql: string): PlanGraph {
     // Build a simple linear plan structure from the plan data
     // This is a simplified version - real implementation would need to parse the actual plan structure
     const nodes: PlanGraphNode[] = [];
     let totalEstCost = 0;
     let totalEstRows = 0;
     let totalActTime = 0;
+
+    const traceByStep = new Map<number, Record<string, SqlValue>>();
+    for (const traceRow of traceRows) {
+      const stepId = traceRow.step_id;
+      if (typeof stepId === 'number') traceByStep.set(stepId, traceRow);
+    }
 
     // Create nodes from plan data
     planRows.forEach((row, index) => {
@@ -247,9 +206,7 @@ class QuereusWorker implements QuereusWorkerAPI {
       const subqueryLevel = (row.subquery_level as number) || 0;
 
       // Find corresponding trace data
-      const traceRow = traceRows.find(trace =>
-        (trace.step_id as number) === index + 1
-      );
+      const traceRow = traceByStep.get(index + 1);
 
       const actTimeMs = traceRow ? (traceRow.duration_ms as number) : undefined;
       const actRows = traceRow ? (traceRow.rows_processed as number) : undefined;
@@ -302,23 +259,30 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   async listTables(): Promise<Array<{ name: string; type: string }>> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
       const results: Array<{ name: string; type: string }> = [];
 
-      for await (const row of this.db.eval(`
-        SELECT name, type FROM sqlite_schema
-        WHERE type IN ('table', 'view')
-        ORDER BY name
-      `)) {
+      // Pull directly from schemaManager instead of sqlite_schema compatibility view
+      const mainSchema = db.schemaManager.getMainSchema();
+
+      for (const table of mainSchema.getAllTables()) {
         results.push({
-          name: row.name as string,
-          type: row.type as string,
+          name: table.name,
+          type: table.isView ? 'view' : 'table',
         });
       }
+
+      for (const view of mainSchema.getAllViews()) {
+        results.push({
+          name: view.name,
+          type: 'view',
+        });
+      }
+
+      // Sort by name for consistent ordering
+      results.sort((a, b) => a.name.localeCompare(b.name));
 
       return results;
     } catch (error) {
@@ -327,87 +291,101 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   async getTableSchema(tableName: string): Promise<TableInfo> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      // Get table definition
-      const tableResults: Array<{ name: string; type: string; sql: string }> = [];
-      for await (const row of this.db.eval(`
-        SELECT name, type, sql FROM sqlite_schema
-        WHERE name = ? AND sql IS NOT NULL
-      `, [tableName])) {
-        tableResults.push({
-          name: row.name as string,
-          type: row.type as string,
-          sql: row.sql as string,
+      const mainSchema = db.schemaManager.getMainSchema();
+
+      // Check for a table first
+      const tableSchema = mainSchema.getTable(tableName);
+      if (tableSchema) {
+        const columns: ColumnInfo[] = tableSchema.columns.map((col, index) => {
+          const isPrimaryKey = tableSchema.primaryKeyDefinition.some(pk => pk.index === index);
+          return {
+            name: col.name,
+            type: col.logicalType.name,
+            nullable: !col.notNull,
+            defaultSql: this.defaultExpressionToSql(col.defaultValue),
+            primaryKey: isPrimaryKey,
+          };
         });
-      }
 
-      if (tableResults.length === 0) {
-        throw new Error(`Table '${tableName}' not found`);
-      }
-
-      const table = tableResults[0];
-
-      // Get column information from schemaManager
-      const tableSchema = this.db.schemaManager.getTable('main', tableName);
-      if (!tableSchema) {
-        throw new Error(`Table schema not found for '${tableName}'`);
-      }
-
-      const columns: ColumnInfo[] = tableSchema.columns.map((col, index) => {
-        const isPrimaryKey = tableSchema.primaryKeyDefinition.some(pk => pk.index === index);
         return {
-          name: col.name,
-          type: col.logicalType.name,
-          nullable: !col.notNull,
-          defaultValue: col.defaultValue,
-          primaryKey: isPrimaryKey,
+          name: tableSchema.name,
+          type: tableSchema.isView ? 'view' : 'table',
+          sql: this.generateTableDDL(tableSchema),
+          columns,
         };
-      });
+      }
 
-      return {
-        name: table.name,
-        type: table.type as 'table' | 'view' | 'index',
-        sql: table.sql,
-        columns,
-      };
+      // Check for a view
+      const viewSchema = mainSchema.getView(tableName);
+      if (viewSchema) {
+        // ViewSchema.columns is just an array of column names (strings), not full column objects.
+        // For views, we return minimal column info (names only).
+        const columns: ColumnInfo[] = (viewSchema.columns ?? []).map(colName => ({
+          name: colName,
+          type: 'ANY',
+          nullable: true,
+          primaryKey: false,
+        }));
+
+        return {
+          name: viewSchema.name,
+          type: 'view',
+          sql: viewSchema.sql,
+          columns,
+        };
+      }
+
+      throw new Error(`Table or view '${tableName}' not found`);
     } catch (error) {
       throw new Error(`Failed to get table schema: ${error instanceof Error ? error.message : error}`);
     }
   }
 
+  private generateTableDDL(tableSchema: { name: string; isTemporary?: boolean; columns: ReadonlyArray<{ name: string; logicalType: { name: string }; notNull: boolean; primaryKey: boolean }>; primaryKeyDefinition: ReadonlyArray<{ index: number }>; vtabModuleName?: string; vtabArgs?: Record<string, SqlValue> }): string {
+    const parts: string[] = ['CREATE'];
+    if (tableSchema.isTemporary) parts.push('TEMP');
+    parts.push('TABLE', `"${tableSchema.name}"`);
+
+    const columnDefs: string[] = [];
+    for (const col of tableSchema.columns) {
+      let colDef = `"${col.name}"`;
+      if (col.logicalType) colDef += ` ${col.logicalType.name}`;
+      if (col.notNull) colDef += ' NOT NULL';
+      if (col.primaryKey && tableSchema.primaryKeyDefinition.length === 1) {
+        colDef += ' PRIMARY KEY';
+      }
+      columnDefs.push(colDef);
+    }
+
+    if (tableSchema.primaryKeyDefinition.length > 1) {
+      const pkCols = tableSchema.primaryKeyDefinition
+        .map(pk => `"${tableSchema.columns[pk.index].name}"`)
+        .join(', ');
+      columnDefs.push(`PRIMARY KEY (${pkCols})`);
+    }
+
+    parts.push(`(${columnDefs.join(', ')})`);
+
+    if (tableSchema.vtabModuleName) {
+      parts.push('USING', tableSchema.vtabModuleName);
+      if (tableSchema.vtabArgs && Object.keys(tableSchema.vtabArgs).length > 0) {
+        const args = Object.entries(tableSchema.vtabArgs)
+          .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+          .join(', ');
+        parts.push(`(${args})`);
+      }
+    }
+
+    return parts.join(' ');
+  }
+
   async previewCsv(csvData: string): Promise<CsvPreview> {
     try {
-      // Parse CSV
-      const parseResult = Papa.parse(csvData, {
-        header: true,
-        skipEmptyLines: true,
-        transform: (value, field) => {
-          // Try to convert numbers
-          if (value === '') return null;
-          const num = Number(value);
-          if (!isNaN(num) && value === num.toString()) {
-            return num;
-          }
-          return value;
-        }
-      });
-
-      // Filter out warnings that shouldn't block import
-      const actualErrors = parseResult.errors.filter(error => {
-        // Allow delimiter detection warnings to pass through
-        if (error.message && error.message.includes('Unable to auto-detect delimiting character')) {
-          return false;
-        }
-        // Allow other non-critical warnings
-        if (error.type === 'Quotes' || error.type === 'Delimiter') {
-          return false;
-        }
-        return true;
-      });
+      const parseResult = this.parseCsv(csvData);
+      const actualErrors = this.filterCsvErrors(parseResult.errors);
 
       if (parseResult.data.length === 0) {
         return {
@@ -419,48 +397,26 @@ class QuereusWorker implements QuereusWorkerAPI {
         };
       }
 
-      const firstRow = parseResult.data[0] as Record<string, any>;
+      const firstRow = parseResult.data[0] as Record<string, unknown>;
       const originalColumns = Object.keys(firstRow);
 
       // Sanitize column names (same logic as import)
-      const sanitizedColumns = originalColumns.map((col, index) => {
-        let sanitizedCol = col.trim();
-        if (!sanitizedCol) {
-          sanitizedCol = `column_${index + 1}`;
-        }
-        sanitizedCol = sanitizedCol.replace(/[^a-zA-Z0-9_]/g, '_');
-        if (/^[0-9]/.test(sanitizedCol)) {
-          sanitizedCol = 'col_' + sanitizedCol;
-        }
-        // Ensure not empty after sanitization
-        if (!sanitizedCol || sanitizedCol === '_'.repeat(sanitizedCol.length)) {
-          sanitizedCol = `column_${index + 1}`;
-        }
-        return sanitizedCol;
-      });
+      const sanitizedColumns = originalColumns.map((col, index) => this.sanitizeColumnName(col, index));
 
       // Infer column types from data (same logic as import)
       const inferredTypes: Record<string, string> = {};
       sanitizedColumns.forEach((sanitizedCol, index) => {
         const originalCol = originalColumns[index];
-        const sampleValues = parseResult.data.slice(0, 10).map(row => (row as any)[originalCol]);
-        const hasNumbers = sampleValues.some(val => typeof val === 'number');
-        const hasStrings = sampleValues.some(val => typeof val === 'string' && val !== '');
-
-        let type = 'TEXT';
-        if (hasNumbers && !hasStrings) {
-          type = 'REAL';
-        }
-
-        inferredTypes[sanitizedCol] = type;
+        const sampleValues = parseResult.data.slice(0, 10).map(row => (row as Record<string, unknown>)[originalCol]);
+        inferredTypes[sanitizedCol] = this.inferSqlType(sampleValues);
       });
 
       // Create sample rows with sanitized column names
       const sampleRows = parseResult.data.slice(0, 5).map(row => {
-        const sanitizedRow: Record<string, any> = {};
+        const sanitizedRow: Record<string, unknown> = {};
         originalColumns.forEach((originalCol, index) => {
           const sanitizedCol = sanitizedColumns[index];
-          sanitizedRow[sanitizedCol] = (row as any)[originalCol];
+          sanitizedRow[sanitizedCol] = (row as Record<string, unknown>)[originalCol];
         });
         return sanitizedRow;
       });
@@ -478,38 +434,11 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   async importCsv(csvData: string, tableName: string): Promise<{ rowsImported: number }> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      // Parse CSV
-      const parseResult = Papa.parse(csvData, {
-        header: true,
-        skipEmptyLines: true,
-        transform: (value, field) => {
-          // Try to convert numbers
-          if (value === '') return null;
-          const num = Number(value);
-          if (!isNaN(num) && value === num.toString()) {
-            return num;
-          }
-          return value;
-        }
-      });
-
-      // Filter out warnings that shouldn't block import
-      const actualErrors = parseResult.errors.filter(error => {
-        // Allow delimiter detection warnings to pass through
-        if (error.message && error.message.includes('Unable to auto-detect delimiting character')) {
-          return false;
-        }
-        // Allow other non-critical warnings
-        if (error.type === 'Quotes' || error.type === 'Delimiter') {
-          return false;
-        }
-        return true;
-      });
+      const parseResult = this.parseCsv(csvData);
+      const actualErrors = this.filterCsvErrors(parseResult.errors);
 
       if (actualErrors.length > 0) {
         throw new Error(`CSV parsing errors: ${actualErrors.map(e => e.message).join(', ')}`);
@@ -519,100 +448,52 @@ class QuereusWorker implements QuereusWorkerAPI {
         return { rowsImported: 0 };
       }
 
-      // Better table name sanitization - ensure it's a valid SQL identifier
-      let sanitizedTableName = tableName.trim();
-      if (!sanitizedTableName) {
-        sanitizedTableName = 'imported_table';
-      }
-      // Replace invalid characters with underscores
-      sanitizedTableName = sanitizedTableName.replace(/[^a-zA-Z0-9_]/g, '_');
-      // Ensure it doesn't start with a number
-      if (/^[0-9]/.test(sanitizedTableName)) {
-        sanitizedTableName = 'table_' + sanitizedTableName;
-      }
-      // Ensure it's not empty after sanitization
-      if (!sanitizedTableName || sanitizedTableName === '_'.repeat(sanitizedTableName.length)) {
-        sanitizedTableName = 'imported_table';
-      }
-
-      console.log('Sanitized table name:', sanitizedTableName);
+      const sanitizedTableName = this.sanitizeTableName(tableName);
 
       // Infer column types from data
-      const firstRow = parseResult.data[0] as Record<string, any>;
+      const firstRow = parseResult.data[0] as Record<string, unknown>;
       const columnNames = Object.keys(firstRow);
 
       if (columnNames.length === 0) {
         throw new Error('No columns found in CSV data');
       }
 
-      // Sanitize column names and build column definitions
+      const sanitizedColumnNames = columnNames.map((col, index) => this.sanitizeColumnName(col, index));
       const columnDefs = columnNames.map((col, index) => {
-        // Sanitize column name
-        let sanitizedCol = col.trim();
-        if (!sanitizedCol) {
-          sanitizedCol = `column_${index + 1}`;
-        }
-        sanitizedCol = sanitizedCol.replace(/[^a-zA-Z0-9_]/g, '_');
-        if (/^[0-9]/.test(sanitizedCol)) {
-          sanitizedCol = 'col_' + sanitizedCol;
-        }
-        // Ensure not empty after sanitization
-        if (!sanitizedCol || sanitizedCol === '_'.repeat(sanitizedCol.length)) {
-          sanitizedCol = `column_${index + 1}`;
-        }
-
-        // Infer type
-        const sampleValues = parseResult.data.slice(0, 10).map(row => (row as any)[col]);
-        const hasNumbers = sampleValues.some(val => typeof val === 'number');
-        const hasStrings = sampleValues.some(val => typeof val === 'string' && val !== '');
-
-        let type = 'TEXT';
-        if (hasNumbers && !hasStrings) {
-          type = 'REAL';
-        }
-
+        const sanitizedCol = sanitizedColumnNames[index];
+        const sampleValues = parseResult.data.slice(0, 10).map(row => (row as Record<string, unknown>)[col]);
+        const type = this.inferSqlType(sampleValues);
         return `${sanitizedCol} ${type}`;
       });
 
       // Create table with proper SQL syntax - no quotes around column names in definition
       const createSql = `CREATE TABLE ${sanitizedTableName} (${columnDefs.join(', ')})`;
-      console.log('CREATE TABLE SQL:', createSql);
 
       try {
-        await this.db.exec(createSql);
+        await db.exec(createSql);
       } catch (createError) {
-        console.error('CREATE TABLE failed:', createError);
         throw new Error(`Failed to create table: ${createError instanceof Error ? createError.message : createError}`);
       }
 
       // Insert data with proper column mapping
-      const sanitizedColumnNames = columnNames.map((col, index) => {
-        let sanitizedCol = col.trim();
-        if (!sanitizedCol) {
-          sanitizedCol = `column_${index + 1}`;
-        }
-        sanitizedCol = sanitizedCol.replace(/[^a-zA-Z0-9_]/g, '_');
-        if (/^[0-9]/.test(sanitizedCol)) {
-          sanitizedCol = 'col_' + sanitizedCol;
-        }
-        if (!sanitizedCol || sanitizedCol === '_'.repeat(sanitizedCol.length)) {
-          sanitizedCol = `column_${index + 1}`;
-        }
-        return sanitizedCol;
-      });
-
       const placeholders = sanitizedColumnNames.map(() => '?').join(', ');
       const insertSql = `INSERT INTO ${sanitizedTableName} (${sanitizedColumnNames.join(', ')}) VALUES (${placeholders})`;
-      console.log('INSERT SQL:', insertSql);
 
-      const stmt = await this.db.prepare(insertSql);
+      const stmt = db.prepare(insertSql);
       let insertCount = 0;
 
       try {
-        for (const row of parseResult.data) {
-          const values = columnNames.map(col => (row as any)[col]);
-          await stmt.run(values);
-          insertCount++;
+        await db.beginTransaction();
+        try {
+          for (const row of parseResult.data) {
+            const values = columnNames.map(col => (row as Record<string, unknown>)[col] as SqlValue);
+            await stmt.run(values);
+            insertCount++;
+          }
+          await db.commit();
+        } catch (e) {
+          await db.rollback();
+          throw e;
         }
       } finally {
         await stmt.finalize();
@@ -625,12 +506,10 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   async loadModule(url: string, config?: Record<string, SqlValue>): Promise<PluginManifest | undefined> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     try {
-      return await dynamicLoadModule(url, this.db, config ?? {});
+      return await dynamicLoadModule(url, db, config ?? {});
     } catch (error) {
       console.error('Failed to load module:', error);
       throw error;
@@ -646,9 +525,7 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   async setStorageModule(module: StorageModuleType): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     if (module === this.currentStorageModule) {
       return; // Already set
@@ -662,7 +539,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     switch (module) {
       case 'memory':
         // Set memory as the default module
-        this.db.setDefaultVtabName('memory');
+        db.setDefaultVtabName('memory');
         this.currentStorageModule = 'memory';
         break;
 
@@ -689,9 +566,7 @@ class QuereusWorker implements QuereusWorkerAPI {
     return ['memory', 'store', 'sync'];
   }
   private async initializeStoreModule(): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    this.requireDb();
 
     // Only initialize once - use promise to prevent race conditions
     if (this.storeModuleInitPromise) {
@@ -703,9 +578,7 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   private async doInitializeStoreModule(): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
+    const db = this.requireDb();
 
     // Create store event emitter
     this.storeEvents = new StoreEventEmitter();
@@ -713,10 +586,10 @@ class QuereusWorker implements QuereusWorkerAPI {
     // Create IndexedDB provider and store module
     this.indexedDBProvider = new IndexedDBProvider({ databaseName: 'quoomb' });
     this.storeModule = new StoreModule(this.indexedDBProvider, this.storeEvents);
-    this.db.registerModule('store', this.storeModule);
+    db.registerModule('store', this.storeModule);
 
     // Set default module BEFORE restore so imported DDL (which may lack USING clause) uses store
-    this.db.setDefaultVtabName('store');
+    db.setDefaultVtabName('store');
 
     // Open a default KV store for sync metadata
     this.kvStore = await IndexedDBStore.openForTable('quoomb', 'sync_meta');
@@ -726,21 +599,18 @@ class QuereusWorker implements QuereusWorkerAPI {
   }
 
   private async restorePersistedTables(): Promise<void> {
-    if (!this.db || !this.storeModule) {
+    const db = this.db;
+    if (!db || !this.storeModule) {
       return;
     }
 
-    try {
-      // Load DDL from the central catalog store
-      const ddlStatements = await this.storeModule.loadAllDDL();
+    // Load DDL from the central catalog store
+    const ddlStatements = await this.storeModule.loadAllDDL();
 
-      if (ddlStatements.length > 0) {
-        // Import the catalog into the schema manager
-        // This calls connect() on the module instead of create()
-        await this.db.schemaManager.importCatalog(ddlStatements);
-      }
-    } catch (error) {
-      console.error('[Restore] Failed to restore persisted tables:', error);
+    if (ddlStatements.length > 0) {
+      // Import the catalog into the schema manager
+      // This calls connect() on the module instead of create()
+      await db.schemaManager.importCatalog(ddlStatements);
     }
   }
 
@@ -982,6 +852,71 @@ class QuereusWorker implements QuereusWorkerAPI {
       }
       this.db = null;
     }
+  }
+
+  private defaultExpressionToSql(expr: Expression | null): string | undefined {
+    if (!expr) return undefined;
+    if (expr.type === 'literal' && expr.value instanceof Uint8Array) {
+      return this.uint8ArrayToHexLiteral(expr.value);
+    }
+    return expressionToString(expr);
+  }
+
+  private uint8ArrayToHexLiteral(v: Uint8Array): string {
+    const hex = Array.from(v, byte => byte.toString(16).padStart(2, '0')).join('');
+    return `x'${hex}'`;
+  }
+
+  private parseCsv(csvData: string): Papa.ParseResult<Record<string, unknown>> {
+    return Papa.parse<Record<string, unknown>>(csvData, {
+      header: true,
+      skipEmptyLines: true,
+      transform: (value, _field) => {
+        if (value === '') return null;
+        const num = Number(value);
+        if (!Number.isNaN(num) && value === num.toString()) {
+          return num;
+        }
+        return value;
+      }
+    });
+  }
+
+  private filterCsvErrors(errors: Papa.ParseError[]): Papa.ParseError[] {
+    return errors.filter(error => {
+      if (error.message && error.message.includes('Unable to auto-detect delimiting character')) {
+        return false;
+      }
+      if (error.type === 'Quotes' || error.type === 'Delimiter') {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private sanitizeTableName(name: string): string {
+    let sanitized = name.trim();
+    if (!sanitized) sanitized = 'imported_table';
+    sanitized = sanitized.replace(/[^a-zA-Z0-9_]/g, '_');
+    if (/^[0-9]/.test(sanitized)) sanitized = 'table_' + sanitized;
+    if (!sanitized || sanitized === '_'.repeat(sanitized.length)) sanitized = 'imported_table';
+    return sanitized;
+  }
+
+  private sanitizeColumnName(name: string, index: number): string {
+    let sanitized = name.trim();
+    if (!sanitized) sanitized = `column_${index + 1}`;
+    sanitized = sanitized.replace(/[^a-zA-Z0-9_]/g, '_');
+    if (/^[0-9]/.test(sanitized)) sanitized = 'col_' + sanitized;
+    if (!sanitized || sanitized === '_'.repeat(sanitized.length)) sanitized = `column_${index + 1}`;
+    return sanitized;
+  }
+
+  private inferSqlType(sampleValues: unknown[]): 'TEXT' | 'REAL' {
+    const hasNumbers = sampleValues.some(val => typeof val === 'number');
+    const hasStrings = sampleValues.some(val => typeof val === 'string' && val !== '');
+    if (hasNumbers && !hasStrings) return 'REAL';
+    return 'TEXT';
   }
 }
 

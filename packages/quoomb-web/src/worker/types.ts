@@ -98,7 +98,7 @@ export interface QuereusWorkerAPI {
   /**
    * Get the query execution plan
    */
-  explainQuery(sql: string): Promise<any>;
+  explainQuery(sql: string): Promise<Record<string, SqlValue>[]>;
 
   /**
    * Get the scheduler program (compiled instructions)
@@ -133,7 +133,7 @@ export interface QuereusWorkerAPI {
   /**
    * Get schema information for a table
    */
-  getTableSchema(tableName: string): Promise<any>;
+  getTableSchema(tableName: string): Promise<TableInfo>;
 
   /**
    * Preview CSV data before import
@@ -224,7 +224,11 @@ export interface ColumnInfo {
   name: string;
   type: string;
   nullable: boolean;
-  defaultValue?: SqlValue;
+  /**
+   * SQL representation of the DEFAULT expression, if present (e.g. `'abc'`, `42`, `datetime('now')`).
+   * Note: Quereus stores column defaults as parsed AST expressions, not runtime `SqlValue`s.
+   */
+  defaultSql?: string;
   primaryKey: boolean;
 }
 
