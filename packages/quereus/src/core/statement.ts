@@ -15,7 +15,7 @@ import { generateInstructionProgram, serializePlanTree } from '../planner/debug.
 import { EmissionContext } from '../runtime/emission-context.js';
 import type { SchemaDependency } from '../planner/planning-context.js';
 import { getParameterTypes } from './param.js';
-import { getPhysicalType, physicalTypeName } from '../types/logical-type.js';
+import { getPhysicalType, physicalTypeName, PhysicalType } from '../types/logical-type.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
@@ -515,21 +515,26 @@ export class Statement {
 				continue;
 			}
 
-			// Get the physical type of the declared logical type
-			const expectedPhysicalType = expectedType.logicalType.physicalType;
+		// Get the physical type of the declared logical type
+		const expectedPhysicalType = expectedType.logicalType.physicalType;
 
-			// Get the physical type directly from the JavaScript value
-			const actualPhysicalType = getPhysicalType(value);
+		// Get the physical type directly from the JavaScript value
+		const actualPhysicalType = getPhysicalType(value);
 
-			// Check if physical types are compatible
-			if (actualPhysicalType !== expectedPhysicalType) {
-				throw new QuereusError(
-					`Parameter type mismatch for ${typeof key === 'number' ? `?${key}` : `:${key}`}: ` +
-					`expected ${expectedType.logicalType.name} (physical: ${physicalTypeName(expectedPhysicalType)}), ` +
-					`got value with physical type ${physicalTypeName(actualPhysicalType)}`,
-					StatusCode.MISMATCH
-				);
-			}
+		// Check if physical types are compatible
+		// INTEGER is compatible with REAL (any integer is a valid real number)
+		const isCompatible =
+			actualPhysicalType === expectedPhysicalType ||
+			(expectedPhysicalType === PhysicalType.REAL && actualPhysicalType === PhysicalType.INTEGER);
+
+		if (!isCompatible) {
+			throw new QuereusError(
+				`Parameter type mismatch for ${typeof key === 'number' ? `?${key}` : `:${key}`}: ` +
+				`expected ${expectedType.logicalType.name} (physical: ${physicalTypeName(expectedPhysicalType)}), ` +
+				`got value with physical type ${physicalTypeName(actualPhysicalType)}`,
+				StatusCode.MISMATCH
+			);
+		}
 		}
 	}
 
