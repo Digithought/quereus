@@ -21,6 +21,7 @@ import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
 import { GlobalScope } from '../planner/scopes/global.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import type { ScalarPlanNode } from '../planner/nodes/plan-node.js';
+import { hasNativeEventSupport } from '../util/event-support.js';
 
 const log = createLogger('schema:manager');
 const warnLog = log.extend('warn');
@@ -444,6 +445,17 @@ export class SchemaManager {
 				objectName: tableName,
 				oldObject: tableSchema
 			});
+
+			// Emit auto schema event for modules without native event support
+			const moduleReg = tableSchema.vtabModuleName ? this.getModule(tableSchema.vtabModuleName) : undefined;
+			if (this.db.hasSchemaListeners() && !hasNativeEventSupport(moduleReg?.module)) {
+				this.db._getEventEmitter().emitAutoSchemaEvent(tableSchema.vtabModuleName ?? 'memory', {
+					type: 'drop',
+					objectType: 'table',
+					schemaName: schemaName,
+					objectName: tableName,
+				});
+			}
 		}
 
 		// Process destruction asynchronously
@@ -598,6 +610,17 @@ export class SchemaManager {
 				oldObject: tableSchema,
 				newObject: updatedTableSchema
 			});
+
+			// Emit auto schema event for modules without native event support
+			const moduleReg = tableSchema.vtabModuleName ? this.getModule(tableSchema.vtabModuleName) : undefined;
+			if (this.db.hasSchemaListeners() && !hasNativeEventSupport(moduleReg?.module)) {
+				this.db._getEventEmitter().emitAutoSchemaEvent(tableSchema.vtabModuleName ?? 'memory', {
+					type: 'create',
+					objectType: 'index',
+					schemaName: targetSchemaName,
+					objectName: indexName,
+				});
+			}
 
 			log(`Successfully created index %s on table %s.%s`, indexName, targetSchemaName, tableName);
 		} catch (e: unknown) {
@@ -829,6 +852,17 @@ export class SchemaManager {
 			objectName: tableName,
 			newObject: completeTableSchema
 		});
+
+		// Emit auto schema event for modules without native event support
+		// (Modules with native events emit during their create() method)
+		if (this.db.hasSchemaListeners() && !hasNativeEventSupport(moduleInfo.module)) {
+			this.db._getEventEmitter().emitAutoSchemaEvent(moduleName, {
+				type: 'create',
+				objectType: 'table',
+				schemaName: targetSchemaName,
+				objectName: tableName,
+			});
+		}
 
 		return completeTableSchema;
 	}

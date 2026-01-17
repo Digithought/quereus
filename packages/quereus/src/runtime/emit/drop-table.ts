@@ -18,10 +18,13 @@ export function emitDropTable(plan: DropTableNode, ctx: EmissionContext): Instru
 	}
 
 	async function run(rctx: RuntimeContext): Promise<SqlValue | undefined> {
+		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
+		await rctx.db._ensureTransaction();
+
 		await rctx.db.schemaManager.dropTable(targetSchemaName, objectName, stmt.ifExists);
 
 		return null;
-  }
+	}
 
   return { params: [], run: run as InstructionRun };
 }

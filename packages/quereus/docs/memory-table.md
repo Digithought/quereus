@@ -36,7 +36,7 @@ The `MemoryTable` implementation (`src/vtab/memory/`) provides a sophisticated, 
 *   **Schema Change Events:** Subscribe to CREATE/ALTER/DROP operations for tables, columns, and indexes
 *   **Fine-Grained Tracking:** UPDATE events include `changedColumns` for intelligent cache invalidation
 *   **Zero Overhead:** Event tracking only enabled when listeners are registered
-*   See [VTable Event Hooks](vtab-events.md) for complete documentation
+*   See [Module Authoring Guide](module-authoring.md#database-level-event-system) for complete documentation
 
 ### **Indexing and Query Planning:**
 *   **Unified Index Treatment:** Primary and secondary indexes are treated uniformly using inherited BTrees

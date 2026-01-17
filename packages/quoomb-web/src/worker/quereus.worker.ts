@@ -1,5 +1,5 @@
 import * as Comlink from 'comlink';
-import { Database, type SqlValue } from '@quereus/quereus';
+import { Database, type SqlValue, type DatabaseDataChangeEvent, type DatabaseSchemaChangeEvent } from '@quereus/quereus';
 import { expressionToString } from '@quereus/quereus/emit';
 import type { Expression } from '@quereus/quereus/parser';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
@@ -26,7 +26,9 @@ import type {
   PluginManifest,
   StorageModuleType,
   SyncStatus,
-  SyncEvent
+  SyncEvent,
+  DataChangeCallback,
+  SchemaChangeCallback,
 } from './types.js';
 import Papa from 'papaparse';
 
@@ -51,6 +53,12 @@ class QuereusWorker implements QuereusWorkerAPI {
   private syncEventHistory: SyncEvent[] = [];
   private syncEventSubscribers = new Map<string, (event: SyncEvent) => void>();
 
+  // Database-level event subscribers (forwarded to UI via Comlink)
+  private dataChangeSubscribers = new Map<string, DataChangeCallback>();
+  private schemaChangeSubscribers = new Map<string, SchemaChangeCallback>();
+  private dbDataChangeUnsub: (() => void) | null = null;
+  private dbSchemaChangeUnsub: (() => void) | null = null;
+
   // Initialization promises to prevent race conditions
   private storeModuleInitPromise: Promise<void> | null = null;
 
@@ -72,9 +80,53 @@ class QuereusWorker implements QuereusWorkerAPI {
   async initialize(): Promise<void> {
     try {
       this.db = new Database();
-      // Database is ready for use
+      // Set up database-level event listeners if there are pending subscribers
+      this.setupDatabaseEventListeners();
     } catch (error) {
       throw new Error(`Failed to initialize Quereus database: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  /**
+   * Set up database-level event listeners for any pending subscribers.
+   * Called after database is initialized or when storage module changes.
+   */
+  private setupDatabaseEventListeners(): void {
+    if (!this.db) return;
+
+    // Clean up any existing subscriptions
+    if (this.dbDataChangeUnsub) {
+      this.dbDataChangeUnsub();
+      this.dbDataChangeUnsub = null;
+    }
+    if (this.dbSchemaChangeUnsub) {
+      this.dbSchemaChangeUnsub();
+      this.dbSchemaChangeUnsub = null;
+    }
+
+    // Re-subscribe if there are active subscribers
+    if (this.dataChangeSubscribers.size > 0) {
+      this.dbDataChangeUnsub = this.db.onDataChange((event) => {
+        for (const cb of this.dataChangeSubscribers.values()) {
+          try {
+            cb(event);
+          } catch (error) {
+            console.warn('Error in data change subscriber:', error);
+          }
+        }
+      });
+    }
+
+    if (this.schemaChangeSubscribers.size > 0) {
+      this.dbSchemaChangeUnsub = this.db.onSchemaChange((event) => {
+        for (const cb of this.schemaChangeSubscribers.values()) {
+          try {
+            cb(event);
+          } catch (error) {
+            console.warn('Error in schema change subscriber:', error);
+          }
+        }
+      });
     }
   }
 
@@ -823,6 +875,70 @@ class QuereusWorker implements QuereusWorkerAPI {
     this.syncEventSubscribers.delete(subscriptionId);
   }
 
+  // ============================================================================
+  // Database-Level Event Subscriptions
+  // ============================================================================
+
+  /**
+   * Subscribe to data change events from all modules.
+   * Events are emitted after successful commit and include module name and remote flag.
+   */
+  onDataChange(callback: DataChangeCallback): string {
+    const id = crypto.randomUUID();
+    const wasEmpty = this.dataChangeSubscribers.size === 0;
+    this.dataChangeSubscribers.set(id, callback);
+
+    // Subscribe to database events on first subscriber
+    if (wasEmpty) {
+      this.setupDatabaseEventListeners();
+    }
+
+    return id;
+  }
+
+  /**
+   * Unsubscribe from data change events.
+   */
+  offDataChange(subscriptionId: string): void {
+    this.dataChangeSubscribers.delete(subscriptionId);
+
+    // Unsubscribe from database events if no more subscribers
+    if (this.dataChangeSubscribers.size === 0 && this.dbDataChangeUnsub) {
+      this.dbDataChangeUnsub();
+      this.dbDataChangeUnsub = null;
+    }
+  }
+
+  /**
+   * Subscribe to schema change events from all modules.
+   * Events are emitted for CREATE/ALTER/DROP operations.
+   */
+  onSchemaChange(callback: SchemaChangeCallback): string {
+    const id = crypto.randomUUID();
+    const wasEmpty = this.schemaChangeSubscribers.size === 0;
+    this.schemaChangeSubscribers.set(id, callback);
+
+    // Subscribe to database events on first subscriber
+    if (wasEmpty) {
+      this.setupDatabaseEventListeners();
+    }
+
+    return id;
+  }
+
+  /**
+   * Unsubscribe from schema change events.
+   */
+  offSchemaChange(subscriptionId: string): void {
+    this.schemaChangeSubscribers.delete(subscriptionId);
+
+    // Unsubscribe from database events if no more subscribers
+    if (this.schemaChangeSubscribers.size === 0 && this.dbSchemaChangeUnsub) {
+      this.dbSchemaChangeUnsub();
+      this.dbSchemaChangeUnsub = null;
+    }
+  }
+
   async close(): Promise<void> {
     // Clean up sync connection
     if (this.syncClient) {
@@ -835,6 +951,18 @@ class QuereusWorker implements QuereusWorkerAPI {
       await this.kvStore.close();
       this.kvStore = null;
     }
+
+    // Clean up database event subscriptions
+    if (this.dbDataChangeUnsub) {
+      this.dbDataChangeUnsub();
+      this.dbDataChangeUnsub = null;
+    }
+    if (this.dbSchemaChangeUnsub) {
+      this.dbSchemaChangeUnsub();
+      this.dbSchemaChangeUnsub = null;
+    }
+    this.dataChangeSubscribers.clear();
+    this.schemaChangeSubscribers.clear();
 
     // Reset state
     this.syncManager = null;

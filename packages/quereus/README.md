@@ -84,32 +84,39 @@ for await (const row of db.eval("select * from users")) {
 ### Reactive Patterns with Event Hooks
 
 ```typescript
-import { Database, DefaultVTableEventEmitter, MemoryTableModule } from '@quereus/quereus';
+import { Database } from '@quereus/quereus';
 
 const db = new Database();
-const emitter = new DefaultVTableEventEmitter();
 
-// Subscribe to changes
-emitter.onDataChange((event) => {
-  console.log(`${event.type} on ${event.tableName}:`, event.key);
+// Subscribe to data changes at the database level
+db.onDataChange((event) => {
+  console.log(`${event.type} on ${event.tableName} (module: ${event.moduleName})`);
+  if (event.remote) {
+    console.log('Change came from remote sync');
+  }
   if (event.type === 'update') {
     console.log('Changed columns:', event.changedColumns);
   }
 });
 
-// Configure memory module with event emitter
-db.registerModule('memory_events', new MemoryTableModule(emitter));
-db.setDefaultModule('memory_events');
+// Subscribe to schema changes
+db.onSchemaChange((event) => {
+  console.log(`${event.type} ${event.objectType}: ${event.objectName}`);
+});
 
 // Events fire after commit
 await db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+// Output: create table: users
+
 await db.exec("INSERT INTO users VALUES (1, 'Alice')");
-// Output: insert on users: [1]
+// Output: insert on users (module: memory)
 ```
+
+The database-level event system aggregates events from all modules automatically. Events are batched within transactions and delivered only after successful commit.
 
 SQL values use native JavaScript types (`string`, `number`, `bigint`, `Uint8Array`, `null`). Temporal types are ISO 8601 strings. Results stream as async iterators.
 
-See the [Usage Guide](docs/usage.md) for complete API reference and [VTable Event Hooks](docs/vtab-events.md) for reactive patterns.
+See the [Usage Guide](docs/usage.md) for complete API reference and [Module Authoring Guide](docs/module-authoring.md) for event system details.
 
 ## Platform Support & Storage
 
@@ -205,7 +212,7 @@ See [Store Documentation](docs/store.md) for the storage architecture and custom
 * [Type System](docs/types.md): Logical/physical types, temporal types, JSON, custom types
 * [Functions](docs/functions.md): Built-in scalar, aggregate, window, and JSON functions
 * [Memory Tables](docs/memory-table.md): Built-in MemoryTable module
-* [VTable Event Hooks](docs/vtab-events.md): Mutation and schema change events for reactive patterns
+* [Module Authoring](docs/module-authoring.md): Virtual table module development and event system
 * [Date/Time Handling](docs/datetime.md): Temporal parsing, functions, and ISO 8601 formats
 * [Runtime](docs/runtime.md): Instruction-based execution and opcodes
 * [Error Handling](docs/error.md): Error types and status codes

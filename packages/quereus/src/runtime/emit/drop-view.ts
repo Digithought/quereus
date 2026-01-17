@@ -6,6 +6,9 @@ import { StatusCode, type SqlValue } from '../../common/types.js';
 
 export function emitDropView(plan: DropViewNode, _ctx: EmissionContext): Instruction {
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
+		await rctx.db._ensureTransaction();
+
 		// Check if view exists
 		const existingView = rctx.db.schemaManager.getView(plan.schemaName, plan.viewName);
 

@@ -515,6 +515,165 @@ class CDCTable extends VirtualTable {
 }
 ```
 
+## Database-Level Event System
+
+Quereus provides a unified event system at the database level that aggregates events from all modules. This enables reactive patterns where applications can subscribe to data and schema changes without knowing which specific modules are being used.
+
+### How It Works
+
+1. **Event Aggregation**: The `Database` class provides `onDataChange()` and `onSchemaChange()` methods that receive events from all modules
+2. **Native Module Events**: Modules that implement their own event emitter (via `getEventEmitter()`) have their events automatically forwarded to the database level
+3. **Automatic Events**: For modules without native event support, the engine automatically emits events after successful DML and DDL operations
+4. **Transaction Batching**: Events are batched during transactions and only delivered after successful commit; on rollback, events are discarded
+5. **Savepoint Support**: Events respect savepoint semantics - `ROLLBACK TO SAVEPOINT` discards events from that savepoint forward, while `RELEASE SAVEPOINT` merges them into the parent transaction
+
+### Event Types
+
+**Data Change Events** (`DatabaseDataChangeEvent`):
+```typescript
+interface DatabaseDataChangeEvent {
+  type: 'insert' | 'update' | 'delete';
+  moduleName: string;       // Which module raised this event
+  schemaName: string;
+  tableName: string;
+  key?: SqlValue[];         // Primary key values
+  oldRow?: Row;             // Previous values (update/delete)
+  newRow?: Row;             // New values (insert/update)
+  changedColumns?: string[]; // Column names that changed (update only)
+  remote: boolean;          // true if from sync/remote source, false for local
+}
+```
+
+**Schema Change Events** (`DatabaseSchemaChangeEvent`):
+```typescript
+interface DatabaseSchemaChangeEvent {
+  type: 'create' | 'alter' | 'drop';
+  objectType: 'table' | 'index' | 'column';
+  moduleName: string;       // Which module raised this event
+  schemaName: string;
+  objectName: string;
+  columnName?: string;      // For column operations
+  ddl?: string;             // DDL statement if available
+  remote: boolean;          // true if from sync/remote source
+}
+```
+
+### Subscribing to Events
+
+```typescript
+import { Database } from '@quereus/quereus';
+
+const db = new Database();
+
+// Subscribe to data changes
+const unsubData = db.onDataChange((event) => {
+  console.log(`${event.type} on ${event.schemaName}.${event.tableName}`);
+  console.log(`Module: ${event.moduleName}, Remote: ${event.remote}`);
+  
+  if (event.type === 'update' && event.changedColumns) {
+    console.log('Changed columns:', event.changedColumns);
+  }
+});
+
+// Subscribe to schema changes
+const unsubSchema = db.onSchemaChange((event) => {
+  console.log(`${event.type} ${event.objectType}: ${event.objectName}`);
+});
+
+// Unsubscribe when done
+unsubData();
+unsubSchema();
+```
+
+### Module Integration
+
+#### For Modules with Native Events
+
+If your module needs fine-grained control over event emission (e.g., for remote change tracking), implement `getEventEmitter()`:
+
+```typescript
+class MyModule implements VirtualTableModule<MyTable, MyConfig> {
+  private eventEmitter = new DefaultVTableEventEmitter();
+  
+  getEventEmitter(): VTableEventEmitter {
+    return this.eventEmitter;
+  }
+  
+  // Your create/connect/destroy implementations...
+}
+
+class MyTable extends VirtualTable {
+  constructor(private emitter: VTableEventEmitter, ...) {
+    super(...);
+  }
+  
+  getEventEmitter(): VTableEventEmitter {
+    return this.emitter;
+  }
+  
+  async update(args: UpdateArgs): Promise<Row | undefined> {
+    // Perform the update...
+    const result = await this.performUpdate(args);
+    
+    // Emit event with remote flag based on your logic
+    this.emitter.emitDataChange?.({
+      type: args.operation,
+      schemaName: this.schemaName,
+      tableName: this.tableName,
+      key: this.extractKey(args),
+      oldRow: args.operation !== 'insert' ? args.oldKeyValues : undefined,
+      newRow: result,
+      remote: this.isRemoteChange(), // Your logic for determining remote
+    });
+    
+    return result;
+  }
+}
+```
+
+#### For Modules without Native Events
+
+If your module doesn't need custom event logic (e.g., remote change tracking), simply don't implement `getEventEmitter()`. The engine will automatically emit events for all successful DML operations. These auto-emitted events:
+
+- Have `remote: false` (local changes only)
+- Include all event fields (`key`, `oldRow`, `newRow`, `changedColumns`)
+- Are batched within transactions and delivered after commit
+
+### Remote vs Local Events
+
+The `remote` field distinguishes the origin of changes:
+
+- **`remote: false`** (local): Changes made through SQL execution on this database instance
+- **`remote: true`** (remote): Changes that originated from sync replication or external sources
+
+For modules with native events, set `remote: true` when applying changes received from sync:
+
+```typescript
+// In your sync handler
+applyRemoteChange(change: RemoteChange): void {
+  // Apply the change to storage...
+  
+  // Emit with remote: true
+  this.emitter.emitDataChange?.({
+    type: change.type,
+    schemaName: this.schemaName,
+    tableName: this.tableName,
+    key: change.pk,
+    newRow: change.values,
+    remote: true, // Mark as remote
+  });
+}
+```
+
+### Event Semantics
+
+1. **Timing**: Events are emitted after successful commit, never during rollback
+2. **Ordering**: Events are delivered in the order operations occurred within a transaction
+3. **Completeness**: All successful mutations generate events (either native or auto)
+4. **Listener Errors**: Exceptions in listeners are logged but don't affect other listeners
+5. **Listener Order**: Listeners are called in registration order
+6. **Savepoints**: Events within a savepoint are tracked separately; `ROLLBACK TO SAVEPOINT` discards those events while `RELEASE SAVEPOINT` merges them into the parent
+
 ## See Also
 
 - [Optimizer Documentation](optimizer.md) - Detailed optimization architecture

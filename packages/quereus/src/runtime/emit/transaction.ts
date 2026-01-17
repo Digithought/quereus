@@ -27,64 +27,18 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 	switch (plan.operation) {
 		case 'begin': {
 			run = async (rctx: RuntimeContext) => {
-				const connections = rctx.db.getAllConnections();
-				log(`BEGIN: Found ${connections.length} active connections`);
-
-				for (const connection of connections) {
-					try {
-						await connection.begin();
-						log(`BEGIN: Successfully called on connection ${connection.connectionId}`);
-					} catch (error) {
-						log(`BEGIN: Error on connection ${connection.connectionId}: %O`, error);
-						throw error;
-					}
-				}
-				// Reflect explicit transaction state in Database
-				rctx.db.markExplicitTransactionStart();
-				// Reset any prior change tracking at the start of an explicit transaction
-				rctx.db._clearChangeLog();
+				log('BEGIN: Starting explicit transaction');
+				await rctx.db._beginTransaction('explicit');
 				return null;
 			};
 			note = 'BEGIN';
 			break;
 		}
+
 		case 'commit': {
 			run = async (rctx: RuntimeContext) => {
-				// Snapshot connections before evaluating deferred constraints
-				// (constraint evaluation may open additional connections that shouldn't be committed)
-				const connectionsToCommit = rctx.db.getAllConnections();
-				log(`COMMIT: Found ${connectionsToCommit.length} active connections`);
-
-				try {
-					// Evaluate global assertions and deferred row-level constraints BEFORE committing connections.
-					await rctx.db.runGlobalAssertions();
-					await rctx.db.runDeferredRowConstraints();
-
-					// Mark coordinated commit to relax layer validation for sibling layers
-					rctx.db._beginCoordinatedCommit();
-					try {
-						// Commit sequentially to avoid race conditions with layer promotion
-						for (const connection of connectionsToCommit) {
-							try {
-								await connection.commit();
-								log(`COMMIT: Successfully called on connection ${connection.connectionId}`);
-							} catch (error) {
-								log(`COMMIT: Error on connection ${connection.connectionId}: %O`, error);
-								throw error;
-							}
-						}
-					} finally {
-						rctx.db._endCoordinatedCommit();
-					}
-				} catch (e) {
-					// If assertions fail (or a commit throws), rollback all connections
-					await Promise.allSettled(rctx.db.getAllConnections().map(c => c.rollback()));
-					throw e;
-				} finally {
-					// Always mark end of explicit transaction and clear change tracking
-					rctx.db.markExplicitTransactionEnd();
-					rctx.db._clearChangeLog();
-				}
+				log('COMMIT: Committing transaction');
+				await rctx.db._commitTransaction();
 				return null;
 			};
 			note = 'COMMIT';
@@ -93,7 +47,7 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 
 		case 'rollback': {
 			if (plan.savepoint) {
-				const savepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
+				const savepointIndex = hashSavepointName(plan.savepoint);
 				run = async (rctx: RuntimeContext) => {
 					const connections = rctx.db.getAllConnections();
 					log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Found ${connections.length} active connections`);
@@ -107,28 +61,15 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 							throw error;
 						}
 					}
-					// Discard top change layer
+					// Discard top change layer and event layer
 					rctx.db._rollbackSavepointLayer();
 					return null;
 				};
 				note = `ROLLBACK TO SAVEPOINT ${plan.savepoint}`;
 			} else {
 				run = async (rctx: RuntimeContext) => {
-					const connections = rctx.db.getAllConnections();
-					log(`ROLLBACK: Found ${connections.length} active connections`);
-
-					for (const connection of connections) {
-						try {
-							await connection.rollback();
-							log(`ROLLBACK: Successfully called on connection ${connection.connectionId}`);
-						} catch (error) {
-							log(`ROLLBACK: Error on connection ${connection.connectionId}: %O`, error);
-							throw error;
-						}
-					}
-					// Reflect explicit transaction end and clear change tracking
-					rctx.db.markExplicitTransactionEnd();
-					rctx.db._clearChangeLog();
+					log('ROLLBACK: Rolling back transaction');
+					await rctx.db._rollbackTransaction();
 					return null;
 				};
 				note = 'ROLLBACK';
@@ -140,8 +81,15 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 			if (!plan.savepoint) {
 				quereusError('Savepoint name is required for SAVEPOINT operation', StatusCode.MISUSE);
 			}
-			const savepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
+			const savepointIndex = hashSavepointName(plan.savepoint);
 			run = async (rctx: RuntimeContext) => {
+				// Ensure we're in a transaction first (savepoints require transaction context)
+				await rctx.db._ensureTransaction();
+
+				// Upgrade implicit transaction to explicit - savepoints mean the user
+				// wants transaction control, so we shouldn't auto-commit
+				rctx.db._upgradeToExplicitTransaction();
+
 				const connections = rctx.db.getAllConnections();
 				log(`SAVEPOINT ${savepointIndex}: Found ${connections.length} active connections`);
 
@@ -154,9 +102,7 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 						throw error;
 					}
 				}
-				// Mark database as in explicit transaction (savepoints require explicit transaction context)
-				rctx.db.markExplicitTransactionStart();
-				// Track change layer
+				// Track change layer and event layer
 				rctx.db._beginSavepointLayer();
 				return null;
 			};
@@ -168,7 +114,7 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 			if (!plan.savepoint) {
 				quereusError('Savepoint name is required for RELEASE operation', StatusCode.MISUSE);
 			}
-			const releaseSavepointIndex = hashSavepointName(plan.savepoint); // Convert name to index
+			const releaseSavepointIndex = hashSavepointName(plan.savepoint);
 			run = async (rctx: RuntimeContext) => {
 				const connections = rctx.db.getAllConnections();
 				log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Found ${connections.length} active connections`);

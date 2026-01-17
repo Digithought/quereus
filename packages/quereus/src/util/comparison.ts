@@ -436,6 +436,20 @@ export function compareRows(a: Row, b: Row): number {
 	return 0;
 }
 
+/**
+ * Check two SQL values for equality, with proper handling of BLOBs (Uint8Array).
+ * Unlike compareSqlValues, this performs byte-wise comparison for BLOBs.
+ */
+export function sqlValuesEqual(a: SqlValue, b: SqlValue): boolean {
+	if (a instanceof Uint8Array && b instanceof Uint8Array) {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	}
+	return a === b;
+}
 
 /**
  * Type-aware comparison function that uses logical type information.

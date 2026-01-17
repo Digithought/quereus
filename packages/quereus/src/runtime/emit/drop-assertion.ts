@@ -10,6 +10,9 @@ const log = createLogger('runtime:emit:drop-assertion');
 export function emitDropAssertion(plan: DropAssertionNode, _ctx: EmissionContext): Instruction {
 
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
+		await rctx.db._ensureTransaction();
+
 		const schemaManager = rctx.db.schemaManager;
 		const schema = schemaManager.getMainSchema(); // Look in main schema for now
 

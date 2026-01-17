@@ -7,6 +7,9 @@ import type { ViewSchema } from '../../schema/view.js';
 
 export function emitCreateView(plan: CreateViewNode, _ctx: EmissionContext): Instruction {
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
+		await rctx.db._ensureTransaction();
+
 		// Check if view already exists
 		const existingView = rctx.db.schemaManager.getView(plan.schemaName, plan.viewName);
 

@@ -25,10 +25,7 @@ import type { PlanningContext } from '../planner/planning-context.js';
 import { BuildTimeDependencyTracker } from '../planner/planning-context.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import { GlobalScope } from '../planner/scopes/global.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
-import { FilterNode } from '../planner/nodes/filter.js';
-import { BinaryOpNode } from '../planner/nodes/scalar.js';
-import { ParameterReferenceNode, ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/reference.js';
+import { PlanNode } from '../planner/nodes/plan-node.js';
 import { registerEmitters } from '../runtime/register.js';
 import { serializePlanTree, formatPlanTree } from '../planner/debug.js';
 import type { DebugOptions } from '../planner/planning-context.js';
@@ -40,47 +37,36 @@ import { DatabaseOptionsManager } from './database-options.js';
 import type { InstructionTracer } from '../runtime/types.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
-import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 import { type LogicalType } from '../types/logical-type.js';
 import { getParameterTypes } from './param.js';
 import { rowToObject } from './utils.js';
+import {
+	DatabaseEventEmitter,
+	type DatabaseDataChangeEvent,
+	type DatabaseSchemaChangeEvent,
+	type DataChangeSubscriptionOptions,
+	type SchemaChangeSubscriptionOptions,
+} from './database-events.js';
+import { TransactionManager, type TransactionManagerContext } from './database-transaction.js';
+import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
 
 const log = createLogger('core:database');
-const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
-const debugLog = log.extend('debug');
-
-/**
- * Options for internal statement execution.
- */
-interface ExecutionOptions {
-	/** Whether to acquire the execution mutex. Set to false for nested execution. */
-	acquireMutex: boolean;
-	/** Whether to manage implicit transactions. Set to false when already in a transaction. */
-	manageTransaction: boolean;
-}
 
 /**
  * Represents a connection to an Quereus database (in-memory in this port).
  * Manages schema, prepared statements, virtual tables, and functions.
  */
-export class Database {
+export class Database implements TransactionManagerContext, AssertionEvaluatorContext {
 	public readonly schemaManager: SchemaManager;
 	public readonly declaredSchemaManager: DeclaredSchemaManager;
 	private isOpen = true;
 	private statements = new Set<Statement>();
-	private isAutocommit = true; // Manages transaction state
-	private inTransaction = false;
 	private activeConnections = new Map<string, VirtualTableConnection>();
-	private inImplicit = false; // Track if we're in an implicit transaction
 	public readonly optimizer: Optimizer;
 	public readonly options: DatabaseOptionsManager;
 	private instructionTracer: InstructionTracer | undefined;
-	/** Per-transaction change tracking: base table name → serialized PK tuples */
-	private changeLog: Map<string, Set<string>> = new Map();
-	/** Savepoint layers for change tracking */
-	private changeLogLayers: Array<Map<string, Set<string>>> = [];
 	/** Deferred constraint evaluation queue */
 	private readonly deferredConstraints = new DeferredConstraintQueue(this);
 	/**
@@ -89,6 +75,12 @@ export class Database {
 	 * transaction state, matching SQLite's behavior of serializing writes.
 	 */
 	private execMutex: Promise<void> = Promise.resolve();
+	/** Database-level event emitter for unified reactivity */
+	private readonly eventEmitter = new DatabaseEventEmitter();
+	/** Transaction management */
+	private readonly transactionManager: TransactionManager;
+	/** Assertion evaluation */
+	private readonly assertionEvaluator: AssertionEvaluator;
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -118,8 +110,40 @@ export class Database {
 		// Initialize optimizer with default tuning
 		this.optimizer = new Optimizer(DEFAULT_TUNING);
 
+		// Initialize transaction manager and assertion evaluator
+		this.transactionManager = new TransactionManager(this);
+		this.assertionEvaluator = new AssertionEvaluator(this);
+
 		// Set up option change listeners
 		this.setupOptionListeners();
+	}
+
+	// ============================================================================
+	// TransactionManagerContext Implementation
+	// ============================================================================
+
+	/** @internal */
+	getEventEmitter(): DatabaseEventEmitter {
+		return this.eventEmitter;
+	}
+
+	/** @internal */
+	getDeferredConstraints(): DeferredConstraintQueue {
+		return this.deferredConstraints;
+	}
+
+	// ============================================================================
+	// AssertionEvaluatorContext Implementation
+	// ============================================================================
+
+	/** Get the set of changed base tables */
+	getChangedBaseTables(): Set<string> {
+		return this.transactionManager.getChangedBaseTables();
+	}
+
+	/** Get changed PK tuples for a specific base table */
+	getChangedKeyTuples(base: string): SqlValue[][] {
+		return this.transactionManager.getChangedKeyTuples(base);
 	}
 
 	/** @internal Set up listeners for option changes */
@@ -306,57 +330,85 @@ export class Database {
 	}
 
 	/**
-	 * Unified execution wrapper that handles mutex acquisition and implicit transactions.
-	 * All public execution methods should use this to ensure consistent behavior.
+	 * Executes a function with the execution mutex held.
+	 * The mutex serializes all database access to prevent concurrent interference.
 	 * @internal
 	 */
-	private async _executeWithProtection<T>(
-		options: ExecutionOptions,
-		executor: () => Promise<T>
-	): Promise<T> {
-		let releaseMutex: (() => void) | undefined;
-
+	private async _withMutex<T>(executor: () => Promise<T>): Promise<T> {
+		const releaseMutex = await this._acquireExecMutex();
 		try {
-			// Acquire mutex if requested
-			if (options.acquireMutex) {
-				releaseMutex = await this._acquireExecMutex();
-			}
-
-			// Determine if we need an implicit transaction
-			const needsImplicit = options.manageTransaction && this.isAutocommit;
-
-			let executionError: Error | null = null;
-			let result: T;
-
-			try {
-				if (needsImplicit) {
-					await this._beginImplicit();
-				}
-
-				try {
-					result = await executor();
-				} catch (err) {
-					const error = err instanceof Error ? err : new Error(String(err));
-					executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
-					throw executionError;
-				}
-
-			} finally {
-				if (needsImplicit) {
-					if (executionError) {
-						await this._rollbackImplicit();
-					} else {
-						await this._commitImplicit();
-					}
-				}
-			}
-
-			return result!;
+			return await executor();
 		} finally {
-			if (releaseMutex) {
-				releaseMutex();
-			}
+			releaseMutex();
 		}
+	}
+
+	// ============================================================================
+	// Transaction Control - Delegated to TransactionManager
+	// ============================================================================
+
+	/**
+	 * Begins a transaction on all active connections.
+	 * @internal
+	 */
+	async _beginTransaction(source: 'explicit' | 'implicit'): Promise<void> {
+		await this.transactionManager.beginTransaction(source);
+	}
+
+	/**
+	 * Commits the current transaction on all connections.
+	 * @internal
+	 */
+	async _commitTransaction(): Promise<void> {
+		await this.transactionManager.commitTransaction();
+	}
+
+	/**
+	 * Rolls back the current transaction on all connections.
+	 * @internal
+	 */
+	async _rollbackTransaction(): Promise<void> {
+		await this.transactionManager.rollbackTransaction();
+	}
+
+	/**
+	 * Ensures we're in a transaction. If in autocommit mode, starts an implicit transaction.
+	 * @internal
+	 */
+	async _ensureTransaction(): Promise<void> {
+		await this.transactionManager.ensureTransaction();
+	}
+
+	/**
+	 * Commits if we're in an implicit transaction.
+	 * @internal
+	 */
+	async _autocommitIfNeeded(): Promise<void> {
+		await this.transactionManager.autocommitIfNeeded();
+	}
+
+	/**
+	 * Rolls back if we're in an implicit transaction (on error).
+	 * @internal
+	 */
+	async _autorollbackIfNeeded(): Promise<void> {
+		await this.transactionManager.autorollbackIfNeeded();
+	}
+
+	/**
+	 * Checks if we're currently in an implicit transaction.
+	 * @internal
+	 */
+	_isImplicitTransaction(): boolean {
+		return this.transactionManager.isImplicitTransaction();
+	}
+
+	/**
+	 * Upgrades an implicit transaction to explicit.
+	 * @internal
+	 */
+	_upgradeToExplicitTransaction(): void {
+		this.transactionManager.upgradeToExplicitTransaction();
 	}
 
 	/**
@@ -426,9 +478,9 @@ export class Database {
 
 	/**
 	 * Executes one or more SQL statements directly.
-	 * Statements are serialized through the execution mutex and wrapped in an
-	 * implicit transaction when in autocommit mode (unless they contain explicit
-	 * transaction control statements).
+	 * Statements are serialized through the execution mutex. Transactions are started
+	 * lazily (just-in-time) when the first DML or DDL operation occurs. If no explicit
+	 * transaction control is present, an implicit transaction is committed after execution.
 	 *
 	 * @param sql The SQL string(s) to execute.
 	 * @param params Optional parameters to bind.
@@ -442,13 +494,26 @@ export class Database {
 		const batch = this._parseSql(sql);
 		if (batch.length === 0) return;
 
-		// Don't wrap in implicit transaction if batch has explicit transaction control
+		// Check if batch has explicit transaction control
 		const hasExplicitTxn = this._hasExplicitTransactionControl(batch);
 
-		await this._executeWithProtection(
-			{ acquireMutex: true, manageTransaction: !hasExplicitTxn },
-			() => this._executeStatementBatch(batch, params)
-		);
+		await this._withMutex(async () => {
+			try {
+				// Execute statements - transactions are started JIT by runtime when needed
+				await this._executeStatementBatch(batch, params);
+
+				// Commit implicit transaction if one was started and no explicit txn control
+				if (!hasExplicitTxn && this.transactionManager.isImplicitTransaction()) {
+					await this._commitTransaction();
+				}
+			} catch (err) {
+				// Rollback implicit transaction on error
+				if (!hasExplicitTxn && this.transactionManager.isImplicitTransaction()) {
+					await this._rollbackTransaction();
+				}
+				throw err;
+			}
+		});
 	}
 
 	/**
@@ -463,24 +528,17 @@ export class Database {
 		const batch = this._parseSql(sql);
 		if (batch.length === 0) return;
 
-		// No mutex, no implicit transaction - we're already inside one
-		await this._executeWithProtection(
-			{ acquireMutex: false, manageTransaction: false },
-			() => this._executeStatementBatch(batch, params)
-		);
+		// No mutex, no implicit transaction management - we're already inside a transaction
+		await this._executeStatementBatch(batch, params);
 	}
 
 	/**
-	 * Execute a function with mutex and optional implicit transaction management.
-	 * This is exposed for Statement to use, avoiding code duplication.
+	 * Execute a function with mutex held.
+	 * Transaction management is handled by the executor if needed.
 	 * @internal
 	 */
-	async _runWithProtection<T>(
-		acquireMutex: boolean,
-		manageTransaction: boolean,
-		executor: () => Promise<T>
-	): Promise<T> {
-		return this._executeWithProtection({ acquireMutex, manageTransaction }, executor);
+	async _runWithMutex<T>(executor: () => Promise<T>): Promise<T> {
+		return this._withMutex(executor);
 	}
 
 	/**
@@ -492,6 +550,115 @@ export class Database {
 	registerModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
 		this.checkOpen();
 		this.schemaManager.registerModule(name, module, auxData);
+
+		// Check if the module has a getEventEmitter method and hook it up
+		this.hookModuleEvents(name, module);
+	}
+
+	/**
+	 * Hook a module's event emitter to forward events to the database level.
+	 * @internal
+	 */
+	private hookModuleEvents(name: string, module: AnyVirtualTableModule): void {
+		// Check if module has getEventEmitter method
+		const getEmitter = (module as { getEventEmitter?: () => unknown }).getEventEmitter;
+		if (typeof getEmitter === 'function') {
+			const emitter = getEmitter.call(module);
+			if (emitter && typeof emitter === 'object') {
+				// Check if emitter has the expected methods
+				const vtabEmitter = emitter as { onDataChange?: unknown; onSchemaChange?: unknown };
+				if (typeof vtabEmitter.onDataChange === 'function' || typeof vtabEmitter.onSchemaChange === 'function') {
+					this.eventEmitter.hookModuleEmitter(name, emitter as import('../vtab/events.js').VTableEventEmitter);
+					log('Hooked event emitter for module: %s', name);
+				}
+			}
+		}
+	}
+
+	// ============================================================================
+	// Database-Level Events
+	// ============================================================================
+
+	/**
+	 * Subscribe to data change events from all modules.
+	 *
+	 * Events are emitted after successful transaction commit. During a transaction,
+	 * events are batched and only delivered once the transaction commits successfully.
+	 * On rollback, batched events are discarded.
+	 *
+	 * @param listener Callback invoked for each data change event
+	 * @param options Optional subscription options (reserved for future filtering)
+	 * @returns Unsubscribe function
+	 *
+	 * @example
+	 * ```typescript
+	 * const unsubscribe = db.onDataChange((event) => {
+	 *   console.log(`${event.type} on ${event.tableName} (module: ${event.moduleName})`);
+	 *   if (event.remote) {
+	 *     console.log('Change came from remote source');
+	 *   }
+	 * });
+	 *
+	 * // Later, when no longer needed:
+	 * unsubscribe();
+	 * ```
+	 */
+	onDataChange(
+		listener: (event: DatabaseDataChangeEvent) => void,
+		options?: DataChangeSubscriptionOptions
+	): () => void {
+		this.checkOpen();
+		return this.eventEmitter.onDataChange(listener, options);
+	}
+
+	/**
+	 * Subscribe to schema change events from all modules.
+	 *
+	 * Schema events are emitted when tables, indexes, or columns are created,
+	 * altered, or dropped. Events are delivered after the DDL operation completes.
+	 *
+	 * @param listener Callback invoked for each schema change event
+	 * @param options Optional subscription options (reserved for future filtering)
+	 * @returns Unsubscribe function
+	 *
+	 * @example
+	 * ```typescript
+	 * const unsubscribe = db.onSchemaChange((event) => {
+	 *   console.log(`${event.type} ${event.objectType}: ${event.objectName}`);
+	 *   if (event.ddl) {
+	 *     console.log('DDL:', event.ddl);
+	 *   }
+	 * });
+	 * ```
+	 */
+	onSchemaChange(
+		listener: (event: DatabaseSchemaChangeEvent) => void,
+		options?: SchemaChangeSubscriptionOptions
+	): () => void {
+		this.checkOpen();
+		return this.eventEmitter.onSchemaChange(listener, options);
+	}
+
+	/**
+	 * Check if there are any data change listeners registered.
+	 */
+	hasDataListeners(): boolean {
+		return this.eventEmitter.hasDataListeners();
+	}
+
+	/**
+	 * Check if there are any schema change listeners registered.
+	 */
+	hasSchemaListeners(): boolean {
+		return this.eventEmitter.hasSchemaListeners();
+	}
+
+	/**
+	 * Get the internal event emitter for advanced use cases.
+	 * @internal
+	 */
+	_getEventEmitter(): DatabaseEventEmitter {
+		return this.eventEmitter;
 	}
 
 	/**
@@ -500,13 +667,11 @@ export class Database {
 	async beginTransaction(): Promise<void> {
 		this.checkOpen();
 
-		if (this.inTransaction) {
+		if (this.transactionManager.isInTransaction()) {
 			throw new QuereusError("Transaction already active", StatusCode.ERROR);
 		}
 
 		await this.exec("BEGIN TRANSACTION");
-		this.inTransaction = true;
-		this.isAutocommit = false;
 	}
 
 	/**
@@ -515,13 +680,11 @@ export class Database {
 	async commit(): Promise<void> {
 		this.checkOpen();
 
-		if (!this.inTransaction) {
+		if (!this.transactionManager.isInTransaction()) {
 			throw new QuereusError("No transaction active", StatusCode.ERROR);
 		}
 
 		await this.exec("COMMIT");
-		this.inTransaction = false;
-		this.isAutocommit = true;
 	}
 
 	/**
@@ -530,13 +693,11 @@ export class Database {
 	async rollback(): Promise<void> {
 		this.checkOpen();
 
-		if (!this.inTransaction) {
+		if (!this.transactionManager.isInTransaction()) {
 			throw new QuereusError("No transaction active", StatusCode.ERROR);
 		}
 
 		await this.exec("ROLLBACK");
-		this.inTransaction = false;
-		this.isAutocommit = true;
 	}
 
 	/**
@@ -563,7 +724,9 @@ export class Database {
 		// This will also call destroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
 		this.schemaManager.clearAll();
 
-		// this.registeredVTabs.clear(); // Removed, SchemaManager handles module lifecycle
+		// Clean up event emitter
+		this.eventEmitter.removeAllListeners();
+
 		log("Database closed.");
 	}
 
@@ -577,7 +740,7 @@ export class Database {
 	 */
 	getAutocommit(): boolean {
 		this.checkOpen();
-		return this.isAutocommit;
+		return this.transactionManager.getAutocommit();
 	}
 
 	/**
@@ -836,134 +999,52 @@ export class Database {
 		return getCollation(name);
 	}
 
-	/** Serialize a composite primary key tuple for set storage */
-	private serializeKeyTuple(values: SqlValue[]): string {
-		// JSON serialization is sufficient because SqlValue is JSON-safe in this engine
-		return JSON.stringify(values);
-	}
-
-	/** Add a key tuple to the current change log for a base table */
-	private addChange(baseTable: string, keyTuple: SqlValue[]): void {
-		const target = this.changeLogLayers.length > 0
-			? this.changeLogLayers[this.changeLogLayers.length - 1]
-			: this.changeLog;
-		const key = baseTable.toLowerCase();
-		if (!target.has(key)) target.set(key, new Set());
-		target.get(key)!.add(this.serializeKeyTuple(keyTuple));
-	}
-
 	public _queueDeferredConstraintRow(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string, contextRow?: Row, contextDescriptor?: RowDescriptor): void {
 		this.deferredConstraints.enqueue(baseTable, constraintName, row, descriptor, evaluator, connectionId, contextRow, contextDescriptor);
 	}
 
-
-	/** @internal Flag to prevent new connections from starting transactions during constraint evaluation */
-	private evaluatingDeferredConstraints = false;
-	/** @internal Flag indicating we're in a coordinated multi-connection commit */
-	private inCoordinatedCommit = false;
-
 	public async runDeferredRowConstraints(): Promise<void> {
-		this.evaluatingDeferredConstraints = true;
-		try {
-			await this.deferredConstraints.runDeferredRows();
-		} finally {
-			this.evaluatingDeferredConstraints = false;
-		}
+		await this.transactionManager.runDeferredRowConstraints();
 	}
 
 	/** @internal Check if we should skip auto-beginning transactions on newly registered connections */
 	public _isEvaluatingDeferredConstraints(): boolean {
-		return this.evaluatingDeferredConstraints;
-	}
-
-	/** @internal Mark start of coordinated multi-connection commit */
-	public _beginCoordinatedCommit(): void {
-		this.inCoordinatedCommit = true;
-	}
-
-	/** @internal Mark end of coordinated multi-connection commit */
-	public _endCoordinatedCommit(): void {
-		this.inCoordinatedCommit = false;
+		return this.transactionManager.isEvaluatingDeferredConstraints();
 	}
 
 	/** @internal Check if we're in a coordinated commit (allows sibling layer validation) */
 	public _inCoordinatedCommit(): boolean {
-		return this.inCoordinatedCommit;
+		return this.transactionManager.isInCoordinatedCommit();
 	}
 
 	/** Public API used by DML emitters to record changes */
 	public _recordInsert(baseTable: string, newKey: SqlValue[]): void {
-		this.addChange(baseTable, newKey);
+		this.transactionManager.recordInsert(baseTable, newKey);
 	}
 
 	public _recordDelete(baseTable: string, oldKey: SqlValue[]): void {
-		this.addChange(baseTable, oldKey);
+		this.transactionManager.recordDelete(baseTable, oldKey);
 	}
 
 	public _recordUpdate(baseTable: string, oldKey: SqlValue[], newKey: SqlValue[]): void {
-		this.addChange(baseTable, oldKey);
-		// If the PK changed, also record the new key
-		if (this.serializeKeyTuple(oldKey) !== this.serializeKeyTuple(newKey)) {
-			this.addChange(baseTable, newKey);
-		}
+		this.transactionManager.recordUpdate(baseTable, oldKey, newKey);
 	}
 
 	/** Savepoint change tracking */
 	public _beginSavepointLayer(): void {
-		this.changeLogLayers.push(new Map());
-		this.deferredConstraints.beginLayer();
+		this.transactionManager.beginSavepointLayer();
 	}
 
 	public _rollbackSavepointLayer(): void {
-		// Discard the top layer
-		this.changeLogLayers.pop();
-		this.deferredConstraints.rollbackLayer();
+		this.transactionManager.rollbackSavepointLayer();
 	}
 
 	public _releaseSavepointLayer(): void {
-		// Merge the top layer into previous or main log
-		const top = this.changeLogLayers.pop();
-		if (!top) return;
-		const target = this.changeLogLayers.length > 0 ? this.changeLogLayers[this.changeLogLayers.length - 1] : this.changeLog;
-		for (const [table, set] of top) {
-			if (!target.has(table)) target.set(table, new Set());
-			const tgt = target.get(table)!;
-			for (const k of set) tgt.add(k);
-		}
-		this.deferredConstraints.releaseLayer();
-	}
-
-	private getChangedBaseTables(): Set<string> {
-		const result = new Set<string>();
-		const collect = (m: Map<string, Set<string>>) => {
-			for (const [t, s] of m) { if (s.size > 0) result.add(t); }
-		};
-		collect(this.changeLog);
-		for (const layer of this.changeLogLayers) collect(layer);
-		return result;
+		this.transactionManager.releaseSavepointLayer();
 	}
 
 	public _clearChangeLog(): void {
-		this.changeLog.clear();
-		this.changeLogLayers = [];
-		this.deferredConstraints.clear();
-	}
-
-	/**
-	 * Marks that an explicit SQL BEGIN has started a transaction.
-	 * Ensures subsequently registered connections also begin a transaction.
-	 */
-	public markExplicitTransactionStart(): void {
-		this.inTransaction = true;
-		this.isAutocommit = false;
-	}
-
-	/**
-	 * Marks that an explicit SQL COMMIT/ROLLBACK has ended the transaction.
-	 */
-	public markExplicitTransactionEnd(): void {
-		this.inTransaction = false;
-		this.isAutocommit = true;
+		this.transactionManager.clearChangeLog();
 	}
 
 	/**
@@ -972,9 +1053,8 @@ export class Database {
 	 * The underlying statement is automatically finalized when iteration completes
 	 * or if an error occurs.
 	 *
-	 * The execution is serialized through the mutex and wrapped in an implicit
-	 * transaction when in autocommit mode. The mutex is held for the entire
-	 * iteration to ensure transactional consistency.
+	 * Transactions are started lazily (just-in-time) when the first DML or DDL
+	 * operation occurs. The mutex is held for the entire iteration.
 	 *
 	 * @param sql The SQL query string to execute.
 	 * @param params Optional parameters to bind (array for positional, object for named).
@@ -994,27 +1074,79 @@ export class Database {
 	 * }
 	 * ```
 	 */
-	async *eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
+	eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
+		// Create the generator that does the actual work
+		const generator = this._evalGenerator(sql, params);
+
+		// Track whether the transaction has been finalized
+		let transactionFinalized = false;
+
+		// Helper to finalize the implicit transaction (idempotent)
+		const finalizeImplicitTransaction = async (commit: boolean): Promise<void> => {
+			if (transactionFinalized) return;
+			transactionFinalized = true;
+			if (this.transactionManager.isImplicitTransaction()) {
+				if (commit) {
+					await this._commitTransaction();
+				} else {
+					await this._rollbackTransaction();
+				}
+			}
+		};
+
+		// Wrap the generator to intercept return() and throw()
+		const wrappedIterator: AsyncIterableIterator<Record<string, SqlValue>> = {
+			[Symbol.asyncIterator]() {
+				return this;
+			},
+			async next() {
+				return generator.next();
+			},
+			async return(value?: unknown) {
+				// Called on early termination (break, return, etc.)
+				// Commit the implicit transaction before delegating to the generator
+				try {
+					await finalizeImplicitTransaction(true);
+				} finally {
+					// Delegate to generator.return() to trigger cleanup (finally block)
+					return generator.return(value as Record<string, SqlValue>);
+				}
+			},
+			async throw(error?: unknown) {
+				// Called when an error is thrown into the iterator
+				// Rollback the implicit transaction before delegating
+				try {
+					await finalizeImplicitTransaction(false);
+				} finally {
+					// Delegate to generator.throw() to propagate the error
+					return generator.throw(error);
+				}
+			}
+		};
+
+		return wrappedIterator;
+	}
+
+	/**
+	 * Internal generator for eval() that yields result rows.
+	 * Transaction finalization is handled by the wrapper returned by eval().
+	 * @internal
+	 */
+	private async *_evalGenerator(sql: string, params?: SqlParameters | SqlValue[]): AsyncGenerator<Record<string, SqlValue>> {
 		this.checkOpen();
 
 		// Acquire mutex for the entire iteration
 		const releaseMutex = await this._acquireExecMutex();
-
-		// Determine if we need implicit transaction
-		const needsImplicit = this.isAutocommit;
-		let transactionStarted = false;
 		let stmt: Statement | null = null;
+		let normalCompletion = false;
 
 		try {
-			if (needsImplicit) {
-				await this._beginImplicit();
-				transactionStarted = true;
-			}
-
+			// Execute - transactions are started JIT by runtime when needed
 			stmt = this.prepare(sql);
 
 			if (stmt.astBatch.length === 0) {
 				// No statements, yield nothing.
+				normalCompletion = true;
 				return;
 			}
 
@@ -1033,7 +1165,7 @@ export class Database {
 				this.statements.add(lastStmt);
 				try {
 					const names = lastStmt.getColumnNames();
-					for await (const row of lastStmt.iterateRows(params)) {
+					for await (const row of lastStmt._iterateRowsRaw(params)) {
 						yield rowToObject(row, names);
 					}
 				} finally {
@@ -1042,29 +1174,26 @@ export class Database {
 			} else {
 				// Single statement: execute and yield results
 				const names = stmt.getColumnNames();
-				for await (const row of stmt.iterateRows(params)) {
+				for await (const row of stmt._iterateRowsRaw(params)) {
 					yield rowToObject(row, names);
 				}
 			}
 
-			// Commit implicit transaction on successful completion
-			if (transactionStarted) {
-				await this._commitImplicit();
-				transactionStarted = false;
+			normalCompletion = true;
+
+			// Commit implicit transaction on normal completion
+			// (The wrapper also handles this for early termination via return())
+			if (this.transactionManager.isImplicitTransaction()) {
+				await this._commitTransaction();
 			}
 		} catch (err) {
-			// Rollback on error
-			if (transactionStarted) {
-				await this._rollbackImplicit();
-				transactionStarted = false;
+			// Rollback implicit transaction on error
+			if (this.transactionManager.isImplicitTransaction()) {
+				await this._rollbackTransaction();
 			}
 			throw err;
 		} finally {
 			if (stmt) { await stmt.finalize(); }
-			// If we somehow exit without committing/rolling back, rollback
-			if (transactionStarted) {
-				await this._rollbackImplicit();
-			}
 			releaseMutex();
 		}
 	}
@@ -1194,21 +1323,21 @@ export class Database {
 	 */
 	async registerConnection(connection: VirtualTableConnection): Promise<void> {
 		this.activeConnections.set(connection.connectionId, connection);
-		debugLog(`Registered connection ${connection.connectionId} for table ${connection.tableName}`);
+		log(`Registered connection ${connection.connectionId} for table ${connection.tableName}`);
 
 		// If we're already in a transaction (implicit or explicit),
 		// start a transaction on this new connection UNLESS we're evaluating deferred constraints
 		// (during which subqueries should read committed state without creating new transaction layers)
-		if (this.inTransaction && !this.evaluatingDeferredConstraints) {
+		if (this.transactionManager.isInTransaction() && !this.transactionManager.isEvaluatingDeferredConstraints()) {
 			try {
 				await connection.begin();
-				debugLog(`Started transaction on newly registered connection ${connection.connectionId}`);
+				log(`Started transaction on newly registered connection ${connection.connectionId}`);
 			} catch (error) {
 				errorLog(`Error starting transaction on newly registered connection ${connection.connectionId}: %O`, error);
 				// Don't throw here - just log the error to avoid breaking connection registration
 			}
-		} else if (this.evaluatingDeferredConstraints) {
-			debugLog(`Skipped transaction begin on connection ${connection.connectionId} (evaluating deferred constraints)`);
+		} else if (this.transactionManager.isEvaluatingDeferredConstraints()) {
+			log(`Skipped transaction begin on connection ${connection.connectionId} (evaluating deferred constraints)`);
 		}
 	}
 
@@ -1220,13 +1349,13 @@ export class Database {
 		const connection = this.activeConnections.get(connectionId);
 		if (connection) {
 			// Don't disconnect during implicit transactions - let the transaction coordinate
-			if (this.inImplicit) {
-				debugLog(`Deferring disconnect of connection ${connectionId} until implicit transaction completes`);
+			if (this.transactionManager.isImplicitTransaction()) {
+				log(`Deferring disconnect of connection ${connectionId} until implicit transaction completes`);
 				return;
 			}
 
 			this.activeConnections.delete(connectionId);
-			debugLog(`Unregistered connection ${connectionId} for table ${connection.tableName}`);
+			log(`Unregistered connection ${connectionId} for table ${connection.tableName}`);
 		}
 	}
 
@@ -1268,7 +1397,7 @@ export class Database {
 	 */
 	private async disconnectAllConnections(): Promise<void> {
 		const connections = Array.from(this.activeConnections.values());
-		debugLog(`Disconnecting ${connections.length} active connections`);
+		log(`Disconnecting ${connections.length} active connections`);
 
 		const disconnectPromises = connections.map(async (conn) => {
 			try {
@@ -1286,333 +1415,8 @@ export class Database {
 		if (!this.isOpen) throw new MisuseError("Database is closed");
 	}
 
-	/**
-	 * Begin an implicit transaction and coordinate with virtual table connections
-	 */
-	/** @internal Begin an implicit transaction */
-	async _beginImplicit(): Promise<void> {
-		debugLog("Database: Starting implicit transaction for multi-statement block.");
-
-		this.inImplicit = true;
-
-		// Begin transaction on all active connections first
-		const connections = this.getAllConnections();
-		for (const connection of connections) {
-			try {
-				await connection.begin();
-			} catch (error) {
-				errorLog(`Error beginning transaction on connection ${connection.connectionId}: %O`, error);
-				throw error;
-			}
-		}
-
-		// Then set database state
-		this.inTransaction = true;
-		this.isAutocommit = false;
-	}
-
-	/**
-	 * Commit an implicit transaction and coordinate with virtual table connections
-	 * @internal
-	 */
-	async _commitImplicit(): Promise<void> {
-		debugLog("Database: Committing implicit transaction.");
-
-		try {
-			const connectionsToCommit = this.getAllConnections();
-
-			// Evaluate global assertions and deferred row constraints BEFORE committing connections. If violated, rollback and abort.
-			await this.runGlobalAssertions();
-			await this.runDeferredRowConstraints();
-
-			// Mark coordinated commit to relax layer validation for sibling layers
-			this._beginCoordinatedCommit();
-			try {
-				// Commit only the original connections (not any opened during constraint evaluation)
-				// Commit sequentially to avoid race conditions with layer promotion
-				for (const connection of connectionsToCommit) {
-					try {
-						await connection.commit();
-					} catch (error) {
-						errorLog(`Error committing transaction on connection ${connection.connectionId}: %O`, error);
-						throw error;
-					}
-				}
-			} finally {
-				this._endCoordinatedCommit();
-			}
-		} catch (e) {
-			// On pre-commit assertion failure (or commit error), rollback all connections
-			const conns = this.getAllConnections();
-			await Promise.allSettled(conns.map(c => c.rollback()));
-			throw e;
-		} finally {
-			this.inTransaction = false;
-			this.isAutocommit = true;
-			this.inImplicit = false;
-			this._clearChangeLog();
-		}
-	}
-
 	public async runGlobalAssertions(): Promise<void> {
-		const assertions = this.schemaManager.getAllAssertions();
-		if (assertions.length === 0) return;
-
-		// Only evaluate assertions impacted by changed base tables
-		const changedBases = this.getChangedBaseTables();
-		if (changedBases.size === 0) return;
-
-		for (const assertion of assertions) {
-			const planSql = assertion.violationSql;
-			const parser = new Parser();
-			let ast: AST.Statement;
-			try {
-				ast = parser.parse(planSql) as AST.Statement;
-			} catch (err) {
-				const error = err instanceof Error ? err : new Error(String(err));
-				throw new QuereusError(
-					`Failed to parse deferred assertion '${assertion.name}': ${error.message}`,
-					StatusCode.INTERNAL,
-					error
-				);
-			}
-			const plan = this._buildPlan([ast]) as BlockNode;
-			const analyzed = this.optimizer.optimizeForAnalysis(plan, this) as BlockNode;
-
-			// Collect base tables and relationKeys in this plan
-			const relationKeyToBase = new Map<string, string>();
-			const baseTablesInPlan = new Set<string>();
-			this.collectTables(analyzed, relationKeyToBase, baseTablesInPlan);
-
-			// Determine impact: if assertion has no dependencies, treat as global and always impacted.
-			const hasDeps = baseTablesInPlan.size > 0;
-			let impacted = !hasDeps;
-			if (hasDeps) {
-				for (const b of baseTablesInPlan) { if (changedBases.has(b)) { impacted = true; break; } }
-			}
-			if (!impacted) continue;
-
-			// Classify instances as row/global
-			const classifications: Map<string, 'row' | 'global'> = analyzeRowSpecific(analyzed as unknown as RelationalPlanNode);
-
-			// If any changed base appears as a global instance, run full violation query once
-			let requiresGlobal = false;
-			for (const [relKey, klass] of classifications) {
-				if (klass === 'global') {
-					const base = relationKeyToBase.get(relKey);
-					if (base && changedBases.has(base)) { requiresGlobal = true; break; }
-				}
-			}
-
-			if (requiresGlobal) {
-				await this.executeViolationOnce(assertion.name, assertion.violationSql);
-				continue;
-			}
-
-			// Collect row-specific references that correspond to changed bases
-			const rowSpecificChanged: Array<{ relKey: string; base: string }> = [];
-			for (const [relKey, klass] of classifications) {
-				if (klass !== 'row') continue;
-				const base = relationKeyToBase.get(relKey);
-				if (base && changedBases.has(base)) rowSpecificChanged.push({ relKey, base });
-			}
-
-			if (rowSpecificChanged.length === 0) {
-				// No row-specific changed refs (or no refs at all) → run once globally.
-				await this.executeViolationOnce(assertion.name, assertion.violationSql);
-				continue;
-			}
-
-			// Execute parameterized variants per changed key for each row-specific reference; early-exit on violation
-			for (const { relKey, base } of rowSpecificChanged) {
-				await this.executeViolationPerChangedKeys(assertion.name, assertion.violationSql, analyzed, relKey, base);
-			}
-		}
-	}
-
-	private async executeViolationOnce(assertionName: string, sql: string): Promise<void> {
-		const stmt = this.prepare(sql);
-		try {
-			// Use raw iterateRows() to avoid mutex acquisition - we're already inside the mutex
-			for await (const _ of stmt.iterateRows()) {
-				throw new QuereusError(`Integrity assertion failed: ${assertionName}`, StatusCode.CONSTRAINT);
-			}
-		} finally {
-			await stmt.finalize();
-		}
-	}
-
-	/** Execute a parameterized variant of the assertion once per changed key for a specific row-specific relationKey. */
-	private async executeViolationPerChangedKeys(
-		assertionName: string,
-		violationSql: string,
-		analyzed: BlockNode,
-		targetRelationKey: string,
-		base: string
-	): Promise<void> {
-		const changedKeyTuples = this.getChangedKeyTuples(base);
-		if (changedKeyTuples.length === 0) return;
-
-		// Find PK indices for the base table
-		const [schemaName, tableName] = base.split('.');
-		const table = this._findTable(tableName, schemaName);
-		if (!table) {
-			throw new QuereusError(`Assertion references unknown table ${base}`, StatusCode.INTERNAL);
-		}
-		const pkIndices = table.primaryKeyDefinition.map(def => def.index);
-
-		// Prepare a rewritten plan with an injected Filter on the target relationKey
-		const rewritten = this.injectPkFilter(analyzed, targetRelationKey, base, pkIndices);
-		const optimizedPlan = this.optimizer.optimize(rewritten, this) as BlockNode;
-
-		// Emit and execute for each changed PK tuple; stop on first violation row.
-		const emissionContext = new EmissionContext(this);
-		const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
-		const scheduler = new Scheduler(rootInstruction);
-
-		for (const tuple of changedKeyTuples) {
-			const params: Record<string, SqlValue> = {};
-			for (let i = 0; i < pkIndices.length; i++) {
-				params[`pk${i}`] = tuple[i];
-			}
-
-			const runtimeCtx: RuntimeContext = {
-				db: this,
-				stmt: undefined,
-				params,
-				context: new Map(),
-				tableContexts: new Map(),
-				tracer: this.instructionTracer,
-				enableMetrics: this.options.getBooleanOption('runtime_stats'),
-			};
-
-			// Run and detect first output row (violation)
-			const result = await scheduler.run(runtimeCtx);
-			if (isAsyncIterable(result)) {
-				for await (const _ of result as AsyncIterable<unknown>) {
-					throw new QuereusError(`Integrity assertion failed: ${assertionName}`, StatusCode.CONSTRAINT);
-				}
-			}
-		}
-	}
-
-	/** Gather all changed PK tuples for a base table across layers */
-	private getChangedKeyTuples(base: string): SqlValue[][] {
-		const lower = base.toLowerCase();
-		const tuples: SqlValue[][] = [];
-		const collect = (m: Map<string, Set<string>>): void => {
-			const set = m.get(lower);
-			if (!set) return;
-			for (const s of set) tuples.push(JSON.parse(s) as SqlValue[]);
-		};
-		collect(this.changeLog);
-		for (const layer of this.changeLogLayers) collect(layer);
-		return tuples;
-	}
-
-	/** Inject an equality Filter with named parameters :pk0, :pk1, ... at the earliest reference of targetRelationKey. */
-	private injectPkFilter(block: BlockNode, targetRelationKey: string, base: string, pkIndices: number[]): BlockNode {
-		const newStatements = block.getChildren().map(stmt => this.rewriteForPkFilter(stmt, targetRelationKey, base, pkIndices));
-		if (newStatements.every((s, i) => s === block.getChildren()[i])) return block;
-		return this.createBlockWithNewStatements(block, newStatements);
-	}
-
-	private rewriteForPkFilter(node: PlanNode, targetRelationKey: string, base: string, pkIndices: number[]): PlanNode {
-		// If this node is the target TableReference instance, wrap with a Filter
-		const maybe = this.tryWrapTableReference(node, targetRelationKey, base, pkIndices);
-		if (maybe) return maybe;
-
-		const originalChildren = node.getChildren();
-		if (!originalChildren || originalChildren.length === 0) return node;
-		const rewrittenChildren = originalChildren.map(child => this.rewriteForPkFilter(child, targetRelationKey, base, pkIndices));
-		const changed = rewrittenChildren.some((c, i) => c !== originalChildren[i]);
-		return changed ? node.withChildren(rewrittenChildren) : node;
-	}
-
-	private tryWrapTableReference(node: PlanNode, targetRelationKey: string, base: string, pkIndices: number[]): PlanNode | null {
-		if (!(node instanceof TableReferenceNode)) return null;
-		const tableSchema = node.tableSchema;
-		const schemaName = tableSchema.schemaName;
-		const tableName = tableSchema.name;
-		const relName = `${schemaName}.${tableName}`.toLowerCase();
-		const relKey = `${relName}#${node.id ?? 'unknown'}`;
-		if (relKey !== targetRelationKey) return null;
-
-		// Build predicate: AND(col_pk_i = :pk{i}) for all PK columns
-		const relational = node as RelationalPlanNode;
-		const scope = relational.scope;
-		const attributes = relational.getAttributes();
-
-		const makeColumnRef = (colIndex: number): ScalarPlanNode => {
-			const attr = attributes[colIndex];
-			const expr: AST.ColumnExpr = { type: 'column', name: attr.name, table: tableName, schema: schemaName };
-			return new ColumnReferenceNode(scope, expr, attr.type, attr.id, colIndex);
-		};
-
-		const makeParamRef = (i: number, type: ScalarType): ScalarPlanNode => {
-			const pexpr: AST.ParameterExpr = { type: 'parameter', name: `pk${i}` };
-			return new ParameterReferenceNode(scope, pexpr, `pk${i}`, type);
-		};
-
-		let predicate: ScalarPlanNode | null = null;
-		for (let i = 0; i < pkIndices.length; i++) {
-			const colIdx = pkIndices[i];
-			const left = makeColumnRef(colIdx);
-			const right = makeParamRef(i, attributes[colIdx].type);
-			const bexpr: AST.BinaryExpr = { type: 'binary', operator: '=', left: left.expression, right: right.expression };
-			const eqNode = new BinaryOpNode(scope, bexpr, left, right);
-			predicate = predicate
-				? new BinaryOpNode(scope, { type: 'binary', operator: 'AND', left: predicate.expression, right: eqNode.expression }, predicate, eqNode)
-				: eqNode;
-		}
-
-		if (!predicate) return null;
-
-		// Wrap the table reference with a FilterNode
-		return new FilterNode(scope, relational, predicate);
-	}
-
-	private collectTables(node: PlanNode, relToBase: Map<string, string>, bases: Set<string>): void {
-		for (const child of node.getChildren()) {
-			this.collectTables(child, relToBase, bases);
-		}
-		if (node instanceof TableReferenceNode) {
-			const schema = node.tableSchema;
-			const baseName = `${schema.schemaName}.${schema.name}`.toLowerCase();
-			bases.add(baseName);
-			const relKey = `${baseName}#${node.id ?? 'unknown'}`;
-			relToBase.set(relKey, baseName);
-		}
-	}
-
-	/**
-	 * Rollback an implicit transaction and coordinate with virtual table connections
-	 */
-	/** @internal Rollback an implicit transaction */
-	async _rollbackImplicit(): Promise<void> {
-		debugLog("Database: Rolling back implicit transaction.");
-
-		// Rollback all active connections
-		const connections = this.getAllConnections();
-		const rollbackPromises = connections.map(async (connection) => {
-			try {
-				await connection.rollback();
-			} catch (error) {
-				errorLog(`Error rolling back transaction on connection ${connection.connectionId}: %O`, error);
-				// Continue attempting rollback for other connections.
-			}
-		});
-
-		await Promise.allSettled(rollbackPromises);
-
-		// Reset database state
-		this.inTransaction = false;
-		this.isAutocommit = true;
-		this.inImplicit = false;
-	}
-
-	private createBlockWithNewStatements(block: BlockNode, statements: PlanNode[]): BlockNode {
-		return new BlockNode(block.scope, statements, block.parameters);
+		await this.assertionEvaluator.runGlobalAssertions();
 	}
 }
 

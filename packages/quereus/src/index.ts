@@ -36,6 +36,15 @@ export type {
 } from './vtab/events.js';
 export { DefaultVTableEventEmitter } from './vtab/events.js';
 
+// Database-Level Event System (unified reactivity)
+export type {
+	DatabaseDataChangeEvent,
+	DatabaseSchemaChangeEvent,
+	DataChangeSubscriptionOptions,
+	SchemaChangeSubscriptionOptions,
+} from './core/database-events.js';
+export { DatabaseEventEmitter } from './core/database-events.js';
+
 // Best Access Plan API (modern vtable planning interface)
 export type {
 	BestAccessPlanRequest,

@@ -1,8 +1,11 @@
-import type { SqlValue } from '@quereus/quereus';
+import type { SqlValue, DatabaseDataChangeEvent, DatabaseSchemaChangeEvent } from '@quereus/quereus';
 import type { PluginManifest as BasePluginManifest } from '@quereus/plugin-loader';
 
 // Re-export plugin types for convenience, but extend PluginManifest with UI-specific properties
 export type { PluginRecord, PluginSetting } from '@quereus/plugin-loader';
+
+// Re-export database event types for consumers
+export type { DatabaseDataChangeEvent, DatabaseSchemaChangeEvent };
 
 // Extended PluginManifest for UI display with provides information
 export interface PluginManifest extends BasePluginManifest {
@@ -12,6 +15,20 @@ export interface PluginManifest extends BasePluginManifest {
     collations?: string[];      // names of collations provided
   };
 }
+
+// ============================================================================
+// Database Event Types (for UI reactivity)
+// ============================================================================
+
+/**
+ * Callback type for data change events.
+ */
+export type DataChangeCallback = (event: DatabaseDataChangeEvent) => void;
+
+/**
+ * Callback type for schema change events.
+ */
+export type SchemaChangeCallback = (event: DatabaseSchemaChangeEvent) => void;
 
 // ============================================================================
 // Storage Module Types
@@ -204,6 +221,32 @@ export interface QuereusWorkerAPI {
    * Unsubscribe from sync events
    */
   offSyncEvent(subscriptionId: string): void;
+
+  // ============================================================================
+  // Database-Level Event Subscriptions
+  // ============================================================================
+
+  /**
+   * Subscribe to data change events from all modules.
+   * Returns a subscription ID for unsubscribing.
+   */
+  onDataChange(callback: DataChangeCallback): string;
+
+  /**
+   * Unsubscribe from data change events.
+   */
+  offDataChange(subscriptionId: string): void;
+
+  /**
+   * Subscribe to schema change events from all modules.
+   * Returns a subscription ID for unsubscribing.
+   */
+  onSchemaChange(callback: SchemaChangeCallback): string;
+
+  /**
+   * Unsubscribe from schema change events.
+   */
+  offSchemaChange(subscriptionId: string): void;
 }
 
 export interface QueryPlan {

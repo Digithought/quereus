@@ -259,7 +259,11 @@ export class Statement {
 		return isRelationType(relationType);
 	}
 
-	async *iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
+	/**
+	 * Low-level row iteration. Does NOT handle transactions - caller must manage.
+	 * @internal
+	 */
+	async *_iterateRowsRaw(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
 		this.validateStatement("iterate rows for");
 		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
 
@@ -304,6 +308,29 @@ export class Statement {
 			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
 		} finally {
 			this.busy = false;
+		}
+	}
+
+	/**
+	 * Iterates over result rows. Handles JIT transaction management - commits
+	 * implicit transactions on successful completion, rolls back on error.
+	 */
+	async *iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
+		let success = false;
+		try {
+			for await (const row of this._iterateRowsRaw(params)) {
+				yield row;
+			}
+			success = true;
+		} finally {
+			// Commit or rollback implicit transaction if one was started
+			if (this.db._isImplicitTransaction()) {
+				if (success) {
+					await this.db._commitTransaction();
+				} else {
+					await this.db._rollbackTransaction();
+				}
+			}
 		}
 	}
 
@@ -359,8 +386,8 @@ export class Statement {
 
 	/**
 	 * Executes the prepared statement with the given parameters until completion.
-	 * Automatically wraps execution in an implicit transaction if in autocommit mode
-	 * and not already in an explicit transaction.
+	 * Transactions are started lazily (just-in-time) when the first DML or DDL
+	 * operation occurs. Implicit transactions are committed after execution.
 	 *
 	 * The execution is serialized through the database mutex to prevent concurrent
 	 * transactions from interfering with each other.
@@ -368,74 +395,81 @@ export class Statement {
 	async run(params?: SqlParameters | SqlValue[]): Promise<void> {
 		this.validateStatement("run");
 
-		// Use the database's unified execution protection
-		await this.db._runWithProtection(true, true, async () => {
-			for await (const _ of this.iterateRows(params)) {
-				/* Consume all rows */
+		await this.db._runWithMutex(async () => {
+			let success = false;
+			try {
+				for await (const _ of this._iterateRowsRaw(params)) {
+					/* Consume all rows */
+				}
+				success = true;
+			} finally {
+				if (this.db._isImplicitTransaction()) {
+					if (success) {
+						await this.db._commitTransaction();
+					} else {
+						await this.db._rollbackTransaction();
+					}
+				}
 			}
 		});
 	}
 
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves the first result row.
-	 * The execution is serialized through the database mutex and wrapped in an implicit
-	 * transaction when in autocommit mode.
+	 * Transactions are started lazily (just-in-time) when needed.
 	 */
 	async get(params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
 		this.validateStatement("get first row for");
 
-		// Use the database's unified execution protection
-		return this.db._runWithProtection(true, true, async () => {
-			const names = this.getColumnNames();
-			for await (const row of this.iterateRows(params)) {
-				return rowToObject(row, names);
+		return this.db._runWithMutex(async () => {
+			let result: Record<string, SqlValue> | undefined;
+			let success = false;
+
+			try {
+				const names = this.getColumnNames();
+				for await (const row of this._iterateRowsRaw(params)) {
+					result = rowToObject(row, names);
+					break; // Only need the first row
+				}
+				success = true;
+				return result;
+			} finally {
+				if (this.db._isImplicitTransaction()) {
+					if (success) {
+						await this.db._commitTransaction();
+					} else {
+						await this.db._rollbackTransaction();
+					}
+				}
 			}
-			return undefined;
 		});
 	}
 
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves all result rows.
-	 * The execution is serialized through the database mutex and wrapped in an implicit
-	 * transaction when in autocommit mode. The mutex is held for the entire iteration.
+	 * Transactions are started lazily (just-in-time) when needed.
+	 * The mutex is held for the entire iteration.
 	 */
 	async *all(params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
 		this.validateStatement("get all rows for");
 
 		// Acquire mutex for the entire iteration
 		const releaseMutex = await this.db._acquireExecMutex();
-
-		// Determine if we need implicit transaction
-		const needsImplicit = this.db.getAutocommit();
-		let transactionStarted = false;
+		let success = false;
 
 		try {
-			if (needsImplicit) {
-				await this.db._beginImplicit();
-				transactionStarted = true;
-			}
-
 			const names = this.getColumnNames();
-			for await (const row of this.iterateRows(params)) {
+			for await (const row of this._iterateRowsRaw(params)) {
 				yield rowToObject(row, names);
 			}
-
-			// Commit on successful completion
-			if (transactionStarted) {
-				await this.db._commitImplicit();
-				transactionStarted = false;
-			}
-		} catch (err) {
-			// Rollback on error
-			if (transactionStarted) {
-				await this.db._rollbackImplicit();
-				transactionStarted = false;
-			}
-			throw err;
+			success = true;
 		} finally {
-			// Safety rollback if we somehow exit without commit/rollback
-			if (transactionStarted) {
-				await this.db._rollbackImplicit();
+			if (this.db._isImplicitTransaction()) {
+				if (success) {
+					await this.db._commitTransaction();
+				} else {
+					await this.db._rollbackTransaction();
+				}
 			}
 			releaseMutex();
 		}

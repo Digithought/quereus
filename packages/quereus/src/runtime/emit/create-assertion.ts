@@ -12,6 +12,9 @@ const log = createLogger('runtime:emit:create-assertion');
 export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionContext): Instruction {
 
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
+		await rctx.db._ensureTransaction();
+
 		// Convert the CHECK expression to SQL text for storage
 		// The CHECK expression should be negated to become a violation query:
 		// check (condition) becomes "select 1 where not (condition)"
