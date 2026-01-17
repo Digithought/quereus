@@ -73,42 +73,44 @@ export function createS3Client(config: S3StorageConfig): S3Client {
 /**
  * Build the S3 key for a sync batch.
  *
- * Key format: <prefix><org_id>/<db_part>/batches/<timestamp>_<batch_id>.json
+ * Key format: <prefix><storagePath>/batches/<timestamp>_<batch_id>.json
  *
  * @param config - S3 storage configuration
- * @param orgId - Organization ID
- * @param dbPart - Database part (e.g., 's_abc123')
+ * @param storagePath - Storage path for the database (e.g., 'org123/s_abc123')
  * @param batchId - Unique batch identifier
  * @param timestamp - Batch timestamp (ISO format)
  */
 export function buildBatchKey(
   config: S3StorageConfig,
-  orgId: string,
-  dbPart: string,
+  storagePath: string,
   batchId: string,
   timestamp: string
 ): string {
   const prefix = config.keyPrefix ?? '';
   // Use timestamp prefix for chronological ordering in S3 listings
   const timestampPrefix = timestamp.replace(/[:.]/g, '-');
-  return `${prefix}${orgId}/${dbPart}/batches/${timestampPrefix}_${batchId}.json`;
+  return `${prefix}${storagePath}/batches/${timestampPrefix}_${batchId}.json`;
 }
 
 /**
  * Build the S3 key for a database snapshot.
  *
- * Key format: <prefix><org_id>/<db_part>/snapshots/<timestamp>_<snapshot_id>.json
+ * Key format: <prefix><storagePath>/snapshots/<timestamp>_<snapshot_id>.json
+ *
+ * @param config - S3 storage configuration
+ * @param storagePath - Storage path for the database (e.g., 'org123/s_abc123')
+ * @param snapshotId - Unique snapshot identifier
+ * @param timestamp - Snapshot timestamp (ISO format)
  */
 export function buildSnapshotKey(
   config: S3StorageConfig,
-  orgId: string,
-  dbPart: string,
+  storagePath: string,
   snapshotId: string,
   timestamp: string
 ): string {
   const prefix = config.keyPrefix ?? '';
   const timestampPrefix = timestamp.replace(/[:.]/g, '-');
-  return `${prefix}${orgId}/${dbPart}/snapshots/${timestampPrefix}_${snapshotId}.json`;
+  return `${prefix}${storagePath}/snapshots/${timestampPrefix}_${snapshotId}.json`;
 }
 
 /**

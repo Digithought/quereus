@@ -12,7 +12,6 @@ import {
   type S3StorageConfig,
   buildBatchKey,
 } from './s3-config.js';
-import { parseDatabaseId } from './database-ids.js';
 
 /**
  * A sync batch to be stored in S3.
@@ -38,21 +37,42 @@ export interface SyncBatch {
 }
 
 /**
+ * Function to resolve a database ID to a storage path for S3 keys.
+ * Default implementation uses the databaseId directly (with sanitization).
+ */
+export type StoragePathResolver = (databaseId: string) => string;
+
+/**
+ * Default storage path resolver - sanitizes databaseId for use as S3 path.
+ * Replaces colons with slashes for hierarchical structure.
+ */
+function defaultStoragePathResolver(databaseId: string): string {
+  // Replace : with / for hierarchical structure, sanitize other chars
+  return databaseId.replace(/:/g, '/').replace(/[^a-zA-Z0-9/_-]/g, '_');
+}
+
+/**
  * S3 Batch Store for durable sync batch storage.
  */
 export class S3BatchStore {
   private readonly client: S3Client;
   private readonly config: S3StorageConfig;
+  private readonly resolveStoragePath: StoragePathResolver;
 
-  constructor(client: S3Client, config: S3StorageConfig) {
+  constructor(
+    client: S3Client,
+    config: S3StorageConfig,
+    resolveStoragePath?: StoragePathResolver
+  ) {
     this.client = client;
     this.config = config;
+    this.resolveStoragePath = resolveStoragePath ?? defaultStoragePathResolver;
   }
 
   /**
    * Store a sync batch in S3.
    *
-   * @param databaseId - Database ID in format <org_id>:<type>_<id>
+   * @param databaseId - Database identifier
    * @param clientId - Client that originated the changes
    * @param changes - The sync changes to store
    * @param metadata - Optional metadata to include
@@ -67,9 +87,6 @@ export class S3BatchStore {
     const batchId = randomUUID();
     const timestamp = new Date().toISOString();
 
-    // Parse database ID to get org and db parts
-    const { orgId, dbPart } = parseDatabaseId(databaseId);
-
     const batch: SyncBatch = {
       batchId,
       databaseId,
@@ -79,7 +96,8 @@ export class S3BatchStore {
       metadata,
     };
 
-    const key = buildBatchKey(this.config, orgId, dbPart, batchId, timestamp);
+    const storagePath = this.resolveStoragePath(databaseId);
+    const key = buildBatchKey(this.config, storagePath, batchId, timestamp);
     const body = JSON.stringify(batch);
 
     serviceLog('Storing sync batch to S3: %s (%d changes)', key, changes.length);
@@ -128,8 +146,9 @@ export class S3BatchStore {
  */
 export function createS3BatchStore(
   client: S3Client,
-  config: S3StorageConfig
+  config: S3StorageConfig,
+  resolveStoragePath?: StoragePathResolver
 ): S3BatchStore {
-  return new S3BatchStore(client, config);
+  return new S3BatchStore(client, config, resolveStoragePath);
 }
 

@@ -1,5 +1,9 @@
 /**
  * Service layer exports.
+ *
+ * This package provides generic multi-tenant sync coordination.
+ * App-specific database ID handling and cascade delete should be
+ * implemented in the application layer via StoreManagerHooks.
  */
 
 export {
@@ -26,15 +30,6 @@ export {
 } from './store-manager.js';
 
 export {
-  parseDatabaseId,
-  getDatabaseStoragePath,
-  buildDatabaseId,
-  isValidDatabaseId,
-  type ParsedDatabaseId,
-  type DatabaseType,
-} from './database-ids.js';
-
-export {
   type S3StorageConfig,
   createS3Client,
   buildBatchKey,
@@ -46,6 +41,7 @@ export {
   S3BatchStore,
   createS3BatchStore,
   type SyncBatch,
+  type StoragePathResolver,
 } from './s3-batch-store.js';
 
 export {
@@ -54,11 +50,3 @@ export {
   type SnapshotMetadata,
   type SnapshotScheduleConfig,
 } from './s3-snapshot-store.js';
-
-export {
-  CascadeDeleteService,
-  type ArchiveRecord,
-  type ArchiveStore,
-  type RelatedDatabaseQuery,
-  type CascadeDeleteServiceConfig,
-} from './cascade-delete.js';

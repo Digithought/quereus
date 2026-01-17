@@ -4,6 +4,9 @@
  * Manages lazy loading and cleanup of per-database LevelDB stores.
  * Each database gets its own isolated store, opened on-demand and
  * closed after idle timeout.
+ *
+ * This is a generic implementation. Applications provide custom database ID
+ * parsing and path resolution via hooks in StoreManagerConfig.
  */
 
 import { join } from 'node:path';
@@ -15,7 +18,6 @@ import {
   type SyncManager,
 } from '@quereus/sync';
 import { serviceLog } from '../common/logger.js';
-import { getDatabaseStoragePath, isValidDatabaseId } from './database-ids.js';
 
 export interface StoreEntry {
   databaseId: string;
@@ -90,39 +92,27 @@ function sanitizePathComponent(value: string): string {
 }
 
 /**
- * Default storage path resolver - uses the new org-based format.
+ * Default storage path resolver - simple sanitized passthrough.
  *
- * For database IDs in format <org_id>:<type>_<id>:
- *   Returns: <org_id>/<type>_<id>
- *
- * For legacy database IDs (no colon):
- *   Returns: _legacy/<sanitized_id>
+ * Applications can provide a custom resolveStoragePath hook for
+ * org-based folder structures or other custom layouts.
  */
 function defaultResolveStoragePath(databaseId: string, _context?: StoreContext): string {
-  // Try new format first
-  if (isValidDatabaseId(databaseId)) {
-    return getDatabaseStoragePath(databaseId);
-  }
-
-  // Legacy fallback for old-format IDs
-  return `_legacy/${sanitizePathComponent(databaseId)}`;
+  return sanitizePathComponent(databaseId);
 }
 
 /**
- * Default database ID validator - accepts new format or legacy format.
+ * Default database ID validator - accepts any non-empty string with safe characters.
+ *
+ * Applications can provide a custom isValidDatabaseId hook for
+ * stricter validation (e.g., org:type_id format).
  */
 function defaultIsValidDatabaseId(databaseId: string, _context?: StoreContext): boolean {
   if (typeof databaseId !== 'string' || databaseId.length === 0) {
     return false;
   }
-
-  // Accept new format
-  if (isValidDatabaseId(databaseId)) {
-    return true;
-  }
-
-  // Accept legacy format (alphanumeric with dashes/underscores)
-  return /^[a-zA-Z0-9_-]+$/.test(databaseId);
+  // Accept alphanumeric with common separators
+  return /^[a-zA-Z0-9_:.-]+$/.test(databaseId);
 }
 
 const DEFAULT_CONFIG: StoreManagerConfig = {

@@ -2,22 +2,19 @@
  * S3 Snapshot Store - Full database snapshots for faster restore.
  *
  * Stores periodic full snapshots to S3 at:
- *   <prefix><org_id>/<db_type>_<id>/snapshot.gz
+ *   <prefix><storage_path>/snapshots/<timestamp>_<snapshot_id>.json.gz
  *
  * Snapshots are triggered by:
  * - Time interval (e.g., every 5 minutes)
  * - Change volume threshold (e.g., every 1000 changes)
  */
 
-import { PutObjectCommand, GetObjectCommand, HeadObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
-import { createGzip, createGunzip } from 'node:zlib';
-import { pipeline } from 'node:stream/promises';
-import { Readable, PassThrough } from 'node:stream';
+import { createGzip } from 'node:zlib';
 import { serviceLog } from '../common/logger.js';
 import { type S3StorageConfig, buildSnapshotKey } from './s3-config.js';
-import { parseDatabaseId } from './database-ids.js';
-import type { SyncManager, SnapshotChunk } from '@quereus/sync';
+import type { SyncManager, SnapshotChunk, SnapshotColumnVersionsChunk } from '@quereus/sync';
 
 /**
  * Snapshot metadata stored alongside the snapshot.
@@ -75,23 +72,38 @@ interface DatabaseSnapshotState {
 }
 
 /**
+ * Function to resolve a database ID to a storage path for S3 keys.
+ */
+export type StoragePathResolver = (databaseId: string) => string;
+
+/**
+ * Default storage path resolver - sanitizes databaseId for use as S3 path.
+ */
+function defaultStoragePathResolver(databaseId: string): string {
+  return databaseId.replace(/:/g, '/').replace(/[^a-zA-Z0-9/_-]/g, '_');
+}
+
+/**
  * S3 Snapshot Store for full database snapshots.
  */
 export class S3SnapshotStore {
   private readonly client: S3Client;
   private readonly config: S3StorageConfig;
   private readonly scheduleConfig: SnapshotScheduleConfig;
+  private readonly resolveStoragePath: StoragePathResolver;
   private readonly databaseStates = new Map<string, DatabaseSnapshotState>();
   private checkTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     client: S3Client,
     config: S3StorageConfig,
-    scheduleConfig: Partial<SnapshotScheduleConfig> = {}
+    scheduleConfig: Partial<SnapshotScheduleConfig> = {},
+    resolveStoragePath?: StoragePathResolver
   ) {
     this.client = client;
     this.config = config;
     this.scheduleConfig = { ...DEFAULT_SCHEDULE_CONFIG, ...scheduleConfig };
+    this.resolveStoragePath = resolveStoragePath ?? defaultStoragePathResolver;
   }
 
   /**
@@ -190,18 +202,19 @@ export class S3SnapshotStore {
     const timestamp = new Date().toISOString();
 
     try {
-      const { orgId, dbPart } = parseDatabaseId(databaseId);
-      const key = buildSnapshotKey(this.config, orgId, dbPart, snapshotId, timestamp);
+      const storagePath = this.resolveStoragePath(databaseId);
+      const key = buildSnapshotKey(this.config, storagePath, snapshotId, timestamp);
 
       // Stream snapshot chunks through gzip compression
-      let totalRows = 0;
+      let totalEntries = 0;
       let totalTables = 0;
       const chunks: SnapshotChunk[] = [];
 
       for await (const chunk of syncManager.getSnapshotStream()) {
         chunks.push(chunk);
-        totalRows += chunk.rows?.length ?? 0;
-        if (chunk.table && chunk.rows && chunk.rows.length > 0) {
+        if (this.isColumnVersionsChunk(chunk)) {
+          totalEntries += chunk.entries?.length ?? 0;
+        } else if (chunk.type === 'table-start') {
           totalTables++;
         }
       }
@@ -220,7 +233,7 @@ export class S3SnapshotStore {
         Metadata: {
           'x-snapshot-id': snapshotId,
           'x-database-id': databaseId,
-          'x-row-count': String(totalRows),
+          'x-entry-count': String(totalEntries),
           'x-table-count': String(totalTables),
         },
       }));
@@ -229,13 +242,13 @@ export class S3SnapshotStore {
         snapshotId,
         databaseId,
         timestamp,
-        totalRows,
+        totalRows: totalEntries, // Using entries count as "rows"
         totalTables,
         compressedSizeBytes: compressed.length,
       };
 
-      serviceLog('Snapshot created: %s (%d rows, %d tables, %d bytes)',
-        snapshotId, totalRows, totalTables, compressed.length);
+      serviceLog('Snapshot created: %s (%d entries, %d tables, %d bytes)',
+        snapshotId, totalEntries, totalTables, compressed.length);
 
       // Update state
       state.lastSnapshotAt = Date.now();
@@ -248,13 +261,20 @@ export class S3SnapshotStore {
   }
 
   /**
+   * Type guard to check if a chunk is a column-versions chunk.
+   */
+  private isColumnVersionsChunk(chunk: SnapshotChunk): chunk is SnapshotColumnVersionsChunk {
+    return chunk.type === 'column-versions';
+  }
+
+  /**
    * Check if a snapshot exists for a database.
    */
   async hasSnapshot(databaseId: string): Promise<boolean> {
-    const { orgId, dbPart } = parseDatabaseId(databaseId);
+    const storagePath = this.resolveStoragePath(databaseId);
     // Check for latest snapshot pattern
     const prefix = this.config.keyPrefix ?? '';
-    const key = `${prefix}${orgId}/${dbPart}/snapshots/`;
+    void `${prefix}${storagePath}/snapshots/`; // Key pattern for listing
     // Would need list operation to check, simplified for now
     return false;
   }
@@ -309,8 +329,9 @@ export class S3SnapshotStore {
 export function createS3SnapshotStore(
   client: S3Client,
   config: S3StorageConfig,
-  scheduleConfig?: Partial<SnapshotScheduleConfig>
+  scheduleConfig?: Partial<SnapshotScheduleConfig>,
+  resolveStoragePath?: StoragePathResolver
 ): S3SnapshotStore {
-  return new S3SnapshotStore(client, config, scheduleConfig);
+  return new S3SnapshotStore(client, config, scheduleConfig, resolveStoragePath);
 }
 
