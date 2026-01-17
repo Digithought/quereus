@@ -178,7 +178,7 @@ export const registerQuereusSql = (monaco: Monaco): void => {
 
 	const alreadyRegistered = monaco.languages
 		.getLanguages()
-		.some((language) => language.id === LANGUAGE_ID);
+		.some((language: { id: string }) => language.id === LANGUAGE_ID);
 
 	if (!alreadyRegistered) {
 		monaco.languages.register({ id: LANGUAGE_ID });
