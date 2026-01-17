@@ -112,11 +112,12 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 		// Generate migration DDL
 		const migrationStatements = generateMigrationDDL(diff, schemaName);
 
-		// Execute each migration statement
+		// Execute each migration statement using _execWithinTransaction to avoid mutex deadlock
+		// (we're already inside an exec() call that holds the mutex)
 		for (const ddl of migrationStatements) {
 			log('Executing migration DDL: %s', ddl);
 			try {
-				await rctx.db.exec(ddl);
+				await rctx.db._execWithinTransaction(ddl);
 			} catch (e) {
 				log('Migration failed for DDL: %s', ddl);
 				const errorMessage = e instanceof Error ? e.message : String(e);
@@ -156,7 +157,7 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 
 				log('Executing seed SQL (length=%d): %s', deleteAndInsertSql.length, deleteAndInsertSql);
 				try {
-					await rctx.db.exec(deleteAndInsertSql);
+					await rctx.db._execWithinTransaction(deleteAndInsertSql);
 					log('Seed application succeeded for table %s', tableName);
 				} catch (e) {
 					log('Seed application failed for table %s: %O', tableName, e);
