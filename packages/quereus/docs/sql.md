@@ -361,15 +361,19 @@ The insert statement adds new rows to a table.
 **Syntax:**
 ```sql
 [ with [recursive] with_clause[,...] ]
-  insert into table_name [(column [, column...])]
+  insert [or conflict_resolution] into table_name [(column [, column...])]
   { values (expr [, expr...]) [, (expr [, expr...])]... | select_statement }
   [ with context (variable = expr [, ...]) ]
   [ with schema schema_name [, schema_name...] ]
   [ returning [qualifier.]expr [, [qualifier.]expr...] ]
+
+conflict_resolution:
+  rollback | abort | fail | ignore | replace
 ```
 
 **Options:**
 - `with clause`: Common Table Expressions for use in the insert
+- `or conflict_resolution`: Specifies how to handle constraint conflicts (see Conflict Resolution below)
 - `table_name`: Target table for the insertion
 - `column`: Optional list of columns to insert into
 - `values`: A list of value sets to insert
@@ -377,6 +381,18 @@ The insert statement adds new rows to a table.
 - `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
 - `with schema`: Specifies schema search path for resolving table names (see section 2.1.1)
 - `returning`: Returns specified expressions from the inserted rows (supports NEW qualifier)
+
+**Conflict Resolution:**
+
+When inserting a row that would violate a UNIQUE constraint (including PRIMARY KEY), the `OR` clause specifies how to handle the conflict:
+
+- **`OR ROLLBACK`**: Abort the current transaction and rollback all changes
+- **`OR ABORT`**: Abort the current statement and rollback changes (default behavior)
+- **`OR FAIL`**: Abort the current statement but do not rollback prior changes in the transaction
+- **`OR IGNORE`**: Silently skip the row that would cause a conflict
+- **`OR REPLACE`**: Delete the existing row that conflicts and insert the new row
+
+**Note:** `OR REPLACE` is particularly useful for "upsert" operations where you want to insert a new row or update an existing one based on the primary key. When `OR REPLACE` is used, the existing row is deleted and replaced with the new row values.
 
 **Examples:**
 ```sql
@@ -416,6 +432,22 @@ with recent_orders as (
     from recent_orders
     group by id, customer_name
     returning order_id, total;
+
+-- INSERT OR REPLACE (upsert operation)
+insert or replace into users (id, name, email, updated_at)
+  values (1, 'Alice', 'alice@example.com', datetime('now'));
+-- If a user with id=1 exists, it is replaced; otherwise, a new row is inserted
+
+-- INSERT OR IGNORE (skip conflicts)
+insert or ignore into tags (name)
+  values ('javascript'), ('typescript'), ('javascript');
+-- Only inserts 'javascript' and 'typescript' once, skipping the duplicate
+
+-- INSERT OR REPLACE with RETURNING
+insert or replace into products (id, name, price)
+  values (101, 'Updated Product', 29.99)
+  returning id, name, price, 'replaced' as action;
+-- Returns the inserted/replaced row with an indicator
 ```
 
 ### 2.3 UPDATE Statement
