@@ -15,6 +15,7 @@ import { generateInstructionProgram, serializePlanTree } from '../planner/debug.
 import { EmissionContext } from '../runtime/emission-context.js';
 import type { SchemaDependency } from '../planner/planning-context.js';
 import { getParameterTypes } from './param.js';
+import { rowToObject } from './utils.js';
 import { getPhysicalType, physicalTypeName, PhysicalType } from '../types/logical-type.js';
 
 const log = createLogger('core:statement');
@@ -360,70 +361,83 @@ export class Statement {
 	 * Executes the prepared statement with the given parameters until completion.
 	 * Automatically wraps execution in an implicit transaction if in autocommit mode
 	 * and not already in an explicit transaction.
+	 *
+	 * The execution is serialized through the database mutex to prevent concurrent
+	 * transactions from interfering with each other.
 	 */
 	async run(params?: SqlParameters | SqlValue[]): Promise<void> {
 		this.validateStatement("run");
 
-		const needsImplicitTransaction = this.db.getAutocommit();
-
-		let executionError: Error | null = null;
-		try {
-			if (needsImplicitTransaction) {
-				await this.db._beginImplicitTransaction();
+		// Use the database's unified execution protection
+		await this.db._runWithProtection(true, true, async () => {
+			for await (const _ of this.iterateRows(params)) {
+				/* Consume all rows */
 			}
-
-			try {
-				for await (const _ of this.iterateRows(params)) {
-					/* Consume all rows */
-				}
-			} catch (err) {
-				const error = err instanceof Error ? err : new Error(String(err));
-				executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
-			}
-
-		} finally {
-			if (needsImplicitTransaction) {
-				if (executionError) {
-					await this.db._rollbackImplicitTransaction();
-				} else {
-					await this.db._commitImplicitTransaction();
-				}
-			}
-		}
-
-		if (executionError) {
-			throw executionError;
-		}
+		});
 	}
 
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves the first result row.
+	 * The execution is serialized through the database mutex and wrapped in an implicit
+	 * transaction when in autocommit mode.
 	 */
 	async get(params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
 		this.validateStatement("get first row for");
-		const names = this.getColumnNames();
-		for await (const rowArray of this.iterateRows(params)) {
-			const rowObject = rowArray.reduce((obj, val, idx) => {
-				obj[names[idx] || `col_${idx}`] = val;
-				return obj;
-			}, {} as Record<string, SqlValue>);
-			return rowObject;
-		}
-		return undefined;
+
+		// Use the database's unified execution protection
+		return this.db._runWithProtection(true, true, async () => {
+			const names = this.getColumnNames();
+			for await (const row of this.iterateRows(params)) {
+				return rowToObject(row, names);
+			}
+			return undefined;
+		});
 	}
 
 	/**
 	 * Executes the prepared statement, binds parameters, and retrieves all result rows.
+	 * The execution is serialized through the database mutex and wrapped in an implicit
+	 * transaction when in autocommit mode. The mutex is held for the entire iteration.
 	 */
 	async *all(params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
 		this.validateStatement("get all rows for");
-		const names = this.getColumnNames();
-		for await (const rowArray of this.iterateRows(params)) {
-			const rowObject = rowArray.reduce((obj, val, idx) => {
-				obj[names[idx] || `col_${idx}`] = val;
-				return obj;
-			}, {} as Record<string, SqlValue>);
-			yield rowObject;
+
+		// Acquire mutex for the entire iteration
+		const releaseMutex = await this.db._acquireExecMutex();
+
+		// Determine if we need implicit transaction
+		const needsImplicit = this.db.getAutocommit();
+		let transactionStarted = false;
+
+		try {
+			if (needsImplicit) {
+				await this.db._beginImplicit();
+				transactionStarted = true;
+			}
+
+			const names = this.getColumnNames();
+			for await (const row of this.iterateRows(params)) {
+				yield rowToObject(row, names);
+			}
+
+			// Commit on successful completion
+			if (transactionStarted) {
+				await this.db._commitImplicit();
+				transactionStarted = false;
+			}
+		} catch (err) {
+			// Rollback on error
+			if (transactionStarted) {
+				await this.db._rollbackImplicit();
+				transactionStarted = false;
+			}
+			throw err;
+		} finally {
+			// Safety rollback if we somehow exit without commit/rollback
+			if (transactionStarted) {
+				await this.db._rollbackImplicit();
+			}
+			releaseMutex();
 		}
 	}
 

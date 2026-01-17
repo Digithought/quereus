@@ -44,11 +44,22 @@ import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js'
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 import { type LogicalType } from '../types/logical-type.js';
 import { getParameterTypes } from './param.js';
+import { rowToObject } from './utils.js';
 
 const log = createLogger('core:database');
 const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
 const debugLog = log.extend('debug');
+
+/**
+ * Options for internal statement execution.
+ */
+interface ExecutionOptions {
+	/** Whether to acquire the execution mutex. Set to false for nested execution. */
+	acquireMutex: boolean;
+	/** Whether to manage implicit transactions. Set to false when already in a transaction. */
+	manageTransaction: boolean;
+}
 
 /**
  * Represents a connection to an Quereus database (in-memory in this port).
@@ -62,7 +73,7 @@ export class Database {
 	private isAutocommit = true; // Manages transaction state
 	private inTransaction = false;
 	private activeConnections = new Map<string, VirtualTableConnection>();
-	private inImplicitTransaction = false; // Track if we're in an implicit transaction
+	private inImplicit = false; // Track if we're in an implicit transaction
 	public readonly optimizer: Optimizer;
 	public readonly options: DatabaseOptionsManager;
 	private instructionTracer: InstructionTracer | undefined;
@@ -72,6 +83,12 @@ export class Database {
 	private changeLogLayers: Array<Map<string, Set<string>>> = [];
 	/** Deferred constraint evaluation queue */
 	private readonly deferredConstraints = new DeferredConstraintQueue(this);
+	/**
+	 * Mutex for serializing statement execution.
+	 * This prevents concurrent statements from interfering with each other's
+	 * transaction state, matching SQLite's behavior of serializing writes.
+	 */
+	private execMutex: Promise<void> = Promise.resolve();
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -242,14 +259,22 @@ export class Database {
 
 	/**
 	 * Executes a query and returns the first result row as an object.
+	 * The execution is serialized through the mutex and wrapped in an implicit
+	 * transaction when in autocommit mode.
+	 *
 	 * @param sql The SQL query string to execute.
 	 * @param params Optional parameters to bind.
 	 * @returns A Promise resolving to the first result row as an object, or undefined if no rows.
 	 * @throws QuereusError on failure.
 	 */
-	get(sql: string, params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
+	async get(sql: string, params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
+		this.checkOpen();
 		const stmt = this.prepare(sql, params);
-		return stmt.get(params);
+		try {
+			return await stmt.get(params);
+		} finally {
+			await stmt.finalize();
+		}
 	}
 
 	/**
@@ -259,12 +284,87 @@ export class Database {
 	 * @returns A Promise resolving when execution completes.
 	 * @throws QuereusError on failure.
 	 */
+	// ============================================================================
+	// Statement Execution - Core Infrastructure
+	// ============================================================================
+
+	/**
+	 * Acquires the execution mutex and returns a release function.
+	 * All statement execution is serialized through this mutex to prevent
+	 * concurrent transactions from interfering with each other.
+	 * This matches SQLite's behavior of serializing database access.
+	 * @internal
+	 */
+	async _acquireExecMutex(): Promise<() => void> {
+		const previousMutex = this.execMutex;
+		let releaseMutex: () => void;
+		this.execMutex = new Promise<void>(resolve => {
+			releaseMutex = resolve;
+		});
+		await previousMutex;
+		return releaseMutex!;
+	}
+
+	/**
+	 * Unified execution wrapper that handles mutex acquisition and implicit transactions.
+	 * All public execution methods should use this to ensure consistent behavior.
+	 * @internal
+	 */
+	private async _executeWithProtection<T>(
+		options: ExecutionOptions,
+		executor: () => Promise<T>
+	): Promise<T> {
+		let releaseMutex: (() => void) | undefined;
+
+		try {
+			// Acquire mutex if requested
+			if (options.acquireMutex) {
+				releaseMutex = await this._acquireExecMutex();
+			}
+
+			// Determine if we need an implicit transaction
+			const needsImplicit = options.manageTransaction && this.isAutocommit;
+
+			let executionError: Error | null = null;
+			let result: T;
+
+			try {
+				if (needsImplicit) {
+					await this._beginImplicit();
+				}
+
+				try {
+					result = await executor();
+				} catch (err) {
+					const error = err instanceof Error ? err : new Error(String(err));
+					executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
+					throw executionError;
+				}
+
+			} finally {
+				if (needsImplicit) {
+					if (executionError) {
+						await this._rollbackImplicit();
+					} else {
+						await this._commitImplicit();
+					}
+				}
+			}
+
+			return result!;
+		} finally {
+			if (releaseMutex) {
+				releaseMutex();
+			}
+		}
+	}
+
 	/**
 	 * @internal
-	 * Executes a single AST statement without transaction management.
-	 * Used by both exec() and eval() to avoid code duplication.
+	 * Executes a single AST statement. Does not manage mutex or transactions.
+	 * Used as the innermost execution primitive.
 	 */
-	private async _executeStatement(statementAst: AST.Statement, params?: SqlParameters | SqlValue[]): Promise<void> {
+	private async _executeSingleStatement(statementAst: AST.Statement, params?: SqlParameters | SqlValue[]): Promise<void> {
 		const plan = this._buildPlan([statementAst], params);
 
 		if (plan.statements.length === 0) return; // No-op for this AST
@@ -287,61 +387,100 @@ export class Database {
 		await scheduler.run(runtimeCtx);
 	}
 
-	async exec(
-		sql: string,
-		params?: SqlParameters,
-	): Promise<void> {
-		this.checkOpen();
+	/**
+	 * @internal
+	 * Executes a batch of AST statements sequentially.
+	 * Does not manage mutex or transactions - caller must handle that.
+	 */
+	private async _executeStatementBatch(batch: AST.Statement[], params?: SqlParameters | SqlValue[]): Promise<void> {
+		for (const statementAst of batch) {
+			await this._executeSingleStatement(statementAst, params);
+		}
+	}
 
-		log('Executing SQL block (new runtime): %s', sql);
-
+	/**
+	 * Parses SQL into a statement batch.
+	 */
+	private _parseSql(sql: string): AST.Statement[] {
 		const parser = new Parser();
-		let batch: AST.Statement[];
 		try {
-			batch = parser.parseAll(sql);
+			return parser.parseAll(sql);
 		} catch (e) {
 			if (e instanceof ParseError) throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
 			throw e;
 		}
+	}
 
+	/**
+	 * Determines if a statement batch contains explicit transaction control.
+	 */
+	private _hasExplicitTransactionControl(batch: AST.Statement[]): boolean {
+		return batch.some(
+			ast => ast.type === 'begin' || ast.type === 'commit' || ast.type === 'rollback' || ast.type === 'savepoint' || ast.type === 'release'
+		);
+	}
+
+	// ============================================================================
+	// Statement Execution - Public API
+	// ============================================================================
+
+	/**
+	 * Executes one or more SQL statements directly.
+	 * Statements are serialized through the execution mutex and wrapped in an
+	 * implicit transaction when in autocommit mode (unless they contain explicit
+	 * transaction control statements).
+	 *
+	 * @param sql The SQL string(s) to execute.
+	 * @param params Optional parameters to bind.
+	 * @returns A Promise resolving when execution completes.
+	 * @throws QuereusError on failure.
+	 */
+	async exec(sql: string, params?: SqlParameters): Promise<void> {
+		this.checkOpen();
+		log('Executing SQL block: %s', sql);
+
+		const batch = this._parseSql(sql);
 		if (batch.length === 0) return;
 
-		const needsImplicitTransaction = batch.length >= 1
-			&& this.isAutocommit
-			// has explicit transaction
-			&& !batch.some(
-				ast => ast.type === 'begin' || ast.type === 'commit' || ast.type === 'rollback' || ast.type === 'savepoint' || ast.type === 'release'
-			);
+		// Don't wrap in implicit transaction if batch has explicit transaction control
+		const hasExplicitTxn = this._hasExplicitTransactionControl(batch);
 
-		let executionError: Error | null = null;
-		try {
-			if (needsImplicitTransaction) {
-				await this._beginImplicitTransaction();
-			}
+		await this._executeWithProtection(
+			{ acquireMutex: true, manageTransaction: !hasExplicitTxn },
+			() => this._executeStatementBatch(batch, params)
+		);
+	}
 
-			for (let i = 0; i < batch.length; i++) {
-				try {
-					await this._executeStatement(batch[i], params);
-				} catch (err) {
-					const error = err instanceof Error ? err : new Error(String(err));
-					executionError = error instanceof QuereusError ? error : new QuereusError(error.message, StatusCode.ERROR, error);
-					break; // Stop processing further statements on error
-				}
-			}
+	/**
+	 * Execute SQL without acquiring the mutex.
+	 * Used by runtime code (e.g., APPLY SCHEMA) that needs to execute
+	 * nested SQL statements while already holding the mutex.
+	 * @internal
+	 */
+	async _execWithinTransaction(sql: string, params?: SqlParameters): Promise<void> {
+		log('Executing nested SQL: %s', sql);
 
-		} finally {
-			if (needsImplicitTransaction) {
-				if (executionError) {
-					await this._rollbackImplicitTransaction();
-				} else {
-					await this._commitImplicitTransaction();
-				}
-			}
-		}
+		const batch = this._parseSql(sql);
+		if (batch.length === 0) return;
 
-		if (executionError) {
-			throw executionError;
-		}
+		// No mutex, no implicit transaction - we're already inside one
+		await this._executeWithProtection(
+			{ acquireMutex: false, manageTransaction: false },
+			() => this._executeStatementBatch(batch, params)
+		);
+	}
+
+	/**
+	 * Execute a function with mutex and optional implicit transaction management.
+	 * This is exposed for Statement to use, avoiding code duplication.
+	 * @internal
+	 */
+	async _runWithProtection<T>(
+		acquireMutex: boolean,
+		manageTransaction: boolean,
+		executor: () => Promise<T>
+	): Promise<T> {
+		return this._executeWithProtection({ acquireMutex, manageTransaction }, executor);
 	}
 
 	/**
@@ -833,6 +972,10 @@ export class Database {
 	 * The underlying statement is automatically finalized when iteration completes
 	 * or if an error occurs.
 	 *
+	 * The execution is serialized through the mutex and wrapped in an implicit
+	 * transaction when in autocommit mode. The mutex is held for the entire
+	 * iteration to ensure transactional consistency.
+	 *
 	 * @param sql The SQL query string to execute.
 	 * @param params Optional parameters to bind (array for positional, object for named).
 	 * @yields Each result row as an object (`Record<string, SqlValue>`).
@@ -854,8 +997,20 @@ export class Database {
 	async *eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
 		this.checkOpen();
 
+		// Acquire mutex for the entire iteration
+		const releaseMutex = await this._acquireExecMutex();
+
+		// Determine if we need implicit transaction
+		const needsImplicit = this.isAutocommit;
+		let transactionStarted = false;
 		let stmt: Statement | null = null;
+
 		try {
+			if (needsImplicit) {
+				await this._beginImplicit();
+				transactionStarted = true;
+			}
+
 			stmt = this.prepare(sql);
 
 			if (stmt.astBatch.length === 0) {
@@ -866,28 +1021,51 @@ export class Database {
 			if (stmt.astBatch.length > 1) {
 				// Multi-statement batch: execute all but the last statement,
 				// then yield results from the last statement
-				const parser = new Parser();
-				const batch = parser.parseAll(sql);
+				const batch = this._parseSql(sql);
 
 				// Execute all statements except the last one
 				for (let i = 0; i < batch.length - 1; i++) {
-					await this._executeStatement(batch[i], params);
+					await this._executeSingleStatement(batch[i], params);
 				}
 
 				// Now prepare and execute the last statement to yield its results
 				const lastStmt = new Statement(this, [batch[batch.length - 1]]);
 				this.statements.add(lastStmt);
 				try {
-					yield* lastStmt.all(params);
+					const names = lastStmt.getColumnNames();
+					for await (const row of lastStmt.iterateRows(params)) {
+						yield rowToObject(row, names);
+					}
 				} finally {
 					await lastStmt.finalize();
 				}
 			} else {
 				// Single statement: execute and yield results
-				yield* stmt.all(params);
+				const names = stmt.getColumnNames();
+				for await (const row of stmt.iterateRows(params)) {
+					yield rowToObject(row, names);
+				}
 			}
+
+			// Commit implicit transaction on successful completion
+			if (transactionStarted) {
+				await this._commitImplicit();
+				transactionStarted = false;
+			}
+		} catch (err) {
+			// Rollback on error
+			if (transactionStarted) {
+				await this._rollbackImplicit();
+				transactionStarted = false;
+			}
+			throw err;
 		} finally {
 			if (stmt) { await stmt.finalize(); }
+			// If we somehow exit without committing/rolling back, rollback
+			if (transactionStarted) {
+				await this._rollbackImplicit();
+			}
+			releaseMutex();
 		}
 	}
 
@@ -1042,7 +1220,7 @@ export class Database {
 		const connection = this.activeConnections.get(connectionId);
 		if (connection) {
 			// Don't disconnect during implicit transactions - let the transaction coordinate
-			if (this.inImplicitTransaction) {
+			if (this.inImplicit) {
 				debugLog(`Deferring disconnect of connection ${connectionId} until implicit transaction completes`);
 				return;
 			}
@@ -1112,10 +1290,10 @@ export class Database {
 	 * Begin an implicit transaction and coordinate with virtual table connections
 	 */
 	/** @internal Begin an implicit transaction */
-	async _beginImplicitTransaction(): Promise<void> {
+	async _beginImplicit(): Promise<void> {
 		debugLog("Database: Starting implicit transaction for multi-statement block.");
 
-		this.inImplicitTransaction = true;
+		this.inImplicit = true;
 
 		// Begin transaction on all active connections first
 		const connections = this.getAllConnections();
@@ -1137,7 +1315,7 @@ export class Database {
 	 * Commit an implicit transaction and coordinate with virtual table connections
 	 * @internal
 	 */
-	async _commitImplicitTransaction(): Promise<void> {
+	async _commitImplicit(): Promise<void> {
 		debugLog("Database: Committing implicit transaction.");
 
 		try {
@@ -1171,7 +1349,7 @@ export class Database {
 		} finally {
 			this.inTransaction = false;
 			this.isAutocommit = true;
-			this.inImplicitTransaction = false;
+			this.inImplicit = false;
 			this._clearChangeLog();
 		}
 	}
@@ -1253,9 +1431,10 @@ export class Database {
 	}
 
 	private async executeViolationOnce(assertionName: string, sql: string): Promise<void> {
-		const stmt = await this.prepare(sql);
+		const stmt = this.prepare(sql);
 		try {
-			for await (const _ of stmt.all()) {
+			// Use raw iterateRows() to avoid mutex acquisition - we're already inside the mutex
+			for await (const _ of stmt.iterateRows()) {
 				throw new QuereusError(`Integrity assertion failed: ${assertionName}`, StatusCode.CONSTRAINT);
 			}
 		} finally {
@@ -1410,7 +1589,7 @@ export class Database {
 	 * Rollback an implicit transaction and coordinate with virtual table connections
 	 */
 	/** @internal Rollback an implicit transaction */
-	async _rollbackImplicitTransaction(): Promise<void> {
+	async _rollbackImplicit(): Promise<void> {
 		debugLog("Database: Rolling back implicit transaction.");
 
 		// Rollback all active connections
@@ -1429,7 +1608,7 @@ export class Database {
 		// Reset database state
 		this.inTransaction = false;
 		this.isAutocommit = true;
-		this.inImplicitTransaction = false;
+		this.inImplicit = false;
 	}
 
 	private createBlockWithNewStatements(block: BlockNode, statements: PlanNode[]): BlockNode {
