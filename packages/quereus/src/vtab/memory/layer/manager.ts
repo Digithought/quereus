@@ -496,6 +496,11 @@ export class MemoryTableManager {
 
 			if (existingRow !== null) {
 				if (onConflict === ConflictResolution.IGNORE) return undefined;
+				if (onConflict === ConflictResolution.REPLACE) {
+					// REPLACE: delete existing row and insert new one
+					targetLayer.recordUpsert(primaryKey, newRowData, existingRow);
+					return newRowData;
+				}
 				throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
 			}
 		}

@@ -320,6 +320,17 @@ export class Parser {
 	 * @returns AST for the INSERT statement
 	 */
 	insertStatement(startToken: Token, withClause?: AST.WithClause): AST.InsertStmt {
+		// Parse optional OR <conflict-resolution> clause (INSERT OR REPLACE, INSERT OR IGNORE, etc.)
+		let onConflict: ConflictResolution | undefined;
+		if (this.matchKeyword('OR')) {
+			if (this.match(TokenType.ROLLBACK)) onConflict = ConflictResolution.ROLLBACK;
+			else if (this.match(TokenType.ABORT)) onConflict = ConflictResolution.ABORT;
+			else if (this.match(TokenType.FAIL)) onConflict = ConflictResolution.FAIL;
+			else if (this.match(TokenType.IGNORE)) onConflict = ConflictResolution.IGNORE;
+			else if (this.match(TokenType.REPLACE)) onConflict = ConflictResolution.REPLACE;
+			else throw this.error(this.peek(), "Expected conflict resolution (ROLLBACK, ABORT, FAIL, IGNORE, REPLACE) after OR.");
+		}
+
 		// INTO keyword is optional in SQLite
 		this.matchKeyword('INTO'); // Handle missing keyword gracefully
 
@@ -412,6 +423,7 @@ export class Parser {
 			columns,
 			values,
 			select,
+			onConflict,
 			returning,
 			contextValues,
 			schemaPath,
@@ -3012,7 +3024,7 @@ export class Parser {
 		return undefined;
 	}
 
-	/** 
+	/**
 	 * @internal Parses trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA) in any order.
 	 * Returns both contextValues and schemaPath, or undefined if not present.
 	 */
