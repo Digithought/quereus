@@ -92,12 +92,12 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^22.15.29",
-    "better-sqlite3": "^12.5.0",
+    "@types/node": "^25.0.9",
+    "better-sqlite3": "^12.6.0",
     "chai": "^6.2.2",
     "mocha": "^11.7.5",
     "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.8.3"
+    "typescript": "^5.9.3"
   }
 }

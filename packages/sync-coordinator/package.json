@@ -43,27 +43,27 @@
     "start": "npx sync-coordinator --port 8080 --debug 'sync-coordinator:*'"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.969.0",
-    "@fastify/cors": "^10.0.2",
-    "@fastify/websocket": "^11.0.2",
+    "@aws-sdk/client-s3": "^3.970.0",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/websocket": "^11.2.0",
     "@quereus/plugin-leveldb": "workspace:^",
     "@quereus/quereus": "workspace:^",
     "@quereus/store": "workspace:^",
     "@quereus/sync": "workspace:^",
-    "commander": "^14.0.0",
-    "debug": "^4.4.0",
-    "fastify": "^5.2.1"
+    "commander": "^14.0.2",
+    "debug": "^4.4.3",
+    "fastify": "^5.7.0"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^22.15.29",
+    "@types/node": "^25.0.9",
     "@types/ws": "^8.18.1",
-    "chai": "^5.2.0",
-    "mocha": "^11.5.0",
+    "chai": "^6.2.2",
+    "mocha": "^11.7.5",
     "rimraf": "^6.1.2",
     "ts-node": "^10.9.2",
-    "tsx": "^4.19.0",
-    "typescript": "^5.8.3"
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
   }
 }

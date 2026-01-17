@@ -52,8 +52,8 @@
     "pub": "yarn pub:quereus && yarn pub:loader && yarn pub:isolation && yarn pub:store && yarn pub:plugin-indexeddb && yarn pub:plugin-leveldb && yarn pub:plugin-rn && yarn pub:plugin-ns && yarn pub:sync && yarn pub:sync-client && yarn pub:sync-coordinator && yarn pub:ui && yarn pub:cli"
   },
   "devDependencies": {
-    "bumpp": "^10.0.3",
-    "esbuild": "^0.23.0",
-    "typescript": "^5.8.3"
+    "bumpp": "^10.4.0",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.9.3"
   }
 }
