@@ -2564,6 +2564,17 @@ export class Parser {
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 		}
 
+		// Parse mutation context definitions if present (WITH CONTEXT clause)
+		let contextDefinitions: AST.MutationContextVar[] | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('CONTEXT')) {
+				contextDefinitions = this.parseMutationContextDefinitions();
+			} else {
+				// Not a WITH CONTEXT clause, backtrack
+				this.current--;
+			}
+		}
+
 		// Build the CREATE TABLE AST node for this declared table
 		const tableStmt: AST.CreateTableStmt = {
 			type: 'createTable',
@@ -2573,7 +2584,8 @@ export class Parser {
 			constraints,
 			isTemporary: false,
 			moduleName,
-			moduleArgs
+			moduleArgs,
+			contextDefinitions
 		};
 
 		return { type: 'declaredTable', tableStmt };

@@ -535,4 +535,64 @@ insert into test_explicit_module.explicit_table values (1, 'Explicit');
 select dt.name, et.value from test_explicit_module.default_table as dt cross join test_explicit_module.explicit_table as et;
 → [{"name": "Default", "value": "Explicit"}]
 
+-- Step 51: Test WITH CONTEXT in declared table
+-- This tests that mutation context variables are properly parsed for tables inside declare schema blocks
+declare schema test_mutation_context using (default_vtab_module = 'memory') {
+	table secure_items (
+		id INTEGER PRIMARY KEY,
+		value TEXT,
+		CONSTRAINT auth_check CHECK (context.allowed = 1)
+	) with context (allowed INTEGER)
+}
+
+-- run
+
+-- Diff should include the WITH CONTEXT clause
+diff schema test_mutation_context;
+→ [{"ddl": "create table test_mutation_context.secure_items (id INTEGER primary key, value TEXT, constraint auth_check check (context.allowed = 1)) using memory with context (allowed INTEGER)"}]
+
+-- Apply the schema
+apply schema test_mutation_context;
+
+-- run
+
+-- Insert with allowed = 1 should succeed
+insert into test_mutation_context.secure_items (id, value)
+with context allowed = 1
+values (1, 'test value');
+
+select * from test_mutation_context.secure_items;
+→ [{"id": 1, "value": "test value"}]
+
+-- Insert with allowed = 0 should fail the CHECK constraint
+insert into test_mutation_context.secure_items (id, value)
+with context allowed = 0
+values (2, 'should fail');
+-- error: CHECK constraint failed
+
+-- Verify only the first row exists
+select count(*) from test_mutation_context.secure_items;
+→ [{"count(*)": 1}]
+
+-- Step 52: Test WITH CONTEXT with default values in declared table
+declare schema test_context_defaults using (default_vtab_module = 'memory') {
+	table orders (
+		id INTEGER PRIMARY KEY,
+		amount INTEGER DEFAULT base_amount + tax
+	) with context (base_amount INTEGER, tax INTEGER)
+}
+
+-- run
+
+apply schema test_context_defaults;
+
+-- run
+
+-- Insert using context for defaults
+insert into test_context_defaults.orders (id)
+with context base_amount = 100, tax = 15
+values (1);
+
+select * from test_context_defaults.orders;
+→ [{"id": 1, "amount": 115}]
 

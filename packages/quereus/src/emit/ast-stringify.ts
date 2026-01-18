@@ -886,5 +886,16 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 		}
 	}
 
+	// Add WITH CONTEXT clause if present
+	if (stmt.contextDefinitions && stmt.contextDefinitions.length > 0) {
+		const contextVars = stmt.contextDefinitions.map(varDef => {
+			let def = quoteIdentifierIfNeeded(varDef.name);
+			if (varDef.dataType) def += ` ${varDef.dataType}`;
+			if (varDef.notNull === false) def += ' NULL';
+			return def;
+		}).join(', ');
+		parts.push('with context', `(${contextVars})`);
+	}
+
 	return parts.join(' ');
 }
