@@ -61,7 +61,7 @@ if (registrations.vtables) {
 
 ## API
 
-See the [Plugin System Documentation](https://github.com/gotchoices/quereus/blob/main/packages/quereus/docs/plugins.md) for complete details.
+See the [Plugin System Documentation](https://github.com/gotchoices/quereus/blob/main/docs/plugins.md) for complete details.
 
 ## License
 

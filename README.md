@@ -1,6 +1,6 @@
 # Quereus
 
-<img src="packages/quereus/docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
+<img src="docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
 A modern, TypeScript-native SQL engine designed for federated query processing with extensible virtual table support.
 
@@ -118,18 +118,18 @@ This repository contains multiple packages:
 ## Documentation
 
 ### Core Documentation
-- **[SQL Reference](packages/quereus/docs/sql.md)** — Comprehensive SQL dialect guide
-- **[Built-in Functions](packages/quereus/docs/functions.md)** — Complete function reference
-- **[Virtual Tables](packages/quereus/docs/memory-table.md)** — Virtual table system and memory tables
-- **[Runtime Architecture](packages/quereus/docs/runtime.md)** — Execution engine internals
+- **[SQL Reference](docs/sql.md)** — Comprehensive SQL dialect guide
+- **[Built-in Functions](docs/functions.md)** — Complete function reference
+- **[Virtual Tables](docs/memory-table.md)** — Virtual table system and memory tables
+- **[Runtime Architecture](docs/runtime.md)** — Execution engine internals
 
 ### Storage & Sync
-- **[Persistent Store](packages/quereus/docs/store.md)** — LevelDB/IndexedDB storage architecture
+- **[Persistent Store](docs/store.md)** — LevelDB/IndexedDB storage architecture
 - **[Store Plugin base README](packages/quereus-store/README.md)** — Quick start and API reference
 
 ### Advanced Topics
-- **[Query Optimizer](packages/quereus/docs/optimizer.md)** — Query planning and optimization
-- **[Usage Examples](packages/quereus/docs/usage.md)** — Practical examples and patterns
+- **[Query Optimizer](docs/optimizer.md)** — Query planning and optimization
+- **[Usage Examples](docs/usage.md)** — Practical examples and patterns
 
 ## Features
 

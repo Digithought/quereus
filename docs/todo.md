@@ -18,7 +18,7 @@ This list reflects the current and upcoming work for Quereus. Completed items an
 
 ## Stand-alone isolation layer optimizations
 
-See `packages/quereus/docs/design-isolation-layer.md`
+See `docs/design-isolation-layer.md`
 
 ## 🔄 Current Development Focus
 

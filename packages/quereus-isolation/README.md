@@ -146,7 +146,7 @@ const merged = mergeStreams(overlayStream, underlyingStream, {
 });
 ```
 
-See the [design document](https://github.com/gotchoices/quereus/blob/main/packages/quereus/docs/design-isolation-layer.md) for detailed architecture and implementation notes.
+See the [design document](https://github.com/gotchoices/quereus/blob/main/docs/design-isolation-layer.md) for detailed architecture and implementation notes.
 
 ## Use Cases
 
