@@ -148,4 +148,34 @@ export interface DatabaseConfig {
 }
 export type RowOp = 'insert' | 'update' | 'delete';
 
+/**
+ * Constraint types that can be reported via UpdateResult.
+ * These represent expected constraint violations that modules should signal
+ * without throwing exceptions.
+ */
+export type ConstraintType = 'unique' | 'check' | 'not_null' | 'foreign_key';
+
+/**
+ * Result of a VirtualTable.update() operation.
+ * Replaces exception-based constraint signaling to distinguish expected
+ * constraint violations from unexpected errors (network issues, bugs, etc.).
+ */
+export type UpdateResult =
+	| { status: 'ok'; row?: Row }
+	| { status: 'constraint'; constraint: ConstraintType; message?: string; existingRow?: Row };
+
+/**
+ * Type guard to check if an UpdateResult indicates success.
+ */
+export function isUpdateOk(result: UpdateResult): result is { status: 'ok'; row?: Row } {
+	return result.status === 'ok';
+}
+
+/**
+ * Type guard to check if an UpdateResult indicates a constraint violation.
+ */
+export function isConstraintViolation(result: UpdateResult): result is { status: 'constraint'; constraint: ConstraintType; message?: string; existingRow?: Row } {
+	return result.status === 'constraint';
+}
+
 export type { JSONValue } from './json-types.js';

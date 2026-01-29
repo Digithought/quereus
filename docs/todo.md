@@ -24,6 +24,67 @@ See `docs/design-isolation-layer.md`
 
 - [ ] Need to update the BNF in sql.md
 
+- [ ] Our constraint system can't enforce a certain class of constraints that require access to the before AND after state of the transaction (e.g. a certain row must have been removed).  Design a system to enable this.  Perhaps we have a new class of constrains that runs a query *before* the transaction changes anything, then makes that result set available to the constraint logic running *after*.
+
+### UPSERT Implementation (ON CONFLICT DO UPDATE/DO NOTHING)
+
+Full UPSERT support with column-level updates and result-based constraint signaling.
+
+**Phase 1: UpdateResult Type & VTab API Refactor** ✅
+- [x] Define `UpdateResult` type to replace exception-based constraint signaling
+- [x] Update `VirtualTable.update()` signature: `Promise<UpdateResult>` instead of `Promise<Row | undefined>`
+- [x] Update MemoryTable to return `UpdateResult` with `existingRow` on unique constraint conflicts
+- [x] Update `dml-executor.ts` to handle `UpdateResult` (converts constraint violations to exceptions for now)
+- [x] Keep `ConstraintError` for truly unexpected constraint failures
+
+**Phase 2: AST & Parser** ✅
+- [x] Add `UpsertClause` AST node with `conflictTarget`, `action`, `assignments`, `where`
+- [x] Extend `InsertStmt` with `upsertClauses?: UpsertClause[]` (supports multiple)
+- [x] Parse `ON CONFLICT ... DO NOTHING` and `ON CONFLICT ... DO UPDATE SET ...`
+- [x] Parse optional `WHERE` clause in `DO UPDATE`
+- [x] Validate mutual exclusivity: error if both `OR <conflict>` and `ON CONFLICT` present
+- [x] `NEW` qualifier already supported via existing column reference parsing
+- [x] Add UPSERT clause to `ast-stringify.ts` for round-trip support
+
+**Phase 3: Planner** ✅
+- [x] Plan UPSERT as conditional: attempt insert, on unique conflict execute update
+- [x] Resolve `NEW.*` references to the proposed insert values
+- [x] Resolve unqualified column references in DO UPDATE to existing row values
+- [x] Plan the WHERE condition for conditional updates
+- [x] Handle multiple ON CONFLICT clauses (match in order)
+- [x] Added `excluded.*` alias for PostgreSQL compatibility
+
+**Phase 4: Runtime/Emitter** ✅
+- [x] Modify `dml-executor.ts` to handle `UpdateResult` for UPSERT
+- [x] On `{ status: 'constraint', constraint: 'unique' }`:
+  - If UPSERT with matching conflict target: execute the DO UPDATE path
+  - If `DO NOTHING`: skip row, continue
+  - If no UPSERT clause: propagate as error (convert to exception for user)
+- [x] Evaluate DO UPDATE SET expressions with access to:
+  - `NEW.*` bindings (proposed insert values)
+  - Existing row values (from `existingRow` in UpdateResult)
+- [x] Evaluate WHERE condition; skip update if false
+- [x] Issue UPDATE operation to vtab for rows that pass WHERE
+
+**Phase 5: Testing** ✅
+- [x] Basic DO NOTHING (equivalent to INSERT OR IGNORE)
+- [x] Basic DO UPDATE SET with NEW references
+- [x] DO UPDATE with WHERE condition
+- [x] Increment pattern: `SET count = count + 1`
+- [x] Multiple ON CONFLICT clauses
+- [x] UPSERT with RETURNING clause
+- [x] Error on mixing OR REPLACE with ON CONFLICT
+- [x] Verify unspecified columns preserved (vs OR REPLACE which loses them)
+- [x] excluded.* alias for NEW.* (PostgreSQL compatibility)
+
+**Module Updates Required** (after core UPSERT changes): ✅
+- [x] `quereus-store`: Update `update()` to return `UpdateResult` instead of throwing `ConstraintError`
+- [x] `quereus-isolation`: Update `update()` to return `UpdateResult`
+- [ ] `plugin-leveldb`: Update `update()` to return `UpdateResult` (external repository)
+- [ ] `plugin-indexeddb`: Update `update()` to return `UpdateResult` (external repository)
+- [ ] `plugin-react-native-leveldb`: Update `update()` to return `UpdateResult` (external repository)
+- [ ] `plugin-nativescript-sqlite`: Update `update()` to return `UpdateResult` (external repository)
+
 **Query Optimization (Current Priority)**
 - [ ] **Phase 3 - Advanced Push-down**: Complex optimization with full cost model
   - [ ] Advanced predicate push-down with sophisticated cost decisions (LIKE prefix, complex OR factoring)

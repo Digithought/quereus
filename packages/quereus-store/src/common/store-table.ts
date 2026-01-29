@@ -15,7 +15,6 @@ import {
 	IndexConstraintOp,
 	ConflictResolution,
 	QuereusError,
-	ConstraintError,
 	StatusCode,
 	type Database,
 	type TableSchema,
@@ -25,6 +24,7 @@ import {
 	type VirtualTableConnection,
 	type UpdateArgs,
 	type VirtualTableModule,
+	type UpdateResult,
 } from '@quereus/quereus';
 
 import type { KVStore } from './kv-store.js';
@@ -422,7 +422,7 @@ export class StoreTable extends VirtualTable {
 	}
 
 	/** Perform an update operation (INSERT, UPDATE, DELETE). */
-	async update(args: UpdateArgs): Promise<Row | undefined> {
+	async update(args: UpdateArgs): Promise<UpdateResult> {
 		const store = await this.ensureStore();
 		const coordinator = await this.ensureCoordinator();
 		const inTransaction = coordinator.isInTransaction();
@@ -438,7 +438,13 @@ export class StoreTable extends VirtualTable {
 				// Check for existing row (for conflict handling)
 				const existing = await store.get(key);
 				if (existing && args.onConflict !== ConflictResolution.REPLACE) {
-					throw new ConstraintError('UNIQUE constraint failed: primary key');
+					const existingRow = deserializeRow(existing);
+					return {
+						status: 'constraint',
+						constraint: 'unique',
+						message: 'UNIQUE constraint failed: primary key',
+						existingRow,
+					};
 				}
 
 				const serializedRow = serializeRow(values);
@@ -470,7 +476,7 @@ export class StoreTable extends VirtualTable {
 					this.eventEmitter?.emitDataChange(insertEvent);
 				}
 
-				return values;
+				return { status: 'ok', row: values };
 			}
 
 			case 'update': {
@@ -518,7 +524,7 @@ export class StoreTable extends VirtualTable {
 					this.eventEmitter?.emitDataChange(updateEvent);
 				}
 
-				return values;
+				return { status: 'ok', row: values };
 			}
 
 			case 'delete': {
@@ -556,7 +562,7 @@ export class StoreTable extends VirtualTable {
 					this.eventEmitter?.emitDataChange(deleteEvent);
 				}
 
-				return undefined;
+				return { status: 'ok' };
 			}
 
 			default:

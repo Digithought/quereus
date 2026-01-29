@@ -15,7 +15,7 @@ export interface AstNode {
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between'
 		| 'declareSchema' | 'diffSchema' | 'applySchema' | 'explainSchema'
-		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declareIgnored';
+		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declareIgnored' | 'upsert';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -185,6 +185,26 @@ export interface SelectStmt extends AstNode {
 	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause
 }
 
+/**
+ * UPSERT clause for INSERT statements.
+ * Specifies conflict handling with optional column-level updates.
+ *
+ * Syntax:
+ *   ON CONFLICT [(column, ...)] DO NOTHING
+ *   ON CONFLICT [(column, ...)] DO UPDATE SET col = expr, ... [WHERE condition]
+ */
+export interface UpsertClause extends AstNode {
+	type: 'upsert';
+	/** Conflict target columns. If undefined, matches any unique constraint. */
+	conflictTarget?: string[];
+	/** Action to take on conflict: 'nothing' skips the row, 'update' performs column updates */
+	action: 'nothing' | 'update';
+	/** For 'update' action: column assignments (col = expr) */
+	assignments?: { column: string; value: Expression }[];
+	/** For 'update' action: optional WHERE condition to control when update applies */
+	where?: Expression;
+}
+
 // INSERT statement
 export interface InsertStmt extends AstNode {
 	type: 'insert';
@@ -193,7 +213,10 @@ export interface InsertStmt extends AstNode {
 	columns?: string[];
 	values?: Expression[][];  // For VALUES (...), (...), ...
 	select?: SelectStmt;      // For INSERT ... SELECT
+	/** Legacy conflict resolution (INSERT OR REPLACE, etc.) - mutually exclusive with upsertClauses */
 	onConflict?: ConflictResolution;
+	/** UPSERT clauses (ON CONFLICT DO ...) - mutually exclusive with onConflict */
+	upsertClauses?: UpsertClause[];
 	returning?: ResultColumn[];
 	contextValues?: ContextAssignment[]; // Optional mutation context assignments
 	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause

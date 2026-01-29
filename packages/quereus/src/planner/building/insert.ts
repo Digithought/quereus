@@ -16,11 +16,11 @@ import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode, TableReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
-import { RowOpFlag } from '../../schema/table.js';
+import { RowOpFlag, type TableSchema } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
-import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
+import { DmlExecutorNode, type UpsertClausePlan } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
 import { validateDeterministicDefault } from '../validation/determinism-validator.js';
 
@@ -124,6 +124,143 @@ function createRowExpansionProjection(
 
 	// Create projection node that expands source to table structure
 	return new ProjectNode(ctx.scope, sourceNode, projections);
+}
+
+/**
+ * Builds UPSERT clause plans from AST UPSERT clauses.
+ *
+ * In UPSERT expressions:
+ * - NEW.* refers to the proposed INSERT values
+ * - Unqualified column names refer to the existing (conflicting) row values
+ * - excluded.* is an alias for NEW.* (PostgreSQL compatibility)
+ */
+function buildUpsertClausePlans(
+	ctx: PlanningContext,
+	upsertClauses: AST.UpsertClause[],
+	tableSchema: TableSchema,
+	newAttributes: Attribute[],
+): UpsertClausePlan[] {
+	return upsertClauses.map(clause => {
+		// Resolve conflict target columns to indices
+		let conflictTargetIndices: number[] | undefined;
+		if (clause.conflictTarget) {
+			conflictTargetIndices = clause.conflictTarget.map(colName => {
+				const colIndex = tableSchema.columns.findIndex(
+					c => c.name.toLowerCase() === colName.toLowerCase()
+				);
+				if (colIndex === -1) {
+					throw new QuereusError(
+						`Column '${colName}' not found in table '${tableSchema.name}' for ON CONFLICT target`,
+						StatusCode.ERROR
+					);
+				}
+				return colIndex;
+			});
+		}
+
+		if (clause.action === 'nothing') {
+			return {
+				conflictTargetIndices,
+				action: 'nothing' as const,
+			};
+		}
+
+		// Build UPDATE action
+		// Create attributes for the existing row (conflict row)
+		const existingAttributes = tableSchema.columns.map((col) => ({
+			id: PlanNode.nextAttrId(),
+			name: col.name,
+			type: {
+				typeClass: 'scalar' as const,
+				logicalType: col.logicalType,
+				nullable: !col.notNull,
+				isReadOnly: true
+			},
+			sourceRelation: `existing.${tableSchema.name}`
+		}));
+
+		// Build row descriptors for NEW (proposed) and existing (conflict) rows
+		const newRowDescriptor: RowDescriptor = [];
+		newAttributes.forEach((attr, index) => {
+			newRowDescriptor[attr.id] = index;
+		});
+
+		const existingRowDescriptor: RowDescriptor = [];
+		existingAttributes.forEach((attr, index) => {
+			existingRowDescriptor[attr.id] = index;
+		});
+
+		// Create scope for UPSERT SET expressions:
+		// - NEW.* and excluded.* reference proposed insert values
+		// - Unqualified names reference existing row values
+		const upsertScope = new RegisteredScope(ctx.scope);
+
+		// Register existing row columns (unqualified column names default to existing values)
+		existingAttributes.forEach((attr, columnIndex) => {
+			const col = tableSchema.columns[columnIndex];
+
+			// Unqualified column name -> existing row value
+			upsertScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+
+			// Table-qualified form (table.column) -> existing row value
+			const tblQualified = `${tableSchema.name.toLowerCase()}.${col.name.toLowerCase()}`;
+			upsertScope.registerSymbol(tblQualified, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+		});
+
+		// Register NEW.* references (proposed insert values)
+		newAttributes.forEach((attr, columnIndex) => {
+			const col = tableSchema.columns[columnIndex];
+
+			// NEW.column -> proposed insert value
+			upsertScope.registerSymbol(`new.${col.name.toLowerCase()}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+
+			// excluded.column -> proposed insert value (PostgreSQL compatibility)
+			upsertScope.registerSymbol(`excluded.${col.name.toLowerCase()}`, (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
+			);
+		});
+
+		const upsertCtx = { ...ctx, scope: upsertScope };
+
+		// Build assignment expressions
+		const assignments = new Map<number, ScalarPlanNode>();
+		if (clause.assignments) {
+			for (const assign of clause.assignments) {
+				const colIndex = tableSchema.columns.findIndex(
+					c => c.name.toLowerCase() === assign.column.toLowerCase()
+				);
+				if (colIndex === -1) {
+					throw new QuereusError(
+						`Column '${assign.column}' not found in table '${tableSchema.name}' for DO UPDATE SET`,
+						StatusCode.ERROR
+					);
+				}
+				const valueNode = buildExpression(upsertCtx, assign.value) as ScalarPlanNode;
+				assignments.set(colIndex, valueNode);
+			}
+		}
+
+		// Build WHERE condition if present
+		let whereCondition: ScalarPlanNode | undefined;
+		if (clause.where) {
+			whereCondition = buildExpression(upsertCtx, clause.where) as ScalarPlanNode;
+		}
+
+		return {
+			conflictTargetIndices,
+			action: 'update' as const,
+			assignments,
+			whereCondition,
+			newRowDescriptor,
+			existingRowDescriptor,
+		};
+	});
 }
 
 /**
@@ -361,6 +498,17 @@ export function buildInsertStmt(
 		contextDescriptor
 	);
 
+	// Build UPSERT clause plans if present
+	let upsertClausePlans: UpsertClausePlan[] | undefined;
+	if (stmt.upsertClauses && stmt.upsertClauses.length > 0) {
+		upsertClausePlans = buildUpsertClausePlans(
+			ctx,
+			stmt.upsertClauses,
+			tableReference.tableSchema,
+			newAttributes
+		);
+	}
+
 	// Add DML executor node to perform the actual database insert operations
 	const dmlExecutorNode = new DmlExecutorNode(
 		ctx.scope,
@@ -370,7 +518,8 @@ export function buildInsertStmt(
 		stmt.onConflict,
 		mutationContextValues.size > 0 ? mutationContextValues : undefined,
 		contextAttributes.length > 0 ? contextAttributes : undefined,
-		contextDescriptor
+		contextDescriptor,
+		upsertClausePlans
 	);
 
 	const resultNode: RelationalPlanNode = dmlExecutorNode;

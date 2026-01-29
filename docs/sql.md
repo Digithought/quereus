@@ -369,6 +369,13 @@ The insert statement adds new rows to a table.
 
 conflict_resolution:
   rollback | abort | fail | ignore | replace
+
+upsert_clause:
+  on conflict [ (column [, column ...]) ] do nothing
+  | on conflict [ (column [, column ...]) ] do update set assignment [, assignment ...] [ where condition ]
+
+assignment:
+  column = expression
 ```
 
 **Options:**
@@ -378,11 +385,12 @@ conflict_resolution:
 - `column`: Optional list of columns to insert into
 - `values`: A list of value sets to insert
 - `select_statement`: A select query whose results are inserted
+- `upsert_clause`: Specifies how to handle conflicts with fine-grained control (see UPSERT below)
 - `with context`: Provides table-level parameters for defaults and constraints (see section 2.6.2)
 - `with schema`: Specifies schema search path for resolving table names (see section 2.1.1)
 - `returning`: Returns specified expressions from the inserted rows (supports NEW qualifier)
 
-**Conflict Resolution:**
+**Conflict Resolution (OR clause):**
 
 When inserting a row that would violate a UNIQUE constraint (including PRIMARY KEY), the `OR` clause specifies how to handle the conflict:
 
@@ -390,9 +398,42 @@ When inserting a row that would violate a UNIQUE constraint (including PRIMARY K
 - **`OR ABORT`**: Abort the current statement and rollback changes (default behavior)
 - **`OR FAIL`**: Abort the current statement but do not rollback prior changes in the transaction
 - **`OR IGNORE`**: Silently skip the row that would cause a conflict
-- **`OR REPLACE`**: Delete the existing row that conflicts and insert the new row
+- **`OR REPLACE`**: Delete the existing row that conflicts and insert the new row (destructive—loses unspecified column values)
 
-**Note:** `OR REPLACE` is particularly useful for "upsert" operations where you want to insert a new row or update an existing one based on the primary key. When `OR REPLACE` is used, the existing row is deleted and replaced with the new row values.
+**Note:** The `OR` clause and `ON CONFLICT` clause are mutually exclusive. Use `OR REPLACE` for simple full-row replacement, and `ON CONFLICT DO UPDATE` for surgical column-level updates.
+
+#### UPSERT (ON CONFLICT clause)
+
+The `ON CONFLICT` clause provides fine-grained control over conflict handling, allowing you to update specific columns rather than replacing the entire row.
+
+**Syntax:**
+```sql
+insert into table_name (columns) values (...)
+  on conflict [ (conflict_columns) ] do nothing | do update set assignments [ where condition ]
+```
+
+**Conflict Target:**
+- `ON CONFLICT (col1, col2, ...)` — Specifies which unique constraint to match. The columns must correspond to a PRIMARY KEY or UNIQUE constraint.
+- `ON CONFLICT` (without columns) — Matches any unique constraint violation.
+
+**Actions:**
+- `DO NOTHING` — Silently skip the conflicting row (equivalent to `INSERT OR IGNORE`)
+- `DO UPDATE SET col = expr, ...` — Update specific columns on the existing row
+
+**Referencing Values:**
+- `NEW.column` or `excluded.column` — References the value that was proposed for insertion (PostgreSQL compatibility via `excluded`)
+- `column` or `table.column` — References the current value in the existing row
+- The `WHERE` clause can use both to conditionally apply updates
+
+**Key Differences from OR REPLACE:**
+
+| Feature | `INSERT OR REPLACE` | `ON CONFLICT DO UPDATE` |
+|---------|---------------------|-------------------------|
+| Behavior | Deletes existing row, inserts new | Updates existing row in place |
+| Unspecified columns | Lost (reset to defaults) | Preserved |
+| Conditional update | Not supported | Supported via `WHERE` |
+| Column-level control | No | Yes |
+| Triggers | DELETE + INSERT | UPDATE |
 
 **Examples:**
 ```sql
@@ -433,21 +474,65 @@ with recent_orders as (
     group by id, customer_name
     returning order_id, total;
 
--- INSERT OR REPLACE (upsert operation)
+-- INSERT OR REPLACE (full row replacement)
 insert or replace into users (id, name, email, updated_at)
   values (1, 'Alice', 'alice@example.com', datetime('now'));
--- If a user with id=1 exists, it is replaced; otherwise, a new row is inserted
+-- If a user with id=1 exists, it is DELETED and replaced; otherwise, a new row is inserted
+-- WARNING: Any columns not in the insert list are reset to defaults!
 
 -- INSERT OR IGNORE (skip conflicts)
 insert or ignore into tags (name)
   values ('javascript'), ('typescript'), ('javascript');
 -- Only inserts 'javascript' and 'typescript' once, skipping the duplicate
 
--- INSERT OR REPLACE with RETURNING
-insert or replace into products (id, name, price)
-  values (101, 'Updated Product', 29.99)
-  returning id, name, price, 'replaced' as action;
--- Returns the inserted/replaced row with an indicator
+-- UPSERT: Insert or update specific columns (preserves other columns)
+insert into users (id, name, email)
+  values (1, 'Alice', 'alice@example.com')
+  on conflict (id) do update set
+    name = NEW.name,
+    email = NEW.email;
+-- If id=1 exists, updates only name and email; other columns (like created_at) are preserved
+
+-- UPSERT with increment pattern
+insert into vocabulary (word, count)
+  values ('hello', 1)
+  on conflict (word) do update set
+    count = count + 1;
+-- Inserts with count=1, or increments existing count
+
+-- UPSERT with conditional update (only update if newer)
+insert into documents (id, content, version)
+  values (100, 'new content', 5)
+  on conflict (id) do update set
+    content = NEW.content,
+    version = NEW.version
+  where NEW.version > version;
+-- Only updates if the new version is greater than existing
+
+-- UPSERT with DO NOTHING (same as INSERT OR IGNORE)
+insert into tags (name)
+  values ('javascript'), ('typescript'), ('javascript')
+  on conflict (name) do nothing;
+
+-- UPSERT on composite key
+insert into user_roles (user_id, role_id, granted_at)
+  values (1, 2, datetime('now'))
+  on conflict (user_id, role_id) do update set
+    granted_at = NEW.granted_at;
+
+-- Multiple ON CONFLICT clauses (evaluated in order)
+insert into products (id, sku, name, price)
+  values (1, 'ABC123', 'Widget', 9.99)
+  on conflict (id) do update set name = NEW.name, price = NEW.price
+  on conflict (sku) do update set price = NEW.price;
+-- First matching conflict target wins
+
+-- UPSERT with RETURNING
+insert into counters (key, value)
+  values ('page_views', 1)
+  on conflict (key) do update set value = value + 1
+  returning key, value, 
+    case when value = NEW.value then 'inserted' else 'updated' end as action;
 ```
 
 ### 2.3 UPDATE Statement

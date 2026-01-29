@@ -1,7 +1,7 @@
 import { VirtualTable } from '../table.js';
 import type { AnyVirtualTableModule, SchemaChangeInfo } from '../module.js';
 import type { Database } from '../../core/database.js';
-import type { Row, SqlValue, CompareFn } from '../../common/types.js';
+import type { Row, SqlValue, CompareFn, UpdateResult } from '../../common/types.js';
 import { type IndexSchema, type TableSchema } from '../../schema/table.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConnection } from './layer/connection.js';
@@ -132,7 +132,7 @@ export class MemoryTable extends VirtualTable {
 	// Note: getBestAccessPlan is handled by the MemoryTableModule, not the table instance.
 
 	/** Performs mutation through the connection's transaction layer */
-	async update(args: import('../table.js').UpdateArgs): Promise<Row | undefined> {
+	async update(args: import('../table.js').UpdateArgs): Promise<UpdateResult> {
 		const conn = await this.ensureConnection();
 		// Delegate mutation to the manager.
 		// Note: mutationStatement is ignored by memory table (could be logged if needed)

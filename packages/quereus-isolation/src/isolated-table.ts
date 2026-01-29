@@ -1,5 +1,5 @@
-import type { Database, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, UpdateArgs, VirtualTableConnection } from '@quereus/quereus';
-import { VirtualTable, compareSqlValues } from '@quereus/quereus';
+import type { Database, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, UpdateArgs, VirtualTableConnection, UpdateResult } from '@quereus/quereus';
+import { VirtualTable, compareSqlValues, isUpdateOk } from '@quereus/quereus';
 import type { IsolationModule, ConnectionOverlayState } from './isolation-module.js';
 import { IsolatedConnection, type IsolatedTableCallback } from './isolated-connection.js';
 import { mergeStreams, createMergeEntry, createTombstone } from './merge-iterator.js';
@@ -484,7 +484,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	 *
 	 * The overlay is created lazily on first write, using schema from the underlying table.
 	 */
-	async update(args: UpdateArgs): Promise<Row | undefined> {
+	async update(args: UpdateArgs): Promise<UpdateResult> {
 		// Ensure connection is registered for transaction coordination
 		await this.ensureConnection();
 
@@ -501,10 +501,15 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 			case 'insert': {
 				// Insert into overlay with tombstone = 0
 				const overlayRow = [...(values ?? []), 0]; // Append tombstone = 0
-				return overlay.update({
+				const result = await overlay.update({
 					...args,
 					values: overlayRow,
-				}).then(result => result?.slice(0, tombstoneIndex)); // Strip tombstone from result
+				});
+				// Strip tombstone from result
+				if (isUpdateOk(result) && result.row) {
+					return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
+				}
+				return result;
 			}
 
 			case 'update': {
@@ -528,19 +533,29 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 					// Update existing overlay row
 					const overlayRow = [...values, 0]; // tombstone = 0
 					// oldKeyValues should only contain PK columns, not tombstone
-					return overlay.update({
+					const result = await overlay.update({
 						...args,
 						values: overlayRow,
 						oldKeyValues: targetPK,
-					}).then(result => result?.slice(0, tombstoneIndex));
+					});
+					// Strip tombstone from result
+					if (isUpdateOk(result) && result.row) {
+						return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
+					}
+					return result;
 				} else {
 					// Insert new overlay row (shadows underlying)
 					const overlayRow = [...values, 0];
-					return overlay.update({
+					const result = await overlay.update({
 						operation: 'insert',
 						values: overlayRow,
 						onConflict: args.onConflict,
-					}).then(result => result?.slice(0, tombstoneIndex));
+					});
+					// Strip tombstone from result
+					if (isUpdateOk(result) && result.row) {
+						return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
+					}
+					return result;
 				}
 			}
 
@@ -563,7 +578,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 						const isTombstone = overlayRow[tombstoneIndex] === 1;
 						if (isTombstone) {
 							// Already deleted, nothing to do
-							return undefined;
+							return { status: 'ok' };
 						}
 						// Convert to tombstone by updating the tombstone flag
 						const tombstoneRow = [...overlayRow.slice(0, tombstoneIndex), 1];
@@ -594,7 +609,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 					});
 				}
 
-				return undefined;
+				return { status: 'ok' };
 			}
 
 			default:

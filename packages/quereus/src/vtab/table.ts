@@ -1,7 +1,7 @@
 import type { AnyVirtualTableModule, SchemaChangeInfo } from './module.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema } from '../schema/table.js';
-import type { MaybePromise, Row, SqlValue, CompareFn } from '../common/types.js';
+import type { MaybePromise, Row, SqlValue, CompareFn, UpdateResult } from '../common/types.js';
 import type { IndexSchema } from '../schema/table.js';
 import type { FilterInfo } from './filter-info.js';
 import type { RowOp } from '../common/types.js';
@@ -92,12 +92,23 @@ export abstract class VirtualTable {
 	): AsyncIterable<Row>;
 
 	/**
-	 * Performs an INSERT, UPDATE, or DELETE operation
+	 * Performs an INSERT, UPDATE, or DELETE operation.
+	 *
+	 * Returns an UpdateResult indicating success or constraint violation:
+	 * - `{ status: 'ok', row?: Row }` - Success. Row is new/updated row for INSERT/UPDATE, undefined for DELETE.
+	 * - `{ status: 'constraint', constraint, message?, existingRow? }` - Constraint violation.
+	 *   For 'unique' constraints, existingRow contains the conflicting row (enables UPSERT).
+	 *
+	 * Modules should return constraint violations rather than throwing ConstraintError for
+	 * expected violations (unique, check, not_null). This allows the engine to handle
+	 * UPSERT and other conflict resolution strategies. Unexpected errors (network, bugs)
+	 * should still throw exceptions.
+	 *
 	 * @param args Arguments object containing operation details and optional mutation statement
-	 * @returns new row for INSERT/UPDATE, undefined for DELETE
-	 * @throws QuereusError or ConstraintError on failure
+	 * @returns UpdateResult indicating success or constraint violation
+	 * @throws QuereusError for unexpected failures (not constraint violations)
 	 */
-	abstract update(args: UpdateArgs): Promise<Row | undefined>;
+	abstract update(args: UpdateArgs): Promise<UpdateResult>;
 
 	/**
 	 * (Optional) Creates a new connection for transaction support.

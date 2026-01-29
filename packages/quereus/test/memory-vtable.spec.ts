@@ -128,7 +128,8 @@ describe("Memory VTable Module", () => {
 			const newRow = [1, 'Laptop', 999.99, 'Electronics'];
 			const result = await table.update({ operation: 'insert', values: newRow });
 
-			expect(result).to.deep.equal(newRow);
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.deep.equal(newRow);
 		});
 
 		it("should query data via query", async () => {
@@ -156,7 +157,8 @@ describe("Memory VTable Module", () => {
 			const oldKeyValues = [1]; // Primary key values
 			const result = await table.update({ operation: 'update', values: updatedRow, oldKeyValues });
 
-			expect(result).to.deep.equal(updatedRow);
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.deep.equal(updatedRow);
 
 			// Verify the update
 			const rows = [];
@@ -177,7 +179,8 @@ describe("Memory VTable Module", () => {
 			const oldKeyValues = [1];
 			const result = await table.update({ operation: 'delete', values: undefined, oldKeyValues });
 
-			expect(result).to.deep.equal([1, 'Laptop', 999.99, 'Electronics']);
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.deep.equal([1, 'Laptop', 999.99, 'Electronics']);
 
 			// Verify deletion
 			const rows = [];
@@ -197,7 +200,8 @@ describe("Memory VTable Module", () => {
 			const oldKeyValues = [1];
 			const result = await table.update({ operation: 'update', values: updatedRow, oldKeyValues });
 
-			expect(result).to.deep.equal(updatedRow);
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.deep.equal(updatedRow);
 
 			// Verify old key is gone and new key exists
 			const rows = [];
@@ -224,11 +228,13 @@ describe("Memory VTable Module", () => {
 		it("should enforce primary key uniqueness", async () => {
 			await table.update({ operation: 'insert', values: [1, 'user@example.com'] });
 
-			try {
-				await table.update({ operation: 'insert', values: [1, 'other@example.com'] });
-				expect.fail("Should have thrown constraint error");
-			} catch (error: any) {
-				expect(error.message).to.include('UNIQUE constraint failed');
+			// Now returns UpdateResult with constraint violation instead of throwing
+			const result = await table.update({ operation: 'insert', values: [1, 'other@example.com'] });
+			expect(result.status).to.equal('constraint');
+			if (result.status === 'constraint') {
+				expect(result.constraint).to.equal('unique');
+				expect(result.message).to.include('UNIQUE constraint failed');
+				expect(result.existingRow).to.deep.equal([1, 'user@example.com']);
 			}
 		});
 
@@ -238,7 +244,9 @@ describe("Memory VTable Module", () => {
 			// Simulate INSERT OR IGNORE by passing conflict resolution
 			const rowWithConflictRes = [1, 'other@example.com'];
 			const result = await table.update({ operation: 'insert', values: rowWithConflictRes, onConflict: ConflictResolution.IGNORE });
-			void expect(result).to.be.undefined; // IGNORE should return undefined
+			// IGNORE should return ok with undefined row
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.be.undefined;
 
 			// Verify original data unchanged
 			const rows = [];
@@ -279,11 +287,12 @@ describe("Memory VTable Module", () => {
 		it("should enforce composite primary key uniqueness", async () => {
 			await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-01'] });
 
-			try {
-				await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-02'] });
-				expect.fail("Should have thrown constraint error");
-			} catch (error: any) {
-				expect(error.message).to.include('UNIQUE constraint failed');
+			// Now returns UpdateResult with constraint violation instead of throwing
+			const result = await table.update({ operation: 'insert', values: [1, 'sess_123', '2024-01-02'] });
+			expect(result.status).to.equal('constraint');
+			if (result.status === 'constraint') {
+				expect(result.constraint).to.equal('unique');
+				expect(result.message).to.include('UNIQUE constraint failed');
 			}
 		});
 
@@ -294,7 +303,8 @@ describe("Memory VTable Module", () => {
 			const oldKeyValues = [1, 'sess_123'];
 			const result = await table.update({ operation: 'update', values: updatedRow, oldKeyValues });
 
-			expect(result).to.deep.equal(updatedRow);
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.deep.equal(updatedRow);
 		});
 
 		it("should delete with composite primary key", async () => {
@@ -304,7 +314,8 @@ describe("Memory VTable Module", () => {
 			const oldKeyValues = [1, 'sess_123'];
 			const result = await table.update({ operation: 'delete', values: undefined, oldKeyValues });
 
-			expect(result).to.deep.equal([1, 'sess_123', '2024-01-01']);
+			expect(result.status).to.equal('ok');
+			expect(result.row).to.deep.equal([1, 'sess_123', '2024-01-01']);
 
 			const rows = [];
 			for await (const row of table.query(createFilterInfo())) {

@@ -1,13 +1,13 @@
 import type { Database } from '../../../core/database.js';
 import { type TableSchema, type IndexSchema, buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js';
 import { type BTreeKey, type BTreeKeyForPrimary } from '../types.js';
-import { StatusCode, type SqlValue, type Row } from '../../../common/types.js';
+import { StatusCode, type SqlValue, type Row, type UpdateResult } from '../../../common/types.js';
 import { BaseLayer } from './base.js';
 import { TransactionLayer } from './transaction.js';
 import type { Layer } from './interface.js';
 import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js';
-import { QuereusError, ConstraintError } from '../../../common/errors.js';
+import { QuereusError } from '../../../common/errors.js';
 import { ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
 import type { ColumnDef as ASTColumnDef, LiteralExpr } from '../../../parser/ast.js';
 import { compareSqlValues } from '../../../util/comparison.js';
@@ -384,7 +384,7 @@ export class MemoryTableManager {
 		values: Row | undefined,
 		oldKeyValues?: Row,
 		onConflict: ConflictResolution = ConflictResolution.ABORT
-	): Promise<Row | undefined> {
+	): Promise<UpdateResult> {
 		this.validateMutationPermissions(operation);
 
 		const wasExplicitTransaction = connection.explicitTransaction;
@@ -393,41 +393,31 @@ export class MemoryTableManager {
 		const targetLayer = connection.pendingTransactionLayer!;
 		this.cleanConflictResolutionFromValues(values);
 
-		try {
-			let result: Row | undefined;
+		let result: UpdateResult;
 
-			switch (operation) {
-				case 'insert':
-					result = await this.performInsert(targetLayer, values, onConflict);
-					break;
-				case 'update':
-					result = await this.performUpdate(targetLayer, values, oldKeyValues, onConflict);
-					break;
-				case 'delete':
-					result = await this.performDelete(targetLayer, oldKeyValues);
-					break;
-				default: {
-					const exhaustiveCheck: never = operation;
-					throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
-				}
+		switch (operation) {
+			case 'insert':
+				result = await this.performInsert(targetLayer, values, onConflict);
+				break;
+			case 'update':
+				result = await this.performUpdate(targetLayer, values, oldKeyValues, onConflict);
+				break;
+			case 'delete':
+				result = await this.performDelete(targetLayer, oldKeyValues);
+				break;
+			default: {
+				const exhaustiveCheck: never = operation;
+				throw new QuereusError(`Unsupported operation: ${exhaustiveCheck}`, StatusCode.INTERNAL);
 			}
-
-			// Auto-commit if we weren't already in an explicit transaction
-			if (!wasExplicitTransaction && this.db.getAutocommit()) {
-				await this.commitTransaction(connection);
-			}
-
-			return result;
-		} catch (e) {
-			if (e instanceof ConstraintError && onConflict === ConflictResolution.IGNORE) {
-				// Auto-commit the transaction even when ignoring constraint errors
-				if (!wasExplicitTransaction && this.db.getAutocommit()) {
-					await this.commitTransaction(connection);
-				}
-				return undefined;
-			}
-			throw e;
 		}
+
+		// Auto-commit if we weren't already in an explicit transaction
+		// Note: We commit even on constraint violations when IGNORE mode, as the row was simply skipped
+		if (!wasExplicitTransaction && this.db.getAutocommit()) {
+			await this.commitTransaction(connection);
+		}
+
+		return result;
 	}
 
 	private validateMutationPermissions(_operation: 'insert' | 'update' | 'delete'): void {
@@ -468,7 +458,7 @@ export class MemoryTableManager {
 		targetLayer: TransactionLayer,
 		values: Row | undefined,
 		onConflict: ConflictResolution
-	): Promise<Row | undefined> {
+	): Promise<UpdateResult> {
 		if (!values) {
 			throw new QuereusError("INSERT requires values.", StatusCode.MISUSE);
 		}
@@ -495,18 +485,26 @@ export class MemoryTableManager {
 			const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
 
 			if (existingRow !== null) {
-				if (onConflict === ConflictResolution.IGNORE) return undefined;
+				if (onConflict === ConflictResolution.IGNORE) {
+					return { status: 'ok', row: undefined };
+				}
 				if (onConflict === ConflictResolution.REPLACE) {
 					// REPLACE: delete existing row and insert new one
 					targetLayer.recordUpsert(primaryKey, newRowData, existingRow);
-					return newRowData;
+					return { status: 'ok', row: newRowData };
 				}
-				throw new ConstraintError(`UNIQUE constraint failed: ${this._tableName} PK.`);
+				// Return constraint violation with existing row for UPSERT support
+				return {
+					status: 'constraint',
+					constraint: 'unique',
+					message: `UNIQUE constraint failed: ${this._tableName} PK.`,
+					existingRow: existingRow
+				};
 			}
 		}
 
 		targetLayer.recordUpsert(primaryKey, newRowData, null);
-		return newRowData;
+		return { status: 'ok', row: newRowData };
 	}
 
 	private async performUpdate(
@@ -514,7 +512,7 @@ export class MemoryTableManager {
 		values: Row | undefined,
 		oldKeyValues: Row | undefined,
 		onConflict: ConflictResolution
-	): Promise<Row | undefined> {
+	): Promise<UpdateResult> {
 		if (!values || !oldKeyValues) {
 			throw new QuereusError("UPDATE requires new values and old key values.", StatusCode.MISUSE);
 		}
@@ -537,11 +535,13 @@ export class MemoryTableManager {
 		const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
 
 		if (!oldRowData) {
-			if (onConflict === ConflictResolution.IGNORE) return undefined;
+			if (onConflict === ConflictResolution.IGNORE) {
+				return { status: 'ok', row: undefined };
+			}
 			logger.warn('UPDATE', this._tableName, 'Target row not found', {
 				primaryKey: oldKeyValues.join(',')
 			});
-			return undefined;
+			return { status: 'ok', row: undefined };
 		}
 
 		const newPrimaryKey = this.primaryKeyFromRow(newRowData);
@@ -551,7 +551,7 @@ export class MemoryTableManager {
 			return this.performUpdateWithPrimaryKeyChange(targetLayer, targetPrimaryKey, newPrimaryKey, oldRowData, newRowData, onConflict);
 		} else {
 			targetLayer.recordUpsert(targetPrimaryKey, newRowData, oldRowData);
-			return newRowData;
+			return { status: 'ok', row: newRowData };
 		}
 	}
 
@@ -562,23 +562,31 @@ export class MemoryTableManager {
 		oldRowData: Row,
 		newRowData: Row,
 		onConflict: ConflictResolution
-	): Row | undefined {
+	): UpdateResult {
 		const existingRowAtNewKey = this.lookupEffectiveRow(newPrimaryKey, targetLayer);
 
 		if (existingRowAtNewKey !== null) {
-			if (onConflict === ConflictResolution.IGNORE) return undefined;
-			throw new ConstraintError(`UNIQUE constraint failed on new PK for ${this._tableName}.`);
+			if (onConflict === ConflictResolution.IGNORE) {
+				return { status: 'ok', row: undefined };
+			}
+			// Return constraint violation with existing row
+			return {
+				status: 'constraint',
+				constraint: 'unique',
+				message: `UNIQUE constraint failed on new PK for ${this._tableName}.`,
+				existingRow: existingRowAtNewKey
+			};
 		}
 
 		targetLayer.recordDelete(oldPrimaryKey, oldRowData);
 		targetLayer.recordUpsert(newPrimaryKey, newRowData, null);
-		return newRowData;
+		return { status: 'ok', row: newRowData };
 	}
 
 	private async performDelete(
 		targetLayer: TransactionLayer,
 		oldKeyValues: Row | undefined
-	): Promise<Row | undefined> {
+	): Promise<UpdateResult> {
 		if (!oldKeyValues) {
 			throw new QuereusError("DELETE requires key values.", StatusCode.MISUSE);
 		}
@@ -587,10 +595,12 @@ export class MemoryTableManager {
 		const targetPrimaryKey = buildPrimaryKeyFromValues(oldKeyValues, schema.primaryKeyDefinition);
 		const oldRowData = this.lookupEffectiveRow(targetPrimaryKey, targetLayer);
 
-		if (!oldRowData) return undefined;
+		if (!oldRowData) {
+			return { status: 'ok', row: undefined };
+		}
 
 		targetLayer.recordDelete(targetPrimaryKey, oldRowData);
-		return oldRowData;
+		return { status: 'ok', row: oldRowData };
 	}
 
 	public renameTable(newName: string): void {

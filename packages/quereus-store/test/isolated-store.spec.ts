@@ -10,8 +10,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'mocha';
 import { expect } from 'chai';
-import { Database, asyncIterableToArray, MemoryTableModule } from '@quereus/quereus';
-import { IsolationModule } from '@quereus/isolation';
+import { Database, asyncIterableToArray } from '@quereus/quereus';
 import {
 	createIsolatedStoreModule,
 	hasIsolation,

@@ -397,6 +397,26 @@ export class Parser {
 			throw this.error(this.peek(), "Expected VALUES or SELECT after INSERT.");
 		}
 
+		// Parse UPSERT clauses (ON CONFLICT DO ...) - can have multiple
+		let upsertClauses: AST.UpsertClause[] | undefined;
+		while (this.match(TokenType.ON)) {
+			if (!this.matchKeyword('CONFLICT')) {
+				// Not an ON CONFLICT clause, backtrack
+				this.current--;
+				break;
+			}
+
+			// Validate mutual exclusivity with OR clause
+			if (onConflict !== undefined) {
+				throw this.error(this.previous(), "Cannot use both 'INSERT OR ...' and 'ON CONFLICT' in the same statement.");
+			}
+
+			const upsertClause = this.parseUpsertClause();
+			if (!upsertClauses) upsertClauses = [];
+			upsertClauses.push(upsertClause);
+			lastConsumedToken = this.previous();
+		}
+
 		// Parse trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA in any order)
 		const trailingClauses = this.parseTrailingWithClauses();
 		if (trailingClauses.contextValues) {
@@ -424,11 +444,74 @@ export class Parser {
 			values,
 			select,
 			onConflict,
+			upsertClauses,
 			returning,
 			contextValues,
 			schemaPath,
 			loc: _createLoc(startToken, lastConsumedToken),
 		};
+	}
+
+	/**
+	 * Parse an UPSERT clause: ON CONFLICT [(columns)] DO NOTHING | DO UPDATE SET ... [WHERE ...]
+	 * Called after 'ON CONFLICT' has been consumed.
+	 */
+	private parseUpsertClause(): AST.UpsertClause {
+		const startToken = this.previous(); // The 'CONFLICT' token
+
+		// Parse optional conflict target columns
+		let conflictTarget: string[] | undefined;
+		if (this.match(TokenType.LPAREN)) {
+			conflictTarget = [];
+			do {
+				conflictTarget.push(this.consumeIdentifier([], "Expected column name in conflict target."));
+			} while (this.match(TokenType.COMMA));
+			this.consume(TokenType.RPAREN, "Expected ')' after conflict target columns.");
+		}
+
+		// Expect DO keyword
+		this.consumeKeyword('DO', "Expected 'DO' after ON CONFLICT [columns].");
+
+		// Parse action: NOTHING or UPDATE
+		if (this.matchKeyword('NOTHING')) {
+			return {
+				type: 'upsert',
+				conflictTarget,
+				action: 'nothing',
+				loc: _createLoc(startToken, this.previous())
+			};
+		}
+
+		if (this.match(TokenType.UPDATE)) {
+			// Expect SET keyword
+			this.consumeKeyword('SET', "Expected 'SET' after DO UPDATE.");
+
+			// Parse assignments
+			const assignments: { column: string; value: AST.Expression }[] = [];
+			do {
+				const column = this.consumeIdentifier([], "Expected column name in SET clause.");
+				this.consume(TokenType.EQUAL, "Expected '=' after column name in SET clause.");
+				const value = this.expression();
+				assignments.push({ column, value });
+			} while (this.match(TokenType.COMMA));
+
+			// Parse optional WHERE clause
+			let where: AST.Expression | undefined;
+			if (this.match(TokenType.WHERE)) {
+				where = this.expression();
+			}
+
+			return {
+				type: 'upsert',
+				conflictTarget,
+				action: 'update',
+				assignments,
+				where,
+				loc: _createLoc(startToken, this.previous())
+			};
+		}
+
+		throw this.error(this.peek(), "Expected 'NOTHING' or 'UPDATE' after DO.");
 	}
 
 	/**

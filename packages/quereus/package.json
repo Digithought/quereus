@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "type": "module",
   "description": "Federated SQL query processor",
   "publisher": "Got Choices Foundation",
@@ -68,7 +68,7 @@
   "dependencies": {
     "debug": "^4.4.3",
     "fast-json-patch": "^3.1.1",
-    "inheritree": "^0.3.2",
+    "inheritree": "^0.3.4",
     "moat-maker": "^2.2.0",
     "temporal-polyfill": "^0.3.0",
     "uint8arrays": "^5.1.0"

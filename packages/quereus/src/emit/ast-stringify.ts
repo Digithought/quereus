@@ -520,6 +520,13 @@ export function insertToString(stmt: AST.InsertStmt): string {
 		parts.push(`on conflict ${ConflictResolution[stmt.onConflict].toLowerCase()}`);
 	}
 
+	// UPSERT clauses (ON CONFLICT DO ...)
+	if (stmt.upsertClauses) {
+		for (const upsert of stmt.upsertClauses) {
+			parts.push(upsertClauseToString(upsert));
+		}
+	}
+
 	if (stmt.returning && stmt.returning.length > 0) {
 		const returning = stmt.returning.map(col => {
 			if (col.type === 'all') {
@@ -531,6 +538,34 @@ export function insertToString(stmt: AST.InsertStmt): string {
 			}
 		});
 		parts.push('returning', returning.join(', '));
+	}
+
+	return parts.join(' ');
+}
+
+/**
+ * Convert an UPSERT clause to string.
+ */
+function upsertClauseToString(upsert: AST.UpsertClause): string {
+	const parts: string[] = ['on conflict'];
+
+	if (upsert.conflictTarget && upsert.conflictTarget.length > 0) {
+		parts.push(`(${upsert.conflictTarget.map(quoteIdentifierIfNeeded).join(', ')})`);
+	}
+
+	if (upsert.action === 'nothing') {
+		parts.push('do nothing');
+	} else {
+		parts.push('do update set');
+		if (upsert.assignments) {
+			const assigns = upsert.assignments.map(a =>
+				`${quoteIdentifierIfNeeded(a.column)} = ${expressionToString(a.value)}`
+			);
+			parts.push(assigns.join(', '));
+		}
+		if (upsert.where) {
+			parts.push('where', expressionToString(upsert.where));
+		}
 	}
 
 	return parts.join(' ');
