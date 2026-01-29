@@ -46,6 +46,7 @@
     "@aws-sdk/client-s3": "^3.970.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/websocket": "^11.2.0",
+    "@quereus/isolation": "workspace:^",
     "@quereus/plugin-leveldb": "workspace:^",
     "@quereus/quereus": "workspace:^",
     "@quereus/store": "workspace:^",
