@@ -463,15 +463,6 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		}
 	}
 
-	/**
-	 * Determines if a statement batch contains explicit transaction control.
-	 */
-	private _hasExplicitTransactionControl(batch: AST.Statement[]): boolean {
-		return batch.some(
-			ast => ast.type === 'begin' || ast.type === 'commit' || ast.type === 'rollback' || ast.type === 'savepoint' || ast.type === 'release'
-		);
-	}
-
 	// ============================================================================
 	// Statement Execution - Public API
 	// ============================================================================
@@ -479,8 +470,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	/**
 	 * Executes one or more SQL statements directly.
 	 * Statements are serialized through the execution mutex. Transactions are started
-	 * lazily (just-in-time) when the first DML or DDL operation occurs. If no explicit
-	 * transaction control is present, an implicit transaction is committed after execution.
+	 * lazily (just-in-time) when the first DML or DDL operation occurs. If an implicit
+	 * transaction was started during execution, it is committed on success or rolled
+	 * back on error.
 	 *
 	 * @param sql The SQL string(s) to execute.
 	 * @param params Optional parameters to bind.
@@ -494,21 +486,18 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		const batch = this._parseSql(sql);
 		if (batch.length === 0) return;
 
-		// Check if batch has explicit transaction control
-		const hasExplicitTxn = this._hasExplicitTransactionControl(batch);
-
 		await this._withMutex(async () => {
 			try {
 				// Execute statements - transactions are started JIT by runtime when needed
 				await this._executeStatementBatch(batch, params);
 
-				// Commit implicit transaction if one was started and no explicit txn control
-				if (!hasExplicitTxn && this.transactionManager.isImplicitTransaction()) {
+				// Commit if an implicit transaction was started during execution
+				if (this.transactionManager.isImplicitTransaction()) {
 					await this._commitTransaction();
 				}
 			} catch (err) {
-				// Rollback implicit transaction on error
-				if (!hasExplicitTxn && this.transactionManager.isImplicitTransaction()) {
+				// Rollback if an implicit transaction was started during execution
+				if (this.transactionManager.isImplicitTransaction()) {
 					await this._rollbackTransaction();
 				}
 				throw err;
