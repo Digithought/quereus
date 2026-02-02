@@ -1,4 +1,4 @@
-import type { Database, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, UpdateArgs, VirtualTableConnection, UpdateResult } from '@quereus/quereus';
+import type { Database, DatabaseInternal, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, UpdateArgs, VirtualTableConnection, UpdateResult } from '@quereus/quereus';
 import { VirtualTable, compareSqlValues, isUpdateOk } from '@quereus/quereus';
 import type { IsolationModule, ConnectionOverlayState } from './isolation-module.js';
 import { IsolatedConnection, type IsolatedTableCallback } from './isolated-connection.js';
@@ -152,6 +152,9 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 				overlayConn,
 				this
 			);
+
+			// Register connection with the database for transaction management
+			await (this.db as DatabaseInternal).registerConnection(this.registeredConnection);
 		}
 		return this.registeredConnection;
 	}
@@ -160,6 +163,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 	/**
 	 * Creates a new isolated connection for transaction support.
+	 * The connection includes this table as a callback so commit/rollback
+	 * operations properly flush/clear the overlay.
 	 */
 	createConnection(): MaybePromise<VirtualTableConnection> {
 		const underlyingConn = this.underlyingTable.createConnection?.();
@@ -174,7 +179,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 		return new IsolatedConnection(
 			this.tableName,
 			underlyingConn,
-			overlayConn
+			overlayConn,
+			this  // Include callback for commit/rollback handling
 		);
 	}
 
@@ -186,7 +192,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 			underlyingConn,
 			overlayConn,
 		]);
-		return new IsolatedConnection(this.tableName, underlying, overlay);
+		return new IsolatedConnection(this.tableName, underlying, overlay, this);
 	}
 
 	// ==================== Query Operations ====================

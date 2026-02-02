@@ -257,6 +257,72 @@ interface VirtualTable {
 
 See [runtime.md](runtime.md) for transaction semantics.
 
+### Connection Registration
+
+For modules that need to participate in the database's transaction coordination (e.g., receiving `commit()` and `rollback()` calls when the database commits or rolls back), you must register connections with the database.
+
+The `DatabaseInternal` interface exposes internal methods for this purpose:
+
+```typescript
+import type { Database, DatabaseInternal, VirtualTableConnection } from '@quereus/quereus';
+
+class MyTable extends VirtualTable {
+  private connection: MyConnection | null = null;
+
+  private async ensureConnection(): Promise<MyConnection> {
+    if (!this.connection) {
+      this.connection = new MyConnection(this.tableName);
+      
+      // Register with database for transaction coordination
+      await (this.db as DatabaseInternal).registerConnection(this.connection);
+    }
+    return this.connection;
+  }
+}
+```
+
+**`DatabaseInternal` methods:**
+
+| Method | Description |
+|--------|-------------|
+| `registerConnection(conn)` | Registers a connection for transaction management. If a transaction is already active, `begin()` is called on the connection. |
+| `unregisterConnection(id)` | Unregisters a connection. May be deferred during implicit transactions. |
+| `getConnection(id)` | Gets a connection by ID. |
+| `getConnectionsForTable(name)` | Gets all connections for a table. Useful for connection reuse. |
+| `getAllConnections()` | Gets all active connections. |
+
+**Connection reuse pattern:**
+
+Before creating a new connection, check if one already exists for the table:
+
+```typescript
+private async ensureConnection(): Promise<MyConnection> {
+  if (!this.connection) {
+    // Check for existing connection to reuse
+    const dbInternal = this.db as DatabaseInternal;
+    const existing = dbInternal.getConnectionsForTable(this.tableName);
+    
+    if (existing.length > 0 && existing[0] instanceof MyConnection) {
+      this.connection = existing[0];
+    } else {
+      // Create and register new connection
+      this.connection = new MyConnection(this.tableName);
+      await dbInternal.registerConnection(this.connection);
+    }
+  }
+  return this.connection;
+}
+```
+
+**When to use connection registration:**
+
+- Your module maintains state that must be committed or rolled back with transactions
+- You need to flush changes to persistent storage on commit
+- You implement an isolation layer with overlay tables
+- You coordinate with external systems that have their own transaction semantics
+
+**Note:** The `DatabaseInternal` interface is marked `@internal` and may change between versions. It's intended for tight integration scenarios like storage backends and isolation layers.
+
 ## Best Practices
 
 ### 1. Accurate Cost Estimation

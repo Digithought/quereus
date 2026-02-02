@@ -17,6 +17,7 @@ import {
 	QuereusError,
 	StatusCode,
 	type Database,
+	type DatabaseInternal,
 	type TableSchema,
 	type Row,
 	type FilterInfo,
@@ -213,11 +214,7 @@ export class StoreTable extends VirtualTable {
 
 		if (!this.connection) {
 			this.connection = new StoreConnection(this.tableName, this.coordinator);
-
-			const dbInternal = this.db as unknown as {
-				registerConnection(conn: VirtualTableConnection): Promise<void>;
-			};
-			await dbInternal.registerConnection(this.connection);
+			await (this.db as DatabaseInternal).registerConnection(this.connection);
 		}
 
 		return this.coordinator;

@@ -1238,6 +1238,15 @@ interface VirtualTableConnection {
   rollbackToSavepoint(index: number): MaybePromise<void>;
   disconnect(): MaybePromise<void>;
 }
+
+// Internal database methods for transaction coordination (see module-authoring.md)
+interface DatabaseInternal {
+  registerConnection(connection: VirtualTableConnection): Promise<void>;
+  unregisterConnection(connectionId: string): void;
+  getConnection(connectionId: string): VirtualTableConnection | undefined;
+  getConnectionsForTable(tableName: string): VirtualTableConnection[];
+  getAllConnections(): VirtualTableConnection[];
+}
 ```
 
 ### Modern Query Planning Interface
