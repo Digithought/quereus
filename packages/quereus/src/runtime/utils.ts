@@ -130,7 +130,8 @@ export async function getVTable(ctx: RuntimeContext, tableSchema: TableSchema): 
 		throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' does not implement connect`, StatusCode.MISUSE);
 	}
 	const vtabArgs = tableSchema.vtabArgs || {};
-	const vtabInstance = await module.connect(ctx.db, moduleInfo.auxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, vtabArgs);
+	// Pass the full tableSchema to connect() so modules can use the primaryKeyDefinition
+	const vtabInstance = await module.connect(ctx.db, moduleInfo.auxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, vtabArgs, tableSchema);
 
 	// If we have an active connection for this table, inject it into the VirtualTable
 	const tableName = tableSchema.name;

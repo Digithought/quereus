@@ -191,21 +191,37 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		const vtabArgs: Record<string, SqlValue> = {};
 		if (options?.collation !== undefined) vtabArgs.collation = options.collation;
 
-		// Use the imported schema if provided, otherwise create a minimal one
-		const tableSchema: TableSchema = importedTableSchema ?? {
-			name: tableName,
-			schemaName: schemaName,
-			columns: Object.freeze([]),
-			columnIndexMap: new Map(),
-			primaryKeyDefinition: [],
-			checkConstraints: Object.freeze([]),
-			isTemporary: false,
-			isView: false,
-			vtabModuleName: 'store',
-			vtabArgs,
-			vtabModule: this,
-			estimatedRows: 0,
-		};
+		// Resolve the table schema:
+		// 1. Use importedTableSchema if provided (from catalog import or runtime)
+		// 2. Look up from schemaManager (most common case during runtime queries)
+		// 3. Fall back to minimal schema (only for cases where table doesn't exist yet)
+		let tableSchema: TableSchema;
+		if (importedTableSchema) {
+			tableSchema = importedTableSchema;
+		} else {
+			// Try to look up the schema from schemaManager - this is the common runtime case
+			const registeredSchema = db.schemaManager.getTable(schemaName, tableName);
+			if (registeredSchema) {
+				tableSchema = registeredSchema;
+			} else {
+				// Fallback to minimal schema - should only happen during catalog import
+				// when the schema hasn't been registered yet
+				tableSchema = {
+					name: tableName,
+					schemaName: schemaName,
+					columns: Object.freeze([]),
+					columnIndexMap: new Map(),
+					primaryKeyDefinition: [],
+					checkConstraints: Object.freeze([]),
+					isTemporary: false,
+					isView: false,
+					vtabModuleName: 'store',
+					vtabArgs,
+					vtabModule: this,
+					estimatedRows: 0,
+				};
+			}
+		}
 
 		const config = this.parseConfig(vtabArgs);
 
