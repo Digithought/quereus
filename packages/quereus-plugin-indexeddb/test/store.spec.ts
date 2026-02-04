@@ -233,10 +233,10 @@ describe('IndexedDB Store Integration', () => {
 
       // There should be exactly one entry
       expect(entries).to.have.length(1);
-      
+
       // The key should not be empty - integer 42 should be encoded
       expect(entries[0].key.length).to.be.greaterThan(0);
-      
+
       // For an integer, the encoded key should have:
       // - 1 byte type prefix (0x01 for INTEGER)
       // - 8 bytes for the bigint value (big-endian with sign flip)
@@ -409,12 +409,12 @@ describe('IndexedDB Store Integration with Isolation', () => {
       await db.exec('BEGIN');
       await db.exec(`INSERT INTO test_int_pk VALUES (42, 'Answer')`);
       await db.exec(`INSERT INTO test_int_pk VALUES (43, 'Another')`);
-      
+
       // Verify we can read our own write within the transaction
       const rowInTx = await db.get('SELECT * FROM test_int_pk WHERE id = 42');
       expect(rowInTx).to.not.be.undefined;
       expect(rowInTx?.id).to.equal(42);
-      
+
       await db.exec('COMMIT');
 
       // Extra transaction cycle ensures IndexedDB data visibility
@@ -445,11 +445,11 @@ describe('IndexedDB Store Integration with Isolation', () => {
       await db.exec(`INSERT INTO items VALUES (1, 'one')`);
       await db.exec(`INSERT INTO items VALUES (2, 'two')`);
       await db.exec(`INSERT INTO items VALUES (3, 'three')`);
-      
+
       // Read-your-own-writes should work
       const row = await db.get('SELECT * FROM items WHERE id = 1');
       expect(row?.name).to.equal('one');
-      
+
       await db.exec('COMMIT');
 
       // Extra transaction cycle ensures IndexedDB data visibility
@@ -477,11 +477,11 @@ describe('IndexedDB Store Integration with Isolation', () => {
       // Now try a transaction that we'll rollback
       await db.exec('BEGIN');
       await db.exec(`INSERT INTO items VALUES (3, 'will be rolled back')`);
-      
+
       // Should see it within transaction
       let rows = await asyncIterableToArray(db.eval('SELECT * FROM items ORDER BY id'));
       expect(rows).to.have.length(3);
-      
+
       await db.exec('ROLLBACK');
 
       // After rollback, should only have the initial rows
@@ -518,10 +518,10 @@ describe('IndexedDB Store Integration with Isolation', () => {
       // There should be exactly one entry with a proper key
       expect(entries).to.have.length(1);
       expect(entries[0].key.length).to.be.greaterThan(0);
-      
+
       // Verify the key is a properly encoded integer (9 bytes: 1 type prefix + 8 value bytes)
       expect(entries[0].key.length).to.equal(9);
-      
+
       // First byte should be 0x01 (TYPE_INTEGER)
       expect(entries[0].key[0]).to.equal(0x01);
     });

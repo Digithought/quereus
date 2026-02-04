@@ -490,46 +490,50 @@ export class Lexer {
 		let value = '';
 		let escaping = false;
 
-		while ((!this.isAtEnd() && this.peek() !== quote) || escaping) {
-			if (escaping) {
-				// Handle escape sequences
-				const c = this.peek();
-				switch (c) {
-					case 'n': value += '\n'; break;
-					case 'r': value += '\r'; break;
-					case 't': value += '\t'; break;
-					case '\\': value += '\\'; break;
-					case '\'': value += '\''; break;
-					case '"': value += '"'; break;
-					case '0': value += '\0'; break;
-					default: value += c; break;
+		while (true) {
+			// Parse characters until we hit a quote or EOF
+			while ((!this.isAtEnd() && this.peek() !== quote) || escaping) {
+				if (escaping) {
+					// Handle escape sequences
+					const c = this.peek();
+					switch (c) {
+						case 'n': value += '\n'; break;
+						case 'r': value += '\r'; break;
+						case 't': value += '\t'; break;
+						case '\\': value += '\\'; break;
+						case '\'': value += '\''; break;
+						case '"': value += '"'; break;
+						case '0': value += '\0'; break;
+						default: value += c; break;
+					}
+					escaping = false;
+				} else if (this.peek() === '\\') {
+					escaping = true;
+				} else {
+					value += this.peek();
 				}
-				escaping = false;
-			} else if (this.peek() === '\\') {
-				escaping = true;
-			} else {
-				value += this.peek();
+
+				this.advance();
 			}
 
+			if (this.isAtEnd()) {
+				this.addErrorToken("Unterminated string.");
+				return;
+			}
+
+			// We've hit a quote - consume it
 			this.advance();
-		}
 
-		if (this.isAtEnd()) {
-			this.addErrorToken("Unterminated string.");
-			return;
-		}
-
-		// Consume the closing quote
-		this.advance();
-
-		// SQLite allows adjacent string literals to be concatenated
-		if (this.peek() === quote) {
-			this.advance(); // Consume the opening quote of the next string
-			this.string(quote); // Process the next string
-			// Merge the two string tokens
-			if (this.tokens.length > 0 && this.tokens[this.tokens.length - 1].type === TokenType.STRING) {
-				const prevToken = this.tokens.pop()!;
-				value += prevToken.literal;
+			// SQL standard: doubled quotes ('') within a string literal represent a single quote
+			// Check if the next character is the same quote - if so, it's an escaped quote
+			if (this.peek() === quote) {
+				// Add the escaped quote to the value and continue parsing the string
+				value += quote;
+				this.advance(); // Consume the second quote
+				// Continue the loop to keep parsing the string
+			} else {
+				// String is complete
+				break;
 			}
 		}
 
