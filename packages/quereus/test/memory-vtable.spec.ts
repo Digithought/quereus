@@ -431,9 +431,9 @@ describe("Memory VTable Module", () => {
 		it("should handle savepoints", async () => {
 			await table.begin();
 			await table.update({ operation: 'update', values: [1, 950.0], oldKeyValues: [1] });
-			await table.savepoint(1);
+			await table.savepoint(0);
 			await table.update({ operation: 'update', values: [1, 850.0], oldKeyValues: [1] });
-			await table.rollbackTo(1);
+			await table.rollbackTo(0);
 			await table.commit();
 
 			const rows = [];
@@ -447,9 +447,9 @@ describe("Memory VTable Module", () => {
 		it("should release savepoints", async () => {
 			await table.begin();
 			await table.update({ operation: 'update', values: [1, 950.0], oldKeyValues: [1] });
-			await table.savepoint(1);
+			await table.savepoint(0);
 			await table.update({ operation: 'update', values: [1, 850.0], oldKeyValues: [1] });
-			await table.release(1);
+			await table.release(0);
 			await table.commit();
 
 			const rows = [];

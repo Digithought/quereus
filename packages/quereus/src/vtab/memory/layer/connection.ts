@@ -20,7 +20,9 @@ export class MemoryTableConnection {
 	public readLayer: Layer;
 	public pendingTransactionLayer: TransactionLayer | null = null;
 	public explicitTransaction: boolean = false; // Track if transaction was explicitly started
-	private savepoints: Map<number, TransactionLayer> = new Map();
+
+	/** Stack of savepoint snapshots, indexed by depth from TransactionManager */
+	private savepointStack: TransactionLayer[] = [];
 
 	constructor(manager: MemoryTableManager, initialReadLayer: Layer) {
 		this.connectionId = connectionCounter++;
@@ -77,35 +79,31 @@ export class MemoryTableConnection {
 
 	/** Helper method to clear transaction-related state */
 	private clearTransactionState(): void {
-		this.savepoints.clear();
+		this.savepointStack = [];
 		this.explicitTransaction = false;
 	}
 
-	/** Creates a savepoint with the given identifier */
-	createSavepoint(savepointIndex: number): void {
-		if (savepointIndex < 0) {
-			quereusError(`Invalid savepoint index: ${savepointIndex}. Must be non-negative.`, StatusCode.INTERNAL);
+	/** Creates a savepoint at the given depth index */
+	createSavepoint(depth: number): void {
+		if (depth < 0) {
+			quereusError(`Invalid savepoint depth: ${depth}. Must be non-negative.`, StatusCode.INTERNAL);
 		}
 
 		if (!this.pendingTransactionLayer) {
 			// Start an implicit transaction and create a fresh layer immediately so the savepoint has something to snapshot
 			this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
-			// Not marking explicitTransaction; this is still auto-txn unless caller ran BEGIN earlier.
 		}
 
-		if (!this.pendingTransactionLayer) {
-			quereusError(`Failed to create transaction for savepoint ${savepointIndex}`);
-		}
-
-		// Create a snapshot of the current transaction state
+		// Create a snapshot of the current transaction state and push onto the stack
 		const savepointLayer = this.createTransactionSnapshot(this.pendingTransactionLayer);
-
-		// Store the snapshot as the savepoint
-		this.savepoints.set(savepointIndex, savepointLayer);
+		this.savepointStack.push(savepointLayer);
 
 		// A SAVEPOINT implicitly puts the connection into explicit-transaction mode
 		// so that subsequent statements do NOT auto-commit and invalidate the savepoint.
 		this.explicitTransaction = true;
+
+		debugLog(`Connection %d: Created savepoint at depth %d (stack size: %d)`,
+			this.connectionId, depth, this.savepointStack.length);
 	}
 
 	/**
@@ -157,52 +155,45 @@ export class MemoryTableConnection {
 		return snapshotLayer;
 	}
 
-	/** Releases a savepoint and any higher-numbered savepoints */
-	releaseSavepoint(savepointIndex: number): void {
-		if (!this.pendingTransactionLayer) return; // No transaction, nothing to release
-
-		if (savepointIndex < 0) {
-			warnLog(`Connection %d: Invalid savepoint index %d for release.`, this.connectionId, savepointIndex);
-			return;
-		}
-
-		// Remove this savepoint and any with higher indices
-		for (const idx of Array.from(this.savepoints.keys())) {
-			if (idx >= savepointIndex) {
-				this.savepoints.delete(idx);
-			}
-		}
-		debugLog(`Connection %d: Released savepoint %d`, this.connectionId, savepointIndex);
+	/** Releases savepoints from the top of the stack down to the target depth (exclusive) */
+	releaseSavepoint(targetDepth: number): void {
+		if (!this.pendingTransactionLayer) return;
+		this.savepointStack.length = targetDepth;
+		debugLog(`Connection %d: Released savepoints to depth %d`, this.connectionId, targetDepth);
 	}
 
-	/** Rolls back to a savepoint while preserving the transaction */
-	rollbackToSavepoint(savepointIndex: number): void {
-		if (!this.pendingTransactionLayer) return; // No transaction, nothing to rollback to
+	/**
+	 * Rolls back to a savepoint at the target depth, restoring the transaction layer.
+	 * The savepoint is preserved (per SQL standard) so it can be rolled back to again.
+	 */
+	rollbackToSavepoint(targetDepth: number): void {
+		if (!this.pendingTransactionLayer) return;
 
-		if (savepointIndex < 0) {
-			warnLog(`Connection %d: Invalid savepoint index %d for rollback.`, this.connectionId, savepointIndex);
+		if (targetDepth >= this.savepointStack.length) {
+			warnLog(`Connection %d: Savepoint depth %d out of range (stack size: %d)`,
+				this.connectionId, targetDepth, this.savepointStack.length);
 			return;
 		}
 
-		const savepoint = this.savepoints.get(savepointIndex);
-		if (!savepoint) {
-			warnLog(`Connection %d: Savepoint %d not found for rollback.`, this.connectionId, savepointIndex);
-			return;
+		const savepoint = this.savepointStack[targetDepth];
+
+		// Create a fresh mutable layer that inherits from the savepoint's immutable snapshot.
+		// This allows further mutations after rollback.
+		this.pendingTransactionLayer = new TransactionLayer(savepoint);
+
+		// Enable change tracking if it was active on the snapshot
+		if (savepoint.isTrackingChanges()) {
+			this.pendingTransactionLayer.enableChangeTracking();
 		}
 
-		// Restore the transaction layer to the savepoint state
-		// Instead of creating a new layer, we directly set the pending layer to the savepoint
-		this.pendingTransactionLayer = savepoint;
+		// Remove savepoints above the target, but preserve the target itself
+		this.savepointStack.length = targetDepth + 1;
 
-		// Remove this savepoint and any with higher indices
-		for (const idx of Array.from(this.savepoints.keys())) {
-			if (idx >= savepointIndex) {
-				this.savepoints.delete(idx);
-			}
-		}
+		debugLog(`Connection %d: Rolled back to savepoint depth %d (preserved)`,
+			this.connectionId, targetDepth);
 	}
 
 	public clearSavepoints(): void {
-		this.savepoints.clear();
+		this.savepointStack = [];
 	}
 }

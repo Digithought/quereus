@@ -108,16 +108,129 @@ SELECT val FROM tx_t WHERE id = 1;
 SELECT count(*) FROM tx_t WHERE id = 6;
 → [{ "count(*)": 0 }]
 
--- Test nested savepoints (conceptual)
--- BEGIN;
--- INSERT INTO tx_t VALUES (100, 'a');
--- SAVEPOINT s1;
--- INSERT INTO tx_t VALUES (101, 'b');
--- SAVEPOINT s2;
--- INSERT INTO tx_t VALUES (102, 'c');
--- ROLLBACK TO s1;
--- SELECT count(*) FROM tx_t WHERE id > 99; -- Should be 1 (row 100)
--- → [{ "count(*)": 1 }]
--- COMMIT;
+-- ===================================
+-- Nested Savepoints
+-- ===================================
+-- ROLLBACK TO s1 should discard s2 and everything after s1.
+
+BEGIN;
+INSERT INTO tx_t VALUES (100, 'a');
+SAVEPOINT s1;
+INSERT INTO tx_t VALUES (101, 'b');
+SAVEPOINT s2;
+INSERT INTO tx_t VALUES (102, 'c');
+ROLLBACK TO s1;
+SELECT count(*) FROM tx_t WHERE id > 99;
+→ [{ "count(*)": 1 }]
+COMMIT;
+
+-- Verify after commit
+SELECT count(*) FROM tx_t WHERE id >= 100;
+→ [{ "count(*)": 1 }]
+SELECT val FROM tx_t WHERE id = 100;
+→ [{ "val": "a" }]
+
+-- Clean up nested test data
+DELETE FROM tx_t WHERE id >= 100;
+-- run
+
+-- ===================================
+-- ROLLBACK TO non-existent savepoint (should error)
+-- ===================================
+
+BEGIN;
+INSERT INTO tx_t VALUES (200, 'phantom');
+ROLLBACK TO SAVEPOINT no_such_sp;
+-- error: No such savepoint: no_such_sp
+
+ROLLBACK;
+-- run
+
+-- ===================================
+-- RELEASE non-existent savepoint (should error)
+-- ===================================
+
+BEGIN;
+INSERT INTO tx_t VALUES (200, 'phantom');
+RELEASE SAVEPOINT no_such_sp;
+-- error: No such savepoint: no_such_sp
+
+ROLLBACK;
+-- run
+
+-- ===================================
+-- Same-prefix savepoint names (no collision)
+-- ===================================
+
+BEGIN;
+SAVEPOINT sp;
+INSERT INTO tx_t VALUES (300, 'sp-data');
+SAVEPOINT spa;
+INSERT INTO tx_t VALUES (301, 'spa-data');
+ROLLBACK TO SAVEPOINT spa;
+-- Only spa's changes are undone; sp's data remains
+SELECT count(*) FROM tx_t WHERE id = 300;
+→ [{ "count(*)": 1 }]
+SELECT count(*) FROM tx_t WHERE id = 301;
+→ [{ "count(*)": 0 }]
+RELEASE SAVEPOINT spa;
+RELEASE SAVEPOINT sp;
+COMMIT;
+
+-- Verify
+SELECT val FROM tx_t WHERE id = 300;
+→ [{ "val": "sp-data" }]
+
+-- Clean up
+DELETE FROM tx_t WHERE id >= 300;
+-- run
+
+-- ===================================
+-- ROLLBACK TO preserves the savepoint (can release after rollback)
+-- ===================================
+
+BEGIN;
+SAVEPOINT preserve_test;
+INSERT INTO tx_t VALUES (400, 'will-be-undone');
+ROLLBACK TO SAVEPOINT preserve_test;
+-- Savepoint still exists; should be able to release it
+RELEASE SAVEPOINT preserve_test;
+COMMIT;
+
+SELECT count(*) FROM tx_t WHERE id = 400;
+→ [{ "count(*)": 0 }]
+
+-- ===================================
+-- Nested savepoints unwinding correctly
+-- ===================================
+
+BEGIN;
+INSERT INTO tx_t VALUES (500, 'base');
+SAVEPOINT sp_outer;
+INSERT INTO tx_t VALUES (501, 'sp_outer');
+SAVEPOINT sp_middle;
+INSERT INTO tx_t VALUES (502, 'sp_middle');
+SAVEPOINT sp_inner;
+INSERT INTO tx_t VALUES (503, 'sp_inner');
+
+-- Rollback to sp_middle should discard sp_inner and sp_middle's changes
+ROLLBACK TO SAVEPOINT sp_middle;
+SELECT count(*) FROM tx_t WHERE id = 503;
+→ [{ "count(*)": 0 }]
+SELECT count(*) FROM tx_t WHERE id = 502;
+→ [{ "count(*)": 0 }]
+-- sp_outer's insert and base should still be visible
+SELECT count(*) FROM tx_t WHERE id = 501;
+→ [{ "count(*)": 1 }]
+SELECT count(*) FROM tx_t WHERE id = 500;
+→ [{ "count(*)": 1 }]
+
+RELEASE SAVEPOINT sp_middle;
+RELEASE SAVEPOINT sp_outer;
+COMMIT;
+
+-- Verify final state
+SELECT count(*) FROM tx_t WHERE id >= 500;
+→ [{ "count(*)": 2 }]
 
 DROP TABLE tx_t;

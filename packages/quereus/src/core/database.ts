@@ -1019,17 +1019,19 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		this.transactionManager.recordUpdate(baseTable, oldKey, newKey);
 	}
 
-	/** Savepoint change tracking */
-	public _beginSavepointLayer(): void {
-		this.transactionManager.beginSavepointLayer();
+	/** Create a named savepoint, returning its depth index */
+	public _createSavepoint(name: string): number {
+		return this.transactionManager.createSavepoint(name);
 	}
 
-	public _rollbackSavepointLayer(): void {
-		this.transactionManager.rollbackSavepointLayer();
+	/** Release a named savepoint (merges layers down to target), returns target depth */
+	public _releaseSavepoint(name: string): number {
+		return this.transactionManager.releaseSavepoint(name);
 	}
 
-	public _releaseSavepointLayer(): void {
-		this.transactionManager.releaseSavepointLayer();
+	/** Rollback to a named savepoint (discards layers down to target) */
+	public _rollbackToSavepoint(name: string): number {
+		return this.transactionManager.rollbackToSavepoint(name);
 	}
 
 	public _clearChangeLog(): void {

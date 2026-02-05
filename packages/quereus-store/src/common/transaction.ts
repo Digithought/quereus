@@ -16,8 +16,8 @@ interface PendingOp {
   value?: Uint8Array;
 }
 
-/** Savepoint snapshot. */
-interface Savepoint {
+/** Savepoint snapshot recording position in the operation/event arrays. */
+interface SavepointSnapshot {
   opIndex: number;
   eventIndex: number;
 }
@@ -43,7 +43,7 @@ export class TransactionCoordinator {
   private inTransaction = false;
   private pendingOps: PendingOp[] = [];
   private pendingEvents: DataChangeEvent[] = [];
-  private savepoints: Map<number, Savepoint> = new Map();
+  private savepointStack: SavepointSnapshot[] = [];
   private callbacks: TransactionCallbacks[] = [];
 
   constructor(store: KVStore, eventEmitter?: StoreEventEmitter) {
@@ -70,7 +70,7 @@ export class TransactionCoordinator {
     this.inTransaction = true;
     this.pendingOps = [];
     this.pendingEvents = [];
-    this.savepoints.clear();
+    this.savepointStack = [];
   }
 
   /** Queue a put operation. */
@@ -147,40 +147,37 @@ export class TransactionCoordinator {
     this.clearTransaction();
   }
 
-  /** Create a savepoint. */
-  createSavepoint(index: number): void {
+  /** Create a savepoint at the given depth. */
+  createSavepoint(_depth: number): void {
     if (!this.inTransaction) {
       // Start implicit transaction
       this.begin();
     }
-    this.savepoints.set(index, {
+    this.savepointStack.push({
       opIndex: this.pendingOps.length,
       eventIndex: this.pendingEvents.length,
     });
   }
 
-  /** Release a savepoint (no-op, just removes from map). */
-  releaseSavepoint(index: number): void {
-    this.savepoints.delete(index);
+  /** Release savepoints down to the target depth. */
+  releaseSavepoint(targetDepth: number): void {
+    this.savepointStack.length = targetDepth;
   }
 
-  /** Rollback to a savepoint. */
-  rollbackToSavepoint(index: number): void {
-    const savepoint = this.savepoints.get(index);
-    if (!savepoint) {
-      throw new QuereusError(`Savepoint ${index} not found`, StatusCode.NOTFOUND);
+  /** Rollback to a savepoint at the target depth (preserves the savepoint). */
+  rollbackToSavepoint(targetDepth: number): void {
+    if (targetDepth >= this.savepointStack.length) {
+      throw new QuereusError(`Savepoint depth ${targetDepth} not found`, StatusCode.NOTFOUND);
     }
 
-    // Truncate operations and events back to savepoint
-    this.pendingOps = this.pendingOps.slice(0, savepoint.opIndex);
-    this.pendingEvents = this.pendingEvents.slice(0, savepoint.eventIndex);
+    const snapshot = this.savepointStack[targetDepth];
 
-    // Remove this savepoint and any created after it
-    for (const [idx] of this.savepoints) {
-      if (idx >= index) {
-        this.savepoints.delete(idx);
-      }
-    }
+    // Truncate operations and events back to the snapshot
+    this.pendingOps = this.pendingOps.slice(0, snapshot.opIndex);
+    this.pendingEvents = this.pendingEvents.slice(0, snapshot.eventIndex);
+
+    // Remove savepoints above the target, but preserve the target itself
+    this.savepointStack.length = targetDepth + 1;
   }
 
   /** Clear all transaction state. */
@@ -188,7 +185,7 @@ export class TransactionCoordinator {
     this.inTransaction = false;
     this.pendingOps = [];
     this.pendingEvents = [];
-    this.savepoints.clear();
+    this.savepointStack = [];
   }
 
   /** Get the underlying store for direct reads. */

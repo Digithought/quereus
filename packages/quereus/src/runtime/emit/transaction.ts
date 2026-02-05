@@ -8,17 +8,6 @@ import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('runtime:emit:transaction');
 
-// Simple hash function to convert savepoint names to indices
-function hashSavepointName(name: string): number {
-	let hash = 0;
-	for (let i = 0; i < name.length; i++) {
-		const char = name.charCodeAt(i);
-		hash = ((hash << 5) - hash) + char;
-		hash = hash & hash; // Convert to 32-bit integer
-	}
-	return Math.abs(hash);
-}
-
 export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): Instruction {
 	// Select the operation function at emit time
 	let run: (ctx: RuntimeContext) => Promise<SqlValue | undefined>;
@@ -47,22 +36,19 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 
 		case 'rollback': {
 			if (plan.savepoint) {
-				const savepointIndex = hashSavepointName(plan.savepoint);
+				const savepointName = plan.savepoint;
 				run = async (rctx: RuntimeContext) => {
-					const connections = rctx.db.getAllConnections();
-					log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Found ${connections.length} active connections`);
+					log(`ROLLBACK TO SAVEPOINT ${savepointName}`);
 
+					// TransactionManager validates the name and rolls back change/event layers.
+					// Returns the depth index that connections should roll back to.
+					const targetDepth = rctx.db._rollbackToSavepoint(savepointName);
+
+					// Roll back each connection to the target savepoint depth
+					const connections = rctx.db.getAllConnections();
 					for (const connection of connections) {
-						try {
-							await connection.rollbackToSavepoint(savepointIndex);
-							log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Successfully called on connection ${connection.connectionId}`);
-						} catch (error) {
-							log(`ROLLBACK TO SAVEPOINT ${savepointIndex}: Error on connection ${connection.connectionId}: %O`, error);
-							throw error;
-						}
+						await connection.rollbackToSavepoint(targetDepth);
 					}
-					// Discard top change layer and event layer
-					rctx.db._rollbackSavepointLayer();
 					return null;
 				};
 				note = `ROLLBACK TO SAVEPOINT ${plan.savepoint}`;
@@ -81,7 +67,7 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 			if (!plan.savepoint) {
 				quereusError('Savepoint name is required for SAVEPOINT operation', StatusCode.MISUSE);
 			}
-			const savepointIndex = hashSavepointName(plan.savepoint);
+			const savepointName = plan.savepoint;
 			run = async (rctx: RuntimeContext) => {
 				// Ensure we're in a transaction first (savepoints require transaction context)
 				await rctx.db._ensureTransaction();
@@ -90,20 +76,15 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 				// wants transaction control, so we shouldn't auto-commit
 				rctx.db._upgradeToExplicitTransaction();
 
+				// TransactionManager tracks the name and creates change/event layers
+				const depth = rctx.db._createSavepoint(savepointName);
+
 				const connections = rctx.db.getAllConnections();
-				log(`SAVEPOINT ${savepointIndex}: Found ${connections.length} active connections`);
+				log(`SAVEPOINT ${savepointName} (depth ${depth}): ${connections.length} connections`);
 
 				for (const connection of connections) {
-					try {
-						await connection.createSavepoint(savepointIndex);
-						log(`SAVEPOINT ${savepointIndex}: Successfully called on connection ${connection.connectionId}`);
-					} catch (error) {
-						log(`SAVEPOINT ${savepointIndex}: Error on connection ${connection.connectionId}: %O`, error);
-						throw error;
-					}
+					await connection.createSavepoint(depth);
 				}
-				// Track change layer and event layer
-				rctx.db._beginSavepointLayer();
 				return null;
 			};
 			note = `SAVEPOINT ${plan.savepoint}`;
@@ -114,22 +95,18 @@ export function emitTransaction(plan: TransactionNode, _ctx: EmissionContext): I
 			if (!plan.savepoint) {
 				quereusError('Savepoint name is required for RELEASE operation', StatusCode.MISUSE);
 			}
-			const releaseSavepointIndex = hashSavepointName(plan.savepoint);
+			const savepointName = plan.savepoint;
 			run = async (rctx: RuntimeContext) => {
-				const connections = rctx.db.getAllConnections();
-				log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Found ${connections.length} active connections`);
+				log(`RELEASE SAVEPOINT ${savepointName}`);
 
+				// TransactionManager validates the name and releases change/event layers
+				const targetDepth = rctx.db._releaseSavepoint(savepointName);
+
+				// Release each connection's savepoint at the target depth
+				const connections = rctx.db.getAllConnections();
 				for (const connection of connections) {
-					try {
-						await connection.releaseSavepoint(releaseSavepointIndex);
-						log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Successfully called on connection ${connection.connectionId}`);
-					} catch (error) {
-						log(`RELEASE SAVEPOINT ${releaseSavepointIndex}: Error on connection ${connection.connectionId}: %O`, error);
-						throw error;
-					}
+					await connection.releaseSavepoint(targetDepth);
 				}
-				// Merge top change layer into below
-				rctx.db._releaseSavepointLayer();
 				return null;
 			};
 			note = `RELEASE SAVEPOINT ${plan.savepoint}`;

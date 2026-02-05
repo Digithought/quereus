@@ -60,6 +60,9 @@ export class TransactionManager {
 	/** Savepoint layers for change tracking */
 	private changeLogLayers: Array<Map<string, Set<string>>> = [];
 
+	/** Stack of active savepoint names (ordered by creation) */
+	private savepointStack: string[] = [];
+
 	/** Flag to prevent new connections from starting transactions during constraint evaluation */
 	private evaluatingDeferredConstraints = false;
 	/** Flag indicating we're in a coordinated multi-connection commit */
@@ -362,29 +365,101 @@ export class TransactionManager {
 	clearChangeLog(): void {
 		this.changeLog.clear();
 		this.changeLogLayers = [];
+		this.savepointStack = [];
 		this.ctx.getDeferredConstraints().clear();
 	}
 
 	// ============================================================================
-	// Savepoint Layer Management
+	// Savepoint Management
 	// ============================================================================
 
-	/** Begin a new savepoint layer */
-	beginSavepointLayer(): void {
+	/**
+	 * Creates a named savepoint, pushing it onto the stack.
+	 * Returns the depth index for use by connections.
+	 */
+	createSavepoint(name: string): number {
+		const depth = this.savepointStack.length;
+		this.savepointStack.push(name);
+		this.beginSavepointLayer();
+		return depth;
+	}
+
+	/**
+	 * Finds a savepoint by name, returning its stack index.
+	 * Throws if the savepoint does not exist.
+	 */
+	findSavepoint(name: string): number {
+		// Search from top of stack to find the most recent savepoint with this name
+		for (let i = this.savepointStack.length - 1; i >= 0; i--) {
+			if (this.savepointStack[i] === name) return i;
+		}
+		throw new QuereusError(`No such savepoint: ${name}`, StatusCode.ERROR);
+	}
+
+	/**
+	 * Releases a named savepoint, merging its layer (and any above it) into the parent.
+	 * Per SQL semantics, RELEASE removes the named savepoint and all savepoints
+	 * created after it.
+	 * Returns the target depth index for connection coordination.
+	 */
+	releaseSavepoint(name: string): number {
+		const index = this.findSavepoint(name);
+		const layersToRelease = this.savepointStack.length - index;
+
+		// Release layers from top down to the target, merging each into its parent
+		for (let i = 0; i < layersToRelease; i++) {
+			this.releaseSavepointLayer();
+		}
+		this.savepointStack.length = index;
+		return index;
+	}
+
+	/**
+	 * Rolls back to a named savepoint, discarding all layers above it.
+	 * Per SQL standard, the savepoint itself is preserved (not consumed) —
+	 * it can be rolled back to again or released later.
+	 * A fresh layer is created for the preserved savepoint.
+	 * Returns the target depth index for connection coordination.
+	 */
+	rollbackToSavepoint(name: string): number {
+		const index = this.findSavepoint(name);
+		const layersAbove = this.savepointStack.length - index - 1;
+
+		// Rollback layers above the target savepoint
+		for (let i = 0; i < layersAbove; i++) {
+			this.rollbackSavepointLayer();
+		}
+		// Rollback the target savepoint's own layer
+		this.rollbackSavepointLayer();
+		// Remove savepoints above the target from the name stack
+		this.savepointStack.length = index + 1;
+
+		// Re-create a fresh layer for the preserved savepoint
+		this.beginSavepointLayer();
+
+		return index;
+	}
+
+	// ============================================================================
+	// Savepoint Layer Management (internal)
+	// ============================================================================
+
+	/** Begin a new savepoint layer for change tracking */
+	private beginSavepointLayer(): void {
 		this.changeLogLayers.push(new Map());
 		this.ctx.getDeferredConstraints().beginLayer();
 		this.ctx.getEventEmitter().beginSavepointLayer();
 	}
 
 	/** Rollback the current savepoint layer */
-	rollbackSavepointLayer(): void {
+	private rollbackSavepointLayer(): void {
 		this.changeLogLayers.pop();
 		this.ctx.getDeferredConstraints().rollbackLayer();
 		this.ctx.getEventEmitter().rollbackSavepointLayer();
 	}
 
 	/** Release the current savepoint layer, merging into parent */
-	releaseSavepointLayer(): void {
+	private releaseSavepointLayer(): void {
 		const top = this.changeLogLayers.pop();
 		if (!top) return;
 
