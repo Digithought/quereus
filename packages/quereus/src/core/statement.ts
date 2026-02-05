@@ -17,6 +17,7 @@ import type { SchemaDependency } from '../planner/planning-context.js';
 import { getParameterTypes } from './param.js';
 import { rowToObject } from './utils.js';
 import { getPhysicalType, physicalTypeName, PhysicalType } from '../types/logical-type.js';
+import { wrapAsyncIterator } from '../util/async-iterator.js';
 
 const log = createLogger('core:statement');
 const errorLog = log.extend('error');
@@ -315,23 +316,16 @@ export class Statement {
 	 * Iterates over result rows. Handles JIT transaction management - commits
 	 * implicit transactions on successful completion, rolls back on error.
 	 */
-	async *iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
-		let success = false;
-		try {
-			for await (const row of this._iterateRowsRaw(params)) {
-				yield row;
-			}
-			success = true;
-		} finally {
-			// Commit or rollback implicit transaction if one was started
+	iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Row> {
+		return wrapAsyncIterator(this._iterateRowsRaw(params), async (commit) => {
 			if (this.db._isImplicitTransaction()) {
-				if (success) {
+				if (commit) {
 					await this.db._commitTransaction();
 				} else {
 					await this.db._rollbackTransaction();
 				}
 			}
-		}
+		});
 	}
 
 	getColumnNames(): string[] {
@@ -450,27 +444,34 @@ export class Statement {
 	 * Transactions are started lazily (just-in-time) when needed.
 	 * The mutex is held for the entire iteration.
 	 */
-	async *all(params?: SqlParameters | SqlValue[]): AsyncIterable<Record<string, SqlValue>> {
+	all(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
 		this.validateStatement("get all rows for");
 
-		// Acquire mutex for the entire iteration
+		return wrapAsyncIterator(this._allGenerator(params), async (commit) => {
+			if (this.db._isImplicitTransaction()) {
+				if (commit) {
+					await this.db._commitTransaction();
+				} else {
+					await this.db._rollbackTransaction();
+				}
+			}
+		});
+	}
+
+	/**
+	 * Internal generator for all() that holds the mutex.
+	 * Transaction finalization is handled by the wrapper returned by all().
+	 * @internal
+	 */
+	private async *_allGenerator(params?: SqlParameters | SqlValue[]): AsyncGenerator<Record<string, SqlValue>> {
 		const releaseMutex = await this.db._acquireExecMutex();
-		let success = false;
 
 		try {
 			const names = this.getColumnNames();
 			for await (const row of this._iterateRowsRaw(params)) {
 				yield rowToObject(row, names);
 			}
-			success = true;
 		} finally {
-			if (this.db._isImplicitTransaction()) {
-				if (success) {
-					await this.db._commitTransaction();
-				} else {
-					await this.db._rollbackTransaction();
-				}
-			}
 			releaseMutex();
 		}
 	}

@@ -35,12 +35,12 @@ import type { OptimizerTuning } from '../planner/optimizer-tuning.js';
 import { registerBuiltinWindowFunctions } from '../func/builtins/builtin-window-functions.js';
 import { DatabaseOptionsManager } from './database-options.js';
 import type { InstructionTracer } from '../runtime/types.js';
-import { isAsyncIterable } from '../runtime/utils.js';
 import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 import { type LogicalType } from '../types/logical-type.js';
 import { getParameterTypes } from './param.js';
 import { rowToObject } from './utils.js';
+import { wrapAsyncIterator } from '../util/async-iterator.js';
 import {
 	DatabaseEventEmitter,
 	type DatabaseDataChangeEvent,
@@ -1064,16 +1064,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 * ```
 	 */
 	eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
-		// Create the generator that does the actual work
-		const generator = this._evalGenerator(sql, params);
-
-		// Track whether the transaction has been finalized
-		let transactionFinalized = false;
-
-		// Helper to finalize the implicit transaction (idempotent)
-		const finalizeImplicitTransaction = async (commit: boolean): Promise<void> => {
-			if (transactionFinalized) return;
-			transactionFinalized = true;
+		return wrapAsyncIterator(this._evalGenerator(sql, params), async (commit) => {
 			if (this.transactionManager.isImplicitTransaction()) {
 				if (commit) {
 					await this._commitTransaction();
@@ -1081,39 +1072,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 					await this._rollbackTransaction();
 				}
 			}
-		};
-
-		// Wrap the generator to intercept return() and throw()
-		const wrappedIterator: AsyncIterableIterator<Record<string, SqlValue>> = {
-			[Symbol.asyncIterator]() {
-				return this;
-			},
-			async next() {
-				return generator.next();
-			},
-			async return(value?: unknown) {
-				// Called on early termination (break, return, etc.)
-				// Commit the implicit transaction before delegating to the generator
-				try {
-					await finalizeImplicitTransaction(true);
-				} finally {
-					// Delegate to generator.return() to trigger cleanup (finally block)
-					return generator.return(value as Record<string, SqlValue>);
-				}
-			},
-			async throw(error?: unknown) {
-				// Called when an error is thrown into the iterator
-				// Rollback the implicit transaction before delegating
-				try {
-					await finalizeImplicitTransaction(false);
-				} finally {
-					// Delegate to generator.throw() to propagate the error
-					return generator.throw(error);
-				}
-			}
-		};
-
-		return wrappedIterator;
+		});
 	}
 
 	/**
@@ -1124,18 +1083,13 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	private async *_evalGenerator(sql: string, params?: SqlParameters | SqlValue[]): AsyncGenerator<Record<string, SqlValue>> {
 		this.checkOpen();
 
-		// Acquire mutex for the entire iteration
 		const releaseMutex = await this._acquireExecMutex();
 		let stmt: Statement | null = null;
-		let normalCompletion = false;
 
 		try {
-			// Execute - transactions are started JIT by runtime when needed
 			stmt = this.prepare(sql);
 
 			if (stmt.astBatch.length === 0) {
-				// No statements, yield nothing.
-				normalCompletion = true;
 				return;
 			}
 
@@ -1144,12 +1098,10 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 				// then yield results from the last statement
 				const batch = this._parseSql(sql);
 
-				// Execute all statements except the last one
 				for (let i = 0; i < batch.length - 1; i++) {
 					await this._executeSingleStatement(batch[i], params);
 				}
 
-				// Now prepare and execute the last statement to yield its results
 				const lastStmt = new Statement(this, [batch[batch.length - 1]]);
 				this.statements.add(lastStmt);
 				try {
@@ -1161,26 +1113,11 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 					await lastStmt.finalize();
 				}
 			} else {
-				// Single statement: execute and yield results
 				const names = stmt.getColumnNames();
 				for await (const row of stmt._iterateRowsRaw(params)) {
 					yield rowToObject(row, names);
 				}
 			}
-
-			normalCompletion = true;
-
-			// Commit implicit transaction on normal completion
-			// (The wrapper also handles this for early termination via return())
-			if (this.transactionManager.isImplicitTransaction()) {
-				await this._commitTransaction();
-			}
-		} catch (err) {
-			// Rollback implicit transaction on error
-			if (this.transactionManager.isImplicitTransaction()) {
-				await this._rollbackTransaction();
-			}
-			throw err;
 		} finally {
 			if (stmt) { await stmt.finalize(); }
 			releaseMutex();
