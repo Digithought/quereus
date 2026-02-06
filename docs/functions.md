@@ -389,10 +389,44 @@ These functions manipulate date and time values. They rely heavily on the underl
     *   **Example:** `julianday('2000-01-01 12:00:00')`.
 
 *   `strftime(format, timestring, modifier, ...)`
-    *   **Description:** Returns the date formatted according to the `format` string, after applying any modifiers to the `timestring`.
-    *   **Arguments:** `format` (TEXT - see docs for specifiers like %Y, %m, %d), `timestring`, `modifier` (Optional, zero or more).
+    *   **Description:** Returns the date formatted according to the `format` string, after applying any modifiers to the `timestring`. Supports `%E` (epoch seconds) and `%Q` (epoch milliseconds) specifiers in addition to standard specifiers.
+    *   **Arguments:** `format` (TEXT - see docs for specifiers like %Y, %m, %d, %E, %Q), `timestring`, `modifier` (Optional, zero or more).
     *   **Returns:** A TEXT string or `NULL` on error.
-    *   **Example:** `strftime('%Y-%m-%d %H:%M', 'now')`, `strftime('%W', '2024-01-15')` (Week number).
+    *   **Example:** `strftime('%Y-%m-%d %H:%M', 'now')`, `strftime('%E', '2024-01-01')` returns `'1704067200'`.
+
+### Epoch Functions
+
+These functions convert datetimes to numeric Unix epoch values. They use **strict parsing** — only ISO 8601 strings and `'now'` are accepted; bare numbers are rejected to avoid ambiguity. The returned epoch values are always relative to UTC regardless of timezone modifiers. See [Date/Time Handling](datetime.md#unix-epoch-functions) for details.
+
+*   `epoch_s(timestring, modifier, ...)`
+    *   **Description:** Returns the number of whole seconds since the Unix epoch (1970-01-01 00:00:00 UTC).
+    *   **Arguments:** `timestring` (TEXT - ISO 8601 or 'now'), `modifier` (Optional, zero or more).
+    *   **Returns:** An INTEGER value or `NULL` on error.
+    *   **Example:** `epoch_s('2024-01-01 00:00:00')` returns `1704067200`.
+
+*   `epoch_ms(timestring, modifier, ...)`
+    *   **Description:** Returns the number of milliseconds since the Unix epoch. Useful for JavaScript interop and sub-second precision.
+    *   **Arguments:** `timestring` (TEXT - ISO 8601 or 'now'), `modifier` (Optional, zero or more).
+    *   **Returns:** An INTEGER value or `NULL` on error.
+    *   **Example:** `epoch_ms('2024-07-26 12:30:45.123')` returns `1721997045123`.
+
+*   `epoch_s_frac(timestring, modifier, ...)`
+    *   **Description:** Returns seconds since the Unix epoch as a floating-point number with fractional (millisecond) precision.
+    *   **Arguments:** `timestring` (TEXT - ISO 8601 or 'now'), `modifier` (Optional, zero or more).
+    *   **Returns:** A REAL value or `NULL` on error.
+    *   **Example:** `epoch_s_frac('2024-07-26 12:30:45.5')` returns `1721997045.5`.
+
+### `subsec` Modifier
+
+The `subsec` modifier can be used with `datetime()` and `time()` to include fractional seconds (milliseconds) in the output. Without this modifier, output is truncated to whole seconds.
+
+```sql
+select datetime('2024-07-26 12:30:45.123', 'subsec');
+-- → '2024-07-26 12:30:45.123'
+
+select datetime(1721997045.123, 'unixepoch', 'subsec');
+-- → '2024-07-26 12:30:45.123'
+```
 
 ## Timespan Functions
 

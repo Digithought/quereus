@@ -262,6 +262,22 @@ While Quereus supports standard SQL syntax, it has several distinctive design ch
 - Row-level CHECKs that reference other tables (e.g., via subqueries) are automatically deferred and enforced at COMMIT using the same optimized engine as global assertions. No `DEFERRABLE` or `SET CONSTRAINTS` management is required by the user.
 - **Determinism Enforcement**: CHECK constraints and DEFAULT values must use only deterministic expressions. Non-deterministic values (like `datetime('now')` or `random()`) must be passed via mutation context to ensure captured statements are replayable. See [Runtime Documentation](../docs/runtime.md#determinism-validation).
 
+### Sequential ID Generation
+
+Quereus has no built-in auto-increment or sequence objects. Instead, batch ID generation composes naturally from existing features: mutation context captures a non-deterministic seed once, a window function provides a deterministic per-row ordinal, and a scalar or table-valued function produces the final ID. For example, inserting with timestamp-derived IDs:
+
+```sql
+insert into orders (id, customer_id, total)
+with context base_ts = epoch_ms('now')
+select
+    base_ts * 1000 + row_number() over (order by c.customer_id),
+    c.customer_id,
+    c.total
+from (select customer_id, sum(price) as total from cart_items group by customer_id) c;
+```
+
+The `WITH CONTEXT` boundary captures `epoch_ms('now')` as a literal, and `row_number() over (order by ...)` assigns a deterministic ordinal over a declared ordering. The entire statement is replayable. For richer formats (ULIDs, UUIDv7), register a deterministic scalar UDF that encodes `(seed, counter)` into the desired format — or use a lateral join to a deterministic TVF when multiple columns are needed per generated row.
+
 ## Current Status
 
 Quereus is a feature-complete SQL query processor with a modern planner and instruction-based runtime architecture. The engine successfully handles complex SQL workloads including joins, window functions, subqueries, CTEs, constraints, and comprehensive DML/DDL operations.
@@ -338,7 +354,7 @@ This layered approach aims for broad coverage via the logic tests while using pr
 *   **Scalar:** `lower`, `upper`, `length`, `substr`/`substring`, `abs`, `round`, `coalesce`, `nullif`, `like`, `glob`, `typeof`
 *   **Aggregate:** `count`, `sum`, `avg`, `min`, `max`, `group_concat`, `json_group_array`, `json_group_object`
 *   **Window Functions:** Complete implementation with `row_number`, `rank`, `dense_rank`, `ntile` (ranking); `count`, `sum`, `avg`, `min`, `max` with OVER clause (aggregates); Full frame specification support (`ROWS BETWEEN`, `UNBOUNDED PRECEDING/FOLLOWING`); `NULLS FIRST/LAST` ordering
-*   **Date/Time:** `date`, `time`, `datetime`, `julianday`, `strftime` (supports common formats and modifiers)
+*   **Date/Time:** `date`, `time`, `datetime`, `julianday`, `strftime` (supports common formats and modifiers), `epoch_s`, `epoch_ms`, `epoch_s_frac` (Unix epoch conversions with strict parsing)
 *   **JSON:** `json_valid`, `json_schema`, `json_type`, `json_extract`, `json_quote`, `json_array`, `json_object`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_array_length`, `json_patch`
 *   **Query Analysis:** `query_plan`, `scheduler_program`, `execution_trace` (debugging and performance analysis)
 

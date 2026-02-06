@@ -334,7 +334,7 @@ async function executeWithTracing(db: Database, sql: string, params?: any[]): Pr
 					// Simple arithmetic like "julianday('2024-01-01') - julianday('2023-01-01')"
 					(columnName.includes(' - ') && !columnName.includes(' and ') && !columnName.includes(' or ') && !columnName.includes(' xor ')) ||
 					// Specific function calls that use simple format (JSON and date/time functions mainly)
-					(/^(json_extract|json_array_length|json_array|json_object|json_insert|json_replace|json_set|json_remove|strftime|julianday|date|time|datetime)\(.+\)$/.test(columnName));
+					(/^(json_extract|json_array_length|json_array|json_object|json_insert|json_replace|json_set|json_remove|strftime|julianday|date|time|datetime|epoch_s|epoch_ms|epoch_s_frac)\(.+\)$/.test(columnName));
 
 				if (isSimpleExpression) {
 					// Simple value format for simple expressions
