@@ -156,6 +156,30 @@ describe(`Basic query`, () => {
 			await stmt.finalize();
 		});
 
+		it('should produce consistent results between bind() and bindAll() for positional params', async () => {
+			const stmtBind = db.prepare('SELECT * FROM test_params WHERE id = ? AND name = ?');
+			stmtBind.bind(1, 2);
+			stmtBind.bind(2, 'Bob');
+			const bindRows: any[] = [];
+			for await (const row of stmtBind.all()) {
+				bindRows.push(row);
+			}
+			await stmtBind.finalize();
+
+			const stmtBindAll = db.prepare('SELECT * FROM test_params WHERE id = ? AND name = ?');
+			stmtBindAll.bindAll([2, 'Bob']);
+			const bindAllRows: any[] = [];
+			for await (const row of stmtBindAll.all()) {
+				bindAllRows.push(row);
+			}
+			await stmtBindAll.finalize();
+
+			void expect(bindRows).to.deep.equal(bindAllRows);
+			void expect(bindRows).to.have.length(1);
+			void expect(bindRows[0].id).to.equal(2);
+			void expect(bindRows[0].name).to.equal('Bob');
+		});
+
 		it('should support parameters in db.eval()', async () => {
 			const rows: any[] = [];
 			for await (const row of db.eval('SELECT * FROM test_params WHERE id = ? AND name = ?', [2, "Bob"])) {

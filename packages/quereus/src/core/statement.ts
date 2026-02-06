@@ -236,12 +236,10 @@ export class Statement {
 		if (this.busy) throw new MisuseError("Statement busy, reset first");
 		this.boundArgs = {};
 		if (Array.isArray(args)) {
-			// Convert array to object with 1-based keys to match parameter indexing
-			const convertedArgs: Record<string, SqlValue> = {};
+			// Convert array to object with 1-based numeric keys to match bind() and constructor
 			args.forEach((value, index) => {
-				convertedArgs[String(index + 1)] = value; // 1-based indexing
+				this.boundArgs[index + 1] = value;
 			});
-			Object.assign(this.boundArgs, convertedArgs);
 		} else if (typeof args === 'object' && args !== null) {
 			Object.assign(this.boundArgs, args);
 		} else {
