@@ -40,6 +40,7 @@ export class TransactionLayer implements Layer {
 	private secondaryIndexes: Map<string, MemoryIndex>;
 
 	private _isCommitted: boolean = false;
+	private _hasModifications: boolean = false;
 
 	/** Pending changes for event emission. Null if tracking disabled. */
 	private pendingChanges: PendingChange[] | null = null;
@@ -149,6 +150,7 @@ export class TransactionLayer implements Layer {
 		if (source.pendingChanges) {
 			this.pendingChanges = [...source.pendingChanges];
 		}
+		this._hasModifications = source._hasModifications;
 	}
 
 	public getPkExtractorsAndComparators(schema: TableSchema): {
@@ -181,6 +183,7 @@ export class TransactionLayer implements Layer {
 	recordUpsert(primaryKey: BTreeKeyForPrimary, newRowData: Row, oldRowDataIfUpdate?: Row | null): void {
 		if (this._isCommitted) throw new QuereusError("Cannot modify a committed layer");
 
+		this._hasModifications = true;
 		this.primaryModifications.upsert(newRowData);
 
 		// Track change for event emission
@@ -225,6 +228,7 @@ export class TransactionLayer implements Layer {
 	recordDelete(primaryKey: BTreeKeyForPrimary, oldRowDataForIndexes: Row): void {
 		if (this._isCommitted) throw new QuereusError("Cannot modify a committed layer");
 
+		this._hasModifications = true;
 		// Find the existing entry
 		const existingPath = this.primaryModifications.find(primaryKey);
 		if (existingPath.on) {
@@ -257,23 +261,7 @@ export class TransactionLayer implements Layer {
 	}
 
 	public hasChanges(): boolean {
-		// Check if primary modifications BTree has any entries beyond its base
-		if (this.primaryModifications.getCount() > 0) {
-			// Note: getCount() might include inherited entries, so we need a better way
-			// to check if this layer has modifications. This depends on inheritree's API.
-			// For now, assume any count > 0 means changes (might need refinement)
-			return true;
-		}
-
-		// Check secondary indexes for changes
-		for (const memoryIndex of this.secondaryIndexes.values()) {
-			if (memoryIndex.size > 0) {
-				// Same caveat as above - this might include inherited entries
-				return true;
-			}
-		}
-
-		return false;
+		return this._hasModifications;
 	}
 
 	/**

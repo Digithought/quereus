@@ -3,6 +3,8 @@ import { expect } from "chai";
 import { Database } from "../src/index.js";
 import { MemoryTableModule } from "../src/vtab/memory/module.js";
 import { MemoryTable } from "../src/vtab/memory/table.js";
+import { TransactionLayer } from "../src/vtab/memory/layer/transaction.js";
+import { BaseLayer } from "../src/vtab/memory/layer/base.js";
 import type { TableSchema, IndexSchema } from "../src/schema/table.js";
 import type { ColumnSchema } from "../src/schema/column.js";
 import type { FilterInfo } from "../src/vtab/filter-info.js";
@@ -650,6 +652,61 @@ describe("Memory VTable Module", () => {
 			} catch (error: any) {
 				expect(error.message).to.include('not found');
 			}
+		});
+	});
+
+	describe("TransactionLayer.hasChanges()", () => {
+		function createBaseLayer(): BaseLayer {
+			const schema = createTableSchema('has_changes_test', [
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'value', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+			], ['id']);
+			return new BaseLayer(schema);
+		}
+
+		it("should return false for a fresh layer with no modifications", () => {
+			const base = createBaseLayer();
+			const layer = new TransactionLayer(base);
+
+			expect(layer.hasChanges()).to.be.false;
+		});
+
+		it("should return false for a fresh layer over a non-empty base", () => {
+			const base = createBaseLayer();
+			base.primaryTree.insert([1, 'existing']);
+
+			const layer = new TransactionLayer(base);
+			expect(layer.hasChanges()).to.be.false;
+		});
+
+		it("should return true after an upsert", () => {
+			const base = createBaseLayer();
+			const layer = new TransactionLayer(base);
+
+			layer.recordUpsert([1], [1, 'new'], null);
+			expect(layer.hasChanges()).to.be.true;
+		});
+
+		it("should return true after a delete", () => {
+			const base = createBaseLayer();
+			base.primaryTree.insert([1, 'existing']);
+
+			const layer = new TransactionLayer(base);
+			layer.recordDelete([1], [1, 'existing']);
+			expect(layer.hasChanges()).to.be.true;
+		});
+
+		it("should return false for outer layer when only inner layer is modified", () => {
+			const base = createBaseLayer();
+			base.primaryTree.insert([1, 'existing']);
+
+			const outerLayer = new TransactionLayer(base);
+			const innerLayer = new TransactionLayer(outerLayer);
+
+			innerLayer.recordUpsert([2], [2, 'inner-only'], null);
+
+			expect(innerLayer.hasChanges()).to.be.true;
+			expect(outerLayer.hasChanges()).to.be.false;
 		});
 	});
 });
