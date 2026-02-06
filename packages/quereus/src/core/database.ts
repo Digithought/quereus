@@ -38,6 +38,7 @@ import type { InstructionTracer } from '../runtime/types.js';
 import { DeclaredSchemaManager } from '../schema/declared-schema-manager.js';
 import { DeferredConstraintQueue } from '../runtime/deferred-constraint-queue.js';
 import { type LogicalType } from '../types/logical-type.js';
+import { registerType as registerTypeInRegistry } from '../types/registry.js';
 import { getParameterTypes } from './param.js';
 import { rowToObject } from './utils.js';
 import { wrapAsyncIterator } from '../util/async-iterator.js';
@@ -458,7 +459,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		try {
 			return parser.parseAll(sql);
 		} catch (e) {
-			if (e instanceof ParseError) throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
+			if (e instanceof ParseError) throw e;
 			throw e;
 		}
 	}
@@ -960,8 +961,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerType(name: string, definition: LogicalType): void {
 		this.checkOpen();
-		const { registerType } = require('../types/registry.js');
-		registerType(name, definition);
+		registerTypeInRegistry(definition);
 		log('Registered type: %s', name);
 	}
 

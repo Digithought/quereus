@@ -1,4 +1,8 @@
 import type { Row, SqlValue } from '../common/types.js';
+import { createLogger } from '../common/logger.js';
+
+const log = createLogger('vtab:events');
+const errorLog = log.extend('error');
 
 /**
  * Data change event emitted when mutations are committed.
@@ -134,7 +138,8 @@ export class DefaultVTableEventEmitter implements VTableEventEmitter {
 			try {
 				listener(event);
 			} catch (e) {
-				console.error('VTable data change listener error:', e);
+				errorLog('Data change listener error on %s.%s (%s): %O',
+					event.schemaName, event.tableName, event.type, e);
 			}
 		}
 	}
@@ -154,7 +159,8 @@ export class DefaultVTableEventEmitter implements VTableEventEmitter {
 				try {
 					listener(event);
 				} catch (e) {
-					console.error('VTable data change listener error:', e);
+					errorLog('Data change listener error on %s.%s (%s): %O',
+						event.schemaName, event.tableName, event.type, e);
 				}
 			}
 		}
@@ -179,7 +185,8 @@ export class DefaultVTableEventEmitter implements VTableEventEmitter {
 			try {
 				listener(event);
 			} catch (e) {
-				console.error('VTable schema change listener error:', e);
+				errorLog('Schema change listener error on %s %s %s: %O',
+					event.type, event.objectType, event.objectName, e);
 			}
 		}
 	}

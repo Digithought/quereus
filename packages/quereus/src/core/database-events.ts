@@ -15,6 +15,7 @@ import type { Row, SqlValue } from '../common/types.js';
 import type { VTableDataChangeEvent, VTableSchemaChangeEvent, VTableEventEmitter } from '../vtab/events.js';
 
 const log = createLogger('core:database-events');
+const errorLog = log.extend('error');
 
 /**
  * Data change event emitted at the database level.
@@ -342,7 +343,8 @@ export class DatabaseEventEmitter {
 			try {
 				listener(dbEvent);
 			} catch (e) {
-				console.error('Database data change listener error:', e);
+				errorLog('Data change listener error on %s.%s (%s): %O',
+					dbEvent.schemaName, dbEvent.tableName, dbEvent.type, e);
 			}
 		}
 	}
@@ -372,7 +374,8 @@ export class DatabaseEventEmitter {
 			try {
 				listener(dbEvent);
 			} catch (e) {
-				console.error('Database schema change listener error:', e);
+				errorLog('Schema change listener error on %s %s %s: %O',
+					dbEvent.type, dbEvent.objectType, dbEvent.objectName, e);
 			}
 		}
 	}
