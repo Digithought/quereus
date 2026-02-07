@@ -1,5 +1,5 @@
 import { createLogger } from '../common/logger.js';
-import { MisuseError, quereusError, QuereusError } from '../common/errors.js';
+import { MisuseError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlParameters, type SqlValue, type Row, type OutputValue } from '../common/types.js';
 import type { ScalarType } from '../common/datatype.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
@@ -762,6 +762,26 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		this.schemaManager.getMainSchema().addTable(definition);
 	}
 
+	/** Wraps function registration with consistent error logging and re-throw. */
+	private registerFunctionWithErrorHandling(
+		funcType: string,
+		funcName: string,
+		numArgs: number,
+		register: () => void
+	): void {
+		try {
+			register();
+		} catch (e) {
+			errorLog(`Failed to register ${funcType} function ${funcName}/${numArgs}: %O`, e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(
+				`Failed to register ${funcType} function ${funcName}/${numArgs}: ${e instanceof Error ? e.message : String(e)}`,
+				StatusCode.ERROR,
+				e instanceof Error ? e : undefined
+			);
+		}
+	}
+
 	/**
 	 * Registers a user-defined scalar function.
 	 *
@@ -788,12 +808,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			func
 		);
 
-		try {
+		this.registerFunctionWithErrorHandling('scalar', name, options.numArgs, () => {
 			this.schemaManager.getMainSchema().addFunction(schema);
-		} catch (e) {
-			errorLog(`Failed to register scalar function ${name}/${options.numArgs}: %O`, e);
-			if (e instanceof Error) throw e; else quereusError(String(e));
-		}
+		});
 	}
 
 	/**
@@ -824,12 +841,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			finalFunc
 		);
 
-		try {
+		this.registerFunctionWithErrorHandling('aggregate', name, options.numArgs, () => {
 			this.schemaManager.getMainSchema().addFunction(schema);
-		} catch (e) {
-			errorLog(`Failed to register aggregate function ${name}/${options.numArgs}: %O`, e);
-			if (e instanceof Error) throw e; else quereusError(String(e));
-		}
+		});
 	}
 
 	/**
@@ -840,12 +854,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerFunction(schema: FunctionSchema): void {
 		this.checkOpen();
-		try {
+		this.registerFunctionWithErrorHandling('user', schema.name, schema.numArgs, () => {
 			this.schemaManager.getMainSchema().addFunction(schema);
-		} catch (e) {
-			errorLog(`Failed to register function ${schema.name}/${schema.numArgs}: %O`, e);
-			if (e instanceof Error) throw e; else quereusError(String(e));
-		}
+		});
 	}
 
 	/** Sets only the name of the default module. */
