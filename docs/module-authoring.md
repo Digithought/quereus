@@ -740,6 +740,24 @@ applyRemoteChange(change: RemoteChange): void {
 5. **Listener Order**: Listeners are called in registration order
 6. **Savepoints**: Events within a savepoint are tracked separately; `ROLLBACK TO SAVEPOINT` discards those events while `RELEASE SAVEPOINT` merges them into the parent
 
+### Event Ordering Guarantees
+
+When events are flushed after a commit:
+
+- **Schema events are emitted before data events.** This ensures listeners see table creation before insertions into that table.
+- **Within each category** (schema or data), events from nested savepoints are flattened into the parent transaction in the order they occurred.
+- **Cross-layer chronological order may not be preserved.** If a transaction creates a table and then inserts data, the schema event fires first, then the data event — but if the transaction performs schema changes interleaved with data changes, the relative ordering between the two categories is not guaranteed to match wall-clock order.
+
+### Listener Memory Management
+
+Listeners hold strong references. Failing to unsubscribe causes the listener (and anything it closes over) to remain in memory for the lifetime of the `Database` instance.
+
+**Best practices:**
+
+- **Always call the returned unsubscribe function** when the listener is no longer needed. Store the unsubscribe function and call it in your component's cleanup or teardown path.
+- **Clean up before discarding the Database instance.** Although `db.close()` removes all listeners internally, relying on that means leaked listeners persist until close. Explicitly unsubscribe to make resource ownership clear.
+- **Use `setMaxListeners(n)`** to adjust the warning threshold if your application legitimately registers many listeners. Set to `0` to disable the warning. The default limit is 100 per event type — exceeding it logs a warning that may indicate a listener leak.
+
 ## See Also
 
 - [Optimizer Documentation](optimizer.md) - Detailed optimization architecture

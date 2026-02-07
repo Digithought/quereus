@@ -15,6 +15,7 @@ import type { Row, SqlValue } from '../common/types.js';
 import type { VTableDataChangeEvent, VTableSchemaChangeEvent, VTableEventEmitter } from '../vtab/events.js';
 
 const log = createLogger('core:database-events');
+const warnLog = log.extend('warn');
 const errorLog = log.extend('error');
 
 /**
@@ -115,6 +116,9 @@ interface PendingSchemaEvent {
 	event: VTableSchemaChangeEvent;
 }
 
+/** Default maximum number of listeners per event type before a warning is logged. */
+const DEFAULT_MAX_LISTENERS = 100;
+
 /**
  * Central event emitter for database-level reactivity.
  *
@@ -128,6 +132,7 @@ interface PendingSchemaEvent {
 export class DatabaseEventEmitter {
 	private dataListeners = new Set<DatabaseDataChangeListener>();
 	private schemaListeners = new Set<DatabaseSchemaChangeListener>();
+	private maxListeners = DEFAULT_MAX_LISTENERS;
 
 	/** Batched events waiting for commit (base transaction level) */
 	private batchedDataEvents: PendingDataEvent[] = [];
@@ -144,6 +149,22 @@ export class DatabaseEventEmitter {
 	private moduleSubscriptions = new Map<string, { dataUnsub?: () => void; schemaUnsub?: () => void }>();
 
 	/**
+	 * Set the maximum number of listeners per event type.
+	 * A warning is logged when this limit is exceeded, which typically
+	 * indicates a listener leak. Set to 0 to disable the warning.
+	 */
+	setMaxListeners(n: number): void {
+		this.maxListeners = n;
+	}
+
+	/**
+	 * Get the current maximum listener count.
+	 */
+	getMaxListeners(): number {
+		return this.maxListeners;
+	}
+
+	/**
 	 * Subscribe to data change events from all modules.
 	 * @param listener Callback invoked for each data change event
 	 * @param _options Reserved for future filtering options
@@ -154,6 +175,7 @@ export class DatabaseEventEmitter {
 		_options?: DataChangeSubscriptionOptions
 	): () => void {
 		this.dataListeners.add(listener);
+		this.checkListenerCount('data', this.dataListeners.size);
 		log('Added data change listener, total: %d', this.dataListeners.size);
 		return () => {
 			this.dataListeners.delete(listener);
@@ -172,6 +194,7 @@ export class DatabaseEventEmitter {
 		_options?: SchemaChangeSubscriptionOptions
 	): () => void {
 		this.schemaListeners.add(listener);
+		this.checkListenerCount('schema', this.schemaListeners.size);
 		log('Added schema change listener, total: %d', this.schemaListeners.size);
 		return () => {
 			this.schemaListeners.delete(listener);
@@ -239,6 +262,19 @@ export class DatabaseEventEmitter {
 			subs.schemaUnsub?.();
 			this.moduleSubscriptions.delete(moduleName);
 			log('Unhooked module emitter: %s', moduleName);
+		}
+	}
+
+	/**
+	 * Warn if the listener count for a category exceeds the configured maximum.
+	 */
+	private checkListenerCount(category: string, count: number): void {
+		if (this.maxListeners > 0 && count > this.maxListeners) {
+			warnLog(
+				'Possible listener leak: %d %s change listeners registered (max %d). ' +
+				'Use setMaxListeners() to increase the limit if this is intentional.',
+				count, category, this.maxListeners
+			);
 		}
 	}
 
@@ -493,8 +529,20 @@ export class DatabaseEventEmitter {
 
 	/**
 	 * Remove all listeners and unhook all modules.
+	 * Logs a warning if listeners were still registered, which may indicate
+	 * missing cleanup in consumer code.
 	 */
 	removeAllListeners(): void {
+		const dataCount = this.dataListeners.size;
+		const schemaCount = this.schemaListeners.size;
+
+		if (dataCount > 0 || schemaCount > 0) {
+			warnLog(
+				'removeAllListeners() called with %d data and %d schema listeners still registered — possible listener leak',
+				dataCount, schemaCount
+			);
+		}
+
 		this.dataListeners.clear();
 		this.schemaListeners.clear();
 		this.batchedDataEvents = [];
