@@ -9,4 +9,10 @@
 - Use yarn
 - No half-baked janky parsers; use a full-fledged parser or better, brainstorm with the dev for another way
 
-Start with packages/quereus/README.md to come up to speed, then read and maintain these and other docs (in docs/) along with the work. 
+## Tasks
+
+- If the user mentions tasks, read tasks/agents.md so you know what to do
+
+----
+
+For all but the most trivial asks, start with packages/quereus/README.md to come up to speed; read and maintain this and other docs (in docs/) along with the work. 
