@@ -6,138 +6,119 @@ priority: 4
 
 # Sample Plugins Review Plan
 
-This document provides a comprehensive adversarial review plan for sample/example plugins.
-
-## 1. Scope
-
-Sample plugins serve as:
-
-- Examples for plugin developers
-- Test cases for plugin system
-- Documentation supplements
-- Starter templates
+Review plan for sample/example plugins serving as developer examples, test cases, documentation supplements, and starter templates.
 
 **Expected locations:**
 - `packages/quereus-plugin-*` directories
+- `packages/sample-plugins/`
 - Example plugins in docs or samples
 
-## 2. Assessment Criteria
+## Review Checklist
 
-### Code Quality
+### API Surface Review
+- [ ] Verify samples demonstrate correct API usage
+- [ ] Check samples match current plugin API
+- [ ] Review type definitions completeness
+- [ ] Verify entry point signatures
+- [ ] Assess API coverage (all plugin types)
+- [ ] Review backward compatibility examples
 
-1. **Best Practices**
-   - Do samples follow best practices?
-   - Are they idiomatic for the plugin API?
-   - Do they handle errors properly?
+### Configuration & Environment Handling
+- [ ] Document sample plugin configuration
+- [ ] Review environment variable usage in samples
+- [ ] Verify configuration examples
+- [ ] Check default values demonstration
 
-2. **Documentation**
-   - Are samples well-documented?
-   - Are they easy to understand?
-   - Do they explain patterns?
+### Security Considerations
+- [ ] Review input validation examples
+- [ ] Verify secure coding patterns
+- [ ] Check error handling prevents crashes
+- [ ] Review resource access patterns
+- [ ] Assess security best practices demonstration
 
-3. **Completeness**
-   - Do they demonstrate all features?
-   - Are edge cases shown?
-   - Are advanced patterns included?
+### Error Handling
+- [ ] Verify proper error handling patterns
+- [ ] Check error context preservation
+- [ ] Review graceful degradation examples
+- [ ] Assess error recovery patterns
+- [ ] Verify initialization error handling
 
-### Coverage
+### Logging & Telemetry
+- [ ] Review logging examples in samples
+- [ ] Check telemetry usage (if applicable)
+- [ ] Verify appropriate log levels
+- [ ] Assess debugging aid examples
 
-What plugin types should be demonstrated?
+### Packaging, Build & Release
+- [ ] Review sample plugin package.json
+- [ ] Verify build configuration examples
+- [ ] Check TypeScript setup
+- [ ] Review release/publishing examples
+- [ ] Assess dependency management examples
 
-- Scalar function plugin
-- Aggregate function plugin
-- Table-valued function plugin
-- Virtual table module plugin
-- Collation plugin
-- Event handler plugin
+### Versioning Boundaries & Cross-Package Contracts
+- [ ] Verify version compatibility examples
+- [ ] Review dependency declaration examples
+- [ ] Check cross-package contract usage
+- [ ] Assess version constraint examples
 
-## 3. Files to Review
+### Test Plan Expectations
+- [ ] Each sample has basic functionality tests
+- [ ] Each sample has edge case tests
+- [ ] Each sample has error handling tests
+- [ ] Each sample has integration tests
+- [ ] Tests demonstrate plugin testing patterns
+- [ ] Tests verify plugin loader compatibility
+
+## Plugin Type Coverage
+
+Required sample types:
+- [ ] Scalar function plugin
+- [ ] Aggregate function plugin
+- [ ] Table-valued function plugin
+- [ ] Virtual table module plugin
+- [ ] Collation plugin
+- [ ] Event handler plugin (if supported)
+
+## Per-Sample Review Checklist
+
+For each sample plugin:
+- [ ] Has clear purpose documented
+- [ ] Has README with installation/usage
+- [ ] Has working, tested code
+- [ ] Has comprehensive tests
+- [ ] Demonstrates best practices
+- [ ] Handles errors properly
+- [ ] Has complete type definitions
+- [ ] Is up to date with current API
+- [ ] Includes code comments explaining patterns
+- [ ] Provides usage examples (simple and advanced)
+
+## Files to Review
 
 ### Each Sample Plugin
-
-For each sample:
 - Entry point file
 - Type definitions
 - README/documentation
 - Tests
+- Build configuration
 
 ### Cross-Cutting
-
 - Shared utilities across samples
-- Build configuration
-- Testing approach
+- Common build patterns
+- Testing infrastructure
 
-## 4. Review Checklist per Sample
-
-- [ ] Has clear purpose
-- [ ] Has README with usage
-- [ ] Has working code
-- [ ] Has tests
-- [ ] Demonstrates best practices
-- [ ] Handles errors properly
-- [ ] Has type definitions
-- [ ] Is up to date with API
-
-## 5. Test Coverage
-
-### Sample Plugin Tests
-
-Each sample should have:
-- Basic functionality tests
-- Edge case tests
-- Error handling tests
-- Integration tests
-
-```typescript
-// test/sample-plugin/basic.spec.ts
-describe('Sample Plugin', () => {
-  it('loads correctly')
-  it('provides expected functionality')
-  it('handles errors gracefully')
-})
-```
-
-## 6. Documentation Requirements
+## Documentation Requirements
 
 ### Per Sample
+- README.md (purpose, installation, usage, API)
+- Code comments (explain patterns, reference docs)
+- Examples (simple usage, advanced usage, integration)
 
-1. **README.md**
-   - Purpose
-   - Installation
-   - Usage
-   - API reference
+## Code Quality Assessment
 
-2. **Code Comments**
-   - Explain non-obvious code
-   - Document patterns
-   - Reference main docs
-
-3. **Examples**
-   - Simple usage
-   - Advanced usage
-   - Integration examples
-
-## 7. TODO
-
-### Phase 1: Inventory
-- [ ] List all sample plugins
-- [ ] Document each plugin's purpose
-- [ ] Check documentation status
-- [ ] Check test status
-
-### Phase 2: Quality Review
-- [ ] Review each plugin's code
-- [ ] Verify best practices
-- [ ] Check error handling
-- [ ] Verify type safety
-
-### Phase 3: Testing
-- [ ] Add missing tests
-- [ ] Verify tests pass
-- [ ] Add edge case tests
-
-### Phase 4: Documentation
-- [ ] Update/create READMEs
-- [ ] Add code comments
-- [ ] Create usage examples
-- [ ] Link from main docs
+- Follow plugin API best practices
+- Idiomatic plugin patterns
+- Proper error handling
+- Complete type safety
+- Well-documented code

@@ -6,180 +6,127 @@ priority: 3
 
 # Plugins Package Review Plan
 
-This document provides a comprehensive adversarial review plan for the core plugins architecture.
+Review plan for core plugins architecture: interfaces, registration, communication patterns, and API exposure.
 
-## 1. Scope
+## Scope
 
 This review covers:
 
-- Plugin interface definitions
-- Plugin registration system
-- Plugin communication patterns
-- Plugin API exposure
+- **Core plugin contract**: interfaces/types used by Quereus to talk to plugins
+- **Registration helpers**: helper utilities used by plugins to register modules/functions/vtabs
+- **Loader boundary**: how plugin contracts are consumed by `packages/plugin-loader/`
+- **Example plugins**: sample + real plugins that exercise the contract
 
-**Package locations:**
-- `packages/quereus/src/plugins/` (if exists)
-- Plugin-related interfaces in core package
+**Starting points:**
+- `packages/quereus/src/types/plugin-interface.ts`
+- `packages/quereus/src/util/plugin-helper.ts`
+- `packages/plugin-loader/src/manifest.ts`
+- `packages/sample-plugins/`
+- `packages/quereus-plugin-*/`
 
-## 2. Architecture Assessment
+## Review Checklist
 
-### Plugin System Design
+### API Surface Review
+- [ ] Document all public plugin interfaces
+- [ ] Verify interface versioning strategy
+- [ ] Check deprecation support and migration paths
+- [ ] Review extension point contracts
+- [ ] Validate plugin manifest schema
+- [ ] Assess API stability guarantees
+- [ ] Review backward compatibility policy
 
-**Components to review:**
-- Plugin interface/contract
-- Registration mechanism
-- Extension points
-- Event system for plugins
+### Configuration & Environment Handling
+- [ ] Document plugin configuration options
+- [ ] Review environment variable usage
+- [ ] Check configuration validation
+- [ ] Verify default values and overrides
+- [ ] Assess configuration hot-reload support
+- [ ] Review plugin discovery paths/config
 
-### Plugin Capabilities
+### Security Considerations
+- [ ] Review plugin sandboxing/isolation
+- [ ] Verify input validation on plugin APIs
+- [ ] Check permission model (if any)
+- [ ] Review plugin signature verification
+- [ ] Assess resource access controls
+- [ ] Verify error isolation (plugin errors don't crash host)
+- [ ] Review plugin communication security
 
-What can plugins do?
-- Add functions (scalar, aggregate, table)
-- Add virtual table modules
-- Add collations
-- Intercept operations
-- Extend schema
+### Error Handling
+- [ ] Standardize plugin error types
+- [ ] Verify error context preservation
+- [ ] Check error recovery mechanisms
+- [ ] Review error propagation patterns
+- [ ] Assess initialization error handling
+- [ ] Verify cleanup on error paths
 
-### Plugin Communication
+### Logging & Telemetry
+- [ ] Add plugin lifecycle logging
+- [ ] Log plugin registration/unregistration
+- [ ] Track plugin API usage
+- [ ] Add error telemetry
+- [ ] Review log levels and filtering
+- [ ] Assess performance metrics collection
 
-How do plugins interact?
-- Direct API calls
-- Event subscription
-- Message passing
-- Shared state
+### Packaging, Build & Release
+- [ ] Review package.json exports
+- [ ] Verify build configuration
+- [ ] Check TypeScript declaration files
+- [ ] Review bundle size impact
+- [ ] Assess tree-shaking compatibility
+- [ ] Verify release process
 
-## 3. Files to Review
+### Versioning Boundaries & Cross-Package Contracts
+- [ ] Document version compatibility matrix
+- [ ] Review plugin API versioning strategy
+- [ ] Check cross-package dependencies
+- [ ] Verify contract stability guarantees
+- [ ] Review breaking change policy
+- [ ] Assess plugin loader compatibility
+
+### Test Plan Expectations
+- [ ] Unit tests: registration system
+- [ ] Unit tests: plugin lifecycle
+- [ ] Unit tests: error isolation
+- [ ] Integration tests: plugin functions in SQL
+- [ ] Integration tests: plugin VTabs in queries
+- [ ] Integration tests: multiple plugins coexistence
+- [ ] Performance tests: plugin overhead
+- [ ] Security tests: input validation, isolation
+
+## Files to Review
 
 ### Interface Definitions
-
 - Plugin interface types
 - Module manifest types
 - Extension point definitions
 - Event types
 
 ### Registration System
-
 - Module registration
 - Function registration
 - VTab registration
 - Collation registration
 
 ### Plugin Utilities
-
 - Helper functions for plugins
 - Type coercion for plugin use
 - Error handling for plugins
 
-## 4. Code Quality Concerns
-
-### Potential Issues
-
-1. **API Stability**
-   - Are plugin interfaces versioned?
-   - How are breaking changes handled?
-   - Is there deprecation support?
-
-2. **Error Isolation**
-   - Plugin errors don't crash host?
-   - Error context preserved?
-   - Recovery possible?
-
-3. **Resource Management**
-   - Plugin cleanup on unload?
-   - Memory leak prevention?
-   - Handle management?
-
-4. **Type Safety**
-   - Plugin inputs validated?
-   - Plugin outputs validated?
-   - Type coercion correct?
+## Code Quality Concerns
 
 ### DRY Violations
-
-Look for:
 - Repeated registration patterns
 - Duplicated validation code
 - Similar error handling
 
-## 5. Test Coverage Gaps
+### Resource Management
+- Plugin cleanup on unload
+- Memory leak prevention
+- Handle management
 
-### Missing Tests
+## Documentation Gaps
 
-```typescript
-// test/plugins/registration.spec.ts
-describe('Plugin Registration', () => {
-  it('registers function plugin')
-  it('registers VTab plugin')
-  it('registers collation plugin')
-  it('handles duplicate registration')
-  it('handles invalid plugin')
-})
-
-// test/plugins/lifecycle.spec.ts
-describe('Plugin Lifecycle', () => {
-  it('initializes plugin correctly')
-  it('calls cleanup on unload')
-  it('handles initialization error')
-  it('handles cleanup error')
-})
-
-// test/plugins/integration.spec.ts
-describe('Plugin Integration', () => {
-  it('plugin function usable in SQL')
-  it('plugin VTab usable in queries')
-  it('plugin collation usable in ORDER BY')
-  it('multiple plugins coexist')
-})
-
-// test/plugins/errors.spec.ts
-describe('Plugin Error Handling', () => {
-  it('isolates plugin errors')
-  it('provides error context')
-  it('allows recovery')
-})
-```
-
-## 6. Documentation Gaps
-
-### Missing Documentation
-
-1. **Plugin API Reference**
-   - All interfaces documented
-   - Method signatures
-   - Type definitions
-
-2. **Plugin Development Guide**
-   - Getting started
-   - Best practices
-   - Common patterns
-
-3. **Extension Points**
-   - Available extension points
-   - How to use each
-   - Limitations
-
-## 7. TODO
-
-### Phase 1: Assessment
-- [ ] Inventory plugin-related code
-- [ ] Document plugin interfaces
-- [ ] Map extension points
-- [ ] Review communication patterns
-
-### Phase 2: Code Quality
-- [ ] Review type safety
-- [ ] Check error isolation
-- [ ] Verify resource cleanup
-- [ ] Assess API stability
-
-### Phase 3: Testing
-- [ ] Add registration tests
-- [ ] Add lifecycle tests
-- [ ] Add integration tests
-- [ ] Add error handling tests
-
-### Phase 4: Documentation
-- [ ] Create API reference
-- [ ] Create development guide
-- [ ] Document extension points
-- [ ] Add examples
+- Plugin API reference (interfaces, methods, types)
+- Plugin development guide (getting started, best practices, patterns)
+- Extension points documentation (available points, usage, limitations)

@@ -1,7 +1,7 @@
 import { Schema } from './schema.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
 import type { Database } from '../core/database.js';
-import type { TableSchema, RowConstraintSchema, IndexSchema, IndexColumnSchema } from './table.js';
+import type { TableSchema, RowConstraintSchema, IndexSchema, IndexColumnSchema, MutationContextDefinition } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
@@ -22,6 +22,7 @@ import { GlobalScope } from '../planner/scopes/global.js';
 import { ParameterScope } from '../planner/scopes/param.js';
 import type { ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { hasNativeEventSupport } from '../util/event-support.js';
+import type { VTableSchemaChangeEvent } from '../vtab/events.js';
 
 const log = createLogger('schema:manager');
 const warnLog = log.extend('warn');
@@ -520,151 +521,16 @@ export class SchemaManager {
 	}
 
 	/**
-	 * Creates a new index on an existing table based on an AST.CreateIndexStmt.
-	 * This method validates the index definition and calls the virtual table's createIndex method.
-	 *
-	 * @param stmt The AST node for the CREATE INDEX statement.
-	 * @returns A Promise that resolves when the index is created.
-	 * @throws QuereusError on errors (e.g., table not found, column not found, createIndex fails).
+	 * Resolves the VTab module name and args from a CREATE TABLE statement,
+	 * falling back to configured defaults when USING is omitted.
 	 */
-	async createIndex(stmt: AST.CreateIndexStmt): Promise<void> {
-		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
-		const tableName = stmt.table.name;
-		const indexName = stmt.index.name;
-
-		// Find the table schema
-		const tableSchema = this.getTable(targetSchemaName, tableName);
-		if (!tableSchema) {
-			throw new QuereusError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-		}
-
-		// Check if the virtual table module supports createIndex
-		if (!tableSchema.vtabModule.createIndex) {
-			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-		}
-
-		// Check if index already exists (if not IF NOT EXISTS)
-		const existingIndex = tableSchema.indexes?.find(idx => idx.name.toLowerCase() === indexName.toLowerCase());
-		if (existingIndex) {
-			if (stmt.ifNotExists) {
-				log(`Skipping CREATE INDEX: Index %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, indexName);
-				return;
-			} else {
-				throw new QuereusError(`Index ${indexName} already exists on table ${tableName}`, StatusCode.CONSTRAINT, undefined, stmt.index.loc?.start.line, stmt.index.loc?.start.column);
-			}
-		}
-
-		// Convert AST columns to IndexSchema columns
-		const indexColumns = stmt.columns.map((indexedCol: AST.IndexedColumn) => {
-			if (indexedCol.expr) {
-				throw new QuereusError(`Indices on expressions are not supported yet.`, StatusCode.ERROR, undefined, indexedCol.expr.loc?.start.line, indexedCol.expr.loc?.start.column);
-			}
-			const colName = indexedCol.name;
-			if (!colName) {
-				// Should not happen if expr is checked first
-				throw new QuereusError(`Indexed column must be a simple column name.`, StatusCode.ERROR);
-			}
-			const tableColIndex = tableSchema.columnIndexMap.get(colName.toLowerCase());
-			if (tableColIndex === undefined) {
-				throw new QuereusError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
-			}
-			const tableColSchema = tableSchema.columns[tableColIndex];
-			return {
-				index: tableColIndex,
-				desc: indexedCol.direction === 'desc',
-				collation: indexedCol.collation || tableColSchema.collation // Use specified collation or inherit from table column
-			};
-		});
-
-		// Construct the IndexSchema object
-		const indexSchema: IndexSchema = {
-			name: indexName,
-			columns: Object.freeze(indexColumns),
-		};
-
-		try {
-			// Call createIndex on the virtual table module
-			await tableSchema.vtabModule.createIndex(
-				this.db,
-				targetSchemaName,
-				tableName,
-				indexSchema
-			);
-
-			// Update the table schema with the new index by creating a new schema object
-			const updatedIndexes = [...(tableSchema.indexes || []), indexSchema];
-			const updatedTableSchema: TableSchema = {
-				...tableSchema,
-				indexes: Object.freeze(updatedIndexes),
-			};
-
-			// Replace the table schema in the schema
-			const schema = this.getSchemaOrFail(targetSchemaName);
-			schema.addTable(updatedTableSchema);
-
-			// Notify schema change listeners that the table was modified
-			this.changeNotifier.notifyChange({
-				type: 'table_modified',
-				schemaName: targetSchemaName,
-				objectName: tableName,
-				oldObject: tableSchema,
-				newObject: updatedTableSchema
-			});
-
-			// Emit auto schema event for modules without native event support
-			const moduleReg = tableSchema.vtabModuleName ? this.getModule(tableSchema.vtabModuleName) : undefined;
-			if (this.db.hasSchemaListeners() && !hasNativeEventSupport(moduleReg?.module)) {
-				this.db._getEventEmitter().emitAutoSchemaEvent(tableSchema.vtabModuleName ?? 'memory', {
-					type: 'create',
-					objectType: 'index',
-					schemaName: targetSchemaName,
-					objectName: indexName,
-				});
-			}
-
-			log(`Successfully created index %s on table %s.%s`, indexName, targetSchemaName, tableName);
-		} catch (e: unknown) {
-			const message = e instanceof Error ? e.message : String(e);
-			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
-			throw new QuereusError(`createIndex failed for index '${indexName}' on table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
-		}
-	}
-
-	/**
-	 * Defines a new table in the schema based on an AST.CreateTableStmt.
-	 * This method encapsulates the logic for interacting with VTab modules (create)
-	 * and registering the new table schema.
-	 *
-	 * @param stmt The AST node for the CREATE TABLE statement.
-	 * @returns A Promise that resolves to the created TableSchema.
-	 * @throws QuereusError on errors (e.g., module not found, create fails, table exists).
-	 */
-	async createTable(stmt: AST.CreateTableStmt): Promise<TableSchema> {
-		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
-		const tableName = stmt.table.name;
-
-		// Check IF NOT EXISTS
-		const schema = this.getSchema(targetSchemaName);
-		if (!schema) {
-			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found.`, StatusCode.INTERNAL);
-		}
-
-		const existingTable = schema.getTable(tableName);
-		const existingView = schema.getView(tableName);
-
-		if (existingTable || existingView) {
-			if (stmt.ifNotExists) {
-				log(`Skipping CREATE TABLE: Item %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, tableName);
-				if (existingTable) return existingTable;
-				throw new QuereusError(`Cannot CREATE TABLE ${targetSchemaName}.${tableName}: a VIEW with the same name already exists.`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-			} else {
-				const itemType = existingTable ? 'Table' : 'View';
-				throw new QuereusError(`${itemType} ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
-			}
-		}
-
+	private resolveModuleInfo(stmt: AST.CreateTableStmt): {
+		moduleName: string;
+		effectiveModuleArgs: Readonly<Record<string, SqlValue>>;
+		moduleInfo: { module: AnyVirtualTableModule; auxData?: unknown };
+	} {
 		let moduleName: string;
-		let effectiveModuleArgs: Record<string, SqlValue>;
+		let effectiveModuleArgs: Readonly<Record<string, SqlValue>>;
 
 		if (stmt.moduleName) {
 			moduleName = stmt.moduleName;
@@ -680,35 +546,53 @@ export class SchemaManager {
 			throw new QuereusError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 		}
 
-		const astColumnsToProcess = stmt.columns || [];
-		const astConstraintsToProcess = stmt.constraints;
+		return { moduleName, effectiveModuleArgs, moduleInfo };
+	}
 
-		// Get default nullability setting from database options
-		const defaultNullability = this.db.options.getStringOption('default_column_nullability');
-		const defaultNotNull = defaultNullability === 'not_null';
+	/**
+	 * Builds column schemas from AST column/constraint definitions,
+	 * resolving PK membership and nullability.
+	 */
+	private buildColumnSchemas(
+		astColumns: readonly AST.ColumnDef[],
+		astConstraints: readonly AST.TableConstraint[] | undefined,
+		defaultNotNull: boolean
+	): {
+		columns: ColumnSchema[];
+		pkDefinition: ReadonlyArray<import('./table.js').PrimaryKeyColumnDefinition>;
+	} {
+		const preliminaryColumnSchemas: ColumnSchema[] = astColumns.map(colDef => columnDefToSchema(colDef, defaultNotNull));
+		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraints);
 
-		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef, defaultNotNull));
-		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess);
-
-		const finalColumnSchemas = preliminaryColumnSchemas.map((col, idx) => {
+		const columns = preliminaryColumnSchemas.map((col, idx) => {
 			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
-			let pkOrder = 0;
-			if (isPkColumn) {
-				pkOrder = pkDefinition.findIndex(pkC => pkC.index === idx) + 1;
-			}
+			const pkOrder = isPkColumn
+				? pkDefinition.findIndex(pkC => pkC.index === idx) + 1
+				: 0;
 			return {
 				...col,
 				primaryKey: isPkColumn,
-				pkOrder: pkOrder,
+				pkOrder,
 				notNull: isPkColumn ? true : col.notNull,
 			};
 		});
 
-		const checkConstraintsSchema: RowConstraintSchema[] = [];
-		astColumnsToProcess.forEach(colDef => {
-			colDef.constraints?.forEach(con => {
+		return { columns, pkDefinition };
+	}
+
+	/**
+	 * Extracts CHECK constraints from AST column and table constraint definitions.
+	 */
+	private extractCheckConstraints(
+		astColumns: readonly AST.ColumnDef[],
+		astConstraints: readonly AST.TableConstraint[] | undefined
+	): RowConstraintSchema[] {
+		const result: RowConstraintSchema[] = [];
+
+		for (const colDef of astColumns) {
+			for (const con of colDef.constraints ?? []) {
 				if (con.type === 'check' && con.expr) {
-					checkConstraintsSchema.push({
+					result.push({
 						name: con.name ?? `_check_${colDef.name}`,
 						expr: con.expr,
 						operations: opsToMask(con.operations),
@@ -716,11 +600,12 @@ export class SchemaManager {
 						initiallyDeferred: con.initiallyDeferred
 					});
 				}
-			});
-		});
-		(astConstraintsToProcess || []).forEach(con => {
+			}
+		}
+
+		for (const con of astConstraints ?? []) {
 			if (con.type === 'check' && con.expr) {
-				checkConstraintsSchema.push({
+				result.push({
 					name: con.name,
 					expr: con.expr,
 					operations: opsToMask(con.operations),
@@ -728,18 +613,58 @@ export class SchemaManager {
 					initiallyDeferred: con.initiallyDeferred
 				});
 			}
-		});
+		}
 
-		// Process mutation context definitions if present
-		const mutationContextSchemas = stmt.contextDefinitions
+		return result;
+	}
+
+	/**
+	 * Builds a base TableSchema from an AST CREATE TABLE statement.
+	 * Shared by both createTable (new storage) and importTable (existing storage).
+	 */
+	private buildTableSchemaFromAST(
+		stmt: AST.CreateTableStmt,
+		moduleName: string,
+		effectiveModuleArgs: Readonly<Record<string, SqlValue>>,
+		moduleInfo: { module: AnyVirtualTableModule; auxData?: unknown }
+	): TableSchema {
+		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
+		const tableName = stmt.table.name;
+
+		const defaultNullability = this.db.options.getStringOption('default_column_nullability');
+		const defaultNotNull = defaultNullability === 'not_null';
+
+		const astColumns = stmt.columns || [];
+		const { columns, pkDefinition } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
+		const checkConstraints = this.extractCheckConstraints(astColumns, stmt.constraints);
+
+		const mutationContextSchemas: MutationContextDefinition[] | undefined = stmt.contextDefinitions
 			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
 			: undefined;
 
-		// Validate that default expressions are deterministic
-		// We need to build them temporarily to check their physical properties
-		// Note: We only validate defaults here, not CHECK constraints, because CHECK constraints
-		// may reference table columns which don't exist yet at CREATE TABLE time.
-		// CHECK constraints are validated at INSERT/UPDATE time in constraint-builder.ts
+		return {
+			name: tableName,
+			schemaName: targetSchemaName,
+			columns: Object.freeze(columns),
+			columnIndexMap: buildColumnIndexMap(columns),
+			primaryKeyDefinition: pkDefinition,
+			checkConstraints: Object.freeze(checkConstraints),
+			isTemporary: !!stmt.isTemporary,
+			isView: false,
+			vtabModuleName: moduleName,
+			vtabArgs: effectiveModuleArgs,
+			vtabModule: moduleInfo.module,
+			vtabAuxData: moduleInfo.auxData,
+			estimatedRows: 0,
+			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
+		};
+	}
+
+	/**
+	 * Validates that all DEFAULT expressions in the column schemas are deterministic.
+	 * Skips expressions that reference columns (validated at INSERT time instead).
+	 */
+	private validateDefaultDeterminism(columns: ReadonlyArray<ColumnSchema>, tableName: string): void {
 		const globalScope = new GlobalScope(this.db.schemaManager);
 		const parameterScope = new ParameterScope(globalScope);
 		const planningCtx: PlanningContext = {
@@ -754,73 +679,50 @@ export class SchemaManager {
 			outputScopes: new Map()
 		};
 
-		// Validate default expressions
-		// Note: We can only validate defaults that don't reference table columns,
-		// since the table doesn't exist yet. Defaults that reference columns will be
-		// validated at INSERT time in insert.ts
-		for (const col of finalColumnSchemas) {
-			if (col.defaultValue && typeof col.defaultValue === 'object' && col.defaultValue !== null && 'type' in col.defaultValue) {
-				let defaultExpr: ScalarPlanNode | undefined;
-				try {
-					// Try to build the expression - may fail if it references columns that don't exist yet
-					defaultExpr = buildExpression(planningCtx, col.defaultValue as AST.Expression) as ScalarPlanNode;
-				} catch (e) {
-					// If we can't build the expression (e.g., it references columns that don't exist yet),
-					// skip validation here. It will be validated at INSERT time.
-					log('Skipping determinism validation for default on column %s.%s at CREATE TABLE time (will validate at INSERT time): %s',
-						tableName, col.name, (e as Error).message);
-				}
+		for (const col of columns) {
+			if (!col.defaultValue || typeof col.defaultValue !== 'object' || col.defaultValue === null || !('type' in col.defaultValue)) {
+				continue;
+			}
 
-				// If expression built successfully, check determinism (non-throwing)
-				if (defaultExpr) {
-					const result = checkDeterministic(defaultExpr);
-					if (!result.valid) {
-						throw new QuereusError(
-							`Non-deterministic expression not allowed in DEFAULT for column '${col.name}' in table '${tableName}'. ` +
-							`Expression: ${result.expression}. ` +
-							`Use mutation context to pass non-deterministic values (e.g., WITH CONTEXT (timestamp = datetime('now'))).`,
-							StatusCode.ERROR
-						);
-					}
+			let defaultExpr: ScalarPlanNode | undefined;
+			try {
+				defaultExpr = buildExpression(planningCtx, col.defaultValue as AST.Expression) as ScalarPlanNode;
+			} catch (_e) {
+				log('Skipping determinism validation for default on column %s.%s at CREATE TABLE time (will validate at INSERT time): %s',
+					tableName, col.name, (_e as Error).message);
+			}
+
+			if (defaultExpr) {
+				const result = checkDeterministic(defaultExpr);
+				if (!result.valid) {
+					throw new QuereusError(
+						`Non-deterministic expression not allowed in DEFAULT for column '${col.name}' in table '${tableName}'. ` +
+						`Expression: ${result.expression}. ` +
+						`Use mutation context to pass non-deterministic values (e.g., WITH CONTEXT (timestamp = datetime('now'))).`,
+						StatusCode.ERROR
+					);
 				}
 			}
 		}
+	}
 
-		const baseTableSchema: TableSchema = {
-			name: tableName,
-			schemaName: targetSchemaName,
-			columns: Object.freeze(finalColumnSchemas),
-			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
-			primaryKeyDefinition: pkDefinition,
-			checkConstraints: Object.freeze(checkConstraintsSchema),
-			isTemporary: !!stmt.isTemporary,
-			isView: false,
-			vtabModuleName: moduleName,
-			vtabArgs: effectiveModuleArgs,
-			vtabModule: moduleInfo.module,
-			vtabAuxData: moduleInfo.auxData,
-			estimatedRows: 0,
-			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
-		};
-
-		let tableInstance: VirtualTable;
-		try {
-			tableInstance = await moduleInfo.module.create(
-				this.db,
-				baseTableSchema
-			);
-		} catch (e: unknown) {
-			const message = e instanceof Error ? e.message : String(e);
-			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
-			throw new QuereusError(`Module '${moduleName}' create failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
-		}
-
+	/**
+	 * Registers a table schema after module.create() returns, correcting
+	 * name/schema if the module returned different values.
+	 */
+	private finalizeCreatedTableSchema(
+		tableInstance: VirtualTable,
+		tableName: string,
+		targetSchemaName: string,
+		moduleName: string,
+		effectiveModuleArgs: Readonly<Record<string, SqlValue>>,
+		moduleInfo: { module: AnyVirtualTableModule; auxData?: unknown }
+	): TableSchema {
 		const finalRegisteredSchema = tableInstance.tableSchema;
 		if (!finalRegisteredSchema) {
 			throw new QuereusError(`Module '${moduleName}' create did not provide a tableSchema for '${tableName}'.`, StatusCode.INTERNAL);
 		}
 
-		// Create a properly typed schema object instead of mutating properties
 		let correctedSchema = finalRegisteredSchema;
 		if (finalRegisteredSchema.name.toLowerCase() !== tableName.toLowerCase() ||
 			finalRegisteredSchema.schemaName.toLowerCase() !== targetSchemaName.toLowerCase()) {
@@ -832,8 +734,7 @@ export class SchemaManager {
 			};
 		}
 
-		// Ensure all required properties are properly set
-		const completeTableSchema: TableSchema = {
+		return {
 			...correctedSchema,
 			vtabModuleName: moduleName,
 			vtabArgs: effectiveModuleArgs,
@@ -841,11 +742,180 @@ export class SchemaManager {
 			vtabAuxData: moduleInfo.auxData,
 			estimatedRows: correctedSchema.estimatedRows ?? 0,
 		};
+	}
+
+	/**
+	 * Creates a new index on an existing table based on an AST.CreateIndexStmt.
+	 *
+	 * @param stmt The AST node for the CREATE INDEX statement.
+	 * @throws QuereusError on errors (e.g., table not found, column not found, createIndex fails).
+	 */
+	async createIndex(stmt: AST.CreateIndexStmt): Promise<void> {
+		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
+		const tableName = stmt.table.name;
+		const indexName = stmt.index.name;
+
+		const tableSchema = this.getTable(targetSchemaName, tableName);
+		if (!tableSchema) {
+			throw new QuereusError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+
+		if (!tableSchema.vtabModule.createIndex) {
+			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+
+		const existingIndex = tableSchema.indexes?.find(idx => idx.name.toLowerCase() === indexName.toLowerCase());
+		if (existingIndex) {
+			if (stmt.ifNotExists) {
+				log(`Skipping CREATE INDEX: Index %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, indexName);
+				return;
+			}
+			throw new QuereusError(`Index ${indexName} already exists on table ${tableName}`, StatusCode.CONSTRAINT, undefined, stmt.index.loc?.start.line, stmt.index.loc?.start.column);
+		}
+
+		const indexSchema = this.buildIndexSchema(stmt, tableSchema, tableName, indexName);
+
+		try {
+			await tableSchema.vtabModule.createIndex(this.db, targetSchemaName, tableName, indexSchema);
+		} catch (e: unknown) {
+			const message = e instanceof Error ? e.message : String(e);
+			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
+			throw new QuereusError(`createIndex failed for index '${indexName}' on table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		}
+
+		const updatedTableSchema = this.addIndexToTableSchema(tableSchema, indexSchema);
+		const schema = this.getSchemaOrFail(targetSchemaName);
+		schema.addTable(updatedTableSchema);
+
+		this.changeNotifier.notifyChange({
+			type: 'table_modified',
+			schemaName: targetSchemaName,
+			objectName: tableName,
+			oldObject: tableSchema,
+			newObject: updatedTableSchema
+		});
+
+		this.emitAutoSchemaEventIfNeeded(tableSchema.vtabModuleName, {
+			type: 'create',
+			objectType: 'index',
+			schemaName: targetSchemaName,
+			objectName: indexName,
+		});
+
+		log(`Successfully created index %s on table %s.%s`, indexName, targetSchemaName, tableName);
+	}
+
+	/**
+	 * Builds an IndexSchema from AST column definitions, validating against the table schema.
+	 */
+	private buildIndexSchema(
+		stmt: AST.CreateIndexStmt,
+		tableSchema: TableSchema,
+		tableName: string,
+		indexName: string
+	): IndexSchema {
+		const indexColumns = stmt.columns.map((indexedCol: AST.IndexedColumn) => {
+			if (indexedCol.expr) {
+				throw new QuereusError(`Indices on expressions are not supported yet.`, StatusCode.ERROR, undefined, indexedCol.expr.loc?.start.line, indexedCol.expr.loc?.start.column);
+			}
+			const colName = indexedCol.name;
+			if (!colName) {
+				throw new QuereusError(`Indexed column must be a simple column name.`, StatusCode.ERROR);
+			}
+			const tableColIndex = tableSchema.columnIndexMap.get(colName.toLowerCase());
+			if (tableColIndex === undefined) {
+				throw new QuereusError(`Column '${colName}' not found in table '${tableName}'`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			}
+			const tableColSchema = tableSchema.columns[tableColIndex];
+			return {
+				index: tableColIndex,
+				desc: indexedCol.direction === 'desc',
+				collation: indexedCol.collation || tableColSchema.collation
+			};
+		});
+
+		return {
+			name: indexName,
+			columns: Object.freeze(indexColumns),
+		};
+	}
+
+	/**
+	 * Returns a new TableSchema with the given index appended.
+	 */
+	private addIndexToTableSchema(tableSchema: TableSchema, indexSchema: IndexSchema): TableSchema {
+		const updatedIndexes = [...(tableSchema.indexes || []), indexSchema];
+		return {
+			...tableSchema,
+			indexes: Object.freeze(updatedIndexes),
+		};
+	}
+
+	/**
+	 * Emits an auto schema event for modules that don't have native event support,
+	 * if any schema listeners are registered.
+	 */
+	private emitAutoSchemaEventIfNeeded(
+		moduleName: string | undefined,
+		event: VTableSchemaChangeEvent
+	): void {
+		const moduleReg = moduleName ? this.getModule(moduleName) : undefined;
+		if (this.db.hasSchemaListeners() && !hasNativeEventSupport(moduleReg?.module)) {
+			this.db._getEventEmitter().emitAutoSchemaEvent(moduleName ?? 'memory', event);
+		}
+	}
+
+	/**
+	 * Defines a new table in the schema based on an AST.CreateTableStmt.
+	 * Interacts with VTab modules (create) and registers the new table schema.
+	 *
+	 * @param stmt The AST node for the CREATE TABLE statement.
+	 * @returns A Promise that resolves to the created TableSchema.
+	 * @throws QuereusError on errors (e.g., module not found, create fails, table exists).
+	 */
+	async createTable(stmt: AST.CreateTableStmt): Promise<TableSchema> {
+		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
+		const tableName = stmt.table.name;
+
+		const schema = this.getSchema(targetSchemaName);
+		if (!schema) {
+			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found.`, StatusCode.INTERNAL);
+		}
+
+		const existingTable = schema.getTable(tableName);
+		const existingView = schema.getView(tableName);
+
+		if (existingTable || existingView) {
+			if (stmt.ifNotExists) {
+				log(`Skipping CREATE TABLE: Item %s.%s already exists (IF NOT EXISTS).`, targetSchemaName, tableName);
+				if (existingTable) return existingTable;
+				throw new QuereusError(`Cannot CREATE TABLE ${targetSchemaName}.${tableName}: a VIEW with the same name already exists.`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+			}
+			const itemType = existingTable ? 'Table' : 'View';
+			throw new QuereusError(`${itemType} ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
+		}
+
+		const { moduleName, effectiveModuleArgs, moduleInfo } = this.resolveModuleInfo(stmt);
+		const baseTableSchema = this.buildTableSchemaFromAST(stmt, moduleName, effectiveModuleArgs, moduleInfo);
+
+		this.validateDefaultDeterminism(baseTableSchema.columns, tableName);
+
+		let tableInstance: VirtualTable;
+		try {
+			tableInstance = await moduleInfo.module.create(this.db, baseTableSchema);
+		} catch (e: unknown) {
+			const message = e instanceof Error ? e.message : String(e);
+			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
+			throw new QuereusError(`Module '${moduleName}' create failed for table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		}
+
+		const completeTableSchema = this.finalizeCreatedTableSchema(
+			tableInstance, tableName, targetSchemaName, moduleName, effectiveModuleArgs, moduleInfo
+		);
 
 		schema.addTable(completeTableSchema);
 		log(`Successfully created table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
 
-		// Notify schema change listeners
 		this.changeNotifier.notifyChange({
 			type: 'table_added',
 			schemaName: targetSchemaName,
@@ -853,16 +923,12 @@ export class SchemaManager {
 			newObject: completeTableSchema
 		});
 
-		// Emit auto schema event for modules without native event support
-		// (Modules with native events emit during their create() method)
-		if (this.db.hasSchemaListeners() && !hasNativeEventSupport(moduleInfo.module)) {
-			this.db._getEventEmitter().emitAutoSchemaEvent(moduleName, {
-				type: 'create',
-				objectType: 'table',
-				schemaName: targetSchemaName,
-				objectName: tableName,
-			});
-		}
+		this.emitAutoSchemaEventIfNeeded(moduleName, {
+			type: 'create',
+			objectType: 'table',
+			schemaName: targetSchemaName,
+			objectName: tableName,
+		});
 
 		return completeTableSchema;
 	}
@@ -906,7 +972,6 @@ export class SchemaManager {
 	 * Import a single DDL statement without creating storage.
 	 */
 	private async importSingleDDL(ddl: string): Promise<{ type: 'table' | 'index'; name: string }> {
-		// Parse the DDL using the parser
 		const parser = new Parser();
 		const statements = parser.parseAll(ddl);
 		if (statements.length !== 1) {
@@ -919,9 +984,8 @@ export class SchemaManager {
 			return this.importTable(stmt as AST.CreateTableStmt);
 		} else if (stmt.type === 'createIndex') {
 			return this.importIndex(stmt as AST.CreateIndexStmt);
-		} else {
-			throw new QuereusError(`importCatalog does not support statement type: ${stmt.type}`, StatusCode.ERROR);
 		}
+		throw new QuereusError(`importCatalog does not support statement type: ${stmt.type}`, StatusCode.ERROR);
 	}
 
 	/**
@@ -932,96 +996,9 @@ export class SchemaManager {
 		const targetSchemaName = stmt.table.schema || this.getCurrentSchemaName();
 		const tableName = stmt.table.name;
 
-		let moduleName: string;
-		let effectiveModuleArgs: Record<string, SqlValue>;
+		const { moduleName, effectiveModuleArgs, moduleInfo } = this.resolveModuleInfo(stmt);
+		const tableSchema = this.buildTableSchemaFromAST(stmt, moduleName, effectiveModuleArgs, moduleInfo);
 
-		if (stmt.moduleName) {
-			moduleName = stmt.moduleName;
-			effectiveModuleArgs = Object.freeze(stmt.moduleArgs || {});
-		} else {
-			const defaultVtab = this.getDefaultVTabModule();
-			moduleName = defaultVtab.name;
-			effectiveModuleArgs = Object.freeze(defaultVtab.args || {});
-		}
-
-		const moduleInfo = this.getModule(moduleName);
-		if (!moduleInfo || !moduleInfo.module) {
-			throw new QuereusError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR);
-		}
-
-		// Get default nullability setting from database options
-		const defaultNullability = this.db.options.getStringOption('default_column_nullability');
-		const defaultNotNull = defaultNullability === 'not_null';
-
-		const astColumnsToProcess = stmt.columns || [];
-		const astConstraintsToProcess = stmt.constraints;
-
-		const preliminaryColumnSchemas: ColumnSchema[] = astColumnsToProcess.map(colDef => columnDefToSchema(colDef, defaultNotNull));
-		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraintsToProcess);
-
-		const finalColumnSchemas = preliminaryColumnSchemas.map((col, idx) => {
-			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
-			let pkOrder = 0;
-			if (isPkColumn) {
-				pkOrder = pkDefinition.findIndex(pkC => pkC.index === idx) + 1;
-			}
-			return {
-				...col,
-				primaryKey: isPkColumn,
-				pkOrder: pkOrder,
-				notNull: isPkColumn ? true : col.notNull,
-			};
-		});
-
-		const checkConstraintsSchema: RowConstraintSchema[] = [];
-		astColumnsToProcess.forEach(colDef => {
-			colDef.constraints?.forEach(con => {
-				if (con.type === 'check' && con.expr) {
-					checkConstraintsSchema.push({
-						name: con.name ?? `_check_${colDef.name}`,
-						expr: con.expr,
-						operations: opsToMask(con.operations),
-						deferrable: con.deferrable,
-						initiallyDeferred: con.initiallyDeferred
-					});
-				}
-			});
-		});
-		(astConstraintsToProcess || []).forEach(con => {
-			if (con.type === 'check' && con.expr) {
-				checkConstraintsSchema.push({
-					name: con.name,
-					expr: con.expr,
-					operations: opsToMask(con.operations),
-					deferrable: con.deferrable,
-					initiallyDeferred: con.initiallyDeferred
-				});
-			}
-		});
-
-		// Process mutation context definitions if present
-		const mutationContextSchemas = stmt.contextDefinitions
-			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
-			: undefined;
-
-		const tableSchema: TableSchema = {
-			name: tableName,
-			schemaName: targetSchemaName,
-			columns: Object.freeze(finalColumnSchemas),
-			columnIndexMap: buildColumnIndexMap(finalColumnSchemas),
-			primaryKeyDefinition: pkDefinition,
-			checkConstraints: Object.freeze(checkConstraintsSchema),
-			isTemporary: !!stmt.isTemporary,
-			isView: false,
-			vtabModuleName: moduleName,
-			vtabArgs: effectiveModuleArgs,
-			vtabModule: moduleInfo.module,
-			vtabAuxData: moduleInfo.auxData,
-			estimatedRows: 0,
-			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
-		};
-
-		// Use connect() instead of create() - the storage already exists
 		try {
 			await moduleInfo.module.connect(
 				this.db,
@@ -1029,22 +1006,20 @@ export class SchemaManager {
 				moduleName,
 				targetSchemaName,
 				tableName,
-				effectiveModuleArgs as BaseModuleConfig,
-				tableSchema // Pass the full schema so the module can use it
+				effectiveModuleArgs,
+				tableSchema
 			);
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			throw new QuereusError(`Module '${moduleName}' connect failed during import for table '${tableName}': ${message}`, StatusCode.ERROR);
 		}
 
-		// Ensure schema exists
 		let schema = this.getSchema(targetSchemaName);
 		if (!schema) {
 			schema = new Schema(targetSchemaName);
 			this.schemas.set(targetSchemaName.toLowerCase(), schema);
 		}
 
-		// Register without notifying change listeners (this is an import, not a create)
 		schema.addTable(tableSchema);
 		log(`Imported table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
 

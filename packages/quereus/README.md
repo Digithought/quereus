@@ -209,6 +209,7 @@ See [Store Documentation](../docs/store.md) for the storage architecture and cus
   - Instruction tracing for performance analysis
   - Transaction and savepoint management
 * [SQL Reference Guide](../docs/sql.md): SQL syntax (includes Declarative Schema)
+* [Schema Management](../docs/schema.md): SchemaManager API, change events, key types
 * [Type System](../docs/types.md): Logical/physical types, temporal types, JSON, custom types
 * [Functions](../docs/functions.md): Built-in scalar, aggregate, window, and JSON functions
 * [Memory Tables](/docs/memory-table.md): Built-in MemoryTable module

@@ -12,6 +12,7 @@ This document provides a comprehensive adversarial review plan for the integrati
 
 The integration review covers boundaries between:
 
+- Note: unless otherwise specified, file paths in this document are relative to `packages/quereus/`.
 - **Parser → Planner**: AST to plan tree transformation
 - **Planner → Optimizer**: Plan node manipulation
 - **Optimizer → Runtime**: Plan to execution instructions
@@ -365,41 +366,94 @@ Search for:
    - Backwards compatibility
    - Migration paths
 
-## 8. TODO
+## 8. Acceptance Criteria
+
+### Boundaries Documented
+- [ ] All 6 boundaries have documented interfaces
+- [ ] Data structure contracts specified (required vs optional fields)
+- [ ] Error handling expectations documented per boundary
+- [ ] Boundary diagrams created showing data flow
+
+### Boundaries Validated
+- [ ] AST validation catches invalid structures before planner
+- [ ] Plan validation catches invalid plans before optimizer
+- [ ] Instruction validation catches invalid instructions before runtime
+- [ ] Constraint validation catches invalid constraints before VTab
+
+### Boundaries Tested
+- [ ] Integration tests cover all boundary transitions
+- [ ] Error propagation tested at each boundary
+- [ ] Type safety verified at each boundary
+- [ ] Resource management verified at each boundary
+
+### Boundaries Type-Safe
+- [ ] No unsafe type assertions at boundaries
+- [ ] Type guards validate data at boundaries
+- [ ] TypeScript types match runtime contracts
+- [ ] Runtime type checking where needed
+
+## 9. Test Plan
+
+### Integration Tests
+- [ ] Parser → Planner: All AST types handled (`test/integration/parser-planner.spec.ts`)
+- [ ] Planner → Optimizer: Attribute ID stability (`test/integration/planner-optimizer.spec.ts`)
+- [ ] Optimizer → Runtime: All plan nodes emit instructions (`test/integration/optimizer-runtime.spec.ts`)
+- [ ] Runtime → VTab: Constraint pushdown correct (`test/integration/runtime-vtab.spec.ts`)
+- [ ] End-to-end: Full query pipeline (`test/integration/end-to-end.spec.ts`)
+
+### Boundary Validation Tests
+- [ ] AST validation rejects invalid structures
+- [ ] Plan validation rejects invalid plans
+- [ ] Instruction validation rejects invalid instructions
+- [ ] Constraint validation rejects invalid constraints
+
+### Error Propagation Tests
+- [ ] Errors propagate correctly across each boundary
+- [ ] Error context preserved at each boundary
+- [ ] Error wrapping adds appropriate context
+- [ ] No information loss in error translation
+
+## 10. TODO
 
 ### Phase 1: Documentation
-- [ ] Document all boundary interfaces
-- [ ] Document data structure contracts
-- [ ] Document error handling expectations
-- [ ] Create boundary diagrams
+- [ ] Document all 6 boundary interfaces (see section 2)
+  - Parser → Planner: AST contract
+  - Planner → Optimizer: PlanNode contract
+  - Optimizer → Runtime: Instruction contract
+  - Runtime → VTab: VTab contract
+  - Schema → All: Schema access contract
+  - Core API → Internal: API contract
+- [ ] Document data structure contracts (required fields, invariants)
+- [ ] Document error handling expectations (error types, context)
+- [ ] Create boundary diagrams (Mermaid or similar)
 
 ### Phase 2: Validation
-- [ ] Add AST validation at parser output
-- [ ] Add plan validation at planner output
-- [ ] Add instruction validation at emitter output
-- [ ] Add constraint validation at VTab boundary
+- [ ] Add AST validation at parser output (`validateAST()` function)
+- [ ] Add plan validation at planner output (`validatePlan()` function)
+- [ ] Add instruction validation at emitter output (`validateInstructions()` function)
+- [ ] Add constraint validation at VTab boundary (`validateConstraints()` function)
 
 ### Phase 3: Testing
-- [ ] Create parser-planner integration tests
-- [ ] Create planner-optimizer integration tests
-- [ ] Create optimizer-runtime integration tests
-- [ ] Create runtime-VTab integration tests
-- [ ] Create end-to-end integration tests
+- [ ] Create parser-planner integration tests (see section 5)
+- [ ] Create planner-optimizer integration tests (attribute ID stability)
+- [ ] Create optimizer-runtime integration tests (instruction correctness)
+- [ ] Create runtime-VTab integration tests (constraint pushdown)
+- [ ] Create end-to-end integration tests (full pipeline)
 
 ### Phase 4: Error Handling
-- [ ] Standardize error propagation across boundaries
-- [ ] Add context at each boundary
-- [ ] Ensure no information loss
-- [ ] Add error translation where needed
+- [ ] Standardize error propagation (see `3-review-error-handling.md`)
+- [ ] Add context at each boundary (SQL, AST, plan, etc.)
+- [ ] Ensure no information loss (preserve original errors)
+- [ ] Add error translation where needed (wrap with boundary context)
 
 ### Phase 5: Refactoring
-- [ ] Define explicit interface types
-- [ ] Add boundary validation functions
-- [ ] Create adapter layers if beneficial
-- [ ] Add tracing infrastructure
+- [ ] Define explicit interface types (see section 7)
+- [ ] Add boundary validation functions (see Phase 2)
+- [ ] Create adapter layers if beneficial (isolate changes)
+- [ ] Add tracing infrastructure (debug boundary crossings)
 
 ### Phase 6: Type Safety
-- [ ] Review type consistency across boundaries
-- [ ] Add type guards at boundaries
-- [ ] Eliminate unsafe type assertions
-- [ ] Add runtime type checking where needed
+- [ ] Review type consistency (compare types across boundaries)
+- [ ] Add type guards at boundaries (`isValidAST`, `isValidPlan`, etc.)
+- [ ] Eliminate unsafe type assertions (`as any`, `as unknown`)
+- [ ] Add runtime type checking where needed (validate at runtime)

@@ -39,29 +39,21 @@ The store package provides:
 
 ### Core Interfaces
 
-**`src/kv-store.ts`** (or similar)
-- KVStore interface definition
-- KVStoreProvider interface
-- Key/value type definitions
-- Transaction interface
+Concrete starting points:
 
-**`src/provider/`**
-- Storage backend implementations
-- IndexedDB provider
-- File system provider
-- Memory provider
+- `packages/quereus-store/src/common/kv-store.ts` - core KV store abstractions
+- `packages/quereus-store/src/common/transaction.ts` - transaction semantics
+- `packages/quereus-store/src/common/store-connection.ts` / `store-table.ts` - connection + table integration
+- `packages/quereus-store/src/common/memory-store.ts` - reference backend
+- `packages/quereus-store/src/common/serialization.ts` / `encoding.ts` - encoding and type preservation
 
 ### Supporting Code
 
-**`src/serialization/`**
-- Value serialization
-- Key encoding
-- Type preservation
+Also review:
 
-**`src/utils/`**
-- Storage utilities
-- Error handling
-- Helpers
+- `packages/quereus-store/src/common/key-builder.ts` - key scheme and uniqueness
+- `packages/quereus-store/src/common/events.ts` - event contracts
+- `packages/quereus-store/src/common/ddl-generator.ts` - schema/DDL generation (if used)
 
 ## 4. Code Quality Concerns
 
@@ -98,7 +90,7 @@ Look for:
 ### Missing Tests
 
 ```typescript
-// test/store/kv-store.spec.ts
+// packages/quereus-store/test/kv-store.spec.ts
 describe('KVStore', () => {
   describe('basic operations', () => {
     it('gets value')
@@ -128,31 +120,25 @@ describe('KVStore', () => {
   })
 })
 
-// test/store/providers/*.spec.ts
-describe('Storage Provider', () => {
-  // Run same tests against each provider
-  runProviderTests('memory', createMemoryProvider)
-  runProviderTests('indexeddb', createIndexedDBProvider)
-  runProviderTests('file', createFileProvider)
+// packages/quereus-store/test/store-backends.spec.ts
+describe('Store backends', () => {
+  // Run the same contract tests against each backend shipped in this package.
+  runStoreTests('memory', createMemoryStore)
+  runStoreTests('isolated', createIsolatedStore)
 })
 ```
 
 ### Provider-Specific Tests
 
 ```typescript
-// test/store/indexeddb.spec.ts
-describe('IndexedDB Provider', () => {
-  it('handles IndexedDB errors')
-  it('handles version upgrades')
-  it('handles quota exceeded')
+// packages/quereus-store/test/serialization.spec.ts
+describe('Serialization', () => {
+  it('round-trips supported value types')
+  it('is stable across versions (if required)')
 })
 
-// test/store/file.spec.ts
-describe('File Provider', () => {
-  it('handles file system errors')
-  it('handles permissions')
-  it('handles concurrent access')
-})
+// Note: storage providers for IndexedDB/LevelDB/etc live in plugin packages (e.g. `packages/quereus-plugin-indexeddb/`).
+// Provider-specific tests should live alongside those providers.
 ```
 
 ## 6. Documentation Gaps

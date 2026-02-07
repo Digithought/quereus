@@ -6,253 +6,137 @@ priority: 3
 
 # Quoomb Web Application Review Plan
 
-This document provides a comprehensive adversarial review plan for the `quoomb-web` package - the web application built on Quereus.
-
-## 1. Scope
-
-The quoomb-web package is:
-
-- A web application using Quereus
-- Demonstrates real-world usage
-- Includes UI components
-- May include sync features
+Review plan for `quoomb-web`: web application demonstrating real-world Quereus usage with React UI, Zustand state, Web Workers, and sync integration.
 
 **Package location:** `packages/quoomb-web/`
 
-## 2. Architecture Assessment
+## Review Checklist
 
-### Expected Components
+### API Surface Review
+- [ ] Document public API (hooks, utilities, components)
+- [ ] Review Quereus integration API usage
+- [ ] Verify worker API contracts
+- [ ] Check sync client API usage
+- [ ] Review component prop interfaces
+- [ ] Assess API stability needs
 
-1. **Database Layer** - Quereus integration
-2. **State Management** - Zustand (per README)
-3. **UI Components** - React components
-4. **Worker Integration** - Web Worker for DB
-5. **Sync Integration** - Sync client usage
+### Configuration & Environment Handling
+- [ ] Document environment variables
+- [ ] Review configuration files
+- [ ] Verify build-time vs runtime config
+- [ ] Check environment-specific settings
+- [ ] Review feature flags/config
+- [ ] Assess configuration validation
 
-### Technology Stack
+### Security Considerations
+- [ ] Review input sanitization
+- [ ] Verify XSS prevention
+- [ ] Check CSRF protection (if applicable)
+- [ ] Review authentication/authorization
+- [ ] Verify secure worker communication
+- [ ] Check sensitive data handling
+- [ ] Review Content Security Policy
+- [ ] Assess dependency vulnerabilities
 
-- React
-- Zustand (state management)
-- Web Workers + Comlink
-- Vite/Webpack (bundler)
+### Error Handling
+- [ ] Standardize error types
+- [ ] Verify user-friendly error messages
+- [ ] Check error boundary coverage
+- [ ] Review worker error propagation
+- [ ] Verify recovery mechanisms
+- [ ] Assess offline error handling
 
-## 3. Files to Review
+### Logging & Telemetry
+- [ ] Add user action logging
+- [ ] Track performance metrics
+- [ ] Log errors with context
+- [ ] Review telemetry privacy
+- [ ] Check log levels and filtering
+- [ ] Assess analytics integration (if any)
+
+### Packaging, Build & Release
+- [ ] Review package.json configuration
+- [ ] Verify build configuration (Vite/Webpack)
+- [ ] Check bundle size optimization
+- [ ] Review code splitting strategy
+- [ ] Verify production build process
+- [ ] Assess asset optimization
+- [ ] Check source map configuration
+
+### Versioning Boundaries & Cross-Package Contracts
+- [ ] Review Quereus core dependency version
+- [ ] Check sync client version compatibility
+- [ ] Verify shared-ui package contracts
+- [ ] Review breaking change handling
+- [ ] Assess dependency update strategy
+
+### Test Plan Expectations
+- [ ] Unit tests: worker integration
+- [ ] Unit tests: Zustand stores
+- [ ] Unit tests: React components
+- [ ] Unit tests: hooks and utilities
+- [ ] Integration tests: DB operations
+- [ ] Integration tests: state sync
+- [ ] Integration tests: sync features
+- [ ] E2E tests: user workflows
+- [ ] Performance tests: bundle size, load time
+
+## Files to Review
 
 ### Database Integration
-
-**Worker setup:**
 - Worker initialization
 - Comlink proxy setup
 - Message handling
-
-**Database usage:**
 - Query patterns
 - Transaction usage
-- Error handling
 
 ### State Management
-
-**Zustand stores:**
-- Store definitions
+- Zustand store definitions
 - Action patterns
 - Selector patterns
-
-**DB-State sync:**
-- How DB changes update state
+- DB-state synchronization
 - Optimistic updates
-- Error handling
 
 ### UI Components
-
-**Core components:**
 - Data display components
 - Form components
 - Error boundaries
-
-**Data fetching:**
 - Query hooks
-- Loading states
-- Error states
+- Loading/error states
 
 ### Sync Integration
-
-**Sync setup:**
-- Client initialization
+- Sync client initialization
 - Event handling
-- Conflict UI
+- Conflict resolution UI
 
-## 4. Code Quality Concerns
-
-### Potential Issues
-
-1. **Worker Communication**
-   - Serialization overhead?
-   - Error propagation?
-   - Resource cleanup?
-
-2. **State Management**
-   - State shape efficiency?
-   - Selector memoization?
-   - Update batching?
-
-3. **Error Handling**
-   - User-friendly errors?
-   - Error boundaries?
-   - Recovery options?
-
-4. **Performance**
-   - Unnecessary re-renders?
-   - Large query results?
-   - Memory leaks?
+## Code Quality Concerns
 
 ### React-Specific Issues
-
 - Missing keys in lists
 - Effect cleanup
 - Stale closures
 - Prop drilling vs context
 
-## 5. Test Coverage Gaps
+### Performance Issues
+- Unnecessary re-renders
+- Large query result handling
+- Memory leaks
+- Worker serialization overhead
 
-### Missing Tests
+## Documentation Gaps
 
-```typescript
-// test/quoomb-web/worker.spec.ts
-describe('Worker Integration', () => {
-  it('initializes worker correctly')
-  it('executes queries through worker')
-  it('handles worker errors')
-  it('cleans up on unmount')
-})
+- Architecture overview (component structure, data flow, state management)
+- Development guide (setup, workflow, testing)
+- Deployment guide (build process, environment config, targets)
 
-// test/quoomb-web/stores.spec.ts
-describe('Zustand Stores', () => {
-  it('initializes with correct state')
-  it('updates state on actions')
-  it('syncs with database')
-})
+## Performance Considerations
 
-// test/quoomb-web/components.spec.ts
-describe('UI Components', () => {
-  it('renders with data')
-  it('handles loading state')
-  it('handles error state')
-  it('handles empty state')
-})
+- Initial load (bundle size, DB init, data fetch)
+- Runtime performance (re-renders, queries, memory)
+- Worker performance (serialization, message frequency)
 
-// test/quoomb-web/integration.spec.ts
-describe('Integration', () => {
-  it('creates and displays data')
-  it('updates and reflects changes')
-  it('deletes and removes from UI')
-  it('handles sync updates')
-})
-```
+## Accessibility Review
 
-### E2E Tests
-
-```typescript
-// test/quoomb-web/e2e.spec.ts
-describe('E2E', () => {
-  it('user can create item')
-  it('user can edit item')
-  it('user can delete item')
-  it('offline works correctly')
-})
-```
-
-## 6. Documentation Gaps
-
-### Missing Documentation
-
-1. **Architecture Overview**
-   - Component structure
-   - Data flow
-   - State management
-
-2. **Development Guide**
-   - Setup instructions
-   - Development workflow
-   - Testing approach
-
-3. **Deployment Guide**
-   - Build process
-   - Environment config
-   - Deployment targets
-
-## 7. Performance Considerations
-
-### Areas to Profile
-
-1. **Initial Load**
-   - Bundle size
-   - Database initialization
-   - Initial data fetch
-
-2. **Runtime Performance**
-   - Re-render frequency
-   - Query performance
-   - Memory usage
-
-3. **Worker Performance**
-   - Serialization overhead
-   - Message frequency
-   - Large result handling
-
-## 8. Accessibility
-
-### Review Areas
-
-1. **Keyboard Navigation**
-   - All interactive elements reachable
-   - Focus management
-   - Keyboard shortcuts
-
-2. **Screen Readers**
-   - Semantic HTML
-   - ARIA labels
-   - Announcements
-
-3. **Visual**
-   - Color contrast
-   - Text sizing
-   - Focus indicators
-
-## 9. TODO
-
-### Phase 1: Assessment
-- [ ] Inventory all components
-- [ ] Document architecture
-- [ ] Review data flow
-- [ ] Review state management
-
-### Phase 2: Code Quality
-- [ ] Review worker integration
-- [ ] Check state management patterns
-- [ ] Review error handling
-- [ ] Check React patterns
-
-### Phase 3: Testing
-- [ ] Add worker tests
-- [ ] Add store tests
-- [ ] Add component tests
-- [ ] Add integration tests
-- [ ] Add E2E tests
-
-### Phase 4: Performance
-- [ ] Profile initial load
-- [ ] Profile runtime
-- [ ] Check bundle size
-- [ ] Optimize hot paths
-
-### Phase 5: Accessibility
-- [ ] Audit keyboard navigation
-- [ ] Test with screen reader
-- [ ] Check color contrast
-- [ ] Fix issues
-
-### Phase 6: Documentation
-- [ ] Create architecture docs
-- [ ] Create development guide
-- [ ] Create deployment guide
-- [ ] Add inline comments
+- Keyboard navigation (all interactive elements, focus management)
+- Screen readers (semantic HTML, ARIA labels)
+- Visual (color contrast, text sizing, focus indicators)

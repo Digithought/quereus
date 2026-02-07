@@ -6,7 +6,11 @@ priority: 3
 
 # Performance Review Plan
 
-This document provides a comprehensive adversarial review plan for performance characteristics and optimization opportunities in the Quereus SQL query processor.
+This document provides a review plan for performance characteristics and optimization opportunities in the Quereus SQL query processor.
+
+## Goal
+
+Establish a minimal, repeatable performance baseline, identify the top hotspots (CPU + memory), and turn findings into a small set of measured optimizations with regression protection.
 
 ## 1. Scope
 
@@ -219,29 +223,14 @@ The performance review covers:
 
 ### Proposed Benchmark Suite
 
-```typescript
-// benchmarks/parser.bench.ts
-describe('Parser benchmarks', () => {
-  benchmark('simple SELECT', () => parse('SELECT * FROM t'))
-  benchmark('complex JOIN', () => parse(complexJoinQuery))
-  benchmark('100-column SELECT', () => parse(wideSelect))
-  benchmark('deeply nested subquery', () => parse(nestedQuery))
-})
+Keep the initial benchmark suite extremely small. Suggested first targets:
 
-// benchmarks/execution.bench.ts
-describe('Execution benchmarks', () => {
-  benchmark('scan 10k rows', async () => db.all('SELECT * FROM large'))
-  benchmark('index lookup', async () => db.get('SELECT * FROM t WHERE id = ?', [42]))
-  benchmark('aggregate 10k rows', async () => db.get('SELECT SUM(x) FROM large'))
-  benchmark('JOIN 1k x 1k', async () => db.all('SELECT * FROM a, b WHERE a.id = b.aid'))
-})
+- Parser: simple `select`, deep nesting, wide select
+- Planner/optimizer: a query with enough structure to trigger rules
+- Runtime: scan + filter, group by, join
+- VTab: index lookup vs scan in MemoryTable
 
-// benchmarks/memory.bench.ts
-describe('Memory benchmarks', () => {
-  benchmark('insert 10k rows', async () => insertBatch(10000))
-  benchmark('10 concurrent transactions', async () => concurrentTxn(10))
-})
-```
+Prefer adding 3–5 scenarios with stable data sizes and keeping them running fast enough for PR validation.
 
 ### Benchmark Scenarios
 
@@ -346,46 +335,29 @@ describe('Memory benchmarks', () => {
 
 ### Quick Wins
 
-1. **Add Statement Caching**
-   - Cache parsed AST
-   - Cache query plans
-   - LRU eviction
+Treat these as *candidates* only; validate with profiling + benchmark deltas:
 
-2. **Object Pooling for Rows**
-   - Reuse row objects
-   - Clear instead of allocate
-
-3. **Index Hints**
-   - Allow users to specify indexes
-   - Override cost estimation
+1. **Reduce allocations in hot loops** (rows, iterators, transient arrays)
+2. **Cache where it’s safe** (AST/plan caching needs clear invalidation rules)
+3. **Improve index utilization** (ensure costs/pushdown steer toward indexes)
 
 ### Medium Effort
 
-4. **Hash Join Implementation**
-   - For equi-joins
-   - When one side fits in memory
-
-5. **Predicate Pushdown**
-   - Push filters to scan
-   - Reduce intermediate results
-
-6. **Batch Operations**
-   - Batch inserts
-   - Batch index updates
+4. **Join algorithm improvements** (hash join or better join selection)
+5. **Predicate pushdown improvements** (reduce intermediate results)
+6. **Batching** (reduce per-row overhead for inserts/updates/index maintenance)
 
 ### Higher Effort
 
-7. **Query Compilation**
-   - Generate optimized code
-   - Eliminate interpretation overhead
+7. **Execution strategy changes** (compilation, vectorization) only after baseline/profiling shows interpreter overhead is dominant
+8. **Parallelism** only after correctness + determinism constraints are clearly defined
 
-8. **Vectorized Execution**
-   - Process batches of rows
-   - Better CPU cache usage
+## Deliverables
 
-9. **Parallel Query**
-   - Parallel scan
-   - Parallel aggregation
+- A small benchmark/profiling harness with documented “how to run”
+- A baseline snapshot (numbers + environment) checked into docs or a task log
+- A ranked list of the top hotspots with evidence (profiles, flamegraphs, heap snapshots)
+- A small set of follow-up issues/PRs that each include a benchmark delta + regression test
 
 ## 10. TODO
 

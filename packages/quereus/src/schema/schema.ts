@@ -87,7 +87,7 @@ export class Schema {
 	 * Adds or replaces a view definition in the schema
 	 *
 	 * @param view The view schema to add
-	 * @throws Error if view's schema name doesn't match or a table with same name exists
+	 * @throws QuereusError if view's schema name doesn't match or a table with same name exists
 	 */
 	addView(view: ViewSchema): void {
 		if (view.schemaName !== this.name) {

@@ -6,219 +6,126 @@ priority: 3
 
 # Plugin Loader Package Review Plan
 
-This document provides a comprehensive adversarial review plan for the `quereus-plugin-loader` package.
+Review plan for `quereus-plugin-loader`: dynamic discovery, loading, lifecycle management, dependency resolution, and security.
 
-## 1. Scope
+**Package location:** `packages/plugin-loader/`
 
-The plugin loader package is responsible for:
+## Review Checklist
 
-- Dynamic plugin discovery
-- Plugin loading and initialization
-- Plugin lifecycle management
-- Plugin dependency resolution
-- Security considerations for dynamic loading
+### API Surface Review
+- [ ] Document loader public API
+- [ ] Review plugin interface contract
+- [ ] Verify entry point signature
+- [ ] Check lifecycle hook contracts
+- [ ] Review event system API
+- [ ] Assess API stability guarantees
+- [ ] Document version compatibility
 
-**Package location:** `packages/quereus-plugin-loader/`
+### Configuration & Environment Handling
+- [ ] Document loader configuration options
+- [ ] Review plugin discovery paths/config
+- [ ] Check environment variable usage
+- [ ] Verify configuration validation
+- [ ] Review security settings
+- [ ] Assess hot-reload support
 
-## 2. Architecture Assessment
+### Security Considerations
+- [ ] Validate all plugin paths (prevent traversal)
+- [ ] Verify whitelist/allowlist mechanism
+- [ ] Review dynamic import security
+- [ ] Check sandboxing/isolation (if any)
+- [ ] Verify signature verification (if applicable)
+- [ ] Review permission system (if any)
+- [ ] Test path traversal prevention
+- [ ] Verify symlink handling
+- [ ] Review dependency confusion mitigations
 
-### Expected Components
+### Error Handling
+- [ ] Standardize loader error types
+- [ ] Verify graceful degradation on load failure
+- [ ] Check initialization error handling
+- [ ] Review dependency resolution errors
+- [ ] Verify resource cleanup on errors
+- [ ] Assess error context preservation
 
-1. **Plugin Discovery** - Finding plugins in filesystem/registry
-2. **Plugin Loading** - Dynamic import/require
-3. **Plugin Initialization** - Calling plugin entry points
-4. **Lifecycle Management** - Enable/disable/unload
-5. **Dependency Resolution** - Plugin dependencies
+### Logging & Telemetry
+- [ ] Log plugin discovery operations
+- [ ] Track plugin load/unload events
+- [ ] Log dependency resolution
+- [ ] Add security event logging
+- [ ] Track loader performance metrics
+- [ ] Review log levels and filtering
 
-### Security Concerns
+### Packaging, Build & Release
+- [ ] Review package.json exports
+- [ ] Verify build configuration
+- [ ] Check TypeScript declaration files
+- [ ] Review bundle size
+- [ ] Assess tree-shaking compatibility
+- [ ] Verify release process
 
-- **Dynamic imports** - Code execution risks
-- **Path traversal** - Loading from untrusted paths
-- **Sandboxing** - Plugin isolation
-- **Permissions** - What plugins can access
+### Versioning Boundaries & Cross-Package Contracts
+- [ ] Document plugin manifest versioning
+- [ ] Review dependency version constraints
+- [ ] Check circular dependency handling
+- [ ] Verify version conflict resolution
+- [ ] Review compatibility with core package
+- [ ] Assess breaking change policy
 
-## 3. Files to Review
+### Test Plan Expectations
+- [ ] Unit tests: discovery mechanism
+- [ ] Unit tests: loading mechanism
+- [ ] Unit tests: lifecycle management
+- [ ] Unit tests: dependency resolution
+- [ ] Security tests: path validation
+- [ ] Security tests: path traversal prevention
+- [ ] Integration tests: end-to-end loading
+- [ ] Performance tests: loader overhead
+
+## Files to Review
 
 ### Core Files
-
-**Plugin loader entry:**
 - Main loader class/function
 - Configuration handling
 - Error handling
-
-**Discovery mechanism:**
-- File system scanning
-- Registry lookup
-- Version resolution
-
-**Loading mechanism:**
-- Dynamic import handling
-- Module resolution
+- Discovery mechanism (filesystem/registry)
+- Loading mechanism (dynamic import)
 - Initialization protocol
 
 ### Type Definitions
-
-**Plugin manifest types:**
-- Plugin metadata format
-- Version constraints
-- Dependency declarations
-
-**Plugin interface:**
-- Entry point signature
+- Plugin manifest types
+- Plugin interface
 - Lifecycle hooks
-- API exposure
+- Event types
 
-## 4. Code Quality Concerns
-
-### Potential Issues
-
-1. **Dynamic Import Security**
-   - Are paths validated?
-   - Is there a whitelist mechanism?
-   - How are relative paths handled?
-
-2. **Error Handling**
-   - What happens when a plugin fails to load?
-   - How are initialization errors handled?
-   - Is there graceful degradation?
-
-3. **Lifecycle Management**
-   - Can plugins be unloaded cleanly?
-   - Are resources released?
-   - Is state cleaned up?
-
-4. **Dependency Handling**
-   - How are circular dependencies handled?
-   - Version conflict resolution?
-   - Missing dependency handling?
+## Code Quality Concerns
 
 ### DRY Violations
-
-Look for:
 - Repeated path handling code
 - Duplicated validation logic
 - Similar error handling patterns
 
-## 5. Test Coverage Gaps
+### Resource Management
+- Plugin cleanup on unload
+- Resource release verification
+- State cleanup verification
 
-### Missing Tests
-
-```typescript
-// test/plugin-loader/discovery.spec.ts
-describe('Plugin Discovery', () => {
-  it('discovers plugins in directory')
-  it('handles missing directory')
-  it('filters invalid plugins')
-  it('respects ignore patterns')
-})
-
-// test/plugin-loader/loading.spec.ts
-describe('Plugin Loading', () => {
-  it('loads valid plugin')
-  it('rejects invalid plugin')
-  it('handles load errors')
-  it('validates plugin manifest')
-  it('prevents path traversal')
-})
-
-// test/plugin-loader/lifecycle.spec.ts
-describe('Plugin Lifecycle', () => {
-  it('initializes plugin')
-  it('enables plugin')
-  it('disables plugin')
-  it('unloads plugin')
-  it('handles lifecycle errors')
-})
-
-// test/plugin-loader/dependencies.spec.ts
-describe('Dependency Resolution', () => {
-  it('loads dependencies first')
-  it('handles circular dependencies')
-  it('handles missing dependencies')
-  it('handles version conflicts')
-})
-
-// test/plugin-loader/security.spec.ts
-describe('Security', () => {
-  it('validates plugin paths')
-  it('rejects absolute paths')
-  it('rejects path traversal')
-  it('validates plugin signatures (if applicable)')
-})
-```
-
-## 6. Documentation Gaps
-
-### Missing Documentation
-
-1. **Plugin Authoring Guide**
-   - How to create a plugin
-   - Manifest format
-   - Entry point requirements
-   - Lifecycle hooks
-
-2. **Loader Configuration**
-   - Configuration options
-   - Security settings
-   - Path configuration
-
-3. **API Reference**
-   - Loader API
-   - Plugin interface
-   - Event system
-
-## 7. Security Review
+## Security Review
 
 ### Threat Model
-
-1. **Malicious Plugin**
-   - Could execute arbitrary code
-   - Could access file system
-   - Could exfiltrate data
-
-2. **Path Manipulation**
-   - Loading from outside allowed paths
-   - Symlink following
-
-3. **Dependency Confusion**
-   - Loading wrong version
-   - Loading malicious substitute
+- Malicious plugin execution
+- Path manipulation attacks
+- Dependency confusion attacks
 
 ### Mitigations to Verify
-
 - Path validation
 - Sandboxing (if applicable)
 - Signature verification (if applicable)
 - Permission system (if applicable)
 
-## 8. TODO
+## Documentation Gaps
 
-### Phase 1: Assessment
-- [ ] Inventory all files in package
-- [ ] Document current architecture
-- [ ] Identify public API surface
-- [ ] Review security model
-
-### Phase 2: Code Quality
-- [ ] Review error handling
-- [ ] Check for DRY violations
-- [ ] Verify resource cleanup
-- [ ] Assess type safety
-
-### Phase 3: Security
-- [ ] Review path validation
-- [ ] Check for dynamic import risks
-- [ ] Verify sandboxing (if any)
-- [ ] Document security model
-
-### Phase 4: Testing
-- [ ] Add discovery tests
-- [ ] Add loading tests
-- [ ] Add lifecycle tests
-- [ ] Add security tests
-
-### Phase 5: Documentation
-- [ ] Create plugin authoring guide
-- [ ] Document configuration
-- [ ] Document API
-- [ ] Add security notes
+- Plugin authoring guide (creation, manifest, entry points, lifecycle)
+- Loader configuration reference
+- API reference (loader API, plugin interface, events)
+- Security model documentation

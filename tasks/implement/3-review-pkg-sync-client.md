@@ -12,13 +12,12 @@ This document provides a comprehensive adversarial review plan for the sync clie
 
 The sync client provides:
 
-- Client-side sync management
+- Client-side sync transport + session management
 - Connection to sync server/coordinator
-- Local change queuing
-- Conflict resolution UI support
-- Offline queue management
+- Local change queuing / resend behavior (if present)
+- Offline handling (if supported)
 
-**Package location:** `packages/quereus-sync-client/` or within `packages/quereus-sync/`
+**Package location:** `packages/quereus-sync-client/`
 
 ## 2. Architecture Assessment
 
@@ -58,6 +57,11 @@ The sync client provides:
 - Retry limits
 - Error classification
 
+Concrete starting points:
+- `packages/quereus-sync-client/src/sync-client.ts`
+- `packages/quereus-sync-client/src/serialization.ts`
+- `packages/quereus-sync-client/src/types.ts`
+
 ### Integration
 
 **Database integration:**
@@ -94,7 +98,7 @@ The sync client provides:
 ### Missing Tests
 
 ```typescript
-// test/sync-client/connection.spec.ts
+// packages/quereus-sync-client/test/connection.spec.ts
 describe('Connection Management', () => {
   it('connects to server')
   it('handles connection failure')
@@ -103,7 +107,7 @@ describe('Connection Management', () => {
   it('applies backoff on failures')
 })
 
-// test/sync-client/queue.spec.ts
+// packages/quereus-sync-client/test/queue.spec.ts
 describe('Change Queue', () => {
   it('queues changes when offline')
   it('persists queue across restarts')
@@ -112,7 +116,7 @@ describe('Change Queue', () => {
   it('maintains change order')
 })
 
-// test/sync-client/sync.spec.ts
+// packages/quereus-sync-client/test/sync.spec.ts
 describe('Synchronization', () => {
   it('sends local changes')
   it('receives remote changes')
@@ -120,7 +124,7 @@ describe('Synchronization', () => {
   it('maintains consistency')
 })
 
-// test/sync-client/offline.spec.ts
+// packages/quereus-sync-client/test/offline.spec.ts
 describe('Offline Support', () => {
   it('works fully offline')
   it('queues changes while offline')
@@ -128,6 +132,8 @@ describe('Offline Support', () => {
   it('handles partial sync')
 })
 ```
+
+Note: `packages/quereus-sync-client/test/` already exists; add/extend tests there.
 
 ## 6. Documentation Gaps
 

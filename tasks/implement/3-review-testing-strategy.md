@@ -429,53 +429,98 @@ export const complexSchema = `...`;
 export const simpleData = [{ id: 1, name: 'a' }, ...];
 ```
 
-## 9. TODO
+## 9. Acceptance Criteria
+
+### Test Coverage Complete
+- [ ] Core subsystems have meaningful unit test coverage (and coverage is measured/tracked)
+- [ ] Integration tests cover all boundary transitions
+- [ ] Property tests verify critical invariants
+- [ ] SQLLogic tests cover all SQL features
+
+### Test Infrastructure Complete
+- [ ] Test helpers available for common patterns
+- [ ] Standard fixtures available for schemas and data
+- [ ] Coverage reporting automated (CI integration)
+- [ ] Test runtime is reasonable for local iteration and CI
+
+### Test Quality High
+- [ ] Zero flaky tests (all tests deterministic)
+- [ ] Slow tests identified and improved
+- [ ] Test names descriptive and consistent
+- [ ] All tests have assertions
+
+## 10. Test Plan
+
+### Coverage Measurement
+- [ ] Measure current coverage (c8 or nyc)
+- [ ] Set coverage targets per subsystem
+- [ ] Track coverage improvements over time
+- [ ] Fail CI if coverage drops
+
+### Test Execution
+- [ ] All tests pass consistently (no flakiness)
+- [ ] Tests run in parallel (faster execution)
+- [ ] Tests isolated (no shared state)
+- [ ] Tests cleanup after themselves
+
+### Test Categories
+- [ ] Unit tests: fast, isolated, comprehensive
+- [ ] Integration tests: verify boundaries work
+- [ ] Property tests: verify invariants hold
+- [ ] SQLLogic tests: verify SQL compatibility
+
+## 11. TODO
 
 ### Phase 1: Assessment
-- [ ] Inventory all existing tests
-- [ ] Measure current coverage
-- [ ] Identify flaky tests
-- [ ] Identify slow tests
-- [ ] Document test gaps
+- [ ] Inventory all existing tests (list all `*.spec.ts` files)
+- [ ] Measure current coverage (run coverage tool)
+- [ ] Identify flaky tests (run tests multiple times)
+- [ ] Identify slow tests (measure execution time)
+- [ ] Document test gaps (compare against codebase)
 
 ### Phase 2: Infrastructure
-- [ ] Create test helper utilities
-- [ ] Create standard fixtures
-- [ ] Set up coverage reporting
-- [ ] Improve CI/CD integration
-- [ ] Add parallelization if missing
+- [ ] Create test helper utilities (e.g. `packages/quereus/test/helpers/`)
+  - Database creation helpers
+  - Schema fixtures
+  - Data seeding helpers
+- [ ] Create standard fixtures (e.g. `packages/quereus/test/fixtures/`)
+  - Common schemas
+  - Test data sets
+- [ ] Set up coverage reporting (c8 or nyc)
+- [ ] Improve CI/CD integration (coverage badges, reports)
+- [ ] Add parallelization if missing (Mocha parallel mode)
 
 ### Phase 3: Unit Test Coverage
-- [ ] Add parser unit tests
-- [ ] Add planner unit tests
-- [ ] Add optimizer rule tests
-- [ ] Add runtime emitter tests
-- [ ] Add VTab unit tests
-- [ ] Add function tests
-- [ ] Add utility tests
+- [ ] Add parser unit tests (under `packages/quereus/test/`)
+- [ ] Add planner unit tests (under `packages/quereus/test/`; see `3-review-core-planner.md`)
+- [ ] Add optimizer rule tests (under `packages/quereus/test/optimizer/`; see `3-review-core-optimizer.md`)
+- [ ] Add runtime emitter tests (under `packages/quereus/test/`; see `3-review-core-runtime.md`)
+- [ ] Add VTab unit tests (under `packages/quereus/test/vtab/`; see `3-review-core-vtab.md`)
+- [ ] Add function tests (under `packages/quereus/test/`)
+- [ ] Add utility tests (under `packages/quereus/test/util/`)
 
 ### Phase 4: Integration Tests
-- [ ] Add parser-planner tests
-- [ ] Add planner-optimizer tests
-- [ ] Add optimizer-runtime tests
-- [ ] Add runtime-VTab tests
-- [ ] Add end-to-end tests
+- [ ] Add parser→planner boundary tests (under `packages/quereus/test/`)
+- [ ] Add planner→optimizer boundary tests (under `packages/quereus/test/`)
+- [ ] Add optimizer→runtime boundary tests (under `packages/quereus/test/`)
+- [ ] Add runtime→VTab boundary tests (under `packages/quereus/test/`)
+- [ ] Add end-to-end query tests (under `packages/quereus/test/`)
 
 ### Phase 5: Property Tests
-- [ ] Add parser property tests
-- [ ] Add type system property tests
-- [ ] Add query execution property tests
-- [ ] Integrate with fast-check
+- [ ] Add parser property tests (under `packages/quereus/test/`)
+- [ ] Add type system property tests (under `packages/quereus/test/`)
+- [ ] Add query execution property tests (under `packages/quereus/test/`)
+- [ ] Integrate with fast-check (already in dependencies)
 
 ### Phase 6: SQLLogic Tests
-- [ ] Review existing SQLLogic tests
-- [ ] Add missing feature coverage
-- [ ] Add edge case tests
-- [ ] Add error condition tests
+- [ ] Review existing SQLLogic tests (`packages/quereus/test/logic/*.sqllogic`)
+- [ ] Add missing feature coverage (compare against SQL features)
+- [ ] Add edge case tests (NULL handling, etc.)
+- [ ] Add error condition tests (invalid SQL, etc.)
 
 ### Phase 7: Quality
-- [ ] Fix flaky tests
-- [ ] Optimize slow tests
-- [ ] Improve test names
-- [ ] Add missing assertions
-- [ ] Document test patterns
+- [ ] Fix flaky tests (remove timing dependencies, etc.)
+- [ ] Optimize slow tests (reduce setup, use mocks)
+- [ ] Improve test names (descriptive, consistent format)
+- [ ] Add missing assertions (verify all expectations)
+- [ ] Document test patterns (`docs/testing.md` - see `3-review-documentation.md`)

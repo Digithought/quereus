@@ -18,17 +18,17 @@ The sync coordinator provides:
 - Conflict arbitration
 - State persistence
 
-**Package location:** `packages/quereus-sync-coordinator/` or similar
+**Package location:** `packages/sync-coordinator/`
 
 ## 2. Architecture Assessment
 
 ### Expected Components
 
-1. **Connection Handler** - WebSocket/HTTP management
-2. **Session Manager** - Client session tracking
-3. **Change Router** - Distributing changes
-4. **State Store** - Persistent sync state
-5. **Conflict Arbiter** - Final conflict resolution
+1. **Connection handler** - WebSocket/HTTP management
+2. **Session/auth** - Client session tracking, authn/z
+3. **Routing/broadcast** - Distributing changes and snapshots
+4. **State persistence** - Durable sync state, snapshots, batching (if present)
+5. **Protocol validation** - Message validation, error responses, version negotiation
 
 ### Scalability Considerations
 
@@ -54,6 +54,12 @@ The sync coordinator provides:
 - State storage
 - State queries
 - State compaction
+
+Concrete starting points:
+- `packages/sync-coordinator/src/server/websocket.ts`
+- `packages/sync-coordinator/src/server/server.ts`
+- `packages/sync-coordinator/src/service/coordinator-service.ts`
+- `packages/sync-coordinator/src/config/*`
 
 ### Protocol
 
@@ -92,7 +98,7 @@ The sync coordinator provides:
 ### Missing Tests
 
 ```typescript
-// test/coordinator/connections.spec.ts
+// packages/sync-coordinator/test/connections.spec.ts
 describe('Connection Handling', () => {
   it('accepts client connections')
   it('handles connection limit')
@@ -100,7 +106,7 @@ describe('Connection Handling', () => {
   it('handles malformed messages')
 })
 
-// test/coordinator/routing.spec.ts
+// packages/sync-coordinator/test/routing.spec.ts
 describe('Change Routing', () => {
   it('broadcasts to all clients')
   it('respects subscriptions')
@@ -108,20 +114,22 @@ describe('Change Routing', () => {
   it('maintains order')
 })
 
-// test/coordinator/state.spec.ts
+// packages/sync-coordinator/test/state.spec.ts
 describe('State Management', () => {
   it('persists state')
   it('recovers after restart')
   it('compacts old state')
 })
 
-// test/coordinator/scale.spec.ts
+// packages/sync-coordinator/test/scale.spec.ts
 describe('Scalability', () => {
   it('handles many connections')
   it('handles high message rate')
   it('handles large messages')
 })
 ```
+
+Note: `packages/sync-coordinator/test/` already exists; use it as the canonical location for coordinator tests.
 
 ## 6. Documentation Gaps
 

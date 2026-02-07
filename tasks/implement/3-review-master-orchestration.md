@@ -12,44 +12,43 @@ This document serves as the master orchestration plan for all review tasks, prov
 
 ### Core Subsystem Reviews (Priority 1-2)
 
-| Task | File | Dependencies | Estimated Effort |
+| Task | Task doc | Dependencies | Estimated Effort |
 |------|------|--------------|------------------|
-| Parser Review | `3-review-core-parser.md` | None | High |
-| Planner Review | `3-review-core-planner.md` | Parser | High |
-| Optimizer Review | `3-review-core-optimizer.md` | Planner | High |
-| Runtime Review | `3-review-core-runtime.md` | Optimizer | High |
-| Schema Review | `3-review-core-schema.md` | None | Medium |
-| Types Review | `3-review-core-types.md` | None | Medium |
-| Functions Review | `3-review-core-functions.md` | Types | Medium |
-| Utilities Review | `3-review-core-utilities.md` | Types | Low |
-| API Review | `3-review-core-api.md` | All core | Medium |
-| VTab Review | `3-review-core-vtab.md` | Schema, Runtime | High |
+| Parser Review | `tasks/complete/3-review-core-parser.md` | None | High |
+| Planner Review | `tasks/implement/3-review-core-planner.md` | Parser | High |
+| Optimizer Review | `tasks/implement/3-review-core-optimizer.md` | Planner | High |
+| Runtime Review | `tasks/implement/3-review-core-runtime.md` | Optimizer | High |
+| Schema Review | `tasks/complete/3-review-core-schema.md` | None | Medium |
+| Types Review | `tasks/complete/3-review-core-types.md` | None | Medium |
+| Utilities Review | `tasks/implement/3-review-core-utilities.md` | Types | Low |
+| API Review | `tasks/complete/3-review-core-api.md` (also `tasks/review/3-review-core-api.md`) | All core | Medium |
+| VTab Review | `tasks/implement/3-review-core-vtab.md` | Schema, Runtime | High |
 
 ### Package Reviews (Priority 2-3)
 
-| Task | File | Dependencies | Estimated Effort |
+| Task | Task doc | Dependencies | Estimated Effort |
 |------|------|--------------|------------------|
-| Plugin Loader | `3-review-pkg-plugin-loader.md` | Core API | Medium |
-| Plugins Review | `3-review-pkg-plugins.md` | Plugin Loader | Medium |
-| Sample Plugins | `3-review-pkg-sample-plugins.md` | Plugins | Low |
-| Store Review | `3-review-pkg-store.md` | Core API, VTab | High |
-| Sync Review | `3-review-pkg-sync.md` | Store | High |
-| Sync Client | `3-review-pkg-sync-client.md` | Sync | Medium |
-| Sync Coordinator | `3-review-pkg-sync-coordinator.md` | Sync | Medium |
-| Quoomb Web | `3-review-pkg-quoomb-web.md` | All | High |
-| VS Code | `3-review-pkg-vscode.md` | Core API | Medium |
-| Tools Review | `3-review-pkg-tools.md` | Core API | Low |
-| Isolation Review | `3-review-pkg-isolation.md` | VTab | Medium |
+| Plugin Loader | `tasks/implement/3-review-pkg-plugin-loader.md` | Core API | Medium |
+| Plugins Review | `tasks/implement/3-review-pkg-plugins.md` | Plugin Loader | Medium |
+| Sample Plugins | `tasks/implement/3-review-pkg-sample-plugins.md` | Plugins | Low |
+| Store Review | `tasks/implement/3-review-pkg-store.md` | Core API, VTab | High |
+| Sync Review | `tasks/implement/3-review-pkg-sync.md` | Store | High |
+| Sync Client | `tasks/implement/3-review-pkg-sync-client.md` | Sync | Medium |
+| Sync Coordinator | `tasks/implement/3-review-pkg-sync-coordinator.md` | Sync | Medium |
+| Quoomb Web | `tasks/implement/3-review-pkg-quoomb-web.md` | All | High |
+| VS Code | `tasks/implement/3-review-pkg-vscode.md` | Core API | Medium |
+| Tools Review | `tasks/implement/3-review-pkg-tools.md` | Core API | Low |
+| Isolation Review | `tasks/implement/3-review-pkg-isolation.md` | VTab | Medium |
 
 ### Cross-Cutting Reviews (Priority 2)
 
-| Task | File | Dependencies | Estimated Effort |
+| Task | Task doc | Dependencies | Estimated Effort |
 |------|------|--------------|------------------|
-| Documentation | `3-review-documentation.md` | All | Medium |
-| Error Handling | `3-review-error-handling.md` | All | Medium |
-| Performance | `3-review-performance.md` | All | Medium |
-| Integration | `3-review-integration-boundaries.md` | All core | High |
-| Testing | `3-review-testing-strategy.md` | All | Medium |
+| Documentation | `tasks/implement/3-review-documentation.md` | All | Medium |
+| Error Handling | `tasks/implement/3-review-error-handling.md` | All | Medium |
+| Performance | `tasks/implement/3-review-performance.md` | All | Medium |
+| Integration | `tasks/implement/3-review-integration-boundaries.md` | All core | High |
+| Testing | `tasks/implement/3-review-testing-strategy.md` | All | Medium |
 
 ## 2. Recommended Execution Order
 
@@ -161,7 +160,6 @@ After all component reviews:
 For each review, verify:
 
 - [ ] All specified files reviewed
-- [ ] All line ranges examined
 - [ ] DRY violations documented
 - [ ] Large functions identified
 - [ ] Error handling assessed

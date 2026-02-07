@@ -6,228 +6,139 @@ priority: 3
 
 # VS Code Extension Review Plan
 
-This document provides a comprehensive adversarial review plan for the `quereus-vscode` package.
-
-## 1. Scope
-
-The VS Code extension provides:
-
-- SQL language support for Quereus
-- Query execution from editor
-- Schema visualization
-- Debugging support
-- Language Server Protocol (LSP) features
+Review plan for `quereus-vscode`: SQL language support, query execution, schema visualization, debugging, and LSP features.
 
 **Package location:** `packages/quereus-vscode/`
 
-## 2. Architecture Assessment
+## Review Checklist
 
-### Expected Components
+### API Surface Review
+- [ ] Document extension public API
+- [ ] Review LSP protocol implementation
+- [ ] Verify command API contracts
+- [ ] Check VS Code API usage
+- [ ] Review Quereus core integration points
+- [ ] Assess API stability needs
+- [ ] Document extension points
 
-1. **Extension Entry** - VS Code activation
-2. **Language Server** - LSP implementation
-3. **Client** - VS Code language client
-4. **Commands** - VS Code command handlers
-5. **Views** - Custom UI panels
+### Configuration & Environment Handling
+- [ ] Document VS Code settings schema
+- [ ] Review configuration options
+- [ ] Verify environment variable usage
+- [ ] Check workspace vs user settings
+- [ ] Review activation events configuration
+- [ ] Assess configuration validation
 
-### VS Code APIs Used
+### Security Considerations
+- [ ] Review language server process security
+- [ ] Verify input validation on commands
+- [ ] Check file system access controls
+- [ ] Review webview content security
+- [ ] Verify secure communication (LSP)
+- [ ] Check dependency vulnerabilities
+- [ ] Assess extension permissions
 
-- Language Server Protocol
-- Commands and keybindings
-- TreeView API
-- Webview API (if custom UI)
-- Diagnostic API
+### Error Handling
+- [ ] Standardize extension error types
+- [ ] Verify language server crash handling
+- [ ] Check parse error handling
+- [ ] Review connection error recovery
+- [ ] Verify graceful degradation
+- [ ] Assess user-facing error messages
 
-## 3. Files to Review
+### Logging & Telemetry
+- [ ] Add extension activation logging
+- [ ] Track command usage
+- [ ] Log language server events
+- [ ] Review VS Code output channel usage
+- [ ] Check telemetry privacy compliance
+- [ ] Assess performance logging
+
+### Packaging, Build & Release
+- [ ] Review package.json (contribution points)
+- [ ] Verify build configuration
+- [ ] Check extension packaging
+- [ ] Review VS Code marketplace metadata
+- [ ] Verify extension size limits
+- [ ] Assess activation performance
+- [ ] Review update mechanism
+
+### Versioning Boundaries & Cross-Package Contracts
+- [ ] Review Quereus core dependency version
+- [ ] Check VS Code API version compatibility
+- [ ] Verify LSP protocol version
+- [ ] Review breaking change handling
+- [ ] Assess extension versioning strategy
+
+### Test Plan Expectations
+- [ ] Unit tests: extension activation
+- [ ] Unit tests: command handlers
+- [ ] Unit tests: language server features
+- [ ] Integration tests: LSP protocol
+- [ ] Integration tests: VS Code API usage
+- [ ] E2E tests: user workflows
+- [ ] Performance tests: startup time, memory
+
+## Files to Review
 
 ### Extension Entry
-
-**`extension.ts`**:
-- Activation function
-- Deactivation/cleanup
-- Command registration
-- Language client setup
+- `extension.ts` (activation, deactivation, commands, language client)
 
 ### Language Server
-
-**Server implementation:**
 - Document parsing
 - Completion provider
 - Diagnostics
 - Hover information
 - Go to definition
+- Formatting
 
 ### Client
-
-**`languageClient.ts`** (or similar):
 - Server process spawn
 - Communication setup
 - Error handling
 
 ### Commands
-
-**Command handlers:**
 - Execute query
 - Format SQL
 - Show schema
 - Other features
 
 ### Views
-
-**Custom views:**
 - Schema tree view
 - Results view
-- Other panels
+- Custom panels
 
-## 4. Code Quality Concerns
-
-### Potential Issues
-
-1. **Performance**
-   - Server startup time?
-   - Parsing performance?
-   - Memory usage?
-
-2. **Error Handling**
-   - Server crashes?
-   - Parse errors?
-   - Connection errors?
-
-3. **Resource Management**
-   - Server process cleanup?
-   - Document listener cleanup?
-   - View disposal?
-
-4. **LSP Compliance**
-   - Correct protocol implementation?
-   - All capabilities declared?
-   - Proper error responses?
+## Code Quality Concerns
 
 ### VS Code Best Practices
+- Extension size optimization
+- Activation events efficiency
+- Contribution points organization
+- Settings schema completeness
 
-- Extension size
-- Activation events
-- Contribution points
-- Settings schema
+### Performance Issues
+- Server startup time
+- Parsing performance
+- Memory usage
+- Resource cleanup
 
-## 5. Test Coverage Gaps
+### LSP Compliance
+- Correct protocol implementation
+- All capabilities declared
+- Proper error responses
+- Protocol version compatibility
 
-### Missing Tests
+## LSP Feature Review
 
-```typescript
-// test/vscode/extension.spec.ts
-describe('Extension', () => {
-  it('activates correctly')
-  it('registers commands')
-  it('starts language server')
-  it('deactivates cleanly')
-})
+- Text document sync (open/close/change/save)
+- Completion (keywords, tables/columns, functions, snippets)
+- Diagnostics (syntax, semantic errors, warnings)
+- Hover (table/column info, function signatures)
+- Formatting, rename, references, definition
 
-// test/vscode/language-server.spec.ts
-describe('Language Server', () => {
-  it('provides completions')
-  it('provides hover')
-  it('provides diagnostics')
-  it('provides formatting')
-  it('handles parse errors')
-})
+## Documentation Gaps
 
-// test/vscode/commands.spec.ts
-describe('Commands', () => {
-  it('executes query')
-  it('formats document')
-  it('shows schema')
-  it('handles errors')
-})
-
-// test/vscode/integration.spec.ts
-describe('Integration', () => {
-  it('works with SQL files')
-  it('updates on document change')
-  it('syncs with database')
-})
-```
-
-## 6. Documentation Gaps
-
-### Missing Documentation
-
-1. **User Guide**
-   - Installation
-   - Features
-   - Configuration
-   - Troubleshooting
-
-2. **Feature Reference**
-   - All commands
-   - Settings
-   - Keyboard shortcuts
-
-3. **Development Guide**
-   - Setup
-   - Debugging
-   - Testing
-   - Publishing
-
-## 7. LSP Feature Review
-
-### Features to Verify
-
-1. **Text Document Sync**
-   - Open/close handling
-   - Change handling
-   - Save handling
-
-2. **Completion**
-   - Keywords
-   - Tables/columns
-   - Functions
-   - Snippets
-
-3. **Diagnostics**
-   - Syntax errors
-   - Semantic errors
-   - Warnings
-
-4. **Hover**
-   - Table info
-   - Column info
-   - Function signatures
-
-5. **Other**
-   - Formatting
-   - Rename
-   - References
-   - Definition
-
-## 8. TODO
-
-### Phase 1: Assessment
-- [ ] Inventory extension files
-- [ ] Document architecture
-- [ ] Review LSP implementation
-- [ ] Review command handlers
-
-### Phase 2: Code Quality
-- [ ] Review error handling
-- [ ] Check resource cleanup
-- [ ] Verify LSP compliance
-- [ ] Assess performance
-
-### Phase 3: Testing
-- [ ] Add extension tests
-- [ ] Add language server tests
-- [ ] Add command tests
-- [ ] Add integration tests
-
-### Phase 4: Features
-- [ ] Verify completion accuracy
-- [ ] Verify diagnostics accuracy
-- [ ] Verify hover information
-- [ ] Test all commands
-
-### Phase 5: Documentation
-- [ ] Create user guide
-- [ ] Document features
-- [ ] Create development guide
-- [ ] Add marketplace description
+- User guide (installation, features, configuration, troubleshooting)
+- Feature reference (commands, settings, keyboard shortcuts)
+- Development guide (setup, debugging, testing, publishing)
+- Marketplace description and screenshots

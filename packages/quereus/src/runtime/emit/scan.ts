@@ -44,7 +44,7 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
 
 	let vtabInstance: VirtualTable;
     try {
-      const options: BaseModuleConfig = (schema.vtabArgs ?? {}) as BaseModuleConfig;
+      const options: BaseModuleConfig = schema.vtabArgs ?? {};
 		vtabInstance = await module.connect(
 			runtimeCtx.db,
 			capturedModuleInfo.auxData,

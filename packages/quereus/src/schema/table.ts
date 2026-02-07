@@ -95,10 +95,10 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 	// Infer logical type from the declared type name
 	const logicalType = inferType(def.dataType);
 
-	const schema: Partial<ColumnSchema> & { name: string } = {
+	const schema: ColumnSchema = {
 		name: def.name,
 		logicalType: logicalType,
-		notNull: defaultNotNull, // Default based on Third Manifesto principles
+		notNull: defaultNotNull,
 		primaryKey: false,
 		pkOrder: 0,
 		defaultValue: null,
@@ -120,12 +120,11 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 				break;
 			case 'unique':
 				break;
-			case 'default':
-				schema.defaultValue = constraint.expr;
-				break;
-			case 'collate':
-				schema.collation = constraint.collation;
-				// Validate collation compatibility with type
+		case 'default':
+			schema.defaultValue = constraint.expr ?? null;
+			break;
+		case 'collate': {
+			schema.collation = constraint.collation ?? 'BINARY';
 				if (constraint.collation && logicalType.supportedCollations &&
 					!logicalType.supportedCollations.includes(constraint.collation)) {
 					throw new QuereusError(
@@ -134,28 +133,22 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 					);
 				}
 				break;
+			}
 			case 'generated':
 				schema.generated = true;
 				break;
 		}
 	}
 
-	// PK implies NOT NULL (always, regardless of default)
 	if (schema.primaryKey) {
 		schema.notNull = true;
 	}
 
-	// If no explicit nullability constraint and default is nullable,
-	// we need to check if there's an explicit NULL declaration
-	// Note: SQL doesn't have explicit NULL constraints in standard syntax,
-	// so this primarily affects the default behavior
-
-	// Assign a default pkOrder if it's a PK but order isn't specified elsewhere
 	if (schema.primaryKey && schema.pkOrder === 0) {
 		schema.pkOrder = 1;
 	}
 
-	return schema as ColumnSchema;
+	return schema;
 }
 
 /**

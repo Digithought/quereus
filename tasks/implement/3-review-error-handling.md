@@ -12,6 +12,7 @@ This document provides a comprehensive adversarial review plan for error handlin
 
 The error handling review covers:
 
+- Note: unless otherwise specified, file paths in this document are relative to `packages/quereus/`.
 - **Error Types** (`src/common/errors.ts`) - Error class definitions
 - **Status Codes** - SQLite-compatible status codes
 - **Error Propagation** - How errors flow through the system
@@ -369,50 +370,104 @@ describe('Error Messages', () => {
    - Aggregation
    - Reporting
 
-## 9. TODO
+## 9. Acceptance Criteria
+
+### Error System Standardized
+- [ ] Zero `throw new Error(...)` usages (all use QuereusError)
+- [ ] All error types extend QuereusError with appropriate codes
+- [ ] Error context interface consistently used
+- [ ] Error factory functions available for common cases
+
+### Error Context Complete
+- [ ] Parse errors include line/column location
+- [ ] Query errors include SQL and parameters
+- [ ] Schema errors include table/column names
+- [ ] Runtime errors include value context where relevant
+- [ ] Wrapped errors preserve original cause
+
+### Error Handling Correct
+- [ ] No error swallowing in async code (all caught errors logged or rethrown)
+- [ ] Errors propagate correctly through iterators
+- [ ] Resources cleaned up on error (cursors, transactions, etc.)
+- [ ] Context leaks detected and prevented
+
+### Error Messages Actionable
+- [ ] Error messages suggest fixes where possible
+- [ ] Technical details available in error context
+- [ ] User-friendly messages for common errors
+- [ ] Error codes documented with resolutions
+
+## 10. Test Plan
+
+### Error Type Tests
+- [ ] All error types instantiate correctly (`test/errors/types.spec.ts`)
+- [ ] Error codes match SQLite where applicable
+- [ ] Error context serializes correctly
+- [ ] Error stack traces preserved
+
+### Error Propagation Tests
+- [ ] Parser errors propagate with location (`test/errors/parser.spec.ts`)
+- [ ] Planner errors propagate with AST context (`test/errors/planner.spec.ts`)
+- [ ] Runtime errors propagate with query context (`test/errors/runtime.spec.ts`)
+- [ ] Async errors propagate through promises (`test/errors/async.spec.ts`)
+- [ ] Iterator errors propagate correctly (`test/errors/iterators.spec.ts`)
+
+### Error Recovery Tests
+- [ ] Parse errors allow recovery (`test/errors/recovery.spec.ts`)
+- [ ] Transaction errors trigger rollback
+- [ ] Resource cleanup on error verified
+- [ ] Error context preserved through wrapping
+
+### Error Message Tests
+- [ ] Error messages are user-friendly (`test/errors/messages.spec.ts`)
+- [ ] Error messages include suggestions
+- [ ] Error context accessible programmatically
+- [ ] Error codes documented
+
+## 11. TODO
 
 ### Phase 1: Audit
-- [ ] Inventory all error types in codebase
-- [ ] Find all `throw new Error(...)` usages
-- [ ] Find all error swallowing patterns
-- [ ] Document current status codes
-- [ ] Review async error handling
+- [ ] Inventory all error types (grep for `class.*Error`)
+- [ ] Find all `throw new Error(...)` usages (grep pattern)
+- [ ] Find all error swallowing patterns (`catch` with empty body)
+- [ ] Document current status codes (`src/common/errors.ts`)
+- [ ] Review async error handling (promises, generators, async iterators)
 
 ### Phase 2: Standardization
-- [ ] Define error class hierarchy
-- [ ] Define error context interface
-- [ ] Create error factory functions
-- [ ] Document error codes and meanings
-- [ ] Replace generic Error with QuereusError
+- [ ] Define error class hierarchy (ParseError, PlanError, RuntimeError, etc.)
+- [ ] Define error context interface (see section 8)
+- [ ] Create error factory functions (`createParseError`, `createTypeError`, etc.)
+- [ ] Document error codes and meanings (`docs/errors.md`)
+- [ ] Replace generic Error with QuereusError (systematic replacement)
 
 ### Phase 3: Context Enhancement
-- [ ] Add SQL context to query errors
-- [ ] Add location to parse errors
-- [ ] Add table/column to schema errors
-- [ ] Add value context to runtime errors
-- [ ] Preserve original cause in wrapped errors
+- [ ] Add SQL context to query errors (include SQL string and params)
+- [ ] Add location to parse errors (line, column from AST)
+- [ ] Add table/column to schema errors (from schema context)
+- [ ] Add value context to runtime errors (problematic value)
+- [ ] Preserve original cause in wrapped errors (cause property)
 
 ### Phase 4: Error Handling Fixes
-- [ ] Fix error swallowing in async code
-- [ ] Fix error propagation in iterators
-- [ ] Add proper cleanup on errors
-- [ ] Ensure resources released on error
+- [ ] Fix error swallowing in async code (see `3-review-core-runtime.md`)
+- [ ] Fix error propagation in iterators (generator error handling)
+- [ ] Add proper cleanup on errors (finally blocks, resource tracking)
+- [ ] Ensure resources released on error (cursors, transactions, connections)
 
 ### Phase 5: Test Coverage
-- [ ] Add parser error tests
-- [ ] Add planner error tests
-- [ ] Add runtime error tests
-- [ ] Add propagation tests
-- [ ] Add recovery tests
+- [ ] Add parser error tests (`test/errors/parser.spec.ts`)
+- [ ] Add planner error tests (`test/errors/planner.spec.ts`)
+- [ ] Add runtime error tests (`test/errors/runtime.spec.ts`)
+- [ ] Add propagation tests (`test/errors/propagation.spec.ts`)
+- [ ] Add recovery tests (`test/errors/recovery.spec.ts`)
 
 ### Phase 6: Documentation
-- [ ] Create error reference documentation
-- [ ] Add JSDoc for all throwing functions
-- [ ] Document recovery patterns
-- [ ] Add error handling examples
+- [ ] Create error reference (`docs/errors.md` - see `3-review-documentation.md`)
+- [ ] Add JSDoc for all throwing functions (`@throws` annotations)
+- [ ] Document recovery patterns (examples in docs)
+- [ ] Add error handling examples (`examples/error-handling.ts`)
 
 ### Phase 7: User Experience
-- [ ] Review error message clarity
-- [ ] Add suggestions in error messages
-- [ ] Ensure actionable messages
-- [ ] Consider error localization
+- [ ] Review error message clarity (user testing or review)
+- [ ] Add suggestions in error messages (common fixes)
+- [ ] Ensure actionable messages (what to do next)
+- [ ] Consider error localization (future: i18n support)

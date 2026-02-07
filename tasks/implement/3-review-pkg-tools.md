@@ -1,40 +1,37 @@
 ---
-description: Comprehensive review of quereus-tools package (CLI)
+description: Review plan for tooling packages under packages/tools
 dependencies: 3-review-core-api
 priority: 4
 ---
 
 # Tools Package Review Plan
 
-This document provides a comprehensive adversarial review plan for the `quereus-tools` package (CLI tools).
+This document provides a review plan for the tooling packages under `packages/tools/` (CLI/dev tools shipped alongside Quereus).
 
 ## 1. Scope
 
 The tools package provides:
 
-- Command-line interface for Quereus
-- SQL REPL
-- Schema management commands
-- Import/export utilities
-- Development tools
+- Tool-specific CLIs (e.g. visualization/debugging helpers)
+- Developer workflows and examples
+- Packaging/distribution ergonomics
 
-**Package location:** `packages/quereus-tools/`
+**Package location:** `packages/tools/` (currently contains `planviz/`).
 
 ## 2. Architecture Assessment
 
 ### Expected Components
 
 1. **CLI Entry** - Command-line argument parsing
-2. **REPL** - Interactive SQL shell
-3. **Commands** - Individual command implementations
-4. **Formatters** - Output formatting
+2. **Commands** - Individual command implementations
+3. **Formatters** - Output formatting / rendering
 5. **Utilities** - Shared helpers
 
-### CLI Framework
+### CLI ergonomics to verify
 
-- Commander.js (per README)
-- Input/output handling
-- Error formatting
+- Input/output handling (stdin/stdout, pipes)
+- Error formatting (actionable, consistent exit codes)
+- Cross-platform behavior (Windows/macOS/Linux)
 
 ## 3. Files to Review
 
@@ -49,19 +46,8 @@ The tools package provides:
 ### Commands
 
 **Individual commands:**
-- `exec` - Execute SQL
-- `schema` - Schema operations
-- `import` - Data import
-- `export` - Data export
-- Others
-
-### REPL
-
-**Interactive shell:**
-- Input handling
-- History
-- Completion
-- Multi-line input
+- Inventory commands that exist in `packages/tools/**/src/cli.ts` / `src/bin/*`
+- Verify each command has clear UX, help text, and predictable exit codes
 
 ### Formatters
 
@@ -107,50 +93,18 @@ The tools package provides:
 ### Missing Tests
 
 ```typescript
-// test/tools/cli.spec.ts
-describe('CLI', () => {
+// packages/tools/planviz/test/cli.spec.ts
+describe('planviz CLI', () => {
   it('parses arguments correctly')
-  it('shows help for all commands')
-  it('handles missing arguments')
-  it('handles invalid arguments')
+  it('prints help')
+  it('handles missing/invalid arguments')
   it('sets exit codes correctly')
 })
 
-// test/tools/commands.spec.ts
-describe('Commands', () => {
-  describe('exec', () => {
-    it('executes SQL from argument')
-    it('executes SQL from file')
-    it('executes SQL from stdin')
-    it('handles errors')
-  })
-  
-  describe('schema', () => {
-    it('lists tables')
-    it('describes table')
-    it('handles missing table')
-  })
-  
-  describe('import', () => {
-    it('imports CSV')
-    it('imports JSON')
-    it('handles invalid data')
-  })
-  
-  describe('export', () => {
-    it('exports to CSV')
-    it('exports to JSON')
-    it('handles large tables')
-  })
-})
-
-// test/tools/repl.spec.ts
-describe('REPL', () => {
-  it('executes single-line queries')
-  it('executes multi-line queries')
-  it('shows results')
-  it('handles errors')
-  it('supports history')
+// packages/tools/planviz/test/visualizer.spec.ts
+describe('plan visualizer', () => {
+  it('renders a minimal plan')
+  it('handles invalid input')
 })
 ```
 
@@ -164,9 +118,8 @@ describe('REPL', () => {
    - Examples for each
 
 2. **Installation Guide**
-   - npm global install
-   - npx usage
-   - PATH setup
+   - How to run each tool (dev + built)
+   - How to publish/distribute (if intended)
 
 3. **Usage Guide**
    - Common workflows

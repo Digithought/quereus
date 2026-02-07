@@ -11,7 +11,6 @@ import type { ModuleCapabilities } from './capabilities.js';
  * Base interface for module-specific configuration passed to create/connect.
  * Modules should define their own interface extending this if they need options.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface BaseModuleConfig {}
 
 /**

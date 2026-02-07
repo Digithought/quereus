@@ -1,298 +1,160 @@
 ---
-description: Comprehensive review of quereus-sync package
+description: Review plan for quereus-sync core package (CRDT replication engine)
 dependencies: 3-review-pkg-store
 priority: 3
 ---
 
 # Sync Package Review Plan
 
-This document provides a comprehensive adversarial review plan for the `quereus-sync` package.
+Review plan for the sync core package (`packages/quereus-sync/`). This should stay transport-agnostic and focus on protocol/types, metadata tracking, and correctness guarantees.
 
-## 1. Scope
+## Responsibilities & Boundaries
 
-The sync package provides:
+**Core Sync (`quereus-sync`):**
+- Sync protocol types and validation
+- Metadata tracking (versions/tombstones/schema versions, as implemented)
+- Clock/ordering semantics (if HLC or similar is used)
+- Change serialization and application (to an abstract store adapter)
+- Snapshot generation/application (if supported)
+- Peer state tracking
 
-- CRDT-based conflict resolution
-- Multi-device synchronization
-- Change tracking and propagation
-- Offline-first capabilities
-- Hybrid Logical Clocks (HLC)
+**Boundaries:**
+- Does NOT handle transport (WebSocket/HTTP) - that's sync-client/coordinator
+- Does NOT persist data - delegates to store via `ApplyToStoreCallback`
+- Does NOT manage connections - that's coordinator/client
 
-**Package location:** `packages/quereus-sync/`
+## Critical Invariants
 
-## 2. Architecture Assessment
+1. **Clock monotonicity**: Whatever ordering token is used must be monotonic per-site (if HLC is used, it must never decrease).
+2. **Causality/ordering**: If the protocol claims happens-before preservation, ordering tokens must reflect that.
+3. **Idempotency**: Applying the same ChangeSet multiple times is safe (no duplicate side effects).
+4. **Convergence**: Replicas applying the same set of changes converge to the same state (under the intended conflict model).
+5. **Deletion semantics**: Deletes/tombstones cannot accidentally resurrect rows under retries/reordering.
 
-### Expected Components
+## Ordering & Consistency Guarantees
 
-1. **CRDT Implementation** - Conflict-free data structures
-2. **HLC (Hybrid Logical Clocks)** - Causality tracking
-3. **Change Tracking** - Detecting and recording changes
-4. **Sync Protocol** - Communication format
-5. **Merge Logic** - Combining changes from multiple sources
+- **Change ordering**: Confirm what ordering the protocol guarantees (within a ChangeSet and across ChangeSets).
+- **Conflict resolution**: Confirm the actual conflict strategy (LWW? per-row? per-column? mergeable CRDT?) and document it precisely.
+- **Schema changes**: Confirm if/when schema migrations can be part of replication and their ordering relative to data changes.
+- **Snapshot consistency**: If snapshots exist, confirm their atomicity/consistency contract.
 
-### Critical Properties
+## Idempotency & Retries
 
-- **Convergence** - All replicas reach same state
-- **Commutativity** - Order of operations doesn't matter
-- **Idempotency** - Applying same change twice is safe
-- **Causality** - Respects happens-before relationship
+**Idempotency Mechanisms:**
+- Column version store deduplicates by (table, pk, column, hlc)
+- Tombstone store deduplicates by (table, pk, hlc)
+- Peer state updates are idempotent (last-write-wins)
 
-## 3. Files to Review
+**Retry Safety:**
+- `applyChanges()` can be called multiple times with same ChangeSet
+- `getChangesSince()` returns same results for same `sinceHLC`
+- Snapshot application is idempotent (replaces all state)
 
-### Core CRDT
+## Conflict Resolution
 
-**`src/crdt/`**
-- LWW (Last-Writer-Wins) implementation
-- Set CRDT operations
-- Map CRDT operations
-- Counter operations
+**Conflict model:**
+- Identify where and how conflicts are resolved (client, core sync, store adapter).
+- Confirm whether resolution is LWW or something else, and what the tie-break rules are (site id? deterministic ordering?).
 
-**`src/hlc/`**
-- HLC implementation
-- Timestamp comparison
-- Clock synchronization
+**Deletion handling:**
+- Confirm how deletes are represented and how they interact with late/duplicate updates.
+- Confirm if “resurrection” is possible and whether it is intentional/configurable.
 
-### Change Tracking
+## Acceptance Criteria
 
-**`src/changes/`**
-- Change detection
-- Change serialization
-- Change application
+### Functional
+- [ ] `getChangesSince()` returns all changes since peer's last acknowledged token (HLC or equivalent)
+- [ ] `applyChanges()` is correct under the implemented conflict model
+- [ ] Snapshot generation/application (if present) is correct and clearly specified
+- [ ] Schema changes (if replicated) have a clear ordering/compatibility story
+- [ ] Clock/token advances monotonically across operations (if applicable)
 
-### Sync Protocol
+### Correctness
+- [ ] Idempotency: applying same ChangeSet twice produces identical result
+- [ ] Convergence: two replicas applying same changes converge to same state
+- [ ] Causality/ordering semantics are correct for the claimed guarantees
+- [ ] Deletion semantics prevent unintended resurrection under retries/reordering
 
-**`src/protocol/`**
-- Message formats
-- State vectors
-- Delta computation
+### Performance
+- [ ] `getChangesSince()` efficient for large change logs (uses scan bounds)
+- [ ] Snapshot streaming handles large databases without memory exhaustion
+- [ ] Change log pruning prevents unbounded growth
+- [ ] Column version storage scales with number of columns modified
 
-### Merge Logic
+## Test Plan
 
-**`src/merge/`**
-- Conflict detection
-- Conflict resolution
-- State reconciliation
+### Unit Tests (`packages/quereus-sync/test/`)
 
-## 4. Code Quality Concerns
+**SyncManager:**
+- `getChangesSince()` with various HLC states
+- `applyChanges()` with conflicts, no conflicts, idempotent retries
+- Snapshot generation/application round-trip
+- Tombstone TTL expiration behavior
+- Schema migration ordering
 
-### Critical Correctness Issues
+**HLC:**
+- Clock monotonicity under concurrent operations
+- Causality preservation across sites
+- Clock synchronization with remote peers
 
-1. **CRDT Properties**
-   - Is convergence guaranteed?
-   - Is commutativity maintained?
-   - Are operations idempotent?
+**Conflict Resolution:**
+- Column-level LWW with concurrent writes
+- Tombstone resurrection prevention
+- Concurrent deletes and inserts
 
-2. **HLC Correctness**
-   - Clock drift handling?
-   - Wraparound handling?
-   - Causality preservation?
+### Integration Tests
 
-3. **Edge Cases**
-   - Concurrent deletes?
-   - Resurrect after delete?
-   - Tombstone management?
+**End-to-End Sync:**
+- Two replicas sync bidirectional changes
+- Convergence after concurrent modifications
+- Snapshot fallback when delta sync impossible
+- Schema migration propagation
 
-### Potential Bugs
-
-1. **Clock Skew**
-   - How are large clock differences handled?
-   - What about time going backwards?
-
-2. **Network Partitions**
-   - Behavior during partition?
-   - Convergence after partition heals?
-
-3. **Data Corruption**
-   - Handling of corrupted messages?
-   - Recovery strategies?
-
-## 5. Test Coverage Gaps
-
-### Missing Tests
-
-```typescript
-// test/sync/crdt.spec.ts
-describe('CRDT Operations', () => {
-  describe('LWW Register', () => {
-    it('last write wins on concurrent writes')
-    it('handles same timestamp (tiebreaker)')
-    it('is idempotent')
-    it('is commutative')
-  })
-  
-  describe('LWW Map', () => {
-    it('handles concurrent field updates')
-    it('handles concurrent deletes')
-    it('converges across replicas')
-  })
-  
-  describe('Tombstones', () => {
-    it('tracks deletions')
-    it('handles resurrection')
-    it('compacts tombstones')
-  })
-})
-
-// test/sync/hlc.spec.ts
-describe('Hybrid Logical Clock', () => {
-  it('generates monotonic timestamps')
-  it('handles wall clock jumps forward')
-  it('handles wall clock jumps backward')
-  it('preserves causality')
-  it('handles concurrent events')
-  it('handles overflow')
-})
-
-// test/sync/convergence.spec.ts
-describe('Convergence', () => {
-  it('converges with 2 replicas')
-  it('converges with N replicas')
-  it('converges after network partition')
-  it('converges with reordered messages')
-  it('converges with duplicate messages')
-})
-
-// test/sync/protocol.spec.ts
-describe('Sync Protocol', () => {
-  it('computes minimal delta')
-  it('handles empty delta')
-  it('handles large deltas')
-  it('validates incoming messages')
-})
-```
+**Failure Injection:**
+- Partial `applyChanges()` failure (some changes succeed, some fail)
+- Network interruption during snapshot streaming
+- Clock drift scenarios (HLC comparison edge cases)
+- Tombstone TTL expiration mid-sync
 
 ### Property-Based Tests
 
-```typescript
-// test/sync/properties.spec.ts
-import fc from 'fast-check';
+- Idempotency: `applyChanges(cs); applyChanges(cs)` ≡ `applyChanges(cs)`
+- Convergence: `applyChanges(cs1); applyChanges(cs2)` ≡ `applyChanges(cs2); applyChanges(cs1)` (when commutative)
+- HLC ordering: All changes in ChangeSet have HLC >= previous ChangeSet
 
-describe('CRDT Properties', () => {
-  it('convergence: same ops in any order yield same state', () => {
-    fc.assert(fc.property(
-      fc.array(operationArbitrary),
-      (ops) => {
-        const orders = permutations(ops);
-        const states = orders.map(order => applyOps(order));
-        return allEqual(states);
-      }
-    ));
-  });
-  
-  it('idempotency: applying op twice yields same state', () => {
-    fc.assert(fc.property(
-      operationArbitrary,
-      stateArbitrary,
-      (op, state) => {
-        const once = applyOp(state, op);
-        const twice = applyOp(once, op);
-        return equal(once, twice);
-      }
-    ));
-  });
-});
-```
+## Files to Review
 
-## 6. Documentation Gaps
+**Core:**
+- `packages/quereus-sync/src/sync/manager.ts` - SyncManager interface
+- `packages/quereus-sync/src/sync/sync-manager-impl.ts` - Implementation
+- `packages/quereus-sync/src/sync/protocol.ts` - Protocol types
+- `packages/quereus-sync/src/sync/events.ts` - Event emission
 
-### Missing Documentation
+**Metadata Stores:**
+- `packages/quereus-sync/src/metadata/column-version.ts`
+- `packages/quereus-sync/src/metadata/tombstones.ts`
+- `packages/quereus-sync/src/metadata/peer-state.ts`
+- `packages/quereus-sync/src/metadata/schema-migration.ts`
+- `packages/quereus-sync/src/metadata/change-log.ts`
 
-1. **CRDT Semantics**
-   - Conflict resolution rules
-   - Tombstone handling
-   - Data model constraints
+**Clock:**
+- `packages/quereus-sync/src/clock/hlc.ts` (if used)
+- `packages/quereus-sync/src/clock/site.ts`
 
-2. **HLC Usage**
-   - Clock synchronization
-   - Timestamp comparison
-   - Causality guarantees
+## Code Quality Concerns
 
-3. **Sync Protocol**
-   - Message formats
-   - State vectors
-   - Delta computation
+1. **Large Implementation File**: `sync-manager-impl.ts` is ~1600 lines - consider decomposition
+2. **Error Handling**: Verify all error paths properly clean up state
+3. **Memory Management**: Snapshot streaming must not accumulate in memory
+4. **Transaction Boundaries**: Ensure atomicity of ChangeSet application
 
-4. **Integration Guide**
-   - How to enable sync
-   - Configuration options
-   - Troubleshooting
+## TODO
 
-## 7. Security Considerations
-
-### Threat Model
-
-1. **Malicious Replica**
-   - Sending invalid timestamps?
-   - Sending invalid operations?
-   - Denial of service?
-
-2. **Data Integrity**
-   - Message tampering?
-   - Replay attacks?
-
-### Mitigations to Verify
-
-- Message validation
-- Timestamp bounds checking
-- Rate limiting (if applicable)
-- Authentication (if applicable)
-
-## 8. Performance Considerations
-
-### Review Areas
-
-1. **Delta Computation**
-   - Efficiency of diff algorithm
-   - Memory usage during diff
-
-2. **Merge Performance**
-   - Large state merges
-   - Many concurrent changes
-
-3. **Tombstone Management**
-   - Growth over time
-   - Compaction strategy
-
-4. **Network Efficiency**
-   - Message size
-   - Compression
-   - Batching
-
-## 9. TODO
-
-### Phase 1: CRDT Correctness
-- [ ] Verify LWW implementation
-- [ ] Verify convergence properties
-- [ ] Review tombstone handling
-- [ ] Check resurrection semantics
-
-### Phase 2: HLC Correctness
-- [ ] Review timestamp generation
-- [ ] Verify causality preservation
-- [ ] Check edge cases (drift, overflow)
-- [ ] Review synchronization
-
-### Phase 3: Testing
-- [ ] Add CRDT property tests
-- [ ] Add HLC tests
-- [ ] Add convergence tests
-- [ ] Add protocol tests
-- [ ] Add multi-replica tests
-
-### Phase 4: Documentation
-- [ ] Document CRDT semantics
-- [ ] Document HLC usage
-- [ ] Document sync protocol
-- [ ] Create integration guide
-
-### Phase 5: Security
-- [ ] Review message validation
-- [ ] Check timestamp bounds
-- [ ] Review authentication needs
-- [ ] Document security model
-
-### Phase 6: Performance
-- [ ] Profile delta computation
-- [ ] Profile merge operations
-- [ ] Review tombstone compaction
-- [ ] Optimize hot paths
+- [ ] Review HLC monotonicity guarantees under clock drift
+- [ ] Verify idempotency of all operations
+- [ ] Test convergence with concurrent modifications
+- [ ] Review tombstone TTL edge cases
+- [ ] Decompose large sync-manager-impl.ts file
+- [ ] Add property-based tests for CRDT properties
+- [ ] Review error handling and cleanup paths
+- [ ] Performance test with large change logs

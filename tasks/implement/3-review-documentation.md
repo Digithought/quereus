@@ -12,6 +12,7 @@ This document provides a comprehensive adversarial review plan for the documenta
 
 The documentation review covers:
 
+- Note: unless otherwise specified, file paths in this document are relative to `packages/quereus/`.
 - **Main README** (`packages/quereus/README.md`) - Primary developer documentation
 - **API Documentation** (`docs/`) - API references and guides
 - **Code Comments** - JSDoc, inline comments, type documentation
@@ -326,47 +327,97 @@ docs/
 - Link checking
 - Example testing
 
-## 9. TODO
+## 9. Acceptance Criteria
+
+### Core Documentation Complete
+- [ ] All public APIs have JSDoc with parameter descriptions
+- [ ] All code examples in README run without errors
+- [ ] API reference covers Database, Statement, and Result types
+- [ ] Type system guide explains LogicalType vs PhysicalType
+- [ ] VTab guide enables implementing a new virtual table
+
+### Reference Documentation Complete
+- [ ] Function reference lists all built-in functions with signatures
+- [ ] SQL syntax reference covers all supported statements
+- [ ] Error codes documented with causes and resolutions
+- [ ] Schema DDL operations documented with examples
+
+### Code Comments Complete
+- [ ] 100% JSDoc coverage for exported functions in `src/core/`
+- [ ] Complex algorithms have explanatory comments
+- [ ] SQLite compatibility differences noted inline
+- [ ] Performance considerations documented for hot paths
+
+### Examples Complete
+- [ ] Basic CRUD example demonstrates all operations
+- [ ] Transaction example shows error handling
+- [ ] Virtual table example implements a working VTab
+- [ ] Integration examples work in React, Node.js, Web Worker contexts
+
+## 10. Test Plan
+
+### Documentation Tests
+- [ ] All code examples execute successfully (`test/docs/examples.spec.ts`)
+- [ ] All markdown links resolve (`test/docs/links.spec.ts`)
+- [ ] JSDoc types match TypeScript types (`test/docs/types.spec.ts`)
+- [ ] API examples match actual API (`test/docs/api-examples.spec.ts`)
+
+### Validation Tests
+- [ ] README installation steps work on Windows/Mac/Linux
+- [ ] All documented APIs exist and match signatures
+- [ ] All error codes referenced in docs exist in code
+- [ ] All function names in docs match actual functions
+
+## 11. TODO
 
 ### Phase 1: Assessment
-- [ ] Audit README.md for accuracy
-- [ ] Identify all existing documentation
-- [ ] Catalog missing documentation
-- [ ] Review code comment coverage
-- [ ] Test all code examples
+- [ ] Audit README.md for accuracy (verify all examples run)
+- [ ] Inventory existing docs in `docs/` directory
+- [ ] Catalog missing documentation (compare against codebase)
+- [ ] Review code comment coverage (measure JSDoc %)
+- [ ] Test all code examples (create test suite)
 
 ### Phase 2: Core Documentation
 - [ ] Create/update `docs/api.md` with complete API reference
+  - Acceptance: All Database/Statement methods documented
 - [ ] Create `docs/types.md` with type system documentation
+  - Acceptance: Coercion rules explained with examples
 - [ ] Create `docs/vtab.md` with VTab implementation guide
+  - Acceptance: Can implement a VTab following the guide
 - [ ] Update README.md with accurate examples
+  - Acceptance: All examples execute successfully
 
 ### Phase 3: Reference Documentation
 - [ ] Create `docs/functions.md` with complete function reference
+  - Acceptance: All built-in functions listed with signatures
 - [ ] Create `docs/sql-syntax.md` with SQL dialect reference
+  - Acceptance: All supported statements documented
 - [ ] Create `docs/schema.md` with DDL documentation
-- [ ] Document error codes and handling
+  - Acceptance: All DDL operations have examples
+- [ ] Document error codes (see `3-review-error-handling.md`)
+  - Acceptance: All codes have causes and resolutions
 
 ### Phase 4: Code Comments
-- [ ] Add JSDoc to all public APIs in core
-- [ ] Add JSDoc to type definitions
-- [ ] Add algorithm documentation to complex code
-- [ ] Add compatibility notes inline
+- [ ] Add JSDoc to all public APIs in `src/core/`
+  - Acceptance: 100% coverage measured
+- [ ] Add JSDoc to type definitions in `src/common/types.ts`
+- [ ] Add algorithm docs to complex code (parser, optimizer, MVCC)
+- [ ] Add compatibility notes inline (SQLite differences)
 
 ### Phase 5: Examples
-- [ ] Create basic CRUD examples
-- [ ] Create transaction examples
-- [ ] Create virtual table examples
-- [ ] Create integration examples
+- [ ] Create basic CRUD examples (`examples/basic-crud.ts`)
+- [ ] Create transaction examples (`examples/transactions.ts`)
+- [ ] Create virtual table examples (`examples/virtual-tables.ts`)
+- [ ] Create integration examples (React, Node.js, Web Worker)
 
 ### Phase 6: Package Documentation
-- [ ] Review and update all package READMEs
-- [ ] Ensure consistent format
-- [ ] Add installation and usage sections
-- [ ] Link to main documentation
+- [ ] Review all package READMEs (see `3-review-master-orchestration.md` for list)
+- [ ] Ensure consistent format (purpose, install, usage, API overview)
+- [ ] Add installation and usage sections to each
+- [ ] Link to main documentation from each package
 
 ### Phase 7: Tooling
-- [ ] Set up TypeDoc or similar
-- [ ] Add documentation linting
-- [ ] Add example testing
-- [ ] Add link checking
+- [ ] Set up TypeDoc for API reference generation
+- [ ] Add markdown linting (markdownlint)
+- [ ] Add example testing (extract and run code blocks)
+- [ ] Add link checking (check all markdown links)

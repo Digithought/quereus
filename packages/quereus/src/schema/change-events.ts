@@ -1,19 +1,71 @@
+import type { TableSchema } from './table.js';
+import type { FunctionSchema } from './function.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:change-events');
 
-/**
- * Represents a schema change event.
- */
-export interface SchemaChangeEvent {
-	type: 'table_added' | 'table_removed' | 'table_modified' |
-	      'function_added' | 'function_removed' | 'function_modified' |
-	      'module_added' | 'module_removed' | 'collation_added' | 'collation_removed';
-	schemaName?: string;
+// ── Base event shapes ──────────────────────────────────────────────
+
+interface SchemaObjectAdded<Type extends string, T> {
+	type: Type;
+	schemaName: string;
 	objectName: string;
-	oldObject?: unknown;
-	newObject?: unknown;
+	newObject: T;
 }
+
+interface SchemaObjectRemoved<Type extends string, T> {
+	type: Type;
+	schemaName: string;
+	objectName: string;
+	oldObject: T;
+}
+
+interface SchemaObjectModified<Type extends string, T> {
+	type: Type;
+	schemaName: string;
+	objectName: string;
+	oldObject: T;
+	newObject: T;
+}
+
+// ── Table events ───────────────────────────────────────────────────
+
+export type TableAddedEvent = SchemaObjectAdded<'table_added', TableSchema>;
+export type TableRemovedEvent = SchemaObjectRemoved<'table_removed', TableSchema>;
+export type TableModifiedEvent = SchemaObjectModified<'table_modified', TableSchema>;
+
+// ── Function events ────────────────────────────────────────────────
+
+export type FunctionAddedEvent = SchemaObjectAdded<'function_added', FunctionSchema>;
+export type FunctionRemovedEvent = SchemaObjectRemoved<'function_removed', FunctionSchema>;
+export type FunctionModifiedEvent = SchemaObjectModified<'function_modified', FunctionSchema>;
+
+// ── Module / collation events (name-only payload) ──────────────────
+
+interface SchemaNameEvent<Type extends string> {
+	type: Type;
+	schemaName: string;
+	objectName: string;
+}
+
+export type ModuleAddedEvent = SchemaNameEvent<'module_added'>;
+export type ModuleRemovedEvent = SchemaNameEvent<'module_removed'>;
+export type CollationAddedEvent = SchemaNameEvent<'collation_added'>;
+export type CollationRemovedEvent = SchemaNameEvent<'collation_removed'>;
+
+// ── Discriminated union ────────────────────────────────────────────
+
+export type SchemaChangeEvent =
+	| TableAddedEvent
+	| TableRemovedEvent
+	| TableModifiedEvent
+	| FunctionAddedEvent
+	| FunctionRemovedEvent
+	| FunctionModifiedEvent
+	| ModuleAddedEvent
+	| ModuleRemovedEvent
+	| CollationAddedEvent
+	| CollationRemovedEvent;
 
 /**
  * Function that handles schema change events.
