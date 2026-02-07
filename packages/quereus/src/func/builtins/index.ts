@@ -151,16 +151,6 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	// JSON table-valued functions
 	jsonEachFunc,
 	jsonTreeFunc,
-	// Conversion functions
-	INTEGER_FUNC,
-	REAL_FUNC,
-	TEXT_FUNC,
-	BOOLEAN_FUNC,
-	DATE_FUNC,
-	TIME_FUNC,
-	DATETIME_FUNC,
-	TIMESPAN_FUNC,
-	JSON_FUNC,
 ];
 
 // Export registration utilities for easy access

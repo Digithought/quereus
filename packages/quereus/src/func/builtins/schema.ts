@@ -173,12 +173,32 @@ export const tableInfoFunc = createIntegratedTableValuedFunction(
 	}
 );
 
+function classifyFunction(funcSchema: FunctionSchema): string {
+	if (isScalarFunctionSchema(funcSchema)) return 'scalar';
+	if (isTableValuedFunctionSchema(funcSchema)) return 'table';
+	if (isAggregateFunctionSchema(funcSchema)) return 'aggregate';
+	if (isWindowFunctionSchema(funcSchema)) return 'window';
+	return 'unknown';
+}
+
+function* yieldFunctionRow(funcSchema: FunctionSchema) {
+	const isDeterministic = (funcSchema.flags & 0x800) !== 0; // FunctionFlags.DETERMINISTIC
+	yield [
+		funcSchema.name,
+		funcSchema.numArgs,
+		classifyFunction(funcSchema),
+		isDeterministic ? 1 : 0,
+		funcSchema.flags,
+		stringifyCreateFunction(funcSchema)
+	] as Row;
+}
+
 // Function information function (table-valued function)
 export const functionInfoFunc = createIntegratedTableValuedFunction(
 	{
 		name: 'function_info',
-		numArgs: 0,
-		deterministic: false, // Functions can change
+		numArgs: -1,
+		deterministic: false,
 		returnType: {
 			typeClass: 'relation',
 			isReadOnly: true,
@@ -195,48 +215,24 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 			rowConstraints: []
 		}
 	},
-	async function* (db: Database): AsyncIterable<Row> {
+	async function* (db: Database, filterName?: SqlValue): AsyncIterable<Row> {
+		const nameFilter = (typeof filterName === 'string') ? filterName.toLowerCase() : null;
+
 		try {
 			const schemaManager = db.schemaManager;
 
 			const processFunctions = function* (schemaInstance: Schema) {
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
-					const isDeterministic = (funcSchema.flags & 0x800) !== 0; // FunctionFlags.DETERMINISTIC
-
-					// Determine function type based on schema type guards
-					let functionType: string;
-					if (isScalarFunctionSchema(funcSchema)) {
-						functionType = 'scalar';
-					} else if (isTableValuedFunctionSchema(funcSchema)) {
-						functionType = 'table';
-					} else if (isAggregateFunctionSchema(funcSchema)) {
-						functionType = 'aggregate';
-					} else if (isWindowFunctionSchema(funcSchema)) {
-						functionType = 'window';
-					} else {
-						functionType = 'unknown';
-					}
-
-					yield [
-						funcSchema.name,                           // name
-						funcSchema.numArgs,                       // num_args
-						functionType,                             // type
-						isDeterministic ? 1 : 0,                 // deterministic
-						funcSchema.flags,                         // flags
-						stringifyCreateFunction(funcSchema)       // signature
-					] as Row;
+					if (nameFilter !== null && funcSchema.name.toLowerCase() !== nameFilter) continue;
+					yield* yieldFunctionRow(funcSchema);
 				}
 			};
 
-			// Process main schema functions
 			yield* processFunctions(schemaManager.getMainSchema());
-
-			// Process temp schema functions
 			yield* processFunctions(schemaManager.getTempSchema());
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
-			// If function info fails, yield an error row
 			yield ['error', -1, 'error', 0, 0, `Failed to get function info: ${error.message}`];
 		}
 	}

@@ -2131,7 +2131,7 @@ Table-valued functions return a result set that can be queried like a table.
 **Schema Introspection Functions:**
 - `schema()`: Returns information about all tables, views, and functions in the database
 - `table_info(table_name)`: Returns column information for a specific table
-- `function_info()`: Returns information about all registered functions
+- `function_info([function_name])`: Returns information about all registered functions, or a given registered function
 
 **Debugging and Analysis Functions:**
 - `query_plan(sql)`: Returns the query execution plan for a SQL statement

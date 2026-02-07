@@ -62,7 +62,7 @@ export function resolveJsonPathForModify(
 				keyStr = remainingPath.substring(1, endQuote);
 				remainingPath = remainingPath.substring(endQuote + 1);
 			} else {
-				const match = remainingPath.match(/^([^[.\\s]+)/);
+				const match = remainingPath.match(/^([^[.\s]+)/);
 				if (!match) return null;
 				keyStr = match[1];
 				remainingPath = remainingPath.substring(keyStr.length);

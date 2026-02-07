@@ -548,10 +548,8 @@ export const jsonRemoveFunc = createScalarFunction(
 export const jsonGroupArrayFunc = createAggregateFunction(
 	{ name: 'json_group_array', numArgs: 1, initialValue: [] },
 	(acc: any[], value: SqlValue): any[] => {
-		// SQLite's json_group_array includes NULLs, unlike json_array function
 		const preparedValue = prepareJsonValue(value);
-		acc.push(preparedValue);
-		return acc;
+		return [...acc, preparedValue];
 	},
 	(acc: any[]): SqlValue => {
 		try {
@@ -574,8 +572,7 @@ export const jsonGroupObjectFunc = createAggregateFunction(
 		const stringKey = String(name);
 		// SQLite's json_group_object includes NULL values associated with keys
 		const preparedValue = prepareJsonValue(value);
-		acc[stringKey] = preparedValue;
-		return acc;
+		return { ...acc, [stringKey]: preparedValue };
 	},
 	(acc: Record<string, any>): SqlValue => {
 		try {

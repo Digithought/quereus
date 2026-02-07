@@ -115,74 +115,50 @@ const textReturnTypeInference = {
 	})
 };
 
-// --- trim(X, Y?) ---
-export const trimFunc = createScalarFunction(
-	{ name: 'trim', numArgs: -1, deterministic: true, ...textReturnTypeInference },
+const trimPatterns = {
+	both: (escaped: string) => `^[${escaped}]+|[${escaped}]+$`,
+	left: (escaped: string) => `^[${escaped}]+`,
+	right: (escaped: string) => `[${escaped}]+$`,
+} as const;
+
+const trimDefaults = {
+	both: (s: string) => s.trim(),
+	left: (s: string) => s.trimStart(),
+	right: (s: string) => s.trimEnd(),
+} as const;
+
+type TrimSide = keyof typeof trimPatterns;
+
+const trimWithChars = (str: string, chars: string, side: TrimSide): string => {
+	if (chars.length === 0) return str;
+	try {
+		const escapedChars = chars.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		const regex = new RegExp(trimPatterns[side](escapedChars), 'g');
+		return str.replace(regex, '');
+	} catch (e) {
+		warnLog('Error creating trim regex for chars: %s, %O', chars, e);
+		return trimDefaults[side](str);
+	}
+};
+
+const createTrimFunc = (name: string, side: TrimSide) => createScalarFunction(
+	{ name, numArgs: -1, deterministic: true, ...textReturnTypeInference },
 	(strVal: SqlValue, charsVal?: SqlValue): SqlValue => {
 		if (strVal === null) return null;
 		const str = String(strVal);
-		if (charsVal === undefined || charsVal === null) {
-			return str.trim();
-		}
-		const chars = String(charsVal);
-		if (chars.length === 0) return str;
-
-		try {
-			const escapedChars = chars.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			const regex = new RegExp(`^[${escapedChars}]+|[${escapedChars}]+$`, 'g');
-			return str.replace(regex, '');
-		} catch (e) {
-			warnLog('Error creating trim regex for chars: %s, %O', chars, e);
-			return str.trim();
-		}
+		if (charsVal === undefined || charsVal === null) return trimDefaults[side](str);
+		return trimWithChars(str, String(charsVal), side);
 	}
 );
+
+// --- trim(X, Y?) ---
+export const trimFunc = createTrimFunc('trim', 'both');
 
 // --- ltrim(X, Y?) ---
-export const ltrimFunc = createScalarFunction(
-	{ name: 'ltrim', numArgs: -1, deterministic: true, ...textReturnTypeInference },
-	(strVal: SqlValue, charsVal?: SqlValue): SqlValue => {
-		if (strVal === null) return null;
-		const str = String(strVal);
-		if (charsVal === undefined || charsVal === null) {
-			return str.trimStart();
-		}
-		const chars = String(charsVal);
-		if (chars.length === 0) return str;
-
-		try {
-			const escapedChars = chars.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			const regex = new RegExp(`^[${escapedChars}]+`, 'g');
-			return str.replace(regex, '');
-		} catch (e) {
-			warnLog('Error creating ltrim regex for chars: %s, %O', chars, e);
-			return str.trimStart();
-		}
-	}
-);
+export const ltrimFunc = createTrimFunc('ltrim', 'left');
 
 // --- rtrim(X, Y?) ---
-export const rtrimFunc = createScalarFunction(
-	{ name: 'rtrim', numArgs: -1, deterministic: true, ...textReturnTypeInference },
-	(strVal: SqlValue, charsVal?: SqlValue): SqlValue => {
-		if (strVal === null) return null;
-		const str = String(strVal);
-		if (charsVal === undefined || charsVal === null) {
-			return str.trimEnd();
-		}
-		const chars = String(charsVal);
-		if (chars.length === 0) return str;
-
-		try {
-			const escapedChars = chars.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			const regex = new RegExp(`[${escapedChars}]+$`, 'g');
-			return str.replace(regex, '');
-		} catch (e) {
-			warnLog('Error creating rtrim regex for chars: %s, %O', chars, e);
-			return str.trimEnd();
-		}
-	}
-);
+export const rtrimFunc = createTrimFunc('rtrim', 'right');
 
 // --- replace(X, Y, Z) ---
 export const replaceFunc = createScalarFunction(
@@ -214,7 +190,7 @@ export const instrFunc = createScalarFunction(
 		})
 	},
 	(strVal: SqlValue, subVal: SqlValue): SqlValue => {
-		if (strVal === null || subVal === null) return 0;
+		if (strVal === null || subVal === null) return null;
 
 		const str = String(strVal);
 		const sub = String(subVal);
@@ -232,21 +208,25 @@ export const reverseFunc = createScalarFunction(
 	{ name: 'reverse', numArgs: 1, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue): SqlValue => {
 		if (typeof str !== 'string') return null;
-		return str.split('').reverse().join('');
+		return Array.from(str).reverse().join('');
 	}
 );
+
+const buildPadding = (str: string, len: number, pad: string): string | null => {
+	if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
+	if (pad.length === 0 || len <= str.length) return str;
+	const needed = len - str.length;
+	return pad.repeat(Math.ceil(needed / pad.length)).substring(0, needed);
+};
 
 // Left padding function
 export const lpadFunc = createScalarFunction(
 	{ name: 'lpad', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue, len: SqlValue, pad: SqlValue): SqlValue => {
 		if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
-
-		const strLen = str.length;
-		if (len <= strLen) return str;
-
-		const padStr = pad.repeat(len - strLen);
-		return padStr + str;
+		const padding = buildPadding(str, len, pad);
+		if (padding === str || padding === null) return padding;
+		return padding + str;
 	}
 );
 
@@ -255,12 +235,9 @@ export const rpadFunc = createScalarFunction(
 	{ name: 'rpad', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue, len: SqlValue, pad: SqlValue): SqlValue => {
 		if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
-
-		const strLen = str.length;
-		if (len <= strLen) return str;
-
-		const padStr = pad.repeat(len - strLen);
-		return str + padStr;
+		const padding = buildPadding(str, len, pad);
+		if (padding === str || padding === null) return padding;
+		return str + padding;
 	}
 );
 
@@ -282,7 +259,7 @@ export const stringConcatFunc = createAggregateFunction(
 	{ name: 'string_concat', numArgs: 1, initialValue: [] },
 	(acc: string[], value: SqlValue) => {
 		if (typeof value === 'string') {
-			acc.push(value);
+			return [...acc, value];
 		}
 		return acc;
 	},
