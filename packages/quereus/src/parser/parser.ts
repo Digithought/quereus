@@ -7,8 +7,7 @@ import { quereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { getSyncLiteral } from './utils.js';
 
-const log = createLogger('parser:parser'); // Create logger instance
-const errorLog = log.extend('error');
+const errorLog = createLogger('parser:parser:error');
 
 export class ParseError extends Error {
 	token: Token;
@@ -692,7 +691,6 @@ export class Parser {
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		do {
-			log(`columnList: Loop start. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 			// Handle wildcard: * or table.*
 			if (this.match(TokenType.ASTERISK)) {
 				columns.push({ type: 'all' });
@@ -707,9 +705,7 @@ export class Parser {
 			}
 			// Handle regular column expression
 			else {
-				log(`columnList: Parsing expression...`); // DEBUG
 				const expr = this.expression();
-				log(`columnList: Parsed expression. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 				let alias: string | undefined;
 
 				// Handle AS alias or just alias
@@ -736,10 +732,8 @@ export class Parser {
 
 				columns.push({ type: 'column', expr, alias });
 			}
-			log(`columnList: Checking for comma. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 		} while (this.match(TokenType.COMMA));
 
-		log(`columnList: Loop ended. Current token: ${this.peek().lexeme} (${this.peek().type})`); // DEBUG
 		return columns;
 	}
 
@@ -1134,6 +1128,33 @@ export class Parser {
 	}
 
 	/**
+	 * Parse a left-associative chain of binary operators.
+	 * Captures the start token before parsing the first operand, avoiding O(n) token lookups.
+	 */
+	private parseBinaryChain(
+		operand: () => AST.Expression,
+		tokenTypes: TokenType[],
+		resolveOperator: (token: Token) => string,
+	): AST.Expression {
+		const startToken = this.peek();
+		let expr = operand();
+
+		while (this.match(...tokenTypes)) {
+			const operator = resolveOperator(this.previous());
+			const right = operand();
+			expr = {
+				type: 'binary',
+				operator,
+				left: expr,
+				right,
+				loc: _createLoc(startToken, this.previous()),
+			};
+		}
+
+		return expr;
+	}
+
+	/**
 	 * Parse an expression
 	 */
 	private expression(): AST.Expression {
@@ -1144,72 +1165,40 @@ export class Parser {
 	 * Parse logical OR and XOR expressions (lowest precedence)
 	 */
 	private logicalXorOr(): AST.Expression {
-		let expr = this.logicalAnd();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.OR, TokenType.XOR)) { // Added XOR
-			const operator = this.previous().type === TokenType.XOR ? 'XOR' : 'OR'; // Determine operator
-			const right = this.logicalAnd();
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
-		}
-
-		return expr;
+		return this.parseBinaryChain(
+			() => this.logicalAnd(),
+			[TokenType.OR, TokenType.XOR],
+			(t) => t.type === TokenType.XOR ? 'XOR' : 'OR',
+		);
 	}
 
 	/**
 	 * Parse logical AND expression
 	 */
 	private logicalAnd(): AST.Expression {
-		let expr = this.isNull();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.AND)) {
-			const operator = 'AND';
-			const right = this.isNull();
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
-		}
-
-		return expr;
+		return this.parseBinaryChain(
+			() => this.isNull(),
+			[TokenType.AND],
+			() => 'AND',
+		);
 	}
 
 	/**
 	 * Parse IS NULL / IS NOT NULL expressions
 	 */
 	private isNull(): AST.Expression {
+		const startToken = this.peek();
 		const expr = this.equality();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		if (this.match(TokenType.IS)) {
-			let isNot = false;
-			if (this.match(TokenType.NOT)) {
-				isNot = true;
-			}
+			const isNot = this.match(TokenType.NOT);
 			if (this.match(TokenType.NULL)) {
-				const endToken = this.previous(); // End token is NULL
 				const operator = isNot ? 'IS NOT NULL' : 'IS NULL';
-				// Represent IS NULL / IS NOT NULL as UnaryExpr for simplicity
-				return { type: 'unary', operator, expr, loc: _createLoc(startToken, endToken) };
+				return { type: 'unary', operator, expr, loc: _createLoc(startToken, this.previous()) };
 			}
-			// If it was IS or IS NOT but not followed by NULL, maybe it's IS TRUE/FALSE/DISTINCT FROM?
-			// For now, assume standard comparison if NULL doesn't follow IS [NOT]
-			// We need to "unread" the IS and optional NOT token if we didn't match NULL.
-			// Backtrack current position.
-			if (isNot) this.current--; // Backtrack NOT
-			this.current--; // Backtrack IS
+			// IS [NOT] not followed by NULL — backtrack
+			if (isNot) this.current--;
+			this.current--;
 		}
 
 		return expr;
@@ -1219,36 +1208,25 @@ export class Parser {
 	 * Parse equality expression
 	 */
 	private equality(): AST.Expression {
-		let expr = this.comparison();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.EQUAL, TokenType.EQUAL_EQUAL, TokenType.NOT_EQUAL)) {
-			let operator: string;
-			switch (this.previous().type) {
-				case TokenType.NOT_EQUAL: operator = '!='; break;
-				case TokenType.EQUAL_EQUAL: operator = '=='; break;
-				default: operator = '='; break;
-			}
-			const right = this.comparison();
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
-		}
-
-		return expr;
+		return this.parseBinaryChain(
+			() => this.comparison(),
+			[TokenType.EQUAL, TokenType.EQUAL_EQUAL, TokenType.NOT_EQUAL],
+			(t) => {
+				switch (t.type) {
+					case TokenType.NOT_EQUAL: return '!=';
+					case TokenType.EQUAL_EQUAL: return '==';
+					default: return '=';
+				}
+			},
+		);
 	}
 
 	/**
 	 * Parse comparison expression
 	 */
 	private comparison(): AST.Expression {
+		const startToken = this.peek();
 		let expr = this.term();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
 
 		while (this.match(
 			TokenType.LESS, TokenType.LESS_EQUAL,
@@ -1445,89 +1423,52 @@ export class Parser {
 	 * Parse addition and subtraction
 	 */
 	private term(): AST.Expression {
-		let expr = this.factor();
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.PLUS, TokenType.MINUS)) {
-			const operator = this.previous().type === TokenType.PLUS ? '+' : '-';
-			const right = this.factor();
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
-		}
-
-		return expr;
+		return this.parseBinaryChain(
+			() => this.factor(),
+			[TokenType.PLUS, TokenType.MINUS],
+			(t) => t.type === TokenType.PLUS ? '+' : '-',
+		);
 	}
 
 	/**
 	 * Parse multiplication and division
 	 */
 	private factor(): AST.Expression {
-		// First, handle unary operators
-		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE, TokenType.NOT)) { // Added NOT
+		// Unary operators bind tighter than multiplicative
+		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE, TokenType.NOT)) {
 			const operatorToken = this.previous();
-			const operatorStartToken = operatorToken; // Start token is the operator itself
-			const operator = operatorToken.lexeme;
-			// Unary operator applies to the result of the *next* precedence level (concatenation)
-			const right = this.concatenation(); // Should call concatenation (higher precedence than factor)
-			const endToken = this.previous(); // End token is end of the operand
-			return { type: 'unary', operator, expr: right, loc: _createLoc(operatorStartToken, endToken) };
+			const right = this.concatenation();
+			return { type: 'unary', operator: operatorToken.lexeme, expr: right, loc: _createLoc(operatorToken, this.previous()) };
 		}
 
-		let expr = this.concatenation(); // Factor operands have higher precedence (concatenation)
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT)) {
-			const operatorToken = this.previous();
-			const operator = operatorToken.lexeme;
-			const right = this.concatenation(); // Factor operands have higher precedence (concatenation)
-			const endToken = this.previous(); // End token is end of right expr
-			expr = { type: 'binary', operator, left: expr, right, loc: _createLoc(startToken, endToken) };
-		}
-
-		return expr;
+		return this.parseBinaryChain(
+			() => this.concatenation(),
+			[TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT],
+			(t) => t.lexeme,
+		);
 	}
 
 	/**
 	 * Parse concatenation expression (||)
 	 */
 	private concatenation(): AST.Expression {
-		let expr = this.collateExpression(); // Concatenation operands have higher precedence (collate)
-		const startToken = expr.loc ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek(); // Get start token of left expr
-
-		while (this.match(TokenType.PIPE_PIPE)) {
-			const operator = '||';
-			const right = this.collateExpression(); // Concatenation operands have higher precedence (collate)
-			const endToken = this.previous(); // End token is end of right expr
-			expr = {
-				type: 'binary',
-				operator,
-				left: expr,
-				right,
-				loc: _createLoc(startToken, endToken),
-			};
-		}
-
-		return expr;
+		return this.parseBinaryChain(
+			() => this.collateExpression(),
+			[TokenType.PIPE_PIPE],
+			() => '||',
+		);
 	}
 
 	/**
 	 * Parse COLLATE expression
 	 */
 	private collateExpression(): AST.Expression {
-		const expr = this.primary(); // Parse primary expression first
+		const startToken = this.peek();
+		const expr = this.primary();
 
 		if (this.matchKeyword('COLLATE')) {
 			const collationToken = this.consume(TokenType.IDENTIFIER, "Expected collation name after COLLATE.");
-			const collation = collationToken.lexeme;
-			// Use the start of the original expression and end of collation name for location
-			const startLocToken = expr.loc?.start ? this.tokens.find(t => t.startOffset === expr.loc!.start.offset) ?? this.peek() : this.peek();
-			return { type: 'collate', expr, collation, loc: _createLoc(startLocToken, collationToken) };
+			return { type: 'collate', expr, collation: collationToken.lexeme, loc: _createLoc(startToken, collationToken) };
 		}
 
 		return expr;
