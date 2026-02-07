@@ -1,5 +1,6 @@
-import { PhysicalType, type LogicalType } from './logical-type.js';
+import { PhysicalType, type LogicalType, compareNulls } from './logical-type.js';
 import { safeJsonParse } from '../func/builtins/json-helpers.js';
+import type { JSONValue } from '../common/json-types.js';
 
 /**
  * JSON type - stores valid JSON strings
@@ -48,10 +49,8 @@ export const JSON_TYPE: LogicalType = {
 	},
 
 	compare: (a, b) => {
-		// NULL handling
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
 		// Both should be strings at this point
 		if (typeof a !== 'string' || typeof b !== 'string') {
@@ -81,72 +80,63 @@ export const JSON_TYPE: LogicalType = {
 	isTemporal: false,
 };
 
+/** Ordering rank for JSON value types: null < boolean < number < string < array < object */
+function jsonTypeOrder(v: JSONValue): number {
+	if (v === null) return 0;
+	switch (typeof v) {
+		case 'boolean': return 1;
+		case 'number': return 2;
+		case 'string': return 3;
+		default: return Array.isArray(v) ? 4 : 5;
+	}
+}
+
 /**
- * Deep comparison of JSON values
- * Returns -1, 0, or 1 for ordering
+ * Deep comparison of JSON values.
+ * Returns -1, 0, or 1 for ordering.
  */
-function deepCompareJson(a: any, b: any): number {
-	// Same reference or both null/undefined
+function deepCompareJson(a: JSONValue, b: JSONValue): number {
 	if (a === b) return 0;
 
-	// Type comparison first
-	const typeA = typeof a;
-	const typeB = typeof b;
+	const orderA = jsonTypeOrder(a);
+	const orderB = jsonTypeOrder(b);
+	if (orderA !== orderB) return orderA < orderB ? -1 : 1;
 
-	if (typeA !== typeB) {
-		// Order: null < boolean < number < string < array < object
-		const typeOrder = { 
-			'object': a === null ? 0 : Array.isArray(a) ? 4 : 5,
-			'boolean': 1,
-			'number': 2,
-			'string': 3
-		};
-		const orderA = typeOrder[typeA as keyof typeof typeOrder] ?? 6;
-		const orderB = typeOrder[typeB as keyof typeof typeOrder] ?? 6;
-		return orderA < orderB ? -1 : 1;
-	}
-
-	// Same type comparison
 	if (a === null) return 0;
 
 	if (typeof a === 'boolean' || typeof a === 'number' || typeof a === 'string') {
-		return a < b ? -1 : a > b ? 1 : 0;
+		return a < (b as typeof a) ? -1 : a > (b as typeof a) ? 1 : 0;
 	}
 
 	if (Array.isArray(a) && Array.isArray(b)) {
-		// Compare arrays element by element
 		const minLen = Math.min(a.length, b.length);
 		for (let i = 0; i < minLen; i++) {
 			const cmp = deepCompareJson(a[i], b[i]);
 			if (cmp !== 0) return cmp;
 		}
-		// If all elements are equal, shorter array comes first
 		return a.length < b.length ? -1 : a.length > b.length ? 1 : 0;
 	}
 
-	if (typeof a === 'object' && typeof b === 'object') {
-		// Compare objects by sorted keys
-		const keysA = Object.keys(a).sort();
-		const keysB = Object.keys(b).sort();
+	if (typeof a === 'object' && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) {
+		const objA = a as Record<string, JSONValue>;
+		const objB = b as Record<string, JSONValue>;
+		const keysA = Object.keys(objA).sort();
+		const keysB = Object.keys(objB).sort();
 
-		// Compare key sets first
 		const minKeys = Math.min(keysA.length, keysB.length);
 		for (let i = 0; i < minKeys; i++) {
 			if (keysA[i] < keysB[i]) return -1;
 			if (keysA[i] > keysB[i]) return 1;
 		}
-		if (keysA.length < keysB.length) return -1;
-		if (keysA.length > keysB.length) return 1;
+		if (keysA.length !== keysB.length) return keysA.length < keysB.length ? -1 : 1;
 
-		// Keys are the same, compare values
 		for (const key of keysA) {
-			const cmp = deepCompareJson(a[key], b[key]);
+			const cmp = deepCompareJson(objA[key], objB[key]);
 			if (cmp !== 0) return cmp;
 		}
 		return 0;
 	}
 
-	// Fallback
 	return 0;
 }
 

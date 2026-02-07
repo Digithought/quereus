@@ -11,7 +11,7 @@
 
 ## Tasks
 
-- If the user mentions tasks, read tasks/agents.md so you know what to do
+- If the user mentions tasks (e.g. work task...), read tasks/agents.md to know what to do
 
 ----
 

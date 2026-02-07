@@ -1,4 +1,5 @@
-import { PhysicalType, type LogicalType } from './logical-type.js';
+import { PhysicalType, type LogicalType, compareNulls } from './logical-type.js';
+import { compareSqlValuesFast, BINARY_COLLATION } from '../util/comparison.js';
 
 /**
  * NULL type - represents null values
@@ -9,13 +10,7 @@ export const NULL_TYPE: LogicalType = {
 
 	validate: (v) => v === null,
 
-	compare: (a, b) => {
-		// Both must be null
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
-		return 0;
-	},
+	compare: (a, b) => compareNulls(a, b) ?? 0,
 };
 
 /**
@@ -56,9 +51,8 @@ export const INTEGER_TYPE: LogicalType = {
 	},
 
 	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
 		const numA = typeof a === 'bigint' ? Number(a) : a as number;
 		const numB = typeof b === 'bigint' ? Number(b) : b as number;
@@ -98,16 +92,13 @@ export const REAL_TYPE: LogicalType = {
 	},
 
 	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
 		const numA = a as number;
 		const numB = b as number;
 
-		// Handle NaN
-		if (isNaN(numA) && isNaN(numB)) return 0;
-		if (isNaN(numA)) return -1;
+		if (isNaN(numA)) return isNaN(numB) ? 0 : -1;
 		if (isNaN(numB)) return 1;
 
 		return numA < numB ? -1 : numA > numB ? 1 : 0;
@@ -144,19 +135,10 @@ export const TEXT_TYPE: LogicalType = {
 	},
 
 	compare: (a, b, collation) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
-		const strA = a as string;
-		const strB = b as string;
-
-		if (collation) {
-			return collation(strA, strB);
-		}
-
-		// Default binary comparison
-		return strA < strB ? -1 : strA > strB ? 1 : 0;
+		return (collation ?? BINARY_COLLATION)(a as string, b as string);
 	},
 };
 
@@ -198,9 +180,8 @@ export const BLOB_TYPE: LogicalType = {
 	},
 
 	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
 		const blobA = a as Uint8Array;
 		const blobB = b as Uint8Array;
@@ -212,7 +193,7 @@ export const BLOB_TYPE: LogicalType = {
 			}
 		}
 
-		return blobA.length - blobB.length;
+		return blobA.length < blobB.length ? -1 : blobA.length > blobB.length ? 1 : 0;
 	},
 };
 
@@ -231,9 +212,8 @@ export const BOOLEAN_TYPE: LogicalType = {
 	parse: (v) => {
 		if (v === null) return null;
 		if (typeof v === 'boolean') return v;
-		if (typeof v === 'number' || typeof v === 'bigint') {
-			return v !== 0;
-		}
+		if (typeof v === 'number') return v !== 0;
+		if (typeof v === 'bigint') return v !== 0n;
 		if (typeof v === 'string') {
 			const lower = v.toLowerCase().trim();
 			if (lower === 'true' || lower === '1' || lower === 'yes' || lower === 'on') return true;
@@ -244,16 +224,11 @@ export const BOOLEAN_TYPE: LogicalType = {
 	},
 
 	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
-
-		const boolA = a as boolean;
-		const boolB = b as boolean;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
 		// false < true
-		if (boolA === boolB) return 0;
-		return boolA ? 1 : -1;
+		return a === b ? 0 : (a as boolean) ? 1 : -1;
 	},
 };
 
@@ -314,37 +289,6 @@ export const ANY_TYPE: LogicalType = {
 
 	parse: (v) => v, // No conversion, store as-is
 
-	compare: (a, b) => {
-		// Follow SQLite comparison rules: NULL < NUMERIC < TEXT < BLOB
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
-
-		// Determine storage classes following SQLite rules
-		const getStorageClass = (v: any): number => {
-			const type = typeof v;
-			if (type === 'number' || type === 'bigint' || type === 'boolean') return 1; // NUMERIC
-			if (type === 'string') return 2; // TEXT
-			if (type === 'object' && v instanceof Uint8Array) return 3; // BLOB
-			return 4; // UNKNOWN
-		};
-
-		const classA = getStorageClass(a);
-		const classB = getStorageClass(b);
-
-		// Different storage classes: compare by class
-		if (classA !== classB) {
-			return classA < classB ? -1 : 1;
-		}
-
-		// Same storage class: compare values
-		// For booleans, convert to numbers (false=0, true=1)
-		const valA = typeof a === 'boolean' ? (a ? 1 : 0) : a;
-		const valB = typeof b === 'boolean' ? (b ? 1 : 0) : b;
-
-		if (valA < valB) return -1;
-		if (valA > valB) return 1;
-		return 0;
-	},
+	compare: (a, b) => compareSqlValuesFast(a, b, BINARY_COLLATION),
 };
 

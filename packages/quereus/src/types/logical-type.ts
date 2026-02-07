@@ -74,6 +74,17 @@ export function getPhysicalType(value: SqlValue): PhysicalType {
 }
 
 /**
+ * Null-comparison preamble for compare functions.
+ * Returns 0 if both null, -1 if only a is null, 1 if only b is null,
+ * or undefined if neither is null (caller should continue with value comparison).
+ */
+export function compareNulls(a: SqlValue, b: SqlValue): number | undefined {
+	if (a === null) return b === null ? 0 : -1;
+	if (b === null) return 1;
+	return undefined;
+}
+
+/**
  * Get a human-readable name for a physical type code.
  * Useful for error messages and debugging.
  */

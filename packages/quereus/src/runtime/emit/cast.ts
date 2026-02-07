@@ -3,62 +3,28 @@ import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { type SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
+import { inferType } from '../../types/registry.js';
 
 export function emitCast(plan: CastNode, ctx: EmissionContext): Instruction {
+	const logicalType = inferType(plan.expression.targetType);
+
 	async function run(
-		runtimeCtx: RuntimeContext,
+		_runtimeCtx: RuntimeContext,
 		operandValue: SqlValue
 	): Promise<SqlValue> {
-		const targetType = plan.expression.targetType.toUpperCase();
+		if (operandValue === null) return null;
 
-		// Handle NULL values - CAST(NULL AS anything) = NULL
-		if (operandValue === null) {
-			return null;
+		if (logicalType.parse) {
+			try {
+				return logicalType.parse(operandValue);
+			} catch {
+				// CAST failures in SQL return 0 for numeric targets, '' for text, etc.
+				// This matches SQLite's lenient CAST behavior.
+				return castFallback(operandValue, logicalType.name);
+			}
 		}
 
-		// Perform the cast based on target type
-		switch (targetType) {
-			case 'INTEGER':
-			case 'INT':
-			case 'TINYINT':
-			case 'SMALLINT':
-			case 'MEDIUMINT':
-			case 'BIGINT':
-			case 'UNSIGNED BIG INT':
-			case 'INT2':
-			case 'INT8':
-				return castToInteger(operandValue);
-
-			case 'REAL':
-			case 'DOUBLE':
-			case 'DOUBLE PRECISION':
-			case 'FLOAT':
-				return castToReal(operandValue);
-
-			case 'TEXT':
-			case 'CHARACTER':
-			case 'VARCHAR':
-			case 'VARYING CHARACTER':
-			case 'NCHAR':
-			case 'NATIVE CHARACTER':
-			case 'NVARCHAR':
-			case 'CLOB':
-				return castToText(operandValue);
-
-			case 'BLOB':
-				return castToBlob(operandValue);
-
-			case 'NUMERIC':
-			case 'DECIMAL':
-			case 'BOOLEAN':
-			case 'DATE':
-			case 'DATETIME':
-				return castToNumeric(operandValue);
-
-			default:
-				// For unknown types, return as-is (BLOB affinity)
-				return operandValue;
-		}
+		return operandValue;
 	}
 
 	return {
@@ -68,84 +34,23 @@ export function emitCast(plan: CastNode, ctx: EmissionContext): Instruction {
 	};
 }
 
-function castToInteger(value: SqlValue): SqlValue {
-	if (typeof value === 'number') {
-		return Math.trunc(value);
+/**
+ * Fallback for when LogicalType.parse throws on invalid input.
+ * CAST in SQL is lenient: non-numeric strings cast to integer yield 0, etc.
+ */
+function castFallback(value: SqlValue, typeName: string): SqlValue {
+	switch (typeName) {
+		case 'INTEGER':
+			return typeof value === 'string' ? 0 : 0;
+		case 'REAL':
+			return 0.0;
+		case 'NUMERIC':
+			return 0;
+		case 'TEXT':
+			return String(value);
+		case 'BLOB':
+			return new TextEncoder().encode(String(value));
+		default:
+			return value;
 	}
-	if (typeof value === 'bigint') {
-		return value;
-	}
-	if (typeof value === 'string') {
-		const num = Number(value);
-		return isNaN(num) ? 0 : Math.trunc(num);
-	}
-	if (typeof value === 'boolean') {
-		return value ? 1 : 0;
-	}
-	return 0;
-}
-
-function castToReal(value: SqlValue): SqlValue {
-	if (typeof value === 'number') {
-		return value;
-	}
-	if (typeof value === 'bigint') {
-		return Number(value);
-	}
-	if (typeof value === 'string') {
-		const num = Number(value);
-		return isNaN(num) ? 0.0 : num;
-	}
-	if (typeof value === 'boolean') {
-		return value ? 1.0 : 0.0;
-	}
-	return 0.0;
-}
-
-function castToText(value: SqlValue): SqlValue {
-	if (typeof value === 'string') {
-		return value;
-	}
-	if (typeof value === 'number' || typeof value === 'bigint') {
-		return String(value);
-	}
-	if (typeof value === 'boolean') {
-		return value ? '1' : '0';
-	}
-	if (value instanceof Uint8Array) {
-		// Convert blob to hex string
-		return Array.from(value, byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
-	}
-	return String(value);
-}
-
-function castToBlob(value: SqlValue): SqlValue {
-	if (value instanceof Uint8Array) {
-		return value;
-	}
-	if (typeof value === 'string') {
-		// Convert string to UTF-8 bytes
-		return new TextEncoder().encode(value);
-	}
-	// For other types, convert to string first then to bytes
-	return new TextEncoder().encode(String(value));
-}
-
-function castToNumeric(value: SqlValue): SqlValue {
-	// NUMERIC affinity: prefer integer if possible, otherwise real
-	if (typeof value === 'number') {
-		return Number.isInteger(value) ? Math.trunc(value) : value;
-	}
-	if (typeof value === 'bigint') {
-		return value;
-	}
-	if (typeof value === 'string') {
-		const num = Number(value);
-		if (isNaN(num)) return 0;
-		return Number.isInteger(num) ? Math.trunc(num) : num;
-	}
-	if (typeof value === 'boolean') {
-		return value ? 1 : 0;
-	}
-	return 0;
 }

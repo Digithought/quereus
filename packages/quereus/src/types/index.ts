@@ -1,5 +1,5 @@
 // Core type system exports
-export { PhysicalType, type LogicalType, getPhysicalType, physicalTypeName } from './logical-type.js';
+export { PhysicalType, type LogicalType, getPhysicalType, physicalTypeName, compareNulls } from './logical-type.js';
 
 // Built-in types
 export { NULL_TYPE, INTEGER_TYPE, REAL_TYPE, TEXT_TYPE, BLOB_TYPE, BOOLEAN_TYPE, NUMERIC_TYPE, ANY_TYPE } from './builtin-types.js';

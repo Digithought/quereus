@@ -1,4 +1,5 @@
-import { PhysicalType, type LogicalType } from './logical-type.js';
+import { PhysicalType, type LogicalType, compareNulls } from './logical-type.js';
+import { BINARY_COLLATION } from '../util/comparison.js';
 import { Temporal } from 'temporal-polyfill';
 
 /**
@@ -39,13 +40,7 @@ export const DATE_TYPE: LogicalType = {
 		throw new TypeError(`Cannot convert ${typeof v} to DATE`);
 	},
 
-	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
-		// ISO 8601 dates can be compared lexicographically
-		return (a as string).localeCompare(b as string);
-	},
+	compare: (a, b) => compareNulls(a, b) ?? BINARY_COLLATION(a as string, b as string),
 
 	supportedCollations: [],
 };
@@ -91,13 +86,7 @@ export const TIME_TYPE: LogicalType = {
 		throw new TypeError(`Cannot convert ${typeof v} to TIME`);
 	},
 
-	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
-		// ISO 8601 times can be compared lexicographically
-		return (a as string).localeCompare(b as string);
-	},
+	compare: (a, b) => compareNulls(a, b) ?? BINARY_COLLATION(a as string, b as string),
 
 	supportedCollations: [],
 };
@@ -154,13 +143,7 @@ export const DATETIME_TYPE: LogicalType = {
 		throw new TypeError(`Cannot convert ${typeof v} to DATETIME`);
 	},
 
-	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
-		// ISO 8601 datetimes can be compared lexicographically
-		return (a as string).localeCompare(b as string);
-	},
+	compare: (a, b) => compareNulls(a, b) ?? BINARY_COLLATION(a as string, b as string),
 
 	supportedCollations: [],
 };
@@ -264,9 +247,8 @@ export const TIMESPAN_TYPE: LogicalType = {
 	},
 
 	compare: (a, b) => {
-		if (a === null && b === null) return 0;
-		if (a === null) return -1;
-		if (b === null) return 1;
+		const nullCmp = compareNulls(a, b);
+		if (nullCmp !== undefined) return nullCmp;
 
 		try {
 			const durationA = Temporal.Duration.from(a as string);
