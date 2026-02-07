@@ -9,6 +9,7 @@ import { isScalarFunctionSchema, isTableValuedFunctionSchema, isAggregateFunctio
 import { Schema } from "../../schema/schema.js";
 import { INTEGER_TYPE, TEXT_TYPE } from "../../types/builtin-types.js";
 import { ColumnSchema } from "../../schema/column.js";
+import { FunctionFlags } from "../../common/constants.js";
 
 /**
  * Generates a function signature string for display
@@ -182,7 +183,7 @@ function classifyFunction(funcSchema: FunctionSchema): string {
 }
 
 function* yieldFunctionRow(funcSchema: FunctionSchema) {
-	const isDeterministic = (funcSchema.flags & 0x800) !== 0; // FunctionFlags.DETERMINISTIC
+	const isDeterministic = (funcSchema.flags & FunctionFlags.DETERMINISTIC) !== 0;
 	yield [
 		funcSchema.name,
 		funcSchema.numArgs,

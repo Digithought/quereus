@@ -98,8 +98,7 @@ select choose(2, 'a', 'b', 'c');   -- 'b'
 | `ltrim(X, Y?)` | 1-2 | TEXT | Remove leading chars |
 | `rtrim(X, Y?)` | 1-2 | TEXT | Remove trailing chars |
 | `replace(X, Y, Z)` | 3 | TEXT | Replace all occurrences of Y in X with Z. Case-sensitive |
-| `instr(X, Y)` | 2 | INTEGER | 1-based position of first occurrence of Y in X. 0 if not found |
-| `reverse(X)` | 1 | TEXT | Reverse the string. Unicode-aware |
+| `instr(X, Y)` | 2 | INTEGER | 1-based position of first occurrence of Y in X. 0 if not found. `NULL` if either input is `NULL` || `reverse(X)` | 1 | TEXT | Reverse the string. Unicode-aware |
 | `lpad(X, N, P)` | 3 | TEXT | Left-pad X to length N using pad string P |
 | `rpad(X, N, P)` | 3 | TEXT | Right-pad X to length N using pad string P |
 | `like(pattern, string)` | 2 | INTEGER | LIKE match: `%` = any chars, `_` = one char. Case-sensitive |
@@ -157,8 +156,8 @@ Aggregate functions compute a single result from multiple rows within a `GROUP B
 | `max(X)` | 1 | any | Maximum non-NULL value |
 | `group_concat(X, Y?)` | 1-2 | TEXT | Concatenate values, separated by Y (default `','`) |
 | `var_pop(X)` | 1 | REAL | Population variance. `NULL` if fewer than 1 value |
+| `var_pop(X)` | 1 | REAL | Population variance. `NULL` for empty set |
 | `var_samp(X)` | 1 | REAL | Sample variance. `NULL` if fewer than 2 values |
-| `stddev_pop(X)` | 1 | REAL | Population standard deviation |
 | `stddev_samp(X)` | 1 | REAL | Sample standard deviation |
 | `json_group_array(X)` | 1 | TEXT | JSON array of all values (including NULLs as JSON `null`) |
 | `json_group_object(N, V)` | 2 | TEXT | JSON object from key/value pairs. Skips NULL keys |

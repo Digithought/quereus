@@ -212,18 +212,17 @@ export const reverseFunc = createScalarFunction(
 	}
 );
 
-const buildPadding = (str: string, len: number, pad: string): string | null => {
+const buildPadding = (str: SqlValue, len: SqlValue, pad: SqlValue): string | null => {
 	if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
 	if (pad.length === 0 || len <= str.length) return str;
 	const needed = len - str.length;
 	return pad.repeat(Math.ceil(needed / pad.length)).substring(0, needed);
 };
 
-// Left padding function
+// --- lpad(X, N, PAD) ---
 export const lpadFunc = createScalarFunction(
 	{ name: 'lpad', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue, len: SqlValue, pad: SqlValue): SqlValue => {
-		if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
 		const padding = buildPadding(str, len, pad);
 		if (padding === str || padding === null) return padding;
 		return padding + str;
@@ -234,7 +233,6 @@ export const lpadFunc = createScalarFunction(
 export const rpadFunc = createScalarFunction(
 	{ name: 'rpad', numArgs: 3, deterministic: true, ...textReturnTypeInference },
 	(str: SqlValue, len: SqlValue, pad: SqlValue): SqlValue => {
-		if (typeof str !== 'string' || typeof len !== 'number' || typeof pad !== 'string') return null;
 		const padding = buildPadding(str, len, pad);
 		if (padding === str || padding === null) return padding;
 		return str + padding;
@@ -259,7 +257,7 @@ export const stringConcatFunc = createAggregateFunction(
 	{ name: 'string_concat', numArgs: 1, initialValue: [] },
 	(acc: string[], value: SqlValue) => {
 		if (typeof value === 'string') {
-			return [...acc, value];
+			acc.push(value);
 		}
 		return acc;
 	},

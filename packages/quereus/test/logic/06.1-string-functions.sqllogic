@@ -39,6 +39,10 @@ select reverse('hello');
 select reverse('abc');
 → [{"reverse('abc')":"cba"}]
 
+-- reverse with emoji (tests Array.from handling)
+select reverse('a😀b');
+→ [{"reverse('a😀b')":"b😀a"}]
+
 -- lpad
 select lpad('hi', 5, '*');
 → [{"lpad('hi', 5, '*')":"***hi"}]
