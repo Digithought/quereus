@@ -315,15 +315,9 @@ export class Statement {
 	 * implicit transactions on successful completion, rolls back on error.
 	 */
 	iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Row> {
-		return wrapAsyncIterator(this._iterateRowsRaw(params), async (commit) => {
-			if (this.db._isImplicitTransaction()) {
-				if (commit) {
-					await this.db._commitTransaction();
-				} else {
-					await this.db._rollbackTransaction();
-				}
-			}
-		});
+		return wrapAsyncIterator(this._iterateRowsRaw(params), (commit) =>
+			this.db._finalizeImplicitTransaction(commit)
+		);
 	}
 
 	getColumnNames(): string[] {
@@ -395,13 +389,7 @@ export class Statement {
 				}
 				success = true;
 			} finally {
-				if (this.db._isImplicitTransaction()) {
-					if (success) {
-						await this.db._commitTransaction();
-					} else {
-						await this.db._rollbackTransaction();
-					}
-				}
+				await this.db._finalizeImplicitTransaction(success);
 			}
 		});
 	}
@@ -426,13 +414,7 @@ export class Statement {
 				success = true;
 				return result;
 			} finally {
-				if (this.db._isImplicitTransaction()) {
-					if (success) {
-						await this.db._commitTransaction();
-					} else {
-						await this.db._rollbackTransaction();
-					}
-				}
+				await this.db._finalizeImplicitTransaction(success);
 			}
 		});
 	}
@@ -445,15 +427,9 @@ export class Statement {
 	all(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
 		this.validateStatement("get all rows for");
 
-		return wrapAsyncIterator(this._allGenerator(params), async (commit) => {
-			if (this.db._isImplicitTransaction()) {
-				if (commit) {
-					await this.db._commitTransaction();
-				} else {
-					await this.db._rollbackTransaction();
-				}
-			}
-		});
+		return wrapAsyncIterator(this._allGenerator(params), (commit) =>
+			this.db._finalizeImplicitTransaction(commit)
+		);
 	}
 
 	/**

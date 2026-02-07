@@ -405,6 +405,21 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	}
 
 	/**
+	 * Commits or rolls back an implicit transaction based on success.
+	 * No-op if no implicit transaction is active.
+	 * @internal
+	 */
+	async _finalizeImplicitTransaction(success: boolean): Promise<void> {
+		if (this.transactionManager.isImplicitTransaction()) {
+			if (success) {
+				await this._commitTransaction();
+			} else {
+				await this._rollbackTransaction();
+			}
+		}
+	}
+
+	/**
 	 * Upgrades an implicit transaction to explicit.
 	 * @internal
 	 */
@@ -1066,15 +1081,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 * ```
 	 */
 	eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
-		return wrapAsyncIterator(this._evalGenerator(sql, params), async (commit) => {
-			if (this.transactionManager.isImplicitTransaction()) {
-				if (commit) {
-					await this._commitTransaction();
-				} else {
-					await this._rollbackTransaction();
-				}
-			}
-		});
+		return wrapAsyncIterator(this._evalGenerator(sql, params), (commit) =>
+			this._finalizeImplicitTransaction(commit)
+		);
 	}
 
 	/**
