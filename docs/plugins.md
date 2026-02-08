@@ -1156,7 +1156,6 @@ import {
   NullsOrdering,              // Enum: DEFAULT = 0, FIRST = 1, LAST = 2
 
   // Truthiness evaluation
-  evaluateIsTrue,             // JS-idiomatic truthiness rules
   isTruthy,                   // SQL truthiness for filters
 
   // Type introspection
@@ -1178,6 +1177,8 @@ import {
   isNumericValue,             // Check if value is numeric
 } from '@quereus/quereus';
 ```
+
+**Note on `bigint` comparisons**: `compareSqlValues` may compare `bigint` and `number` using JavaScript relational operators. This can produce surprising results for magnitudes beyond IEEE-754 safe integer range. For deterministic ordering in plugin code, prefer keeping numeric domains consistent (all `bigint` or all `number`) and avoid mixing when values may exceed `Number.MAX_SAFE_INTEGER`.
 
 **Example: Using compareSqlValues in a virtual table**
 

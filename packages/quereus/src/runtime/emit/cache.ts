@@ -5,7 +5,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitCallFromPlan } from '../emitters.js';
 import { streamWithCache, createCacheState, type SharedCacheConfig } from '../cache/shared-cache.js';
 import { buffered, traced } from '../async-util.js';
-import { isDebugEnabled } from '../../util/environment.js';
+import { isLoggingEnabled } from '../../common/logger.js';
 
 /**
  * Usage example for other emitters needing caching (NLJ inner caching, CTE materialization):
@@ -46,7 +46,7 @@ export function emitCache(plan: CacheNode, ctx: EmissionContext): Instruction {
 		}
 
 		// Optional: Add tracing in debug mode
-		if (isDebugEnabled('runtime:cache')) {
+		if (isLoggingEnabled('runtime:cache')) {
 			sourceIterable = traced(sourceIterable, `cache-${plan.id}`,
 				(row, index) => `row ${index}: [${row.length} columns]`);
 		}

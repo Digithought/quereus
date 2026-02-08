@@ -9,6 +9,12 @@
 import type { Database } from '../core/database.js';
 import type { PluginRegistrations } from '../vtab/manifest.js';
 import type { SqlValue } from '../common/types.js';
+import { QuereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Plugin function type - what a plugin exports as its default export
@@ -61,8 +67,10 @@ export async function registerPlugin(
 			try {
 				db.registerModule(vtable.name, vtable.module, vtable.auxData);
 			} catch (error) {
-				throw new Error(
-					`Failed to register vtable module '${vtable.name}': ${error instanceof Error ? error.message : String(error)}`
+				throw new QuereusError(
+					`Failed to register vtable module '${vtable.name}': ${errorMessage(error)}`,
+					StatusCode.ERROR,
+					error instanceof Error ? error : undefined
 				);
 			}
 		}
@@ -74,8 +82,10 @@ export async function registerPlugin(
 			try {
 				db.registerFunction(func.schema);
 			} catch (error) {
-				throw new Error(
-					`Failed to register function '${func.schema.name}/${func.schema.numArgs}': ${error instanceof Error ? error.message : String(error)}`
+				throw new QuereusError(
+					`Failed to register function '${func.schema.name}/${func.schema.numArgs}': ${errorMessage(error)}`,
+					StatusCode.ERROR,
+					error instanceof Error ? error : undefined
 				);
 			}
 		}
@@ -87,8 +97,10 @@ export async function registerPlugin(
 			try {
 				db.registerCollation(collation.name, collation.func);
 			} catch (error) {
-				throw new Error(
-					`Failed to register collation '${collation.name}': ${error instanceof Error ? error.message : String(error)}`
+				throw new QuereusError(
+					`Failed to register collation '${collation.name}': ${errorMessage(error)}`,
+					StatusCode.ERROR,
+					error instanceof Error ? error : undefined
 				);
 			}
 		}
@@ -100,8 +112,10 @@ export async function registerPlugin(
 			try {
 				db.registerType(type.name, type.definition);
 			} catch (error) {
-				throw new Error(
-					`Failed to register type '${type.name}': ${error instanceof Error ? error.message : String(error)}`
+				throw new QuereusError(
+					`Failed to register type '${type.name}': ${errorMessage(error)}`,
+					StatusCode.ERROR,
+					error instanceof Error ? error : undefined
 				);
 			}
 		}

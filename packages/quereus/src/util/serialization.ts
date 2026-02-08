@@ -8,6 +8,14 @@ import { createLogger } from '../common/logger.js';
 const log = createLogger('util:serialization');
 const errorLog = log.extend('error');
 
+export function uint8ArrayToHex(bytes: Uint8Array): string {
+	const hex: string[] = [];
+	for (let i = 0; i < bytes.length; i++) {
+		hex.push(bytes[i].toString(16).padStart(2, '0'));
+	}
+	return hex.join('');
+}
+
 export function jsonStringify(obj: any, space?: string | number): string {
   return JSON.stringify(
 		obj,
@@ -20,7 +28,7 @@ export function jsonStringify(obj: any, space?: string | number): string {
 				// Otherwise, convert to string (without 'n' suffix for standard JSON)
 				return value.toString();
 			} else if (value instanceof Uint8Array) {
-				return `0x${Buffer.from(value).toString('hex')}`; // Keep existing Uint8Array handling
+				return `0x${uint8ArrayToHex(value)}`;
 			}
 			return value;
 		},

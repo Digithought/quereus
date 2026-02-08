@@ -6,7 +6,8 @@
 import { createLogger } from '../../common/logger.js';
 import type { PlanNode } from '../nodes/plan-node.js';
 import type { RuleHandle } from './registry.js';
-import { isDebugEnabled, isFeatureEnabled } from '../../util/environment.js';
+import { isLoggingEnabled } from '../../common/logger.js';
+import { isFeatureEnabled } from '../../util/environment.js';
 
 const log = createLogger('optimizer:framework:trace');
 
@@ -181,7 +182,7 @@ class TraceRegistry {
 		const hooks: TraceHook[] = [];
 
 		// Enable debug tracing if debug logging is enabled
-		if (isDebugEnabled('optimizer')) {
+		if (isLoggingEnabled('optimizer')) {
 			hooks.push(new DebugTraceHook());
 		}
 

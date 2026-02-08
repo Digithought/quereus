@@ -17,7 +17,6 @@ import {
 	createOrderByComparatorFast,
 	SortDirection,
 	NullsOrdering,
-	evaluateIsTrue,
 	isTruthy,
 	getSqlDataTypeName,
 	// Collation functions
@@ -81,13 +80,6 @@ describe('Public API Exports', () => {
 			expect(NullsOrdering.DEFAULT).to.equal(0);
 			expect(NullsOrdering.FIRST).to.equal(1);
 			expect(NullsOrdering.LAST).to.equal(2);
-		});
-
-		it('should export evaluateIsTrue', () => {
-			expect(evaluateIsTrue).to.be.a('function');
-			expect(evaluateIsTrue(1)).to.be.true;
-			expect(evaluateIsTrue(0)).to.be.false;
-			expect(evaluateIsTrue(null)).to.be.false;
 		});
 
 		it('should export isTruthy', () => {

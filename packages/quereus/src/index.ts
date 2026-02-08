@@ -82,7 +82,6 @@ export {
 	SortDirection,
 	NullsOrdering,
 	// Truthiness evaluation
-	evaluateIsTrue,
 	isTruthy,
 	// Type introspection
 	getSqlDataTypeName

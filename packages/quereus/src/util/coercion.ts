@@ -16,8 +16,7 @@ export function tryCoerceToNumber(value: SqlValue): SqlValue {
 		const trimmed = value.trim();
 		const asNumber = Number(trimmed);
 		if (!isNaN(asNumber) && isFinite(asNumber)) {
-			// Check if it's an integer or float
-			return Number.isInteger(asNumber) ? Math.trunc(asNumber) : asNumber;
+			return asNumber;
 		}
 	}
 	return value;
@@ -78,18 +77,16 @@ export function coerceForComparison(v1: SqlValue, v2: SqlValue): [SqlValue, SqlV
  * Most aggregate functions should accept numeric strings as numbers.
  * For COUNT, no coercion needed. For SUM/AVG, numeric strings should be converted.
  */
+const NON_NUMERIC_AGGREGATES = new Set(['COUNT', 'GROUP_CONCAT']);
+
 export function coerceForAggregate(value: SqlValue, functionName: string): SqlValue {
-	// COUNT and similar functions don't need numeric coercion
-	if (functionName.toUpperCase() === 'COUNT' ||
-		functionName.toUpperCase() === 'GROUP_CONCAT' ||
-		functionName.toUpperCase().startsWith('JSON_')) {
+	const upperName = functionName.toUpperCase();
+	if (NON_NUMERIC_AGGREGATES.has(upperName) || upperName.startsWith('JSON_')) {
 		return value;
 	}
 
-	// Numeric aggregates (SUM, AVG, MIN, MAX) should coerce numeric strings
 	if (typeof value === 'string' && value.trim() !== '') {
-		const coerced = tryCoerceToNumber(value);
-		return coerced;
+		return tryCoerceToNumber(value);
 	}
 
 	return value;
@@ -104,10 +101,7 @@ export function isNumericValue(value: SqlValue): boolean {
 		return true;
 	}
 	if (typeof value === 'string') {
-		const trimmed = value.trim();
-		if (trimmed === '') return false;
-		const asNumber = Number(trimmed);
-		return !isNaN(asNumber) && isFinite(asNumber);
+		return tryCoerceToNumber(value) !== value;
 	}
 	return false;
 }

@@ -94,41 +94,6 @@ export function resolveCollation(collationName: string): CollationFunction {
 	return func;
 }
 
-/**
- * Evaluates a JavaScript value according to simplified, JS-idiomatic truthiness rules.
- * - null/undefined are false
- * - boolean is its own value
- * - number: 0 is false, non-zero is true
- * - bigint: 0n is false, non-zero is true
- * - string: empty string is false, non-empty is true
- * - Uint8Array (BLOB): always false
- *
- * @param value The value to evaluate
- * @returns True or false
- */
-export function evaluateIsTrue(value: SqlValue): boolean {
-	if (value === null || value === undefined) {
-		return false;
-	}
-	switch (typeof value) {
-		case 'boolean':
-			return value;
-		case 'number':
-			return value !== 0;
-		case 'bigint':
-			return value !== 0n;
-		case 'string':
-			return value.length > 0;
-		case 'object':
-			if (value instanceof Uint8Array) {
-				return false;
-			}
-			return false;
-		default:
-			return false;
-	}
-}
-
 /** Represents SQLite storage classes for comparison purposes */
 enum StorageClass {
 	NULL = 0,
@@ -407,15 +372,37 @@ export function createOrderByComparatorFast(
 
 /**
  * Determines if a SqlValue is truthy for filter purposes.
- * In SQL semantics:
+ * In SQL semantics (numeric truthiness):
  * - NULL is falsy
- * - 0 (number) is falsy
- * - Empty string is falsy
- * - false (boolean) is falsy
- * - Everything else is truthy
+ * - booleans: false/true
+ * - numbers: 0 is falsy, non-zero is truthy
+ * - bigint: 0n is falsy, non-zero is truthy
+ * - strings: trimmed numeric conversion is used; non-numeric converts to 0 (falsy)
+ * - blobs: convert to 0 (falsy)
  */
 export function isTruthy(value: SqlValue): boolean {
-	return (typeof value === 'string') ? value.length > 0 : !!value;
+	if (value === null) return false;
+
+	switch (typeof value) {
+		case 'boolean':
+			return value;
+		case 'number':
+			return value !== 0;
+		case 'bigint':
+			return value !== 0n;
+		case 'string': {
+			const trimmed = value.trim();
+			if (trimmed === '') return false;
+			const n = Number(trimmed);
+			return !Number.isNaN(n) && n !== 0;
+		}
+		default:
+			break;
+	}
+
+	if (value instanceof Uint8Array) return false;
+
+	return false;
 }
 /**
  * Compares two rows for SQL DISTINCT semantics.

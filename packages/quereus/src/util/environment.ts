@@ -3,8 +3,6 @@
  * Works in Node.js, browsers, and React Native
  */
 
-import { createLogger } from '../common/logger.js';
-
 /**
  * Cross-platform environment variable accessor
  * Works in Node.js, browsers, and React Native
@@ -27,18 +25,6 @@ export function getEnvVar(key: string): string | undefined {
 	// React Native or other environments might set environment variables differently
 	// For now, return undefined for unsupported environments
 	return undefined;
-}
-
-/**
- * Check if debug logging is enabled for a specific namespace
- * Uses the debug library's own enabled property via createLogger
- *
- * @param namespace The debug namespace to check (without the 'quereus:' prefix)
- * @returns true if debug logging is enabled for the namespace
- */
-export function isDebugEnabled(namespace: string): boolean {
-	const logger = createLogger(namespace);
-	return logger.enabled;
 }
 
 /**

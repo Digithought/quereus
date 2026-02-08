@@ -1,5 +1,4 @@
 import { StatusCode } from './types.js';
-import type { Token } from '../parser/lexer.js';
 
 /**
  * Base class for Quereus specific errors
@@ -7,15 +6,13 @@ import type { Token } from '../parser/lexer.js';
  */
 export class QuereusError extends Error {
 	public code: number;
-	public cause?: Error;
 	public line?: number;
 	public column?: number;
 
 	constructor(message: string, code: number = StatusCode.ERROR, cause?: Error, line?: number, column?: number) {
-		super(message);
+		super(message, { cause });
 		this.code = code;
 		this.name = 'QuereusError';
-		this.cause = cause;
 		this.line = line;
 		this.column = column;
 
@@ -32,26 +29,13 @@ export class QuereusError extends Error {
 }
 
 /**
- * Parser-specific error that includes token information
- * Used during SQL parsing to provide precise error locations
- */
-export class ParseError extends QuereusError {
-	public token: Token;
-
-	constructor(message: string, token: Token) {
-		super(message, StatusCode.ERROR, undefined, token.startLine, token.startColumn);
-		this.token = token;
-		this.name = 'ParseError';
-	}
-}
-
-/**
  * Error thrown when a database constraint is violated
  */
 export class ConstraintError extends QuereusError {
 	constructor(message: string, code: number = StatusCode.CONSTRAINT) {
 		super(message, code);
 		this.name = 'ConstraintError';
+		Object.setPrototypeOf(this, ConstraintError.prototype);
 	}
 }
 

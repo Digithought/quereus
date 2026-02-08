@@ -14,6 +14,7 @@
 import type * as AST from '../parser/ast.js';
 import { ConflictResolution } from '../common/constants.js';
 import { KEYWORDS } from '../parser/lexer.js';
+import { uint8ArrayToHex } from '../util/serialization.js';
 
 // --- Identifier Quoting Logic ---
 
@@ -128,7 +129,7 @@ export function expressionToString(expr: AST.Expression): string {
 			if (typeof expr.value === 'string') return `'${expr.value.replace(/'/g, "''")}'`; // Escape single quotes
 			if (typeof expr.value === 'number') return expr.value.toString();
 			if (expr.value instanceof Uint8Array) {
-				const hex = Buffer.from(expr.value).toString('hex');
+				const hex = uint8ArrayToHex(expr.value);
 				return `x'${hex}'`;
 			}
 			return String(expr.value);

@@ -1,10 +1,20 @@
 import type { FilterNode } from '../../planner/nodes/filter.js';
 import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { OutputValue, type Row } from '../../common/types.js';
+import { OutputValue, StatusCode, type Row, type SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { withRowContextGenerator } from '../context-helpers.js';
+import { QuereusError } from '../../common/errors.js';
+import { isTruthy } from '../../util/comparison.js';
+
+function asPredicateScalar(value: unknown): SqlValue {
+	if (value === null) return null;
+	const t = typeof value;
+	if (t === 'string' || t === 'number' || t === 'bigint' || t === 'boolean') return value;
+	if (value instanceof Uint8Array) return value;
+	throw new QuereusError(`Filter predicate returned non-scalar value: ${String(value)}`, StatusCode.INTERNAL);
+}
 
 export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -16,7 +26,7 @@ export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction 
 	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
 		yield* withRowContextGenerator(ctx, sourceRowDescriptor, source, async function* (sourceRow) {
 			const result = await predicate(ctx);
-			if (result) {
+			if (isTruthy(asPredicateScalar(result))) {
 				yield sourceRow;
 			}
 		});
