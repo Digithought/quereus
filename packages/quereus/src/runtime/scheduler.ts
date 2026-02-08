@@ -89,9 +89,13 @@ export class Scheduler {
 		}
 
 		// Check for remaining contexts and warn rather than error
+		if (ctx.context.size > 0 || ctx.tableContexts.size > 0) {
+			contextLog('Context leak detected - remaining row contexts: %d, table contexts: %d', ctx.context.size, ctx.tableContexts.size);
+		}
+
 		if (ctx.contextTracker && ctx.contextTracker.hasRemainingContexts()) {
 			const remaining = ctx.contextTracker.getRemainingContexts();
-			contextLog('Context leak detected - remaining contexts:', remaining.map(c => c.source));
+			contextLog('Context tracker recorded remaining contexts: %O', remaining.map(c => c.source));
 		}
 
 		return result;

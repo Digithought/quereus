@@ -3,14 +3,15 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { OutputValue, Row, SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { resolveWindowFunction } from '../../schema/window-function.js';
+import { resolveWindowFunction, type WindowFunctionSchema } from '../../schema/window-function.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { compareSqlValues, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { RowDescriptor } from '../../planner/nodes/plan-node.js';
-import { withRowContext, withAsyncRowContext } from '../context-helpers.js';
+import type * as AST from '../../parser/ast.js';
+import { withAsyncRowContext, withRowContext } from '../context-helpers.js';
 
 const log = createLogger('runtime:emit:window');
 
@@ -115,15 +116,10 @@ async function groupByPartitions(
 
 	for (const row of rows) {
 		const partitionKey = await withAsyncRowContext(rctx, sourceRowDescriptor, () => row, async () => {
-			// Evaluate partition expressions
 			const partitionValues = await Promise.all(partitionCallbacks.map(callback =>
 				callback(rctx)
 			));
-
-			// Create partition key
-			return partitionValues.map(val =>
-				val === null ? 'NULL' : String(val)
-			).join('|');
+			return JSON.stringify(partitionValues);
 		});
 
 		if (!partitions.has(partitionKey)) {
@@ -138,7 +134,7 @@ async function groupByPartitions(
 async function* processPartition(
 	partitionRows: Row[],
 	plan: WindowNode,
-	functionSchemas: any[],
+	functionSchemas: WindowFunctionSchema[],
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor,
 	outputRowDescriptor: RowDescriptor,
@@ -158,7 +154,7 @@ async function* processPartition(
 		const outputRow = [...currentRow];
 
 		// Set up context for current row
-		const outputValues = await withRowContext(rctx, sourceRowDescriptor, () => currentRow, async () => {
+		const outputValues = await withAsyncRowContext(rctx, sourceRowDescriptor, () => currentRow, async () => {
 			const values: SqlValue[] = [];
 			// Compute each window function
 			for (let funcIndex = 0; funcIndex < plan.functions.length; funcIndex++) {
@@ -201,7 +197,7 @@ async function* processPartition(
 
 async function sortRows(
 	rows: Row[],
-	orderBy: any[],
+	orderBy: AST.OrderByClause[],
 	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
@@ -318,19 +314,18 @@ async function computeRankingFunction(
 }
 
 async function computeAggregateFunction(
-	schema: any,
-	argCallback: ((ctx: RuntimeContext) => any) | null,
+	schema: WindowFunctionSchema,
+	argCallback: ((ctx: RuntimeContext) => OutputValue) | null,
 	sortedRows: Row[],
 	currentIndex: number,
-	frame: any,
+	frame: AST.WindowFrame | undefined,
 	hasOrderBy: boolean,
 	rctx: RuntimeContext,
 	sourceRowDescriptor: RowDescriptor
 ): Promise<SqlValue> {
-	// Determine frame bounds
 	const frameBounds = getFrameBounds(frame, sortedRows.length, currentIndex, hasOrderBy);
 
-	let accumulator: any = null;
+	let accumulator: SqlValue = null;
 	let rowCount = 0;
 
 	// Process rows within the frame
@@ -359,7 +354,7 @@ async function computeAggregateFunction(
 }
 
 function getFrameBounds(
-	frame: any,
+	frame: AST.WindowFrame | undefined,
 	totalRows: number,
 	currentIndex: number,
 	hasOrderBy: boolean = true
@@ -383,11 +378,10 @@ function getFrameBounds(
 	} else if (frame.start.type === 'currentRow') {
 		start = currentIndex;
 	} else if (frame.start.type === 'preceding') {
-		// TODO: Evaluate frame.start.value expression
-		const offset = 1; // For now, hard-coded for the test
+		const offset = getFrameOffset(frame.start.value);
 		start = Math.max(0, currentIndex - offset);
 	} else if (frame.start.type === 'following') {
-		const offset = 1; // TODO: Evaluate frame.start.value expression
+		const offset = getFrameOffset(frame.start.value);
 		start = Math.min(totalRows - 1, currentIndex + offset);
 	} else {
 		start = 0;
@@ -402,16 +396,59 @@ function getFrameBounds(
 	} else if (frame.end.type === 'currentRow') {
 		end = currentIndex;
 	} else if (frame.end.type === 'preceding') {
-		const offset = 1; // TODO: Evaluate frame.end.value expression
+		const offset = getFrameOffset(frame.end.value);
 		end = Math.max(0, currentIndex - offset);
 	} else if (frame.end.type === 'following') {
-		const offset = 1; // TODO: Evaluate frame.end.value expression
+		const offset = getFrameOffset(frame.end.value);
 		end = Math.min(totalRows - 1, currentIndex + offset);
 	} else {
 		end = currentIndex;
 	}
 
+	// Empty frame when bounds invert
+	if (start > end) {
+		return { start: currentIndex + 1, end: currentIndex };
+	}
+
 	return { start, end };
+}
+
+function getFrameOffset(expr: AST.Expression): number {
+	// SQL grammar for frame offsets is typically an unsigned integer literal.
+	// Quereus currently supports literal numeric offsets and unary +/- on literals.
+	const value = tryExtractNumericLiteral(expr);
+	if (value === undefined) {
+		throw new QuereusError(
+			'Window frame offsets must be constant numeric literals',
+			StatusCode.UNSUPPORTED
+		);
+	}
+
+	if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+		throw new QuereusError(
+			`Invalid window frame offset: ${value}. Must be a non-negative integer.`,
+			StatusCode.ERROR
+		);
+	}
+
+	return value;
+}
+
+function tryExtractNumericLiteral(expr: AST.Expression): number | undefined {
+	if (expr.type === 'literal') {
+		const v = expr.value;
+		if (typeof v === 'number') return v;
+		if (typeof v === 'bigint') return Number(v);
+		return undefined;
+	}
+
+	if (expr.type === 'unary' && (expr.operator === '+' || expr.operator === '-')) {
+		const inner = tryExtractNumericLiteral(expr.expr);
+		if (inner === undefined) return undefined;
+		return expr.operator === '-' ? -inner : inner;
+	}
+
+	return undefined;
 }
 
 async function areRowsEqualInOrderBy(

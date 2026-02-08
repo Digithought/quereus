@@ -8,7 +8,7 @@ import type { Statement as ASTStatement } from '../parser/ast.js';
 import type { BlockNode } from '../planner/nodes/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
-import type { RuntimeContext } from '../runtime/types.js';
+import type { InstructionTracer, RuntimeContext } from '../runtime/types.js';
 import { Cached } from '../util/cached.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
@@ -262,7 +262,13 @@ export class Statement {
 	 * Low-level row iteration. Does NOT handle transactions - caller must manage.
 	 * @internal
 	 */
-	async *_iterateRowsRaw(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
+	private async *_iterateRowsRawInternal(
+		params?: SqlParameters | SqlValue[],
+		runtimeOverrides?: {
+			tracer?: InstructionTracer;
+			enableMetrics?: boolean;
+		}
+	): AsyncIterable<Row> {
 		this.validateStatement("iterate rows for");
 		if (this.busy) throw new MisuseError("Statement busy, another iteration may be in progress or reset needed.");
 
@@ -279,14 +285,16 @@ export class Statement {
 			const emissionContext = this.getEmissionContext();
 			const rootInstruction = emitPlanNode(blockPlanNode, emissionContext);
 			const scheduler = new Scheduler(rootInstruction);
+			const tracer = runtimeOverrides?.tracer ?? this.db.getInstructionTracer();
+			const enableMetrics = runtimeOverrides?.enableMetrics ?? Boolean(this.db.getOption('runtime_metrics'));
 			const runtimeCtx: RuntimeContext = {
 				db: this.db,
 				stmt: this,
 				params: this.boundArgs,
 				context: new Map(),
 				tableContexts: new Map(),
-				tracer: this.db.getInstructionTracer(),
-				enableMetrics: Boolean(this.db.getOption('runtime_metrics')),
+				tracer,
+				enableMetrics,
 			};
 
 			const results = await scheduler.run(runtimeCtx);
@@ -310,6 +318,11 @@ export class Statement {
 		}
 	}
 
+	/** @internal Low-level row iteration without overrides. */
+	async *_iterateRowsRaw(params?: SqlParameters | SqlValue[]): AsyncIterable<Row> {
+		yield* this._iterateRowsRawInternal(params);
+	}
+
 	/**
 	 * Iterates over result rows. Handles JIT transaction management - commits
 	 * implicit transactions on successful completion, rolls back on error.
@@ -317,6 +330,17 @@ export class Statement {
 	iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Row> {
 		return wrapAsyncIterator(this._iterateRowsRaw(params), (commit) =>
 			this.db._finalizeImplicitTransaction(commit)
+		);
+	}
+
+	/**
+	 * Iterates over result rows while forcing instruction tracing for this execution.
+	 * Metrics are disabled for trace runs to ensure the tracing scheduler mode is used.
+	 */
+	iterateRowsWithTrace(params: SqlParameters | SqlValue[] | undefined, tracer: InstructionTracer): AsyncIterableIterator<Row> {
+		return wrapAsyncIterator(
+			this._iterateRowsRawInternal(params, { tracer, enableMetrics: false }),
+			(commit) => this.db._finalizeImplicitTransaction(commit)
 		);
 	}
 

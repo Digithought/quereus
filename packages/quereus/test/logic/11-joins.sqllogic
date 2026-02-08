@@ -36,5 +36,9 @@ SELECT l.id, r.id, e.id FROM t_left l JOIN t_right r ON l.id = r.left_id JOIN t_
 → [{"id":1,"id:1":10,"id:2":100},{"id":2,"id:1":20,"id:2":200}]
 DROP TABLE t_extra;
 
+-- RIGHT JOIN (not supported yet)
+-- error: RIGHT JOIN is not supported yet
+SELECT l.id, r.id FROM t_left l RIGHT JOIN t_right r ON l.id = r.left_id ORDER BY r.id;
+
 DROP TABLE t_left;
 DROP TABLE t_right;

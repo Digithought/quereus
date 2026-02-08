@@ -33,6 +33,9 @@ export function createRowSlot(
 
 	// Install only once
 	rctx.context.set(descriptor, () => ref.current!);
+	if (ctxLog.enabled && rctx.contextTracker) {
+		rctx.contextTracker.addContext(descriptor, 'createRowSlot');
+	}
 
 	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
 	ctxLog('CREATE slot with attrs=[%s]', attrs.join(','));
@@ -43,6 +46,9 @@ export function createRowSlot(
 		},
 		close() {
 			rctx.context.delete(descriptor);
+			if (ctxLog.enabled && rctx.contextTracker) {
+				rctx.contextTracker.removeContext(descriptor);
+			}
 			ctxLog('CLOSE slot with attrs=[%s]', attrs.join(','));
 		}
 	};
@@ -126,10 +132,16 @@ export async function withAsyncRowContext<T>(
 	ctxLog('PUSH async context with attrs=[%s]', attrs.join(','));
 
 	rctx.context.set(descriptor, rowGetter);
+	if (ctxLog.enabled && rctx.contextTracker) {
+		rctx.contextTracker.addContext(descriptor, 'withAsyncRowContext');
+	}
 	try {
 		return await fn();
 	} finally {
 		rctx.context.delete(descriptor);
+		if (ctxLog.enabled && rctx.contextTracker) {
+			rctx.contextTracker.removeContext(descriptor);
+		}
 		ctxLog('POP async context with attrs=[%s]', attrs.join(','));
 	}
 }
@@ -148,10 +160,16 @@ export function withRowContext<T>(
 	ctxLog('PUSH context with attrs=[%s]', attrs.join(','));
 
 	rctx.context.set(descriptor, rowGetter);
+	if (ctxLog.enabled && rctx.contextTracker) {
+		rctx.contextTracker.addContext(descriptor, 'withRowContext');
+	}
 	try {
 		return fn();
 	} finally {
 		rctx.context.delete(descriptor);
+		if (ctxLog.enabled && rctx.contextTracker) {
+			rctx.contextTracker.removeContext(descriptor);
+		}
 		ctxLog('POP context with attrs=[%s]', attrs.join(','));
 	}
 }
@@ -174,11 +192,17 @@ export async function* withRowContextGenerator<T>(
 			ctxLog('PUSH generator context with attrs=[%s]', attrs.join(','));
 		}
 		rctx.context.set(descriptor, () => row);
+		if (ctxLog.enabled && rctx.contextTracker) {
+			rctx.contextTracker.addContext(descriptor, 'withRowContextGenerator');
+		}
 		try {
 			yield* fn(row);
 			rowCount++;
 		} finally {
 			rctx.context.delete(descriptor);
+			if (ctxLog.enabled && rctx.contextTracker) {
+				rctx.contextTracker.removeContext(descriptor);
+			}
 			if (ctxLog.enabled && rowCount % 1000 === 0) {
 				ctxLog('Generator context processed %d rows', rowCount);
 			}

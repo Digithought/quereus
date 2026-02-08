@@ -68,6 +68,11 @@ SELECT id, amount, SUM(amount) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 
 FROM sales ORDER BY id;
 → [{"id":1,"amount":100.50,"windowed_sum":175.75},{"id":2,"amount":75.25,"windowed_sum":296.50},{"id":3,"amount":120.75,"windowed_sum":286.00},{"id":4,"amount":90.00,"windowed_sum":296.25},{"id":5,"amount":85.50,"windowed_sum":285.75},{"id":6,"amount":110.25,"windowed_sum":195.75}]
 
+-- Test window frames with non-1 literal offsets
+SELECT id, amount, SUM(amount) OVER (ORDER BY id ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING) as windowed_sum
+FROM sales ORDER BY id;
+→ [{"id":1,"amount":100.50,"windowed_sum":175.75},{"id":2,"amount":75.25,"windowed_sum":296.50},{"id":3,"amount":120.75,"windowed_sum":386.50},{"id":4,"amount":90.00,"windowed_sum":371.50},{"id":5,"amount":85.50,"windowed_sum":406.50},{"id":6,"amount":110.25,"windowed_sum":285.75}]
+
 -- Test multiple window functions with same OVER clause
 SELECT product, amount,
        ROW_NUMBER() OVER (PARTITION BY product ORDER BY amount) as rn,

@@ -8,12 +8,14 @@ import { compareSqlValues } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
 import type { Attribute } from '../../planner/nodes/plan-node.js';
+import { QuereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 const log = createLogger('runtime:emit:join');
 
 /**
  * Emits a nested loop join instruction.
- * This is a simple nested loop implementation that can handle all join types.
+ * This is a simple nested loop implementation for inner/left/cross joins.
  */
 export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction {
 	// Create row descriptors for left and right inputs
@@ -29,6 +31,13 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 
 		log('Starting %s join between %d left attrs and %d right attrs',
 			joinType.toUpperCase(), leftAttributes.length, rightAttributes.length);
+
+		if (joinType === 'right' || joinType === 'full') {
+			throw new QuereusError(
+				`${joinType.toUpperCase()} JOIN is not supported yet`,
+				StatusCode.UNSUPPORTED
+			);
+		}
 
 		// Create row slots for efficient context management
 		const leftSlot = createRowSlot(rctx, leftRowDescriptor);
@@ -77,18 +86,6 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 				}
 			}
 
-			// Handle right outer join semantics - we need to track which right rows were matched
-			// For now, we'll handle this in a simpler way by iterating again for right/full outer joins
-			if (joinType === 'right' || joinType === 'full') {
-				// For right outer joins, we need to find unmatched right rows
-				// This is more complex and less efficient - a real implementation would track matches
-				// For now, we'll implement a simplified version
-				log('Right/full outer join - checking for unmatched right rows');
-
-				// We'd need to track which right rows were matched during the main loop
-				// For now, we'll skip this implementation detail
-				// TODO: Implement proper right outer join semantics
-			}
 		} finally {
 			leftSlot.close();
 			rightSlot.close();

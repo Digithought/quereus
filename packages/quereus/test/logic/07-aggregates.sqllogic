@@ -56,6 +56,20 @@ SELECT grp, count(*), val FROM agg_t GROUP BY grp;
 
 DROP TABLE agg_t;
 
+-- GROUP BY with NULL group key
+CREATE TABLE agg_null_grp (id INTEGER PRIMARY KEY, grp TEXT NULL, val INTEGER);
+INSERT INTO agg_null_grp VALUES
+	(1, 'a', 10),
+	(2, null, 20),
+	(3, 'a', 30),
+	(4, null, 40),
+	(5, 'b', 50);
+
+SELECT grp, count(*) as cnt, sum(val) as total FROM agg_null_grp GROUP BY grp ORDER BY grp NULLS FIRST;
+→ [{"grp":null,"cnt":2,"total":60},{"grp":"a","cnt":2,"total":40},{"grp":"b","cnt":1,"total":50}]
+
+DROP TABLE agg_null_grp;
+
 -- Test aggregate function commutativity (order independence)
 CREATE TABLE agg_order_test (id INTEGER PRIMARY KEY, val REAL NULL);
 INSERT INTO agg_order_test VALUES (1, 1), (2, 2), (3, 3), (4, null), (5, 4.5), (6, -1);

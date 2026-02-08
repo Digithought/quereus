@@ -6,7 +6,7 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import { safeJsonStringify } from "../../util/serialization.js";
-import { CollectingInstructionTracer, InstructionTraceEvent } from "../../runtime/types.js";
+import { CollectingInstructionTracer, type Instruction, InstructionTraceEvent } from "../../runtime/types.js";
 import { PlanNode, RelationalPlanNode } from "../../planner/nodes/plan-node.js";
 import { EmissionContext } from "../../runtime/emission-context.js";
 import { emitPlanNode } from "../../runtime/emitters.js";
@@ -226,11 +226,17 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 
 			// Create a scheduler to get the instruction sequence
 			const scheduler = new Scheduler(rootInstruction);
+			const indexByInstruction = new Map<Instruction, number>();
+			for (let i = 0; i < scheduler.instructions.length; i++) {
+				indexByInstruction.set(scheduler.instructions[i], i);
+			}
 
 			// Yield information about each instruction
 			for (let i = 0; i < scheduler.instructions.length; i++) {
 				const instruction = scheduler.instructions[i];
-				const dependencies = instruction.params.map((_, idx) => idx).filter(idx => idx < i);
+				const dependencies = instruction.params
+					.map(inst => indexByInstruction.get(inst))
+					.filter((idx): idx is number => idx !== undefined);
 
 				yield [
 					i, // addr
@@ -245,9 +251,15 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 				if (instruction.programs) {
 					for (let progIdx = 0; progIdx < instruction.programs.length; progIdx++) {
 						const subProgram = instruction.programs[progIdx];
+						const subIndexByInstruction = new Map<Instruction, number>();
+						for (let subI = 0; subI < subProgram.instructions.length; subI++) {
+							subIndexByInstruction.set(subProgram.instructions[subI], subI);
+						}
 						for (let subI = 0; subI < subProgram.instructions.length; subI++) {
 							const subInstruction = subProgram.instructions[subI];
-							const subDependencies = subInstruction.params.map((_, idx) => idx).filter(idx => idx < subI);
+							const subDependencies = subInstruction.params
+								.map(inst => subIndexByInstruction.get(inst))
+								.filter((idx): idx is number => idx !== undefined);
 
 							yield [
 								scheduler.instructions.length + progIdx * 1000 + subI, // addr (offset for sub-programs)
@@ -264,7 +276,7 @@ export const schedulerProgramFunc = createIntegratedTableValuedFunction(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If compilation fails, yield an error instruction
-			yield [0, 'ERROR', '[]', `Failed to compile SQL: ${error.message}`, null, 0, null];
+			yield [0, '[]', `Failed to compile SQL: ${error.message}`, null, 0, null];
 		}
 	}
 );

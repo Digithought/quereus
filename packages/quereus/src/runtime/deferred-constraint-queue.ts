@@ -6,6 +6,7 @@ import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createRowSlot } from './context-helpers.js';
 import type { VirtualTableConnection } from '../vtab/connection.js';
+import { composeCombinedDescriptor } from './descriptor-helpers.js';
 
 export interface DeferredConstraintRow {
 	row: Row;
@@ -91,7 +92,7 @@ export class DeferredConstraintQueue {
 		// Compose context row with the flat row if context is present
 		const evaluationRow = entry.contextRow ? [...entry.contextRow, ...entry.row] : entry.row;
 		const evaluationDescriptor = entry.contextRow && entry.contextDescriptor
-			? this.composeCombinedDescriptor(entry.contextDescriptor, entry.descriptor)
+			? composeCombinedDescriptor(entry.contextDescriptor, entry.descriptor)
 			: entry.descriptor;
 
 
@@ -105,29 +106,6 @@ export class DeferredConstraintQueue {
 		} finally {
 			slot.close();
 		}
-	}
-
-	private composeCombinedDescriptor(contextDescriptor: RowDescriptor, flatRowDescriptor: RowDescriptor): RowDescriptor {
-		const combined: RowDescriptor = [];
-		const contextLength = Object.keys(contextDescriptor).filter(k => contextDescriptor[parseInt(k)] !== undefined).length;
-
-		// Copy context descriptor as-is (indices 0..contextLength-1)
-		for (const attrIdStr in contextDescriptor) {
-			const attrId = parseInt(attrIdStr);
-			if (contextDescriptor[attrId] !== undefined) {
-				combined[attrId] = contextDescriptor[attrId];
-			}
-		}
-
-		// Copy flat descriptor with offset indices (indices contextLength..end)
-		for (const attrIdStr in flatRowDescriptor) {
-			const attrId = parseInt(attrIdStr);
-			if (flatRowDescriptor[attrId] !== undefined) {
-				combined[attrId] = flatRowDescriptor[attrId] + contextLength;
-			}
-		}
-
-		return combined;
 	}
 
 	private getActiveStore(): DeferredConstraintBuckets {
@@ -184,13 +162,24 @@ export class DeferredConstraintQueue {
 			if (direct) {
 				return direct;
 			}
+			throw new QuereusError(
+				`Deferred constraint execution could not find connectionId=${preferredId} for table ${tableKey}`,
+				StatusCode.INTERNAL
+			);
 		}
 		const normalized = tableKey.toLowerCase();
 		const simple = normalized.includes('.') ? normalized.substring(normalized.lastIndexOf('.') + 1) : normalized;
-		return connections.find(conn => {
+		const matches = connections.filter(conn => {
 			const connName = conn.tableName.toLowerCase();
 			return connName === normalized || connName === simple;
 		});
+		if (matches.length > 1) {
+			throw new QuereusError(
+				`Deferred constraint execution found multiple candidate connections for table ${tableKey}`,
+				StatusCode.INTERNAL
+			);
+		}
+		return matches[0];
 	}
 }
 
