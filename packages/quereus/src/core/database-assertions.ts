@@ -16,7 +16,7 @@ import * as AST from '../parser/ast.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
-import { BlockNode } from '../planner/nodes/block.js';
+import type { BlockNode } from '../planner/nodes/block.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { FilterNode } from '../planner/nodes/filter.js';
 import { BinaryOpNode } from '../planner/nodes/scalar.js';
@@ -35,7 +35,7 @@ export interface AssertionEvaluatorContext {
 	readonly optimizer: Database['optimizer'];
 	readonly options: Database['options'];
 
-	_buildPlan(statements: AST.Statement[]): BlockNode;
+	_buildPlan(statements: AST.Statement[]): import('./database.js').BuildPlanResult;
 	_findTable(tableName: string, schemaName?: string): ReturnType<Database['_findTable']>;
 	prepare(sql: string): ReturnType<Database['prepare']>;
 	getInstructionTracer(): ReturnType<Database['getInstructionTracer']>;
@@ -89,7 +89,7 @@ export class AssertionEvaluator {
 			);
 		}
 
-		const plan = this.ctx._buildPlan([ast]) as BlockNode;
+		const { plan } = this.ctx._buildPlan([ast]);
 		const analyzed = this.ctx.optimizer.optimizeForAnalysis(plan, this.ctx as unknown as Database) as BlockNode;
 
 		// Collect base tables and relationKeys in this plan

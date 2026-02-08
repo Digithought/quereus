@@ -21,7 +21,7 @@ This document serves as the master orchestration plan for all review tasks, prov
 | Schema Review | `tasks/complete/3-review-core-schema.md` | None | Medium |
 | Types Review | `tasks/complete/3-review-core-types.md` | None | Medium |
 | Utilities Review | `tasks/implement/3-review-core-utilities.md` | Types | Low |
-| API Review | `tasks/complete/3-review-core-api.md` (also `tasks/review/3-review-core-api.md`) | All core | Medium |
+| API Review | `tasks/complete/3-review-core-api.md` | All core | Medium |
 | VTab Review | `tasks/implement/3-review-core-vtab.md` | Schema, Runtime | High |
 
 ### Package Reviews (Priority 2-3)

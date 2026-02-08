@@ -91,11 +91,7 @@ export class BuildTimeDependencyTracker {
 	 */
 	notifyInvalidation(): void {
 		for (const callback of this.invalidationCallbacks) {
-			try {
-				callback();
-			} catch (error) {
-				console.error('Error in schema invalidation callback:', error);
-			}
+			callback();
 		}
 	}
 

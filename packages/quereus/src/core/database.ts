@@ -13,7 +13,7 @@ import { FunctionFlags } from '../common/constants.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { VirtualTableConnection } from '../vtab/connection.js';
 import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
-import { Parser, ParseError } from '../parser/parser.js';
+import { Parser } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
 import { buildBlock } from '../planner/building/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
@@ -55,6 +55,19 @@ import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-a
 const log = createLogger('core:database');
 const errorLog = log.extend('error');
 
+/** Result from _buildPlan containing both the plan tree and its schema dependencies. */
+export interface BuildPlanResult {
+	plan: BlockNode;
+	schemaDependencies: BuildTimeDependencyTracker;
+}
+
+/** Parse a comma-separated schema path string into an array of trimmed, non-empty names. */
+function parseSchemaPath(pathString: string): string[] | undefined {
+	if (!pathString) return undefined;
+	const parts = pathString.split(',').map(s => s.trim()).filter(s => s.length > 0);
+	return parts.length > 0 ? parts : undefined;
+}
+
 /**
  * Represents a connection to an Quereus database (in-memory in this port).
  * Manages schema, prepared statements, virtual tables, and functions.
@@ -91,12 +104,6 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 		// Register built-in functions
 		this.registerBuiltinFunctions();
-
-		// Register default virtual table modules via SchemaManager
-		// The SchemaManager.defaultVTabModuleName is already initialized (e.g. to 'memory')
-		// No need to set defaultVtabModuleName explicitly here unless it's different from SchemaManager's init value.
-		// this.schemaManager.setDefaultVTabModuleName('memory'); // Already 'memory' by default in SchemaManager
-		// this.schemaManager.setDefaultVTabArgs([]); // Already [] by default in SchemaManager
 
 		this.schemaManager.registerModule('memory', new MemoryTableModule());
 
@@ -433,7 +440,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 * Used as the innermost execution primitive.
 	 */
 	private async _executeSingleStatement(statementAst: AST.Statement, params?: SqlParameters | SqlValue[]): Promise<void> {
-		const plan = this._buildPlan([statementAst], params);
+		const { plan } = this._buildPlan([statementAst], params);
 
 		if (plan.statements.length === 0) return; // No-op for this AST
 
@@ -470,13 +477,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 * Parses SQL into a statement batch.
 	 */
 	private _parseSql(sql: string): AST.Statement[] {
-		const parser = new Parser();
-		try {
-			return parser.parseAll(sql);
-		} catch (e) {
-			if (e instanceof ParseError) throw e;
-			throw e;
-		}
+		return new Parser().parseAll(sql);
 	}
 
 	// ============================================================================
@@ -917,8 +918,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	getSchemaPath(): string[] {
 		this.checkOpen();
-		const pathString = this.options.getStringOption('schema_path');
-		return pathString.split(',').map(s => s.trim()).filter(s => s.length > 0);
+		return parseSchemaPath(this.options.getStringOption('schema_path')) ?? [];
 	}
 
 	/**
@@ -1166,7 +1166,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			ast = sqlOrAst;
 		}
 
-		const plan = this._buildPlan([ast as AST.Statement]);
+		const { plan } = this._buildPlan([ast as AST.Statement]);
 
 		if (plan.statements.length === 0) return plan; // No-op for this AST
 
@@ -1208,8 +1208,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		log('Preparing SQL with debug options: %s', sql);
 
 		const stmt = new Statement(this, sql);
-		// Set debug options on the statement
-		(stmt as Statement & { _debugOptions?: DebugOptions })._debugOptions = debug;
+		stmt._debugOptions = debug;
 
 		this.statements.add(stmt);
 		return stmt;
@@ -1233,7 +1232,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	}
 
 	/** @internal */
-	_buildPlan(statements: AST.Statement[], paramsOrTypes?: SqlParameters | SqlValue[] | Map<string | number, ScalarType>) {
+	_buildPlan(statements: AST.Statement[], paramsOrTypes?: SqlParameters | SqlValue[] | Map<string | number, ScalarType>): BuildPlanResult {
 		const globalScope = new GlobalScope(this.schemaManager);
 
 		// If we received parameter values, infer their types
@@ -1246,23 +1245,24 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		const parameterScope = new ParameterScope(globalScope, parameterTypes);
 
 		// Get default schema path from options
-		const schemaPathString = this.options.getStringOption('schema_path');
-		const schemaPath = schemaPathString ? schemaPathString.split(',').map(s => s.trim()).filter(s => s.length > 0) : undefined;
+		const schemaPath = parseSchemaPath(this.options.getStringOption('schema_path'));
 
+		const schemaDependencies = new BuildTimeDependencyTracker();
 		const ctx: PlanningContext = {
 			db: this,
 			schemaManager: this.schemaManager,
 			parameters: paramsOrTypes instanceof Map ? {} : (paramsOrTypes ?? {}),
 			scope: parameterScope,
 			cteNodes: new Map(),
-			schemaDependencies: new BuildTimeDependencyTracker(),
+			schemaDependencies,
 			schemaCache: new Map(),
 			cteReferenceCache: new Map(),
 			outputScopes: new Map(),
 			schemaPath
 		};
 
-		return buildBlock(ctx, statements);
+		const plan = buildBlock(ctx, statements);
+		return { plan, schemaDependencies };
 	}
 
 	/**

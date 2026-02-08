@@ -3,7 +3,7 @@ import { type SqlValue, StatusCode, type Row, type SqlParameters, type DeepReado
 import { MisuseError, QuereusError } from '../common/errors.js';
 import type { Database } from './database.js';
 import { isRelationType, type ColumnDef, type ScalarType } from '../common/datatype.js';
-import { Parser, ParseError } from '../parser/parser.js';
+import { Parser } from '../parser/parser.js';
 import type { Statement as ASTStatement } from '../parser/ast.js';
 import type { BlockNode } from '../planner/nodes/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
@@ -41,6 +41,8 @@ export class Statement {
 	private schemaChangeUnsubscriber: (() => void) | null = null;
 	/** Parameter types established at prepare time (either explicit or inferred from initial values) */
 	private parameterTypes: Map<string | number, ScalarType> | undefined = undefined;
+	/** Debug options set via Database.prepareDebug(). @internal */
+	_debugOptions?: import('../planner/planning-context.js').DebugOptions;
 
 	/**
 	 * @internal - Use db.prepare().
@@ -58,12 +60,7 @@ export class Statement {
 		if (typeof sqlOrAstBatch === 'string') {
 			this.originalSql = sqlOrAstBatch;
 			const parser = new Parser();
-			try {
-				this.astBatch = parser.parseAll(this.originalSql);
-			} catch (e) {
-				if (e instanceof ParseError) throw new QuereusError(`Parse error: ${e.message}`, StatusCode.ERROR, e);
-				throw e;
-			}
+			this.astBatch = parser.parseAll(this.originalSql);
 		} else {
 			this.astBatch = sqlOrAstBatch;
 			// Try to reconstruct originalSql if possible, or set a generic name
@@ -144,10 +141,8 @@ export class Statement {
 			}
 
 			// Pass parameter types directly to planning
-			const planResult = this.db._buildPlan([currentAst], this.parameterTypes);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const dependencies = (planResult as any).schemaDependencies; // Extract dependencies from planning context
-			plan = this.db.optimizer.optimize(planResult, this.db) as BlockNode;
+			const { plan: rawPlan, schemaDependencies: dependencies } = this.db._buildPlan([currentAst], this.parameterTypes);
+			plan = this.db.optimizer.optimize(rawPlan, this.db) as BlockNode;
 
 			// Set up schema change invalidation if we have dependencies
 			if (dependencies && dependencies.hasAnyDependencies()) {
@@ -308,11 +303,11 @@ export class Statement {
 					yield* results as AsyncIterable<Row>;
 				}
 			}
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		} catch (e: any) {
+		} catch (e) {
 			errorLog('Runtime execution failed in iterateRows for current statement: %O', e);
 			if (e instanceof QuereusError) throw e;
-			throw new QuereusError(`Execution error: ${e.message}`, StatusCode.ERROR, e);
+			const message = e instanceof Error ? e.message : String(e);
+			throw new QuereusError(`Execution error: ${message}`, StatusCode.ERROR, e instanceof Error ? e : undefined);
 		} finally {
 			this.busy = false;
 		}
