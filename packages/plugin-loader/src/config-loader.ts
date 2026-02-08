@@ -14,7 +14,7 @@ const log = debug('quereus:config-loader');
  */
 export interface PluginConfig {
 	source: string;
-	config?: Record<string, SqlValue>;
+	config?: Record<string, unknown>;
 }
 
 /**
@@ -139,6 +139,6 @@ function isValidPluginEntry(plugin: unknown): boolean {
 	if (typeof plugin !== 'object' || plugin === null) return false;
 	const p = plugin as Record<string, unknown>;
 	if (typeof p.source !== 'string') return false;
-	if (p.config !== undefined && typeof p.config !== 'object') return false;
+	if (p.config !== undefined && p.config !== null && (typeof p.config !== 'object' || Array.isArray(p.config))) return false;
 	return true;
 }

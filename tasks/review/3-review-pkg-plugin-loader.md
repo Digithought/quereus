@@ -36,9 +36,9 @@ Previously, plugin load failures were silently `console.warn`'d and skipped. Now
 - After attempting all plugins, if any failed, an aggregate `Error` is thrown listing all failures
 - This prevents silent data loss where an app starts without critical plugins
 
-### 6. Modernized Import Assertion Syntax
+### 6. Modernized Import Attribute Syntax
 
-Replaced deprecated `{ assert: { type: 'json' } }` with the standard `{ with: { type: 'json' } }` syntax for JSON module imports.
+Replaced deprecated `{ assert: { type: 'json' } }` with the standard `{ with: { type: 'json' } }` import attribute syntax for JSON module imports (Node 24+).
 
 ### 7. Code Quality Improvements
 

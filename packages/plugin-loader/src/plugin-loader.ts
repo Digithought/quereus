@@ -85,22 +85,27 @@ export async function dynamicLoadModule(
 	db: Database,
 	config: Record<string, SqlValue> = {}
 ): Promise<PluginManifest | undefined> {
-	const moduleUrl = new URL(url);
+	try {
+		const moduleUrl = new URL(url);
 
-	// Add cache-busting timestamp for local development
-	if (moduleUrl.protocol === 'file:' || moduleUrl.hostname === 'localhost') {
-		moduleUrl.searchParams.set('t', Date.now().toString());
+		// Add cache-busting timestamp for local development
+		if (moduleUrl.protocol === 'file:' || moduleUrl.hostname === 'localhost') {
+			moduleUrl.searchParams.set('t', Date.now().toString());
+		}
+
+		// Dynamic import with Vite ignore comment for bundler compatibility
+		const mod: unknown = await import(/* @vite-ignore */ moduleUrl.toString());
+
+		assertValidPluginModule(mod, url);
+
+		await registerPlugin(db, mod.default, config);
+		log('Loaded plugin from %s', url);
+
+		return await tryLoadManifestFromUrl(moduleUrl);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to load plugin from ${url}: ${message}`);
 	}
-
-	// Dynamic import with Vite ignore comment for bundler compatibility
-	const mod: unknown = await import(/* @vite-ignore */ moduleUrl.toString());
-
-	assertValidPluginModule(mod, url);
-
-	await registerPlugin(db, mod.default, config);
-	log('Loaded plugin from %s', url);
-
-	return await tryLoadManifestFromUrl(moduleUrl);
 }
 
 /**
@@ -248,7 +253,7 @@ function splitVersion(nameAndVersion: string, subpath?: string): NpmSpec {
 	const atIndex = nameAndVersion.lastIndexOf('@');
 	const startsWithScope = nameAndVersion.startsWith('@');
 
-	if (atIndex > (startsWithScope ? 0 : -1) && atIndex !== 0) {
+	if (atIndex > (startsWithScope ? 0 : -1)) {
 		const name = nameAndVersion.slice(0, atIndex);
 		const version = nameAndVersion.slice(atIndex + 1) || undefined;
 		return { name, version, subpath };
