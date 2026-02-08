@@ -7,7 +7,7 @@ import { DistinctNode } from '../nodes/distinct-node.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
 import { LimitOffsetNode } from '../nodes/limit-offset.js';
 import { LiteralNode } from '../nodes/scalar.js';
-import { MultiScope } from '../scopes/multi.js';
+import { ShadowScope } from '../scopes/shadow.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
@@ -102,7 +102,7 @@ export function applyOrderBy(
 		// Merge projection scope if available so ORDER BY can reference output column aliases
 		let orderByContext = selectContext;
 		if (projectionScope) {
-			const combinedScope = new MultiScope([projectionScope, selectContext.scope]);
+			const combinedScope = new ShadowScope([projectionScope, selectContext.scope]);
 			orderByContext = { ...selectContext, scope: combinedScope };
 		}
 
@@ -133,7 +133,7 @@ export function applyLimitOffset(
 		// Merge projection scope if available so LIMIT/OFFSET can reference output column aliases
 		let limitContext = selectContext;
 		if (projectionScope) {
-			const combinedScope = new MultiScope([projectionScope, selectContext.scope]);
+			const combinedScope = new ShadowScope([projectionScope, selectContext.scope]);
 			limitContext = { ...selectContext, scope: combinedScope };
 		}
 

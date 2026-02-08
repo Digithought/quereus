@@ -5,7 +5,8 @@ import type { Scope } from '../scopes/scope.js';
 import type { WindowFunctionExpr } from '../../parser/ast.js';
 import { Cached } from '../../util/cached.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
-import { INTEGER_TYPE, REAL_TYPE } from '../../types/builtin-types.js';
+import { resolveWindowFunction } from '../../schema/window-function.js';
+import { REAL_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Represents a window function call in the query plan.
@@ -27,13 +28,13 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 		super(scope, estimatedCostOverride);
 
 		this.outputTypeCache = new Cached(() => {
-			// Most window functions return numeric types
-			// row_number() specifically returns an integer
-			if (this.functionName === 'row_number') {
-				return { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: false } satisfies ScalarType;
+			const schema = resolveWindowFunction(this.functionName);
+			if (schema) {
+				return schema.returnType;
 			}
-			// Other window functions would have their own type inference
-			return { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: false } satisfies ScalarType;
+
+			// Fallback: unknown window functions behave like numeric windows for now.
+			return { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: false, isReadOnly: true } satisfies ScalarType;
 		});
 	}
 

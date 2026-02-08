@@ -9,6 +9,7 @@ import { AliasedScope } from '../scopes/aliased.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import type { Scope } from '../scopes/scope.js';
 import { MultiScope } from '../scopes/multi.js';
+import { ShadowScope } from '../scopes/shadow.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildExpression } from './expression.js';
 import { FilterNode } from '../nodes/filter.js';
@@ -95,7 +96,7 @@ export function buildSelectStmt(
 
 	// Phase 2: Create the main scope for this SELECT statement
 	const columnScopes = fromTables.map(ft => ctx.outputScopes.get(ft) || ft.scope).filter(Boolean);
-	const selectScope = new MultiScope([...columnScopes, contextWithCTEs.scope]);
+	const selectScope = new ShadowScope([...columnScopes, contextWithCTEs.scope]);
 	let selectContext: PlanningContext = { ...contextWithCTEs, scope: selectScope };
 
 	let input: RelationalPlanNode = fromTables[0];
@@ -198,7 +199,7 @@ export function buildSelectStmt(
 		});
 
 		// Create combined scope that includes both original columns and window output
-		const combinedScope = new MultiScope([windowOutputScope, selectScope]);
+		const combinedScope = new ShadowScope([windowOutputScope, selectScope]);
 		selectContext = { ...selectContext, scope: combinedScope };
 
 		// Don't apply ORDER BY again if we already did it
@@ -338,10 +339,6 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 					columnScope = new AliasedScope(cteScope, tableName, tableName);
 				}
 
-				// CRITICAL: Cache the reference node so later expression compilation uses the same attribute IDs
-				// TODO: replace this monkey patching with a proper interface
-				(columnScope as any).referenceNode = cteRefNode;
-
 				fromTable = cteRefNode;
 			}
 		} else {
@@ -467,8 +464,12 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			throw new QuereusError(`Unsupported subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
 
+		const alias = fromClause.alias?.toLowerCase();
+
 		// Wrap with AliasNode to update relationName on attributes
-		fromTable = new AliasNode(parentContext.scope, subqueryNode, fromClause.alias.toLowerCase());
+		fromTable = alias
+			? new AliasNode(parentContext.scope, subqueryNode, alias)
+			: subqueryNode;
 
 		// Create scope for subquery columns
 		const subqueryScope = new RegisteredScope(parentContext.scope);
@@ -486,7 +487,9 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			}
 		});
 
-		columnScope = new AliasedScope(subqueryScope, '', fromClause.alias.toLowerCase());
+		columnScope = alias
+			? new AliasedScope(subqueryScope, '', alias)
+			: subqueryScope;
 
 	} else if (fromClause.type === 'mutatingSubquerySource') {
 		// Build the mutating subquery (DML with RETURNING)
@@ -507,8 +510,12 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			throw new QuereusError(`Unsupported mutating subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
 		}
 
+		const alias = fromClause.alias?.toLowerCase();
+
 		// Wrap with AliasNode to update relationName on attributes
-		fromTable = new AliasNode(parentContext.scope, dmlNode, fromClause.alias.toLowerCase());
+		fromTable = alias
+			? new AliasNode(parentContext.scope, dmlNode, alias)
+			: dmlNode;
 
 		// Create scope for mutating subquery columns
 		const mutatingScope = new RegisteredScope(parentContext.scope);
@@ -526,7 +533,9 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			}
 		});
 
-		columnScope = new AliasedScope(mutatingScope, '', fromClause.alias.toLowerCase());
+		columnScope = alias
+			? new AliasedScope(mutatingScope, '', alias)
+			: mutatingScope;
 
 	} else if (fromClause.type === 'join') {
 		// Handle JOIN clauses

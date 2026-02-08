@@ -18,6 +18,8 @@ import type { PlanNode, ScalarPlanNode, Attribute } from '../../nodes/plan-node.
 import type { OptContext } from '../../framework/context.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
+import { PlanNodeType } from '../../nodes/plan-node-type.js';
+import { ColumnReferenceNode } from '../../nodes/reference.js';
 import {
 	PlanNodeCharacteristics,
 	CapabilityDetectors,
@@ -52,7 +54,7 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
 		// Need to ensure ordering for streaming aggregate
 		// Check if source already provides the required ordering
 		const sourceOrdering = PlanNodeCharacteristics.getOrdering(source);
-		const needsSort = !isOrderedForGrouping(sourceOrdering, groupingKeys);
+		const needsSort = !isOrderedForGrouping(sourceOrdering, groupingKeys, source.getAttributes());
 
 		let sortedSource = source;
 		if (needsSort) {
@@ -117,13 +119,40 @@ export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): Pl
  * Check if source ordering matches grouping requirements for streaming
  */
 function isOrderedForGrouping(
-	_ordering: { column: number; desc: boolean }[] | undefined,
-	_groupingKeys: readonly ScalarPlanNode[]
+	ordering: { column: number; desc: boolean }[] | undefined,
+	groupingKeys: readonly ScalarPlanNode[],
+	sourceAttributes: readonly { id: number }[]
 ): boolean {
-	// TODO: Implement proper ordering analysis
-	// For now, conservatively return false to always sort
-	// This should check if the ordering covers all grouping keys in order
-	return false;
+	if (!ordering || ordering.length === 0) {
+		return false;
+	}
+
+	const groupColumns: number[] = [];
+	for (const key of groupingKeys) {
+		if (key.nodeType !== PlanNodeType.ColumnReference) {
+			return false;
+		}
+
+		const colRef = key as unknown as ColumnReferenceNode;
+		const idx = sourceAttributes.findIndex(a => a.id === colRef.attributeId);
+		if (idx < 0) {
+			return false;
+		}
+
+		groupColumns.push(idx);
+	}
+
+	if (groupColumns.length > ordering.length) {
+		return false;
+	}
+
+	for (let i = 0; i < groupColumns.length; i++) {
+		if (ordering[i].column !== groupColumns[i]) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 /**

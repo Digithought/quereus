@@ -27,38 +27,51 @@ Conduct an adversarial review of the query optimizer to identify correctness ris
 
 ### Rule Application Correctness
 
-- [ ] **Rule termination / convergence**: Validate that repeated application cannot cycle (including node type-changing rewrites). Inspect `packages/quereus/src/planner/framework/pass.ts` and `packages/quereus/src/planner/framework/registry.ts`. Add/extend tests that exercise known “A→B→A” patterns.
-- [ ] **Visited tracking semantics**: Confirm what “visited” means (per-node, per-rule, per-pass) and whether it prevents re-firing loops without blocking legitimate follow-up optimizations.
-- [ ] **Depth limiting**: Confirm recursion/iteration depth limits are correct and testable. Inspect `packages/quereus/src/planner/optimizer.ts` and add a regression test for deep nesting.
+- [x] **Rule termination / convergence**: Add a local fixpoint loop in pass application and a regression test covering an explicit A→B→A rewrite cycle.
+- [x] **Visited tracking semantics**: Wire `visitedRules` into the pass framework and inherit visited state across rewrite chains so rule application remains terminating even as node IDs change.
+- [x] **Depth limiting**: Enforce `tuning.maxOptimizationDepth` during pass traversal and add a regression test for deep nesting.
 
 ### Physical Property Propagation
 
-- [ ] **Ordering analysis**: Confirm whether ordering analysis is implemented (or intentionally stubbed). If there are TODOs (e.g. in streaming aggregate rules), decide whether to implement now or track as a follow-up with a focused test.
-- [ ] **Unique key propagation**: Audit that unique keys/keys-by attributes are preserved through projections and common rewrites. Verify `packages/quereus/src/planner/framework/physical-utils.ts` is used consistently.
-- [ ] **Cost model sanity**: Validate that costs are internally consistent and useful for relative ranking (not necessarily “accurate”). Add a small benchmark/regression test to ensure costs move in the expected direction for obvious plan changes.
+- [x] **Ordering analysis**: Implement the trivial “ordered-by-grouping-keys” check for streaming aggregation and add a regression test (no redundant sort inserted).
+- [x] **Unique key propagation**: Keep existing key projection logic and add consistent ordering projection via shared utilities.
+- [ ] **Cost model sanity**: Deferred (no changes in this task).
 
 ### Attribute ID Preservation
 
-- [ ] **Attribute collection correctness**: Verify expression/constraint walkers do not miss bindings (especially nested expressions). Prefer shared utilities (e.g. `packages/quereus/src/planner/analysis/binding-collector.ts`) over ad-hoc walkers where practical.
+- [ ] **Attribute collection correctness**: Deferred (no walker refactors in this task).
 - [ ] **Attribute ID uniqueness**: Confirm attribute combination/merging logic cannot silently create duplicate IDs or cross-wire IDs across different sources.
-- [ ] **Transformation stability**: Audit common rewrite helpers (`withChildren()`, node constructors) to ensure attribute IDs are preserved unless intentionally remapped. Add at least one regression test that fails if IDs drift.
+- [x] **Transformation stability**: Add a regression test asserting `attributeId` stability across aliasing + `order by` references.
 
 ### Code Quality
 
-- [ ] **DRY hotspots**: Identify the top 2–3 duplicated patterns (predicate normalization, constraint extraction, binding collection) and either consolidate or document why they must remain separate.
+- [x] **DRY hotspots**: Add a shared `projectOrdering()` helper to mirror existing key projection patterns and use it from `ProjectNode` and `ReturningNode`.
 - [ ] **Large functions**: Flag the biggest readability/maintainability offenders and propose a decomposition plan (don’t refactor “just because”; prioritize things that reduce bug surface area).
 - [ ] **Constraint extraction complexity**: Review `packages/quereus/src/planner/analysis/constraint-extractor.ts` for correctness and maintainability. If it’s becoming a “god function”, decide on an incremental decomposition strategy and capture it as follow-up work.
 
 ### Framework Tests
 
-- [ ] **Pass manager tests**: Cover pass execution order, traversal order (top-down vs bottom-up), and termination behavior.
+- [x] **Pass manager tests**: Add tests for termination (A→B→A) and depth limiting.
 - [ ] **Rule registry tests**: Cover rule priority ordering, visited tracking, and duplicate registration handling.
 - [ ] **Context tests**: Cover context cloning/copying, depth limiting, and any node caching semantics.
 
 ### Rule Tests
 
 - [ ] **Rule coverage**: Ensure high-risk rules have direct unit tests (predicate pushdown, join reordering, aggregate/window-related rules, CTE/materialization decisions).
-- [ ] **Analysis module tests**: Add focused tests for `constraint-extractor`, `predicate-normalizer`, `binding-collector`, and `const-evaluator`.
+- [ ] **Analysis module tests**: Deferred (no changes in this task).
+
+## Work completed (implementation notes)
+
+- **Pass framework**: `PassManager` now supports local fixpoint rule application with visited tracking and per-pass DAG caching; traversal enforces `maxOptimizationDepth`.
+- **Physical properties**:
+  - `ProjectNode`/`ReturningNode`: ordering is now remapped through projections (mirrors unique-key projection).
+  - `AliasNode`: now preserves ordering/uniqueKeys/estimatedRows.
+  - Streaming aggregate ordering check implemented for trivial column refs.
+- **New tests**:
+  - `packages/quereus/test/optimizer/pass-manager.spec.ts`
+  - `packages/quereus/test/optimizer/ordering-propagation.spec.ts`
+  - `packages/quereus/test/optimizer/attribute-id-stability.spec.ts`
+- **Docs**: updated `docs/optimizer.md` to reflect current pass/caching semantics.
 
 ## Deliverables
 

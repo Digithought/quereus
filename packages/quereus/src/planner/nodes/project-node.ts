@@ -11,6 +11,7 @@ import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { ProjectionCapable } from '../framework/characteristics.js';
 import type { PhysicalProperties } from './plan-node.js';
+import { projectOrdering } from '../framework/physical-utils.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -171,7 +172,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			if (proj.node instanceof ColumnReferenceNode) {
 				const colRef = proj.node as ColumnReferenceNode;
 				const srcIndex = sourceAttrs.findIndex(a => a.id === colRef.attributeId);
-				if (srcIndex >= 0) map.set(srcIndex, outIdx);
+				if (srcIndex >= 0 && !map.has(srcIndex)) map.set(srcIndex, outIdx);
 			}
 		});
 		const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
@@ -187,7 +188,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			.filter((k): k is number[] => k !== null);
 		return {
 			estimatedRows: this.source.estimatedRows,
-			ordering: sourcePhysical?.ordering,
+			ordering: projectOrdering(sourcePhysical?.ordering, map),
 			uniqueKeys,
 		};
 	}

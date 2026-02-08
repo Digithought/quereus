@@ -380,7 +380,7 @@ export function formatPlanTree(rootNode: PlanNode, options: PlanDisplayOptions =
 				physicalInfo.push(`rows: ${physical.estimatedRows}`);
 			}
 			if (physical.ordering && physical.ordering.length > 0) {
-				physicalInfo.push(`ordered: ${physical.ordering.map((o: any) => `${o.attributeId}:${o.direction}`).join(',')}`);
+				physicalInfo.push(`ordered: ${physical.ordering.map((o: any) => `${o.column}${o.desc ? ' desc' : ' asc'}`).join(',')}`);
 			}
 			if (physical.readonly !== undefined) {
 				physicalInfo.push(`readonly: ${physical.readonly}`);

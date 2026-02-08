@@ -118,6 +118,7 @@ interface OptimizationPass {
 - **Proper Sequencing**: Structural transformations happen before physical selection
 - **Flexible Traversal**: Each pass can choose its optimal traversal order
 - **Clean Debugging**: Clear pass boundaries make optimization easier to understand
+- **Depth safety**: Traversal enforces `tuning.maxOptimizationDepth` to prevent pathological recursion
 
 ### Core Components
 
@@ -702,24 +703,20 @@ interface OptContext {
 - Correlated subqueries with repeated correlation variables
 - View expansions that reference the same underlying tables
 
-**Solution**: Context-scoped tracking treats each traversal path as independent:
+**Solution**: The pass framework uses a **per-pass traversal cache** to ensure shared subtrees are optimized consistently within a pass, while still allowing later passes to revisit nodes.
 
 ```typescript
-// Optimizer core handles shared nodes elegantly
-optimizeNode(node: PlanNode, context: OptContext): PlanNode {
-  // Check if we've already optimized this exact node instance
-  const cached = context.optimizedNodes.get(node.id);
-  if (cached) {
-    return cached; // Reuse optimized version
-  }
-  
-  // ... optimization logic ...
-  
-  // Cache result for future references in this context
-  context.optimizedNodes.set(node.id, result);
-  return result;
-}
+// PassManager traversal: reuse within a single pass
+const cached = context.optimizedNodes.get(node.id);
+if (cached) return cached;
+
+// ... optimize children + apply rules ...
+
+context.optimizedNodes.set(node.id, result);
+return result;
 ```
+
+The cache is cleared at the start of each pass (so Physical Selection can still rewrite nodes that Structural cached).
 
 ### Rule Application Control
 
@@ -743,12 +740,12 @@ markRuleApplied(nodeId: string, ruleId: string, context: OptContext): void {
 
 ### Multi-Pass Optimization Support
 
-The architecture naturally supports multi-pass optimization strategies:
+The architecture supports multi-pass optimization strategies via:
 
-**Single-Pass (Current)**:
+**Single optimization session (current)**:
 - One context per optimization session
-- Rules fire once per node per context
-- Shared nodes are cached and reused
+- `optimizedNodes` is used as a per-pass traversal cache (cleared each pass)
+- `visitedRules` persists across passes and is inherited along rewrite chains so local fixpoint iteration terminates
 
 **Multi-Pass (Future)**:
 - Fresh context per optimization pass
@@ -834,7 +831,7 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 
 2) Unique key propagation rules
 - Filter: If predicate covers a full unique key on the source, set `uniqueKeys = [[]]` and cap `estimatedRows = 1`; otherwise propagate source `uniqueKeys` unchanged.
-- Project/Returning: Map source `uniqueKeys` through projection mapping; drop keys that aren’t fully preserved.
+- Project/Returning: Map source `uniqueKeys` through projection mapping; drop keys that aren’t fully preserved. If `ordering` is present and all ordering columns survive the projection, remap ordering indices through the same mapping; otherwise clear ordering.
 - Join (INNER/CROSS): Preserve side keys when equi‑join predicates cover the other side’s key; compute composite keys when applicable. For OUTER joins, only preserve non‑null‑safe keys on the preserved side.
 - Aggregate: `GROUP BY` columns define `uniqueKeys` over their indices; global aggregates without grouping produce `[[]]`.
 - Distinct: All columns form a `uniqueKey`.

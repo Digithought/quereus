@@ -208,3 +208,27 @@ export function projectUniqueKeys(
 
 	return result;
 }
+
+/**
+ * Project ordering through a projection
+ * Returns undefined if any ordering column is removed by the projection
+ */
+export function projectOrdering(
+	ordering: Ordering[] | undefined,
+	columnMapping: Map<number, number> // oldColumn -> newColumn
+): Ordering[] | undefined {
+	if (!ordering || ordering.length === 0) {
+		return ordering;
+	}
+
+	const result: Ordering[] = [];
+	for (const ord of ordering) {
+		const newCol = columnMapping.get(ord.column);
+		if (newCol === undefined) {
+			return undefined;
+		}
+		result.push({ column: newCol, desc: ord.desc });
+	}
+
+	return result;
+}

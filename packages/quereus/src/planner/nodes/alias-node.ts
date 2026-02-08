@@ -1,4 +1,4 @@
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
@@ -58,6 +58,15 @@ export class AliasNode extends PlanNode implements UnaryRelationalNode {
 
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.source];
+	}
+
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		return {
+			estimatedRows: this.source.estimatedRows,
+			ordering: sourcePhysical?.ordering,
+			uniqueKeys: sourcePhysical?.uniqueKeys,
+		};
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {

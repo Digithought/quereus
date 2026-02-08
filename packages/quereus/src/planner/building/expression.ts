@@ -27,7 +27,10 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
     case 'column': {
       const colResolution = resolveColumn(ctx.scope, expr, ctx.db.schemaManager.getCurrentSchemaName());
 
-      if (!colResolution || colResolution === Ambiguous) {
+      if (colResolution === Ambiguous) {
+        throw new QuereusError(`ambiguous column name: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+      }
+      if (!colResolution) {
         throw new QuereusError(`Column not found: ${expr.name}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
       return colResolution as ScalarPlanNode;
@@ -35,7 +38,10 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 
 		case 'parameter': {
       const paramResolution = resolveParameter(ctx.scope, expr);
-      if (!paramResolution || paramResolution === Ambiguous) {
+      if (paramResolution === Ambiguous) {
+        throw new QuereusError(`ambiguous parameter: ${expr.name ?? expr.index}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
+      }
+      if (!paramResolution) {
         throw new QuereusError(`Parameter not found: ${expr.name ?? expr.index}`, StatusCode.ERROR, undefined, expr.loc?.start.line, expr.loc?.start.column);
       }
       return paramResolution as ScalarPlanNode;

@@ -7,6 +7,7 @@ import { ColumnReferenceNode } from './reference.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { Cached } from '../../util/cached.js';
 import { projectKeys } from '../util/key-utils.js';
+import { projectOrdering } from '../framework/physical-utils.js';
 
 export interface ReturningProjection {
   node: ScalarPlanNode;
@@ -226,7 +227,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     this.projections.forEach((proj, outIdx) => {
       if (proj.node instanceof ColumnReferenceNode) {
         const srcIndex = execAttrs.findIndex(a => a.id === (proj.node as ColumnReferenceNode).attributeId);
-        if (srcIndex >= 0) map.set(srcIndex, outIdx);
+        if (srcIndex >= 0 && !map.has(srcIndex)) map.set(srcIndex, outIdx);
       }
     });
 
@@ -244,7 +245,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
 
     return {
       estimatedRows: this.estimatedRows,
-      ordering: sourcePhysical?.ordering,
+      ordering: projectOrdering(sourcePhysical?.ordering, map),
       uniqueKeys,
     };
   }

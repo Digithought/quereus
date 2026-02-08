@@ -29,6 +29,35 @@ SELECT id FROM t_amb1 JOIN t_amb2 ON t_amb1.id = t_amb2.id;
 DROP TABLE t_amb1;
 DROP TABLE t_amb2;
 
+-- Semantic Success: Qualified columns resolve correctly in JOIN
+CREATE TABLE t_qual1 (id INTEGER, name TEXT);
+CREATE TABLE t_qual2 (id INTEGER, value TEXT);
+INSERT INTO t_qual1 VALUES (1, 'A'), (2, 'B');
+INSERT INTO t_qual2 VALUES (1, 'X'), (3, 'Y');
+SELECT a.id AS a_id, a.name, b.id AS b_id, b.value FROM t_qual1 a JOIN t_qual2 b ON a.id = b.id ORDER BY a.id;
+→ [{"a_id":1,"name":"A","b_id":1,"value":"X"}]
+DROP TABLE t_qual1;
+DROP TABLE t_qual2;
+
+-- Semantic Success: Projection alias shadows input columns in ORDER BY
+CREATE TABLE t_order_shadow (id INTEGER, name TEXT);
+INSERT INTO t_order_shadow VALUES (1, 'Z'), (2, 'A'), (3, 'M');
+SELECT id AS name, name AS id FROM t_order_shadow ORDER BY name;
+→ [{"name":1,"id":"Z"},{"name":2,"id":"A"},{"name":3,"id":"M"}]
+SELECT id AS name, name AS id FROM t_order_shadow ORDER BY name DESC;
+→ [{"name":3,"id":"M"},{"name":2,"id":"A"},{"name":1,"id":"Z"}]
+DROP TABLE t_order_shadow;
+
+-- Semantic Success: CTE name shadows table name
+CREATE TABLE t_cte_shadow (id INTEGER, name TEXT);
+INSERT INTO t_cte_shadow VALUES (1, 'Table'), (2, 'Data');
+WITH t_cte_shadow AS (SELECT 10 AS id, 'CTE' AS name)
+SELECT * FROM t_cte_shadow ORDER BY id;
+→ [{"id":10,"name":"CTE"}]
+SELECT * FROM t_cte_shadow ORDER BY id;
+→ [{"id":1,"name":"Table"},{"id":2,"name":"Data"}]
+DROP TABLE t_cte_shadow;
+
 -- Semantic Error: Function not found
 SELECT non_existent_function(1);
 -- error: Function not found: non_existent_function/1

@@ -9,9 +9,12 @@
 import type { PlanNode } from '../nodes/plan-node.js';
 import type { OptContext } from './context.js';
 import type { RuleHandle } from './registry.js';
+import { hasRuleBeenApplied, markRuleApplied } from './registry.js';
 import { createLogger } from '../../common/logger.js';
 import { performConstantFolding } from '../analysis/const-pass.js';
 import { createRuntimeExpressionEvaluator } from '../analysis/const-evaluator.js';
+import { StatusCode } from '../../common/types.js';
+import { quereusError } from '../../common/errors.js';
 
 const log = createLogger('optimizer:framework:pass');
 
@@ -163,9 +166,9 @@ export class PassManager {
 	private passes: Map<string, OptimizationPass> = new Map();
 	private sortedPasses: OptimizationPass[] = [];
 
-	constructor() {
-		// Register standard passes
-		for (const pass of STANDARD_PASSES) {
+	constructor(passes: readonly OptimizationPass[] = STANDARD_PASSES) {
+		// Register standard (or provided) passes
+		for (const pass of passes) {
 			this.registerPass(pass);
 		}
 	}
@@ -241,6 +244,8 @@ export class PassManager {
 		let currentPlan = plan;
 		for (const pass of this.sortedPasses) {
 			log('Starting pass: %s', pass.name);
+			// Cache is scoped to a single traversal/pass; do not reuse across passes.
+			context.optimizedNodes.clear();
 
 			if (pass.execute) {
 				// Custom execution logic
@@ -268,9 +273,15 @@ export class PassManager {
 		// and apply the pass's rules at each node
 
 		if (pass.traversalOrder === TraversalOrder.TopDown) {
-			return this.traverseTopDown(plan, context, pass);
+			return this.traverseTopDown(plan, context, pass, 0);
 		} else {
-			return this.traverseBottomUp(plan, context, pass);
+			return this.traverseBottomUp(plan, context, pass, 0);
+		}
+	}
+
+	private assertOptimizationDepth(context: OptContext, depth: number): void {
+		if (depth >= context.tuning.maxOptimizationDepth) {
+			quereusError(`Maximum optimization depth exceeded: ${depth}`, StatusCode.ERROR);
 		}
 	}
 
@@ -280,8 +291,16 @@ export class PassManager {
 	private traverseTopDown(
 		node: PlanNode,
 		context: OptContext,
-		pass: OptimizationPass
+		pass: OptimizationPass,
+		depth: number
 	): PlanNode {
+		this.assertOptimizationDepth(context, depth);
+
+		const cached = context.optimizedNodes.get(node.id);
+		if (cached) {
+			return cached;
+		}
+
 		// Apply rules to this node first
 		let currentNode = this.applyPassRules(node, context, pass);
 
@@ -289,7 +308,7 @@ export class PassManager {
 		const children = currentNode.getChildren();
 		if (children.length > 0) {
 			const newChildren = children.map(child =>
-				this.traverseTopDown(child, context, pass)
+				this.traverseTopDown(child, context, pass, depth + 1)
 			);
 
 			// Only create new node if children changed
@@ -299,6 +318,7 @@ export class PassManager {
 			}
 		}
 
+		context.optimizedNodes.set(node.id, currentNode);
 		return currentNode;
 	}
 
@@ -308,15 +328,23 @@ export class PassManager {
 	private traverseBottomUp(
 		node: PlanNode,
 		context: OptContext,
-		pass: OptimizationPass
+		pass: OptimizationPass,
+		depth: number
 	): PlanNode {
+		this.assertOptimizationDepth(context, depth);
+
+		const cached = context.optimizedNodes.get(node.id);
+		if (cached) {
+			return cached;
+		}
+
 		// Traverse children first
 		const children = node.getChildren();
 		let currentNode = node;
 
 		if (children.length > 0) {
 			const newChildren = children.map(child =>
-				this.traverseBottomUp(child, context, pass)
+				this.traverseBottomUp(child, context, pass, depth + 1)
 			);
 
 			// Only create new node if children changed
@@ -327,7 +355,9 @@ export class PassManager {
 		}
 
 		// Then apply rules to this node
-		return this.applyPassRules(currentNode, context, pass);
+		const result = this.applyPassRules(currentNode, context, pass);
+		context.optimizedNodes.set(node.id, result);
+		return result;
 	}
 
 	/**
@@ -339,16 +369,41 @@ export class PassManager {
 		pass: OptimizationPass
 	): PlanNode {
 		let currentNode = node;
-		// Apply rules against the current node type only
-		for (const rule of pass.rules) {
-			if (rule.nodeType !== currentNode.nodeType) continue;
-			const result = rule.fn(currentNode, context);
-			if (result && result !== currentNode) {
-				log('Rule %s transformed node in pass %s', rule.id, pass.id);
-				currentNode = result;
+		let changed = true;
+
+		while (changed) {
+			changed = false;
+
+			for (const rule of pass.rules) {
+				if (rule.nodeType !== currentNode.nodeType) continue;
+				if (hasRuleBeenApplied(currentNode.id, rule.id, context)) continue;
+
+				const result = rule.fn(currentNode, context);
+				if (result && result !== currentNode) {
+					markRuleApplied(currentNode.id, rule.id, context);
+					this.inheritVisitedRules(currentNode.id, result.id, context);
+					log('Rule %s transformed node in pass %s', rule.id, pass.id);
+					currentNode = result;
+					changed = true;
+				}
 			}
 		}
 
 		return currentNode;
+	}
+
+	private inheritVisitedRules(fromNodeId: string, toNodeId: string, context: OptContext): void {
+		const from = context.visitedRules.get(fromNodeId);
+		if (!from || from.size === 0) return;
+
+		const existing = context.visitedRules.get(toNodeId);
+		if (!existing) {
+			context.visitedRules.set(toNodeId, new Set(from));
+			return;
+		}
+
+		for (const id of from) {
+			existing.add(id);
+		}
 	}
 }
