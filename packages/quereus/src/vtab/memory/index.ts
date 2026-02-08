@@ -176,16 +176,13 @@ export class MemoryIndex {
 		return this.data.getCount();
 	}
 
-	/** Clears all entries from the index */
+	/** Clears all entries from the index, creating a fresh empty BTree */
 	clear(): void {
-		const base = (this.data as any).baseTable as BTree<BTreeKeyForIndex, MemoryIndexEntry> | undefined;
-		this.data = this.createBTree(base);
+		this.data = this.createBTree();
 	}
 
-	/** Clears the base inheritance for this index (used during layer collapse) */
+	/** Detaches this index's BTree from its base inheritance (used during layer collapse) */
 	clearBase(): void {
-		if (typeof (this.data as any).clearBase === 'function') {
-			(this.data as any).clearBase();
-		}
+		this.data.clearBase();
 	}
 }

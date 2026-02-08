@@ -3,6 +3,8 @@ import type { SqlValue } from '../../../common/types.js';
 import type { BTreeKey } from '../types.js';
 import type { FilterInfo } from '../../filter-info.js';
 import type { TableSchema } from '../../../schema/table.js';
+import type { IndexColumnSchema, PrimaryKeyColumnDefinition } from '../../../schema/table.js';
+import type { IndexConstraint, IndexInfo } from '../../index-info.js';
 import { IndexConstraintOp as ActualIndexConstraintOp } from '../../../common/constants.js';
 
 /** Describes an equality constraint for a scan plan */
@@ -36,49 +38,223 @@ export interface ScanPlan {
 	idxNum?: number;
 	/** The original idxStr from xBestIndex, potentially useful for debugging */
 	idxStr?: string | null;
-
-	// Additional fields might be needed for complex filtering passed down
-	// e.g., remaining constraints not handled by index bounds/equality.
-	// remainingConstraints?: ReadonlyArray<{ constraint: IndexConstraint, value: SqlValue }>;
 }
 
-// Helper function (moved from MemoryTableCursor and adapted)
-export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema: TableSchema): ScanPlan {
-	const { idxNum, idxStr, constraints, args, indexInfoOutput } = filterInfo;
-	let indexName: string | 'primary' = 'primary';
-	let descending = false;
-	let equalityKey: BTreeKey | undefined = undefined;
-	let lowerBound: ScanPlanRangeBound | undefined = undefined;
-	let upperBound: ScanPlanRangeBound | undefined = undefined;
+interface IndexSchemaLike {
+	name: string;
+	columns: ReadonlyArray<IndexColumnSchema | PrimaryKeyColumnDefinition>;
+}
+
+type ArgvMap = ReadonlyMap<number, number>;
+
+function parseIdxStrParameters(idxStr: string | null): Map<string, string> {
 	const params = new Map<string, string>();
-	idxStr?.split(';').forEach(part => { const [key, value] = part.split('=', 2); if (key && value !== undefined) params.set(key, value); });
-	const idxNameMatch = params.get('idx')?.match(/^(.*?)\((\d+)\)$/);
-	if (idxNameMatch) indexName = idxNameMatch[1] === '_primary_' ? 'primary' : idxNameMatch[1];
-	const planType = parseInt(params.get('plan') ?? '0', 10);
-	descending = params.get('ordCons') === 'DESC' || planType === 1 || planType === 4;
-	const argvMap = new Map<number, number>();
-	params.get('argvMap')?.match(/\[(\d+),(\d+)\]/g)?.forEach(m => { const p = m.match(/\[(\d+),(\d+)\]/); if (p) argvMap.set(parseInt(p[1]), parseInt(p[2])); });
-	const currentSchema = tableSchema;
-	const indexSchemaForPlan = indexName === 'primary' ? { name: '_primary_', columns: currentSchema.primaryKeyDefinition ?? [{ index: -1, desc: false, collation: 'BINARY' }] } : currentSchema.indexes?.find(i => i.name === indexName);
-	if (planType === 2) { // EQ Plan
-		if (indexName === 'primary' && args.length === 1 && argvMap.size === 1 && currentSchema.primaryKeyDefinition.length <=1 ) equalityKey = args[0];
-		else if (indexSchemaForPlan?.columns) {
-			const keyParts: SqlValue[] = []; let keyComplete = true;
-			for (const colSpec of indexSchemaForPlan.columns) {
-				let foundArg = false;
-				argvMap.forEach((constraintArrIdx, queryArgIdx) => { if (foundArg) return; const constraintInfo = indexInfoOutput.aConstraint[constraintArrIdx]; if (constraintInfo && constraintInfo.iColumn === colSpec.index && constraintInfo.op === ActualIndexConstraintOp.EQ) { keyParts.push(args[queryArgIdx - 1]); foundArg = true; } });
-				if (!foundArg) { for (const cInfo of constraints) { if(foundArg) break; if (cInfo.constraint.iColumn === colSpec.index && cInfo.constraint.op === ActualIndexConstraintOp.EQ && cInfo.argvIndex > 0) { keyParts.push(args[cInfo.argvIndex - 1]); foundArg = true;}}}
-				if (!foundArg) { keyComplete = false; break; }
-			}
-			if (keyComplete && keyParts.length > 0) equalityKey = keyParts.length === 1 && indexSchemaForPlan.columns.length === 1 ? keyParts[0] : keyParts;
-		}
-	} else if (planType === 3 || planType === 4) { // Range Scan
-		const firstPkColDef = indexSchemaForPlan?.columns?.[0];
-		if (firstPkColDef) {
-			const firstColSchemaIdx = firstPkColDef.index;
-			argvMap.forEach((constraintArrIdx, queryArgIdx) => { const cI = indexInfoOutput.aConstraint[constraintArrIdx]; if (cI && cI.iColumn === firstColSchemaIdx) { const v = args[queryArgIdx-1]; const op = cI.op; if (op === ActualIndexConstraintOp.GT || op === ActualIndexConstraintOp.GE) {if (!lowerBound || op > lowerBound.op) lowerBound = {value:v,op};} else if (op === ActualIndexConstraintOp.LT || op === ActualIndexConstraintOp.LE){if (!upperBound || op < upperBound.op) upperBound = {value:v,op};}}});
-			constraints.forEach(cInfo => { if (cInfo.constraint.iColumn === firstColSchemaIdx && cInfo.argvIndex > 0) { const v = args[cInfo.argvIndex-1]; const op = cInfo.constraint.op; if (op===ActualIndexConstraintOp.GT || op===ActualIndexConstraintOp.GE) {if(!lowerBound || op>lowerBound.op)lowerBound={value:v,op:op};} else if (op===ActualIndexConstraintOp.LT || op===ActualIndexConstraintOp.LE){if(!upperBound||op<upperBound.op)upperBound={value:v,op:op};}}});
+	if (!idxStr) return params;
+
+	for (const part of idxStr.split(';')) {
+		const [key, value] = part.split('=', 2);
+		if (key && value !== undefined) {
+			params.set(key, value);
 		}
 	}
+	return params;
+}
+
+function parseArgvMappings(raw: string | undefined): Map<number, number> {
+	const mappings = new Map<number, number>();
+	if (!raw) return mappings;
+
+	const pairPattern = /\[(\d+),(\d+)\]/g;
+	let match: RegExpExecArray | null;
+	while ((match = pairPattern.exec(raw)) !== null) {
+		const queryArgIdx = parseInt(match[1]);
+		const constraintArrIdx = parseInt(match[2]);
+		mappings.set(queryArgIdx, constraintArrIdx);
+	}
+	return mappings;
+}
+
+function resolveIndexName(idxParam: string | undefined): string | 'primary' {
+	const match = idxParam?.match(/^(.*?)\((\d+)\)$/);
+	if (!match) return 'primary';
+	return match[1] === '_primary_' ? 'primary' : match[1];
+}
+
+function resolveIndexSchema(
+	indexName: string | 'primary',
+	tableSchema: TableSchema,
+): IndexSchemaLike | undefined {
+	if (indexName === 'primary') {
+		return {
+			name: '_primary_',
+			columns: tableSchema.primaryKeyDefinition,
+		};
+	}
+	return tableSchema.indexes?.find(idx => idx.name === indexName);
+}
+
+function isDescendingScan(params: Map<string, string>, planType: number): boolean {
+	return params.get('ordCons') === 'DESC' || planType === 1 || planType === 4;
+}
+
+function findArgValueForColumn(
+	columnIndex: number,
+	argvMap: ArgvMap,
+	args: ReadonlyArray<SqlValue>,
+	indexInfoOutput: IndexInfo,
+): SqlValue | undefined {
+	for (const [queryArgIdx, constraintArrIdx] of argvMap) {
+		const constraint = indexInfoOutput.aConstraint[constraintArrIdx];
+		if (constraint?.iColumn === columnIndex && constraint.op === ActualIndexConstraintOp.EQ) {
+			return args[queryArgIdx - 1];
+		}
+	}
+	return undefined;
+}
+
+function findConstraintValueForColumn(
+	columnIndex: number,
+	constraints: ReadonlyArray<{ constraint: IndexConstraint; argvIndex: number }>,
+	args: ReadonlyArray<SqlValue>,
+): SqlValue | undefined {
+	for (const entry of constraints) {
+		if (
+			entry.constraint.iColumn === columnIndex &&
+			entry.constraint.op === ActualIndexConstraintOp.EQ &&
+			entry.argvIndex > 0
+		) {
+			return args[entry.argvIndex - 1];
+		}
+	}
+	return undefined;
+}
+
+function buildEqualityKey(
+	indexName: string | 'primary',
+	indexSchema: IndexSchemaLike,
+	argvMap: ArgvMap,
+	args: ReadonlyArray<SqlValue>,
+	constraints: ReadonlyArray<{ constraint: IndexConstraint; argvIndex: number }>,
+	indexInfoOutput: IndexInfo,
+	tableSchema: TableSchema,
+): BTreeKey | undefined {
+	const isSingleColumnPrimary = indexName === 'primary'
+		&& args.length === 1
+		&& argvMap.size === 1
+		&& tableSchema.primaryKeyDefinition.length <= 1;
+
+	if (isSingleColumnPrimary) return args[0];
+
+	return buildCompositeEqualityKey(indexSchema, argvMap, args, constraints, indexInfoOutput);
+}
+
+function buildCompositeEqualityKey(
+	indexSchema: IndexSchemaLike,
+	argvMap: ArgvMap,
+	args: ReadonlyArray<SqlValue>,
+	constraints: ReadonlyArray<{ constraint: IndexConstraint; argvIndex: number }>,
+	indexInfoOutput: IndexInfo,
+): BTreeKey | undefined {
+	const keyParts: SqlValue[] = [];
+
+	for (const colSpec of indexSchema.columns) {
+		const argValue = findArgValueForColumn(colSpec.index, argvMap, args, indexInfoOutput);
+		if (argValue !== undefined) {
+			keyParts.push(argValue);
+			continue;
+		}
+
+		const constraintValue = findConstraintValueForColumn(colSpec.index, constraints, args);
+		if (constraintValue !== undefined) {
+			keyParts.push(constraintValue);
+			continue;
+		}
+
+		return undefined;
+	}
+
+	if (keyParts.length === 0) return undefined;
+	return keyParts.length === 1 && indexSchema.columns.length === 1
+		? keyParts[0]
+		: keyParts;
+}
+
+function isLowerBoundOp(op: IndexConstraintOp): op is typeof ActualIndexConstraintOp.GT | typeof ActualIndexConstraintOp.GE {
+	return op === ActualIndexConstraintOp.GT || op === ActualIndexConstraintOp.GE;
+}
+
+function isUpperBoundOp(op: IndexConstraintOp): op is typeof ActualIndexConstraintOp.LT | typeof ActualIndexConstraintOp.LE {
+	return op === ActualIndexConstraintOp.LT || op === ActualIndexConstraintOp.LE;
+}
+
+function extractRangeBounds(
+	indexSchema: IndexSchemaLike,
+	argvMap: ArgvMap,
+	args: ReadonlyArray<SqlValue>,
+	constraints: ReadonlyArray<{ constraint: IndexConstraint; argvIndex: number }>,
+	indexInfoOutput: IndexInfo,
+): { lowerBound?: ScanPlanRangeBound; upperBound?: ScanPlanRangeBound } {
+	const firstColumn = indexSchema.columns[0];
+	if (!firstColumn) return {};
+
+	const targetColumnIndex = firstColumn.index;
+	let lowerBound: ScanPlanRangeBound | undefined;
+	let upperBound: ScanPlanRangeBound | undefined;
+
+	const applyBound = (op: IndexConstraintOp, value: SqlValue) => {
+		if (isLowerBoundOp(op)) {
+			if (!lowerBound || op > lowerBound.op) {
+				lowerBound = { value, op };
+			}
+		} else if (isUpperBoundOp(op)) {
+			if (!upperBound || op < upperBound.op) {
+				upperBound = { value, op };
+			}
+		}
+	};
+
+	for (const [queryArgIdx, constraintArrIdx] of argvMap) {
+		const constraint = indexInfoOutput.aConstraint[constraintArrIdx];
+		if (constraint?.iColumn === targetColumnIndex) {
+			applyBound(constraint.op, args[queryArgIdx - 1]);
+		}
+	}
+
+	for (const entry of constraints) {
+		if (entry.constraint.iColumn === targetColumnIndex && entry.argvIndex > 0) {
+			applyBound(entry.constraint.op, args[entry.argvIndex - 1]);
+		}
+	}
+
+	return { lowerBound, upperBound };
+}
+
+export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema: TableSchema): ScanPlan {
+	const { idxNum, idxStr, constraints, args, indexInfoOutput } = filterInfo;
+
+	const params = parseIdxStrParameters(idxStr);
+	const indexName = resolveIndexName(params.get('idx'));
+	const planType = parseInt(params.get('plan') ?? '0', 10);
+	const descending = isDescendingScan(params, planType);
+	const argvMap = parseArgvMappings(params.get('argvMap'));
+	const indexSchema = resolveIndexSchema(indexName, tableSchema);
+
+	let equalityKey: BTreeKey | undefined;
+	let lowerBound: ScanPlanRangeBound | undefined;
+	let upperBound: ScanPlanRangeBound | undefined;
+
+	const isEqPlan = planType === 2;
+	const isRangePlan = planType === 3 || planType === 4;
+
+	if (isEqPlan && indexSchema) {
+		equalityKey = buildEqualityKey(
+			indexName, indexSchema, argvMap, args, constraints, indexInfoOutput, tableSchema,
+		);
+	} else if (isRangePlan && indexSchema) {
+		({ lowerBound, upperBound } = extractRangeBounds(
+			indexSchema, argvMap, args, constraints, indexInfoOutput,
+		));
+	}
+
 	return { indexName, descending, equalityKey, lowerBound, upperBound, idxNum, idxStr };
 }

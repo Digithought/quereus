@@ -269,12 +269,7 @@ export class TransactionLayer implements Layer {
 	 * This should be called when the layer becomes the new effective base.
 	 */
 	public clearBase(): void {
-		// Clear base for primary modifications
-		if (typeof (this.primaryModifications as any).clearBase === 'function') {
-			(this.primaryModifications as any).clearBase();
-		}
-
-		// Clear base for secondary indexes
+		this.primaryModifications.clearBase();
 		for (const memoryIndex of this.secondaryIndexes.values()) {
 			memoryIndex.clearBase();
 		}

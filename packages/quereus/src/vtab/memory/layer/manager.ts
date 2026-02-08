@@ -18,7 +18,6 @@ import { scanTransactionLayer } from './transaction-cursor.js';
 import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFunctions } from '../utils/primary-key.js';
 import { createMemoryTableLoggers } from '../utils/logging.js';
 import { getSyncLiteral } from '../../../parser/utils.js';
-import { createLogger } from '../../../common/logger.js';
 import { validateAndParse } from '../../../types/validation.js';
 import type { VTableEventEmitter } from '../../events.js';
 
@@ -391,7 +390,6 @@ export class MemoryTableManager {
 		this.ensureTransactionLayer(connection);
 
 		const targetLayer = connection.pendingTransactionLayer!;
-		this.cleanConflictResolutionFromValues(values);
 
 		let result: UpdateResult;
 
@@ -441,19 +439,6 @@ export class MemoryTableManager {
 		}
 	}
 
-	private shouldSkipPkCheck(values: Row | undefined): boolean {
-		return !!(values && (values as any)._skipPkCheck);
-	}
-
-	private cleanConflictResolutionFromValues(values: Row | undefined): void {
-		if (values && (values as any)._onConflict) {
-			delete (values as any)._onConflict;
-		}
-		if (values && (values as any)._skipPkCheck) {
-			delete (values as any)._skipPkCheck;
-		}
-	}
-
 	private async performInsert(
 		targetLayer: TransactionLayer,
 		values: Row | undefined,
@@ -478,29 +463,22 @@ export class MemoryTableManager {
 
 		const newRowData: Row = validatedRow;
 		const primaryKey = this.primaryKeyFromRow(newRowData);
-		const skipPkCheck = this.shouldSkipPkCheck(values);
+		const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
 
-		// Only check for existing rows if not skipping PK checks (engine-level constraint checking handles this)
-		if (!skipPkCheck) {
-			const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
-
-			if (existingRow !== null) {
-				if (onConflict === ConflictResolution.IGNORE) {
-					return { status: 'ok', row: undefined };
-				}
-				if (onConflict === ConflictResolution.REPLACE) {
-					// REPLACE: delete existing row and insert new one
-					targetLayer.recordUpsert(primaryKey, newRowData, existingRow);
-					return { status: 'ok', row: newRowData };
-				}
-				// Return constraint violation with existing row for UPSERT support
-				return {
-					status: 'constraint',
-					constraint: 'unique',
-					message: `UNIQUE constraint failed: ${this._tableName} PK.`,
-					existingRow: existingRow
-				};
+		if (existingRow !== null) {
+			if (onConflict === ConflictResolution.IGNORE) {
+				return { status: 'ok', row: undefined };
 			}
+			if (onConflict === ConflictResolution.REPLACE) {
+				targetLayer.recordUpsert(primaryKey, newRowData, existingRow);
+				return { status: 'ok', row: newRowData };
+			}
+			return {
+				status: 'constraint',
+				constraint: 'unique',
+				message: `UNIQUE constraint failed: ${this._tableName} PK.`,
+				existingRow: existingRow
+			};
 		}
 
 		targetLayer.recordUpsert(primaryKey, newRowData, null);

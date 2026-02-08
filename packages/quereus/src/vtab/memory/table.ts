@@ -30,6 +30,8 @@ export class MemoryTable extends VirtualTable {
 	public readonly manager: MemoryTableManager;
 	/** @internal Connection state specific to this table instance (lazily initialized) */
 	private connection: MemoryTableConnection | null = null;
+	/** @internal Cached VirtualTableConnection wrapper to avoid re-creation */
+	private cachedVtabConnection: MemoryVirtualTableConnection | null = null;
 
 	/**
 	 * @internal - Use MemoryTableModule.connect or create
@@ -100,7 +102,10 @@ export class MemoryTable extends VirtualTable {
 		if (!this.connection) {
 			return undefined;
 		}
-		return new MemoryVirtualTableConnection(this.tableName, this.connection);
+		if (!this.cachedVtabConnection || this.cachedVtabConnection.getMemoryConnection() !== this.connection) {
+			this.cachedVtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
+		}
+		return this.cachedVtabConnection;
 	}
 
 	/**
@@ -234,7 +239,8 @@ export class MemoryTable extends VirtualTable {
 		if (this.connection) {
 			// Manager handles cleanup and potential layer collapse trigger
 			await this.manager.disconnect(this.connection.connectionId);
-			this.connection = null; // Clear connection reference on this instance
+			this.connection = null;
+			this.cachedVtabConnection = null;
 		}
 	}
 
