@@ -1,8 +1,9 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { SqlValue } from '../common/types.js';
 import type { FunctionSchema } from '../schema/function.js';
 import type { CollationFunction } from '../util/comparison.js';
 import type { TypePluginInfo } from '../types/plugin-interface.js';
+import type { VirtualTableModule } from './module.js';
+import type { VirtualTable } from './table.js';
 
 // Re-export TypePluginInfo so it can be imported from this module
 export type { TypePluginInfo };
@@ -23,9 +24,9 @@ export interface PluginSetting {
  * Virtual table module registration info
  */
 export interface VTablePluginInfo {
-	name: string;                   // module name for registration
-	module: any;                   // the VirtualTableModule implementation
-	auxData?: unknown;             // optional auxiliary data
+	name: string;
+	module: VirtualTableModule<VirtualTable>;
+	auxData?: unknown;
 }
 
 /**

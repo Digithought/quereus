@@ -1638,7 +1638,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@quereus/isolation@npm:*, @quereus/isolation@workspace:packages/quereus-isolation":
+"@quereus/isolation@npm:*, @quereus/isolation@workspace:^, @quereus/isolation@workspace:packages/quereus-isolation":
   version: 0.0.0-use.local
   resolution: "@quereus/isolation@workspace:packages/quereus-isolation"
   dependencies:
@@ -1704,7 +1704,9 @@ __metadata:
   resolution: "@quereus/plugin-loader@workspace:packages/plugin-loader"
   dependencies:
     "@quereus/quereus": "npm:*"
+    "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.9"
+    debug: "npm:^4.4.3"
     rimraf: "npm:^6.1.2"
     typescript: "npm:^5.9.3"
   peerDependencies:
@@ -1935,6 +1937,7 @@ __metadata:
     "@aws-sdk/client-s3": "npm:^3.970.0"
     "@fastify/cors": "npm:^11.2.0"
     "@fastify/websocket": "npm:^11.2.0"
+    "@quereus/isolation": "workspace:^"
     "@quereus/plugin-leveldb": "workspace:^"
     "@quereus/quereus": "workspace:^"
     "@quereus/store": "workspace:^"
@@ -1971,6 +1974,7 @@ __metadata:
     ts-node: "npm:^10.9.2"
     typescript: "npm:^5.9.3"
   peerDependencies:
+    "@quereus/isolation": "workspace:^"
     "@quereus/quereus": "workspace:^"
     "@quereus/store": "workspace:^"
   languageName: unknown

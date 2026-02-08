@@ -32,8 +32,12 @@
   },
   "devDependencies": {
     "@quereus/quereus": "*",
+    "@types/debug": "^4.1.12",
     "@types/node": "^25.0.9",
     "rimraf": "^6.1.2",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "debug": "^4.4.3"
   }
 }
