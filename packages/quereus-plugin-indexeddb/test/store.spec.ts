@@ -235,9 +235,7 @@ describe('IndexedDB Store Integration', () => {
       expect(entries).to.have.length(1);
 
       // The key should not be empty - integer 42 should be encoded
-      expect(entries[0].key.length).to.be.greaterThan(0);
-
-      // For an integer, the encoded key should have:
+      expect(entries[0].key.length).to.be.greaterThan(0);      // For an integer, the encoded key should have:
       // - 1 byte type prefix (0x01 for INTEGER)
       // - 8 bytes for the bigint value (big-endian with sign flip)
       // Total: 9 bytes
