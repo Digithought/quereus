@@ -1188,7 +1188,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			try {
 				ast = parser.parse(originalSqlString);
 			} catch (err) {
-				const error = err instanceof Error ? err : new Error(String(err));
+				const error = err instanceof QuereusError ? err : new QuereusError(String(err), StatusCode.ERROR, err instanceof Error ? err : undefined);
 				errorLog("Failed to parse SQL for query plan: %O", error);
 				throw error;
 			}

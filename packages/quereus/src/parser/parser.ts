@@ -3,19 +3,20 @@ import { Lexer, type Token, TokenType } from './lexer.js';
 import * as AST from './ast.js';
 import { ConflictResolution } from '../common/constants.js';
 import type { RowOp, SqlValue } from '../common/types.js';
-import { quereusError } from '../common/errors.js';
+import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { getSyncLiteral } from './utils.js';
 
 const errorLog = createLogger('parser:parser:error');
 
-export class ParseError extends Error {
+export class ParseError extends QuereusError {
 	token: Token;
 
 	constructor(token: Token, message: string) {
-		super(message);
+		super(message, StatusCode.ERROR, undefined, token.startLine, token.startColumn);
 		this.token = token;
 		this.name = 'ParseError';
+		Object.setPrototypeOf(this, ParseError.prototype);
 	}
 }
 

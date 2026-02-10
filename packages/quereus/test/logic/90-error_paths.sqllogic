@@ -88,6 +88,27 @@ DROP TABLE t_sub;
 SELECT CAST('not_a_number' AS INTEGER) WHERE 0;
 -- May succeed with value 0 depending on implementation
 
+-- Parse error with location info on multi-line statement
+SELECT
+  *
+  FROM
+  WHERE 1;
+-- error: Expected table name.
+
+-- NOT NULL constraint via UPDATE to NULL
+CREATE TABLE t_nn_upd (id INTEGER PRIMARY KEY, name TEXT);
+INSERT INTO t_nn_upd VALUES (1, 'hello');
+UPDATE t_nn_upd SET name = NULL WHERE id = 1;
+-- error: NOT NULL constraint failed: t_nn_upd.name
+DROP TABLE t_nn_upd;
+
+-- CHECK constraint violation
+CREATE TABLE t_chk (id INTEGER PRIMARY KEY, val INTEGER CHECK (val > 0));
+INSERT INTO t_chk VALUES (1, 10);
+INSERT INTO t_chk VALUES (2, -5);
+-- error: CHECK constraint failed
+DROP TABLE t_chk;
+
 -- Misuse Error: Trying to use closed DB (cannot test directly in sqllogic)
 
 -- Misuse Error: Using finalized statement (cannot test directly in sqllogic)

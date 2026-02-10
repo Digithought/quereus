@@ -6,6 +6,8 @@
  */
 
 import type { MaybePromise, OutputValue } from '../../common/types.js';
+import { QuereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { emitPlanNode } from '../../runtime/emitters.js';
 import { EmissionContext } from '../../runtime/emission-context.js';
@@ -49,7 +51,7 @@ export function createRuntimeExpressionEvaluator(db: Database): (expr: PlanNode)
 
 			// Ensure result is a valid OutputValue
 			if (result === undefined) {
-				throw new Error('Expression evaluation returned undefined');
+				throw new QuereusError('Expression evaluation returned undefined');
 			}
 
 			log('Expression evaluated to: %s', result);
@@ -57,7 +59,7 @@ export function createRuntimeExpressionEvaluator(db: Database): (expr: PlanNode)
 
 		} catch (error) {
 			log('Failed to evaluate expression %s: %s', expr.nodeType, error);
-			throw new Error(`Expression evaluation failed: ${error}`);
+			throw new QuereusError('Expression evaluation failed', StatusCode.ERROR, error instanceof Error ? error : undefined);
 		}
 	};
 }

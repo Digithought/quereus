@@ -1,5 +1,5 @@
 import { StatusCode } from "../../common/types.js";
-import { QuereusError } from "../../common/errors.js";
+import { quereusError } from "../../common/errors.js";
 import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
@@ -40,7 +40,7 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 			return emitLikeOp(plan, ctx);
 		// TODO: emitBitwise
 		default:
-			throw new QuereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+			quereusError(`Unsupported binary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED, undefined, plan.expression);
 	}
 }
 
@@ -70,7 +70,7 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 			innerBigInt = (v1, v2) => v1 % v2;
 			break;
 		default:
-			throw new QuereusError(`Unsupported numeric operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+			quereusError(`Unsupported numeric operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED, undefined, plan.expression);
 	}
 
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
@@ -239,7 +239,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 			};
 			break;
 		default:
-			throw new QuereusError(`Unsupported comparison operator: ${operator}`, StatusCode.UNSUPPORTED);
+			quereusError(`Unsupported comparison operator: ${operator}`, StatusCode.UNSUPPORTED, undefined, plan.expression);
 	}
 
 	const leftExpr = emitPlanNode(plan.left, ctx);
@@ -316,7 +316,7 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 			}
 
 			default:
-				throw new QuereusError(`Unsupported logical operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+				quereusError(`Unsupported logical operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED, undefined, plan.expression);
 		}
 	}
 

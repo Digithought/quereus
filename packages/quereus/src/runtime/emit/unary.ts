@@ -1,5 +1,5 @@
 import { StatusCode } from "../../common/types.js";
-import { QuereusError } from "../../common/errors.js";
+import { quereusError } from "../../common/errors.js";
 import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { UnaryOpNode } from "../../planner/nodes/scalar.js";
@@ -88,7 +88,7 @@ export function emitUnaryOp(plan: UnaryOpNode, ctx: EmissionContext): Instructio
 			break;
 
 		default:
-			throw new QuereusError(`Unsupported unary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED);
+			quereusError(`Unsupported unary operator: ${plan.expression.operator}`, StatusCode.UNSUPPORTED, undefined, plan.expression);
 	}
 
 	const operandExpr = emitPlanNode(plan.operand, ctx);

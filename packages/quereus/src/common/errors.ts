@@ -32,21 +32,10 @@ export class QuereusError extends Error {
  * Error thrown when a database constraint is violated
  */
 export class ConstraintError extends QuereusError {
-	constructor(message: string, code: number = StatusCode.CONSTRAINT) {
-		super(message, code);
+	constructor(message: string, code: number = StatusCode.CONSTRAINT, cause?: Error) {
+		super(message, code, cause);
 		this.name = 'ConstraintError';
 		Object.setPrototypeOf(this, ConstraintError.prototype);
-	}
-}
-
-/**
- * Error thrown for SQL syntax issues
- */
-export class SyntaxError extends QuereusError {
-	constructor(message: string = "SQL syntax error") {
-		super(message, StatusCode.ERROR);
-		this.name = 'SyntaxError';
-		Object.setPrototypeOf(this, SyntaxError.prototype);
 	}
 }
 
@@ -54,8 +43,8 @@ export class SyntaxError extends QuereusError {
  * Error thrown when the API is used incorrectly
  */
 export class MisuseError extends QuereusError {
-	constructor(message: string = "API misuse") {
-		super(message, StatusCode.MISUSE);
+	constructor(message: string = 'API misuse', cause?: Error) {
+		super(message, StatusCode.MISUSE, cause);
 		this.name = 'MisuseError';
 		Object.setPrototypeOf(this, MisuseError.prototype);
 	}
