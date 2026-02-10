@@ -337,8 +337,7 @@ async function computeAggregateFunction(
 
 			// Get argument value if callback exists
 			if (argCallback) {
-				const result = argCallback(rctx);
-				argValue = await Promise.resolve(result);
+				argValue = await Promise.resolve(argCallback(rctx)) as SqlValue;
 			}
 
 			// Apply aggregate step function

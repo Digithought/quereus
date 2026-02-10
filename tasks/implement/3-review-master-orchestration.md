@@ -271,7 +271,7 @@ Use this section to track progress:
 
 ### Phase 5: Packages
 - [x] Plugin Loader Review
-- [ ] Plugins Review
+- [x] Plugins Review
 - [ ] Sample Plugins Review
 - [ ] Store Review
 - [ ] Sync Review

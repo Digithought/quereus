@@ -16,7 +16,7 @@ import * as AST from '../parser/ast.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
-import type { BlockNode } from '../planner/nodes/block.js';
+import { BlockNode } from '../planner/nodes/block.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { FilterNode } from '../planner/nodes/filter.js';
 import { BinaryOpNode } from '../planner/nodes/scalar.js';

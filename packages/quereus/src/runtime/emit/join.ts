@@ -78,7 +78,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 				}
 
 				// Handle outer join semantics - null padding for unmatched left rows
-				if (!leftMatched && (joinType === 'left' || joinType === 'full')) {
+				if (!leftMatched && joinType === 'left') {
 					// Create null-padded row for left outer join
 					const nullPadding = new Array(rightAttributes.length).fill(null);
 					const outputRow = [...leftRow, ...nullPadding] as Row;

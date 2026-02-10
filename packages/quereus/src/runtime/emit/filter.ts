@@ -10,8 +10,7 @@ import { isTruthy } from '../../util/comparison.js';
 
 function asPredicateScalar(value: unknown): SqlValue {
 	if (value === null) return null;
-	const t = typeof value;
-	if (t === 'string' || t === 'number' || t === 'bigint' || t === 'boolean') return value;
+	if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') return value;
 	if (value instanceof Uint8Array) return value;
 	throw new QuereusError(`Filter predicate returned non-scalar value: ${String(value)}`, StatusCode.INTERNAL);
 }

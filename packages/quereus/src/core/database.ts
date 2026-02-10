@@ -51,6 +51,7 @@ import {
 } from './database-events.js';
 import { TransactionManager, type TransactionManagerContext } from './database-transaction.js';
 import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
+import type { VTableEventEmitter } from '../vtab/events.js';
 
 const log = createLogger('core:database');
 const errorLog = log.extend('error');
@@ -66,6 +67,17 @@ function parseSchemaPath(pathString: string): string[] | undefined {
 	if (!pathString) return undefined;
 	const parts = pathString.split(',').map(s => s.trim()).filter(s => s.length > 0);
 	return parts.length > 0 ? parts : undefined;
+}
+
+/** Extract a VTableEventEmitter from a module if it supports one. */
+function tryGetEventEmitter(module: AnyVirtualTableModule): VTableEventEmitter | undefined {
+	const asSource = module as { getEventEmitter?: () => unknown };
+	if (typeof asSource.getEventEmitter !== 'function') return undefined;
+	const emitter = asSource.getEventEmitter();
+	if (!emitter || typeof emitter !== 'object') return undefined;
+	const typed = emitter as { onDataChange?: unknown; onSchemaChange?: unknown };
+	if (typeof typed.onDataChange !== 'function' && typeof typed.onSchemaChange !== 'function') return undefined;
+	return emitter as VTableEventEmitter;
 }
 
 /**
@@ -566,18 +578,10 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 * @internal
 	 */
 	private hookModuleEvents(name: string, module: AnyVirtualTableModule): void {
-		// Check if module has getEventEmitter method
-		const getEmitter = (module as { getEventEmitter?: () => unknown }).getEventEmitter;
-		if (typeof getEmitter === 'function') {
-			const emitter = getEmitter.call(module);
-			if (emitter && typeof emitter === 'object') {
-				// Check if emitter has the expected methods
-				const vtabEmitter = emitter as { onDataChange?: unknown; onSchemaChange?: unknown };
-				if (typeof vtabEmitter.onDataChange === 'function' || typeof vtabEmitter.onSchemaChange === 'function') {
-					this.eventEmitter.hookModuleEmitter(name, emitter as import('../vtab/events.js').VTableEventEmitter);
-					log('Hooked event emitter for module: %s', name);
-				}
-			}
+		const emitter = tryGetEventEmitter(module);
+		if (emitter) {
+			this.eventEmitter.hookModuleEmitter(name, emitter);
+			log('Hooked event emitter for module: %s', name);
 		}
 	}
 
@@ -965,7 +969,17 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerCollation(name: string, func: CollationFunction): void {
 		this.checkOpen();
-		registerCollation(name, func);
+		try {
+			registerCollation(name, func);
+		} catch (e) {
+			errorLog('Failed to register collation %s: %O', name, e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(
+				`Failed to register collation '${name}': ${e instanceof Error ? e.message : String(e)}`,
+				StatusCode.ERROR,
+				e instanceof Error ? e : undefined
+			);
+		}
 		log('Registered collation: %s', name);
 	}
 
@@ -987,7 +1001,23 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerType(name: string, definition: LogicalType): void {
 		this.checkOpen();
-		registerTypeInRegistry(definition);
+		if (definition.name.toLowerCase() !== name.toLowerCase()) {
+			throw new QuereusError(
+				`Type name mismatch: registerType('${name}', ...) does not match definition.name '${definition.name}'`,
+				StatusCode.ERROR
+			);
+		}
+		try {
+			registerTypeInRegistry(definition);
+		} catch (e) {
+			errorLog('Failed to register type %s: %O', name, e);
+			if (e instanceof QuereusError) throw e;
+			throw new QuereusError(
+				`Failed to register type '${name}': ${e instanceof Error ? e.message : String(e)}`,
+				StatusCode.ERROR,
+				e instanceof Error ? e : undefined
+			);
+		}
 		log('Registered type: %s', name);
 	}
 
