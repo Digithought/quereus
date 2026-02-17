@@ -1373,4 +1373,310 @@ describe('Sync Protocol E2E', () => {
       expect(schemaChanges.length).to.be.at.least(1, 'Snapshot should apply schema migrations to store');
     });
   });
+
+  describe('Idempotency', () => {
+    it('should produce identical state when applying the same ChangeSet twice', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Host inserts data
+      emitLocalInsert(host, 'main', 'users', [1], [1, 'Alice']);
+      emitLocalInsert(host, 'main', 'users', [2], [2, 'Bob']);
+      await new Promise(r => setTimeout(r, 10));
+
+      const changes = await host.manager.getChangesSince(guest.manager.getSiteId());
+      expect(changes.length).to.be.greaterThan(0);
+
+      // Apply once
+      const result1 = await guest.manager.applyChanges(changes);
+      expect(result1.applied).to.be.greaterThan(0);
+      const changeLogAfterFirst = guest.dataStore.changeLog.length;
+
+      // Get snapshot state after first apply
+      const snapshot1 = await guest.manager.getSnapshot();
+
+      // Apply again (exact same changes)
+      const result2 = await guest.manager.applyChanges(changes);
+
+      // Second apply should skip everything (already applied)
+      expect(result2.applied).to.equal(0);
+      expect(result2.skipped + result2.conflicts).to.equal(result1.applied);
+
+      // Snapshot state should be identical
+      const snapshot2 = await guest.manager.getSnapshot();
+      expect(snapshot2.tables.length).to.equal(snapshot1.tables.length);
+    });
+
+    it('should produce identical state when applying the same deletion twice', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Host inserts then deletes
+      emitLocalInsert(host, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 5));
+      emitLocalDelete(host, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 10));
+
+      const changes = await host.manager.getChangesSince(guest.manager.getSiteId());
+
+      // Apply once
+      const result1 = await guest.manager.applyChanges(changes);
+      expect(result1.applied).to.be.greaterThan(0);
+
+      // Apply again
+      const result2 = await guest.manager.applyChanges(changes);
+
+      // Second apply: all previously-applied changes should be skipped/conflicted
+      expect(result2.applied).to.equal(0);
+    });
+  });
+
+  describe('Convergence', () => {
+    it('should converge to same state regardless of application order', async () => {
+      // Create two sources with different changes to the same column
+      const source1 = await createReplica('source1', config);
+      const source2 = await createReplica('source2', config);
+
+      // Source1 writes an earlier value
+      emitLocalInsert(source1, 'main', 'users', [1], [1, 'EarlierValue']);
+      await new Promise(r => setTimeout(r, 50));
+
+      // Source2 writes a later value to the same row (later timestamp wins)
+      emitLocalInsert(source2, 'main', 'users', [1], [1, 'LaterValue']);
+      await new Promise(r => setTimeout(r, 10));
+
+      const changes1 = await source1.manager.getChangesSince(generateSiteId());
+      const changes2 = await source2.manager.getChangesSince(generateSiteId());
+
+      // Replica A applies in order: source1 then source2
+      const replicaA = await createReplica('replicaA', config);
+      await replicaA.manager.applyChanges(changes1);
+      await replicaA.manager.applyChanges(changes2);
+
+      // Replica B applies in REVERSE order: source2 then source1
+      const replicaB = await createReplica('replicaB', config);
+      await replicaB.manager.applyChanges(changes2);
+      await replicaB.manager.applyChanges(changes1);
+
+      // Both replicas should converge: same snapshot state
+      const snapshotA = await replicaA.manager.getSnapshot();
+      const snapshotB = await replicaB.manager.getSnapshot();
+
+      expect(snapshotA.tables.length).to.equal(snapshotB.tables.length);
+      // Both should have exactly the same column versions
+      for (let i = 0; i < snapshotA.tables.length; i++) {
+        expect(snapshotA.tables[i].columnVersions.size).to.equal(
+          snapshotB.tables[i].columnVersions.size
+        );
+        // The winning value should be the same on both
+        for (const [key, entryA] of snapshotA.tables[i].columnVersions) {
+          const entryB = snapshotB.tables[i].columnVersions.get(key);
+          expect(entryB).to.exist;
+          expect(entryA.value).to.equal(entryB!.value);
+          expect(compareHLC(entryA.hlc, entryB!.hlc)).to.equal(0);
+        }
+      }
+    });
+  });
+
+  describe('Tombstone Pruning', () => {
+    it('should prune expired tombstones', async () => {
+      // Use very short TTL for testing
+      const shortTTLConfig = { ...config, tombstoneTTL: 1 }; // 1ms TTL
+      const replica = await createReplica('replica', shortTTLConfig);
+
+      // Insert and delete a row (creates a tombstone)
+      emitLocalInsert(replica, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 5));
+      emitLocalDelete(replica, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 10));
+
+      // Wait for the TTL to expire
+      await new Promise(r => setTimeout(r, 10));
+
+      // Prune should remove the expired tombstone
+      const pruned = await replica.manager.pruneTombstones();
+      expect(pruned).to.equal(1);
+
+      // Second prune should find nothing
+      const pruned2 = await replica.manager.pruneTombstones();
+      expect(pruned2).to.equal(0);
+    });
+
+    it('should not prune non-expired tombstones', async () => {
+      // Use long TTL
+      const longTTLConfig = { ...config, tombstoneTTL: 60_000 };
+      const replica = await createReplica('replica', longTTLConfig);
+
+      emitLocalInsert(replica, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 5));
+      emitLocalDelete(replica, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 10));
+
+      const pruned = await replica.manager.pruneTombstones();
+      expect(pruned).to.equal(0);
+    });
+  });
+
+  describe('Delta Sync with sinceHLC', () => {
+    it('should return only changes after the given sinceHLC', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Host inserts first row
+      emitLocalInsert(host, 'main', 'users', [1], [1, 'Alice']);
+      await new Promise(r => setTimeout(r, 10));
+
+      // Capture HLC after first insert
+      const midpointHLC = host.manager.getCurrentHLC();
+
+      // Host inserts second row (after midpoint)
+      await new Promise(r => setTimeout(r, 10));
+      emitLocalInsert(host, 'main', 'users', [2], [2, 'Bob']);
+      await new Promise(r => setTimeout(r, 10));
+
+      // Get all changes (no sinceHLC) - should include both
+      const allChanges = await host.manager.getChangesSince(guest.manager.getSiteId());
+      const allColumnChanges = allChanges.flatMap(cs => cs.changes);
+      expect(allColumnChanges.length).to.be.at.least(2); // At least 2 column changes (one per row per col)
+
+      // Get changes since midpoint - should only include second row's changes
+      const deltaChanges = await host.manager.getChangesSince(guest.manager.getSiteId(), midpointHLC);
+      const deltaColumnChanges = deltaChanges.flatMap(cs => cs.changes);
+
+      expect(deltaColumnChanges.length).to.be.lessThan(allColumnChanges.length);
+      // All delta changes should have HLC > midpointHLC
+      for (const change of deltaColumnChanges) {
+        expect(compareHLC(change.hlc, midpointHLC)).to.be.greaterThan(0);
+      }
+    });
+  });
+
+  describe('Multiple Tables', () => {
+    it('should sync data across multiple tables independently', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      // Insert into different tables
+      emitLocalInsert(host, 'main', 'users', [1], [1, 'Alice']);
+      emitLocalInsert(host, 'main', 'products', [1], [1, 'Widget']);
+      emitLocalInsert(host, 'main', 'orders', [1], [1, 100]);
+      await new Promise(r => setTimeout(r, 10));
+
+      const result = await performBidirectionalSync(host, guest);
+      expect(result.hostToGuest.applied).to.be.greaterThan(0);
+
+      // Guest should have changes for all three tables
+      const tables = new Set<string>();
+      for (const entry of guest.dataStore.changeLog) {
+        if (entry.type === 'data') {
+          const change = entry.change as DataChangeToApply;
+          tables.add(change.table);
+        }
+      }
+      expect(tables.size).to.equal(3);
+      expect(tables.has('users')).to.be.true;
+      expect(tables.has('products')).to.be.true;
+      expect(tables.has('orders')).to.be.true;
+    });
+  });
+
+  describe('Tombstone Blocking (allowResurrection=false)', () => {
+    it('should block older writes to a deleted row when allowResurrection is false', async () => {
+      const noResurrectConfig = { ...config, allowResurrection: false };
+      const replica = await createReplica('replica', noResurrectConfig);
+
+      const remoteSiteId = generateSiteId();
+      const { HLCManager } = await import('../../src/clock/hlc.js');
+      const remoteHLC = new HLCManager(remoteSiteId);
+
+      // Apply a delete first with a later HLC
+      const deleteHlc = remoteHLC.tick();
+      await new Promise(r => setTimeout(r, 5));
+      const laterDeleteHlc = remoteHLC.tick();
+
+      const deleteChanges: import('../../src/sync/protocol.js').ChangeSet[] = [{
+        siteId: remoteSiteId,
+        transactionId: 'tx-delete',
+        hlc: laterDeleteHlc,
+        changes: [{
+          type: 'delete',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          hlc: laterDeleteHlc,
+        }],
+        schemaMigrations: [],
+      }];
+
+      await replica.manager.applyChanges(deleteChanges);
+
+      // Now try to apply a column change with NEWER HLC (after the delete)
+      const evenLaterHlc = remoteHLC.tick();
+      const otherRemote = generateSiteId();
+      const writeChanges: import('../../src/sync/protocol.js').ChangeSet[] = [{
+        siteId: otherRemote,
+        transactionId: 'tx-write',
+        hlc: evenLaterHlc,
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'name',
+          value: 'Ghost',
+          hlc: { ...evenLaterHlc, siteId: otherRemote },
+        }],
+        schemaMigrations: [],
+      }];
+
+      const result = await replica.manager.applyChanges(writeChanges);
+
+      // With allowResurrection=false, any write to a deleted row should be blocked
+      expect(result.applied).to.equal(0);
+      expect(result.skipped).to.equal(1);
+    });
+  });
+
+  describe('Null Column Values', () => {
+    it('should correctly sync null values in columns', async () => {
+      const host = await createReplica('host', config);
+      const guest = await createReplica('guest', config);
+
+      const remoteSiteId = generateSiteId();
+      const { HLCManager } = await import('../../src/clock/hlc.js');
+      const remoteHLC = new HLCManager(remoteSiteId);
+
+      // Apply a column change with null value
+      const hlc = remoteHLC.tick();
+      const changes: import('../../src/sync/protocol.js').ChangeSet[] = [{
+        siteId: remoteSiteId,
+        transactionId: 'tx-null',
+        hlc,
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'email',
+          value: null,
+          hlc,
+        }],
+        schemaMigrations: [],
+      }];
+
+      const result = await guest.manager.applyChanges(changes);
+      expect(result.applied).to.equal(1);
+
+      // Verify the null value is preserved in a round-trip
+      const guestChanges = await guest.manager.getChangesSince(host.manager.getSiteId());
+      expect(guestChanges.length).to.be.greaterThan(0);
+      const columnChanges = guestChanges.flatMap(cs =>
+        cs.changes.filter((c): c is import('../../src/sync/protocol.js').ColumnChange => c.type === 'column')
+      );
+      const emailChange = columnChanges.find(c => c.column === 'email');
+      expect(emailChange).to.exist;
+      expect(emailChange!.value).to.be.null;
+    });
+  });
 });

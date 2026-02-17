@@ -15,10 +15,8 @@
  *   import { LevelDBModule, StoreEventEmitter } from '@quereus/store';
  *
  *   const storeEvents = new StoreEventEmitter();
- *   const store = new LevelDBModule(storeEvents);
- *   const { syncModule, syncManager, syncEvents } = createSyncModule(store, storeEvents);
- *
- *   db.registerModule('store', syncModule);
+ *   const kv = await LevelDBStore.open({ path: './sync-metadata' });
+ *   const { syncManager, syncEvents } = await createSyncModule(kv, storeEvents);
  */
 
 // Clock module
