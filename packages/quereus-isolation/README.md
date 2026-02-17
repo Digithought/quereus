@@ -191,7 +191,7 @@ console.log(caps.persistent); // (from underlying module)
 The isolation layer adds minimal overhead:
 
 - **Fast path** — No overlay merging if no writes have occurred
-- **Point lookups** — O(log n) overlay check + underlying lookup
+- **Point lookups** — Currently O(n) full scan (PK point lookup optimization planned)
 - **Range scans** — Streaming merge of sorted results
 
 For performance-critical applications, consider:

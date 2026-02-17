@@ -608,4 +608,357 @@ describe('IsolationModule', () => {
 			expect(afterRollback[0].id).to.equal(1);
 		});
 	});
+
+	describe('savepoints', () => {
+		let isolatedModule: IsolationModule;
+
+		beforeEach(() => {
+			const memoryModule = new MemoryTableModule();
+			isolatedModule = new IsolationModule({
+				underlying: memoryModule,
+			});
+			db.registerModule('isolated', isolatedModule);
+		});
+
+		it('savepoint + release preserves changes', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO test VALUES (1, 'before')`);
+			await db.exec('SAVEPOINT sp1');
+			await db.exec(`INSERT INTO test VALUES (2, 'in savepoint')`);
+			await db.exec('RELEASE SAVEPOINT sp1');
+
+			// Both rows visible after release
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(2);
+			expect(rows[0].name).to.equal('before');
+			expect(rows[1].name).to.equal('in savepoint');
+
+			await db.exec('COMMIT');
+
+			// Both rows committed
+			const committed = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(committed.length).to.equal(2);
+		});
+
+		it('rollback to savepoint discards changes after savepoint', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO test VALUES (1, 'keeper')`);
+			await db.exec('SAVEPOINT sp1');
+			await db.exec(`INSERT INTO test VALUES (2, 'discard')`);
+			await db.exec(`INSERT INTO test VALUES (3, 'also discard')`);
+			await db.exec('ROLLBACK TO SAVEPOINT sp1');
+
+			// Only the row before savepoint should remain
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(1);
+			expect(rows[0].name).to.equal('keeper');
+
+			await db.exec('COMMIT');
+
+			const committed = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(committed.length).to.equal(1);
+			expect(committed[0].id).to.equal(1);
+		});
+
+		it.skip('nested savepoints rollback independently (BUG: overlay rollbackTo does not restore prior state)', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, value INTEGER) USING isolated`);
+			await db.exec('BEGIN');
+			await db.exec('INSERT INTO test VALUES (1, 100)');
+			await db.exec('SAVEPOINT sp_outer');
+			await db.exec('INSERT INTO test VALUES (2, 200)');
+			await db.exec('SAVEPOINT sp_inner');
+			await db.exec('INSERT INTO test VALUES (3, 300)');
+
+			// All three visible
+			let rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(3);
+
+			// Rollback inner savepoint - row 3 gone
+			await db.exec('ROLLBACK TO SAVEPOINT sp_inner');
+			rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(2);
+			expect(rows.map((r: any) => r.id)).to.deep.equal([1, 2]);
+
+			// Rollback outer savepoint - row 2 also gone
+			await db.exec('ROLLBACK TO SAVEPOINT sp_outer');
+			rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(1);
+			expect(rows[0].id).to.equal(1);
+
+			await db.exec('COMMIT');
+			const committed = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(committed.length).to.equal(1);
+		});
+
+		it('savepoint rollback then continue adding data', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO test VALUES (1, 'stays')`);
+			await db.exec('SAVEPOINT sp1');
+			await db.exec(`INSERT INTO test VALUES (2, 'gone')`);
+			await db.exec('ROLLBACK TO SAVEPOINT sp1');
+
+			// Can insert new data after rollback to savepoint
+			await db.exec(`INSERT INTO test VALUES (3, 'new after rollback')`);
+
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(2);
+			expect(rows.map((r: any) => r.id)).to.deep.equal([1, 3]);
+
+			await db.exec('COMMIT');
+			const committed = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(committed.length).to.equal(2);
+		});
+
+		it.skip('savepoint with update and delete operations (BUG: overlay rollbackTo does not restore deleted/updated rows)', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec(`INSERT INTO test VALUES (1, 'Alice')`);
+			await db.exec(`INSERT INTO test VALUES (2, 'Bob')`);
+
+			await db.exec('BEGIN');
+			await db.exec('SAVEPOINT sp1');
+			await db.exec(`UPDATE test SET name = 'ALICE' WHERE id = 1`);
+			await db.exec(`DELETE FROM test WHERE id = 2`);
+
+			// Verify changes visible
+			let rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(1);
+			expect(rows[0].name).to.equal('ALICE');
+
+			// Rollback savepoint restores original
+			await db.exec('ROLLBACK TO SAVEPOINT sp1');
+			rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(2);
+			expect(rows[0].name).to.equal('Alice');
+			expect(rows[1].name).to.equal('Bob');
+
+			await db.exec('COMMIT');
+		});
+	});
+
+	describe('compound primary keys', () => {
+		let isolatedModule: IsolationModule;
+
+		beforeEach(() => {
+			const memoryModule = new MemoryTableModule();
+			isolatedModule = new IsolationModule({
+				underlying: memoryModule,
+			});
+			db.registerModule('isolated', isolatedModule);
+		});
+
+		it('supports CRUD with composite primary keys', async () => {
+			await db.exec(`
+				CREATE TABLE orders (
+					customer_id INTEGER,
+					order_id INTEGER,
+					amount REAL,
+					PRIMARY KEY (customer_id, order_id)
+				) USING isolated
+			`);
+
+			// Insert
+			await db.exec(`INSERT INTO orders VALUES (1, 100, 9.99)`);
+			await db.exec(`INSERT INTO orders VALUES (1, 101, 19.99)`);
+			await db.exec(`INSERT INTO orders VALUES (2, 100, 5.00)`);
+
+			// Read
+			const all = await asyncIterableToArray(
+				db.eval('SELECT * FROM orders ORDER BY customer_id, order_id')
+			);
+			expect(all.length).to.equal(3);
+
+			// Update
+			await db.exec('UPDATE orders SET amount = 14.99 WHERE customer_id = 1 AND order_id = 100');
+			const updated = await db.get('SELECT amount FROM orders WHERE customer_id = 1 AND order_id = 100');
+			expect(updated?.amount).to.equal(14.99);
+
+			// Delete
+			await db.exec('DELETE FROM orders WHERE customer_id = 2 AND order_id = 100');
+			const afterDelete = await asyncIterableToArray(
+				db.eval('SELECT * FROM orders ORDER BY customer_id, order_id')
+			);
+			expect(afterDelete.length).to.equal(2);
+		});
+
+		it('composite PK isolation within transaction', async () => {
+			await db.exec(`
+				CREATE TABLE kv (
+					ns TEXT,
+					key TEXT,
+					value TEXT,
+					PRIMARY KEY (ns, key)
+				) USING isolated
+			`);
+
+			await db.exec(`INSERT INTO kv VALUES ('a', 'k1', 'original')`);
+
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO kv VALUES ('a', 'k2', 'new')`);
+			await db.exec(`UPDATE kv SET value = 'modified' WHERE ns = 'a' AND key = 'k1'`);
+
+			// Read-your-own-writes
+			const rows = await asyncIterableToArray(
+				db.eval(`SELECT * FROM kv WHERE ns = 'a' ORDER BY key`)
+			);
+			expect(rows.length).to.equal(2);
+			expect(rows[0].value).to.equal('modified');
+			expect(rows[1].value).to.equal('new');
+
+			await db.exec('ROLLBACK');
+
+			// After rollback, only original data
+			const afterRollback = await asyncIterableToArray(
+				db.eval(`SELECT * FROM kv ORDER BY ns, key`)
+			);
+			expect(afterRollback.length).to.equal(1);
+			expect(afterRollback[0].value).to.equal('original');
+		});
+	});
+
+	describe('transaction edge cases', () => {
+		let isolatedModule: IsolationModule;
+
+		beforeEach(() => {
+			const memoryModule = new MemoryTableModule();
+			isolatedModule = new IsolationModule({
+				underlying: memoryModule,
+			});
+			db.registerModule('isolated', isolatedModule);
+		});
+
+		it('empty transaction commits successfully', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY) USING isolated`);
+			await db.exec('INSERT INTO test VALUES (1)');
+
+			await db.exec('BEGIN');
+			// No writes
+			await db.exec('COMMIT');
+
+			// Data unchanged
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(rows.length).to.equal(1);
+		});
+
+		it('empty transaction rolls back successfully', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY) USING isolated`);
+			await db.exec('INSERT INTO test VALUES (1)');
+
+			await db.exec('BEGIN');
+			// No writes
+			await db.exec('ROLLBACK');
+
+			// Data unchanged
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(rows.length).to.equal(1);
+		});
+
+		it('sequential transactions see each other\'s committed data', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT) USING isolated`);
+
+			// Transaction 1
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO test VALUES (1, 'first')`);
+			await db.exec('COMMIT');
+
+			// Transaction 2 sees transaction 1's data
+			await db.exec('BEGIN');
+			const row = await db.get('SELECT * FROM test WHERE id = 1');
+			expect(row?.value).to.equal('first');
+			await db.exec(`INSERT INTO test VALUES (2, 'second')`);
+			await db.exec('COMMIT');
+
+			// Transaction 3 sees both
+			await db.exec('BEGIN');
+			const all = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(all.length).to.equal(2);
+			await db.exec('COMMIT');
+		});
+
+		it('autocommit statements commit individually', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY) USING isolated`);
+
+			// Each statement is its own implicit transaction
+			await db.exec('INSERT INTO test VALUES (1)');
+			await db.exec('INSERT INTO test VALUES (2)');
+			await db.exec('INSERT INTO test VALUES (3)');
+
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(rows.length).to.equal(3);
+			expect(rows.map((r: any) => r.id)).to.deep.equal([1, 2, 3]);
+		});
+
+		it('read-only queries work without overlay', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec(`INSERT INTO test VALUES (1, 'Alice')`);
+
+			// Multiple reads without any writes in this "transaction"
+			const r1 = await db.get('SELECT * FROM test WHERE id = 1');
+			expect(r1?.name).to.equal('Alice');
+
+			const count = await db.get('SELECT count(*) as c FROM test');
+			expect(count?.c).to.equal(1);
+		});
+
+		it.skip('delete-all then re-insert works (BUG: insert does not check for existing tombstone, causes PK conflict)', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec(`INSERT INTO test VALUES (1, 'Alice')`);
+			await db.exec(`INSERT INTO test VALUES (2, 'Bob')`);
+
+			await db.exec('BEGIN');
+			await db.exec('DELETE FROM test WHERE id = 1');
+			await db.exec('DELETE FROM test WHERE id = 2');
+
+			// Table empty
+			let rows = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(rows.length).to.equal(0);
+
+			// Re-insert with same PK
+			await db.exec(`INSERT INTO test VALUES (1, 'Charlie')`);
+			rows = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(rows.length).to.equal(1);
+			expect(rows[0].name).to.equal('Charlie');
+
+			await db.exec('COMMIT');
+
+			const committed = await asyncIterableToArray(db.eval('SELECT * FROM test ORDER BY id'));
+			expect(committed.length).to.equal(1);
+			expect(committed[0].name).to.equal('Charlie');
+		});
+
+		it('update followed by delete of same row', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+			await db.exec(`INSERT INTO test VALUES (1, 'Alice')`);
+
+			await db.exec('BEGIN');
+			await db.exec(`UPDATE test SET name = 'Updated' WHERE id = 1`);
+			await db.exec(`DELETE FROM test WHERE id = 1`);
+
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(rows.length).to.equal(0);
+
+			await db.exec('COMMIT');
+
+			const committed = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(committed.length).to.equal(0);
+		});
+
+		it('insert then update same row within transaction', async () => {
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO test VALUES (1, 'original')`);
+			await db.exec(`UPDATE test SET name = 'modified' WHERE id = 1`);
+
+			const row = await db.get('SELECT * FROM test WHERE id = 1');
+			expect(row?.name).to.equal('modified');
+
+			await db.exec('COMMIT');
+
+			const committed = await db.get('SELECT * FROM test WHERE id = 1');
+			expect(committed?.name).to.equal('modified');
+		});
+	});
 });
