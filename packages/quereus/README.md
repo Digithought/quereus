@@ -1,6 +1,6 @@
 # Quereus - A TypeScript SQL Query Processor
 
-<img src="docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
+<img src="../../docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
 Quereus is a feature-complete SQL query processor specifically designed for efficient in-memory data processing with a strong emphasis on the **virtual table** interface. It provides rich SQL query and constraint capabilities (joins, aggregates, subqueries, CTEs, window functions, constraints) over data sources exposed via the virtual table mechanism. Quereus features a modern type system with temporal types, JSON support, and plugin-extensible custom types. It has no persistent file storage, though one could be built as a virtual table module.
 
@@ -8,7 +8,7 @@ Quereus is a feature-complete SQL query processor specifically designed for effi
 
 *   **Virtual Table Centric**: Provide a robust and flexible virtual table API as the primary means of interacting with data sources. All tables are virtual tables.
 *   **In-Memory Default**: Includes a comprehensive in-memory virtual table implementation (`MemoryTable`) with support for transactions and savepoints.
-*   **Modern Type System**: Extensible logical/physical type separation with built-in temporal types (DATE, TIME, DATETIME), native JSON type with deep equality comparison, and plugin support for custom types. See [Type System Documentation](../docs/types.md).
+*   **Modern Type System**: Extensible logical/physical type separation with built-in temporal types (DATE, TIME, DATETIME), native JSON type with deep equality comparison, and plugin support for custom types. See [Type System Documentation](../../docs/types.md).
 *   **TypeScript & Modern JS**: Leverage TypeScript's type system and modern JavaScript features and idioms.
 *   **Async VTab Operations**: Virtual table data operations (reads/writes) are asynchronous. Cursors are implemented as async iterables.
 *   **Cross-Platform**: Target diverse Javascript runtime environments, including Node.js, browser, and React Native. Plugin loading (via `@quereus/plugin-loader`) uses dynamic `import()` and is not compatible with React Native; use static imports for RN.
@@ -30,7 +30,7 @@ Quereus is built on a modern architecture based on partially immutable PlanNodes
     *   Handles Common Table Expressions (CTEs) and Subqueries by converting them into relational `PlanNode`s.
     *   Resolves table and function references using the Schema Manager.
     *   Performs query planning, incorporating virtual table `getBestAccessPlan` method and table schema statistics.
-    *   **Optimizer (`src/planner/optimizer`)**: Transforms logical plans into efficient physical execution plans through a rule-based optimization system. See [Optimizer Documentation](../docs/optimizer.md) for details.
+    *   **Optimizer (`src/planner/optimizer`)**: Transforms logical plans into efficient physical execution plans through a rule-based optimization system. See [Optimizer Documentation](../../docs/optimizer.md) for details.
 4.  **Runtime (`src/runtime`)**:
     *   **Emitters (`src/runtime/emitters.ts`, `src/runtime/emit/`)**: Translate `PlanNode`s into a graph of `Instruction` objects.
     *   **Scheduler (`src/runtime/scheduler.ts`)**: Manages the execution flow of the `Instruction` graph.
@@ -116,7 +116,7 @@ The database-level event system aggregates events from all modules automatically
 
 SQL values use native JavaScript types (`string`, `number`, `bigint`, `Uint8Array`, `null`). Temporal types are ISO 8601 strings. Results stream as async iterators.
 
-See the [Usage Guide](../docs/usage.md) for complete API reference and [Module Authoring Guide](../docs/module-authoring.md) for event system details.
+See the [Usage Guide](../../docs/usage.md) for complete API reference and [Module Authoring Guide](../../docs/module-authoring.md) for event system details.
 
 ## Platform Support & Storage
 
@@ -124,7 +124,7 @@ Quereus runs on any JavaScript runtime. For persistent storage, platform-specifi
 
 ### Node.js
 
-Use [`@quereus/plugin-leveldb`](packages/quereus-plugin-leveldb/) for LevelDB-based persistent storage with full transaction isolation. Each table becomes a subdirectory under `basePath`:
+Use [`@quereus/plugin-leveldb`](../quereus-plugin-leveldb/) for LevelDB-based persistent storage with full transaction isolation. Each table becomes a subdirectory under `basePath`:
 
 ```typescript
 import { Database, registerPlugin } from '@quereus/quereus';
@@ -144,7 +144,7 @@ await db.exec('COMMIT');
 
 ### Browser
 
-Use [`@quereus/plugin-indexeddb`](packages/quereus-plugin-indexeddb/) for IndexedDB-based persistent storage with cross-tab sync and full transaction isolation. All tables share one IndexedDB database:
+Use [`@quereus/plugin-indexeddb`](../quereus-plugin-indexeddb/) for IndexedDB-based persistent storage with cross-tab sync and full transaction isolation. All tables share one IndexedDB database:
 
 ```typescript
 import { Database, registerPlugin } from '@quereus/quereus';
@@ -158,7 +158,7 @@ await db.exec(`create table users (id integer primary key, name text) using stor
 
 ### React Native
 
-Use [`@quereus/plugin-react-native-leveldb`](packages/quereus-plugin-react-native-leveldb/) for fast LevelDB storage with full transaction isolation. Each table becomes a separate LevelDB database with a name prefix:
+Use [`@quereus/plugin-react-native-leveldb`](../quereus-plugin-react-native-leveldb/) for fast LevelDB storage with full transaction isolation. Each table becomes a separate LevelDB database with a name prefix:
 
 ```typescript
 import { LevelDB, LevelDBWriteBatch } from 'react-native-leveldb';
@@ -175,7 +175,7 @@ await registerPlugin(db, leveldbPlugin, {
 await db.exec(`create table users (id integer primary key, name text) using store`);
 ```
 
-**Note:** React Native requires runtime polyfills and static plugin loading. See the [plugin README](packages/quereus-plugin-react-native-leveldb/) for setup details.
+**Note:** React Native requires runtime polyfills and static plugin loading. See the [plugin README](../quereus-plugin-react-native-leveldb/) for setup details.
 
 **Required polyfills:**
 - `structuredClone` (Quereus uses it internally)
@@ -184,7 +184,7 @@ await db.exec(`create table users (id integer primary key, name text) using stor
 
 ### NativeScript
 
-Use [`@quereus/plugin-nativescript-sqlite`](packages/quereus-plugin-nativescript-sqlite/) for SQLite-based storage with full transaction isolation. All tables share one SQLite database file:
+Use [`@quereus/plugin-nativescript-sqlite`](../quereus-plugin-nativescript-sqlite/) for SQLite-based storage with full transaction isolation. All tables share one SQLite database file:
 
 ```typescript
 import { openOrCreate } from '@nativescript-community/sqlite';
@@ -198,27 +198,27 @@ await registerPlugin(db, sqlitePlugin, { db: sqliteDb });
 await db.exec(`create table users (id integer primary key, name text) using store`);
 ```
 
-See [Store Documentation](../docs/store.md) for the storage architecture and custom backend implementation.
+See [Store Documentation](../../docs/store.md) for the storage architecture and custom backend implementation.
 
 ## Documentation
 
-* [Usage Guide](/docs/usage.md): Complete API reference including:
+* [Usage Guide](../../docs/usage.md): Complete API reference including:
   - Type mappings (SQL ↔ JavaScript)
   - Parameter binding and prepared statements
   - Logging via `debug` library with namespace control
   - Instruction tracing for performance analysis
   - Transaction and savepoint management
-* [SQL Reference Guide](../docs/sql.md): SQL syntax (includes Declarative Schema)
-* [Schema Management](../docs/schema.md): SchemaManager API, change events, key types
-* [Type System](../docs/types.md): Logical/physical types, temporal types, JSON, custom types
-* [Functions](../docs/functions.md): Built-in scalar, aggregate, window, and JSON functions
-* [Memory Tables](/docs/memory-table.md): Built-in MemoryTable module
-* [Module Authoring](../docs/module-authoring.md): Virtual table module development and event system
-* [Date/Time Handling](../docs/datetime.md): Temporal parsing, functions, and ISO 8601 formats
-* [Runtime](../docs/runtime.md): Instruction-based execution and opcodes
-* [Error Handling](../docs/error.md): Error types and status codes
-* [Plugin System](../docs/plugins.md): Virtual tables, functions, and collations
-* [TODO List](../docs/todo.md): Planned features
+* [SQL Reference Guide](../../docs/sql.md): SQL syntax (includes Declarative Schema)
+* [Schema Management](../../docs/schema.md): SchemaManager API, change events, key types
+* [Type System](../../docs/types.md): Logical/physical types, temporal types, JSON, custom types
+* [Functions](../../docs/functions.md): Built-in scalar, aggregate, window, and JSON functions
+* [Memory Tables](../../docs/memory-table.md): Built-in MemoryTable module
+* [Module Authoring](../../docs/module-authoring.md): Virtual table module development and event system
+* [Date/Time Handling](../../docs/datetime.md): Temporal parsing, functions, and ISO 8601 formats
+* [Runtime](../../docs/runtime.md): Instruction-based execution and opcodes
+* [Error Handling](../../docs/errors.md): Error types and status codes
+* [Plugin System](../../docs/plugins.md): Virtual tables, functions, and collations
+* [TODO List](../../docs/todo.md): Planned features
 
 ### Plugin Development
 
@@ -230,7 +230,7 @@ Quereus exports all critical utilities needed for plugin and module development:
 * **Type System**: Full access to logical types, validation, and parsing utilities
 * **Event Hooks**: `VTableEventEmitter` interface for mutation and schema change events — Enable reactive patterns, caching, and replication
 
-See the [Plugin System documentation](../docs/plugins.md#comparison-and-coercion-utilities) for complete API reference and examples.
+See the [Plugin System documentation](../../docs/plugins.md#comparison-and-coercion-utilities) for complete API reference and examples.
 
 ## Key Design Decisions
 
@@ -250,7 +250,7 @@ See the [Plugin System documentation](../docs/plugins.md#comparison-and-coercion
 
 While Quereus supports standard SQL syntax, it has several distinctive design choices:
 
-*   **Modern Type System**: Uses logical/physical type separation instead of SQLite's type affinity model. Includes native temporal types (DATE, TIME, DATETIME) and JSON type with deep equality comparison. Conversion functions (`integer()`, `date()`, `json()`) are preferred over CAST syntax. See [Type System Documentation](../docs/types.md).
+*   **Modern Type System**: Uses logical/physical type separation instead of SQLite's type affinity model. Includes native temporal types (DATE, TIME, DATETIME) and JSON type with deep equality comparison. Conversion functions (`integer()`, `date()`, `json()`) are preferred over CAST syntax. See [Type System Documentation](../../docs/types.md).
 *   **Virtual Table Centric**: Uses `CREATE TABLE ... USING module(...)` syntax. All tables are virtual tables.
 *   **Default NOT NULL Columns**: Following Third Manifesto principles, columns default to NOT NULL unless explicitly specified otherwise. This behavior can be controlled via `pragma default_column_nullability = 'nullable'` to restore SQL standard behavior.
 *   **No Rowids**: All tables are addressed by their Primary Key. When no explicit PRIMARY KEY is defined, Quereus includes all columns in the primary key.
@@ -261,7 +261,7 @@ While Quereus supports standard SQL syntax, it has several distinctive design ch
 
 - Row-level CHECKs that reference only the current row are enforced immediately.
 - Row-level CHECKs that reference other tables (e.g., via subqueries) are automatically deferred and enforced at COMMIT using the same optimized engine as global assertions. No `DEFERRABLE` or `SET CONSTRAINTS` management is required by the user.
-- **Determinism Enforcement**: CHECK constraints and DEFAULT values must use only deterministic expressions. Non-deterministic values (like `datetime('now')` or `random()`) must be passed via mutation context to ensure captured statements are replayable. See [Runtime Documentation](../docs/runtime.md#determinism-validation).
+- **Determinism Enforcement**: CHECK constraints and DEFAULT values must use only deterministic expressions. Non-deterministic values (like `datetime('now')` or `random()`) must be passed via mutation context to ensure captured statements are replayable. See [Runtime Documentation](../../docs/runtime.md#determinism-validation).
 
 ### Sequential ID Generation
 
@@ -299,8 +299,8 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 
 Quereus features a sophisticated rule-based query optimizer that transforms logical plans into efficient physical execution plans. The optimizer uses a single plan node hierarchy with logical-to-physical transformation, generic tree rewriting infrastructure, and comprehensive optimization rules including constant folding, intelligent caching, and streaming aggregation.
 
-See the [Optimizer Documentation](../docs/optimizer.md) for architecture details and [Optimizer Conventions](../docs/optimizer-conventions.md) for development guidelines.
-[TODO List](../docs/todo.md) has remaining priorities.
+See the [Optimizer Documentation](../../docs/optimizer.md) for architecture details and [Optimizer Conventions](../../docs/optimizer-conventions.md) for development guidelines.
+[TODO List](../../docs/todo.md) has remaining priorities.
 
 Recent changes:
 - Retrieve growth and push-down stabilized: query-based modules slide full nodes via `supports()`; index-style fallback injects supported-only fragments inside `Retrieve`, preserving residuals above.
