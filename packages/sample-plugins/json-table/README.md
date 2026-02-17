@@ -1,33 +1,27 @@
 # JSON_TABLE Plugin
 
-A sample virtual table plugin for Quereus that allows reading JSON data from URLs or files as if it were a SQL table.
+A sample read-only virtual table plugin for Quereus that allows reading JSON data from URLs or files as if it were a SQL table.
 
 ## Features
 
-- 📄 Read JSON from HTTP/HTTPS URLs
-- 📁 Read JSON from local files (Node.js CLI only)
-- 🔍 JSONPath support for extracting specific data
-- 🗃️ Automatic schema detection from JSON structure
-- ⚡ Configurable HTTP timeout and caching
-- 🔄 Object flattening for nested JSON structures
+- Read JSON from HTTP/HTTPS URLs
+- Read JSON from local files (Node.js CLI only)
+- JSONPath support for extracting specific data
+- Automatic schema detection from JSON structure
+- Configurable HTTP timeout and caching
+- Object flattening for nested JSON structures
 
 ## Installation
 
-### Web Playground
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import jsonTable from '@quereus/quereus-plugin-json-table/plugin';
 
-1. Open Quoomb settings (⚙️ icon)
-2. Click "Manage Plugins"
-3. Enter the URL to this plugin file:
-   ```
-   https://raw.githubusercontent.com/user/repo/main/packages/sample-plugins/json-table/index.js
-   ```
-4. Click "Install"
+const db = new Database();
+await registerPlugin(db, jsonTable);
 
-### CLI
-
-```bash
-quoomb
-.plugin install https://raw.githubusercontent.com/user/repo/main/packages/sample-plugins/json-table/index.js
+// Or with configuration:
+await registerPlugin(db, jsonTable, { timeout: 10000 });
 ```
 
 ## Usage
@@ -51,6 +45,8 @@ Parameters:
 SELECT * FROM my_data;
 SELECT name, email FROM my_data WHERE age > 25;
 ```
+
+Note: This is a read-only virtual table. INSERT, UPDATE, and DELETE are not supported.
 
 ## Examples
 
@@ -86,7 +82,15 @@ CREATE TABLE local_data USING json_table(
 
 ## Configuration
 
-The plugin supports several configuration options:
+Config options are passed as the third argument to `registerPlugin`:
+
+```typescript
+await registerPlugin(db, jsonTable, {
+  timeout: 60000,
+  cache_ttl: 600,
+  enable_cache: false
+});
+```
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -94,23 +98,6 @@ The plugin supports several configuration options:
 | `cache_ttl` | number | 300 | Cache TTL for HTTP responses in seconds |
 | `user_agent` | string | "Quereus JSON_TABLE Plugin/1.0.0" | User agent for HTTP requests |
 | `enable_cache` | boolean | true | Whether to cache HTTP responses |
-
-### Setting Configuration (Web)
-
-1. Open Plugin Manager
-2. Click the settings icon next to JSON_TABLE
-3. Modify values and click "Save Configuration"
-
-### Setting Configuration (CLI)
-
-```bash
-# View current configuration
-.plugin config JSON_TABLE
-
-# Set specific values
-.plugin config JSON_TABLE timeout=60000 cache_ttl=600
-.plugin config JSON_TABLE enable_cache=false
-```
 
 ## Schema Detection
 
@@ -152,7 +139,3 @@ This plugin serves as a template for creating your own virtual table modules. Ke
 2. **Registration function**: Called by Quereus to register the virtual table module
 3. **Virtual table class**: Implements the table interface with `scan()` method
 4. **Schema generation**: Creates appropriate SQL table schema
-
-## License
-
-This sample plugin is provided as-is for educational purposes. 

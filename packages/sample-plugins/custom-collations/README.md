@@ -10,6 +10,16 @@ This plugin demonstrates how to create custom collation functions in Quereus. Co
 - **`ALPHANUM`** - Advanced alphanumeric sorting with mixed text and numbers
 - **`PHONETIC`** - Phonetic-like sorting (groups similar-sounding characters)
 
+## Installation
+
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import customCollations from '@quereus/quereus-plugin-custom-collations/plugin';
+
+const db = new Database();
+await registerPlugin(db, customCollations);
+```
+
 ## Usage Examples
 
 ```sql
@@ -33,24 +43,6 @@ SELECT * FROM mixed ORDER BY value COLLATE ALPHANUM;
 SELECT * FROM names ORDER BY name COLLATE PHONETIC;
 -- Groups similar-sounding names together
 ```
-
-## Installation
-
-### In Node.js
-
-```javascript
-import { Database } from 'quereus';
-import { dynamicLoadModule } from 'quereus/plugin-loader';
-
-const db = new Database();
-await dynamicLoadModule('path/to/custom-collations/index.js', db);
-```
-
-### In Quoomb Web
-
-1. Open the Plugin Manager
-2. Install from URL: `https://raw.githubusercontent.com/your-repo/quereus/main/packages/sample-plugins/custom-collations/index.js`
-3. The collations will be available immediately
 
 ## Collation Details
 
@@ -195,7 +187,7 @@ All collation functions handle edge cases gracefully:
 
 ## Source Code
 
-The complete source code is available in `packages/sample-plugins/custom-collations/index.js` and demonstrates:
+The complete source code is available in `packages/sample-plugins/custom-collations/index.ts` and demonstrates:
 
 - String parsing and tokenization
 - Numeric comparison logic

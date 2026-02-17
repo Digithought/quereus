@@ -1,6 +1,6 @@
 # String Functions Plugin
 
-This plugin demonstrates how to create custom SQL functions in Quereus. It provides additional string manipulation functions beyond the built-in ones.
+A sample plugin for Quereus demonstrating how to create custom scalar and table-valued SQL functions. It provides additional string manipulation functions beyond the built-in ones.
 
 ## Functions Provided
 
@@ -57,21 +57,13 @@ SELECT * FROM str_stats('Hello world!\nThis is a test.');
 
 ## Installation
 
-### In Node.js
-
-```javascript
-import { Database } from 'quereus';
-import { dynamicLoadModule } from 'quereus/plugin-loader';
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import stringFunctions from '@quereus/quereus-plugin-string-functions/plugin';
 
 const db = new Database();
-await dynamicLoadModule('path/to/string-functions/index.js', db);
+await registerPlugin(db, stringFunctions);
 ```
-
-### In Quoomb Web
-
-1. Open the Plugin Manager
-2. Install from URL: `https://raw.githubusercontent.com/your-repo/quereus/main/packages/sample-plugins/string-functions/index.js`
-3. The functions will be available immediately
 
 ## Function Details
 
@@ -166,16 +158,9 @@ All functions gracefully handle `NULL` inputs and invalid data types:
 - Invalid numbers are treated as 0 or cause errors as appropriate
 - Empty strings are handled according to function semantics
 
-## Performance Notes
-
-- All functions are optimized for typical string lengths
-- `repeat()` has a safety limit of 1000 repetitions
-- `str_stats()` processes the input string once for all metrics
-- Functions use efficient JavaScript string operations
-
 ## Source Code
 
-The complete source code is available in `packages/sample-plugins/string-functions/index.js` and demonstrates:
+The complete source code is available in `packages/sample-plugins/string-functions/index.ts` and demonstrates:
 
 - Proper input validation
 - Error handling patterns

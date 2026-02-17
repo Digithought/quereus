@@ -12,207 +12,126 @@
  * - PHONETIC - Simple phonetic-like sorting (vowels treated as equivalent)
  */
 
-import type { Database, SqlValue, CollationFunction } from '@quereus/quereus';
+import type { Database, SqlValue, CollationFunction, PluginRegistrations } from '@quereus/quereus';
 
-/**
- * Natural numeric sorting collation
- * Handles embedded numbers naturally: "file2.txt" < "file10.txt"
- */
-const numericCollation: CollationFunction = (a: string, b: string): number => {
-  // Split strings into alternating text and numeric parts
-  const parseString = (str: string): (string | number)[] => {
-    const parts: (string | number)[] = [];
-    let current = '';
-    let inNumber = false;
-    
-    for (let i = 0; i < str.length; i++) {
-      const char = str[i];
-      const isDigit = char >= '0' && char <= '9';
-      
-      if (isDigit !== inNumber) {
-        if (current) {
-          parts.push(inNumber ? Number(current) : current);
-          current = '';
-        }
-        inNumber = isDigit;
-      }
-      current += char;
-    }
-    
-    if (current) {
-      parts.push(inNumber ? Number(current) : current);
-    }
-    
-    return parts;
-  };
-  
-  const partsA = parseString(a);
-  const partsB = parseString(b);
-  
-  const maxLen = Math.max(partsA.length, partsB.length);
-  
-  for (let i = 0; i < maxLen; i++) {
-    const partA = partsA[i];
-    const partB = partsB[i];
-    
-    if (partA === undefined) return -1;
-    if (partB === undefined) return 1;
-    
-    // Compare numbers numerically, strings lexicographically
-    if (typeof partA === 'number' && typeof partB === 'number') {
-      if (partA !== partB) return partA < partB ? -1 : 1;
-    } else {
-      const strA = String(partA);
-      const strB = String(partB);
-      if (strA !== strB) return strA < strB ? -1 : 1;
-    }
-  }
-  
-  return 0;
+export const manifest = {
+	name: 'Custom Collations',
+	version: '1.0.0',
+	author: 'Quereus Team',
+	description: 'Custom collation functions for specialized text sorting',
+	provides: {
+		collations: ['NUMERIC', 'LENGTH', 'REVERSE', 'ALPHANUM', 'PHONETIC']
+	}
 };
 
-/**
- * Length-based collation
- * Sort by string length first, then lexicographically
- */
-const lengthCollation: CollationFunction = (a: string, b: string): number => {
-  if (a.length !== b.length) {
-    return a.length - b.length;
-  }
-  return a < b ? -1 : a > b ? 1 : 0;
-};
-
-/**
- * Reverse lexicographic collation
- * Opposite of normal sorting
- */
-const reverseCollation: CollationFunction = (a: string, b: string): number => {
-  return a < b ? 1 : a > b ? -1 : 0;
-};
-
-/**
- * Alphanumeric collation
- * More sophisticated handling of mixed text and numbers
- */
-const alphanumCollation: CollationFunction = (a: string, b: string): number => {
-  interface Token {
-    type: 'text' | 'number';
-    value: string | number;
-  }
-
-  const tokenize = (str: string): Token[] => {
-    const tokens: Token[] = [];
-    let i = 0;
-    
-    while (i < str.length) {
-      if (str[i] >= '0' && str[i] <= '9') {
-        // Extract number
-        let num = '';
-        while (i < str.length && str[i] >= '0' && str[i] <= '9') {
-          num += str[i++];
-        }
-        tokens.push({ type: 'number', value: parseInt(num, 10) });
-      } else {
-        // Extract text
-        let text = '';
-        while (i < str.length && (str[i] < '0' || str[i] > '9')) {
-          text += str[i++];
-        }
-        tokens.push({ type: 'text', value: text.toLowerCase() });
-      }
-    }
-    
-    return tokens;
-  };
-  
-  const tokensA = tokenize(a);
-  const tokensB = tokenize(b);
-  
-  const maxLen = Math.max(tokensA.length, tokensB.length);
-  
-  for (let i = 0; i < maxLen; i++) {
-    const tokenA = tokensA[i];
-    const tokenB = tokensB[i];
-    
-    if (!tokenA) return -1;
-    if (!tokenB) return 1;
-    
-    // Different types: text comes before numbers
-    if (tokenA.type !== tokenB.type) {
-      return tokenA.type === 'text' ? -1 : 1;
-    }
-    
-    // Same type: compare values
-    if (tokenA.value !== tokenB.value) {
-      return tokenA.value < tokenB.value ? -1 : 1;
-    }
-  }
-  
-  return 0;
-};
-
-/**
- * Phonetic-like collation
- * Groups similar-sounding characters together
- */
-const phoneticCollation: CollationFunction = (a: string, b: string): number => {
-  const normalize = (str: string): string => {
-    return str.toLowerCase()
-      // Group similar vowels
-      .replace(/[aeiou]/g, 'a')
-      // Group similar consonants
-      .replace(/[bp]/g, 'b')
-      .replace(/[fv]/g, 'f')
-      .replace(/[kg]/g, 'k')
-      .replace(/[sz]/g, 's')
-      .replace(/[td]/g, 't')
-      // Remove silent letters (basic)
-      .replace(/h/g, '')
-      .replace(/(.)\1+/g, '$1'); // Remove consecutive duplicates
-  };
-  
-  const normA = normalize(a);
-  const normB = normalize(b);
-  
-  // If normalized forms are different, use that
-  if (normA !== normB) {
-    return normA < normB ? -1 : 1;
-  }
-  
-  // If normalized forms are the same, fall back to exact comparison
-  return a < b ? -1 : a > b ? 1 : 0;
-};
-
-/**
- * Plugin registration function
- */
-export default function register(db: Database, config: Record<string, SqlValue> = {}) {
-  console.log('Custom Collations plugin loaded with config:', config);
-  
-  // Return collation registrations
-  return {
-    collations: [
-      {
-        name: 'NUMERIC',
-        func: numericCollation
-      },
-      {
-        name: 'LENGTH',
-        func: lengthCollation
-      },
-      {
-        name: 'REVERSE',
-        func: reverseCollation
-      },
-      {
-        name: 'ALPHANUM',
-        func: alphanumCollation
-      },
-      {
-        name: 'PHONETIC',
-        func: phoneticCollation
-      }
-    ]
-  };
+interface Token {
+	type: 'text' | 'number';
+	value: string | number;
 }
 
+function tokenize(str: string, caseSensitive: boolean): Token[] {
+	const tokens: Token[] = [];
+	let i = 0;
+
+	while (i < str.length) {
+		if (str[i] >= '0' && str[i] <= '9') {
+			let num = '';
+			while (i < str.length && str[i] >= '0' && str[i] <= '9') {
+				num += str[i++];
+			}
+			tokens.push({ type: 'number', value: parseInt(num, 10) });
+		} else {
+			let text = '';
+			while (i < str.length && (str[i] < '0' || str[i] > '9')) {
+				text += str[i++];
+			}
+			tokens.push({ type: 'text', value: caseSensitive ? text : text.toLowerCase() });
+		}
+	}
+
+	return tokens;
+}
+
+function compareTokens(tokensA: Token[], tokensB: Token[], textBeforeNumbers: boolean): number {
+	const maxLen = Math.max(tokensA.length, tokensB.length);
+
+	for (let i = 0; i < maxLen; i++) {
+		const tokenA = tokensA[i];
+		const tokenB = tokensB[i];
+
+		if (!tokenA) return -1;
+		if (!tokenB) return 1;
+
+		if (textBeforeNumbers && tokenA.type !== tokenB.type) {
+			return tokenA.type === 'text' ? -1 : 1;
+		}
+
+		if (typeof tokenA.value === 'number' && typeof tokenB.value === 'number') {
+			if (tokenA.value !== tokenB.value) return tokenA.value < tokenB.value ? -1 : 1;
+		} else {
+			const strA = String(tokenA.value);
+			const strB = String(tokenB.value);
+			if (strA !== strB) return strA < strB ? -1 : 1;
+		}
+	}
+
+	return 0;
+}
+
+const numericCollation: CollationFunction = (a: string, b: string): number => {
+	const tokensA = tokenize(a, true);
+	const tokensB = tokenize(b, true);
+	return compareTokens(tokensA, tokensB, false);
+};
+
+const lengthCollation: CollationFunction = (a: string, b: string): number => {
+	if (a.length !== b.length) {
+		return a.length - b.length;
+	}
+	return a < b ? -1 : a > b ? 1 : 0;
+};
+
+const reverseCollation: CollationFunction = (a: string, b: string): number => {
+	return a < b ? 1 : a > b ? -1 : 0;
+};
+
+const alphanumCollation: CollationFunction = (a: string, b: string): number => {
+	const tokensA = tokenize(a, false);
+	const tokensB = tokenize(b, false);
+	return compareTokens(tokensA, tokensB, true);
+};
+
+const phoneticCollation: CollationFunction = (a: string, b: string): number => {
+	const normalize = (str: string): string => {
+		return str.toLowerCase()
+			.replace(/[aeiou]/g, 'a')
+			.replace(/[bp]/g, 'b')
+			.replace(/[fv]/g, 'f')
+			.replace(/[kg]/g, 'k')
+			.replace(/[sz]/g, 's')
+			.replace(/[td]/g, 't')
+			.replace(/h/g, '')
+			.replace(/(.)\1+/g, '$1');
+	};
+
+	const normA = normalize(a);
+	const normB = normalize(b);
+
+	if (normA !== normB) {
+		return normA < normB ? -1 : 1;
+	}
+
+	return a < b ? -1 : a > b ? 1 : 0;
+};
+
+export default function register(_db: Database, _config: Record<string, SqlValue> = {}): PluginRegistrations {
+	return {
+		collations: [
+			{ name: 'NUMERIC', func: numericCollation },
+			{ name: 'LENGTH', func: lengthCollation },
+			{ name: 'REVERSE', func: reverseCollation },
+			{ name: 'ALPHANUM', func: alphanumCollation },
+			{ name: 'PHONETIC', func: phoneticCollation }
+		]
+	};
+}

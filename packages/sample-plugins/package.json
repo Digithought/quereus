@@ -9,7 +9,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "serve": "npx http-server -p 8080 --cors",
-    "test": "echo \"No tests specified\" && exit 0"
+    "test": "cd ../.. && node --import ./packages/sample-plugins/register.mjs node_modules/mocha/bin/mocha.js \"packages/sample-plugins/test/**/*.spec.ts\" --colors"
   },
   "keywords": [
     "quereus",
@@ -22,7 +22,10 @@
   "author": "Quereus Team",
   "license": "MIT",
   "files": [
-    "json-table/"
+    "json-table/",
+    "string-functions/",
+    "custom-collations/",
+    "comprehensive-demo/"
   ],
   "repository": {
     "type": "git",

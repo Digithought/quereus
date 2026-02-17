@@ -2,11 +2,27 @@
 
 This plugin demonstrates all three types of Quereus plugin registrations in a single plugin:
 
-- **Virtual Table** - A simple in-memory key-value store
+- **Virtual Table** - A simple in-memory key-value store (`key_value_store` module name)
 - **Functions** - Math utilities and data conversion functions
 - **Collations** - Unicode case-insensitive sorting
 
 This is an educational plugin showing how to combine multiple plugin types.
+
+## Installation
+
+```typescript
+import { Database, registerPlugin } from '@quereus/quereus';
+import comprehensiveDemo from '@quereus/quereus-plugin-comprehensive-demo/plugin';
+
+const db = new Database();
+await registerPlugin(db, comprehensiveDemo);
+
+// Or with configuration:
+await registerPlugin(db, comprehensiveDemo, {
+  default_precision: 3,
+  enable_debug: true
+});
+```
 
 ## Components Provided
 
@@ -108,28 +124,6 @@ SELECT * FROM names ORDER BY name COLLATE UNICODE_CI;
 SELECT * FROM users WHERE name = 'JOSÉ' COLLATE UNICODE_CI;
 -- Matches 'José', 'josé', 'JOSÉ', etc.
 ```
-
-## Installation
-
-### In Node.js
-
-```javascript
-import { Database } from 'quereus';
-import { dynamicLoadModule } from 'quereus/plugin-loader';
-
-const db = new Database();
-await dynamicLoadModule('path/to/comprehensive-demo/index.js', db, {
-  default_precision: 3,
-  enable_debug: true
-});
-```
-
-### In Quoomb Web
-
-1. Open the Plugin Manager
-2. Install from URL: `https://raw.githubusercontent.com/your-repo/quereus/main/packages/sample-plugins/comprehensive-demo/index.js`
-3. Configure settings as needed
-4. All components will be available immediately
 
 ## Detailed Component Information
 

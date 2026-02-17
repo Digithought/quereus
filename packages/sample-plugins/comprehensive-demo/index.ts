@@ -1,336 +1,268 @@
 /**
  * Comprehensive Demo Plugin for Quereus
  *
- * This plugin demonstrates all three types of registrations in one plugin:
+ * Demonstrates all three types of registrations in one plugin:
  * - Virtual Table: A simple in-memory key-value store
  * - Functions: Math utilities and data conversion
  * - Collations: Case-insensitive with Unicode normalization
- *
- * This shows how a single plugin can provide multiple types of functionality.
  */
 
-import type { Database, SqlValue, CollationFunction } from '@quereus/quereus';
+import {
+	VirtualTable,
+	FunctionFlags,
+	createScalarFunction,
+	createTableValuedFunction,
+	TEXT_TYPE,
+	INTEGER_TYPE,
+	REAL_TYPE,
+} from '@quereus/quereus';
+import type {
+	Database,
+	SqlValue,
+	Row,
+	CollationFunction,
+	PluginRegistrations,
+	VirtualTableModule,
+	UpdateArgs,
+	UpdateResult,
+	FilterInfo,
+} from '@quereus/quereus';
+import type { TableSchema } from '@quereus/quereus';
 
-// In-memory storage for the key-value store
+export const manifest = {
+	name: 'Comprehensive Demo',
+	version: '1.0.0',
+	author: 'Quereus Team',
+	description: 'Demonstrates virtual tables, functions, and collations in a single plugin',
+	provides: {
+		vtables: ['key_value_store'],
+		functions: ['math_round_to', 'hex_to_int', 'int_to_hex', 'data_summary'],
+		collations: ['UNICODE_CI']
+	}
+};
+
+// --- Virtual Table: Key-Value Store ---
+
+class KeyValueTable extends VirtualTable {
+	readonly store: Map<string, string>;
+
+	constructor(db: Database, module: VirtualTableModule<KeyValueTable>, schemaName: string, tableName: string, store: Map<string, string>) {
+		super(db, module, schemaName, tableName);
+		this.store = store;
+	}
+
+	async disconnect(): Promise<void> { /* no-op */ }
+
+	async *query(_filterInfo: FilterInfo): AsyncIterable<Row> {
+		const snapshot = [...this.store.entries()];
+		for (const [key, value] of snapshot) {
+			yield [key, value];
+		}
+	}
+
+	async update(args: UpdateArgs): Promise<UpdateResult> {
+		switch (args.operation) {
+			case 'insert': {
+				const [key, value] = args.values as Row;
+				this.store.set(String(key), String(value ?? ''));
+				return { status: 'ok', row: args.values };
+			}
+			case 'update': {
+				const oldKey = String((args.oldKeyValues as Row)[0]);
+				const [newKey, newValue] = args.values as Row;
+				this.store.delete(oldKey);
+				this.store.set(String(newKey), String(newValue ?? ''));
+				return { status: 'ok', row: args.values };
+			}
+			case 'delete': {
+				const key = String((args.oldKeyValues as Row)[0]);
+				this.store.delete(key);
+				return { status: 'ok' };
+			}
+			default:
+				return { status: 'ok' };
+		}
+	}
+}
+
 const stores = new Map<string, Map<string, string>>();
 
-/**
- * Virtual Table: Key-Value Store
- * Simple demonstration of an in-memory key-value store
- */
-class KeyValueStore {
-  private storeName: string;
-  private config: Record<string, SqlValue>;
-  private store: Map<string, string>;
-
-  constructor(args: string[], config: Record<string, SqlValue>) {
-    this.storeName = args[0] || 'default';
-    this.config = config;
-
-    // Initialize store if it doesn't exist
-    if (!stores.has(this.storeName)) {
-      stores.set(this.storeName, new Map());
-    }
-
-    this.store = stores.get(this.storeName)!;
-  }
-
-  getSchema(): string {
-    return 'CREATE TABLE kv_store(key TEXT PRIMARY KEY, value TEXT)';
-  }
-
-  *scan(): Generator<Record<string, string>> {
-    for (const [key, value] of this.store) {
-      yield { key, value };
-    }
-  }
-
-  insert(row: Record<string, string>): Record<string, string> {
-    this.store.set(row.key, row.value);
-    return { key: row.key, value: row.value };
-  }
-
-  update(oldRow: Record<string, string>, newRow: Record<string, string>): void {
-    this.store.delete(oldRow.key);
-    this.store.set(newRow.key, newRow.value);
-  }
-
-  delete(row: Record<string, string>): void {
-    this.store.delete(row.key);
-  }
-
-  getRowCount(): number {
-    return this.store.size;
-  }
+function getOrCreateStore(schemaName: string, tableName: string): Map<string, string> {
+	const key = `${schemaName}.${tableName}`.toLowerCase();
+	let store = stores.get(key);
+	if (!store) {
+		store = new Map();
+		stores.set(key, store);
+	}
+	return store;
 }
 
-const keyValueModule = {
-  create: async (db: Database, tableSchema: any) => {
-    const args = [tableSchema.vtabArgs && tableSchema.vtabArgs.store ? tableSchema.vtabArgs.store : 'default'];
-    const table = new KeyValueStore(args, tableSchema.vtabArgs || {});
-    // Minimal instance compatible with VirtualTable
-    return {
-      db,
-      module: keyValueModule,
-      schemaName: tableSchema.schemaName,
-      tableName: tableSchema.name,
-      tableSchema,
-      disconnect: async () => {},
-      async update(updateArgs: { operation: string; values?: any; oldKeyValues?: any }) {
-        if (updateArgs.operation === 'insert' && updateArgs.values) {
-          table.insert({ key: updateArgs.values[0], value: updateArgs.values[1] });
-          return updateArgs.values;
-        } else if (updateArgs.operation === 'update' && updateArgs.values && updateArgs.oldKeyValues) {
-          table.update({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] }, { key: updateArgs.values[0], value: updateArgs.values[1] });
-          return updateArgs.values;
-        } else if (updateArgs.operation === 'delete' && updateArgs.oldKeyValues) {
-          table.delete({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] });
-          return undefined;
-        }
-        return undefined;
-      },
-      *query() {
-        for (const row of table.scan()) {
-          yield [row.key, row.value];
-        }
-      },
-      async createConnection() {
-        return {
-          connectionId: 'kv:' + tableSchema.schemaName + '.' + tableSchema.name,
-          tableName: tableSchema.name,
-          begin: async () => {},
-          commit: async () => {},
-          rollback: async () => {},
-          createSavepoint: async () => {},
-          releaseSavepoint: async () => {},
-          rollbackToSavepoint: async () => {},
-          disconnect: async () => {}
-        };
-      }
-    };
-  },
-  connect: (db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string, options: any) => {
-    // Build table schema for connect (connect is synchronous, so we create the table inline)
-    const tableSchema = {
-      name: tableName,
-      schemaName,
-      columns: [
-        { name: 'key', type: 3, notNull: false },
-        { name: 'value', type: 3, notNull: false }
-      ],
-      columnIndexMap: new Map([[0,0],[1,1]]),
-      primaryKeyDefinition: [{ name: 'key', index: 0 }],
-      checkConstraints: [],
-      isTemporary: false,
-      isView: false,
-      vtabModuleName: 'key_value_store',
-      vtabArgs: options || {},
-      estimatedRows: 0
-    };
-    const args = [options && options.store ? options.store : 'default'];
-    const table = new KeyValueStore(args, options || {});
-    // Return minimal instance compatible with VirtualTable
-    return {
-      db,
-      module: keyValueModule,
-      schemaName: tableSchema.schemaName,
-      tableName: tableSchema.name,
-      tableSchema,
-      disconnect: async () => {},
-      async update(updateArgs: { operation: string; values?: any; oldKeyValues?: any }) {
-        if (updateArgs.operation === 'insert' && updateArgs.values) {
-          table.insert({ key: updateArgs.values[0], value: updateArgs.values[1] });
-          return updateArgs.values;
-        } else if (updateArgs.operation === 'update' && updateArgs.values && updateArgs.oldKeyValues) {
-          table.update({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] }, { key: updateArgs.values[0], value: updateArgs.values[1] });
-          return updateArgs.values;
-        } else if (updateArgs.operation === 'delete' && updateArgs.oldKeyValues) {
-          table.delete({ key: updateArgs.oldKeyValues[0], value: updateArgs.oldKeyValues[1] });
-          return undefined;
-        }
-        return undefined;
-      },
-      *query() {
-        for (const row of table.scan()) {
-          yield [row.key, row.value];
-        }
-      },
-      async createConnection() {
-        return {
-          connectionId: 'kv:' + tableSchema.schemaName + '.' + tableSchema.name,
-          tableName: tableSchema.name,
-          begin: async () => {},
-          commit: async () => {},
-          rollback: async () => {},
-          createSavepoint: async () => {},
-          releaseSavepoint: async () => {},
-          rollbackToSavepoint: async () => {},
-          disconnect: async () => {}
-        };
-      }
-    };
-  }
+const keyValueModule: VirtualTableModule<KeyValueTable> = {
+	async create(db: Database, tableSchema: TableSchema): Promise<KeyValueTable> {
+		const store = getOrCreateStore(tableSchema.schemaName, tableSchema.name);
+		const table = new KeyValueTable(db, keyValueModule, tableSchema.schemaName, tableSchema.name, store);
+		table.tableSchema = tableSchema;
+		return table;
+	},
+
+	async connect(db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string): Promise<KeyValueTable> {
+		const store = getOrCreateStore(schemaName, tableName);
+		return new KeyValueTable(db, keyValueModule, schemaName, tableName, store);
+	},
+
+	async destroy(_db: Database, _pAux: unknown, _moduleName: string, schemaName: string, tableName: string): Promise<void> {
+		const key = `${schemaName}.${tableName}`.toLowerCase();
+		stores.delete(key);
+	}
 };
 
-/**
- * Functions: Math and Data Utilities
- */
+// --- Functions: Math and Data Utilities ---
 
-// Round to specific precision
+const DETERMINISTIC_UTF8 = FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC;
+
+const REAL_SCALAR = {
+	typeClass: 'scalar' as const,
+	logicalType: REAL_TYPE,
+	nullable: true,
+	isReadOnly: true,
+};
+
+const INTEGER_SCALAR = {
+	typeClass: 'scalar' as const,
+	logicalType: INTEGER_TYPE,
+	nullable: true,
+	isReadOnly: true,
+};
+
+const TEXT_SCALAR = {
+	typeClass: 'scalar' as const,
+	logicalType: TEXT_TYPE,
+	nullable: true,
+	isReadOnly: true,
+};
+
 function mathRoundTo(value: SqlValue, precision: SqlValue): SqlValue {
-  if (value === null || value === undefined) return null;
-  if (precision === null || precision === undefined) return null;
+	if (value === null || value === undefined) return null;
+	if (precision === null || precision === undefined) return null;
 
-  const num = Number(value);
-  const prec = Math.max(0, Math.floor(Number(precision)));
-  const factor = Math.pow(10, prec);
+	const num = Number(value);
+	const prec = Math.max(0, Math.floor(Number(precision)));
+	const factor = Math.pow(10, prec);
 
-  return Math.round(num * factor) / factor;
+	return Math.round(num * factor) / factor;
 }
 
-// Convert hex string to integer
 function hexToInt(hexStr: SqlValue): SqlValue {
-  if (hexStr === null || hexStr === undefined) return null;
+	if (hexStr === null || hexStr === undefined) return null;
 
-  const str = String(hexStr).replace(/^0x/i, '');
-  const result = parseInt(str, 16);
+	const str = String(hexStr).replace(/^0x/i, '');
+	const result = parseInt(str, 16);
 
-  return isNaN(result) ? null : result;
+	return isNaN(result) ? null : result;
 }
 
-// Convert integer to hex string
 function intToHex(intVal: SqlValue): SqlValue {
-  if (intVal === null || intVal === undefined) return null;
+	if (intVal === null || intVal === undefined) return null;
 
-  const num = Number(intVal);
-  if (!Number.isInteger(num)) return null;
+	const num = Number(intVal);
+	if (!Number.isInteger(num)) return null;
 
-  return '0x' + num.toString(16).toUpperCase();
+	return '0x' + num.toString(16).toUpperCase();
 }
 
-// Table-valued function that returns data summary
-function* dataSummary(jsonData: SqlValue): Generator<Record<string, SqlValue>> {
-  if (jsonData === null || jsonData === undefined) return;
+async function* dataSummary(jsonData: SqlValue): AsyncIterable<Row> {
+	if (jsonData === null || jsonData === undefined) return;
 
-  let data: any;
-  try {
-    data = JSON.parse(String(jsonData));
-  } catch (e) {
-    yield { property: 'error', value: 'Invalid JSON' };
-    return;
-  }
+	let data: unknown;
+	try {
+		data = JSON.parse(String(jsonData));
+	} catch {
+		yield ['error', 'Invalid JSON'];
+		return;
+	}
 
-  if (Array.isArray(data)) {
-    yield { property: 'type', value: 'array' };
-    yield { property: 'length', value: data.length };
-
-    if (data.length > 0) {
-      const firstType = typeof data[0];
-      yield { property: 'first_element_type', value: firstType };
-    }
-  } else if (typeof data === 'object' && data !== null) {
-    yield { property: 'type', value: 'object' };
-    const keys = Object.keys(data);
-    yield { property: 'key_count', value: keys.length };
-
-    if (keys.length > 0) {
-      yield { property: 'first_key', value: keys[0] };
-    }
-  } else {
-    yield { property: 'type', value: typeof data };
-    yield { property: 'value', value: String(data) };
-  }
+	if (Array.isArray(data)) {
+		yield ['type', 'array'];
+		yield ['length', data.length];
+		if (data.length > 0) {
+			yield ['first_element_type', typeof data[0]];
+		}
+	} else if (typeof data === 'object' && data !== null) {
+		yield ['type', 'object'];
+		const keys = Object.keys(data);
+		yield ['key_count', keys.length];
+		if (keys.length > 0) {
+			yield ['first_key', keys[0]];
+		}
+	} else {
+		yield ['type', typeof data];
+		yield ['value', String(data)];
+	}
 }
 
-/**
- * Collations: Unicode Case-Insensitive
- */
+// --- Collation: Unicode Case-Insensitive ---
+
 const unicodeCaseInsensitive: CollationFunction = (a: string, b: string): number => {
-  // Use proper Unicode normalization and case folding
-  const normalize = (str: string): string => {
-    return str.normalize('NFD').toLowerCase().normalize('NFC');
-  };
-
-  const normA = normalize(a);
-  const normB = normalize(b);
-
-  return normA < normB ? -1 : normA > normB ? 1 : 0;
+	const normA = a.normalize('NFD').toLowerCase().normalize('NFC');
+	const normB = b.normalize('NFD').toLowerCase().normalize('NFC');
+	return normA < normB ? -1 : normA > normB ? 1 : 0;
 };
 
-/**
- * Plugin registration function
- */
-export default function register(db: Database, config: Record<string, SqlValue> = {}) {
-  const precision = (config.default_precision as number) || 2;
-  const debug = (config.enable_debug as boolean) || false;
+// --- Plugin Registration ---
 
-  if (debug) {
-    console.log('Comprehensive Demo plugin loaded with config:', config);
-  }
+export default function register(_db: Database, _config: Record<string, SqlValue> = {}): PluginRegistrations {
+	return {
+		vtables: [
+			{
+				name: 'key_value_store',
+				module: keyValueModule,
+			}
+		],
 
-  return {
-    // Virtual table registration
-    vtables: [
-      {
-        name: 'key_value_store',
-        module: keyValueModule,
-        auxData: config
-      }
-    ],
+		functions: [
+			{
+				schema: createScalarFunction(
+					{ name: 'math_round_to', numArgs: 2, flags: DETERMINISTIC_UTF8, returnType: REAL_SCALAR },
+					mathRoundTo,
+				),
+			},
+			{
+				schema: createScalarFunction(
+					{ name: 'hex_to_int', numArgs: 1, flags: DETERMINISTIC_UTF8, returnType: INTEGER_SCALAR },
+					hexToInt,
+				),
+			},
+			{
+				schema: createScalarFunction(
+					{ name: 'int_to_hex', numArgs: 1, flags: DETERMINISTIC_UTF8, returnType: TEXT_SCALAR },
+					intToHex,
+				),
+			},
+			{
+				schema: createTableValuedFunction(
+					{
+						name: 'data_summary',
+						numArgs: 1,
+						flags: DETERMINISTIC_UTF8,
+						returnType: {
+							typeClass: 'relation' as const,
+							isReadOnly: true,
+							isSet: false,
+							columns: [
+								{ name: 'property', type: { typeClass: 'scalar' as const, logicalType: TEXT_TYPE, nullable: false, isReadOnly: true } },
+								{ name: 'value', type: { typeClass: 'scalar' as const, logicalType: TEXT_TYPE, nullable: true, isReadOnly: true } },
+							],
+							keys: [],
+							rowConstraints: [],
+						},
+					},
+					dataSummary,
+				),
+			},
+		],
 
-    // Function registrations
-    functions: [
-      {
-        schema: {
-          name: 'math_round_to',
-          numArgs: 2,
-          flags: 1, // FunctionFlags.UTF8
-          returnType: { typeClass: 'scalar', sqlType: 'REAL' },
-          implementation: mathRoundTo
-        }
-      },
-      {
-        schema: {
-          name: 'hex_to_int',
-          numArgs: 1,
-          flags: 1, // FunctionFlags.UTF8
-          returnType: { typeClass: 'scalar', sqlType: 'INTEGER' },
-          implementation: hexToInt
-        }
-      },
-      {
-        schema: {
-          name: 'int_to_hex',
-          numArgs: 1,
-          flags: 1, // FunctionFlags.UTF8
-          returnType: { typeClass: 'scalar', sqlType: 'TEXT' },
-          implementation: intToHex
-        }
-      },
-      {
-        schema: {
-          name: 'data_summary',
-          numArgs: 1,
-          flags: 1, // FunctionFlags.UTF8
-          returnType: {
-            typeClass: 'relation',
-            columns: [
-              { name: 'property', type: 'TEXT' },
-              { name: 'value', type: 'TEXT' }
-            ]
-          },
-          implementation: dataSummary
-        }
-      }
-    ],
-
-    // Collation registrations
-    collations: [
-      {
-        name: 'UNICODE_CI',
-        func: unicodeCaseInsensitive
-      }
-    ]
-  };
+		collations: [
+			{ name: 'UNICODE_CI', func: unicodeCaseInsensitive }
+		]
+	};
 }
-
