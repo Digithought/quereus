@@ -112,9 +112,9 @@ npx sync-coordinator --help
 |----------|--------|-------------|
 | `/sync/status` | GET | Health check and stats |
 | `/sync/metrics` | GET | Prometheus metrics |
-| `/sync/changes` | GET | Get changes since HLC |
-| `/sync/changes` | POST | Apply changes |
-| `/sync/snapshot` | GET | Stream full snapshot |
+| `/sync/:databaseId/changes` | GET | Get changes since HLC |
+| `/sync/:databaseId/changes` | POST | Apply changes |
+| `/sync/:databaseId/snapshot` | GET | Stream full snapshot (NDJSON) |
 | `/sync/ws` | WS | WebSocket for real-time sync |
 
 ## Prometheus Metrics

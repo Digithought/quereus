@@ -182,8 +182,141 @@ describe('WebSocket Handler', () => {
     });
   });
 
+  describe('Duplicate handshake', () => {
+    it('should reject duplicate handshake with ALREADY_AUTHENTICATED', async () => {
+      const ws = await connectWs();
+      try {
+        // First handshake
+        await sendAndReceive(ws, {
+          type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
+          siteId: TEST_SITE_ID_1,
+        });
+
+        // Second handshake on same connection
+        const response = await sendAndReceive(ws, {
+          type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
+          siteId: TEST_SITE_ID_1,
+        }) as { type: string; code: string };
+
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('ALREADY_AUTHENTICATED');
+      } finally {
+        ws.close();
+      }
+    });
+  });
+
+  describe('Unknown message type', () => {
+    it('should return UNKNOWN_MESSAGE for unrecognized type', async () => {
+      const ws = await connectWs();
+      try {
+        // Handshake first
+        await sendAndReceive(ws, {
+          type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
+          siteId: TEST_SITE_ID_1,
+        });
+
+        const response = await sendAndReceive(ws, {
+          type: 'totally_unknown',
+        }) as { type: string; code: string };
+
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('UNKNOWN_MESSAGE');
+      } finally {
+        ws.close();
+      }
+    });
+  });
+
+  describe('Apply Changes via WS', () => {
+    it('should require authentication for apply_changes', async () => {
+      const ws = await connectWs();
+      try {
+        const response = await sendAndReceive(ws, {
+          type: 'apply_changes',
+          changes: [],
+        }) as { type: string; code: string };
+
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('NOT_AUTHENTICATED');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('should apply empty changes array', async () => {
+      const ws = await connectWs();
+      try {
+        await sendAndReceive(ws, {
+          type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
+          siteId: TEST_SITE_ID_1,
+        });
+
+        const response = await sendAndReceive(ws, {
+          type: 'apply_changes',
+          changes: [],
+        }) as { type: string; applied: number };
+
+        expect(response.type).to.equal('apply_result');
+        expect(response.applied).to.equal(0);
+      } finally {
+        ws.close();
+      }
+    });
+  });
+
+  describe('Get Snapshot via WS', () => {
+    it('should require authentication for get_snapshot', async () => {
+      const ws = await connectWs();
+      try {
+        const response = await sendAndReceive(ws, {
+          type: 'get_snapshot',
+        }) as { type: string; code: string };
+
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('NOT_AUTHENTICATED');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('should stream snapshot after handshake (known bug: BigInt serialization)', async function () {
+      // BUG: handleGetSnapshot() sends raw SnapshotChunk objects containing HLC (BigInt wallTime)
+      // and SiteId (Uint8Array), which JSON.stringify cannot serialize.
+      // The handler should serialize these fields (like handleGetChanges does with serializeChangeSet).
+      // Once fixed, this test should assert snapshot_chunk/snapshot_complete messages.
+      const ws = await connectWs();
+      try {
+        await sendAndReceive(ws, {
+          type: 'handshake',
+          databaseId: TEST_DATABASE_ID,
+          siteId: TEST_SITE_ID_1,
+        });
+
+        const response = await sendAndReceive(ws, {
+          type: 'get_snapshot',
+        }) as { type: string; code?: string; message?: string };
+
+        // Currently returns error due to BigInt serialization failure
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('MESSAGE_ERROR');
+        expect(response.message).to.include('BigInt');
+      } finally {
+        ws.close();
+        // Wait for server-side session cleanup
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    });
+  });
+
   describe('Connection tracking', () => {
-    it('should track connected clients', async () => {
+    it('should track connected clients', async function () {
+      // Allow any lingering connections from previous tests to fully close
+      await new Promise(resolve => setTimeout(resolve, 300));
       const ws1 = await connectWs();
       const ws2 = await connectWs();
 

@@ -145,6 +145,108 @@ describe('CoordinatorService', () => {
     });
   });
 
+  describe('getChangesSince', () => {
+    it('should return empty changes for a new database', async () => {
+      const client: ClientIdentity = {
+        siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
+      };
+      const changes = await service.getChangesSince(TEST_DATABASE_ID, client);
+      expect(changes).to.be.an('array');
+      expect(changes.length).to.equal(0);
+    });
+  });
+
+  describe('applyChanges', () => {
+    it('should handle empty changes array', async () => {
+      const client: ClientIdentity = {
+        siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
+      };
+      const result = await service.applyChanges(TEST_DATABASE_ID, client, []);
+      expect(result).to.have.property('applied');
+      expect(result.applied).to.equal(0);
+    });
+  });
+
+  describe('authorization denial', () => {
+    it('should deny operation when onAuthorize returns false', async () => {
+      const hooks: CoordinatorHooks = {
+        async onAuthorize(_client, _operation) {
+          return false;
+        },
+      };
+
+      const config: CoordinatorConfig = {
+        ...DEFAULT_CONFIG,
+        dataDir: join(tmpdir(), `sync-coordinator-test-deny-${randomUUID()}`),
+      };
+      const deniedService = new CoordinatorService({ config, hooks });
+      await deniedService.initialize();
+
+      try {
+        const client: ClientIdentity = {
+          siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
+        };
+        try {
+          await deniedService.getChangesSince(TEST_DATABASE_ID, client);
+          expect.fail('Should have thrown');
+        } catch (err) {
+          expect((err as Error).message).to.equal('Not authorized');
+        }
+      } finally {
+        await deniedService.shutdown();
+        await rm(config.dataDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  });
+
+  describe('token-whitelist authentication', () => {
+    it('should reject when no token provided in token-whitelist mode', async () => {
+      const config: CoordinatorConfig = {
+        ...DEFAULT_CONFIG,
+        dataDir: join(tmpdir(), `sync-coordinator-test-token-${randomUUID()}`),
+        auth: { mode: 'token-whitelist', tokens: ['valid-token'] },
+      };
+      const tokenService = new CoordinatorService({ config });
+      await tokenService.initialize();
+
+      try {
+        await tokenService.authenticate({
+          databaseId: TEST_DATABASE_ID,
+          siteIdRaw: TEST_SITE_ID_BASE64,
+        });
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect((err as Error).message).to.equal('Authentication required');
+      } finally {
+        await tokenService.shutdown();
+        await rm(config.dataDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('should accept valid token in token-whitelist mode', async () => {
+      const config: CoordinatorConfig = {
+        ...DEFAULT_CONFIG,
+        dataDir: join(tmpdir(), `sync-coordinator-test-token2-${randomUUID()}`),
+        auth: { mode: 'token-whitelist', tokens: ['valid-token'] },
+      };
+      const tokenService = new CoordinatorService({ config });
+      await tokenService.initialize();
+
+      try {
+        const identity = await tokenService.authenticate({
+          databaseId: TEST_DATABASE_ID,
+          token: 'valid-token',
+          siteIdRaw: TEST_SITE_ID_BASE64,
+          siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
+        });
+        expect(identity.siteId).to.deep.equal(siteIdFromBase64(TEST_SITE_ID_BASE64));
+      } finally {
+        await tokenService.shutdown();
+        await rm(config.dataDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  });
+
   describe('getStatus', () => {
     it('should return server status', () => {
       const status = service.getStatus();
@@ -152,6 +254,30 @@ describe('CoordinatorService', () => {
       expect(status).to.have.property('connectedClients');
       expect(status).to.have.property('uptime');
       expect(status.connectedClients).to.equal(0);
+    });
+  });
+
+  describe('getSnapshotStream', () => {
+    it('should stream snapshot chunks for empty database', async () => {
+      const client: ClientIdentity = {
+        siteId: siteIdFromBase64(TEST_SITE_ID_BASE64),
+      };
+      const chunks: unknown[] = [];
+      for await (const chunk of service.getSnapshotStream(TEST_DATABASE_ID, client)) {
+        chunks.push(chunk);
+      }
+      // Even empty database should produce header + footer at minimum
+      expect(chunks.length).to.be.greaterThan(0);
+      expect((chunks[0] as { type: string }).type).to.equal('header');
+      expect((chunks[chunks.length - 1] as { type: string }).type).to.equal('footer');
+    });
+  });
+
+  describe('isValidDatabaseId', () => {
+    it('should validate database IDs', () => {
+      expect(service.isValidDatabaseId('valid-db')).to.be.true;
+      expect(service.isValidDatabaseId('')).to.be.false;
+      expect(service.isValidDatabaseId('has spaces')).to.be.false;
     });
   });
 });

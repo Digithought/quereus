@@ -152,6 +152,21 @@ describe('HTTP Routes', () => {
     });
   });
 
+  describe('GET /:databaseId/snapshot', () => {
+    it('should require authentication', async () => {
+      const response = await fetch(`${baseUrl}/${TEST_DATABASE_ID}/snapshot`);
+      expect(response.status).to.equal(401);
+    });
+
+    it('should stream snapshot as NDJSON with valid content-type', async () => {
+      const response = await fetch(`${baseUrl}/${TEST_DATABASE_ID}/snapshot`, {
+        headers: { 'X-Site-Id': TEST_SITE_ID },
+      });
+      expect(response.ok).to.be.true;
+      expect(response.headers.get('content-type')).to.include('application/x-ndjson');
+    });
+  });
+
   describe('Token authentication', () => {
     let tokenServer: CoordinatorServer;
     let tokenBaseUrl: string;
