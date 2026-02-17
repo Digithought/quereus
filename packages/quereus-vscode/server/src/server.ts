@@ -113,8 +113,8 @@ async function validate(doc: TextDocument): Promise<void> {
 	connection.sendDiagnostics({ uri: doc.uri, diagnostics });
 }
 
-documents.onDidOpen((e): void => { void validate(e.document); });
-documents.onDidChangeContent((change): void => { void validate(change.document); });
+documents.onDidOpen((e: { document: TextDocument }): void => { void validate(e.document); });
+documents.onDidChangeContent((change: { document: TextDocument }): void => { void validate(change.document); });
 
 connection.onCompletion((): CompletionItem[] => {
 	// Keywords
