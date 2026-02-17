@@ -3,4 +3,4 @@
  */
 
 export { PlanVisualizer } from './visualizer.js';
-export type { PlanNode, InstructionProgram } from './visualizer.js';
+export type { PlanNode, InstructionProgram, PhysicalProperties } from './visualizer.js';

@@ -5,7 +5,7 @@ Visual query plan inspection tool for Quereus SQL engine.
 ## Installation
 
 ```bash
-npm install -g @quereus/planviz
+yarn global add @quereus/planviz
 ```
 
 ## Usage
@@ -137,12 +137,12 @@ graph TD
 
 ### Building
 ```bash
-npm run build
+yarn build
 ```
 
 ### Testing
 ```bash
-npm run test
+yarn test
 ```
 
 ## Schema Setup

@@ -5,33 +5,63 @@
 import chalk from 'chalk';
 import { serializePlanTree } from '@quereus/quereus';
 
+export interface PhysicalProperties {
+	estimatedRows?: number;
+	ordering?: readonly { column: string; desc?: boolean }[];
+	[key: string]: unknown;
+}
+
 export interface PlanNode {
 	id?: string;
 	nodeType: string;
 	description?: string;
 	logical?: Record<string, unknown>;
-	physical?: any; // More flexible type to handle different physical property structures
+	physical?: PhysicalProperties;
 	children?: readonly PlanNode[];
 	relations?: readonly PlanNode[];
 
 	// Methods that might be available on actual plan nodes
 	getChildren?(): readonly PlanNode[];
 	getRelations?(): readonly PlanNode[];
-	toString?(): string;
 	getLogicalProperties?(): Record<string, unknown>;
 }
 
 export interface InstructionProgram {
 	type: 'program';
-	program: string; // String representation of the instruction program
+	program: string;
+}
+
+function isInstructionProgram(plan: PlanNode | InstructionProgram): plan is InstructionProgram {
+	return 'type' in plan && (plan as InstructionProgram).type === 'program';
+}
+
+/** Collect all children and relations from a node, preferring methods over static arrays. */
+function gatherChildren(node: PlanNode): readonly PlanNode[] {
+	const result: PlanNode[] = [];
+	if (node.getChildren) {
+		result.push(...node.getChildren());
+	} else if (node.children) {
+		result.push(...node.children);
+	}
+	if (node.getRelations) {
+		result.push(...node.getRelations());
+	} else if (node.relations) {
+		result.push(...node.relations);
+	}
+	return result;
+}
+
+/** Get the node description, using the explicit property only (not toString). */
+function getNodeDescription(node: PlanNode): string | undefined {
+	return node.description;
 }
 
 export class PlanVisualizer {
-	/**
-	 * Render plan as a tree structure
-	 */
+	private nextNodeId = 0;
+
+	/** Render plan as a tree structure. */
 	renderTree(plan: PlanNode | InstructionProgram, phase: string): string {
-		if ('type' in plan && plan.type === 'program') {
+		if (isInstructionProgram(plan)) {
 			return this.renderInstructionTree(plan);
 		}
 
@@ -39,31 +69,31 @@ export class PlanVisualizer {
 		lines.push(chalk.bold.blue(`Query Plan (${phase}):`));
 		lines.push('');
 
-		this.renderNodeTree(plan as PlanNode, '', true, lines);
+		this.renderNodeTree(plan, '', true, lines);
 
 		return lines.join('\n');
 	}
 
-	/**
-	 * Render plan as JSON
-	 */
+	/** Render plan as JSON. */
 	renderJson(plan: PlanNode | InstructionProgram): string {
-		if ('type' in plan && plan.type === 'program') {
+		if (isInstructionProgram(plan)) {
 			return JSON.stringify(plan, null, 2);
 		}
 
-		// For plan nodes, use the same serialization as golden plan tests
-		return serializePlanTree(plan as any);
+		// Use engine serialization for real PlanNode objects (with visit method); fall back to JSON.stringify
+		if (typeof (plan as any).visit === 'function') {
+			return serializePlanTree(plan as any);
+		}
+		return JSON.stringify(plan, null, 2);
 	}
 
-	/**
-	 * Render plan as Mermaid diagram
-	 */
+	/** Render plan as Mermaid diagram. */
 	renderMermaid(plan: PlanNode | InstructionProgram, phase: string): string {
-		if ('type' in plan && plan.type === 'program') {
+		if (isInstructionProgram(plan)) {
 			return this.renderInstructionMermaid(plan);
 		}
 
+		this.nextNodeId = 0;
 		const lines: string[] = [];
 		lines.push('graph TD');
 		lines.push(`  subgraph "Query Plan (${phase})"`);
@@ -71,14 +101,12 @@ export class PlanVisualizer {
 		const nodeMap = new Map<string, string>();
 		const edges: string[] = [];
 
-		this.buildMermaidNodes(plan as PlanNode, nodeMap, edges);
+		this.buildMermaidNodes(plan, nodeMap, edges);
 
-		// Add nodes
 		for (const [nodeId, nodeLabel] of nodeMap) {
 			lines.push(`    ${nodeId}["${nodeLabel}"]`);
 		}
 
-		// Add edges
 		for (const edge of edges) {
 			lines.push(`    ${edge}`);
 		}
@@ -88,33 +116,17 @@ export class PlanVisualizer {
 		return lines.join('\n');
 	}
 
-			private renderNodeTree(node: PlanNode, prefix: string, isLast: boolean, lines: string[]): void {
+	private renderNodeTree(node: PlanNode, prefix: string, isLast: boolean, lines: string[]): void {
 		const connector = isLast ? '└── ' : '├── ';
 		const nodeInfo = this.formatNodeInfo(node);
 
 		lines.push(prefix + connector + nodeInfo);
 
-		// Get all children (both direct children and relations)
-		const allChildren: PlanNode[] = [];
-
-		// Try methods first, fallback to properties
-		if (node.getChildren) {
-			allChildren.push(...node.getChildren());
-		} else if (node.children) {
-			allChildren.push(...node.children);
-		}
-
-		if (node.getRelations) {
-			allChildren.push(...node.getRelations());
-		} else if (node.relations) {
-			allChildren.push(...node.relations);
-		}
-
+		const allChildren = gatherChildren(node);
 		const childPrefix = prefix + (isLast ? '    ' : '│   ');
 
 		allChildren.forEach((child, index) => {
-			const isLastChild = index === allChildren.length - 1;
-			this.renderNodeTree(child, childPrefix, isLastChild, lines);
+			this.renderNodeTree(child, childPrefix, index === allChildren.length - 1, lines);
 		});
 	}
 
@@ -123,18 +135,12 @@ export class PlanVisualizer {
 		lines.push(chalk.bold.blue('Instruction Program:'));
 		lines.push('');
 
-		// Split the program string into lines and format them
 		const programLines = program.program.split('\n').filter(line => line.trim());
 
 		programLines.forEach((line, index) => {
 			const isLast = index === programLines.length - 1;
 			const connector = isLast ? '└── ' : '├── ';
-
-			// Add basic coloring to the instruction line
-			const coloredLine = line.includes('→') ?
-				chalk.cyan(line) :
-				chalk.gray(line);
-
+			const coloredLine = line.includes('→') ? chalk.cyan(line) : chalk.gray(line);
 			lines.push(connector + coloredLine);
 		});
 
@@ -144,17 +150,20 @@ export class PlanVisualizer {
 	private formatNodeInfo(node: PlanNode): string {
 		let info = chalk.cyan.bold(node.nodeType);
 
-		// Try to get description from toString() method or description property
-		let description = node.description;
-		if (!description && node.toString) {
-			description = node.toString();
-		}
-
+		const description = getNodeDescription(node);
 		if (description) {
 			info += ' ' + chalk.gray(description);
 		}
 
-		// Add key properties
+		const props = this.collectNodeProps(node);
+		if (props.length > 0) {
+			info += ' ' + chalk.yellow(`(${props.join(', ')})`);
+		}
+
+		return info;
+	}
+
+	private collectNodeProps(node: PlanNode): string[] {
 		const props: string[] = [];
 
 		if (node.physical?.estimatedRows !== undefined) {
@@ -163,20 +172,18 @@ export class PlanVisualizer {
 
 		if (node.physical?.ordering && Array.isArray(node.physical.ordering)) {
 			const orderStr = node.physical.ordering
-				.map((o: any) => `${o.column}${o.desc ? ' DESC' : ''}`)
+				.map((o) => `${o.column}${o.desc ? ' DESC' : ''}`)
 				.join(', ');
 			props.push(`order: [${orderStr}]`);
 		}
 
-		// Try to get logical properties
 		let logical = node.logical;
 		if (!logical && node.getLogicalProperties) {
 			logical = node.getLogicalProperties();
 		}
 
 		if (logical) {
-			const logicalKeys = Object.keys(logical).slice(0, 2); // Show first 2 logical properties
-			for (const key of logicalKeys) {
+			for (const key of Object.keys(logical).slice(0, 2)) {
 				const value = logical[key];
 				if (typeof value === 'string' || typeof value === 'number') {
 					props.push(`${key}: ${value}`);
@@ -184,40 +191,20 @@ export class PlanVisualizer {
 			}
 		}
 
-		if (props.length > 0) {
-			info += ' ' + chalk.yellow(`(${props.join(', ')})`);
-		}
-
-		return info;
+		return props;
 	}
 
-		private buildMermaidNodes(
+	private buildMermaidNodes(
 		node: PlanNode,
 		nodeMap: Map<string, string>,
 		edges: string[]
 	): string {
-		const nodeId = node.id || `node_${Math.random().toString(36).substring(7)}`;
+		const nodeId = node.id || `node_${this.nextNodeId++}`;
 		const nodeLabel = this.getMermaidNodeLabel(node);
 
 		nodeMap.set(nodeId, nodeLabel);
 
-		// Process children and relations
-		const allChildren: PlanNode[] = [];
-
-		// Try methods first, fallback to properties
-		if (node.getChildren) {
-			allChildren.push(...node.getChildren());
-		} else if (node.children) {
-			allChildren.push(...node.children);
-		}
-
-		if (node.getRelations) {
-			allChildren.push(...node.getRelations());
-		} else if (node.relations) {
-			allChildren.push(...node.relations);
-		}
-
-		for (const child of allChildren) {
+		for (const child of gatherChildren(node)) {
 			const childId = this.buildMermaidNodes(child, nodeMap, edges);
 			edges.push(`${childId} --> ${nodeId}`);
 		}
@@ -228,17 +215,11 @@ export class PlanVisualizer {
 	private getMermaidNodeLabel(node: PlanNode): string {
 		let label = node.nodeType;
 
-		// Try to get description from toString() method or description property
-		let description = node.description;
-		if (!description && node.toString) {
-			description = node.toString();
-		}
-
+		const description = getNodeDescription(node);
 		if (description) {
 			label += `<br/>${description}`;
 		}
 
-		// Add key metrics
 		if (node.physical?.estimatedRows !== undefined) {
 			label += `<br/>rows: ${node.physical.estimatedRows}`;
 		}
@@ -251,18 +232,15 @@ export class PlanVisualizer {
 		lines.push('graph TD');
 		lines.push('  subgraph "Instruction Program"');
 
-		// Split the program string into lines and create nodes
 		const programLines = program.program.split('\n').filter(line => line.trim());
 
 		programLines.forEach((line, index) => {
 			const nodeId = `inst_${index}`;
-			// Clean up the line for display and escape quotes
 			const cleanLine = line.trim().replace(/"/g, '\\"');
 			const label = cleanLine || `Instruction ${index}`;
 
 			lines.push(`    ${nodeId}["${label}"]`);
 
-			// Connect to next instruction
 			if (index < programLines.length - 1) {
 				lines.push(`    ${nodeId} --> inst_${index + 1}`);
 			}
