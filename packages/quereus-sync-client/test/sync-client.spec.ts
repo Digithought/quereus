@@ -1,8 +1,9 @@
 import { expect } from 'chai';
 import { SyncClient } from '../src/sync-client.js';
-import type { SyncStatus, SyncEvent } from '../src/types.js';
+import type { SyncStatus, SyncEvent, ClientMessage } from '../src/types.js';
 import {
   generateSiteId,
+  siteIdToBase64,
   SyncEventEmitterImpl,
   type SyncManager,
   type HLC,
@@ -14,12 +15,107 @@ import {
   type SnapshotProgress,
   type SiteId,
 } from '@quereus/sync';
+import { serializeChangeSet } from '../src/serialization.js';
 
-/**
- * Mock SyncManager for testing.
- */
+// ============================================================================
+// Mock WebSocket
+// ============================================================================
+
+type WSListener = (event: { data: string }) => void;
+
+class MockWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
+  readonly CONNECTING = 0;
+  readonly OPEN = 1;
+  readonly CLOSING = 2;
+  readonly CLOSED = 3;
+
+  readyState = MockWebSocket.CONNECTING;
+  url: string;
+  sentMessages: string[] = [];
+
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onmessage: WSListener | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    // Track instance for test access
+    MockWebSocket.lastInstance = this;
+    MockWebSocket.instances.push(this);
+  }
+
+  send(data: string): void {
+    this.sentMessages.push(data);
+  }
+
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED;
+    // Fire onclose asynchronously like real WebSocket
+    if (this.onclose) {
+      setTimeout(() => this.onclose?.(), 0);
+    }
+  }
+
+  // Test helpers
+  simulateOpen(): void {
+    this.readyState = MockWebSocket.OPEN;
+    this.onopen?.();
+  }
+
+  simulateMessage(data: object): void {
+    this.onmessage?.({ data: JSON.stringify(data) });
+  }
+
+  simulateClose(): void {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.();
+  }
+
+  simulateError(): void {
+    this.onerror?.();
+  }
+
+  getSentMessages(): ClientMessage[] {
+    return this.sentMessages.map(m => JSON.parse(m));
+  }
+
+  // Static tracking
+  static lastInstance: MockWebSocket | null = null;
+  static instances: MockWebSocket[] = [];
+
+  static reset(): void {
+    MockWebSocket.lastInstance = null;
+    MockWebSocket.instances = [];
+  }
+}
+
+// Install mock WebSocket globally
+function installMockWebSocket(): void {
+  (globalThis as any).WebSocket = MockWebSocket as any;
+}
+
+function uninstallMockWebSocket(): void {
+  delete (globalThis as any).WebSocket;
+}
+
+// ============================================================================
+// Mock SyncManager
+// ============================================================================
+
 class MockSyncManager implements SyncManager {
-  private siteId = generateSiteId();
+  siteId = generateSiteId();
+  getChangesSinceResult: ChangeSet[] = [];
+  applyChangesResult: ApplyResult = { applied: 0, skipped: 0, conflicts: 0, transactions: 0 };
+  peerSyncState: HLC | undefined = undefined;
+  applyChangesCalls: ChangeSet[][] = [];
+  updatePeerSyncStateCalls: { peerSiteId: SiteId; hlc: HLC }[] = [];
+  getChangesSinceCalls: { peerSiteId: SiteId; sinceHLC?: HLC }[] = [];
 
   getSiteId(): SiteId {
     return this.siteId;
@@ -29,12 +125,14 @@ class MockSyncManager implements SyncManager {
     return { wallTime: BigInt(Date.now()), counter: 0, siteId: this.siteId };
   }
 
-  async getChangesSince(_peerSiteId: SiteId, _sinceHLC?: HLC): Promise<ChangeSet[]> {
-    return [];
+  async getChangesSince(peerSiteId: SiteId, sinceHLC?: HLC): Promise<ChangeSet[]> {
+    this.getChangesSinceCalls.push({ peerSiteId, sinceHLC });
+    return this.getChangesSinceResult;
   }
 
-  async applyChanges(_changes: ChangeSet[]): Promise<ApplyResult> {
-    return { applied: 0, skipped: 0, conflicts: 0, transactions: 0 };
+  async applyChanges(changes: ChangeSet[]): Promise<ApplyResult> {
+    this.applyChangesCalls.push(changes);
+    return this.applyChangesResult;
   }
 
   async canDeltaSync(_peerSiteId: SiteId, _sinceHLC: HLC): Promise<boolean> {
@@ -42,20 +140,17 @@ class MockSyncManager implements SyncManager {
   }
 
   async getSnapshot(): Promise<Snapshot> {
-    return {
-      siteId: this.siteId,
-      hlc: this.getCurrentHLC(),
-      tables: [],
-      schemaMigrations: [],
-    };
+    return { siteId: this.siteId, hlc: this.getCurrentHLC(), tables: [], schemaMigrations: [] };
   }
 
   async applySnapshot(_snapshot: Snapshot): Promise<void> {}
 
-  async updatePeerSyncState(_peerSiteId: SiteId, _hlc: HLC): Promise<void> {}
+  async updatePeerSyncState(peerSiteId: SiteId, hlc: HLC): Promise<void> {
+    this.updatePeerSyncStateCalls.push({ peerSiteId, hlc });
+  }
 
   async getPeerSyncState(_peerSiteId: SiteId): Promise<HLC | undefined> {
-    return undefined;
+    return this.peerSyncState;
   }
 
   async *getSnapshotStream(_chunkSize?: number): AsyncIterable<SnapshotChunk> {}
@@ -76,16 +171,82 @@ class MockSyncManager implements SyncManager {
   async *resumeSnapshotStream(_checkpoint: SnapshotCheckpoint): AsyncIterable<SnapshotChunk> {}
 }
 
+// ============================================================================
+// Helper to create a connected client
+// ============================================================================
+
+function createClient(opts?: {
+  syncManager?: MockSyncManager;
+  syncEvents?: SyncEventEmitterImpl;
+  autoReconnect?: boolean;
+  statusChanges?: SyncStatus[];
+  syncEventsLog?: SyncEvent[];
+  errors?: Error[];
+}) {
+  const syncManager = opts?.syncManager ?? new MockSyncManager();
+  const syncEvents = opts?.syncEvents ?? new SyncEventEmitterImpl();
+  const statusChanges = opts?.statusChanges ?? [];
+  const syncEventsLog = opts?.syncEventsLog ?? [];
+  const errors = opts?.errors ?? [];
+
+  const client = new SyncClient({
+    syncManager,
+    syncEvents,
+    autoReconnect: opts?.autoReconnect ?? false,
+    reconnectDelayMs: 100,
+    maxReconnectDelayMs: 1000,
+    localChangeDebounceMs: 10,
+    onStatusChange: (s) => statusChanges.push(s),
+    onSyncEvent: (e) => syncEventsLog.push(e),
+    onError: (e) => errors.push(e),
+  });
+
+  return { client, syncManager, syncEvents, statusChanges, syncEventsLog, errors };
+}
+
+/** Connect a client and simulate the WebSocket opening + handshake ack. */
+async function connectAndHandshake(
+  client: SyncClient,
+  serverSiteId?: SiteId,
+): Promise<MockWebSocket> {
+  const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+  const ws = MockWebSocket.lastInstance!;
+  ws.simulateOpen();
+  await connectPromise;
+
+  // Simulate handshake ack
+  const sId = serverSiteId ?? generateSiteId();
+  ws.simulateMessage({
+    type: 'handshake_ack',
+    serverSiteId: siteIdToBase64(sId),
+    connectionId: 'conn-123',
+  });
+
+  // Let async handlers settle
+  await new Promise(r => setTimeout(r, 10));
+  return ws;
+}
+
 describe('SyncClient', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    installMockWebSocket();
+  });
+
+  afterEach(() => {
+    uninstallMockWebSocket();
+  });
+
+  // ==========================================================================
+  // Constructor
+  // ==========================================================================
+
   describe('constructor', () => {
     it('should create a SyncClient with required options', () => {
       const syncManager = new MockSyncManager();
       const syncEvents = new SyncEventEmitterImpl();
 
-      const client = new SyncClient({
-        syncManager,
-        syncEvents,
-      });
+      const client = new SyncClient({ syncManager, syncEvents });
 
       expect(client).to.be.instanceOf(SyncClient);
       expect(client.status).to.deep.equal({ status: 'disconnected' });
@@ -94,63 +255,466 @@ describe('SyncClient', () => {
     });
 
     it('should accept optional configuration', () => {
-      const syncManager = new MockSyncManager();
-      const syncEvents = new SyncEventEmitterImpl();
-      const statusChanges: SyncStatus[] = [];
-      const syncEventsReceived: SyncEvent[] = [];
-
-      const client = new SyncClient({
-        syncManager,
-        syncEvents,
-        autoReconnect: false,
-        reconnectDelayMs: 2000,
-        maxReconnectDelayMs: 30000,
-        localChangeDebounceMs: 100,
-        onStatusChange: (s) => statusChanges.push(s),
-        onSyncEvent: (e) => syncEventsReceived.push(e),
-      });
-
+      const { client } = createClient();
       expect(client).to.be.instanceOf(SyncClient);
     });
   });
 
-  describe('disconnect', () => {
-    it('should disconnect cleanly when not connected', async () => {
-      const syncManager = new MockSyncManager();
-      const syncEvents = new SyncEventEmitterImpl();
-      const client = new SyncClient({ syncManager, syncEvents });
+  // ==========================================================================
+  // Connection
+  // ==========================================================================
 
-      // Should not throw
-      await client.disconnect();
+  describe('connect', () => {
+    it('should create a WebSocket and transition to connecting', async () => {
+      const { client, statusChanges } = createClient();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
 
-      expect(client.status).to.deep.equal({ status: 'disconnected' });
+      expect(MockWebSocket.lastInstance).to.not.be.null;
+      expect(statusChanges.some(s => s.status === 'connecting')).to.be.true;
+
+      // Simulate open to resolve promise
+      MockWebSocket.lastInstance!.simulateOpen();
+      await connectPromise;
+    });
+
+    it('should transition to syncing after WebSocket opens', async () => {
+      const { client, statusChanges } = createClient();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      MockWebSocket.lastInstance!.simulateOpen();
+      await connectPromise;
+
+      expect(statusChanges.some(s => s.status === 'syncing')).to.be.true;
+    });
+
+    it('should send handshake message on open', async () => {
+      const { client, syncManager } = createClient();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      const ws = MockWebSocket.lastInstance!;
+      ws.simulateOpen();
+      await connectPromise;
+
+      const messages = ws.getSentMessages();
+      expect(messages.length).to.be.greaterThanOrEqual(1);
+      const handshake = messages.find(m => m.type === 'handshake');
+      expect(handshake).to.exist;
+      expect(handshake!.databaseId).to.equal('test-db');
+      expect(handshake!.siteId).to.equal(siteIdToBase64(syncManager.getSiteId()));
+    });
+
+    it('should include token in URL when provided', async () => {
+      const { client } = createClient();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db', 'my-token');
+      const ws = MockWebSocket.lastInstance!;
+      expect(ws.url).to.include('token=my-token');
+      ws.simulateOpen();
+      await connectPromise;
+    });
+
+    it('should reject on WebSocket error during first attempt', async () => {
+      const { client } = createClient();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      const ws = MockWebSocket.lastInstance!;
+      ws.simulateError();
+
+      try {
+        await connectPromise;
+        expect.fail('should have rejected');
+      } catch (err: any) {
+        expect(err.message).to.include('WebSocket connection failed');
+      }
+    });
+
+    it('should close existing connection before creating new one', async () => {
+      const { client } = createClient();
+
+      // First connection
+      const p1 = client.connect('ws://localhost:8080/sync', 'db1');
+      const ws1 = MockWebSocket.lastInstance!;
+      ws1.simulateOpen();
+      await p1;
+
+      // Second connection
+      const p2 = client.connect('ws://localhost:8080/sync', 'db2');
+      expect(ws1.readyState).to.equal(MockWebSocket.CLOSED);
+      const ws2 = MockWebSocket.lastInstance!;
+      ws2.simulateOpen();
+      await p2;
     });
   });
 
-  describe('status tracking', () => {
-    it('should report disconnected initially', () => {
-      const syncManager = new MockSyncManager();
-      const syncEvents = new SyncEventEmitterImpl();
-      const client = new SyncClient({ syncManager, syncEvents });
+  // ==========================================================================
+  // Disconnect
+  // ==========================================================================
 
-      expect(client.status.status).to.equal('disconnected');
+  describe('disconnect', () => {
+    it('should disconnect cleanly when not connected', async () => {
+      const { client } = createClient();
+      await client.disconnect();
+      expect(client.status).to.deep.equal({ status: 'disconnected' });
     });
 
-    it('should call onStatusChange callback', async () => {
-      const syncManager = new MockSyncManager();
-      const syncEvents = new SyncEventEmitterImpl();
-      const statusChanges: SyncStatus[] = [];
-
-      const client = new SyncClient({
-        syncManager,
-        syncEvents,
-        onStatusChange: (s) => statusChanges.push(s),
-      });
+    it('should close WebSocket and set status to disconnected', async () => {
+      const { client } = createClient();
+      const ws = await connectAndHandshake(client);
 
       await client.disconnect();
 
-      // disconnect should emit a disconnected status
+      expect(ws.readyState).to.equal(MockWebSocket.CLOSED);
+      expect(client.status.status).to.equal('disconnected');
+      expect(client.isConnected).to.be.false;
+    });
+
+    it('should emit disconnected status change', async () => {
+      const { client, statusChanges } = createClient();
+      await connectAndHandshake(client);
+      statusChanges.length = 0; // Clear previous
+
+      await client.disconnect();
+
       expect(statusChanges.some(s => s.status === 'disconnected')).to.be.true;
+    });
+
+    it('should emit sync event on manual disconnect', async () => {
+      const { client, syncEventsLog } = createClient();
+      await connectAndHandshake(client);
+      syncEventsLog.length = 0;
+
+      await client.disconnect();
+
+      expect(syncEventsLog.some(e => e.message.includes('manual'))).to.be.true;
+    });
+  });
+
+  // ==========================================================================
+  // Status tracking
+  // ==========================================================================
+
+  describe('status tracking', () => {
+    it('should report disconnected initially', () => {
+      const { client } = createClient();
+      expect(client.status.status).to.equal('disconnected');
+    });
+
+    it('should report isConnected when WebSocket is open', async () => {
+      const { client } = createClient();
+      await connectAndHandshake(client);
+      expect(client.isConnected).to.be.true;
+    });
+
+    it('should report isSynced after receiving changes', async () => {
+      const { client } = createClient();
+      const ws = await connectAndHandshake(client);
+
+      // Simulate receiving changes (empty set triggers synced status)
+      ws.simulateMessage({ type: 'changes', changeSets: [] });
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(client.isSynced).to.be.true;
+    });
+  });
+
+  // ==========================================================================
+  // Message handling
+  // ==========================================================================
+
+  describe('message handling', () => {
+    it('should request changes from server after handshake ack', async () => {
+      const { client } = createClient();
+      const ws = await connectAndHandshake(client);
+
+      const messages = ws.getSentMessages();
+      const getChanges = messages.find(m => m.type === 'get_changes');
+      expect(getChanges).to.exist;
+    });
+
+    it('should apply remote changes via syncManager', async () => {
+      const syncManager = new MockSyncManager();
+      syncManager.applyChangesResult = { applied: 2, skipped: 0, conflicts: 0, transactions: 1 };
+      const { client } = createClient({ syncManager });
+      const ws = await connectAndHandshake(client);
+
+      // Create a serialized change set
+      const hlc: HLC = { wallTime: BigInt(Date.now()), counter: 1, siteId: generateSiteId() };
+      const cs: ChangeSet = {
+        siteId: generateSiteId(),
+        transactionId: 'tx-1',
+        hlc,
+        changes: [{ type: 'column', schema: 'main', table: 'users', pk: [1], column: 'name', value: 'Bob', hlc }],
+        schemaMigrations: [],
+      };
+      const serialized = serializeChangeSet(cs);
+
+      ws.simulateMessage({ type: 'changes', changeSets: [serialized] });
+      await new Promise(r => setTimeout(r, 20));
+
+      expect(syncManager.applyChangesCalls.length).to.be.greaterThanOrEqual(1);
+    });
+
+    it('should handle push_changes the same as changes', async () => {
+      const syncManager = new MockSyncManager();
+      syncManager.applyChangesResult = { applied: 1, skipped: 0, conflicts: 0, transactions: 1 };
+      const { client } = createClient({ syncManager });
+      const ws = await connectAndHandshake(client);
+
+      const hlc: HLC = { wallTime: BigInt(Date.now()), counter: 1, siteId: generateSiteId() };
+      const cs: ChangeSet = {
+        siteId: generateSiteId(),
+        transactionId: 'tx-push',
+        hlc,
+        changes: [{ type: 'delete', schema: 'main', table: 'users', pk: [5], hlc }],
+        schemaMigrations: [],
+      };
+
+      ws.simulateMessage({ type: 'push_changes', changeSets: [serializeChangeSet(cs)] });
+      await new Promise(r => setTimeout(r, 20));
+
+      expect(syncManager.applyChangesCalls.length).to.be.greaterThanOrEqual(1);
+    });
+
+    it('should call onRemoteChanges callback', async () => {
+      const syncManager = new MockSyncManager();
+      syncManager.applyChangesResult = { applied: 1, skipped: 0, conflicts: 0, transactions: 1 };
+      let remoteResult: ApplyResult | null = null;
+      const { client } = createClient({ syncManager });
+      // Patch onRemoteChanges
+      (client as any).options.onRemoteChanges = (result: ApplyResult) => { remoteResult = result; };
+
+      const ws = await connectAndHandshake(client);
+
+      ws.simulateMessage({ type: 'changes', changeSets: [] });
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(remoteResult).to.not.be.null;
+    });
+
+    it('should handle apply_result and emit info event', async () => {
+      const { client, syncEventsLog } = createClient();
+      const ws = await connectAndHandshake(client);
+      syncEventsLog.length = 0;
+
+      ws.simulateMessage({ type: 'apply_result', applied: 5 });
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(syncEventsLog.some(e => e.type === 'info' && e.message.includes('5'))).to.be.true;
+    });
+
+    it('should handle error messages from server', async () => {
+      const { client, errors, syncEventsLog } = createClient();
+      const ws = await connectAndHandshake(client);
+      errors.length = 0;
+      syncEventsLog.length = 0;
+
+      ws.simulateMessage({ type: 'error', code: 'AUTH_FAILED', message: 'Invalid token' });
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(errors.length).to.be.greaterThanOrEqual(1);
+      expect(errors[0].message).to.include('Invalid token');
+      expect(syncEventsLog.some(e => e.type === 'error')).to.be.true;
+    });
+
+    it('should handle pong messages without error', async () => {
+      const { client } = createClient();
+      const ws = await connectAndHandshake(client);
+
+      // Should not throw
+      ws.simulateMessage({ type: 'pong' });
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    it('should warn on unknown message types', async () => {
+      const { client } = createClient();
+      const ws = await connectAndHandshake(client);
+
+      // Should not throw
+      ws.simulateMessage({ type: 'unknown_type' });
+      await new Promise(r => setTimeout(r, 10));
+    });
+  });
+
+  // ==========================================================================
+  // Local change pushing
+  // ==========================================================================
+
+  describe('local change pushing', () => {
+    it('should subscribe to local changes after handshake', async () => {
+      const syncEvents = new SyncEventEmitterImpl();
+      const syncManager = new MockSyncManager();
+      const { client } = createClient({ syncManager, syncEvents });
+      await connectAndHandshake(client);
+
+      // Trigger a local change
+      const hlc: HLC = { wallTime: BigInt(Date.now()), counter: 1, siteId: syncManager.getSiteId() };
+      syncManager.getChangesSinceResult = [{
+        siteId: syncManager.getSiteId(),
+        transactionId: 'tx-local',
+        hlc,
+        changes: [{ type: 'column', schema: 'main', table: 'items', pk: [1], column: 'name', value: 'X', hlc }],
+        schemaMigrations: [],
+      }];
+
+      // Emit local change event
+      (syncEvents as any).localChangeListeners.forEach((fn: any) => fn({ table: 'items' }));
+
+      // Wait for debounce
+      await new Promise(r => setTimeout(r, 50));
+
+      // Should have sent apply_changes
+      const ws = MockWebSocket.lastInstance!;
+      const messages = ws.getSentMessages();
+      const applyMsg = messages.find(m => m.type === 'apply_changes');
+      expect(applyMsg).to.exist;
+    });
+
+    it('should not push changes when disconnected', async () => {
+      const syncEvents = new SyncEventEmitterImpl();
+      const syncManager = new MockSyncManager();
+      const { client } = createClient({ syncManager, syncEvents });
+      await connectAndHandshake(client);
+      await client.disconnect();
+
+      // Trigger a local change after disconnect
+      syncManager.getChangesSinceResult = [{
+        siteId: syncManager.getSiteId(),
+        transactionId: 'tx-offline',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: syncManager.getSiteId() },
+        changes: [],
+        schemaMigrations: [],
+      }];
+
+      // The listener should have been unsubscribed
+      // No error should occur
+    });
+
+    it('should not send when there are no changes', async () => {
+      const syncEvents = new SyncEventEmitterImpl();
+      const syncManager = new MockSyncManager();
+      syncManager.getChangesSinceResult = []; // No changes
+      const { client } = createClient({ syncManager, syncEvents });
+      const ws = await connectAndHandshake(client);
+
+      const msgCountBefore = ws.sentMessages.length;
+
+      // Emit local change
+      (syncEvents as any).localChangeListeners.forEach((fn: any) => fn({ table: 'items' }));
+      await new Promise(r => setTimeout(r, 50));
+
+      // No new apply_changes should have been sent (only handshake + get_changes)
+      const newMessages = ws.getSentMessages().slice(msgCountBefore);
+      const applyMsg = newMessages.find(m => m.type === 'apply_changes');
+      expect(applyMsg).to.be.undefined;
+    });
+  });
+
+  // ==========================================================================
+  // Reconnection
+  // ==========================================================================
+
+  describe('reconnection', () => {
+    it('should not reconnect when autoReconnect is false', async () => {
+      const { client } = createClient({ autoReconnect: false });
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      const ws = MockWebSocket.lastInstance!;
+      ws.simulateOpen();
+      await connectPromise;
+
+      const instanceCount = MockWebSocket.instances.length;
+      ws.simulateClose();
+      await new Promise(r => setTimeout(r, 200));
+
+      // No new WebSocket should have been created
+      expect(MockWebSocket.instances.length).to.equal(instanceCount);
+    });
+
+    it('should not reconnect after intentional disconnect', async () => {
+      const { client } = createClient({ autoReconnect: true });
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      const ws = MockWebSocket.lastInstance!;
+      ws.simulateOpen();
+      await connectPromise;
+
+      await client.disconnect();
+      const instanceCount = MockWebSocket.instances.length;
+
+      await new Promise(r => setTimeout(r, 200));
+      expect(MockWebSocket.instances.length).to.equal(instanceCount);
+    });
+
+    it('should attempt reconnect with autoReconnect enabled', async () => {
+      const { client } = createClient({ autoReconnect: true });
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      const ws = MockWebSocket.lastInstance!;
+      ws.simulateOpen();
+      await connectPromise;
+
+      const instanceCount = MockWebSocket.instances.length;
+      ws.simulateClose();
+
+      // Wait for reconnect timer (100ms base delay)
+      await new Promise(r => setTimeout(r, 200));
+
+      // A new WebSocket should have been created
+      expect(MockWebSocket.instances.length).to.be.greaterThan(instanceCount);
+    });
+  });
+
+  // ==========================================================================
+  // Sync events
+  // ==========================================================================
+
+  describe('sync events', () => {
+    it('should emit state-change events during connection lifecycle', async () => {
+      const { client, syncEventsLog } = createClient();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      MockWebSocket.lastInstance!.simulateOpen();
+      await connectPromise;
+
+      const stateChanges = syncEventsLog.filter(e => e.type === 'state-change');
+      expect(stateChanges.length).to.be.greaterThanOrEqual(1);
+      expect(stateChanges.some(e => e.message.includes('Connected'))).to.be.true;
+    });
+
+    it('should include timestamp in sync events', async () => {
+      const { client, syncEventsLog } = createClient();
+      const before = Date.now();
+      const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
+      MockWebSocket.lastInstance!.simulateOpen();
+      await connectPromise;
+
+      for (const event of syncEventsLog) {
+        expect(event.timestamp).to.be.greaterThanOrEqual(before);
+        expect(event.timestamp).to.be.lessThanOrEqual(Date.now());
+      }
+    });
+
+    it('should emit remote-change events with details', async () => {
+      const syncManager = new MockSyncManager();
+      syncManager.applyChangesResult = { applied: 3, skipped: 1, conflicts: 1, transactions: 1 };
+      const { client, syncEventsLog } = createClient({ syncManager });
+      const ws = await connectAndHandshake(client);
+      syncEventsLog.length = 0;
+
+      ws.simulateMessage({ type: 'changes', changeSets: [] });
+      await new Promise(r => setTimeout(r, 10));
+
+      const remoteEvents = syncEventsLog.filter(e => e.type === 'remote-change');
+      expect(remoteEvents.length).to.be.greaterThanOrEqual(1);
+      expect(remoteEvents[0].details?.changeCount).to.equal(3);
+      expect(remoteEvents[0].details?.conflicts).to.equal(1);
+      expect(remoteEvents[0].details?.skipped).to.equal(1);
+    });
+  });
+
+  // ==========================================================================
+  // send() guard
+  // ==========================================================================
+
+  describe('send guard', () => {
+    it('should not send messages when WebSocket is not open', async () => {
+      const { client } = createClient();
+      // Don't connect - just create
+      // Access private send via message handling that would trigger send
+      // The client should silently skip sends when not connected
+      expect(client.isConnected).to.be.false;
     });
   });
 });

@@ -62,7 +62,7 @@ interface SyncClientOptions {
   syncManager: SyncManager;
 
   /** SyncEventEmitter for local change notifications */
-  syncEvents?: SyncEventEmitter;
+  syncEvents: SyncEventEmitter;
 
   /** Called when connection status changes */
   onStatusChange?: (status: SyncStatus) => void;
@@ -94,7 +94,9 @@ interface SyncClientOptions {
 
 - `connect(url: string, databaseId: string, token?: string): Promise<void>` - Connect to sync server
 - `disconnect(): Promise<void>` - Disconnect and stop reconnection attempts
-- `getStatus(): SyncStatus` - Get current connection status
+- `status: SyncStatus` - Current connection status (getter property)
+- `isConnected: boolean` - Whether the WebSocket is open (getter property)
+- `isSynced: boolean` - Whether the client is fully synced (getter property)
 
 ### Serialization Helpers
 
@@ -104,8 +106,8 @@ The package exports helpers for ChangeSet serialization:
 import {
   serializeChangeSet,
   deserializeChangeSet,
-  serializeHLC,
-  deserializeHLC,
+  serializeHLCForTransport,
+  deserializeHLCFromTransport,
 } from '@quereus/sync-client';
 ```
 

@@ -24,6 +24,8 @@ import type {
   SyncClientOptions,
   SyncStatus,
   SyncEvent,
+  ClientMessage,
+  ServerMessage,
   SerializedChangeSet,
 } from './types.js';
 
@@ -38,6 +40,17 @@ import {
 const DEFAULT_RECONNECT_DELAY_MS = 1000;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 60_000;
 const DEFAULT_LOCAL_CHANGE_DEBOUNCE_MS = 50;
+
+/** Find the maximum HLC in a list of change sets. */
+function maxHLCFromChangeSets(changeSets: ChangeSet[]): HLC | undefined {
+  let max: HLC | undefined;
+  for (const cs of changeSets) {
+    if (!max || compareHLC(cs.hlc, max) > 0) {
+      max = cs.hlc;
+    }
+  }
+  return max;
+}
 
 /**
  * WebSocket sync client for Quereus.
@@ -270,12 +283,7 @@ export class SyncClient {
 
     // Update peer sync state with the max HLC from received changes
     if (changeSets.length > 0 && this.serverSiteId) {
-      let maxHLC: HLC | undefined;
-      for (const cs of changeSets) {
-        if (!maxHLC || compareHLC(cs.hlc, maxHLC) > 0) {
-          maxHLC = cs.hlc;
-        }
-      }
+      const maxHLC = maxHLCFromChangeSets(changeSets);
       if (maxHLC) {
         await this.syncManager.updatePeerSyncState(this.serverSiteId, maxHLC);
       }
@@ -340,16 +348,15 @@ export class SyncClient {
     if (!this.serverSiteId) return;
 
     const lastSyncHLC = await this.syncManager.getPeerSyncState(this.serverSiteId);
-    const msg: { type: string; sinceHLC?: string } = { type: 'get_changes' };
 
     if (lastSyncHLC) {
-      msg.sinceHLC = serializeHLCForTransport(lastSyncHLC);
+      this.send({ type: 'get_changes', sinceHLC: serializeHLCForTransport(lastSyncHLC) });
+    } else {
+      this.send({ type: 'get_changes' });
     }
-
-    this.send(msg);
   }
 
-  private send(message: object): void {
+  private send(message: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     }
@@ -396,13 +403,7 @@ export class SyncClient {
     if (changes.length === 0) return;
 
     // Track the max HLC we're sending for delta sync
-    let maxHLC: HLC | undefined;
-    for (const cs of changes) {
-      if (!maxHLC || compareHLC(cs.hlc, maxHLC) > 0) {
-        maxHLC = cs.hlc;
-      }
-    }
-    this.pendingSentHLC = maxHLC ?? null;
+    this.pendingSentHLC = maxHLCFromChangeSets(changes) ?? null;
 
     // Serialize and send
     const serialized = changes.map(cs => serializeChangeSet(cs));
