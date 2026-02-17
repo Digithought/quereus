@@ -64,12 +64,12 @@ Quoomb Web follows a modern client-side architecture that leverages Web Workers 
 ├─────────────────────────────────────────────────────────────┤
 │                    State Management                        │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐ │
-│  │ SessionStore    │  │ SettingsStore   │  │ PluginStore │ │
+│  │ SessionStore    │  │ SettingsStore   │  │ ConfigStore │ │
 │  │ (Zustand)       │  │ (Zustand)       │  │ (Zustand)   │ │
 │  │                 │  │                 │  │             │ │
-│  │ • Tabs          │  │ • Theme         │  │ • Installed │ │
-│  │ • Query History │  │ • Editor Config │  │ • Available │ │
-│  │ • Connection    │  │ • Preferences   │  │ • Settings  │ │
+│  │ • Tabs          │  │ • Theme         │  │ • Plugin    │ │
+│  │ • Query History │  │ • Editor Config │  │   Config    │ │
+│  │ • Connection    │  │ • Preferences   │  │ • Autoload  │ │
 │  └─────────────────┘  └─────────────────┘  └─────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │                      Comlink Bridge                        │
@@ -115,9 +115,9 @@ The Quereus database engine runs in a dedicated Web Worker, providing several be
 
 #### **State Management with Zustand**
 Three primary stores manage application state:
-- **SessionStore** — Active tabs, query history, connection status
-- **SettingsStore** — User preferences, theme, editor configuration  
-- **PluginStore** — Installed plugins, available modules, configuration
+- **SessionStore** — Active tabs, query history, connection status, sync state
+- **SettingsStore** — User preferences, theme, editor configuration, plugin CRUD, storage module
+- **ConfigStore** — Quoomb configuration file (`quoomb.config.json`) import/export
 
 #### **Comlink Communication**
 Uses Comlink library for seamless async communication between main thread and worker:
