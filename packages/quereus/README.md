@@ -342,13 +342,20 @@ Quereus employs a multi-faceted testing strategy:
         *   **Numeric Affinity**: Verifies that comparisons (`=`, `<`) in SQL handle mixed types (numbers, strings, booleans, nulls) consistently with SQLite's affinity rules, using `compareSqlValues` as the reference.
         *   **JSON Roundtrip**: Confirms that arbitrary JSON values survive being processed by `json_quote()` and `json_extract('$')` without data loss or corruption.
 
-3.  **Performance Sentinels (Planned)**:
-    *   Micro-benchmarks for specific scenarios (e.g., bulk inserts, complex queries) to catch performance regressions.
+3.  **Performance Sentinels (`test/performance-sentinels.spec.ts`)**:
+    *   Micro-benchmarks with generous thresholds to catch severe performance regressions.
+    *   Currently includes sentinels for: parser throughput (simple, wide-SELECT, nested-expression), query execution (full table scan), and self-join (nested-loop baseline).
+    *   Thresholds are intentionally generous to avoid flakiness while still catching order-of-magnitude regressions.
 
-4.  **CI Integration (Planned)**:
+4.  **Unit Tests (`test/*.spec.ts`)**:
+    *   Dedicated unit tests for core subsystems: type system (`type-system.spec.ts`), schema manager (`schema-manager.spec.ts`), optimizer rules (`optimizer/*.spec.ts`), memory vtable (`memory-vtable.spec.ts`), utility functions (`utility-edge-cases.spec.ts`).
+    *   Integration boundary tests (`integration-boundaries.spec.ts`) verify all boundary transitions: Parser→Planner, Planner→Optimizer, Optimizer→Runtime, Runtime→VTab.
+    *   Golden plan tests (`plan/golden-plans.spec.ts`) use snapshot testing to detect unintended query plan changes.
+
+5.  **CI Integration (Planned)**:
     *   Utilize GitHub Actions (or similar) to run test suites automatically, potentially with different configurations (quick checks, full runs, browser environment).
 
-This layered approach aims for broad coverage via the logic tests while using property tests to explore edge cases in specific subsystems more thoroughly.
+This layered approach aims for broad coverage via the logic tests, unit tests for individual subsystems, property tests to explore edge cases, and performance sentinels to guard against regressions.
 
 ## Supported Built-in Functions
 
