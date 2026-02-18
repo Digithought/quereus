@@ -1,7 +1,7 @@
 ---
 description: Completed review of testing strategy and test coverage across the Quereus project
 dependencies: none
-priority: 3
+
 ---
 
 # Testing Strategy Review — Completed
@@ -10,7 +10,7 @@ This document summarizes the review of the Quereus testing strategy, including c
 
 ## 1. Current State
 
-- **353 tests passing**, 1 known failing (self-join performance sentinel: 26s vs 8s threshold — pre-existing, pending hash join implementation per `tasks/plan/4-join-algorithms.md`)
+- **353 tests passing**, 1 known failing (self-join performance sentinel: 26s vs 8s threshold — pre-existing, pending bloom/hash join implementation per `tasks/plan/4-join-algorithms.md`)
 - **Total runtime**: ~30s
 - **No flaky tests** detected
 - **Zero skipped or broken tests** (5 skipped in event hooks are explicitly marked for unimplemented features)

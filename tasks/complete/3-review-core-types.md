@@ -1,7 +1,7 @@
 ---
 description: Completed review of type system (logical types, physical types, coercion, comparison)
 dependencies: none
-priority: 3
+
 ---
 
 # Type System Review — Completed

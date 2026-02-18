@@ -46,9 +46,9 @@ export const COST_CONSTANTS = {
 	/** Cost per row for nested loop join (outer side) */
 	NL_JOIN_PER_OUTER_ROW: 1.0,
 
-	/** Cost per row for hash join build phase */
+	/** Cost per row for bloom/hash join build phase */
 	HASH_JOIN_BUILD_PER_ROW: 0.8,
-	/** Cost per row for hash join probe phase */
+	/** Cost per row for bloom/hash join probe phase */
 	HASH_JOIN_PROBE_PER_ROW: 0.4,
 
 	/** Cost per row for distinct operation */
@@ -124,7 +124,7 @@ export function nestedLoopJoinCost(outerRows: number, innerRows: number): number
 }
 
 /**
- * Calculate cost for hash join
+ * Calculate cost for bloom/hash join
  */
 export function hashJoinCost(buildRows: number, probeRows: number): number {
 	return (buildRows * COST_CONSTANTS.HASH_JOIN_BUILD_PER_ROW) +

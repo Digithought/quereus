@@ -69,6 +69,12 @@ const TRANSITION_INSTRUCTIONS = [
 	'     You may keep or adjust the priority prefix as appropriate.',
 	'  2. Delete the original source task file from its current stage folder.',
 	'  3. Commit everything with a message like: "task(<stage>): <short description>"',
+	'',
+	'IMPORTANT — if PowerShell: The launch-process tool wraps commands in',
+	'`powershell -Command ...` which strips inner quotes and parses parentheses',
+	'as subexpressions.  Never use `git commit -m "..."` with special characters.',
+	'Use file or pipe base work around; e.g. write to `.git/COMMIT_EDITMSG` using save-file',
+	', then run: `git commit -F .git/COMMIT_EDITMSG`',
 ].join('\n');
 
 const STAGE_INSTRUCTIONS = {

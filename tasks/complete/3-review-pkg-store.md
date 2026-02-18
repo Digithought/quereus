@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review of quereus-store package (KVStore, StoreModule, encoding, serialization, events)
 dependencies: [3-review-core-api, 3-review-core-vtab]
-priority: 3
+
 ---
 
 # Store Package Review

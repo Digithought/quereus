@@ -1,7 +1,7 @@
 ---
 description: DRY violations in sync-manager-impl.ts (HLC serialization, snapshot streaming duplication, type duplication)
 dependencies: none
-priority: 3
+
 ---
 
 # DRY Violations in sync-manager-impl.ts

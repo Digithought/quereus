@@ -1,7 +1,7 @@
 ---
 description: Long-term vision features (real-time queries, graph, ML)
 dependencies: Core engine maturity
-priority: 1
+
 ---
 
 ## Architecture

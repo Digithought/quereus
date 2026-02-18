@@ -1,7 +1,7 @@
 ---
 description: Use injective/monotone expression properties to preserve uniqueness and enable sargable range rewrites
 dependencies: 2-expression-properties-injective-monotone.md
-priority: 2
+
 ---
 
 ## Architecture

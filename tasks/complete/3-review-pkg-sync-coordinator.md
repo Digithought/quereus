@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review of sync-coordinator package (coordinator service, transports, store management, S3 integration)
 dependencies: 3-review-pkg-sync
-priority: 3
+
 ---
 
 # Sync Coordinator Package Review

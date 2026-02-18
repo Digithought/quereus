@@ -1,7 +1,7 @@
 ---
 description: Remaining window functions (LAG/LEAD, FIRST_VALUE/LAST_VALUE, RANGE BETWEEN, etc.)
 dependencies: Window function infrastructure
-priority: 2
+
 ---
 
 ## Architecture

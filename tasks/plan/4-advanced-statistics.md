@@ -1,7 +1,7 @@
 ---
 description: VTab-supplied or ANALYZE-based statistics for cost estimation
 dependencies: VTab API, optimizer cost model
-priority: 4
+
 ---
 
 ## Architecture

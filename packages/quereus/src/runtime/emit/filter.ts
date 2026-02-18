@@ -4,7 +4,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { OutputValue, StatusCode, type Row, type SqlValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import { withRowContextGenerator } from '../context-helpers.js';
+import { createRowSlot } from '../context-helpers.js';
 import { QuereusError } from '../../common/errors.js';
 import { isTruthy } from '../../util/comparison.js';
 
@@ -22,13 +22,19 @@ export function emitFilter(plan: FilterNode, ctx: EmissionContext): Instruction 
 	// Create row descriptor for source attributes
 	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
-	async function* run(ctx: RuntimeContext, source: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
-		yield* withRowContextGenerator(ctx, sourceRowDescriptor, source, async function* (sourceRow) {
-			const result = await predicate(ctx);
-			if (isTruthy(asPredicateScalar(result))) {
-				yield sourceRow;
+	async function* run(rctx: RuntimeContext, source: AsyncIterable<Row>, predicate: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
+		const sourceSlot = createRowSlot(rctx, sourceRowDescriptor);
+		try {
+			for await (const sourceRow of source) {
+				sourceSlot.set(sourceRow);
+				const result = await predicate(rctx);
+				if (isTruthy(asPredicateScalar(result))) {
+					yield sourceRow;
+				}
 			}
-		});
+		} finally {
+			sourceSlot.close();
+		}
 	}
 
 	return {

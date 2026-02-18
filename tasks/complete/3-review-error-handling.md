@@ -1,7 +1,7 @@
 ---
 description: Error handling standardization - audit and fixes across the Quereus codebase
 dependencies: none
-priority: 3
+
 ---
 
 # Error Handling Review - Implementation Summary

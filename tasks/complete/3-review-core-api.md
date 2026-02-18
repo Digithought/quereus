@@ -1,7 +1,7 @@
 ---
 description: Completed review of core API (Database, Statement, Events, Transactions)
 dependencies: none
-priority: 3
+
 ---
 
 # Core API Review - Complete

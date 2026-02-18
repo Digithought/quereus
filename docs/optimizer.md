@@ -584,7 +584,7 @@ The optimizer architecture is designed to support future enhancements:
 - Adaptive query optimization
 
 **Additional Physical Operators**
-- Hash joins and merge joins
+- Bloom filter joins and merge joins
 - Parallel execution nodes
 - Specialized aggregation algorithms
 
@@ -1214,7 +1214,7 @@ if (assessment) {
 
 **Adaptive Optimization**: Modules can choose between full scans and index seeks based on correlation selectivity.
 
-**Later Physical Optimization**: Non-correlated Apply operations can be transformed into hash joins or merge joins by later optimization phases.
+**Later Physical Optimization**: Non-correlated Apply operations can be transformed into bloom joins or merge joins by later optimization phases.
 
 ### Benefits
 

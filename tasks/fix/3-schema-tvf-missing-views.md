@@ -1,7 +1,7 @@
 ---
 description: schema() TVF does not include views in its output
 dependencies: none
-priority: 3
+
 ---
 
 # schema() TVF Missing Views

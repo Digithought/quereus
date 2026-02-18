@@ -1,7 +1,7 @@
 ---
 description: Testing & quality improvements (stress, fuzzing, benchmarks, cross-platform)
 dependencies: Test infrastructure
-priority: 3
+
 ---
 
 ## Architecture

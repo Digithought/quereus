@@ -1,7 +1,6 @@
 ---
 description: Optimize resolveAttribute from O(n) linear scan to O(1) direct lookup
 dependencies: Runtime context infrastructure
-priority: 3
 ---
 
 ## Problem
@@ -23,6 +22,8 @@ Column reference resolution should be O(1) — a direct lookup from attribute ID
 Maintain a secondary index `Map<attributeId, { descriptor, columnIndex }>` on RuntimeContext that is updated when descriptors are added/removed. The `resolveAttribute` function then becomes a single Map.get() call.
 
 Alternatively, since attribute IDs are dense integers assigned at plan time, a flat array indexed by attribute ID could be even faster than a Map.
+
+Something to move this to plan time only?
 
 ## Key Files
 

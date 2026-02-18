@@ -1,7 +1,7 @@
 ---
 description: Runtime subsystem review (scheduler, emitters, context, deferred constraints)
 dependencies: none
-priority: 3
+
 ---
 
 # Runtime Subsystem Review (implementation output)

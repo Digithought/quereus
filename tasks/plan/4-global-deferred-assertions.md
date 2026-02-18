@@ -1,7 +1,7 @@
 ---
 description: Database-wide integrity assertions deferrable at COMMIT
 dependencies: Schema system, transaction infrastructure, optimizer
-priority: 4
+
 ---
 
 ## Architecture

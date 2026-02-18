@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review of quereus-sync package (CRDT replication, HLC, metadata stores, sync protocol)
 dependencies: [3-review-pkg-store]
-priority: 3
+
 ---
 
 # Sync Package Review

@@ -1,7 +1,7 @@
 ---
 description: Standardize parameter binding key types (string vs number)
 dependencies: none
-priority: 3
+
 ---
 
 # Fix Parameter Binding Key Inconsistency

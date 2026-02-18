@@ -4,7 +4,7 @@
  *
  * Note: This builder works with logical plan nodes and their properties.
  * It does not make assumptions about execution strategies (e.g., whether
- * a join will use nested loops vs hash join). Loop detection and execution
+ * a join will use nested loops vs bloom/hash join). Loop detection and execution
  * multipliers should be determined during physical optimization when
  * concrete execution strategies are chosen.
  */

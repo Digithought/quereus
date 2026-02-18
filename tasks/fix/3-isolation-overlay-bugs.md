@@ -1,7 +1,7 @@
 ---
 description: Fix three bugs in isolation layer overlay handling (savepoint rollback, insert-after-delete)
 dependencies: packages/quereus-isolation/src/isolated-table.ts
-priority: 3
+
 ---
 
 # Isolation Layer Overlay Bugs

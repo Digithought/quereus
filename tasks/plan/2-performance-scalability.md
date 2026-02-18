@@ -1,7 +1,7 @@
 ---
 description: Performance & scalability improvements (memory pooling, caching, streaming, parallel)
 dependencies: Runtime infrastructure
-priority: 2
+
 ---
 
 ## Architecture

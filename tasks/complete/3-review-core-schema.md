@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review plan for schema management subsystem
 dependencies: none
-priority: 3
+
 ---
 
 # Schema Management Subsystem Review Plan

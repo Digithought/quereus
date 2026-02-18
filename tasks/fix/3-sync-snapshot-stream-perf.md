@@ -1,7 +1,7 @@
 ---
 description: O(N*M) performance bug in getSnapshotStream table entry counting
 dependencies: none
-priority: 3
+
 ---
 
 # O(N*M) Performance in Snapshot Streaming

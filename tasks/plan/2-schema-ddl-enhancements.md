@@ -1,7 +1,7 @@
 ---
 description: Schema & DDL enhancements (FK, computed columns, ALTER TABLE, materialized views)
 dependencies: Schema system, DDL engine
-priority: 2
+
 ---
 
 ## Architecture

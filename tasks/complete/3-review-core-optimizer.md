@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review plan for optimizer subsystem (rules, framework, analysis)
 dependencies: none
-priority: 3
+
 ---
 
 # Optimizer Subsystem Review

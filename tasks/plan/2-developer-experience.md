@@ -1,7 +1,7 @@
 ---
 description: Developer experience & tooling (EXPLAIN, profiling, VTab guide)
 dependencies: Documentation, runtime instrumentation
-priority: 2
+
 ---
 
 ## Architecture

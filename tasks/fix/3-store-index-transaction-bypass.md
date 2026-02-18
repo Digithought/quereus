@@ -1,7 +1,7 @@
 ---
 description: Fix StoreTable secondary index updates bypassing TransactionCoordinator during transactions
 dependencies: packages/quereus-store/src/common/store-table.ts, packages/quereus-store/src/common/transaction.ts
-priority: 3
+
 ---
 
 # Secondary Index Updates Bypass Transaction Coordinator

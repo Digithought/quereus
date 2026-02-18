@@ -1,7 +1,7 @@
 ---
 description: Review functions subsystem fixes, tests, and documentation
 dependencies: none
-priority: 3
+
 ---
 
 # Functions Subsystem Review

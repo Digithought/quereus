@@ -1,7 +1,7 @@
 ---
 description: Add first-class scalar expression properties (injective + monotone/range-preserving) for use by optimizer/planner
 dependencies: Type system, optimizer analysis framework
-priority: 2
+
 ---
 
 ## Architecture

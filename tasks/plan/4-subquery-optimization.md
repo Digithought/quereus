@@ -1,7 +1,7 @@
 ---
 description: Transform correlated subqueries to joins for better performance
 dependencies: Titan optimizer, join infrastructure
-priority: 4
+
 ---
 
 ## Architecture

@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review of quereus-vscode VS Code extension package
 dependencies: [3-review-core-api]
-priority: 3
+
 ---
 
 # VS Code Extension Review

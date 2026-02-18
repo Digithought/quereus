@@ -56,6 +56,7 @@ while (i < args.length) {
 			break;
 		case '--verbose':
 			env.QUEREUS_TEST_VERBOSE = 'true';
+			testArgs.push('--reporter', 'spec');
 			break;
 		default:
 			// Pass through other arguments (like test file patterns)
@@ -71,6 +72,11 @@ const registerPath = join(__dirname, 'register.mjs');
 const mochaPath = join(projectRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
 const testPattern = join('packages', 'quereus', 'test', '**', '*.spec.ts');
 
+// Use 'min' reporter by default for concise output (full failure details preserved).
+// Override with --reporter <name> on the command line.
+const hasReporterFlag = testArgs.some((a, i) => a === '--reporter' || a === '-R');
+const reporterArgs = hasReporterFlag ? [] : ['--reporter', 'min'];
+
 // Build command arguments
 const cmdArgs = [
 	'--import', pathToFileURL(registerPath).href,
@@ -78,6 +84,7 @@ const cmdArgs = [
 	testPattern,
 	'--colors',
 	'--bail',
+	...reporterArgs,
 	...testArgs
 ];
 

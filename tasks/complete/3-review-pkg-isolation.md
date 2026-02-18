@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review of isolation package (MVCC, transactions)
 dependencies: 3-review-core-vtab
-priority: 3
+
 ---
 
 # Isolation Package Review

@@ -1,7 +1,7 @@
 ---
 description: DRY violations in sync-coordinator (duplicated serialization, storage path resolver)
 dependencies: none
-priority: 3
+
 ---
 
 # DRY Violations

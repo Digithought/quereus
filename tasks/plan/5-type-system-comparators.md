@@ -1,7 +1,7 @@
 ---
 description: Pre-resolved comparators to eliminate runtime type detection in hot paths
 dependencies: Logical type system, Memory VTable, Sort/Join nodes
-priority: 5
+
 ---
 
 ## Architecture

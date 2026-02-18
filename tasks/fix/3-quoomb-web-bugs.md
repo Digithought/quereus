@@ -1,7 +1,7 @@
 ---
 description: Fix three bugs in quoomb-web stores and components
 dependencies: 3-review-pkg-quoomb-web
-priority: 3
+
 ---
 
 # Quoomb Web Bug Fixes

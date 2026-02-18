@@ -1,7 +1,6 @@
 ---
 description: Fix hasChanges() to not misdetect inherited BTree entries
 dependencies: none
-priority: 2
 ---
 
 # Fix hasChanges() Inherited Entry Detection

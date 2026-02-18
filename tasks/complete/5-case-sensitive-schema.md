@@ -1,7 +1,7 @@
 ---
 description: Fix case-sensitive schema name lookups in SchemaManager, Schema, and planner cache
 dependencies: none
-priority: 5
+
 status: complete
 ---
 

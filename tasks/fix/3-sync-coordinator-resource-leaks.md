@@ -1,7 +1,7 @@
 ---
 description: Resource management bugs in sync-coordinator (eviction race, socket close leaks)
 dependencies: none
-priority: 3
+
 ---
 
 # Resource Management Bugs

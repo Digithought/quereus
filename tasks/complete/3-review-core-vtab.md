@@ -1,7 +1,7 @@
 ---
 description: Comprehensive review of virtual table subsystem (VTab interface, Memory table, cursors)
 dependencies: none
-priority: 3
+
 ---
 
 # Virtual Table Subsystem Review

@@ -135,7 +135,7 @@ describe('Performance sentinels', function () {
 		});
 
 		it('self-join under 8 s (nested-loop baseline)', async () => {
-			// NOTE: this is slow due to nested-loop join — hash join would bring
+			// NOTE: this is slow due to nested-loop join — bloom join would bring
 			// this down to ~100 ms.  The generous threshold exists to catch
 			// catastrophic regressions; see tasks/plan/4-join-algorithms.md.
 			const elapsed = await timeMs(async () => {

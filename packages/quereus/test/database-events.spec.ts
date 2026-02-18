@@ -1,4 +1,3 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Database, type DatabaseDataChangeEvent, type DatabaseSchemaChangeEvent } from '../src/index.js';
 

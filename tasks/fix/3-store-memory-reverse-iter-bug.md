@@ -1,7 +1,7 @@
 ---
 description: Fix InMemoryKVStore.iterate() reverse iteration with bounds returning empty results
 dependencies: packages/quereus-store/src/common/memory-store.ts
-priority: 3
+
 ---
 
 # InMemoryKVStore Reverse Iteration with Bounds Bug

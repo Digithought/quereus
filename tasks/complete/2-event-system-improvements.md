@@ -1,7 +1,6 @@
 ---
 description: Event system memory management and documentation improvements
 dependencies: none
-priority: 2
 ---
 
 # Event System Improvements

@@ -1,7 +1,7 @@
 ---
 description: Extract repeated function registration error handling into a shared helper
 dependencies: none
-priority: 3
+
 ---
 
 # DRY: Function Registration Error Handling

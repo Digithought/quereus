@@ -1,7 +1,7 @@
 ---
 description: Replace hash-based savepoint names with stack-based approach
 dependencies: none
-priority: 4
+
 status: complete
 ---
 

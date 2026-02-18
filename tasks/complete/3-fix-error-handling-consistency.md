@@ -1,7 +1,7 @@
 ---
 description: Fix error handling inconsistencies (ParseError, inline require, logging)
 dependencies: none
-priority: 3
+
 ---
 
 # Fix Error Handling Consistency

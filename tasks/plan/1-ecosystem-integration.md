@@ -1,7 +1,7 @@
 ---
 description: Ecosystem integration (database connectors, ORMs, cloud, data pipelines)
 dependencies: Core API stability
-priority: 1
+
 ---
 
 ## Architecture

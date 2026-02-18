@@ -1,7 +1,7 @@
 ---
 description: Decompose sync-manager-impl.ts (1,676 lines) into focused modules
 dependencies: 3-sync-manager-dry-violations
-priority: 3
+
 ---
 
 # Decompose sync-manager-impl.ts

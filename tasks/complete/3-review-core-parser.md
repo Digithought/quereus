@@ -1,7 +1,7 @@
 ---
 description: Completed review of parser subsystem (lexer, parser, AST, visitor)
 dependencies: none
-priority: 3
+
 ---
 
 # Parser Subsystem Review — Completed

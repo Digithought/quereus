@@ -1,7 +1,7 @@
 ---
 description: DRY refactoring and code quality improvements in quoomb-web
 dependencies: 3-review-pkg-quoomb-web
-priority: 3
+
 ---
 
 # Quoomb Web DRY Refactoring

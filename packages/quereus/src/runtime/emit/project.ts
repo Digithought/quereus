@@ -5,7 +5,7 @@ import { type Row } from '../../common/types.js';
 import { type OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import { withAsyncRowContext, withRowContextGenerator } from '../context-helpers.js';
+import { createRowSlot } from '../context-helpers.js';
 
 export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -18,23 +18,27 @@ export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instructio
 	const outputRowDescriptor = buildRowDescriptor(plan.getAttributes());
 
 	async function* run(rctx: RuntimeContext, source: AsyncIterable<Row>, ...projectionFunctions: Array<(ctx: RuntimeContext) => OutputValue>): AsyncIterable<Row> {
-		for await (const sourceRow of source) {
-			// Evaluate projections using the source row context
-			const outputs = await withAsyncRowContext(rctx, sourceRowDescriptor, () => sourceRow, async () => {
-				return Promise.all(projectionFunctions.map(fn => fn(rctx)));
-			});
+		// Output slot is created FIRST so it is older in the context Map.
+		// resolveAttribute searches newest→oldest, so the source slot
+		// (created second) wins during projection evaluation, preventing
+		// stale output data from shadowing the current source row when
+		// output and source descriptors share attribute IDs.
+		const outputSlot = createRowSlot(rctx, outputRowDescriptor);
+		const sourceSlot = createRowSlot(rctx, sourceRowDescriptor);
+		try {
+			for await (const sourceRow of source) {
+				// Set source context for projection evaluation
+				sourceSlot.set(sourceRow);
+				const outputs = await Promise.all(projectionFunctions.map(fn => fn(rctx)));
+				const outputRow = outputs as Row;
 
-			// Push the output row descriptor for downstream consumers
-			yield* withRowContextGenerator(
-				rctx,
-				outputRowDescriptor,
-				(async function* () {
-					yield outputs as Row;
-				})(),
-				async function* (row) {
-					yield row;
-				}
-			);
+				// Set output context for downstream column resolution
+				outputSlot.set(outputRow);
+				yield outputRow;
+			}
+		} finally {
+			sourceSlot.close();
+			outputSlot.close();
 		}
 	}
 

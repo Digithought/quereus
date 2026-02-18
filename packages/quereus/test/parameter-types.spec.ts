@@ -1,4 +1,3 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
 import { expect } from 'chai';
 import { Database } from '../src/core/database.js';
 import type { ScalarType } from '../src/common/datatype.js';

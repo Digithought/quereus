@@ -1,7 +1,7 @@
 ---
 description: Performance, error handling, and testability issues in quereus-vscode language server
 dependencies: []
-priority: 3
+
 ---
 
 # VS Code Server Quality Issues

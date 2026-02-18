@@ -1,7 +1,7 @@
 ---
 description: Extend MemoryTable getBestAccessPlan to handle IS NULL, IS NOT NULL, and IN constraint operators
 dependencies: none
-priority: 3
+
 ---
 
 # Extended Constraint Pushdown for MemoryTable

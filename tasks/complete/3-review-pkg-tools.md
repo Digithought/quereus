@@ -1,7 +1,7 @@
 ---
 description: Review of tooling packages under packages/tools (planviz)
 dependencies: 3-review-core-api
-priority: 4
+
 ---
 
 # Tools Package Review — Complete

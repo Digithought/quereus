@@ -1,7 +1,7 @@
 ---
 description: Phase 1.5 - Access Path Selection for Titan optimizer (seek/range scan infrastructure)
 dependencies: Titan optimizer core, index infrastructure
-priority: 5
+
 ---
 
 ## Architecture

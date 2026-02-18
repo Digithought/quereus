@@ -1,7 +1,7 @@
 ---
 description: Phase 3 Federation - Advanced predicate pushdown and projection/aggregation
 dependencies: Federation phase 2, cost model
-priority: 3
+
 ---
 
 ## Architecture

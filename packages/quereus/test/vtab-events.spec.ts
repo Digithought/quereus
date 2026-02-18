@@ -1,4 +1,3 @@
-import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Database, DefaultVTableEventEmitter, MemoryTableModule, type VTableDataChangeEvent, type VTableSchemaChangeEvent } from '../src/index.js';
 

@@ -1,7 +1,7 @@
 ---
 description: Error handling gaps in sync-coordinator endpoints and broadcast
 dependencies: none
-priority: 3
+
 ---
 
 # Error Handling Gaps

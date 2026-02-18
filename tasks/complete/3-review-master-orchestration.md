@@ -1,7 +1,7 @@
 ---
 description: Master orchestration plan for all review tasks — completion summary
 dependencies: none
-priority: 1
+
 ---
 
 # Master Orchestration — Review Completion Summary

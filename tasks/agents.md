@@ -10,6 +10,13 @@ Don't combine tasks unless they are tightly related.
 
 For new tasks: put a new file into /fix or /plan but focus on the description of the issue or feature, expected behavior, use case, etc.  Don't do planning, add TODO items, or get ahead, unless you already posess key information that would be useful.
 
+## Launch process tool (if under PowerShell)
+
+The `launch-process` tool wraps commands in `powershell -Command ...`, which strips inner quotes and parses parentheses as subexpressions. This makes `git commit -m "task(review): ..."` impossible — no escaping strategy works.
+Use a file or pipe based pattern as a work-around.  e.g. `git commit -F .git/COMMIT_EDITMSG`
+
+## Task file format
+
 For the file:
 ----
 description: <brief description>

@@ -1,7 +1,7 @@
 ---
 description: Update the BNF grammar documentation in sql.md
 dependencies: docs/sql.md, parser
-priority: 3
+
 ---
 
 ## Architecture

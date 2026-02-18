@@ -6,8 +6,10 @@ import { StatusCode, type OutputValue } from '../../common/types.js';
 
 export function emitArrayIndex(plan: ArrayIndexNode, _ctx: EmissionContext): Instruction {
 	function run(ctx: RuntimeContext): OutputValue {
-		// Look through the context to find a row that has the index we need
-		for (const [_descriptor, rowGetter] of ctx.context.entries()) {
+		// Search newest→oldest (reverse insertion order) so the most
+		// recently pushed / innermost scope wins, matching resolveAttribute.
+		const entries = Array.from(ctx.context.entries()).reverse();
+		for (const [_descriptor, rowGetter] of entries) {
 			const row = rowGetter();
 			if (Array.isArray(row) && plan.index < row.length) {
 				return row[plan.index];

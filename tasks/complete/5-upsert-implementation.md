@@ -1,7 +1,7 @@
 ---
 description: UPSERT implementation (ON CONFLICT DO UPDATE/DO NOTHING) - COMPLETED
 dependencies: VTab API, DML executor
-priority: 5
+
 ---
 
 ## Status: COMPLETE ✅

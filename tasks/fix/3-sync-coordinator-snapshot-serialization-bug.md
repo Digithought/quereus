@@ -1,7 +1,7 @@
 ---
 description: BigInt serialization bug in sync-coordinator snapshot endpoints (WS and HTTP)
 dependencies: none
-priority: 3
+
 ---
 
 # Snapshot Serialization Bug

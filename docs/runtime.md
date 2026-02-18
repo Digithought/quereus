@@ -320,23 +320,12 @@ export function registerEmitters() {
 ### Row Context Management
 Use context helpers to manage row contexts safely and efficiently:
 
-**Pattern 1: Simple row processing (withRowContextGenerator)**
-```typescript
-import { withRowContextGenerator } from '../context-helpers.js';
-
-// For simple streaming operations
-yield* withRowContextGenerator(rctx, rowDescriptor, sourceRows, async function* (row) {
-	// Process row - column references automatically resolve
-	const result = await processRow(row);
-	yield result;
-});
-```
-
-**Pattern 2: High-volume streaming (createRowSlot)**
+**Pattern 1: High-volume streaming (createRowSlot) — preferred for all streaming emitters**
 ```typescript
 import { createRowSlot } from '../context-helpers.js';
 
-// For scan/join operations processing many rows
+// Used by scan, join, filter, project, and distinct emitters.
+// Installs the context entry once; updates by cheap field write per row.
 const rowSlot = createRowSlot(rctx, rowDescriptor);
 try {
 	for await (const row of sourceRows) {
@@ -348,9 +337,12 @@ try {
 }
 ```
 
-**Pattern 3: One-off context (withRowContext/withAsyncRowContext)**
+**Pattern 2: One-off / low-frequency context (withRowContext / withAsyncRowContext)**
 ```typescript
 import { withRowContext, withAsyncRowContext } from '../context-helpers.js';
+
+// Best for single-row evaluations such as constraint checks, DML context
+// setup, or any place where Map.set+delete once is negligible.
 
 // Synchronous evaluation
 const result = withRowContext(rctx, rowDescriptor, () => row, () => {
@@ -360,6 +352,19 @@ const result = withRowContext(rctx, rowDescriptor, () => row, () => {
 // Async evaluation
 const result = await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
 	return await evaluateAsyncExpression(rctx);
+});
+```
+
+**Pattern 3: Legacy per-row generator (withRowContextGenerator)**
+```typescript
+import { withRowContextGenerator } from '../context-helpers.js';
+
+// Calls Map.set + Map.delete on every row.  Prefer createRowSlot for
+// high-frequency streaming.  Still used in some lower-frequency emitters
+// (CTE reference, recursive CTE, returning, window).
+yield* withRowContextGenerator(rctx, rowDescriptor, sourceRows, async function* (row) {
+	const result = await processRow(row);
+	yield result;
 });
 ```
 
@@ -1301,7 +1306,7 @@ Quereus provides helper functions in `src/runtime/context-helpers.ts` to simplif
 **`createRowSlot(rctx, descriptor)`**
 - Creates a mutable slot for efficient streaming operations
 - Installs context once, updates by reference (no Map mutations per row)
-- Perfect for scan/join operations processing many rows
+- Used by all high-frequency streaming emitters: scan, join, filter, project, distinct
 - Must call `close()` to clean up
 
 **`resolveAttribute(rctx, attributeId, columnName?)`**

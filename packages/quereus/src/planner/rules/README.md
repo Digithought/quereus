@@ -44,7 +44,7 @@ Choose optimal table access strategies:
 
 ### Join Rules (Logical → Physical)
 Select join algorithms and optimize join trees:
-- Nested loop vs. hash join selection
+- Nested loop vs. bloom join selection
 - Join order optimization
 - Cache injection for inner sides
 

@@ -1,7 +1,7 @@
 ---
 description: Optimizer enhancements (cost models, plan validation, metrics)
 dependencies: Titan optimizer core
-priority: 2
+
 ---
 
 ## Architecture

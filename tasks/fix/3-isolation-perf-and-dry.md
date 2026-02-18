@@ -1,7 +1,7 @@
 ---
 description: Fix O(n) full scans and DRY violations in isolation layer
 dependencies: packages/quereus-isolation/src/isolated-table.ts, docs/design-isolation-layer.md
-priority: 3
+
 ---
 
 # Isolation Layer Performance and DRY Issues

@@ -1,7 +1,7 @@
 ---
 description: Review + hardening of planner scope resolution, ambiguity handling, and window typing
 dependencies: none
-priority: 3
+
 ---
 
 ## Summary

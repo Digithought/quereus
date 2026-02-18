@@ -1,7 +1,7 @@
 ---
 description: Fill documentation gaps identified during review
 dependencies: docs/, packages/quereus/src/
-priority: 3
+
 ---
 
 ## Architecture

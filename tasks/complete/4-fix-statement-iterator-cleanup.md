@@ -1,7 +1,7 @@
 ---
 description: Fix mutex leak in Statement.all() and ensure iterator cleanup
 dependencies: none
-priority: 4
+
 ---
 
 # Fix Statement Iterator Cleanup

@@ -1,7 +1,7 @@
 ---
 description: Type-specialized implementations for operators and functions
 dependencies: Logical type system, planner type information
-priority: 5
+
 ---
 
 ## Architecture

@@ -1,7 +1,6 @@
 ---
 description: Core API lifecycle and cleanup tests for Database and Statement
 dependencies: none
-priority: 3
 ---
 
 # Core API Lifecycle Tests

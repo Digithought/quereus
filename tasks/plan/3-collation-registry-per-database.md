@@ -1,7 +1,7 @@
 ---
 description: Make collation registry per-Database instead of global
 dependencies: none
-priority: 3
+
 ---
 
 # Per-Database collation registry

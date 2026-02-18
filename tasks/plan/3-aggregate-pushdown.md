@@ -1,7 +1,7 @@
 ---
 description: Push aggregations below joins when semantically valid
 dependencies: Titan optimizer, aggregation planning
-priority: 3
+
 ---
 
 ## Architecture

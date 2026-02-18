@@ -1,7 +1,7 @@
 ---
 description: Utilities subsystem review - comparison, coercion, affinity, errors, cross-platform
 dependencies: none
-priority: 3
+
 ---
 
 # Utilities Subsystem Review

@@ -1,7 +1,7 @@
 ---
 description: Error handling gaps in sync-manager-impl.ts (silent failures, unhandled async, missing error boundaries)
 dependencies: none
-priority: 3
+
 ---
 
 # Error Handling Gaps in SyncManager

@@ -1,7 +1,7 @@
 ---
 description: Reusable incremental delta runtime for assertions and materialized views
 dependencies: Assertion infrastructure, optimizer, savepoint system
-priority: 3
+
 ---
 
 ## Architecture

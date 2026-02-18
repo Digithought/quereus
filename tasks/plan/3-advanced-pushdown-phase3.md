@@ -1,7 +1,7 @@
 ---
 description: Phase 3 Advanced Push-down with full cost model
 dependencies: Titan optimizer phases 1-2, cost model
-priority: 3
+
 ---
 
 ## Architecture

@@ -1,7 +1,7 @@
 ---
 description: Extract repeated transaction finalization pattern into helper
 dependencies: none
-priority: 3
+
 ---
 
 # DRY: Transaction Finalization Pattern

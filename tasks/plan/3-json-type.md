@@ -1,7 +1,7 @@
 ---
 description: Native JSON type with object storage and path queries
 dependencies: Type system, storage layer
-priority: 3
+
 ---
 
 ## Architecture

@@ -1,7 +1,7 @@
 ---
 description: Phase 2 Federation - Join enumeration integration with realistic cardinality
 dependencies: Titan optimizer, predicate pushdown phases 1-2
-priority: 3
+
 ---
 
 ## Architecture

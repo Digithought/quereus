@@ -1,7 +1,7 @@
 ---
 description: Constraints requiring access to before AND after transaction state
 dependencies: Constraint system, transaction infrastructure
-priority: 4
+
 ---
 
 ## Architecture

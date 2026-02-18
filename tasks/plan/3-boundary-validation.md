@@ -1,7 +1,7 @@
 ---
 description: Entrance-point validation for data at system boundaries
 dependencies: Type system, parameter handling, module API
-priority: 3
+
 ---
 
 ## Architecture

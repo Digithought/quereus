@@ -119,8 +119,11 @@ export function lookupColumn(rctx: RuntimeContext, descriptor: RowDescriptor, co
 }
 
 /**
- * Execute a function with a row context, ensuring proper cleanup.
- * This is the recommended pattern for all row-processing emitters.
+ * Execute an async function with a temporary row context (Map.set + Map.delete).
+ *
+ * Best for **one-off or low-frequency** evaluations (constraint checks, DML
+ * context setup).  For high-frequency streaming loops prefer {@link createRowSlot}
+ * which avoids per-row Map mutations.
  */
 export async function withAsyncRowContext<T>(
 	rctx: RuntimeContext,
@@ -147,8 +150,10 @@ export async function withAsyncRowContext<T>(
 }
 
 /**
- * Execute a function with a row context, ensuring proper cleanup.
- * This is the recommended pattern for all row-processing emitters.
+ * Execute a synchronous function with a temporary row context (Map.set + Map.delete).
+ *
+ * Best for **one-off or low-frequency** evaluations.  For high-frequency
+ * streaming loops prefer {@link createRowSlot}.
  */
 export function withRowContext<T>(
 	rctx: RuntimeContext,
@@ -175,8 +180,11 @@ export function withRowContext<T>(
 }
 
 /**
- * Execute a generator function with row context management.
- * Useful for streaming operations that process multiple rows.
+ * Execute a generator with per-row context push/pop (Map.set + Map.delete each row).
+ *
+ * Still used by some lower-frequency emitters (CTE reference, recursive CTE,
+ * returning, window).  For high-frequency streaming emitters (scan, join,
+ * filter, project, distinct) prefer {@link createRowSlot}.
  */
 export async function* withRowContextGenerator<T>(
 	rctx: RuntimeContext,

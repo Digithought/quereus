@@ -1,7 +1,7 @@
 ---
 description: Performance review — sentinel tests, hot-path analysis, and follow-up optimization tasks
 dependencies: None
-priority: 3
+
 ---
 
 ## Summary
@@ -17,7 +17,7 @@ Created `packages/quereus/test/performance-sentinels.spec.ts` — 12 regression 
 - **Bulk mutations** (2 tests): 1000-row bulk insert, 50 PK lookups after bulk insert
 - **Statement reuse** (1 test): 50 prepare+execute cycles
 
-The self-join sentinel (50×1000 rows, nested-loop) establishes a baseline of ~3500–4200 ms with an 8000 ms threshold, documenting the need for hash join.
+The self-join sentinel (50×1000 rows, nested-loop) establishes a baseline of ~3500–4200 ms with an 8000 ms threshold, documenting the need for bloom/hash join.
 
 ## Key Findings
 

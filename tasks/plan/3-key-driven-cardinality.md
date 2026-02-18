@@ -1,7 +1,7 @@
 ---
 description: Key-driven row-count reduction with FK→PK inference and optimizer exploitation
 dependencies: Key inference system, optimizer cost model
-priority: 3
+
 ---
 
 ## Architecture

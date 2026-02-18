@@ -1,7 +1,7 @@
 ---
 description: DRY violations and type safety issues in quereus-vscode
 dependencies: []
-priority: 3
+
 ---
 
 # VS Code Extension DRY & Type Safety

@@ -1,7 +1,7 @@
 ---
 description: Completed review of integration boundaries between subsystems
 dependencies: none
-priority: 3
+
 ---
 
 # Integration Boundaries Review - Complete

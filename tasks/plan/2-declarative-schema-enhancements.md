@@ -1,7 +1,7 @@
 ---
 description: Declarative schema remaining work (rename detection, imports, seeds, etc.)
 dependencies: Declarative schema core, DDL engine
-priority: 2
+
 ---
 
 ## Architecture
