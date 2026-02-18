@@ -244,9 +244,9 @@ export class SchemaManager {
 		if (this.schemas.has(lowerName)) {
 			throw new QuereusError(`Schema '${name}' already exists`, StatusCode.ERROR);
 		}
-		const schema = new Schema(name);
+		const schema = new Schema(lowerName);
 		this.schemas.set(lowerName, schema);
-		log(`Added schema '%s'`, name);
+		log(`Added schema '%s'`, lowerName);
 		return schema;
 	}
 
@@ -276,7 +276,7 @@ export class SchemaManager {
 
 	/**
 	 * @internal Finds a table or virtual table by name across schemas
-	 * 
+	 *
 	 * @param tableName Name of the table to find
 	 * @param dbName Optional specific schema name to search (overrides search path)
 	 * @param schemaPath Optional ordered list of schemas to search (overrides default search order)
@@ -324,7 +324,7 @@ export class SchemaManager {
 	/**
 	 * Finds all schemas that contain a table with the given name.
 	 * Useful for generating helpful error messages.
-	 * 
+	 *
 	 * @param tableName Name of the table to search for
 	 * @returns Array of schema names that contain the table
 	 */
@@ -360,7 +360,7 @@ export class SchemaManager {
 	 * @returns The ViewSchema or undefined if not found
 	 */
 	getView(schemaName: string | null, viewName: string): ViewSchema | undefined {
-		const targetSchemaName = schemaName ?? this.currentSchemaName;
+		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getView(viewName);
 	}
@@ -373,7 +373,7 @@ export class SchemaManager {
 	 * @returns The TableSchema or ViewSchema, or undefined if not found
 	 */
 	getSchemaItem(schemaName: string | null, itemName: string): TableSchema | ViewSchema | undefined {
-		const targetSchemaName = schemaName ?? this.currentSchemaName;
+		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
 		const schema = this.schemas.get(targetSchemaName);
 		if (!schema) return undefined;
 
@@ -475,7 +475,7 @@ export class SchemaManager {
 	 * @returns True if the view was found and dropped, false otherwise
 	 */
 	dropView(schemaName: string, viewName: string): boolean {
-		const schema = this.schemas.get(schemaName);
+		const schema = this.schemas.get(schemaName.toLowerCase());
 		if (!schema) return false;
 		return schema.removeView(viewName);
 	}
@@ -515,7 +515,7 @@ export class SchemaManager {
 	 * @returns The TableSchema or undefined if not found
 	 */
 	getTable(schemaName: string | undefined, tableName: string): TableSchema | undefined {
-		const targetSchemaName = schemaName ?? this.currentSchemaName;
+		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getTable(tableName);
 	}
@@ -1016,8 +1016,9 @@ export class SchemaManager {
 
 		let schema = this.getSchema(targetSchemaName);
 		if (!schema) {
-			schema = new Schema(targetSchemaName);
-			this.schemas.set(targetSchemaName.toLowerCase(), schema);
+			const lowerSchemaName = targetSchemaName.toLowerCase();
+			schema = new Schema(lowerSchemaName);
+			this.schemas.set(lowerSchemaName, schema);
 		}
 
 		schema.addTable(tableSchema);

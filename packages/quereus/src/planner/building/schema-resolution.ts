@@ -20,7 +20,7 @@ export function resolveTableSchema(
 	// If schema is explicitly provided, search only that schema
 	if (schemaName) {
 		const resolvedSchemaName = schemaName;
-		const cacheKey = `table:${resolvedSchemaName}:${tableName}`;
+		const cacheKey = `table:${resolvedSchemaName.toLowerCase()}:${tableName.toLowerCase()}`;
 
 		// Check cache first
 		const cached = ctx.schemaCache.get(cacheKey);
@@ -55,9 +55,10 @@ export function resolveTableSchema(
 
 	// No explicit schema, use search path
 	const schemaPath = ctx.schemaPath;
+	const lowerTableName = tableName.toLowerCase();
 	const cacheKey = schemaPath
-		? `table:path(${schemaPath.join(',')}):${tableName}`
-		: `table:default:${tableName}`;
+		? `table:path(${schemaPath.map(s => s.toLowerCase()).join(',')}):${lowerTableName}`
+		: `table:default:${lowerTableName}`;
 
 	// Check cache first
 	const cached = ctx.schemaCache.get(cacheKey);
@@ -74,7 +75,7 @@ export function resolveTableSchema(
 		const existsIn = ctx.schemaManager.findSchemasContainingTable(tableName);
 
 		let errorMsg = `Table '${tableName}' not found in schema path: ${searchedSchemas.join(', ')}`;
-		
+
 		if (existsIn.length > 0) {
 			// Table exists in other schemas - suggest qualified name
 			const suggestions = existsIn.map(s => `${s}.${tableName}`).join(', ');

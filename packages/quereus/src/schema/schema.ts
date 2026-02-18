@@ -90,7 +90,7 @@ export class Schema {
 	 * @throws QuereusError if view's schema name doesn't match or a table with same name exists
 	 */
 	addView(view: ViewSchema): void {
-		if (view.schemaName !== this.name) {
+		if (view.schemaName.toLowerCase() !== this.name.toLowerCase()) {
 			quereusError(`View ${view.name} has wrong schema name ${view.schemaName}, expected ${this.name}`);
 		}
 		if (this.tables.has(view.name.toLowerCase())) {
