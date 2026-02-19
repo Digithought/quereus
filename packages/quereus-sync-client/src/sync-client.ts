@@ -270,11 +270,14 @@ export class SyncClient {
     // Request changes from server since our last sync with this peer
     await this.requestChangesFromServer();
 
-    // Subscribe to local changes for pushing to server
-    this.subscribeToLocalChanges();
+    // In read-only (pull-only) mode, skip push entirely
+    if (!this.options.readOnly) {
+      // Subscribe to local changes for pushing to server
+      this.subscribeToLocalChanges();
 
-    // Push any existing local changes to server (changes made while offline)
-    await this.pushLocalChanges();
+      // Push any existing local changes to server (changes made while offline)
+      await this.pushLocalChanges();
+    }
   }
 
   private async handleChanges(serializedChangeSets: SerializedChangeSet[]): Promise<void> {
@@ -390,6 +393,7 @@ export class SyncClient {
   }
 
   private async pushLocalChanges(): Promise<void> {
+    if (this.options.readOnly) return;
     if (!this.isConnected || !this.serverSiteId) return;
 
     // Get changes since lastSentHLC (delta sync)

@@ -100,6 +100,14 @@ export interface SyncClientOptions {
    * @default 50
    */
   localChangeDebounceMs?: number;
+
+  /**
+   * When true, the client operates in pull-only mode: it receives remote
+   * changes but never pushes local changes to the server. Useful for
+   * read-only / view-permission shared scenarios.
+   * @default false
+   */
+  readOnly?: boolean;
 }
 
 // ============================================================================
