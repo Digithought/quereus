@@ -1,38 +1,23 @@
 import type { Row } from '../common/types.js';
-import type { RuntimeContext } from '../runtime/types.js';
-import type { RowDescriptor } from '../planner/nodes/plan-node.js';
-import { withRowContextGenerator } from '../runtime/context-helpers.js';
 
 /**
  * A reusable async iterable for working table data that can be iterated multiple times.
  * Similar to CachedIterable but for runtime-generated working table data.
  * Used primarily in recursive CTE execution where the working table needs to be
  * accessed multiple times during recursive iterations.
+ *
+ * Note: This class intentionally does NOT manage row context. The consumer
+ * (e.g. InternalRecursiveCTERef) is responsible for installing the appropriate
+ * row context via its own createRowSlot. Doing it here would conflict with the
+ * shared rowDescriptor used by the recursive CTE emitter's withRowContext calls.
  */
 export class WorkingTableIterable implements AsyncIterable<Row> {
-	constructor(
-		private rows: Row[],
-		private rctx: RuntimeContext,
-		private rowDescriptor: RowDescriptor
-	) {}
+	constructor(private rows: Row[]) {}
 
 	async *[Symbol.asyncIterator](): AsyncIterator<Row> {
-		// Convert rows array to async iterable
-		async function* rowsIterable(rows: Row[]): AsyncIterable<Row> {
-			for (const row of rows) {
-				yield row;
-			}
+		for (const row of this.rows) {
+			yield row;
 		}
-
-		// Use the helper to manage context
-		yield* withRowContextGenerator(
-			this.rctx,
-			this.rowDescriptor,
-			rowsIterable(this.rows),
-			async function* (row) {
-				yield row;
-			}
-		);
 	}
 }
 

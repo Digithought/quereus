@@ -10,15 +10,9 @@ import { WorkingTableIterable } from '../../util/working-table-iterable.js';
 import { DEFAULT_TUNING } from '../../planner/optimizer-tuning.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import { withRowContext } from '../context-helpers.js';
-
 const log = createLogger('runtime:emit:recursive-cte');
 
 export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): Instruction {
-	// Create row descriptor for CTE output attributes
-	const rowDescriptor = buildRowDescriptor(plan.getAttributes());
-
 	// Use the plan's table descriptor for table context coordination
 	const { tableDescriptor } = plan;
 
@@ -42,8 +36,8 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			const shouldYield = !allRowsTree || allRowsTree.insert(row).on;
 
 			if (shouldYield) {
-				// Yield immediately (streaming)
-				yield withRowContext(rctx, rowDescriptor, () => row, () => row);
+				// Yield immediately — context is managed by the downstream cte_ref's slot
+				yield row;
 
 				// Add to delta for recursive processing (deep copy to avoid reference issues)
 				deltaRows.push([...row] as Row);
@@ -58,7 +52,7 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			log('Recursive CTE %s iteration %d, delta size: %d', plan.cteName, iterationCount, deltaRows.length);
 
 			// Create a working table iterable from ONLY the delta (not all accumulated rows)
-			const deltaIterable = new WorkingTableIterable([...deltaRows], rctx, rowDescriptor);
+			const deltaIterable = new WorkingTableIterable([...deltaRows]);
 			const newDeltaRows: Row[] = []; // Collect rows for next iteration
 
 			// Set up the delta table in context for CTE references to access
@@ -70,8 +64,8 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 					const shouldYield = !allRowsTree || allRowsTree.insert(row).on;
 
 					if (shouldYield) {
-						// Stream the row immediately
-						yield withRowContext(rctx, rowDescriptor, () => row, () => row);
+						// Stream the row immediately — context is managed by the downstream cte_ref's slot
+						yield row;
 
 						// Add to next iteration's delta (deep copy to avoid reference issues)
 						newDeltaRows.push([...row] as Row);

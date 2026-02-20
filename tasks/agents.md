@@ -1,27 +1,27 @@
-The tasks folder contains fix, plan, implement, review, test, and complete subfolders.  Each task is an md file under these folders, having a descriptive filename prefixed with a 1-5 priority (5 being highest priority).  
+The tasks folder contains fix, plan, implement, review, blocked, and complete subfolders.  Each task is an md file under these folders, having a descriptive filename prefixed with a 1-5 priority (5 being highest priority).  
+
+You own the full stage transition.  When you are done:
+  1. Create the next-stage output file(s) in the appropriate tasks/ subfolder.
+     You may split one task into multiple next-stage tasks if warranted.
+     You may keep or adjust the priority prefix as appropriate.
+  2. Delete the original source task file from its current stage folder.
+* **Important**: Only proceed if you are clear on the task after research.  If there are questions or important decisions, transition the task into the blocked/ folder, with appropriate question(s) and/or discussion of tradeoffs.
 
 Stages:
-- Fix - for bugs in existing functionality.  These should be researched and elaborated, with one or more hypothesis made as to the cause and correction.  The output is a corresponding plan md file in the implement folder, and delete the file from /fix.  References should be made to key files and documentation.  TODO tasks should be added to the bottom of the md file.  
-- Plan - for features and enhancements.  Research and elaborate on these.  The output is a corresponding plan md file in the implement folder, and delete the file from /plan.  If there are questions about different options, list the options in the output file.  References should be made to key files and documentation.  TODO tasks should be added to the bottom of the md file.  Don't switch to "planning mode" when working these tasks - that's too meta.
-- Implement - These tasks are ready for implementation (fix, build, review, write test, ...whatever the task specifies).  If more than one agent would be useful, without stepping on toes, spawn sub-agents.  Once complete, output a distilled summary of the task, with emphasis on testing, validation and usage into the /review folder and delete the task from /implement.
-- Review - First, ensure there are tests for the task.  Try to look only at the interface points for the task initially to avoid biasing the tests towards the implementation.  Then inspect the code against all aspect-oriented criteria (SPP, DRY, modular, etc.).  Once the tests pass and code is solid, output an md file for the task in /complete, and delete the /review one.
+- Fix - for bugs.  Start with a reproducing test case, or a trace modality if the issue is intermittent.  Once reproduced and researched, form one or more hypothesis as to the cause and correction.  Provided enough confidence, output is one or more implementation task file(s) in implement/.  References should be made to key files and documentation.  TODO sub-tasks should be at the bottom of the task file(s).  Split into multiple tasks if warranted.
+- Plan - for features and enhancements.  After research, provided no major questions/options remain, output is one or more design and implement/ tasks.  References should be made to key files and documentation.  TODO sub-tasks should be at the bottom of the task file(s).  Don't switch to your agent's "planning mode" when working these tasks - that's too meta.  After planning, you may immediately proceed to implement iif: * the plan is concrete; * you haven\'t filling your context with a bunch of bunny trails (context is fresh); * no unresolved design questions remain; * the task doesn't indicate otherwise.
+- Implement - These tasks are ready for implementation (fix, build, update, ...whatever the task specifies).  If more than one agent would be useful, without stepping on toes, spawn sub-agents.  Once complete, output a distilled summary of the task, with emphasis on testing, validation and usage into the review/ folder and delete the task from implement/.
+- Review - Inspect the code against all aspect-oriented criteria (SPP, DRY, modular, scalable, maintainable, performant, etc.).  Ensure there are tests for the task, and that they pass.  Try to look only at the interface points for the task initially to avoid biasing the tests towards the implementation.  Ensure that relevant docs are up-to-date.  Output to complete/ once the tests pass and code is solid.
 
 Don't combine tasks unless they are tightly related.
 
-For new tasks: put a new file into /fix or /plan but focus on the description of the issue or feature, expected behavior, use case, etc.  Don't do planning, add TODO items, or get ahead, unless you already posess key information that would be useful.
-
-## Launch process tool (if under PowerShell)
-
-The `launch-process` tool wraps commands in `powershell -Command ...`, which strips inner quotes and parses parentheses as subexpressions. This makes `git commit -m "task(review): ..."` impossible — no escaping strategy works.
-Use a file or pipe based pattern as a work-around.  e.g. `git commit -F .git/COMMIT_EDITMSG`
-
-## Task file format
+For new tasks: put a new file into fix/ or plan/ but focus on the description/requirements of the issue or feature, expected behavior, use case, etc.  Don't do planning, add TODO items, or get ahead, unless you already posess key information that would be useful.
 
 For the file:
 ----
 description: <brief description>
-dependencies: <needed other tasks, contribution points, external libraries>
+dependencies: <needed other tasks, modularity points, external libraries>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 
-<if adding to implement or review: TODO list of detailed tasks - avoid numbering of tasks, besides phases>
+<if applicable: TODO list of sub-tasks - avoid numbering of tasks, besides phases>

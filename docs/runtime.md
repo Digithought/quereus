@@ -235,7 +235,7 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
-import { withRowContextGenerator, createRowSlot } from '../context-helpers.js';
+import { createRowSlot } from '../context-helpers.js';
 
 export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): Instruction {
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -254,18 +254,7 @@ export function emitMyOperation(plan: MyOperationNode, ctx: EmissionContext): In
 		outputRowDescriptor[attr.id] = index;
 	});
 
-	// Common run function patterns:
-
-	// Pattern 1: Simple streaming with context helper
-	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
-		yield* withRowContextGenerator(rctx, sourceRowDescriptor, inputRows, async function* (row) {
-			// Process each row - column references automatically resolve
-			const processedRow = processRow(row, plan.operationParam);
-			yield processedRow;
-		});
-	}
-
-	// Pattern 2: High-volume streaming with row slot (for scan-like operations)
+	// Common run function pattern: streaming with row slot
 	async function* run(rctx: RuntimeContext, inputRows: AsyncIterable<Row>): AsyncIterable<Row> {
 		const rowSlot = createRowSlot(rctx, sourceRowDescriptor);
 		try {
@@ -352,19 +341,6 @@ const result = withRowContext(rctx, rowDescriptor, () => row, () => {
 // Async evaluation
 const result = await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
 	return await evaluateAsyncExpression(rctx);
-});
-```
-
-**Pattern 3: Legacy per-row generator (withRowContextGenerator)**
-```typescript
-import { withRowContextGenerator } from '../context-helpers.js';
-
-// Calls Map.set + Map.delete on every row.  Prefer createRowSlot for
-// high-frequency streaming.  Still used in some lower-frequency emitters
-// (CTE reference, recursive CTE, returning, window).
-yield* withRowContextGenerator(rctx, rowDescriptor, sourceRows, async function* (row) {
-	const result = await processRow(row);
-	yield result;
 });
 ```
 
@@ -531,7 +507,7 @@ set DEBUG=quereus:runtime:context* && yarn test
 - Always use the logging helpers: `logContextPush()` and `logContextPop()`
 - Include meaningful notes that identify the operation context
 - Log attribute information when setting up row descriptors
-- Always use context helpers (`withRowContext`, `withAsyncRowContext`, `withRowContextGenerator`, `createRowSlot`)
+- Always use context helpers (`withRowContext`, `withAsyncRowContext`, `createRowSlot`)
 - Never call `rctx.context.set/delete` directly
 - Choose the appropriate helper based on your use case
 - Include meaningful notes in your instruction's `note` field
@@ -668,10 +644,15 @@ if (plan.oldRowDescriptor) {
 
 // CURRENT MODEL - always-present flat context with helpers
 const flatRow = composeOldNewRow(oldRow, newRow, columnCount);
-yield* withRowContextGenerator(rctx, flatRowDescriptor, flatRows, async function* (flatRow) {
-	// Process mutations with proper context
-	yield flatRow;
-});
+const slot = createRowSlot(rctx, flatRowDescriptor);
+try {
+	for await (const flatRow of flatRows) {
+		slot.set(flatRow);
+		yield flatRow;
+	}
+} finally {
+	slot.close();
+}
 ```
 
 This eliminates the break-fix cycle where attribute ID conflicts caused unpredictable column resolution behavior.
@@ -973,25 +954,16 @@ db.createScalarFunction("my_upper",
 
 ### Row Processing with Context
 ```typescript
-// Simple streaming pattern
+// Streaming pattern with row slot
 async function* run(rctx: RuntimeContext, input: AsyncIterable<Row>): AsyncIterable<Row> {
-	yield* withRowContextGenerator(rctx, rowDescriptor, input, async function* (row) {
-		// Process row - column references resolve automatically
-		const result = await processRow(row, rctx);
-		yield result;
-	});
-}
-
-// High-volume streaming pattern (scan, join)
-async function* run(rctx: RuntimeContext, input: AsyncIterable<Row>): AsyncIterable<Row> {
-	const rowSlot = createRowSlot(rctx, rowDescriptor);
+	const slot = createRowSlot(rctx, rowDescriptor);
 	try {
 		for await (const row of input) {
-			rowSlot.set(row);
+			slot.set(row);
 			yield processRow(row, rctx);
 		}
 	} finally {
-		rowSlot.close();
+		slot.close();
 	}
 }
 ```
@@ -1245,12 +1217,17 @@ if (symbolKey === 'problematic.column') {
 **Context Setup Pattern:**
 ```typescript
 // Always use context helpers for row context
-// Pattern 1: Streaming with generator helper
-yield* withRowContextGenerator(rctx, rowDescriptor, rows, async function* (row) {
-    // Process row - column references resolve automatically
-    const result = await processRow(row, rctx);
-    yield result;
-});
+// Pattern 1: Streaming with row slot
+const slot = createRowSlot(rctx, rowDescriptor);
+try {
+    for await (const row of rows) {
+        slot.set(row);
+        const result = await processRow(row, rctx);
+        yield result;
+    }
+} finally {
+    slot.close();
+}
 
 // Pattern 2: One-off async evaluation
 const result = await withAsyncRowContext(rctx, rowDescriptor, () => row, async () => {
@@ -1258,7 +1235,7 @@ const result = await withAsyncRowContext(rctx, rowDescriptor, () => row, async (
     return await processRow(row, rctx);
 });
 
-// Pattern 3: High-volume streaming with row slot
+// Pattern 3: One-off synchronous evaluation
 const slot = createRowSlot(rctx, rowDescriptor);
 try {
     for await (const row of rows) {
@@ -1325,37 +1302,25 @@ Quereus provides helper functions in `src/runtime/context-helpers.ts` to simplif
 - Ensures proper cleanup in finally block
 - Use for async operations (e.g., constraint checks)
 
-**`withRowContextGenerator(rctx, descriptor, rows, fn)`**
-- Processes multiple rows with automatic context management
-- Ideal for simple streaming operations
-- Handles context setup/teardown for each row
-
 **Example usage:**
 ```typescript
-import { createRowSlot, withRowContext, withAsyncRowContext, withRowContextGenerator, resolveAttribute } from '../context-helpers.js';
+import { createRowSlot, withRowContext, withAsyncRowContext, resolveAttribute } from '../context-helpers.js';
 
-// Pattern 1: Simple streaming with generator helper
-async function* run(rctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
-	yield* withRowContextGenerator(rctx, rowDescriptor, rows, async function* (row) {
-		const value = someExpression(rctx); // Column refs auto-resolve
-		yield processRow(row, value);
-	});
-}
-
-// Pattern 2: High-volume streaming with row slot
+// Pattern 1: Streaming with row slot
 async function* run(rctx: RuntimeContext, rows: AsyncIterable<Row>): AsyncIterable<Row> {
 	const slot = createRowSlot(rctx, rowDescriptor);
 	try {
 		for await (const row of rows) {
 			slot.set(row);
-			yield row; // Process millions of rows efficiently
+			const value = someExpression(rctx); // Column refs auto-resolve
+			yield processRow(row, value);
 		}
 	} finally {
 		slot.close();
 	}
 }
 
-// Pattern 3: Synchronous expression evaluation
+// Pattern 2: Synchronous expression evaluation
 function evaluateSync(rctx: RuntimeContext, row: Row): SqlValue {
 	return withRowContext(rctx, rowDescriptor, () => row, () => {
 		// Synchronous expression evaluation

@@ -4,7 +4,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode, createValidatedInstruction } from '../emitters.js';
 import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import { withRowContextGenerator } from '../context-helpers.js';
+import { createRowSlot } from '../context-helpers.js';
 import { createLogger } from '../../common/logger.js';
 
 const logger = createLogger('runtime:cte');
@@ -20,10 +20,15 @@ export function emitCTEReference(plan: CTEReferenceNode, ctx: EmissionContext): 
 	// Standard CTE reference: Use normal instruction parameter approach
 	async function* run(rctx: RuntimeContext, cteResult: AsyncIterable<Row>): AsyncIterable<Row> {
 		logger(`Executing CTE reference ${cteAlias}`);
-		// Execute the CTE and yield each row
-		yield* withRowContextGenerator(rctx, rowDescriptor, cteResult, async function* (row) {
-			yield row;
-		});
+		const slot = createRowSlot(rctx, rowDescriptor);
+		try {
+			for await (const row of cteResult) {
+				slot.set(row);
+				yield row;
+			}
+		} finally {
+			slot.close();
+		}
 	}
 
 	// Emit the underlying CTE

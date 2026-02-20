@@ -121,9 +121,8 @@ export function lookupColumn(rctx: RuntimeContext, descriptor: RowDescriptor, co
 /**
  * Execute an async function with a temporary row context (Map.set + Map.delete).
  *
- * Best for **one-off or low-frequency** evaluations (constraint checks, DML
- * context setup).  For high-frequency streaming loops prefer {@link createRowSlot}
- * which avoids per-row Map mutations.
+ * Useful for **one-off** evaluations such as constraint checks and DML context
+ * setup where a full {@link createRowSlot} lifecycle is unnecessary.
  */
 export async function withAsyncRowContext<T>(
 	rctx: RuntimeContext,
@@ -152,8 +151,8 @@ export async function withAsyncRowContext<T>(
 /**
  * Execute a synchronous function with a temporary row context (Map.set + Map.delete).
  *
- * Best for **one-off or low-frequency** evaluations.  For high-frequency
- * streaming loops prefer {@link createRowSlot}.
+ * Useful for **one-off** evaluations where a full {@link createRowSlot}
+ * lifecycle is unnecessary.
  */
 export function withRowContext<T>(
 	rctx: RuntimeContext,
@@ -179,45 +178,4 @@ export function withRowContext<T>(
 	}
 }
 
-/**
- * Execute a generator with per-row context push/pop (Map.set + Map.delete each row).
- *
- * Still used by some lower-frequency emitters (CTE reference, recursive CTE,
- * returning, window).  For high-frequency streaming emitters (scan, join,
- * filter, project, distinct) prefer {@link createRowSlot}.
- */
-export async function* withRowContextGenerator<T>(
-	rctx: RuntimeContext,
-	descriptor: RowDescriptor,
-	rows: AsyncIterable<Row>,
-	fn: (row: Row) => AsyncIterable<T>
-): AsyncIterable<T> {
-	const attrs = Object.keys(descriptor).filter(k => descriptor[parseInt(k)] !== undefined);
-	let rowCount = 0;
 
-	for await (const row of rows) {
-		if (rowCount === 0) {
-			ctxLog('PUSH generator context with attrs=[%s]', attrs.join(','));
-		}
-		rctx.context.set(descriptor, () => row);
-		if (ctxLog.enabled && rctx.contextTracker) {
-			rctx.contextTracker.addContext(descriptor, 'withRowContextGenerator');
-		}
-		try {
-			yield* fn(row);
-			rowCount++;
-		} finally {
-			rctx.context.delete(descriptor);
-			if (ctxLog.enabled && rctx.contextTracker) {
-				rctx.contextTracker.removeContext(descriptor);
-			}
-			if (ctxLog.enabled && rowCount % 1000 === 0) {
-				ctxLog('Generator context processed %d rows', rowCount);
-			}
-		}
-	}
-
-	if (rowCount > 0) {
-		ctxLog('POP generator context after %d rows', rowCount);
-	}
-}

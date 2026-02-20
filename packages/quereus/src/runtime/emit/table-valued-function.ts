@@ -7,7 +7,7 @@ import { isTableValuedFunctionSchema } from '../../schema/function.js';
 import type { EmissionContext } from '../emission-context.js';
 import type { TableFunctionCallNode } from '../../planner/nodes/table-function-call.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import { withRowContextGenerator } from '../context-helpers.js';
+import { createRowSlot } from '../context-helpers.js';
 
 export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: EmissionContext): Instruction {
 	const functionName = plan.functionName.toLowerCase();
@@ -50,9 +50,15 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
 
-			yield* withRowContextGenerator(innerCtx, rowDescriptor, iterable, async function* (row) {
-				yield row;
-			});
+			const slot = createRowSlot(innerCtx, rowDescriptor);
+			try {
+				for await (const row of iterable) {
+					slot.set(row);
+					yield row;
+				}
+			} finally {
+				slot.close();
+			}
 		} catch (error: any) {
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
 		}
@@ -86,9 +92,15 @@ export function emitTableValuedFunctionCall(plan: TableFunctionCallNode, ctx: Em
 			// Handle both direct AsyncIterable and Promise<AsyncIterable>
 			const iterable = result instanceof Promise ? await result : result;
 
-			yield* withRowContextGenerator(innerCtx, rowDescriptor, iterable, async function* (row) {
-				yield row;
-			});
+			const slot = createRowSlot(innerCtx, rowDescriptor);
+			try {
+				for await (const row of iterable) {
+					slot.set(row);
+					yield row;
+				}
+			} finally {
+				slot.close();
+			}
 		} catch (error: any) {
 			throw new QuereusError(`Table-valued function ${functionName} failed: ${error.message}`, StatusCode.ERROR, error);
 		}

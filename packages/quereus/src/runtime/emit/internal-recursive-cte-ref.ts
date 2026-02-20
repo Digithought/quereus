@@ -6,7 +6,7 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import { withRowContextGenerator } from '../context-helpers.js';
+import { createRowSlot } from '../context-helpers.js';
 
 export function emitInternalRecursiveCTERef(plan: InternalRecursiveCTERefNode, ctx: EmissionContext): Instruction {
 	// Create row descriptor for output attributes
@@ -22,10 +22,15 @@ export function emitInternalRecursiveCTERef(plan: InternalRecursiveCTERefNode, c
 			);
 		}
 
-		// Execute the working table and yield each row
-		yield* withRowContextGenerator(rctx, rowDescriptor, tableGetter(), async function* (row) {
-			yield row;
-		});
+		const slot = createRowSlot(rctx, rowDescriptor);
+		try {
+			for await (const row of tableGetter()) {
+				slot.set(row);
+				yield row;
+			}
+		} finally {
+			slot.close();
+		}
 	}
 
 	return createValidatedInstruction(

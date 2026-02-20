@@ -36,15 +36,15 @@ export class CTEReferenceNode extends PlanNode implements RelationalPlanNode {
 	}
 
 	private buildAttributes(): Attribute[] {
-		// CRITICAL: Always create fresh attribute IDs for each CTE reference instance.
-		// Since we now cache CTEReferenceNode instances per alias in buildFrom(),
-		// each alias gets its own unique set of attribute IDs that remain consistent
-		// throughout the planning and execution phases.
+		// Always create fresh attribute IDs for each CTE reference instance.
+		// This ensures that the cte_ref's context entry uses unique attribute IDs
+		// that cannot collide with other descriptors (e.g. InternalRecursiveCTERef)
+		// still present in the context map. Without fresh IDs, resolveAttribute's
+		// newest→oldest search may find a stale slot from an inner operator that
+		// shares the same attribute IDs, causing incorrect column resolution.
 		const relationName = this.alias || this.source.cteName;
-		// Only use fresh IDs when we have an alias that differs from the CTE name
-		const useFreshIds = this.alias !== undefined && this.alias.toLowerCase() !== this.source.cteName.toLowerCase();
 		return this.source.getAttributes().map((attr) => ({
-			id: useFreshIds ? PlanNode.nextAttrId() : attr.id,
+			id: PlanNode.nextAttrId(),
 			name: attr.name,
 			type: attr.type,
 			sourceRelation: `cte_ref:${this.source.cteName}`,
