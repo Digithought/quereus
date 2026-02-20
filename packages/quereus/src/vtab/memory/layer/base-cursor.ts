@@ -89,21 +89,39 @@ export async function* scanBaseLayer(
 
 		// Use mutation-safe iterator for secondary index iteration with range support
 		const isAscending = !plan.descending;
+		const isDescFirstColumn = secondaryIndex.specColumns[0]?.desc === true;
 
-		// Determine start key for range scans on secondary index
+		// For DESC indexes the tree stores higher values first, so:
+		// - ASC index: start from lowerBound (values increase forward in tree order)
+		// - DESC index: start from upperBound (higher values first; upper bound is the start)
 		let startKey: { value: BTreeKeyForIndex } | undefined;
-		if (plan.lowerBound) {
-			startKey = { value: plan.lowerBound.value as BTreeKeyForIndex };
+		if (isDescFirstColumn) {
+			if (plan.upperBound) {
+				startKey = { value: plan.upperBound.value as BTreeKeyForIndex };
+			}
+		} else {
+			if (plan.lowerBound) {
+				startKey = { value: plan.lowerBound.value as BTreeKeyForIndex };
+			}
 		}
 
 		for await (const indexEntry of safeIterate(indexTree, isAscending, startKey)) {
 			if (!planAppliesToKey(indexEntry.indexKey, true)) {
-				// Early termination for ascending scans past upper bound
-				if (isAscending && plan.upperBound) {
-					const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
-					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
-					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
-						break;
+				// Early termination: for ASC indexes break when past upper bound,
+				// for DESC indexes break when past lower bound (since values decrease in tree order)
+				if (isAscending) {
+					if (isDescFirstColumn && plan.lowerBound) {
+						const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
+						const cmp = compareSqlValues(keyForComparison, plan.lowerBound.value);
+						if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) {
+							break;
+						}
+					} else if (!isDescFirstColumn && plan.upperBound) {
+						const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
+						const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+						if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+							break;
+						}
 					}
 				}
 				continue;

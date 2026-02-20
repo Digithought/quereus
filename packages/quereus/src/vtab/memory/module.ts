@@ -117,8 +117,10 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	): BestAccessPlanResult {
 		logger.debugLog(`[getBestAccessPlan] Planning access for ${tableInfo.name} with ${request.filters.length} filters`);
 
-		// Get table size estimate for cost calculations
-		const estimatedTableSize = request.estimatedRows ?? 1000;
+		// Get table size estimate for cost calculations.
+		// The schema defaults estimatedRows to 0 at creation time, so treat 0 as
+		// "unknown" and fall back to a reasonable default to avoid degenerate costs.
+		const estimatedTableSize = request.estimatedRows || 1000;
 
 		// Find the best access strategy
 		const bestPlan = this.findBestAccessPlan(tableInfo, request, estimatedTableSize);
@@ -187,25 +189,36 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				.build();
 		}
 
-		// Check for equality constraints on index columns
+		// Check for equality constraints on index columns (prefix matching)
 		const equalityMatches = this.findEqualityMatches(indexCols, request.filters);
 		if (equalityMatches.matchCount === indexCols.length) {
-			// Perfect equality match - index seek
+			// Perfect equality match on all index columns - index seek
+			const seekCols = indexCols.slice(0, equalityMatches.matchCount).map(c => c.index);
 			return AccessPlanBuilder
-				.eqMatch(1) // Assuming unique index access
+				.eqMatch(1)
 				.setHandledFilters(equalityMatches.handledFilters)
 				.setIsSet(true)
+				.setIndexName(index.name)
+				.setSeekColumns(seekCols)
 				.setExplanation(`Index seek on ${index.name}`)
 				.build();
 		}
+
+		// NOTE: Prefix-equality + trailing-range on composite indexes is not yet
+		// supported at the physical scan level (partial prefix seek on composite
+		// B-tree keys requires composite range bounds).  Fall through to
+		// range-on-first-column check, which the runtime can execute correctly.
 
 		// Check for range constraints on first index column
 		const rangeMatch = this.findRangeMatch(indexCols[0], request.filters);
 		if (rangeMatch.hasRange) {
 			const estimatedRangeRows = Math.max(1, Math.floor(estimatedTableSize / 4));
+			const seekCols = [indexCols[0].index];
 			return AccessPlanBuilder
 				.rangeScan(estimatedRangeRows)
 				.setHandledFilters(rangeMatch.handledFilters)
+				.setIndexName(index.name)
+				.setSeekColumns(seekCols)
 				.setExplanation(`Index range scan on ${index.name}`)
 				.build();
 		}
@@ -218,7 +231,8 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	}
 
 	/**
-	 * Find equality matches for index columns
+	 * Find equality matches for index columns (prefix matching).
+	 * Handles both `=` and single-value `IN` as equality constraints.
 	 */
 	private findEqualityMatches(
 		indexCols: ReadonlyArray<IndexColumnSchema>,
@@ -231,10 +245,19 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			let foundMatch = false;
 			for (let i = 0; i < filters.length; i++) {
 				const filter = filters[i];
-				if (filter.columnIndex === indexCol.index &&
-					filter.op === '=' &&
-					filter.usable &&
-					filter.value !== undefined) {
+				if (filter.columnIndex !== indexCol.index || !filter.usable) continue;
+
+				// Direct equality (value may be undefined for parameter bindings —
+				// the actual value is supplied at runtime via seek key expressions)
+				if (filter.op === '=') {
+					handledFilters[i] = true;
+					foundMatch = true;
+					matchCount++;
+					break;
+				}
+
+				// Single-value IN treated as equality
+				if (filter.op === 'IN' && Array.isArray(filter.value) && (filter.value as unknown[]).length === 1) {
 					handledFilters[i] = true;
 					foundMatch = true;
 					matchCount++;
@@ -262,7 +285,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 		for (let i = 0; i < filters.length; i++) {
 			const filter = filters[i];
-			if (filter.columnIndex === indexCol.index && filter.usable && filter.value !== undefined) {
+			if (filter.columnIndex === indexCol.index && filter.usable) {
 				if (filter.op === '>' || filter.op === '>=') {
 					handledFilters[i] = true;
 					hasLower = true;

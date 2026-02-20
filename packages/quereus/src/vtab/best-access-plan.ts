@@ -87,6 +87,10 @@ export interface BestAccessPlanResult {
 	providesOrdering?: readonly OrderingSpec[];
 	/** Name of the index that provides the ordering (if any) */
 	orderingIndexName?: string;
+	/** Name of the index chosen for filtering (e.g., '_primary_' or a secondary index name) */
+	indexName?: string;
+	/** Column indexes that form the seek/range key, in order */
+	seekColumnIndexes?: readonly number[];
 	/** Whether this plan guarantees unique rows (helps DISTINCT optimization) */
 	isSet?: boolean;
 	/** Free-text explanation for debugging */
@@ -179,6 +183,22 @@ export class AccessPlanBuilder {
 	}
 
 	/**
+	 * Set the index name chosen for this access plan
+	 */
+	setIndexName(indexName: string): this {
+		this.result.indexName = indexName;
+		return this;
+	}
+
+	/**
+	 * Set the column indexes that form the seek/range key
+	 */
+	setSeekColumns(seekColumnIndexes: readonly number[]): this {
+		this.result.seekColumnIndexes = seekColumnIndexes;
+		return this;
+	}
+
+	/**
 	 * Set a residual filter function
 	 */
 	setResidualFilter(filter: (row: any) => boolean): this {
@@ -234,6 +254,18 @@ export function validateAccessPlan(
 			if (order.columnIndex < 0 || order.columnIndex >= request.columns.length) {
 				quereusError(
 					`Invalid ordering column index ${order.columnIndex}, must be 0-${request.columns.length - 1}`,
+					StatusCode.FORMAT
+				);
+			}
+		}
+	}
+
+	// Validate seek column indexes
+	if (result.seekColumnIndexes) {
+		for (const colIdx of result.seekColumnIndexes) {
+			if (colIdx < 0 || colIdx >= request.columns.length) {
+				quereusError(
+					`Invalid seek column index ${colIdx}, must be 0-${request.columns.length - 1}`,
 					StatusCode.FORMAT
 				);
 			}

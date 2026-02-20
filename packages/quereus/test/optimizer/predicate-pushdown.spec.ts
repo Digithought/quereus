@@ -36,7 +36,7 @@ describe('Predicate push-down (supported-only fragments)', () => {
     expect(access[0].accesses).to.equal(1);
   });
 
-  it('handles key-equality with residual arithmetic, keeping inner supported filter and one residual', async () => {
+  it('handles key-equality with residual arithmetic, keeping residual filter above index seek', async () => {
     await setup();
     const q = "SELECT name FROM ptab WHERE id = 2 AND (id + 0) > 0";
     const rows: any[] = [];
@@ -44,8 +44,8 @@ describe('Predicate push-down (supported-only fragments)', () => {
       rows.push(r);
     }
     expect(rows).to.have.lengthOf(1);
-    // One FILTER inside Retrieve (supported) + one residual above
-    expect(rows[0].filters).to.equal(2);
+    // IndexSeek handles id = 2 internally; residual (id + 0) > 0 stays as FILTER
+    expect(rows[0].filters).to.equal(1);
   });
 });
 

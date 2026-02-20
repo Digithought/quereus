@@ -28,9 +28,9 @@ SELECT name FROM test_table WHERE age < 35;
 
 -- Plan checks using query_plan()
 
--- Equality predicate on primary key: current implementation keeps a FILTER and chooses one access op
+-- Equality predicate on primary key: IndexSeek handles the constraint directly (no FILTER needed)
 SELECT COUNT(*) AS filters FROM query_plan('SELECT id, name FROM test_table WHERE id = 1') WHERE op = 'FILTER';
-→ [{"filters": 1}]
+→ [{"filters": 0}]
 SELECT COUNT(*) AS accesses FROM query_plan('SELECT id, name FROM test_table WHERE id = 1') WHERE op = 'SEQSCAN' OR op = 'INDEXSCAN' OR op = 'INDEXSEEK';
 → [{"accesses": 1}]
 

@@ -125,7 +125,7 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
 				isUnique: col.primaryKey || false // For now, assume only PK columns are unique
 			} as ColumnMeta)),
 			filters: constraints,
-			estimatedRows: retrieveNode.tableRef.estimatedRows
+			estimatedRows: retrieveNode.tableRef.estimatedRows || undefined
 		};
 
 		// Use the vtab module's getBestAccessPlan method to get an optimized access plan
@@ -206,84 +206,250 @@ function selectPhysicalNode(
 		}
 	};
 
-  // Analyze the access plan to determine node type
-  // Determine handled constraints by column index, not array position (robust to ordering)
-  const handledByCol = new Set<number>();
-  constraints.forEach((c, i) => {
-    if (accessPlan.handledFilters[i] === true) handledByCol.add(c.columnIndex);
-  });
-  const eqHandled = constraints.filter(c => c.op === '=');
-  const hasEqualityConstraints = eqHandled.length > 0;
-  const hasRangeConstraints = constraints.some(c => ['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex));
-
 	// Convert OrderingSpec[] to the format expected by physical nodes
 	const providesOrdering = accessPlan.providesOrdering?.map(spec => ({
 		column: spec.columnIndex,
 		desc: spec.desc
 	}));
 
-	// Decision logic for access method
-  const maybeRows = accessPlan.rows || 0;
-  const pkCols = tableRef.tableSchema.primaryKeyDefinition ?? [];
-  const eqByCol = new Map<number, PlannerPredicateConstraint>();
-  for (const c of eqHandled) eqByCol.set(c.columnIndex, c);
-  const coversPk = pkCols.length > 0 && pkCols.every(pk => eqByCol.has(pk.index));
+	// --- Index-aware path: use module-provided index identity ---
+	if (accessPlan.indexName && accessPlan.seekColumnIndexes && accessPlan.seekColumnIndexes.length > 0) {
+		return selectPhysicalNodeFromPlan(tableRef, accessPlan, constraints, filterInfo, providesOrdering);
+	}
 
-  // If module didn't report handledFilters properly but we have full-PK equality,
-  // treat it as handled for the purpose of selecting IndexSeek.
-  const treatAsHandledPk = coversPk && pkCols.every(pk => handledByCol.has(pk.index) || eqByCol.has(pk.index));
+	// --- Legacy fallback: infer access method from constraints and PK definition ---
+	return selectPhysicalNodeLegacy(tableRef, accessPlan, constraints, filterInfo, providesOrdering);
+}
 
-  if ((hasEqualityConstraints && coversPk || treatAsHandledPk) && maybeRows <= 10) {
-    // Build seek keys (as ScalarPlanNode) and constraint wiring for runtime args
-    const seekKeys = pkCols.map(pk => {
-      const c = eqByCol.get(pk.index)!;
-      if (c.valueExpr) return c.valueExpr as unknown as ScalarPlanNode;
-      const lit: AST.LiteralExpr = { type: 'literal', value: c.value } as unknown as AST.LiteralExpr;
-      return new LiteralNode(tableRef.scope, lit);
-    });
+/**
+ * Index-aware physical node selection using module-provided indexName and seekColumnIndexes.
+ * Works for both primary key and secondary indexes.
+ */
+function selectPhysicalNodeFromPlan(
+	tableRef: TableReferenceNode,
+	accessPlan: BestAccessPlanResult,
+	constraints: PlannerPredicateConstraint[],
+	filterInfo: FilterInfo,
+	providesOrdering: { column: number; desc: boolean }[] | undefined
+): SeqScanNode | IndexScanNode | IndexSeekNode {
+	const seekCols = accessPlan.seekColumnIndexes!;
+	// Map accessPlan.indexName to physical node indexName ('_primary_' → 'primary')
+	const physicalIndexName = accessPlan.indexName === '_primary_' ? 'primary' : accessPlan.indexName!;
+	// idxStr uses the raw name (scan-plan builder maps '_primary_' → 'primary')
+	const idxStrName = accessPlan.indexName!;
 
-    // Build FilterInfo with EQ constraints carrying argvIndex placeholders
-    const eqConstraints = pkCols.map((pk, i) => ({
-      constraint: { iColumn: pk.index, op: IndexConstraintOp.EQ, usable: true },
-      argvIndex: i + 1,
-    }));
-    const fi: FilterInfo = {
-      ...filterInfo,
-      constraints: eqConstraints,
-      // idxStr plan=2 (equality); include primary idx tag for clarity
-      idxStr: 'idx=_primary_(0);plan=2',
-    };
+	// Build a map of constraints by column index for quick lookup
+	const constraintsByCol = new Map<number, PlannerPredicateConstraint[]>();
+	for (const c of constraints) {
+		if (!constraintsByCol.has(c.columnIndex)) constraintsByCol.set(c.columnIndex, []);
+		constraintsByCol.get(c.columnIndex)!.push(c);
+	}
 
-    log('Using index seek on primary key');
-    return new IndexSeekNode(
-      tableRef.scope,
-      tableRef,
-      fi,
-      'primary',
-      seekKeys,
-      false,
-      providesOrdering,
-      accessPlan.cost
-    );
-  }
+	// Determine handled columns
+	const handledByCol = new Set<number>();
+	constraints.forEach((c, i) => {
+		if (accessPlan.handledFilters[i] === true) handledByCol.add(c.columnIndex);
+	});
+
+	// Check if all seek columns have equality constraints (= or single-value IN)
+	const eqBySeekCol = new Map<number, PlannerPredicateConstraint>();
+	let allEquality = true;
+	for (const colIdx of seekCols) {
+		const colConstraints = constraintsByCol.get(colIdx) ?? [];
+		const eqConstraint = colConstraints.find(c =>
+			(c.op === '=' || (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1)) &&
+			handledByCol.has(c.columnIndex)
+		);
+		if (eqConstraint) {
+			eqBySeekCol.set(colIdx, eqConstraint);
+		} else {
+			allEquality = false;
+			break;
+		}
+	}
+
+	if (allEquality && eqBySeekCol.size === seekCols.length) {
+		// Equality seek on all seek columns
+		const seekKeys: ScalarPlanNode[] = seekCols.map(colIdx => {
+			const c = eqBySeekCol.get(colIdx)!;
+			if (c.valueExpr && !Array.isArray(c.valueExpr)) return c.valueExpr as unknown as ScalarPlanNode;
+			const val = c.op === 'IN' && Array.isArray(c.value) ? (c.value as unknown[])[0] : c.value;
+			const lit: AST.LiteralExpr = { type: 'literal', value: val } as unknown as AST.LiteralExpr;
+			return new LiteralNode(tableRef.scope, lit);
+		});
+
+		const eqConstraints = seekCols.map((colIdx, i) => ({
+			constraint: { iColumn: colIdx, op: IndexConstraintOp.EQ, usable: true },
+			argvIndex: i + 1,
+		}));
+		const fi: FilterInfo = {
+			...filterInfo,
+			constraints: eqConstraints,
+			idxStr: `idx=${idxStrName}(0);plan=2`,
+		};
+
+		log('Using index seek on %s (equality)', physicalIndexName);
+		return new IndexSeekNode(
+			tableRef.scope,
+			tableRef,
+			fi,
+			physicalIndexName,
+			seekKeys,
+			false,
+			providesOrdering,
+			accessPlan.cost
+		);
+	}
+
+	// Check for range constraints on the seek columns
+	// Use the first (or only) seek column that has range constraints
+	const rangeCol = seekCols.find(colIdx => {
+		const colConstraints = constraintsByCol.get(colIdx) ?? [];
+		return colConstraints.some(c => ['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex));
+	});
+
+	if (rangeCol !== undefined) {
+		const colConstraints = constraintsByCol.get(rangeCol) ?? [];
+		const lower = colConstraints.find(c => (c.op === '>' || c.op === '>=') && handledByCol.has(c.columnIndex));
+		const upper = colConstraints.find(c => (c.op === '<' || c.op === '<=') && handledByCol.has(c.columnIndex));
+
+		const seekKeys: ScalarPlanNode[] = [];
+		const rangeConstraints: { constraint: { iColumn: number; op: number; usable: boolean }; argvIndex: number }[] = [];
+
+		let argv = 1;
+		if (lower) {
+			rangeConstraints.push({ constraint: { iColumn: rangeCol, op: opToIndexOp(lower.op as any), usable: true }, argvIndex: argv });
+			seekKeys.push(lower.valueExpr && !Array.isArray(lower.valueExpr) ? lower.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: lower.value } as any));
+			argv++;
+		}
+		if (upper) {
+			rangeConstraints.push({ constraint: { iColumn: rangeCol, op: opToIndexOp(upper.op as any), usable: true }, argvIndex: argv });
+			seekKeys.push(upper.valueExpr && !Array.isArray(upper.valueExpr) ? upper.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: upper.value } as any));
+			argv++;
+		}
+
+		const fi: FilterInfo = {
+			...filterInfo,
+			constraints: rangeConstraints as any,
+			idxStr: `idx=${idxStrName}(0);plan=3`,
+		};
+
+		log('Using index seek (range) on %s', physicalIndexName);
+		return new IndexSeekNode(
+			tableRef.scope,
+			tableRef,
+			fi,
+			physicalIndexName,
+			seekKeys,
+			true,
+			providesOrdering,
+			accessPlan.cost
+		);
+	}
+
+	// Ordering-only index scan
+	if (providesOrdering) {
+		const orderingIndexName = accessPlan.orderingIndexName ?? physicalIndexName;
+		const orderingIdxStr = orderingIndexName === 'primary' ? '_primary_' : orderingIndexName;
+		log('Using index scan (ordering provided by %s)', orderingIndexName);
+
+		const orderingFilterInfo: FilterInfo = {
+			...filterInfo,
+			idxStr: `idx=${orderingIdxStr}(0);plan=0`,
+			indexInfoOutput: {
+				...filterInfo.indexInfoOutput,
+				idxStr: `idx=${orderingIdxStr}(0);plan=0`,
+				orderByConsumed: true,
+			}
+		};
+
+		return new IndexScanNode(
+			tableRef.scope,
+			tableRef,
+			orderingFilterInfo,
+			orderingIndexName,
+			providesOrdering,
+			accessPlan.cost
+		);
+	}
+
+	// Fall back to sequential scan
+	log('Using sequential scan (index %s: no usable seek/range constraints)', physicalIndexName);
+	return createSeqScan(tableRef, filterInfo, accessPlan.cost);
+}
+
+/**
+ * Legacy physical node selection for backward compatibility when module
+ * doesn't provide indexName/seekColumnIndexes (PK-based heuristics).
+ */
+function selectPhysicalNodeLegacy(
+	tableRef: TableReferenceNode,
+	accessPlan: BestAccessPlanResult,
+	constraints: PlannerPredicateConstraint[],
+	filterInfo: FilterInfo,
+	providesOrdering: { column: number; desc: boolean }[] | undefined
+): SeqScanNode | IndexScanNode | IndexSeekNode {
+	// Analyze the access plan to determine node type
+	const handledByCol = new Set<number>();
+	constraints.forEach((c, i) => {
+		if (accessPlan.handledFilters[i] === true) handledByCol.add(c.columnIndex);
+	});
+	const eqHandled = constraints.filter(c => c.op === '=');
+	const hasEqualityConstraints = eqHandled.length > 0;
+	const hasRangeConstraints = constraints.some(c => ['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex));
+
+	const maybeRows = accessPlan.rows || 0;
+	const pkCols = tableRef.tableSchema.primaryKeyDefinition ?? [];
+	const eqByCol = new Map<number, PlannerPredicateConstraint>();
+	for (const c of eqHandled) eqByCol.set(c.columnIndex, c);
+	const coversPk = pkCols.length > 0 && pkCols.every(pk => eqByCol.has(pk.index));
+	const treatAsHandledPk = coversPk && pkCols.every(pk => handledByCol.has(pk.index) || eqByCol.has(pk.index));
+
+	if ((hasEqualityConstraints && coversPk || treatAsHandledPk) && maybeRows <= 10) {
+		const seekKeys = pkCols.map(pk => {
+			const c = eqByCol.get(pk.index)!;
+			if (c.valueExpr) return c.valueExpr as unknown as ScalarPlanNode;
+			const lit: AST.LiteralExpr = { type: 'literal', value: c.value } as unknown as AST.LiteralExpr;
+			return new LiteralNode(tableRef.scope, lit);
+		});
+
+		const eqConstraints = pkCols.map((pk, i) => ({
+			constraint: { iColumn: pk.index, op: IndexConstraintOp.EQ, usable: true },
+			argvIndex: i + 1,
+		}));
+		const fi: FilterInfo = {
+			...filterInfo,
+			constraints: eqConstraints,
+			idxStr: 'idx=_primary_(0);plan=2',
+		};
+
+		log('Using index seek on primary key (legacy)');
+		return new IndexSeekNode(
+			tableRef.scope,
+			tableRef,
+			fi,
+			'primary',
+			seekKeys,
+			false,
+			providesOrdering,
+			accessPlan.cost
+		);
+	}
 
 	if (hasRangeConstraints) {
-		// Build dynamic range seek using IndexSeek with lower/upper bound expressions
-		// Choose first handled range column (typically leading PK/index column)
 		const rangeCols = constraints
 			.filter(c => ['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex))
 			.sort((a, b) => a.columnIndex - b.columnIndex);
 
 		const primaryFirstCol = (tableRef.tableSchema.primaryKeyDefinition?.[0]?.index) ?? (rangeCols[0]?.columnIndex ?? 0);
-		const lower = rangeCols.find(c => c.columnIndex === primaryFirstCol && (c.op === '>' || c.op === '>=')) as unknown as PlannerPredicateConstraint | undefined;
-		const upper = rangeCols.find(c => c.columnIndex === primaryFirstCol && (c.op === '<' || c.op === '<=')) as unknown as PlannerPredicateConstraint | undefined;
+		const lower = rangeCols.find(c => c.columnIndex === primaryFirstCol && (c.op === '>' || c.op === '>='));
+		const upper = rangeCols.find(c => c.columnIndex === primaryFirstCol && (c.op === '<' || c.op === '<='));
 
 		const seekKeys: ScalarPlanNode[] = [];
-		const rangeConstraints: { constraint: { iColumn: number; op: number; usable: boolean }; argvIndex: number }[] = [] as any;
+		const rangeConstraints: { constraint: { iColumn: number; op: number; usable: boolean }; argvIndex: number }[] = [];
 
 		let argv = 1;
 		if (lower) {
-			// argvIndex starts at 1
 			rangeConstraints.push({ constraint: { iColumn: primaryFirstCol, op: opToIndexOp(lower.op as any), usable: true }, argvIndex: argv });
 			seekKeys.push(lower.valueExpr ? lower.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: lower.value } as any));
 			argv++;
@@ -300,7 +466,7 @@ function selectPhysicalNode(
 			idxStr: 'idx=_primary_(0);plan=3',
 		};
 
-		log('Using index seek (range) on primary key');
+		log('Using index seek (range) on primary key (legacy)');
 		return new IndexSeekNode(
 			tableRef.scope,
 			tableRef,
@@ -311,13 +477,12 @@ function selectPhysicalNode(
 			providesOrdering,
 			accessPlan.cost
 		);
-	} else if (providesOrdering) {
-		// Ordering benefit without explicit range constraints: prefer index scan
-		// Use the index that provides the ordering, or fall back to primary
+	}
+
+	if (providesOrdering) {
 		const indexName = accessPlan.orderingIndexName ?? 'primary';
 		log('Using index scan (ordering provided by %s)', indexName);
 
-		// Build FilterInfo with the correct index name for the runtime
 		const indexIdxStr = indexName === 'primary' ? '_primary_' : indexName;
 		const orderingFilterInfo: FilterInfo = {
 			...filterInfo,
@@ -337,11 +502,10 @@ function selectPhysicalNode(
 			providesOrdering,
 			accessPlan.cost
 		);
-	} else {
-		// Fall back to sequential scan
-		log('Using sequential scan (no beneficial index access)');
-		return createSeqScan(tableRef, filterInfo, accessPlan.cost);
 	}
+
+	log('Using sequential scan (no beneficial index access)');
+	return createSeqScan(tableRef, filterInfo, accessPlan.cost);
 }
 
 // Narrow module context originating from grow-retrieve index-style fallback

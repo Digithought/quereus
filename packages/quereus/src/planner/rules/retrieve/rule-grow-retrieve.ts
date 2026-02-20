@@ -33,8 +33,9 @@ import { extractOrderingFromSortKeys } from '../../framework/physical-utils.js';
 import { LimitOffsetNode } from '../../nodes/limit-offset.js';
 import { PlanNode as _PlanNode } from '../../nodes/plan-node.js';
 import { PlanNodeType as _PlanNodeType } from '../../nodes/plan-node-type.js';
-import { LiteralNode } from '../../nodes/scalar.js';
+import { LiteralNode, BinaryOpNode } from '../../nodes/scalar.js';
 import { collectBindingsInPlan } from '../../analysis/binding-collector.js';
+import type * as AST from '../../../parser/ast.js';
 
 const log = createLogger('optimizer:rule:grow-retrieve');
 
@@ -238,7 +239,7 @@ function fallbackIndexSupports(
 		filters: [],
 		requiredOrdering: undefined,
 		limit: undefined,
-		estimatedRows: tableRef.estimatedRows ?? context.stats.tableRows(tableSchema) ?? 1000
+		estimatedRows: tableRef.estimatedRows || context.stats.tableRows(tableSchema) || 1000
 	};
 
 	// Extract information based on node type
@@ -321,6 +322,33 @@ function fallbackIndexSupports(
 	}
 
 	log('Index-style fallback beneficial: cost %d vs %d seq scan', accessPlan.cost, seqCost);
+
+	// Compute full residual: extraction residual + source expressions of unhandled constraints.
+	// The extractor marks constraints it can decompose (e.g., LIKE), but the module may not
+	// handle them.  Those unhandled constraints must be preserved as a residual filter.
+	if (node instanceof FilterNode && request.filters.length > 0) {
+		const unhandledExprs: PlanNode[] = [];
+		for (let i = 0; i < request.filters.length; i++) {
+			if (!accessPlan.handledFilters[i] && request.filters[i].sourceExpression) {
+				unhandledExprs.push(request.filters[i].sourceExpression);
+			}
+		}
+		if (unhandledExprs.length > 0) {
+			const parts: PlanNode[] = residualPredicate ? [residualPredicate, ...unhandledExprs] : unhandledExprs;
+			if (parts.length === 1) {
+				residualPredicate = parts[0];
+			} else {
+				let acc = parts[0];
+				for (let i = 1; i < parts.length; i++) {
+					const right = parts[i];
+					const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (acc as any).expression, right: (right as any).expression };
+					acc = new BinaryOpNode((acc as any).scope, ast, acc, right);
+				}
+				residualPredicate = acc;
+			}
+			log('Added %d unhandled constraint expressions to residual', unhandledExprs.length);
+		}
+	}
 
 	// Store context for later use in ruleSelectAccessPath
 	const indexCtx: IndexStyleContext = {
